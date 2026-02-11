@@ -575,22 +575,16 @@ impl WithdrawQueue {
         Ok(id)
     }
 
-    /// Peek at the head of the queue without removing it.
+    /// Get the head of the queue without removing it.
     ///
     /// # Returns
     /// `Some((id, &withdrawal))` if non-empty, `None` if empty.
-    #[must_use]
-    pub fn peek(&self) -> Option<(u64, &PendingWithdrawal)> {
-        self.pending_withdrawals
-            .get(&self.next_withdraw_to_execute)
-            .map(|w| (self.next_withdraw_to_execute, w))
-    }
-
-    /// Alias for [`peek`](Self::peek) — get the head of the queue.
     #[inline]
     #[must_use]
     pub fn head(&self) -> Option<(u64, &PendingWithdrawal)> {
-        self.peek()
+        self.pending_withdrawals
+            .get(&self.next_withdraw_to_execute)
+            .map(|w| (self.next_withdraw_to_execute, w))
     }
 
     /// Dequeue and return the head of the queue (FIFO).

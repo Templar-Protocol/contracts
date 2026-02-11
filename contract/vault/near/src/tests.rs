@@ -1307,7 +1307,7 @@ fn rebalance_balance_read_failure_stops_operation() {
     assert!(matches!(res, PromiseOrValue::Value(())));
     assert!(matches!(c.op_state, OpState::Idle));
     assert!(
-        !c.market_execution_lock.is_locked_all(),
+        !c.has_pending_market_withdrawal(),
         "locks should be cleared on stop"
     );
 
@@ -3255,7 +3255,7 @@ fn sentinel_can_revoke_pending_cap_change() {
     c.revoke_pending_cap(market.clone());
 
     assert!(
-        !c.governance_timelocks.has_pending(),
+        c.governance_timelocks.pending_len() == 0,
         "Sentinel should be able to revoke pending caps"
     );
 }
@@ -3449,7 +3449,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         half
     );
     assert!(
-        !c.governance_timelocks.has_pending(),
+        c.governance_timelocks.pending_len() == 0,
         "decreasing relative cap should apply immediately"
     );
 
@@ -3459,7 +3459,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     });
 
     assert!(
-        c.governance_timelocks.has_pending(),
+        c.governance_timelocks.pending_len() > 0,
         "increasing relative cap should be timelocked"
     );
     assert_eq!(
@@ -4252,7 +4252,7 @@ fn rebalance_create_failure_keeps_idle_and_unlocks() {
 
     assert!(matches!(c.op_state, OpState::Idle));
     assert!(
-        !c.market_execution_lock.is_locked_all(),
+        !c.has_pending_market_withdrawal(),
         "no locks should be held initially",
     );
 
@@ -4270,7 +4270,7 @@ fn rebalance_create_failure_keeps_idle_and_unlocks() {
         "vault should remain Idle after rebalance create failure",
     );
     assert!(
-        !c.market_execution_lock.is_locked_all(),
+        !c.has_pending_market_withdrawal(),
         "market execution lock must not be held after failure",
     );
 }

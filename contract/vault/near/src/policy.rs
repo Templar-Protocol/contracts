@@ -131,10 +131,6 @@ impl MarketExecutionLock {
             .is_locked(market.into_target_id(), env::block_timestamp())
     }
 
-    pub fn is_locked_all(&self) -> bool {
-        self.inner.active_count(env::block_timestamp()) > 0
-    }
-
     pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
         let mut set = MarketLockSet::new();
         for market in markets {

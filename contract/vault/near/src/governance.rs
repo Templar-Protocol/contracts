@@ -111,10 +111,6 @@ impl Timelocks {
         self.pending_actions.len()
     }
 
-    pub fn has_pending(&self) -> bool {
-        !self.pending_actions.is_empty()
-    }
-
     pub fn pending_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
         self.pending_actions.iter().cloned().collect()
     }

@@ -1011,10 +1011,7 @@ impl Contract {
 
     /// Returns all pending timelocked governance actions.
     pub fn get_pending_governance_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
-        self.governance_timelocks
-            .pending_actions()
-            .into_iter()
-            .collect()
+        self.governance_timelocks.pending_actions()
     }
 
     /// Returns total assets under management = idle balance + sum of market principals.
@@ -1195,7 +1192,10 @@ impl Contract {
     /// This is a coarse signal that a withdrawal or allocator-only
     /// rebalance is in-flight against at least one market.
     pub fn has_pending_market_withdrawal(&self) -> bool {
-        self.market_execution_lock.is_locked_all()
+        self.market_execution_lock
+            .inner()
+            .active_count(env::block_timestamp())
+            > 0
     }
 
     pub fn get_current_withdraw_request_id(&self) -> Option<U64> {

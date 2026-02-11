@@ -459,24 +459,22 @@ fn test_withdraw_queue_enqueue_full() {
 }
 
 #[test]
-fn test_withdraw_queue_peek() {
+fn test_withdraw_queue_head_non_destructive() {
     let mut queue = WithdrawQueue::new();
 
     // Empty queue
-    assert!(queue.peek().is_none());
+    assert!(queue.head().is_none());
 
     // Add items
     enqueue_simple(&mut queue, 1, 100, 1000);
     enqueue_simple(&mut queue, 2, 200, 2000);
 
-    // Peek should return the first item
-    let (id, withdrawal) = queue.peek().unwrap();
+    let (id, withdrawal) = queue.head().unwrap();
     assert_eq!(id, 0);
     assert_eq!(withdrawal.owner, owner_addr(1));
     assert_eq!(withdrawal.escrow_shares, 100);
 
-    // Peek again should return the same item
-    let (id2, _) = queue.peek().unwrap();
+    let (id2, _) = queue.head().unwrap();
     assert_eq!(id2, 0);
     assert_eq!(queue.len(), 2); // Length unchanged
 }
@@ -726,7 +724,6 @@ fn test_withdraw_queue_empty_operations() {
 
     assert!(queue.is_empty());
     assert_eq!(queue.len(), 0);
-    assert!(queue.peek().is_none());
     assert!(queue.head().is_none());
     assert!(queue.get(0).is_none());
     assert!(!queue.contains(0));
@@ -1227,7 +1224,7 @@ proptest! {
     }
 
     #[test]
-    fn withdraw_queue_peek_equals_head(
+    fn withdraw_queue_head_is_stable(
         num_enqueues in 1usize..10usize,
     ) {
         let mut queue = WithdrawQueue::new();
@@ -1244,10 +1241,10 @@ proptest! {
             ).unwrap();
         }
 
-        let peek_result = queue.peek();
-        let head_result = queue.head();
+        let first = queue.head();
+        let second = queue.head();
 
-        prop_assert_eq!(peek_result, head_result);
+        prop_assert_eq!(first, second);
     }
 
     #[test]

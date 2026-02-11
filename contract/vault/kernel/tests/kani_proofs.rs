@@ -1442,7 +1442,7 @@ mod kani_proofs {
 
     #[kani::proof]
     #[kani::unwind(4)]
-    fn kani_queue_peek_equals_head() {
+    fn kani_queue_head_is_stable() {
         let mut queue = WithdrawQueue::new();
         let n: u8 = kani::any();
         kani::assume(n > 0 && n <= 3);
@@ -1460,9 +1460,9 @@ mod kani_proofs {
                 .unwrap();
         }
 
-        let peek = queue.peek();
-        let head = queue.head();
-        assert_eq!(peek, head);
+        let first = queue.head();
+        let second = queue.head();
+        assert_eq!(first, second);
     }
 
     #[kani::proof]
