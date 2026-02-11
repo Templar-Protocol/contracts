@@ -1,0 +1,44 @@
+set shell := ["bash", "-cu"]
+
+vault_root := justfile_directory()
+
+# Count auditor-facing Rust LOC for vault runtime code only.
+# Includes: src/ trees for curator-primitives, kernel, near, soroban, soroban-blend-adapter.
+# Excludes: tests, proofs, test helpers, examples, snapshots.
+audit-loc:
+	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
+	@if ! command -v jq >/dev/null 2>&1; then echo "jq not found"; exit 1; fi
+	@tokei \
+		"{{vault_root}}/curator-primitives/src" \
+		"{{vault_root}}/kernel/src" \
+		"{{vault_root}}/near/src" \
+		"{{vault_root}}/soroban/src" \
+		"{{vault_root}}/soroban-blend-adapter/src" \
+		--types Rust \
+		--exclude "**/tests/**" \
+		--exclude "**/tests.rs" \
+		--exclude "**/*_tests.rs" \
+		--exclude "**/*proof*.rs" \
+		--exclude "**/test_utils.rs" \
+		--exclude "**/examples/**" \
+		--exclude "**/test_snapshots/**" \
+		--output json | jq '{code: .Rust.code, comments: .Rust.comments, blanks: .Rust.blanks, code_plus_comments: (.Rust.code + .Rust.comments), lines: (.Rust.code + .Rust.comments + .Rust.blanks)}'
+
+# Count auditor-facing Rust LOC per vault crate.
+audit-loc-per-crate:
+	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
+	@if ! command -v jq >/dev/null 2>&1; then echo "jq not found"; exit 1; fi
+	@for crate in curator-primitives kernel near soroban soroban-blend-adapter; do \
+		stats=$(tokei \
+			"{{vault_root}}/$crate/src" \
+			--types Rust \
+			--exclude "**/tests/**" \
+			--exclude "**/tests.rs" \
+			--exclude "**/*_tests.rs" \
+			--exclude "**/*proof*.rs" \
+			--exclude "**/test_utils.rs" \
+			--exclude "**/examples/**" \
+			--exclude "**/test_snapshots/**" \
+			--output json); \
+		echo "$stats" | jq --arg crate "$crate" '{crate: $crate, code: .Rust.code, comments: .Rust.comments, blanks: .Rust.blanks, code_plus_comments: (.Rust.code + .Rust.comments), lines: (.Rust.code + .Rust.comments + .Rust.blanks)}'; \
+	done | jq -s '{crates: ., totals: {code: (map(.code) | add), comments: (map(.comments) | add), blanks: (map(.blanks) | add), code_plus_comments: (map(.code_plus_comments) | add), lines: (map(.lines) | add)}}'

@@ -26,6 +26,7 @@ _site/
 
 # generated bindings
 client/vault/dist/
+contract/vault/soroban/test_snapshots/
 
 .aider*
 **/target
