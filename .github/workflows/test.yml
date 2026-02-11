@@ -57,8 +57,8 @@ jobs:
             check_args: -p templar-curator-primitives --no-default-features --features std
           - name: serde-borsh
             check_args: -p templar-curator-primitives --no-default-features --features borsh,serde,schemars,std
-          - name: near
-            check_args: -p templar-curator-primitives --no-default-features --features near,std --target wasm32-unknown-unknown
+          - name: boundary
+            check_args: -p templar-curator-primitives --no-default-features --features boundary,std --target wasm32-unknown-unknown
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,9 +68,9 @@ jobs:
       - name: cargo check (${{ matrix.name }})
         run: cargo check ${{ matrix.check_args }}
 
-      - name: cargo test (near)
-        if: matrix.name == 'near'
-        run: cargo test -p templar-curator-primitives --no-default-features --features near-test,std
+      - name: cargo test (boundary)
+        if: matrix.name == 'boundary'
+        run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
 
   tests:
     name: Tests

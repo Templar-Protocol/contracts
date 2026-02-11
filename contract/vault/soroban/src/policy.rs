@@ -13,7 +13,7 @@ pub use templar_curator_primitives::policy::lock_filter::{
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
     cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
-    market_lock::{MarketLock, MarketLockSet},
+    market_lock::{validate_lock_expiry, MarketLock, MarketLockSet},
     refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},

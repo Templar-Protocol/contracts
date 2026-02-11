@@ -45,7 +45,7 @@ pub use policy::{
         build_withdrawal_plan_with_locks, filter_allocation_plan, filter_supply_queue,
         filter_unlocked_targets, filter_withdraw_route,
     },
-    market_lock::{MarketLock, MarketLockSet},
+    market_lock::{validate_lock_expiry, MarketLock, MarketLockSet},
     refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},

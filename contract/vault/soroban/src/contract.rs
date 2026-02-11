@@ -412,15 +412,42 @@ where
         self.apply_kernel_action(action, now_ns)
     }
 
-    fn authorize_and_apply_unit(
+    fn begin_operation<F>(
         &mut self,
         kind: ActionKind,
         caller: Address,
-        action: KernelAction,
-        now_ns: u64,
-    ) -> Result<(), RuntimeError> {
-        let _summary = self.authorize_and_apply(kind, caller, action, now_ns)?;
-        Ok(())
+        apply: F,
+    ) -> Result<u64, RuntimeError>
+    where
+        F: FnOnce(&mut VaultState, u64) -> Result<OpState, RuntimeError>,
+    {
+        self.auth.authorize(kind, caller, None)?;
+        let state = self.state_mut();
+        let op_id = state.next_op_id;
+        state.next_op_id = state.next_op_id.saturating_add(1);
+        let next_op_state = apply(state, op_id)?;
+        state.op_state = next_op_state;
+        self.save_state()?;
+        Ok(op_id)
+    }
+
+    fn finish_operation<R, F>(
+        &mut self,
+        kind: ActionKind,
+        caller: Address,
+        op_id: u64,
+        apply: F,
+    ) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut VaultState, u64) -> Result<R, RuntimeError>,
+    {
+        self.auth.authorize(kind, caller, None)?;
+        let result = {
+            let state = self.state_mut();
+            apply(state, op_id)?
+        };
+        self.save_state()?;
+        Ok(result)
     }
 
     /// Get a reference to the current vault state.
@@ -917,36 +944,24 @@ where
         plan: Vec<(TargetId, u128)>,
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        // Authorize
-        self.auth
-            .authorize(ActionKind::BeginAllocating, caller, None)?;
-
         // Filter plan to exclude locked markets
         let filtered_plan = filter_allocation_plan(&plan, &self.policy_state.locks, current_ns);
 
-        let state = self.state_mut();
-        let op_id = state.next_op_id;
-        state.next_op_id = state.next_op_id.saturating_add(1);
+        self.begin_operation(ActionKind::BeginAllocating, caller, move |state, op_id| {
+            let alloc_total: u128 = filtered_plan.iter().map(|(_, amt)| *amt).sum();
+            if alloc_total > state.idle_assets {
+                return Err(RuntimeError::insufficient_balance(
+                    state.idle_assets,
+                    alloc_total,
+                ));
+            }
+            state.idle_assets -= alloc_total;
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
 
-        // Compute allocation total and decrement idle_assets before transitioning.
-        let alloc_total: u128 = filtered_plan.iter().map(|(_, amt)| *amt).sum();
-        if alloc_total > state.idle_assets {
-            return Err(RuntimeError::insufficient_balance(
-                state.idle_assets,
-                alloc_total,
-            ));
-        }
-        state.idle_assets -= alloc_total;
-        state.total_assets = state.idle_assets.saturating_add(state.external_assets);
-
-        // Call kernel transition with filtered plan
-        let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
-            .map_err(RuntimeError::transition_error)?;
-
-        state.op_state = result.new_state;
-        self.save_state()?;
-
-        Ok(op_id)
+            let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
+                .map_err(RuntimeError::transition_error)?;
+            Ok(result.new_state)
+        })
     }
 
     /// Sync external assets during an operation.
@@ -960,13 +975,11 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::SyncExternalAssets, caller, None)?;
-
-        // Verify caller's value against market adapter when targets are available
         self.verify_external_assets_against_adapter(new_external_assets)?;
 
-        let _summary = self.apply_kernel_action(
+        let _summary = self.authorize_and_apply(
+            ActionKind::SyncExternalAssets,
+            caller,
             KernelAction::SyncExternalAssets {
                 new_external_assets,
                 op_id,
@@ -1053,27 +1066,21 @@ where
         caller: Address,
         op_id: u64,
     ) -> Result<AllocationResult, RuntimeError> {
-        // Authorize
-        self.auth
-            .authorize(ActionKind::FinishAllocating, caller, None)?;
-
-        // Call kernel transition
-        {
-            let state = self.state_mut();
-            let transition_result = complete_allocation(state.op_state.clone(), op_id, None)
-                .map_err(RuntimeError::transition_error)?;
-            state.op_state = transition_result.new_state;
-        }
-
-        // Capture external_assets before save_state
-        let external_assets = self.state().external_assets;
-        self.save_state()?;
-
-        Ok(AllocationResult {
+        self.finish_operation(
+            ActionKind::FinishAllocating,
+            caller,
             op_id,
-            new_external_assets: external_assets,
-            summary: EffectSummary::new(),
-        })
+            |state, op_id| {
+                let transition_result = complete_allocation(state.op_state.clone(), op_id, None)
+                    .map_err(RuntimeError::transition_error)?;
+                state.op_state = transition_result.new_state;
+                Ok(AllocationResult {
+                    op_id,
+                    new_external_assets: state.external_assets,
+                    summary: EffectSummary::new(),
+                })
+            },
+        )
     }
 
     /// Begin a refresh operation.
@@ -1086,26 +1093,15 @@ where
         plan: Vec<TargetId>,
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        // Authorize
-        self.auth
-            .authorize(ActionKind::BeginRefreshing, caller, None)?;
-
         // Filter plan to exclude locked markets
         let filtered_plan =
             build_refresh_plan_with_locks(&plan, &self.policy_state.locks, current_ns);
 
-        let state = self.state_mut();
-        let op_id = state.next_op_id;
-        state.next_op_id = state.next_op_id.saturating_add(1);
-
-        // Call kernel transition with filtered plan
-        let result = start_refresh(state.op_state.clone(), filtered_plan, op_id)
-            .map_err(RuntimeError::transition_error)?;
-
-        state.op_state = result.new_state;
-        self.save_state()?;
-
-        Ok(op_id)
+        self.begin_operation(ActionKind::BeginRefreshing, caller, move |state, op_id| {
+            let result = start_refresh(state.op_state.clone(), filtered_plan, op_id)
+                .map_err(RuntimeError::transition_error)?;
+            Ok(result.new_state)
+        })
     }
 
     /// Finish a refresh operation.
@@ -1115,29 +1111,28 @@ where
         caller: Address,
         op_id: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        // Authorize
-        self.auth
-            .authorize(ActionKind::FinishRefreshing, caller, None)?;
-
-        let state = self.state_mut();
-        let markets_refreshed = match &state.op_state {
-            OpState::Refreshing(refresh) => refresh.plan.len() as u32,
-            _ => 0,
-        };
-
-        // Call kernel transition
-        let result = complete_refresh(state.op_state.clone(), op_id)
-            .map_err(RuntimeError::transition_error)?;
-
-        state.op_state = result.new_state;
-        let external_assets = state.external_assets;
-        self.save_state()?;
-
-        Ok(RefreshResult {
+        self.finish_operation(
+            ActionKind::FinishRefreshing,
+            caller,
             op_id,
-            markets_refreshed,
-            new_external_assets: external_assets,
-        })
+            |state, op_id| {
+                let markets_refreshed = match &state.op_state {
+                    OpState::Refreshing(refresh) => refresh.plan.len() as u32,
+                    _ => 0,
+                };
+
+                let result = complete_refresh(state.op_state.clone(), op_id)
+                    .map_err(RuntimeError::transition_error)?;
+
+                state.op_state = result.new_state;
+
+                Ok(RefreshResult {
+                    op_id,
+                    markets_refreshed,
+                    new_external_assets: state.external_assets,
+                })
+            },
+        )
     }
 
     /// Abort an allocation operation.
@@ -1148,7 +1143,7 @@ where
         op_id: u64,
         restore_idle: u128,
     ) -> Result<(), RuntimeError> {
-        self.authorize_and_apply_unit(
+        self.authorize_and_apply(
             ActionKind::AbortAllocating,
             caller,
             KernelAction::AbortAllocating {
@@ -1157,17 +1152,19 @@ where
             },
             0,
         )
+        .map(|_| ())
     }
 
     /// Abort a refresh operation.
     ///
     pub fn abort_refreshing(&mut self, caller: Address, op_id: u64) -> Result<(), RuntimeError> {
-        self.authorize_and_apply_unit(
+        self.authorize_and_apply(
             ActionKind::AbortRefreshing,
             caller,
             KernelAction::AbortRefreshing { op_id },
             0,
         )
+        .map(|_| ())
     }
 
     /// Abort a withdrawal operation.
@@ -1178,7 +1175,7 @@ where
         op_id: u64,
         refund_shares: u128,
     ) -> Result<(), RuntimeError> {
-        self.authorize_and_apply_unit(
+        self.authorize_and_apply(
             ActionKind::AbortWithdrawing,
             caller,
             KernelAction::AbortWithdrawing {
@@ -1187,6 +1184,7 @@ where
             },
             0,
         )
+        .map(|_| ())
     }
 
     /// Settle a payout operation.
@@ -1197,12 +1195,13 @@ where
         op_id: u64,
         outcome: PayoutOutcome,
     ) -> Result<(), RuntimeError> {
-        self.authorize_and_apply_unit(
+        self.authorize_and_apply(
             ActionKind::SettlePayout,
             caller,
             KernelAction::SettlePayout { op_id, outcome },
             0,
         )
+        .map(|_| ())
     }
 
     /// Recover from a stuck operation by delegating to curator-primitives.
@@ -1239,59 +1238,28 @@ where
         self.auth
             .authorize(ActionKind::ManualReconcile, caller, None)?;
 
-        // Phase 1: Check state and start refresh
-        let op_id = {
-            let state = self.state_mut();
+        let plan: Vec<TargetId> = markets.iter().map(|m| m.market_id).collect();
+        let op_id = self.begin_refreshing(caller, plan, now_ns)?;
 
-            // Ensure we're in Idle state
-            if !state.op_state.is_idle() {
-                return Err(RuntimeError::contract_error("vault not in idle state"));
+        let refresh_markets: Vec<MarketRef> = match &self.state().op_state {
+            OpState::Refreshing(refresh) => refresh
+                .plan
+                .iter()
+                .copied()
+                .map(|market_id| {
+                    MarketRef::new(market_id, AssetId::from(self.config.asset_address))
+                })
+                .collect(),
+            _ => {
+                return Err(RuntimeError::contract_error(
+                    "manual reconcile requires refreshing state",
+                ))
             }
-
-            // Generate op_id
-            let op_id = state.next_op_id;
-            state.next_op_id = state.next_op_id.saturating_add(1);
-
-            op_id
         };
 
-        // Build plan from markets and filter locked ones
-        let plan: Vec<TargetId> = markets.iter().map(|m| m.market_id).collect();
-        let filtered_plan = build_refresh_plan_with_locks(&plan, &self.policy_state.locks, now_ns);
-
-        // Start refresh with filtered plan
-        {
-            let state = self.state_mut();
-            let result = start_refresh(state.op_state.clone(), filtered_plan, op_id)
-                .map_err(RuntimeError::transition_error)?;
-            state.op_state = result.new_state;
-        }
-
-        // Phase 2: Reconcile external assets (releases mutable borrow)
-        let record = reconcile_external_assets(&self.market, op_id, &markets)?;
-
-        // Phase 3: Update state with reconciliation results
-        {
-            let state = self.state_mut();
-
-            // Update external assets
-            let old_external = state.external_assets;
-            state.external_assets = record.new_external_assets;
-
-            // Adjust total_assets
-            if record.new_external_assets > old_external {
-                let increase = record.new_external_assets - old_external;
-                state.total_assets = state.total_assets.saturating_add(increase);
-            } else {
-                let decrease = old_external - record.new_external_assets;
-                state.total_assets = state.total_assets.saturating_sub(decrease);
-            }
-
-            // Complete refresh
-            let result = complete_refresh(state.op_state.clone(), op_id)
-                .map_err(RuntimeError::transition_error)?;
-            state.op_state = result.new_state;
-        }
+        let record = reconcile_external_assets(&self.market, op_id, &refresh_markets)?;
+        self.sync_external_assets(caller, record.new_external_assets, op_id, now_ns)?;
+        let _result = self.finish_refreshing(caller, op_id)?;
 
         // Phase 4: Emit audit event
         let ctx = self.effect_context(now_ns);
@@ -1299,8 +1267,6 @@ where
             event: templar_vault_kernel::effects::KernelEvent::RefreshCompleted { op_id },
         };
         self.interpreter.execute_effect(&effect, &ctx)?;
-
-        self.save_state()?;
 
         Ok(record)
     }
@@ -1420,23 +1386,14 @@ where
         expiry_ns: u64,
         current_ns: u64,
     ) -> Result<(), RuntimeError> {
-        use crate::policy::MarketLock;
+        use crate::policy::{validate_lock_expiry, MarketLock};
 
         // Authorize - requires allocator privileges
         self.auth
             .authorize(ActionKind::BeginAllocating, caller, None)?;
 
-        // Validate lock duration
-        if expiry_ns <= current_ns {
-            return Err(RuntimeError::contract_error(
-                "lock expiry must be in the future",
-            ));
-        }
-        let duration = expiry_ns - current_ns;
-        if duration > Self::MAX_LOCK_DURATION_NS {
-            return Err(RuntimeError::contract_error(
-                "lock duration exceeds maximum (7 days)",
-            ));
+        if !validate_lock_expiry(current_ns, expiry_ns, Self::MAX_LOCK_DURATION_NS) {
+            return Err(RuntimeError::contract_error("invalid market lock expiry"));
         }
 
         let lock = MarketLock::new(target_id, current_ns).with_expiry(expiry_ns);

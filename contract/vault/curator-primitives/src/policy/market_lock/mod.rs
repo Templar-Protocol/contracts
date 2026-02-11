@@ -4,6 +4,10 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
+pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u64) -> bool {
+    expiry_ns > current_ns && expiry_ns - current_ns <= max_duration_ns
+}
+
 /// A lock on a specific market/target.
 #[cfg_attr(
     feature = "borsh",
