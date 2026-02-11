@@ -111,13 +111,13 @@ pub fn price_header_line(
 }
 
 /// Fetches ETH price in USD from Hermes.
-pub async fn fetch_eth_price_usd() -> Option<Decimal> {
-    fetch_oracle_price("ETH").await.ok()
+pub async fn fetch_eth_price_usd(network: templar_common::utils::Network) -> Option<Decimal> {
+    fetch_oracle_price(network, "ETH").await.ok()
 }
 
 /// Fetches NEAR price in USD from Hermes.
-pub async fn fetch_near_price_usd() -> Option<Decimal> {
-    fetch_oracle_price("NEAR").await.ok()
+pub async fn fetch_near_price_usd(network: templar_common::utils::Network) -> Option<Decimal> {
+    fetch_oracle_price(network, "NEAR").await.ok()
 }
 
 /// Refreshes all price contexts from on-chain and Hermes data.
@@ -182,13 +182,13 @@ pub async fn refresh_price_contexts(
         *collateral_price_context.borrow_mut() = None;
     }
 
-    let eth_price = fetch_eth_price_usd().await;
+    let eth_price = fetch_eth_price_usd(network).await;
     if eth_price.is_none() {
         logger::warn("Unable to fetch ETH price from Hermes");
     }
     *eth_price_usd.borrow_mut() = eth_price;
 
-    let near_price = fetch_near_price_usd().await;
+    let near_price = fetch_near_price_usd(network).await;
     if near_price.is_none() {
         logger::warn("Unable to fetch NEAR price from Hermes");
     }

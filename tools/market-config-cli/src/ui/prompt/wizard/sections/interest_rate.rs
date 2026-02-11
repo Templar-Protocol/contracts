@@ -221,16 +221,18 @@ pub fn edit_interest_rate_strategy(
                 &defaults.get("optimal", "0.8"),
                 "piecewise optimal utilization",
             )?;
+            let rate_at_optimal = config.borrow_interest_rate_strategy.at(optimal);
+            let rate_at_100 = config.borrow_interest_rate_strategy.at(Decimal::ONE);
             let rate_1 = prompt_decimal(
                 theme,
                 "Rate at optimal utilization",
-                &defaults.get("rate_1", "0.0"),
+                &rate_at_optimal.to_string(),
                 "piecewise optimal rate",
             )?;
             let rate_2 = prompt_decimal(
                 theme,
-                "Maximum rate at 100% utilization",
-                &defaults.get("rate_2", "0.0"),
+                "Rate at 100% utilization",
+                &rate_at_100.to_string(),
                 "piecewise max rate",
             )?;
             InterestRateStrategy::piecewise(base, optimal, rate_1, rate_2).ok_or_else(|| {

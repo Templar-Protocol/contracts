@@ -1,4 +1,8 @@
-use crate::{logger, ui::prompt::error::map_dialoguer_err, CliError, CliResult, ConfigBuilder};
+use crate::{
+    logger,
+    ui::prompt::{error::map_dialoguer_err, wizard::types::prompt_until_valid},
+    CliError, CliResult, ConfigBuilder,
+};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use templar_common::number::Decimal;
 
@@ -263,7 +267,18 @@ fn prompt_amount(
     default_base_units: Option<u128>,
 ) -> CliResult<u128> {
     match input_mode {
-        InputMode::Base => prompt_u128(theme, prompt, default_base_units),
+        InputMode::Base => prompt_until_valid(
+            || {
+                let mut input = Input::with_theme(theme).with_prompt(prompt);
+                if let Some(default) = default_base_units {
+                    if default != 0 {
+                        input = input.default(default);
+                    }
+                }
+                input.interact_text()
+            },
+            Ok,
+        ),
         #[allow(clippy::cast_sign_loss)]
         InputMode::Asset => {
             let decimals = asset_decimals.unwrap_or(0);
@@ -272,8 +287,16 @@ fn prompt_amount(
                 let amount = Decimal::from(value) / scale;
                 amount.to_fixed(decimals as usize)
             });
-            let value = prompt_decimal_string(theme, prompt, default)?;
-            asset_units_to_base_units(&value, decimals)
+            prompt_until_valid(
+                || {
+                    let mut input = Input::with_theme(theme).with_prompt(prompt);
+                    if let Some(default) = default.clone() {
+                        input = input.default(default);
+                    }
+                    input.interact_text()
+                },
+                |value| asset_units_to_base_units(&value, decimals),
+            )
         }
         InputMode::Eth => {
             let decimals = asset_decimals.unwrap_or(0);
@@ -294,8 +317,16 @@ fn prompt_amount(
                 let eth_amount = borrow_value_usd / *eth_price_usd;
                 eth_amount.to_fixed(6)
             });
-            let value = prompt_decimal_string(theme, prompt, default)?;
-            eth_units_to_base_units(&value, decimals, borrow_price_usd, eth_price_usd)
+            prompt_until_valid(
+                || {
+                    let mut input = Input::with_theme(theme).with_prompt(prompt);
+                    if let Some(default) = default.clone() {
+                        input = input.default(default);
+                    }
+                    input.interact_text()
+                },
+                |value| eth_units_to_base_units(&value, decimals, borrow_price_usd, eth_price_usd),
+            )
         }
         InputMode::Near => {
             let decimals = asset_decimals.unwrap_or(0);
@@ -316,32 +347,20 @@ fn prompt_amount(
                 let near_amount = borrow_value_usd / *near_price_usd;
                 near_amount.to_fixed(6)
             });
-            let value = prompt_decimal_string(theme, prompt, default)?;
-            near_units_to_base_units(&value, decimals, borrow_price_usd, near_price_usd)
+            prompt_until_valid(
+                || {
+                    let mut input = Input::with_theme(theme).with_prompt(prompt);
+                    if let Some(default) = default.clone() {
+                        input = input.default(default);
+                    }
+                    input.interact_text()
+                },
+                |value| {
+                    near_units_to_base_units(&value, decimals, borrow_price_usd, near_price_usd)
+                },
+            )
         }
     }
-}
-
-fn prompt_u128(theme: &ColorfulTheme, prompt: &str, default: Option<u128>) -> CliResult<u128> {
-    let mut input = Input::with_theme(theme).with_prompt(prompt);
-    if let Some(default) = default {
-        if default != 0 {
-            input = input.default(default);
-        }
-    }
-    input.interact_text().map_err(|err| map_dialoguer_err(&err))
-}
-
-fn prompt_decimal_string(
-    theme: &ColorfulTheme,
-    prompt: &str,
-    default: Option<String>,
-) -> CliResult<String> {
-    let mut input = Input::with_theme(theme).with_prompt(prompt);
-    if let Some(default) = default {
-        input = input.default(default);
-    }
-    input.interact_text().map_err(|err| map_dialoguer_err(&err))
 }
 
 fn asset_units_to_base_units(value: &str, decimals: i32) -> CliResult<u128> {
@@ -406,9 +425,237 @@ fn amount_decimal_to_base_units(amount: Decimal, decimals: i32) -> CliResult<u12
 
     let scale = Decimal::from_u32(10).pow(decimals);
     let base_units = amount * scale;
-    let floor = base_units.to_u128_floor().ok_or_else(|| {
+    let ceil = base_units.to_u128_ceil().ok_or_else(|| {
         CliError::InvalidInput("Amount is too large to convert to base units".into())
     })?;
 
-    Ok(floor)
+    Ok(ceil)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        amount_decimal_to_base_units, asset_units_to_base_units, eth_units_to_base_units,
+        near_units_to_base_units,
+    };
+    use crate::CliError;
+    use rstest::rstest;
+    use std::str::FromStr;
+    use templar_common::number::Decimal;
+
+    // ===== amount_decimal_to_base_units tests =====
+
+    #[test]
+    fn amount_decimal_to_base_units_uses_ceil_for_rounding() {
+        let amount = Decimal::from_str("0.04").expect("valid decimal");
+        let base_units = amount_decimal_to_base_units(amount, 7).expect("conversion succeeds");
+        assert_eq!(base_units, 400_000);
+    }
+
+    #[test]
+    fn amount_decimal_to_base_units_exact_scale_rounds_exactly() {
+        let amount = Decimal::from_str("1.5").expect("valid decimal");
+        let base_units = amount_decimal_to_base_units(amount, 2).expect("conversion succeeds");
+        assert_eq!(base_units, 150);
+    }
+
+    #[rstest]
+    #[case("0", 6, 0)]
+    #[case("1", 6, 1_000_000)]
+    #[case("1.0", 6, 1_000_000)]
+    #[case("0.000001", 6, 1)]
+    #[case("0.0000001", 6, 1)] // Rounds up due to ceil
+    #[case("100", 0, 100)]
+    #[case("100.5", 0, 101)] // Rounds up due to ceil
+    #[case("1", 18, 1_000_000_000_000_000_000)]
+    fn amount_decimal_to_base_units_various_cases(
+        #[case] input: &str,
+        #[case] decimals: i32,
+        #[case] expected: u128,
+    ) {
+        let amount = Decimal::from_str(input).expect("valid decimal");
+        let result = amount_decimal_to_base_units(amount, decimals).expect("conversion succeeds");
+        assert_eq!(result, expected);
+    }
+
+    // Note: Decimal type from templar_common does not support negative values,
+    // so we cannot directly test negative rejection in amount_decimal_to_base_units.
+    // The negative check is tested via eth_units_to_base_units and near_units_to_base_units
+    // which parse strings and can detect negatives.
+
+    // ===== asset_units_to_base_units tests =====
+
+    #[rstest]
+    #[case("1.0", 6, 1_000_000)]
+    #[case("0.5", 6, 500_000)]
+    #[case("0.001", 6, 1_000)]
+    #[case("100", 8, 10_000_000_000)]
+    #[case("0", 6, 0)]
+    #[case("1.123456", 6, 1_123_456)]
+    fn asset_units_to_base_units_valid_inputs(
+        #[case] input: &str,
+        #[case] decimals: i32,
+        #[case] expected: u128,
+    ) {
+        let result = asset_units_to_base_units(input, decimals).expect("conversion succeeds");
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case("invalid")]
+    #[case("abc")]
+    #[case("hello world")]
+    #[case("12abc")]
+    fn asset_units_to_base_units_invalid_inputs(#[case] input: &str) {
+        let result = asset_units_to_base_units(input, 6);
+        assert!(result.is_err());
+    }
+
+    // ===== eth_units_to_base_units tests =====
+
+    #[test]
+    fn eth_units_to_base_units_converts_correctly() {
+        // 1 ETH at $2000, borrow asset at $1 = 2000 asset units
+        let eth_price = Decimal::from(2000u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = eth_units_to_base_units("1", 6, &borrow_price, &eth_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 2_000_000_000); // 2000 * 10^6
+    }
+
+    #[test]
+    fn eth_units_to_base_units_fractional_eth() {
+        // 0.5 ETH at $2000, borrow asset at $1 = 1000 asset units
+        let eth_price = Decimal::from(2000u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = eth_units_to_base_units("0.5", 6, &borrow_price, &eth_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 1_000_000_000); // 1000 * 10^6
+    }
+
+    #[test]
+    fn eth_units_to_base_units_different_prices() {
+        // 1 ETH at $3000, borrow asset at $0.5 = 6000 asset units
+        let eth_price = Decimal::from(3000u64);
+        let borrow_price = Decimal::from_str("0.5").expect("valid decimal");
+        let result = eth_units_to_base_units("1", 6, &borrow_price, &eth_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 6_000_000_000); // 6000 * 10^6
+    }
+
+    #[test]
+    fn eth_units_to_base_units_zero_amount() {
+        let eth_price = Decimal::from(2000u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = eth_units_to_base_units("0", 6, &borrow_price, &eth_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn eth_units_to_base_units_rejects_negative() {
+        let eth_price = Decimal::from(2000u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = eth_units_to_base_units("-1", 6, &borrow_price, &eth_price);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CliError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn eth_units_to_base_units_rejects_zero_eth_price() {
+        let eth_price = Decimal::ZERO;
+        let borrow_price = Decimal::from(1u64);
+        let result = eth_units_to_base_units("1", 6, &borrow_price, &eth_price);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn eth_units_to_base_units_rejects_zero_borrow_price() {
+        let eth_price = Decimal::from(2000u64);
+        let borrow_price = Decimal::ZERO;
+        let result = eth_units_to_base_units("1", 6, &borrow_price, &eth_price);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn eth_units_to_base_units_rejects_invalid_input() {
+        let eth_price = Decimal::from(2000u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = eth_units_to_base_units("invalid", 6, &borrow_price, &eth_price);
+        assert!(result.is_err());
+    }
+
+    // ===== near_units_to_base_units tests =====
+
+    #[test]
+    fn near_units_to_base_units_converts_correctly() {
+        // 1 NEAR at $5, borrow asset at $1 = 5 asset units
+        let near_price = Decimal::from(5u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = near_units_to_base_units("1", 6, &borrow_price, &near_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 5_000_000); // 5 * 10^6
+    }
+
+    #[test]
+    fn near_units_to_base_units_fractional_near() {
+        // 10 NEAR at $5, borrow asset at $1 = 50 asset units
+        let near_price = Decimal::from(5u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = near_units_to_base_units("10", 6, &borrow_price, &near_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 50_000_000); // 50 * 10^6
+    }
+
+    #[test]
+    fn near_units_to_base_units_different_prices() {
+        // 2 NEAR at $4, borrow asset at $0.5 = 16 asset units
+        let near_price = Decimal::from(4u64);
+        let borrow_price = Decimal::from_str("0.5").expect("valid decimal");
+        let result = near_units_to_base_units("2", 6, &borrow_price, &near_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 16_000_000); // 16 * 10^6
+    }
+
+    #[test]
+    fn near_units_to_base_units_zero_amount() {
+        let near_price = Decimal::from(5u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = near_units_to_base_units("0", 6, &borrow_price, &near_price)
+            .expect("conversion succeeds");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn near_units_to_base_units_rejects_negative() {
+        let near_price = Decimal::from(5u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = near_units_to_base_units("-1", 6, &borrow_price, &near_price);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CliError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn near_units_to_base_units_rejects_zero_near_price() {
+        let near_price = Decimal::ZERO;
+        let borrow_price = Decimal::from(1u64);
+        let result = near_units_to_base_units("1", 6, &borrow_price, &near_price);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn near_units_to_base_units_rejects_zero_borrow_price() {
+        let near_price = Decimal::from(5u64);
+        let borrow_price = Decimal::ZERO;
+        let result = near_units_to_base_units("1", 6, &borrow_price, &near_price);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn near_units_to_base_units_rejects_invalid_input() {
+        let near_price = Decimal::from(5u64);
+        let borrow_price = Decimal::from(1u64);
+        let result = near_units_to_base_units("not_a_number", 6, &borrow_price, &near_price);
+        assert!(result.is_err());
+    }
 }
