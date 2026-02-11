@@ -223,34 +223,6 @@ fn mint_shares_from_deposit(state: VaultState, assets_in: u128) -> u128 {
         .expect("mint shares effect")
 }
 
-fn expected_assets_from_withdraw(state: VaultState, shares: u128) -> u128 {
-    let owner = [1u8; 32];
-    let receiver = [2u8; 32];
-    let self_id = [9u8; 32];
-    let config = preview_kernel_config(false);
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &self_id,
-        KernelAction::RequestWithdraw {
-            owner,
-            receiver,
-            shares,
-            min_assets_out: 0,
-            now_ns: 1,
-        },
-    )
-    .expect("kernel request_withdraw");
-    result
-        .state
-        .withdraw_queue
-        .head()
-        .expect("withdraw queue head")
-        .1
-        .expected_assets
-}
-
 #[test]
 fn soroban_contract_preview_deposit_matches_kernel() {
     let env = Env::default();

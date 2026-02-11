@@ -584,7 +584,7 @@ proptest! {
 
         // Deposit first
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
-        vault.interpreter.clear();
+        vault.interpreter.effects.clear();
 
         // Request withdrawal
         let shares_to_withdraw = withdraw_shares.min(deposit_amount);

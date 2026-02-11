@@ -401,8 +401,25 @@ where
         Ok(())
     }
 
-    fn authorize_action(&self, action: ActionKind, caller: Address) -> Result<(), RuntimeError> {
-        self.auth.authorize(action, caller, None)?;
+    fn authorize_and_apply(
+        &mut self,
+        kind: ActionKind,
+        caller: Address,
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.auth.authorize(kind, caller, None)?;
+        self.apply_kernel_action(action, now_ns)
+    }
+
+    fn authorize_and_apply_unit(
+        &mut self,
+        kind: ActionKind,
+        caller: Address,
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<(), RuntimeError> {
+        let _summary = self.authorize_and_apply(kind, caller, action, now_ns)?;
         Ok(())
     }
 
@@ -943,19 +960,20 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<(), RuntimeError> {
-        // Authorize
         self.auth
             .authorize(ActionKind::SyncExternalAssets, caller, None)?;
 
         // Verify caller's value against market adapter when targets are available
         self.verify_external_assets_against_adapter(new_external_assets)?;
 
-        let action = KernelAction::SyncExternalAssets {
-            new_external_assets,
-            op_id,
+        let _summary = self.apply_kernel_action(
+            KernelAction::SyncExternalAssets {
+                new_external_assets,
+                op_id,
+                now_ns,
+            },
             now_ns,
-        };
-        let _summary = self.apply_kernel_action(action, now_ns)?;
+        )?;
 
         Ok(())
     }
@@ -1130,26 +1148,26 @@ where
         op_id: u64,
         restore_idle: u128,
     ) -> Result<(), RuntimeError> {
-        // Authorize
-        self.auth
-            .authorize(ActionKind::AbortAllocating, caller, None)?;
-        let action = KernelAction::AbortAllocating {
-            op_id,
-            restore_idle,
-        };
-        let _summary = self.apply_kernel_action(action, 0)?;
-        Ok(())
+        self.authorize_and_apply_unit(
+            ActionKind::AbortAllocating,
+            caller,
+            KernelAction::AbortAllocating {
+                op_id,
+                restore_idle,
+            },
+            0,
+        )
     }
 
     /// Abort a refresh operation.
     ///
     pub fn abort_refreshing(&mut self, caller: Address, op_id: u64) -> Result<(), RuntimeError> {
-        // Authorize
-        self.auth
-            .authorize(ActionKind::AbortRefreshing, caller, None)?;
-        let action = KernelAction::AbortRefreshing { op_id };
-        let _summary = self.apply_kernel_action(action, 0)?;
-        Ok(())
+        self.authorize_and_apply_unit(
+            ActionKind::AbortRefreshing,
+            caller,
+            KernelAction::AbortRefreshing { op_id },
+            0,
+        )
     }
 
     /// Abort a withdrawal operation.
@@ -1160,14 +1178,15 @@ where
         op_id: u64,
         refund_shares: u128,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::AbortWithdrawing, caller, None)?;
-        let action = KernelAction::AbortWithdrawing {
-            op_id,
-            refund_shares,
-        };
-        let _summary = self.apply_kernel_action(action, 0)?;
-        Ok(())
+        self.authorize_and_apply_unit(
+            ActionKind::AbortWithdrawing,
+            caller,
+            KernelAction::AbortWithdrawing {
+                op_id,
+                refund_shares,
+            },
+            0,
+        )
     }
 
     /// Settle a payout operation.
@@ -1178,11 +1197,12 @@ where
         op_id: u64,
         outcome: PayoutOutcome,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::SettlePayout, caller, None)?;
-        let action = KernelAction::SettlePayout { op_id, outcome };
-        let _summary = self.apply_kernel_action(action, 0)?;
-        Ok(())
+        self.authorize_and_apply_unit(
+            ActionKind::SettlePayout,
+            caller,
+            KernelAction::SettlePayout { op_id, outcome },
+            0,
+        )
     }
 
     /// Recover from a stuck operation by delegating to curator-primitives.
@@ -1200,9 +1220,7 @@ where
         };
 
         let kind: ActionKind = (&action).into();
-        self.auth.authorize(kind, caller, None)?;
-
-        let summary = self.apply_kernel_action(action, context.current_ns)?;
+        let summary = self.authorize_and_apply(kind, caller, action, context.current_ns)?;
         Ok(Some(summary))
     }
 

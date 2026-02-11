@@ -17,10 +17,6 @@ impl MockInterpreter {
             effects: Vec::new(),
         }
     }
-
-    pub fn clear(&mut self) {
-        self.effects.clear();
-    }
 }
 
 impl EffectInterpreter for MockInterpreter {
