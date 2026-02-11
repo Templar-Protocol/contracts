@@ -1037,9 +1037,9 @@ where
         }
 
         if ok_count == 0 {
-            // Adapter not configured — all targets returned errors. Skip verification
-            // and rely on the kernel's 2x bounds check as fallback.
-            return Ok(());
+            return Err(RuntimeError::contract_error(
+                "sync_external_assets: adapter unavailable for refresh verification",
+            ));
         }
 
         if had_error {

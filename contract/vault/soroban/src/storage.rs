@@ -244,6 +244,19 @@ impl Storage for SorobanStorage<'_> {
         if let Some(stored) = self.load_state_blob() {
             let versioned =
                 borsh_deserialize::<VersionedState>(&stored, "state blob deserialize failed")?;
+
+            let version = SorobanStorage::get_version(self)
+                .ok_or_else(|| RuntimeError::storage_error("state version missing"))?;
+            let stored_version = StorageVersion::new(version);
+
+            if versioned.version != stored_version {
+                return Err(RuntimeError::storage_error("state version mismatch"));
+            }
+
+            if !versioned.version.is_compatible() {
+                return Err(RuntimeError::storage_error("unsupported state version"));
+            }
+
             return Ok(Some(versioned));
         }
 

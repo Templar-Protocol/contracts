@@ -1395,6 +1395,62 @@ fn refresh_markets_updates_principals_and_emits_events() {
 }
 
 #[test]
+fn refresh_markets_uses_deposit_principal_not_unharvested_yield() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    let market = mk(7010);
+    let market_id = c.insert_market_for_tests(market, MarketConfiguration::default(), 10);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![market_id]);
+    assert!(matches!(c.op_state, OpState::Refreshing(_)));
+
+    let mut pos = SupplyPosition::new(0);
+    pos.borrow_asset_yield.add_once(250u128.into());
+    let _ = c.refresh_01_settle(Ok(Some(pos)), market_id, op_id, 0, U128(10));
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.principal_of(market_id), 0);
+    assert_eq!(c.get_total_assets().0, c.idle_balance);
+}
+
+#[test]
+fn stale_principal_before_refresh_underprices_new_deposits() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    let owner = mk(10);
+    c.deposit_unchecked(&owner, 100)
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+
+    c.idle_balance = 0;
+    let market = mk(7011);
+    let market_id = c.insert_market_for_tests(market, MarketConfiguration::default(), 100);
+    c.fees.performance.fee = Wad::zero();
+    c.fees.management.fee = Wad::zero();
+    c.fee_anchor.total_assets = U128(c.get_total_assets().0);
+    c.fee_anchor.timestamp_ns = env::block_timestamp().into();
+
+    let deposit_assets = U128(50);
+    let minted_before_refresh = c.preview_deposit(deposit_assets).0;
+    assert!(minted_before_refresh > 0);
+
+    c.set_market_principal(market_id, 150);
+
+    let assets_after_refresh = c.convert_to_assets(U128(minted_before_refresh)).0;
+    assert!(assets_after_refresh > deposit_assets.0);
+}
+
+#[test]
 #[should_panic(expected = "Refresh throttled")]
 fn refresh_markets_throttles_without_time_advance() {
     let vault_id = accounts(0);

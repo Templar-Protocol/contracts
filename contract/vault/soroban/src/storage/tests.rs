@@ -1,4 +1,5 @@
 use super::*;
+use rstest::{fixture, rstest};
 
 #[test]
 fn test_storage_version() {
@@ -101,12 +102,16 @@ mod test_contract {
     }
 }
 
-#[test]
-fn test_soroban_storage_with_sdk_env() {
-    // Test using real Soroban SDK Env (testutils)
+#[fixture]
+fn contract_env() -> (Env, soroban_sdk::Address) {
     let env = Env::default();
     let contract_id = env.register(test_contract::TestContract, ());
+    (env, contract_id)
+}
 
+#[rstest]
+fn test_soroban_storage_with_sdk_env(contract_env: (Env, soroban_sdk::Address)) {
+    let (env, contract_id) = contract_env;
     env.as_contract(&contract_id, || {
         let storage = SorobanStorage::new(&env);
 
@@ -143,11 +148,9 @@ fn test_soroban_storage_with_sdk_env() {
     });
 }
 
-#[test]
-fn test_soroban_storage_pause_state() {
-    let env = Env::default();
-    let contract_id = env.register(test_contract::TestContract, ());
-
+#[rstest]
+fn test_soroban_storage_pause_state(contract_env: (Env, soroban_sdk::Address)) {
+    let (env, contract_id) = contract_env;
     env.as_contract(&contract_id, || {
         let storage = SorobanStorage::new(&env);
 
@@ -164,15 +167,13 @@ fn test_soroban_storage_pause_state() {
     });
 }
 
-#[test]
-fn test_soroban_storage_roundtrip_op_state_and_queue() {
+#[rstest]
+fn test_soroban_storage_roundtrip_op_state_and_queue(contract_env: (Env, soroban_sdk::Address)) {
     use alloc::collections::BTreeMap;
     use templar_vault_kernel::state::queue::{PendingWithdrawal, WithdrawQueue};
     use templar_vault_kernel::{OpState, WithdrawingState};
 
-    let env = Env::default();
-    let contract_id = env.register(test_contract::TestContract, ());
-
+    let (env, contract_id) = contract_env;
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let mut state = VaultState::default();
@@ -206,11 +207,9 @@ fn test_soroban_storage_roundtrip_op_state_and_queue() {
     });
 }
 
-#[test]
-fn test_soroban_storage_implements_storage_trait() {
-    let env = Env::default();
-    let contract_id = env.register(test_contract::TestContract, ());
-
+#[rstest]
+fn test_soroban_storage_implements_storage_trait(contract_env: (Env, soroban_sdk::Address)) {
+    let (env, contract_id) = contract_env;
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
 
@@ -227,4 +226,118 @@ fn test_soroban_storage_implements_storage_trait() {
         let loaded = storage.load_state().unwrap().unwrap();
         assert_eq!(loaded.version, StorageVersion::CURRENT);
     });
+}
+
+#[rstest]
+fn test_storage_trait_get_version_fails_when_uninitialized(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        let err = Storage::get_version(&storage).unwrap_err();
+        assert_eq!(err, RuntimeError::storage_error("version not initialized"));
+    });
+}
+
+#[rstest]
+fn test_soroban_storage_load_state_rejects_corrupted_blob(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        storage.save_state_blob(&alloc::vec![1, 2, 3, 4, 5]);
+
+        let err = Storage::load_state(&storage).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::storage_error("state blob deserialize failed")
+        );
+    });
+}
+
+#[rstest]
+fn test_soroban_storage_load_state_rejects_trailing_bytes(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        let versioned = VersionedState::new(VaultState::default());
+        let mut bytes = borsh::to_vec(&versioned).unwrap();
+        bytes.push(0xff);
+        storage.save_state_blob(&bytes);
+
+        let err = Storage::load_state(&storage).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::storage_error("state blob deserialize failed")
+        );
+    });
+}
+
+#[rstest]
+fn test_soroban_storage_load_state_rejects_missing_version_key(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        let versioned = VersionedState::new(VaultState::default());
+        let bytes = borsh::to_vec(&versioned).unwrap();
+        storage.save_state_blob(&bytes);
+
+        let err = Storage::load_state(&storage).unwrap_err();
+        assert_eq!(err, RuntimeError::storage_error("state version missing"));
+    });
+}
+
+#[rstest]
+fn test_soroban_storage_load_state_rejects_mismatched_version(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        let versioned = VersionedState::new(VaultState::default());
+        let bytes = borsh::to_vec(&versioned).unwrap();
+        storage.save_state_blob(&bytes);
+        storage.set_version(StorageVersion::new(2).number());
+
+        let err = Storage::load_state(&storage).unwrap_err();
+        assert_eq!(err, RuntimeError::storage_error("state version mismatch"));
+    });
+}
+
+#[rstest]
+fn test_soroban_storage_load_state_rejects_incompatible_version(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        let versioned = VersionedState::with_version(StorageVersion::new(2), VaultState::default());
+        let bytes = borsh::to_vec(&versioned).unwrap();
+        storage.save_state_blob(&bytes);
+        storage.set_version(StorageVersion::new(2).number());
+
+        let err = Storage::load_state(&storage).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::storage_error("unsupported state version")
+        );
+    });
+}
+
+#[rstest]
+#[case(StorageVersion::new(0), true)]
+#[case(StorageVersion::V1, true)]
+#[case(StorageVersion::new(2), false)]
+#[case(StorageVersion::new(u32::MAX), false)]
+fn test_storage_version_compatibility_cases(
+    #[case] version: StorageVersion,
+    #[case] expected: bool,
+) {
+    assert_eq!(version.is_compatible(), expected);
 }

@@ -279,7 +279,7 @@ fn test_sync_external_assets_rejects_adapter_mismatch_during_refresh() {
 }
 
 #[test]
-fn test_sync_external_assets_skips_verification_when_adapter_not_configured() {
+fn test_sync_external_assets_rejects_when_adapter_unavailable_during_refresh() {
     let mut vault = create_test_vault_with_failing_market();
     let caller = [3u8; 32]; // allocator
 
@@ -290,13 +290,16 @@ fn test_sync_external_assets_skips_verification_when_adapter_not_configured() {
     // Use refresh so adapter verification is attempted
     let op_id = vault.begin_refreshing(caller, vec![0, 1], 1000).unwrap();
 
-    // All adapter queries fail → adapter not configured → skip verification.
-    vault
-        .sync_external_assets(caller, 2_000, op_id, 1000)
-        .unwrap();
+    let err = vault.sync_external_assets(caller, 2_000, op_id, 1000);
+    let invalid_state = matches!(
+        &err,
+        Err(RuntimeError::InvalidState(msg))
+            if msg.contains("adapter unavailable for refresh verification")
+    );
+    assert!(invalid_state, "unexpected error: {err:?}");
 
     assert!(vault.state().op_state.is_refreshing());
-    assert_eq!(vault.state().external_assets, 2_000);
+    assert_eq!(vault.state().external_assets, 0);
 }
 
 #[test]
