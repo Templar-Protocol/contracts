@@ -17,6 +17,8 @@ extern crate alloc;
 
 pub mod auth;
 pub mod governance;
+#[cfg(feature = "near")]
+pub mod near;
 pub mod policy;
 pub mod rbac;
 pub mod recovery;
@@ -67,4 +69,10 @@ pub use governance::{
     relative_cap_change_decision, sentinel_change_decision, timelock_config_decision,
     FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError, PendingValue,
     Restrictions, TimelockConfigError, TimelockDecision,
+};
+
+#[cfg(feature = "near")]
+pub use near::{
+    cap_change_error_message, fee_change_error_message, membership_change_error_message,
+    relative_cap_change_error_message, timelock_config_error_message, VaultStorageKey,
 };
