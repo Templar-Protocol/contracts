@@ -1,10 +1,15 @@
-# Vault Parity Tests
+# Vault
 
-This document describes how to run property tests and verify parity across the kernel, NEAR, and Soroban vault implementations.
+This directory contains shared vault runtime/testing material for the kernel, NEAR executor, and Soroban executor.
 
-## Architecture Overview
+## Architecture
 
-The vault implementation follows a kernel + executor pattern:
+The vault system follows a kernel + executor split:
+
+- `templar-vault-kernel` is the chain-agnostic source of truth for state transitions, math, and invariants.
+- `contract/vault/near` executes kernel behavior on NEAR (storage, callbacks, token interfaces, gas-specific concerns).
+- `contract/vault/soroban` executes kernel behavior on Soroban (storage/auth wiring and sync execution model).
+- `contract/vault/curator-primitives` holds shared policy/recovery helpers used by executors.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -27,6 +32,10 @@ The vault implementation follows a kernel + executor pattern:
 └─────────────────────────┘   └─────────────────────────┘
 ```
 
+## Parity Tests
+
+Parity tests verify behavioral equivalence across the kernel and executors.
+
 ## Running Property Tests
 
 ### Kernel Property Tests (Source of Truth)
@@ -45,10 +54,10 @@ cargo test -p templar-vault-kernel --test property_tests prop_conversion
 ```
 
 Key invariants tested:
-- **Accounting**: `total_assets = idle_assets + external_assets`
-- **Queue**: FIFO ordering, length bounds, head monotonicity
-- **Fees**: Non-negative accrual, zero fee → zero shares
-- **Conversions**: Roundtrip bounds, monotonicity, ERC4626 consistency
+- Accounting: `total_assets = idle_assets + external_assets`
+- Queue: FIFO ordering, length bounds, head monotonicity
+- Fees: Non-negative accrual, zero fee -> zero shares
+- Conversions: Roundtrip bounds, monotonicity, ERC4626 consistency
 
 ### Soroban Parity Tests
 
@@ -139,35 +148,35 @@ The baseline is stored in `contract/vault/near/gas_baseline.json`.
 
 ### Interpreting Gas Results
 
-| Action           | Typical Gas | Description |
-|------------------|-------------|-------------|
-| `supply`         | ~8.2 Tgas   | Deposit assets, mint shares |
-| `allocate`       | ~20.7 Tgas  | Allocate idle to market |
-| `withdraw`       | ~4.4 Tgas   | Request withdrawal |
-| `execute_withdraw` | ~10.0 Tgas | Execute pending withdrawal |
-| `submit_cap`     | ~2.7 Tgas   | Submit allocation cap |
+| Action             | Typical Gas | Description                     |
+|--------------------|-------------|---------------------------------|
+| `supply`           | ~8.2 Tgas   | Deposit assets, mint shares     |
+| `allocate`         | ~20.7 Tgas  | Allocate idle to market         |
+| `withdraw`         | ~4.4 Tgas   | Request withdrawal              |
+| `execute_withdraw` | ~10.0 Tgas  | Execute pending withdrawal      |
+| `submit_cap`       | ~2.7 Tgas   | Submit allocation cap           |
 
 ## Property Test Categories
 
 ### Shared Properties (Kernel)
 
-| Category | Properties | Description |
-|----------|------------|-------------|
-| Accounting | 10 | Total assets = idle + external |
-| Queue | 15 | FIFO, length bounds, status |
-| Conversion | 10 | Share/asset roundtrips |
-| Fees | 10 | Non-negative, bounded, monotonic |
-| State Machine | 15 | Transition guards, op ID matching |
-| Escrow | 10 | Settlement conservation |
+| Category      | Properties | Description                         |
+|---------------|------------|-------------------------------------|
+| Accounting    | 10         | Total assets = idle + external      |
+| Queue         | 15         | FIFO, length bounds, status         |
+| Conversion    | 10         | Share/asset roundtrips              |
+| Fees          | 10         | Non-negative, bounded, monotonic    |
+| State Machine | 15         | Transition guards, op ID matching   |
+| Escrow        | 10         | Settlement conservation             |
 
 ### Parity Properties (Soroban)
 
-| Property | Verified Against |
-|----------|------------------|
-| `prop_accounting_invariant` | Kernel accounting rules |
-| `prop_roundtrip_bounded` | Kernel conversion logic |
-| `prop_state_machine_completes` | Kernel transitions |
-| `prop_effects_consistent` | Kernel effect generation |
+| Property                        | Verified Against          |
+|---------------------------------|---------------------------|
+| `prop_accounting_invariant`     | Kernel accounting rules   |
+| `prop_roundtrip_bounded`        | Kernel conversion logic   |
+| `prop_state_machine_completes`  | Kernel transitions        |
+| `prop_effects_consistent`       | Kernel effect generation  |
 
 ## Adding New Parity Tests
 
@@ -176,6 +185,7 @@ The baseline is stored in `contract/vault/near/gas_baseline.json`.
 3. Verify NEAR behavior through integration tests
 
 Example kernel property:
+
 ```rust
 proptest! {
     #[test]
@@ -196,7 +206,13 @@ The property tests run in CI via:
 - `cargo test --manifest-path contract/vault/soroban/Cargo.toml` (Soroban)
 
 Gas delta checks are manual but can be added to CI with:
+
 ```yaml
 - name: Gas delta check
   run: ./scripts/gas_delta_check.sh --threshold 10
 ```
+
+## Security Docs
+
+- Soroban STRIDE threat model: `contract/vault/soroban/STRIDE.md`
+- Soroban runtime operational notes: `contract/vault/soroban/README.md`
