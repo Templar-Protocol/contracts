@@ -69,6 +69,19 @@ pub trait MarketExternalInterface {
     /// called.
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition>;
 
+    /// Estimate the pending interest on the borrow position, that is, the
+    /// amount of interest that would accrue on the record if an accumulation
+    /// were to be run.
+    ///
+    /// - `snapshot_limit` allows the caller to limit the number of snapshots
+    ///     that will be included in the calculation. Useful to limit gas
+    ///     consumption. Default `u32::MAX`.
+    fn get_borrow_position_pending_interest(
+        &self,
+        account_id: AccountId,
+        snapshot_limit: Option<u32>,
+    ) -> Option<BorrowAssetAmount>;
+
     /// Retrieves the status of a borrow position (healthy or in liquidation)
     /// given some asset prices.
     ///
@@ -108,7 +121,16 @@ pub trait MarketExternalInterface {
     ) -> HashMap<AccountId, SupplyPosition>;
 
     /// Retrieves a supply position record, with estimated yield.
+    ///
+    /// If `pending_yield_snapshot_limit` is not set, it defaults to unlimited,
+    /// which may consume a lot of gas in transactions.
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
+
+    fn get_supply_position_pending_yield(
+        &self,
+        account_id: AccountId,
+        snapshot_limit: Option<u32>,
+    ) -> Option<BorrowAssetAmount>;
 
     /// Enters a supply position into the withdrawal queue, requesting to
     /// withdraw `amount` borrow asset tokens.
