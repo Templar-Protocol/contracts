@@ -12451,7 +12451,7 @@ dependencies = [
 
 [[package]]
 name = "templar-vault-contract"
-version = "1.2.1"
+version = "1.0.0"
 dependencies = [
  "futures",
  "getrandom 0.2.15",
