@@ -119,11 +119,6 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             .contains(self.position.borrow_asset_deposit.total())
     }
 
-    pub fn with_pending_yield_estimate(&mut self) {
-        self.position.borrow_asset_yield.pending_estimate =
-            self.calculate_yield(u32::MAX).get_amount();
-    }
-
     pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
         let mut next_snapshot_index = self.position.borrow_asset_yield.get_next_snapshot_index();
 
