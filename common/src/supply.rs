@@ -337,6 +337,9 @@ impl<'a> SupplyPositionGuard<'a> {
         YieldAccumulationProof(())
     }
 
+    /// Removes the requested amount from the supply record. The amount is
+    /// removed from the yield record, the incoming deposit record, and the
+    /// active supply record, in that order.
     pub fn record_withdrawal_initial(
         &mut self,
         _proof: YieldAccumulationProof,
@@ -349,15 +352,22 @@ impl<'a> SupplyPositionGuard<'a> {
 
         let my_incoming = self.position.total_incoming();
         let my_active = self.position.get_deposit().active;
-        let entitled_to_withdraw = my_incoming + my_active;
+        let my_yield = self
+            .position
+            .borrow_asset_yield
+            .get_total()
+            .min(self.market.borrow_asset_paid_to_fees);
+        let entitled_to_withdraw = my_incoming + my_active + my_yield;
 
         if entitled_to_withdraw.is_zero() {
             return WithdrawalAttempt::EmptyPosition;
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let market_incoming = self.market.total_incoming();
-        let available_to_me = self.market.borrow_asset_balance - market_incoming + my_incoming;
+        let available_to_me = self.market.borrow_asset_deposited_active
+            + self.market.borrow_asset_paid_to_fees
+            - self.market.borrow_asset_borrowed
+            + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -370,14 +380,18 @@ impl<'a> SupplyPositionGuard<'a> {
         // Execute removal
         //
 
-        let mut amount_to_remove = withdrawal_amount;
-
         self.position.borrow_asset_deposit.outgoing += withdrawal_amount;
 
-        amount_to_remove = amount_to_remove.unwrap_sub(
-            self.remove_incoming(withdrawal_amount),
-            "Invariant violation: remove_incoming(amount) > amount",
-        );
+        let mut amount_to_remove = withdrawal_amount;
+
+        let amount_from_yield = my_yield.min(amount_to_remove);
+        self.position.borrow_asset_yield.remove(amount_from_yield);
+        self.market.borrow_asset_paid_to_fees -= amount_from_yield;
+        amount_to_remove -= amount_from_yield;
+
+        let amount_from_incoming = my_incoming.min(amount_to_remove);
+        self.remove_incoming(amount_from_incoming);
+        amount_to_remove -= amount_from_incoming;
 
         if !amount_to_remove.is_zero() {
             self.remove_active(amount_to_remove);
@@ -471,24 +485,6 @@ impl<'a> SupplyPositionGuard<'a> {
 
     pub fn record_yield_withdrawal(&mut self, amount: BorrowAssetAmount) {
         self.0.position.borrow_asset_yield.remove(amount);
-    }
-
-    /// Converts an amount of borrow asset from the yield record to the
-    /// deposit record, allowing the account to earn compound interest on
-    /// their yield without withdrawing it.
-    ///
-    /// # Panics
-    ///
-    /// If `amount` is greater the amount in the yield record. The caller
-    /// should probably use the return value of
-    /// [`SupplyPositionRef::total_yield`] as an upper bound for this argument.
-    pub fn record_yield_compound(
-        &mut self,
-        _proof: YieldAccumulationProof,
-        amount: BorrowAssetAmount,
-    ) {
-        self.0.position.borrow_asset_yield.remove(amount);
-        self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
     }
 }
 

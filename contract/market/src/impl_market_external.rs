@@ -299,27 +299,12 @@ impl MarketExternalInterface for Contract {
         let predecessor = env::predecessor_account_id();
         let account_id = account_id.unwrap_or_else(|| predecessor.clone());
 
-        require!(
-            account_id == predecessor || !matches!(mode, HarvestYieldMode::Compounding),
-            "Only the position holder can compound yield",
-        );
-
         let snapshot = self.snapshot();
         let Some(mut supply_position) = self.supply_position_guard(snapshot, account_id) else {
             return BorrowAssetAmount::zero();
         };
 
         match mode {
-            HarvestYieldMode::Compounding => {
-                let proof = supply_position.accumulate_yield();
-                let total_yield = supply_position.total_yield();
-                supply_position.record_yield_compound(proof, total_yield);
-                require!(
-                    supply_position.is_within_allowable_range(),
-                    "New supply position is outside of allowable range",
-                );
-                return total_yield;
-            }
             HarvestYieldMode::SnapshotLimit(limit) => {
                 supply_position.accumulate_yield_partial(limit);
             }

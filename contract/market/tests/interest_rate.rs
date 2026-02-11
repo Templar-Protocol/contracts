@@ -68,10 +68,9 @@ async fn interest_rate(
         while timer.elapsed() < Duration::from_secs(12) {
             tokio::join!(
                 c.apply_interest(&borrow_user_2, None, None),
-                // No compounding so we get apples-to-apples comparison.
-                // Technically it should be optimal to harvest (and
-                // compound) occasionally throughout the duration of
-                // the supply.
+                // Technically, it should be optimal to harvest and compound
+                // (withdraw yield and re-deposit) occasionally throughout the
+                // duration of the supply.
                 c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default)),
             );
             tokio::time::sleep(Duration::from_secs(1)).await;
