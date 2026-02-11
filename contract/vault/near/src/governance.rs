@@ -647,7 +647,7 @@ impl Contract {
     /// Rejects duplicates and markets without a positive cap. Requires the vault to be idle.
     #[payable]
     pub fn set_supply_queue(&mut self, markets: Vec<MarketId>) {
-        AuthPattern::Allocator.require();
+        crate::auth::require_action(crate::auth::ActionKind::BeginAllocating);
         Abdicator::require_not_abdicated(&self.abdicator, "set_supply_queue");
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");

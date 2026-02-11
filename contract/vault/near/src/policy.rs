@@ -6,7 +6,15 @@ use crate::convert::{IntoMarketId, IntoTargetId};
 use near_sdk::{env, near};
 use std::ops::{Deref, DerefMut};
 use templar_common::vault::{CapGroupRecord as CommonCapGroupRecord, Event, MarketId};
-use templar_curator_primitives::policy::target_set::find_first_duplicate;
+use templar_curator_primitives::policy::target_set::{
+    build_refresh_plan_from_targets, build_withdraw_plan_from_target_principals,
+    find_duplicate_target_id, find_locked_targets as find_locked_target_ids,
+    get_locked_targets as get_locked_target_ids, is_target_locked, validate_no_duplicate_targets,
+};
+use templar_curator_primitives::{
+    available_capacity_from_fields, can_allocate_from_fields, cap_group_from_fields,
+    cap_group_record_from_fields, effective_cap_from_fields, enforce_from_fields,
+};
 
 // Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
@@ -155,17 +163,12 @@ impl MarketExecutionLock {
 /// The common module stores cap and relative_cap directly on the record,
 /// while curator-primitives separates them into a CapGroup struct.
 pub fn to_primitive_cap_group(record: &CommonCapGroupRecord) -> CapGroup {
-    CapGroup::new()
-        .with_absolute(record.cap.0)
-        .with_relative(record.relative_cap)
+    cap_group_from_fields(record.cap.0, record.relative_cap)
 }
 
 /// Convert a common CapGroupRecord to a curator-primitives CapGroupRecord.
 pub fn to_primitive_cap_group_record(record: &CommonCapGroupRecord) -> PrimitiveCapGroupRecord {
-    PrimitiveCapGroupRecord {
-        cap: to_primitive_cap_group(record),
-        principal: record.principal,
-    }
+    cap_group_record_from_fields(record.cap.0, record.relative_cap, record.principal)
 }
 
 /// Check if an allocation is allowed for a cap group using common types.
@@ -176,8 +179,13 @@ pub fn can_allocate_to_common_cap_group(
     amount: u128,
     total_assets: u128,
 ) -> bool {
-    let cap = to_primitive_cap_group(record);
-    cap.can_allocate(record.principal, amount, total_assets)
+    can_allocate_from_fields(
+        record.cap.0,
+        record.relative_cap,
+        record.principal,
+        amount,
+        total_assets,
+    )
 }
 
 /// Enforce cap group constraints using common types.
@@ -188,14 +196,18 @@ pub fn enforce_common_cap_group(
     amount: u128,
     total_assets: u128,
 ) -> Result<(), CapGroupError> {
-    let cap = to_primitive_cap_group(record);
-    cap.enforce(record.principal, amount, total_assets)
+    enforce_from_fields(
+        record.cap.0,
+        record.relative_cap,
+        record.principal,
+        amount,
+        total_assets,
+    )
 }
 
 /// Compute the effective cap for a common CapGroupRecord.
 pub fn compute_effective_cap_for_common(record: &CommonCapGroupRecord, total_assets: u128) -> u128 {
-    let cap = to_primitive_cap_group(record);
-    cap.effective_cap(total_assets)
+    effective_cap_from_fields(record.cap.0, record.relative_cap, total_assets)
 }
 
 /// Compute available capacity for a common CapGroupRecord.
@@ -203,8 +215,12 @@ pub fn compute_available_capacity_for_common(
     record: &CommonCapGroupRecord,
     total_assets: u128,
 ) -> u128 {
-    let cap = to_primitive_cap_group(record);
-    cap.available_capacity(record.principal, total_assets)
+    available_capacity_from_fields(
+        record.cap.0,
+        record.relative_cap,
+        record.principal,
+        total_assets,
+    )
 }
 
 /// Validate a supply queue represented as a Vec<MarketId>.
@@ -213,14 +229,15 @@ pub fn compute_available_capacity_for_common(
 /// while curator-primitives uses a more detailed SupplyQueueEntry structure.
 /// This function validates the basic requirements: no duplicates.
 pub fn validate_supply_queue_no_duplicates(queue: &[MarketId]) -> bool {
-    find_duplicate_market_id(queue).is_none()
+    let target_ids: Vec<u32> = queue.iter().map(IntoTargetId::into_target_id).collect();
+    validate_no_duplicate_targets(&target_ids)
 }
 
 /// Returns the first duplicate market ID in insertion order.
 #[must_use]
 pub fn find_duplicate_market_id(markets: &[MarketId]) -> Option<MarketId> {
     let target_ids: Vec<u32> = markets.iter().map(IntoTargetId::into_target_id).collect();
-    find_first_duplicate(&target_ids).map(IntoMarketId::into_market_id)
+    find_duplicate_target_id(&target_ids).map(IntoMarketId::into_market_id)
 }
 
 /// Build a withdraw route from market principals.
@@ -231,27 +248,25 @@ pub fn build_withdraw_route_from_markets(
     principals: &[(MarketId, u128)],
     target_amount: u128,
 ) -> Result<Vec<(MarketId, u128)>, WithdrawRouteError> {
-    // Convert to TargetId (u32) for curator-primitives
     let target_principals: Vec<(u32, u128)> = principals
         .iter()
         .map(|(m, p)| (m.into_target_id(), *p))
         .collect();
 
-    let route = build_withdraw_route(&target_principals, target_amount)?;
-
-    // Convert back to MarketId
-    Ok(route
-        .entries
-        .iter()
-        .map(|e| (e.target_id.into_market_id(), e.max_amount))
-        .collect())
+    Ok(
+        build_withdraw_plan_from_target_principals(&target_principals, target_amount)?
+            .iter()
+            .map(|(target_id, amount)| (target_id.into_market_id(), *amount))
+            .collect(),
+    )
 }
 
 /// Validate a withdraw route represented as Vec<MarketId>.
 ///
 /// Checks for duplicates in the route.
 pub fn validate_withdraw_route_no_duplicates(route: &[MarketId]) -> bool {
-    find_duplicate_market_id(route).is_none()
+    let target_ids: Vec<u32> = route.iter().map(IntoTargetId::into_target_id).collect();
+    validate_no_duplicate_targets(&target_ids)
 }
 
 /// Check if any markets in the list are locked.
@@ -263,7 +278,7 @@ pub fn find_locked_markets(
     current_ns: u64,
 ) -> Vec<MarketId> {
     let targets: Vec<u32> = markets.iter().map(|m| m.into_target_id()).collect();
-    let locked = lock_set.find_locked_targets(&targets, current_ns);
+    let locked = find_locked_target_ids(lock_set, &targets, current_ns);
     locked
         .into_iter()
         .map(IntoMarketId::into_market_id)
@@ -272,13 +287,12 @@ pub fn find_locked_markets(
 
 /// Check if a specific market is locked.
 pub fn is_market_id_locked(lock_set: &MarketLockSet, market: MarketId, current_ns: u64) -> bool {
-    lock_set.is_locked(market.into_target_id(), current_ns)
+    is_target_locked(lock_set, market.into_target_id(), current_ns)
 }
 
 /// Get all locked market IDs.
 pub fn get_locked_market_ids(lock_set: &MarketLockSet, current_ns: u64) -> Vec<MarketId> {
-    lock_set
-        .locked_targets(current_ns)
+    get_locked_target_ids(lock_set, current_ns)
         .into_iter()
         .map(IntoMarketId::into_market_id)
         .collect()
@@ -294,11 +308,7 @@ pub fn build_refresh_plan_from_market_ids(
         .iter()
         .map(IntoTargetId::into_target_id)
         .collect::<Vec<_>>();
-    let plan = PrimitiveRefreshPlan::new(targets)
-        .with_cooldown(cooldown_ns)
-        .with_last_refresh(last_refresh_ns);
-    plan.validate()?;
-    Ok(plan)
+    build_refresh_plan_from_targets(&targets, cooldown_ns, last_refresh_ns)
 }
 
 #[cfg(test)]
@@ -323,67 +333,65 @@ mod tests {
     }
 
     #[test]
-    fn test_can_allocate_to_common_cap_group() {
-        let record = CommonCapGroupRecord {
-            cap: U128(1000),
-            relative_cap: Wad::one(), // 100%
-            principal: 300,
-        };
-
-        // Should be able to allocate 500 more (300 + 500 = 800 < 1000)
-        assert!(can_allocate_to_common_cap_group(&record, 500, 2000));
-
-        // Should not be able to allocate 800 more (300 + 800 = 1100 > 1000)
-        assert!(!can_allocate_to_common_cap_group(&record, 800, 2000));
-    }
-
-    #[test]
-    fn test_enforce_common_cap_group() {
+    fn cap_group_bridge_uses_shared_field_adapters() {
         let record = CommonCapGroupRecord {
             cap: U128(1000),
             relative_cap: Wad::one(),
             principal: 300,
         };
 
-        // Valid allocation
+        assert!(can_allocate_to_common_cap_group(&record, 500, 2000));
+        assert!(!can_allocate_to_common_cap_group(&record, 800, 2000));
         assert!(enforce_common_cap_group(&record, 500, 2000).is_ok());
-
-        // Invalid allocation
-        let result = enforce_common_cap_group(&record, 800, 2000);
         assert!(matches!(
-            result,
+            enforce_common_cap_group(&record, 800, 2000),
             Err(CapGroupError::ExceedsAbsoluteCap { .. })
         ));
-    }
-
-    #[test]
-    fn test_effective_cap_uses_relative_when_stricter() {
-        let record = CommonCapGroupRecord {
-            cap: U128(1000),
-            relative_cap: Wad::one(), // 100%
-            principal: 0,
-        };
-
-        // With total assets below absolute cap, relative cap should bind.
         assert_eq!(compute_effective_cap_for_common(&record, 500), 500);
-        assert_eq!(compute_available_capacity_for_common(&record, 500), 500);
+        assert_eq!(compute_available_capacity_for_common(&record, 500), 200);
     }
 
     #[test]
-    fn test_validate_supply_queue_no_duplicates() {
+    fn duplicate_checks_bridge_market_ids() {
         let queue_ok = vec![MarketId(1), MarketId(2), MarketId(3)];
         assert!(validate_supply_queue_no_duplicates(&queue_ok));
+        assert!(validate_withdraw_route_no_duplicates(&queue_ok));
+        assert_eq!(find_duplicate_market_id(&queue_ok), None);
 
         let queue_dup = vec![MarketId(1), MarketId(2), MarketId(1)];
         assert!(!validate_supply_queue_no_duplicates(&queue_dup));
+        assert!(!validate_withdraw_route_no_duplicates(&queue_dup));
+        assert_eq!(find_duplicate_market_id(&queue_dup), Some(MarketId(1)));
     }
 
     #[test]
-    fn test_validate_withdraw_route_no_duplicates() {
-        let route_ok = vec![MarketId(1), MarketId(2), MarketId(3)];
-        assert!(validate_withdraw_route_no_duplicates(&route_ok));
+    fn lock_helpers_bridge_market_ids() {
+        let lock_set = MarketLockSet::new()
+            .acquire(MarketLock::new(2, 1_000), 1_000)
+            .unwrap();
+        let markets = vec![MarketId(1), MarketId(2), MarketId(3)];
 
-        let route_dup = vec![MarketId(1), MarketId(2), MarketId(1)];
-        assert!(!validate_withdraw_route_no_duplicates(&route_dup));
+        assert_eq!(
+            find_locked_markets(&lock_set, &markets, 1_500),
+            vec![MarketId(2)]
+        );
+        assert!(is_market_id_locked(&lock_set, MarketId(2), 1_500));
+        assert_eq!(get_locked_market_ids(&lock_set, 1_500), vec![MarketId(2)]);
+    }
+
+    #[test]
+    fn withdraw_and_refresh_plan_builders_bridge_market_ids() {
+        let principals = vec![(MarketId(1), 100), (MarketId(2), 200), (MarketId(3), 300)];
+        let route = build_withdraw_route_from_markets(&principals, 250).unwrap();
+        assert_eq!(
+            route,
+            vec![(MarketId(3), 300), (MarketId(2), 200), (MarketId(1), 100)]
+        );
+
+        let refresh =
+            build_refresh_plan_from_market_ids(&[MarketId(3), MarketId(1)], 100, 50).unwrap();
+        assert_eq!(refresh.targets, vec![3, 1]);
+        assert_eq!(refresh.cooldown_ns(), 100);
+        assert_eq!(refresh.last_refresh_ns(), Some(50));
     }
 }

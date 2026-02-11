@@ -4,10 +4,8 @@
 //! and provides NEAR-specific authorization helpers that integrate with
 //! NEAR's `Owner` + `Rbac` derive macros.
 
-// Re-export chain-agnostic types from curator-primitives
-pub use templar_curator_primitives::auth::{
-    ActionKind, AuthAdapter, AuthError, AuthResult, PermissiveAuth, StrictAuth,
-};
+pub use templar_curator_primitives::auth::ActionKind;
+use templar_curator_primitives::auth::{action_policy_class, AuthPolicyClass, AuthPolicyProfile};
 
 use super::*;
 
@@ -72,29 +70,15 @@ impl AuthPattern {
 /// - `Pause`/`SetRestrictions` are guardian-level (handled via governance)
 #[must_use]
 pub fn auth_pattern_for(action: ActionKind) -> AuthPattern {
-    match action {
-        // User-facing — no privileged auth required
-        ActionKind::Deposit | ActionKind::RequestWithdraw => AuthPattern::OwnerOnly,
-
-        // In NEAR, execution is allocator-driven
-        ActionKind::ExecuteWithdraw
-        | ActionKind::BeginAllocating
-        | ActionKind::FinishAllocating
-        | ActionKind::SyncExternalAssets
-        | ActionKind::BeginRefreshing
-        | ActionKind::FinishRefreshing
-        | ActionKind::RefreshFees
-        | ActionKind::SettlePayout => AuthPattern::Allocator,
-
-        // Emergency: Allocator, Curator, Sentinel, or Owner
-        ActionKind::AbortAllocating
-        | ActionKind::AbortWithdrawing
-        | ActionKind::AbortRefreshing => AuthPattern::AllocatorOrSentinel,
-
-        // Guardian-level
-        ActionKind::Pause | ActionKind::SetRestrictions => AuthPattern::GuardianOrOwner,
-
-        // Owner-only
-        ActionKind::ManualReconcile | ActionKind::EmergencyReset => AuthPattern::OwnerOnly,
+    match action_policy_class(action, AuthPolicyProfile::Near) {
+        AuthPolicyClass::Guardian => AuthPattern::GuardianOrOwner,
+        AuthPolicyClass::Allocator => AuthPattern::Allocator,
+        AuthPolicyClass::AllocatorEmergency => AuthPattern::AllocatorOrSentinel,
+        AuthPolicyClass::Public | AuthPolicyClass::Admin => AuthPattern::OwnerOnly,
     }
+}
+
+#[inline]
+pub fn require_action(action: ActionKind) {
+    auth_pattern_for(action).require();
 }

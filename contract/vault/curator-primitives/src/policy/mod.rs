@@ -12,6 +12,7 @@
 //! - [`state`]: Aggregate policy state for executors
 
 pub mod cap_group;
+pub mod cap_group_adapter;
 pub mod cooldown;
 pub mod lock_filter;
 pub mod market_lock;

@@ -74,6 +74,36 @@ pub fn filter_withdraw_route(
     WithdrawRoute::from_entries(entries, route.target_amount)
 }
 
+/// Build an allocation plan from a queue while excluding locked targets.
+#[must_use]
+pub fn build_allocation_plan_with_locks(
+    queue: &SupplyQueue,
+    lock_set: &MarketLockSet,
+    current_ns: u64,
+) -> Vec<(TargetId, u128)> {
+    filter_supply_queue(queue, lock_set, current_ns).to_allocation_plan()
+}
+
+/// Build a withdraw plan from a route while excluding locked targets.
+#[must_use]
+pub fn build_withdrawal_plan_with_locks(
+    route: &WithdrawRoute,
+    lock_set: &MarketLockSet,
+    current_ns: u64,
+) -> Vec<(TargetId, u128)> {
+    filter_withdraw_route(route, lock_set, current_ns).to_withdrawal_plan()
+}
+
+/// Build a refresh target list while excluding locked targets.
+#[must_use]
+pub fn build_refresh_plan_with_locks(
+    targets: &[TargetId],
+    lock_set: &MarketLockSet,
+    current_ns: u64,
+) -> Vec<TargetId> {
+    filter_unlocked_targets(lock_set, targets, current_ns)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -144,5 +174,52 @@ mod tests {
         assert_eq!(filtered.target_amount, 250);
         assert_eq!(filtered.entries.len(), 1);
         assert_eq!(filtered.entries[0].target_id, 2);
+    }
+
+    #[test]
+    fn builds_allocation_plan_with_locks() {
+        let lock_set = lock_set_with_target(2);
+        let queue = SupplyQueue {
+            entries: VecDeque::from(vec![
+                SupplyQueueEntry::new(1, 10),
+                SupplyQueueEntry::new(2, 20),
+                SupplyQueueEntry::new(3, 30),
+            ]),
+            max_length: 16,
+        };
+
+        assert_eq!(
+            build_allocation_plan_with_locks(&queue, &lock_set, 1_500),
+            vec![(1, 10), (3, 30)]
+        );
+    }
+
+    #[test]
+    fn builds_withdrawal_plan_with_locks() {
+        let lock_set = lock_set_with_target(1);
+        let route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 100),
+                WithdrawRouteEntry::new(2, 200),
+                WithdrawRouteEntry::new(3, 300),
+            ],
+            450,
+        );
+
+        assert_eq!(
+            build_withdrawal_plan_with_locks(&route, &lock_set, 1_500),
+            vec![(2, 200), (3, 300)]
+        );
+    }
+
+    #[test]
+    fn builds_refresh_plan_with_locks() {
+        let lock_set = lock_set_with_target(2);
+        let targets = vec![1, 2, 3, 4];
+
+        assert_eq!(
+            build_refresh_plan_with_locks(&targets, &lock_set, 1_500),
+            vec![1, 3, 4]
+        );
     }
 }

@@ -401,6 +401,11 @@ where
         Ok(())
     }
 
+    fn authorize_action(&self, action: ActionKind, caller: Address) -> Result<(), RuntimeError> {
+        self.auth.authorize(action, caller, None)?;
+        Ok(())
+    }
+
     /// Get a reference to the current vault state.
     ///
     /// # Panics
@@ -1693,7 +1698,7 @@ impl SorobanVaultContract {
         min_shares_out: i128,
     ) -> Result<i128, ContractError> {
         // Require authorization from owner
-        owner.require_auth();
+        require_signed(&owner);
 
         if assets <= 0 {
             return Err(ContractError::InvalidInput);
@@ -1736,7 +1741,7 @@ impl SorobanVaultContract {
         min_assets_out: i128,
     ) -> Result<u64, ContractError> {
         // Require authorization from owner
-        owner.require_auth();
+        require_signed(&owner);
 
         if shares <= 0 {
             return Err(ContractError::InvalidInput);
@@ -1769,7 +1774,7 @@ impl SorobanVaultContract {
     /// Execute a pending withdrawal.
     ///
     pub fn execute_withdraw(env: Env, caller: SdkAddress) -> Result<(), ContractError> {
-        caller.require_auth();
+        require_signed(&caller);
         let now_ns = ledger_timestamp_ns(&env);
 
         with_reentrancy_guard(&env, || {
@@ -1785,7 +1790,7 @@ impl SorobanVaultContract {
     /// Pause or unpause the vault.
     ///
     pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) -> Result<(), ContractError> {
-        caller.require_auth();
+        require_signed(&caller);
         let caller_kernel = kernel_address_from_sdk(&env, &caller);
 
         with_contract_vault(&env, |vault| vault.pause(caller_kernel, paused))
@@ -1890,8 +1895,13 @@ impl SorobanVaultContract {
     }
 }
 
+#[inline]
+fn require_signed(addr: &SdkAddress) {
+    addr.require_auth();
+}
+
 fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
-    caller.require_auth();
+    require_signed(caller);
     let admin: SdkAddress = get_config_address(env, &VaultDataKey::Admin)?;
     if caller != &admin {
         return Err(ContractError::Unauthorized);
@@ -2069,7 +2079,7 @@ impl SorobanVaultContract {
         from: SdkAddress,
         operator: SdkAddress,
     ) -> i128 {
-        operator.require_auth();
+        require_signed(&operator);
         if assets <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -2085,7 +2095,7 @@ impl SorobanVaultContract {
         from: SdkAddress,
         operator: SdkAddress,
     ) -> i128 {
-        operator.require_auth();
+        require_signed(&operator);
         if shares <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -2112,8 +2122,8 @@ impl SorobanVaultContract {
         owner: SdkAddress,
         operator: SdkAddress,
     ) -> i128 {
-        operator.require_auth();
-        owner.require_auth();
+        require_signed(&operator);
+        require_signed(&owner);
         if assets <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -2145,8 +2155,8 @@ impl SorobanVaultContract {
         owner: SdkAddress,
         operator: SdkAddress,
     ) -> i128 {
-        operator.require_auth();
-        owner.require_auth();
+        require_signed(&operator);
+        require_signed(&owner);
         if shares <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }

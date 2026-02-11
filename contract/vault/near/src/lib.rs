@@ -459,7 +459,7 @@ impl Contract {
     pub fn execute_withdrawal(&mut self, route: Vec<MarketId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
-        crate::auth::AuthPattern::Allocator.require();
+        crate::auth::require_action(crate::auth::ActionKind::ExecuteWithdraw);
 
         self.internal_accrue_fee();
 
@@ -527,7 +527,7 @@ impl Contract {
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        crate::auth::AuthPattern::Allocator.require();
+        crate::auth::require_action(crate::auth::ActionKind::ExecuteWithdraw);
         self.internal_accrue_fee();
 
         let ctx = match self.ctx_withdrawing(op_id.0) {
@@ -593,7 +593,7 @@ impl Contract {
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        crate::auth::AuthPattern::AllocatorOrSentinel.require();
+        crate::auth::require_action(crate::auth::ActionKind::AbortWithdrawing);
 
         self.ensure_idle();
 
@@ -771,7 +771,7 @@ impl Contract {
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
     /// - Clears withdraw state and market execution locks and returns the vault to Idle.
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
-        crate::auth::AuthPattern::AllocatorOrSentinel.require();
+        crate::auth::require_action(crate::auth::ActionKind::AbortWithdrawing);
 
         let kernel_state = to_kernel_op_state(&self.op_state);
         let now = env::block_timestamp();
@@ -900,8 +900,12 @@ impl Contract {
     /// NOTE: When we rewrite this we should use a delta based approach
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         match &delta {
-            AllocationDelta::Supply(_) => crate::auth::AuthPattern::Allocator.require(),
-            AllocationDelta::Withdraw(_) => crate::auth::AuthPattern::AllocatorOrSentinel.require(),
+            AllocationDelta::Supply(_) => {
+                crate::auth::require_action(crate::auth::ActionKind::BeginAllocating);
+            }
+            AllocationDelta::Withdraw(_) => {
+                crate::auth::require_action(crate::auth::ActionKind::AbortWithdrawing);
+            }
         }
         self.ensure_idle();
         self.internal_accrue_fee();

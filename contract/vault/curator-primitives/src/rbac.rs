@@ -16,7 +16,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use templar_vault_kernel::Address;
 
-use crate::auth::{ActionKind, AuthAdapter, AuthError, AuthResult};
+use crate::auth::{
+    action_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthPolicyProfile,
+    AuthResult,
+};
 
 /// Role types for RBAC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,29 +170,11 @@ impl RbacConfig {
 #[inline]
 #[must_use]
 pub fn required_role(action: ActionKind) -> Option<Role> {
-    match action {
-        // User-facing actions don't require special roles
-        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw => None,
-
-        // Guardian actions
-        ActionKind::Pause => Some(Role::Guardian),
-
-        // Allocator actions
-        ActionKind::BeginAllocating
-        | ActionKind::FinishAllocating
-        | ActionKind::SyncExternalAssets
-        | ActionKind::BeginRefreshing
-        | ActionKind::FinishRefreshing
-        | ActionKind::AbortAllocating
-        | ActionKind::AbortWithdrawing
-        | ActionKind::AbortRefreshing
-        | ActionKind::SettlePayout
-        | ActionKind::RefreshFees => Some(Role::Allocator),
-
-        // Admin-only actions
-        ActionKind::ManualReconcile | ActionKind::SetRestrictions | ActionKind::EmergencyReset => {
-            Some(Role::Admin)
-        }
+    match action_policy_class(action, AuthPolicyProfile::Canonical) {
+        AuthPolicyClass::Public => None,
+        AuthPolicyClass::Guardian => Some(Role::Guardian),
+        AuthPolicyClass::Allocator | AuthPolicyClass::AllocatorEmergency => Some(Role::Allocator),
+        AuthPolicyClass::Admin => Some(Role::Admin),
     }
 }
 

@@ -27,19 +27,33 @@ mod golden_tests;
 mod test_utils;
 
 // Re-exports for convenience
-pub use auth::{ActionKind, AuthAdapter, AuthError, AuthResult, PermissiveAuth, StrictAuth};
+pub use auth::{
+    action_policy_class, canonical_policy_class, near_policy_class, ActionKind, AuthAdapter,
+    AuthError, AuthPolicyClass, AuthPolicyProfile, AuthResult, PermissiveAuth, StrictAuth,
+};
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
 pub use policy::{
     cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
+    cap_group_adapter::{
+        available_capacity_from_fields, can_allocate_from_fields, cap_group_from_fields,
+        cap_group_record_from_fields, effective_cap_from_fields, enforce_from_fields,
+    },
     cooldown::{Cooldown, CooldownError},
     lock_filter::{
-        filter_allocation_plan, filter_supply_queue, filter_unlocked_targets, filter_withdraw_route,
+        build_allocation_plan_with_locks, build_refresh_plan_with_locks,
+        build_withdrawal_plan_with_locks, filter_allocation_plan, filter_supply_queue,
+        filter_unlocked_targets, filter_withdraw_route,
     },
     market_lock::{MarketLock, MarketLockSet},
     refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
+    target_set::{
+        build_refresh_plan_from_targets, build_withdraw_plan_from_target_principals,
+        find_duplicate_target_id, find_first_duplicate, find_locked_targets, get_locked_targets,
+        has_unique_items, is_target_locked, validate_no_duplicate_targets,
+    },
     withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
 };
 

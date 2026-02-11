@@ -9,6 +9,90 @@
 use alloc::string::String;
 use templar_vault_kernel::{Address, KernelAction};
 
+/// Shared auth policy profile used to classify action authorization behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthPolicyProfile {
+    /// Canonical policy used by shared RBAC adapters.
+    Canonical,
+    /// NEAR executor policy (allocator-driven execute-withdraw and sentinel emergency paths).
+    Near,
+}
+
+/// Shared authorization class for an action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthPolicyClass {
+    /// User-facing/public action (no special role requirement).
+    Public,
+    /// Guardian-level privileged action.
+    Guardian,
+    /// Allocator-level privileged action.
+    Allocator,
+    /// Emergency allocator path (allocator + emergency role on some executors).
+    AllocatorEmergency,
+    /// Admin/owner-only privileged action.
+    Admin,
+}
+
+/// Classify an action under a specific auth policy profile.
+#[inline]
+#[must_use]
+pub const fn action_policy_class(
+    action: ActionKind,
+    profile: AuthPolicyProfile,
+) -> AuthPolicyClass {
+    match profile {
+        AuthPolicyProfile::Canonical => canonical_policy_class(action),
+        AuthPolicyProfile::Near => near_policy_class(action),
+    }
+}
+
+/// Canonical shared policy class for an action.
+#[inline]
+#[must_use]
+pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
+    match action {
+        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw => {
+            AuthPolicyClass::Public
+        }
+        ActionKind::Pause => AuthPolicyClass::Guardian,
+        ActionKind::BeginAllocating
+        | ActionKind::FinishAllocating
+        | ActionKind::SyncExternalAssets
+        | ActionKind::BeginRefreshing
+        | ActionKind::FinishRefreshing
+        | ActionKind::AbortAllocating
+        | ActionKind::AbortWithdrawing
+        | ActionKind::AbortRefreshing
+        | ActionKind::SettlePayout
+        | ActionKind::RefreshFees => AuthPolicyClass::Allocator,
+        ActionKind::ManualReconcile | ActionKind::SetRestrictions | ActionKind::EmergencyReset => {
+            AuthPolicyClass::Admin
+        }
+    }
+}
+
+/// NEAR executor policy class for an action.
+#[inline]
+#[must_use]
+pub const fn near_policy_class(action: ActionKind) -> AuthPolicyClass {
+    match action {
+        ActionKind::Deposit | ActionKind::RequestWithdraw => AuthPolicyClass::Public,
+        ActionKind::ExecuteWithdraw
+        | ActionKind::BeginAllocating
+        | ActionKind::FinishAllocating
+        | ActionKind::SyncExternalAssets
+        | ActionKind::BeginRefreshing
+        | ActionKind::FinishRefreshing
+        | ActionKind::RefreshFees
+        | ActionKind::SettlePayout => AuthPolicyClass::Allocator,
+        ActionKind::AbortAllocating
+        | ActionKind::AbortWithdrawing
+        | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
+        ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Guardian,
+        ActionKind::ManualReconcile | ActionKind::EmergencyReset => AuthPolicyClass::Admin,
+    }
+}
+
 /// Kinds of actions that require authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionKind {
@@ -219,6 +303,42 @@ mod tests {
         assert!(ActionKind::BeginAllocating.is_privileged());
         assert!(ActionKind::AbortAllocating.is_privileged());
         assert!(ActionKind::ManualReconcile.is_privileged());
+    }
+
+    #[test]
+    fn test_policy_class_canonical() {
+        assert_eq!(
+            action_policy_class(ActionKind::ExecuteWithdraw, AuthPolicyProfile::Canonical),
+            AuthPolicyClass::Public
+        );
+        assert_eq!(
+            action_policy_class(ActionKind::Pause, AuthPolicyProfile::Canonical),
+            AuthPolicyClass::Guardian
+        );
+        assert_eq!(
+            action_policy_class(ActionKind::AbortRefreshing, AuthPolicyProfile::Canonical),
+            AuthPolicyClass::Allocator
+        );
+        assert_eq!(
+            action_policy_class(ActionKind::ManualReconcile, AuthPolicyProfile::Canonical),
+            AuthPolicyClass::Admin
+        );
+    }
+
+    #[test]
+    fn test_policy_class_near_profile() {
+        assert_eq!(
+            action_policy_class(ActionKind::ExecuteWithdraw, AuthPolicyProfile::Near),
+            AuthPolicyClass::Allocator
+        );
+        assert_eq!(
+            action_policy_class(ActionKind::AbortRefreshing, AuthPolicyProfile::Near),
+            AuthPolicyClass::AllocatorEmergency
+        );
+        assert_eq!(
+            action_policy_class(ActionKind::SetRestrictions, AuthPolicyProfile::Near),
+            AuthPolicyClass::Guardian
+        );
     }
 
     #[test]
