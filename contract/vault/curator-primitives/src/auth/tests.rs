@@ -32,7 +32,7 @@ fn test_policy_class_canonical() {
     );
     assert_eq!(
         action_policy_class(ActionKind::ManualReconcile, AuthPolicyProfile::Canonical),
-        AuthPolicyClass::Admin
+        AuthPolicyClass::Curator
     );
 }
 

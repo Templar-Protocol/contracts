@@ -367,12 +367,15 @@ fn prop_get_max_deposit_matches_bruteforce() {
                 prop_assert_eq!(c.total_assets_for_caps(), base_total_assets);
 
                 let rounding_slack = c.relative_cap_rounding_slack();
-                let upper = c.market_room_upper_bound();
+                let markets = c.supply_queue_market_infos();
+                let upper = markets
+                    .iter()
+                    .fold(0u128, |acc, market| acc.saturating_add(market.cap_room));
 
                 let mut expected = 0u128;
                 for x in 0..=upper {
                     let total_assets = base_total_assets.saturating_add(x);
-                    let room = c.max_allocatable_room_at(total_assets);
+                    let room = c.max_allocatable_room_at_precomputed(total_assets, &markets);
                     if x <= room.saturating_add(rounding_slack) {
                         expected = x;
                     }

@@ -4,7 +4,7 @@
 //! documents no-op handling for chain-specific calls that are orchestrated
 //! elsewhere in the NEAR contract flows.
 
-use std::collections::BTreeMap;
+use std::fmt;
 
 use near_sdk::{
     json_types::{U128, U64},
@@ -24,8 +24,18 @@ pub enum KernelEffectError {
     MissingAccount(Address),
     MintFailed,
     BurnFailed,
-    TransferFailed,
     UnsupportedEffect(&'static str),
+}
+
+impl fmt::Display for KernelEffectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingAccount(address) => write!(f, "missing account for address {address:?}"),
+            Self::MintFailed => f.write_str("failed to mint shares"),
+            Self::BurnFailed => f.write_str("failed to burn shares"),
+            Self::UnsupportedEffect(kind) => write!(f, "unsupported kernel effect: {kind}"),
+        }
+    }
 }
 
 #[near(event_json(standard = "templar-vault-kernel"))]
@@ -109,13 +119,6 @@ pub struct KernelEffectContext {
 }
 
 impl KernelEffectContext {
-    #[must_use]
-    pub fn new(accounts: BTreeMap<Address, AccountId>) -> Self {
-        Self {
-            accounts: AddressBook::from(accounts),
-        }
-    }
-
     pub fn insert(&mut self, address: Address, account: AccountId) {
         self.accounts.insert(address, account);
     }

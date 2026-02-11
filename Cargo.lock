@@ -12046,6 +12046,7 @@ version = "0.1.0"
 dependencies = [
  "borsh 1.6.0",
  "derive_more 1.0.0",
+ "near-sdk",
  "proptest",
  "rstest",
  "schemars",

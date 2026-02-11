@@ -6,7 +6,7 @@
 //!
 //! # Roles
 //!
-//! - **Admin**: Full control over the vault, including role management
+//! - **Curator**: Full control over the vault, including role management
 //! - **Guardian**: Can pause/unpause the vault
 //! - **Sentinel**: Emergency backstop, distinct from guardian (used by NEAR)
 //! - **Allocator**: Can manage allocations and refreshes
@@ -23,9 +23,16 @@ use crate::auth::{
 
 /// Role types for RBAC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "near", derive(near_sdk::BorshStorageKey))]
 pub enum Role {
-    /// Full administrative control.
-    Admin,
+    /// Full curator control.
+    Curator,
     /// Can pause/unpause and perform emergency actions.
     Guardian,
     /// Emergency backstop, distinct from guardian.
@@ -40,7 +47,7 @@ impl Role {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
-            Role::Admin => "admin",
+            Role::Curator => "curator",
             Role::Guardian => "guardian",
             Role::Sentinel => "sentinel",
             Role::Allocator => "allocator",
@@ -83,12 +90,12 @@ impl RbacConfig {
         Self::default()
     }
 
-    /// Create an RBAC configuration with a single admin.
+    /// Create an RBAC configuration with a single curator.
     #[inline]
     #[must_use]
-    pub fn with_admin(admin: Address) -> Self {
+    pub fn with_curator(curator: Address) -> Self {
         Self {
-            assignments: alloc::vec![RoleAssignment::new(admin, Role::Admin)],
+            assignments: alloc::vec![RoleAssignment::new(curator, Role::Curator)],
             paused: false,
         }
     }
@@ -146,7 +153,7 @@ pub fn required_role(action: ActionKind) -> Option<Role> {
         AuthPolicyClass::Public => None,
         AuthPolicyClass::Guardian => Some(Role::Guardian),
         AuthPolicyClass::Allocator | AuthPolicyClass::AllocatorEmergency => Some(Role::Allocator),
-        AuthPolicyClass::Admin => Some(Role::Admin),
+        AuthPolicyClass::Curator => Some(Role::Curator),
     }
 }
 
@@ -168,17 +175,17 @@ impl RbacAuth {
         Self { config }
     }
 
-    /// Create an RBAC auth adapter with a single admin.
+    /// Create an RBAC auth adapter with a single curator.
     #[inline]
     #[must_use]
-    pub fn with_admin(admin: Address) -> Self {
-        Self::new(RbacConfig::with_admin(admin))
+    pub fn with_curator(curator: Address) -> Self {
+        Self::new(RbacConfig::with_curator(curator))
     }
 
-    /// Check if the caller has the required role or is an admin.
+    /// Check if the caller has the required role or is a curator.
     fn has_required_role(&self, caller: &Address, required: Role) -> bool {
-        // Admin can do anything
-        if self.config.has_role(caller, Role::Admin) {
+        // Curator can do anything
+        if self.config.has_role(caller, Role::Curator) {
             return true;
         }
 
@@ -206,8 +213,8 @@ impl AuthAdapter for RbacAuth {
             if !action.is_privileged(AuthPolicyProfile::Canonical) {
                 return Err(AuthError::VaultPaused);
             }
-            // Allow admin to unpause and perform privileged recovery actions
-            if !self.config.has_role(&caller, Role::Admin) {
+            // Allow curator to unpause and perform privileged recovery actions
+            if !self.config.has_role(&caller, Role::Curator) {
                 return Err(AuthError::VaultPaused);
             }
         }

@@ -1,6 +1,6 @@
 use super::*;
 
-fn admin_addr() -> Address {
+fn curator_addr() -> Address {
     [1u8; 32]
 }
 
@@ -21,7 +21,7 @@ fn sentinel_addr() -> Address {
 }
 
 fn test_rbac() -> RbacAuth {
-    let mut config = RbacConfig::with_admin(admin_addr());
+    let mut config = RbacConfig::with_curator(curator_addr());
     config.add_role(guardian_addr(), Role::Guardian);
     config.add_role(allocator_addr(), Role::Allocator);
     RbacAuth::new(config)
@@ -29,10 +29,10 @@ fn test_rbac() -> RbacAuth {
 
 #[test]
 fn test_role_assignment() {
-    let config = RbacConfig::with_admin(admin_addr());
+    let config = RbacConfig::with_curator(curator_addr());
 
-    assert!(config.has_role(&admin_addr(), Role::Admin));
-    assert!(!config.has_role(&user_addr(), Role::Admin));
+    assert!(config.has_role(&curator_addr(), Role::Curator));
+    assert!(!config.has_role(&user_addr(), Role::Curator));
 }
 
 #[test]
@@ -48,18 +48,18 @@ fn test_add_remove_role() {
 
 #[test]
 fn test_get_roles() {
-    let mut config = RbacConfig::with_admin(admin_addr());
-    config.add_role(admin_addr(), Role::Guardian); // Admin also guardian
+    let mut config = RbacConfig::with_curator(curator_addr());
+    config.add_role(curator_addr(), Role::Guardian); // Curator also guardian
 
-    let roles = config.get_roles(&admin_addr());
+    let roles = config.get_roles(&curator_addr());
     assert_eq!(roles.len(), 2);
-    assert!(roles.contains(&Role::Admin));
+    assert!(roles.contains(&Role::Curator));
     assert!(roles.contains(&Role::Guardian));
 }
 
 #[test]
 fn test_sentinel_role() {
-    let mut config = RbacConfig::with_admin(admin_addr());
+    let mut config = RbacConfig::with_curator(curator_addr());
     config.add_role(sentinel_addr(), Role::Sentinel);
 
     assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
@@ -141,31 +141,31 @@ fn test_allocator_actions() {
 }
 
 #[test]
-fn test_admin_can_do_everything() {
+fn test_curator_can_do_everything() {
     let auth = test_rbac();
 
-    // Admin can do all privileged actions
+    // Curator can do all privileged actions
     assert!(auth
-        .authorize(ActionKind::Pause, admin_addr(), None)
+        .authorize(ActionKind::Pause, curator_addr(), None)
         .is_ok());
     assert!(auth
-        .authorize(ActionKind::BeginAllocating, admin_addr(), None)
+        .authorize(ActionKind::BeginAllocating, curator_addr(), None)
         .is_ok());
     assert!(auth
-        .authorize(ActionKind::ManualReconcile, admin_addr(), None)
+        .authorize(ActionKind::ManualReconcile, curator_addr(), None)
         .is_ok());
     assert!(auth
-        .authorize(ActionKind::Deposit, admin_addr(), None)
+        .authorize(ActionKind::Deposit, curator_addr(), None)
         .is_ok());
 }
 
 #[test]
-fn test_manual_reconcile_admin_only() {
+fn test_manual_reconcile_curator_only() {
     let auth = test_rbac();
 
-    // Only admin can do manual reconcile
+    // Only curator can do manual reconcile
     assert!(auth
-        .authorize(ActionKind::ManualReconcile, admin_addr(), None)
+        .authorize(ActionKind::ManualReconcile, curator_addr(), None)
         .is_ok());
 
     // Allocator cannot
@@ -186,9 +186,9 @@ fn test_paused_blocks_user_actions() {
     let result = auth.authorize(ActionKind::Deposit, user_addr(), None);
     assert!(matches!(result, Err(AuthError::VaultPaused)));
 
-    // Admin can still act when paused
+    // Curator can still act when paused
     assert!(auth
-        .authorize(ActionKind::BeginAllocating, admin_addr(), None)
+        .authorize(ActionKind::BeginAllocating, curator_addr(), None)
         .is_ok());
 }
 
@@ -215,7 +215,7 @@ fn test_is_paused() {
 
 #[test]
 fn test_role_as_str() {
-    assert_eq!(Role::Admin.as_str(), "admin");
+    assert_eq!(Role::Curator.as_str(), "curator");
     assert_eq!(Role::Guardian.as_str(), "guardian");
     assert_eq!(Role::Sentinel.as_str(), "sentinel");
     assert_eq!(Role::Allocator.as_str(), "allocator");

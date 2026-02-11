@@ -53,6 +53,7 @@ use templar_common::{
         WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
+pub use templar_curator_primitives::rbac::Role;
 use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
@@ -96,24 +97,6 @@ mod test_utils;
 /// Internal storage keys used by persistent collections.
 pub enum StorageKey {
     PendingWithdrawals,
-}
-
-#[derive(BorshStorageKey)]
-#[near]
-/// Role-based access control roles for privileged actions.
-pub enum Role {
-    /// Primary operator for market configuration and policy.
-    /// Can submit/accept cap changes and market removals, and is implicitly granted the Allocator role.
-    Curator,
-    /// Safety backstop that can revoke pending governance changes (e.g., timelock/guardian).
-    /// Has no authority to change caps or the supply queue on its own.
-    Guardian,
-    /// Emergency role distinct from the guardian.
-    /// Can revoke pending governance, perform emergency deallocations, and cancel stuck withdrawals.
-    Sentinel,
-    /// Operational role for allocation and withdrawal execution.
-    /// May set the supply_queue while the vault is Idle; cannot modify caps/timelocks/guardian.
-    Allocator,
 }
 
 #[near(serializers = [borsh])]
@@ -1229,14 +1212,6 @@ impl Contract {
         }
     }
 
-    fn record_account(&mut self, account: &AccountId) -> Address {
-        let address = account_id_to_address(account);
-        self.address_book
-            .entry(address)
-            .or_insert_with(|| account.clone());
-        address
-    }
-
     fn resolve_account(&self, address: &Address) -> AccountId {
         self.address_book
             .get(address)
@@ -1399,12 +1374,6 @@ impl Contract {
             .collect()
     }
 
-    fn market_room_upper_bound(&self) -> u128 {
-        self.supply_queue_market_infos()
-            .iter()
-            .fold(0u128, |acc, market| acc.saturating_add(market.cap_room))
-    }
-
     fn cap_group_room_remaining_at(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
         let Some(rec) = self.cap_groups.get(cap_group) else {
             return 0;
@@ -1447,11 +1416,6 @@ impl Contract {
         }
 
         low
-    }
-
-    fn max_allocatable_room_at(&self, total_assets: u128) -> u128 {
-        let markets = self.supply_queue_market_infos();
-        self.max_allocatable_room_at_precomputed(total_assets, &markets)
     }
 
     fn max_allocatable_room_at_precomputed(
@@ -1636,8 +1600,14 @@ impl Contract {
         id: u64,
         entry: PendingWithdrawal,
     ) {
-        let owner_addr = self.record_account(&entry.owner);
-        let receiver_addr = self.record_account(&entry.receiver);
+        let owner_addr = account_id_to_address(&entry.owner);
+        self.address_book
+            .entry(owner_addr)
+            .or_insert_with(|| entry.owner.clone());
+        let receiver_addr = account_id_to_address(&entry.receiver);
+        self.address_book
+            .entry(receiver_addr)
+            .or_insert_with(|| entry.receiver.clone());
 
         let mut pending = self.withdraw_queue.pending_withdrawals.clone();
         pending.insert(

@@ -49,9 +49,6 @@ pub(crate) struct PayoutSpec;
 pub(crate) struct OpGuard<'a, S: GuardSpec<Contract>>(Guard<'a, Contract, S>);
 
 pub(crate) type IdleGuard<'a> = OpGuard<'a, IdleSpec>;
-pub(crate) type AllocatingGuard<'a> = OpGuard<'a, AllocatingSpec>;
-pub(crate) type WithdrawingGuard<'a> = OpGuard<'a, WithdrawingSpec>;
-pub(crate) type RefreshingGuard<'a> = OpGuard<'a, RefreshingSpec>;
 pub(crate) type PayoutGuard<'a> = OpGuard<'a, PayoutSpec>;
 
 impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
@@ -61,10 +58,6 @@ impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
 
     pub fn state(&self) -> &S::State {
         self.0.state()
-    }
-
-    pub fn replace_state(self, state: S::State) -> Self {
-        Self(self.0.replace_state(state))
     }
 
     pub fn into_idle(self) -> OpGuard<'a, S::Idle> {
@@ -138,30 +131,6 @@ impl<'a> OpGuard<'a, IdleSpec> {
     pub fn new(contract: &'a mut Contract) -> Self {
         Self::expect(contract, None)
             .unwrap_or_else(|e| panic_with_message(&format!("idle guard: {e}")))
-    }
-
-    pub fn start_allocation(self, state: AllocatingState) -> AllocatingGuard<'a> {
-        let op_id = state.op_id;
-        let contract = self.into_inner();
-        AllocatingSpec::set_state(contract, state);
-        AllocatingGuard::expect(contract, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&format!("allocating guard: {e}")))
-    }
-
-    pub fn start_withdrawal(self, state: WithdrawingState) -> WithdrawingGuard<'a> {
-        let op_id = state.op_id;
-        let contract = self.into_inner();
-        WithdrawingSpec::set_state(contract, state);
-        WithdrawingGuard::expect(contract, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&format!("withdrawing guard: {e}")))
-    }
-
-    pub fn start_refreshing(self, state: RefreshingState) -> RefreshingGuard<'a> {
-        let op_id = state.op_id;
-        let contract = self.into_inner();
-        RefreshingSpec::set_state(contract, state);
-        RefreshingGuard::expect(contract, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&format!("refreshing guard: {e}")))
     }
 }
 

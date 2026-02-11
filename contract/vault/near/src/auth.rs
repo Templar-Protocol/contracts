@@ -74,7 +74,7 @@ pub fn auth_pattern_for(action: ActionKind) -> AuthPattern {
         AuthPolicyClass::Guardian => AuthPattern::GuardianOrOwner,
         AuthPolicyClass::Allocator => AuthPattern::Allocator,
         AuthPolicyClass::AllocatorEmergency => AuthPattern::AllocatorOrSentinel,
-        AuthPolicyClass::Public | AuthPolicyClass::Admin => AuthPattern::OwnerOnly,
+        AuthPolicyClass::Public | AuthPolicyClass::Curator => AuthPattern::OwnerOnly,
     }
 }
 

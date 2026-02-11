@@ -29,8 +29,8 @@ pub enum AuthPolicyClass {
     Allocator,
     /// Emergency allocator path (allocator + emergency role on some executors).
     AllocatorEmergency,
-    /// Admin/owner-only privileged action.
-    Admin,
+    /// Curator/owner-only privileged action.
+    Curator,
 }
 
 /// Classify an action under a specific auth policy profile.
@@ -66,7 +66,7 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::SettlePayout
         | ActionKind::RefreshFees => AuthPolicyClass::Allocator,
         ActionKind::ManualReconcile | ActionKind::SetRestrictions | ActionKind::EmergencyReset => {
-            AuthPolicyClass::Admin
+            AuthPolicyClass::Curator
         }
     }
 }
@@ -89,7 +89,7 @@ pub const fn near_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::AbortWithdrawing
         | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
         ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Guardian,
-        ActionKind::ManualReconcile | ActionKind::EmergencyReset => AuthPolicyClass::Admin,
+        ActionKind::ManualReconcile | ActionKind::EmergencyReset => AuthPolicyClass::Curator,
     }
 }
 
