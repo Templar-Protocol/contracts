@@ -150,8 +150,8 @@ fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
 /// Contract configuration set at initialization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractConfig {
-    /// Administrator address.
-    pub admin: Address,
+    /// Curator address.
+    pub curator: Address,
     /// Vault contract address.
     pub vault_address: Address,
     /// Guardian addresses (can pause).
@@ -177,7 +177,7 @@ impl ContractConfig {
     #[inline]
     #[must_use]
     pub fn new(
-        admin: Address,
+        curator: Address,
         vault_address: Address,
         guardians: Vec<Address>,
         allocators: Vec<Address>,
@@ -185,7 +185,7 @@ impl ContractConfig {
         share_address: Address,
     ) -> Self {
         Self {
-            admin,
+            curator,
             vault_address,
             guardians,
             allocators,
@@ -230,11 +230,11 @@ impl ContractConfig {
         self
     }
 
-    /// Check if the given address is the admin.
+    /// Check if the given address is the curator.
     #[inline]
     #[must_use]
-    pub fn is_admin(&self, addr: &Address) -> bool {
-        &self.admin == addr
+    pub fn is_curator(&self, addr: &Address) -> bool {
+        &self.curator == addr
     }
 
     /// Check if the given address is a guardian.
@@ -251,11 +251,11 @@ impl ContractConfig {
         self.allocators.iter().any(|a| a == addr)
     }
 
-    /// Check if the address has privileged access (admin or allocator).
+    /// Check if the address has privileged access (curator or allocator).
     #[inline]
     #[must_use]
     pub fn is_privileged(&self, addr: &Address) -> bool {
-        self.is_admin(addr) || self.is_allocator(addr)
+        self.is_curator(addr) || self.is_allocator(addr)
     }
 }
 
@@ -1467,8 +1467,8 @@ where
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum VaultDataKey {
-    /// Admin address.
-    Admin,
+    /// Curator address.
+    Curator,
     /// Underlying asset token address.
     AssetToken,
     /// Share token address.
@@ -1567,8 +1567,8 @@ fn with_contract_vault<T>(
 ) -> Result<T, RuntimeError> {
     extend_storage_ttl(env);
     migrate_legacy_paused(env);
-    let admin: SdkAddress = get_config_address(env, &VaultDataKey::Admin)
-        .map_err(|_| RuntimeError::storage_error("admin not set"))?;
+    let curator: SdkAddress = get_config_address(env, &VaultDataKey::Curator)
+        .map_err(|_| RuntimeError::storage_error("curator not set"))?;
     let asset_token: SdkAddress = get_config_address(env, &VaultDataKey::AssetToken)
         .map_err(|_| RuntimeError::storage_error("asset token not set"))?;
     let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)
@@ -1576,12 +1576,12 @@ fn with_contract_vault<T>(
 
     let vault_sdk = env.current_contract_address();
     let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
-    let admin_kernel = kernel_address_from_sdk(env, &admin);
+    let curator_kernel = kernel_address_from_sdk(env, &curator);
     let asset_kernel = kernel_address_from_sdk(env, &asset_token);
     let share_kernel = kernel_address_from_sdk(env, &share_token);
 
     let mut config = ContractConfig::new(
-        admin_kernel,
+        curator_kernel,
         vault_kernel,
         Vec::new(),
         Vec::new(),
@@ -1604,7 +1604,7 @@ fn with_contract_vault<T>(
 
     let storage = SorobanStorage::new(env);
     let paused = storage.is_paused();
-    let mut rbac_config = RbacConfig::with_admin(admin_kernel);
+    let mut rbac_config = RbacConfig::with_curator(curator_kernel);
     rbac_config.set_paused(paused);
     let auth = RbacAuth::new(rbac_config);
 
@@ -1656,7 +1656,7 @@ impl SorobanVaultContract {
     /// Returns an error if the contract is already initialized or storage fails.
     pub fn initialize(
         env: Env,
-        admin: SdkAddress,
+        curator: SdkAddress,
         asset_token: SdkAddress,
         share_token: SdkAddress,
     ) -> Result<(), ContractError> {
@@ -1666,7 +1666,7 @@ impl SorobanVaultContract {
         }
 
         // Store configuration
-        set_config_address(&env, &VaultDataKey::Admin, &admin);
+        set_config_address(&env, &VaultDataKey::Curator, &curator);
         set_config_address(&env, &VaultDataKey::AssetToken, &asset_token);
         set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
         env.storage()
@@ -1803,42 +1803,42 @@ impl SorobanVaultContract {
         Ok(())
     }
 
-    /// Set the Blend adapter contract address (admin only).
+    /// Set the Blend adapter contract address (curator only).
     pub fn set_blend_adapter(
         env: Env,
         caller: SdkAddress,
         adapter: SdkAddress,
     ) -> Result<(), ContractError> {
-        require_admin(&env, &caller)?;
+        require_curator(&env, &caller)?;
         set_config_address(&env, &VaultDataKey::BlendAdapter, &adapter);
         Ok(())
     }
 
-    /// Set the Blend pool contract address (admin only).
+    /// Set the Blend pool contract address (curator only).
     pub fn set_blend_pool(
         env: Env,
         caller: SdkAddress,
         pool: SdkAddress,
     ) -> Result<(), ContractError> {
-        require_admin(&env, &caller)?;
+        require_curator(&env, &caller)?;
         set_config_address(&env, &VaultDataKey::BlendPool, &pool);
         Ok(())
     }
 
-    /// Set the Blend factory contract address (admin only).
+    /// Set the Blend factory contract address (curator only).
     pub fn set_blend_factory(
         env: Env,
         caller: SdkAddress,
         factory: SdkAddress,
     ) -> Result<(), ContractError> {
-        require_admin(&env, &caller)?;
+        require_curator(&env, &caller)?;
         set_config_address(&env, &VaultDataKey::BlendFactory, &factory);
         Ok(())
     }
 
-    /// Get the admin address.
-    pub fn admin(env: Env) -> Result<SdkAddress, ContractError> {
-        get_config_address(&env, &VaultDataKey::Admin)
+    /// Get the curator address.
+    pub fn curator(env: Env) -> Result<SdkAddress, ContractError> {
+        get_config_address(&env, &VaultDataKey::Curator)
     }
 
     /// Get the asset token address.
@@ -1900,10 +1900,10 @@ fn require_signed(addr: &SdkAddress) {
     addr.require_auth();
 }
 
-fn require_admin(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+fn require_curator(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
     require_signed(caller);
-    let admin: SdkAddress = get_config_address(env, &VaultDataKey::Admin)?;
-    if caller != &admin {
+    let curator: SdkAddress = get_config_address(env, &VaultDataKey::Curator)?;
+    if caller != &curator {
         return Err(ContractError::Unauthorized);
     }
     Ok(())
@@ -2081,7 +2081,10 @@ impl SorobanVaultContract {
         if assets <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
-        must(&env, Self::deposit_with_min(env, from, receiver, assets, 0))
+        must(
+            &env,
+            Self::deposit_with_min(env.clone(), from, receiver, assets, 0),
+        )
     }
 
     /// Mint exactly `shares` to `receiver`, pulling required assets from `from`.
@@ -2103,7 +2106,7 @@ impl SorobanVaultContract {
         let assets_i128 = must(&env, to_i128(assets_needed));
         let _shares_minted = must(
             &env,
-            Self::deposit_with_min(env, from, receiver, assets_i128, shares),
+            Self::deposit_with_min(env.clone(), from, receiver, assets_i128, shares),
         );
         assets_i128
     }
@@ -2576,8 +2579,8 @@ mod tests {
     fn test_contract_config() {
         let config = test_config();
 
-        assert!(config.is_admin(&[1u8; 32]));
-        assert!(!config.is_admin(&[2u8; 32]));
+        assert!(config.is_curator(&[1u8; 32]));
+        assert!(!config.is_curator(&[2u8; 32]));
 
         assert!(config.is_guardian(&[2u8; 32]));
         assert!(!config.is_guardian(&[1u8; 32]));
@@ -2585,7 +2588,7 @@ mod tests {
         assert!(config.is_allocator(&[3u8; 32]));
         assert!(!config.is_allocator(&[1u8; 32]));
 
-        assert!(config.is_privileged(&[1u8; 32])); // admin
+        assert!(config.is_privileged(&[1u8; 32])); // curator
         assert!(config.is_privileged(&[3u8; 32])); // allocator
         assert!(!config.is_privileged(&[2u8; 32])); // guardian only
     }
@@ -2598,12 +2601,12 @@ mod tests {
         env.mock_all_auths();
 
         let contract_id = env.register(SorobanVaultContract, ());
-        let admin = soroban_sdk::Address::generate(&env);
+        let curator = soroban_sdk::Address::generate(&env);
         let asset = soroban_sdk::Address::generate(&env);
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+            SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
             let result = with_reentrancy_guard(&env, || with_reentrancy_guard(&env, || Ok(())));
             assert_eq!(result, Err(ContractError::Reentrancy));
         });
@@ -2617,12 +2620,12 @@ mod tests {
         env.mock_all_auths();
 
         let contract_id = env.register(SorobanVaultContract, ());
-        let admin = soroban_sdk::Address::generate(&env);
+        let curator = soroban_sdk::Address::generate(&env);
         let asset = soroban_sdk::Address::generate(&env);
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+            SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
             with_reentrancy_guard(&env, || Ok(())).unwrap();
             with_reentrancy_guard(&env, || Ok(())).unwrap();
         });
@@ -2638,12 +2641,12 @@ mod tests {
         env.mock_all_auths();
 
         let contract_id = env.register(SorobanVaultContract, ());
-        let admin = soroban_sdk::Address::generate(&env);
+        let curator = soroban_sdk::Address::generate(&env);
         let asset = soroban_sdk::Address::generate(&env);
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+            SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
         });
 
         let fees = FeesSpec::new(
@@ -2932,12 +2935,12 @@ mod tests {
         env.mock_all_auths();
 
         let contract_id = env.register(SorobanVaultContract, ());
-        let admin = soroban_sdk::Address::generate(&env);
+        let curator = soroban_sdk::Address::generate(&env);
         let asset = soroban_sdk::Address::generate(&env);
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+            SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
 
             let mut storage = SorobanStorage::new(&env);
             let versioned = VersionedState::new(VaultState::default());

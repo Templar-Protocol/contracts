@@ -116,7 +116,7 @@ impl CrossChainMarketAdapter for MockCrossChainAdapter {
 
 fn test_config() -> ContractConfig {
     ContractConfig::new(
-        [1u8; 32],       // admin
+        [1u8; 32],       // curator
         [9u8; 32],       // vault_address
         vec![[2u8; 32]], // guardians
         vec![[3u8; 32]], // allocators
@@ -125,7 +125,7 @@ fn test_config() -> ContractConfig {
     )
 }
 
-fn admin_addr() -> Address {
+fn curator_addr() -> Address {
     [1u8; 32]
 }
 
@@ -147,7 +147,7 @@ fn soroban_contract_blend_config_roundtrip() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let admin = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
     let asset = soroban_sdk::Address::generate(&env);
     let share = soroban_sdk::Address::generate(&env);
     let adapter = soroban_sdk::Address::generate(&env);
@@ -155,17 +155,17 @@ fn soroban_contract_blend_config_roundtrip() {
     let factory = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin.clone(), asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), asset, share).unwrap();
     });
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::set_blend_adapter(env.clone(), admin.clone(), adapter.clone())
+        SorobanVaultContract::set_blend_adapter(env.clone(), curator.clone(), adapter.clone())
             .unwrap();
     });
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::set_blend_pool(env.clone(), admin.clone(), pool.clone()).unwrap();
+        SorobanVaultContract::set_blend_pool(env.clone(), curator.clone(), pool.clone()).unwrap();
     });
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::set_blend_factory(env.clone(), admin, factory.clone()).unwrap();
+        SorobanVaultContract::set_blend_factory(env.clone(), curator, factory.clone()).unwrap();
     });
     env.as_contract(&contract_id, || {
         assert_eq!(
@@ -255,12 +255,12 @@ fn soroban_contract_preview_deposit_matches_kernel() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let admin = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
     let asset = soroban_sdk::Address::generate(&env);
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
     });
 
     let assets_in = 500u128;
@@ -297,12 +297,12 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let admin = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
     let asset = soroban_sdk::Address::generate(&env);
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -335,13 +335,13 @@ fn soroban_contract_execute_withdraw_queue_empty_errors() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let admin = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
     let asset = soroban_sdk::Address::generate(&env);
     let share = soroban_sdk::Address::generate(&env);
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -356,13 +356,13 @@ fn soroban_contract_execute_withdraw_non_idle_errors() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let admin = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
     let asset = soroban_sdk::Address::generate(&env);
     let share = soroban_sdk::Address::generate(&env);
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), admin, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -419,7 +419,7 @@ type RbacVault = CuratorVault<
 >;
 
 fn create_rbac_vault() -> RbacVault {
-    let mut rbac_config = RbacConfig::with_admin(admin_addr());
+    let mut rbac_config = RbacConfig::with_curator(curator_addr());
     rbac_config.add_role(guardian_addr(), Role::Guardian);
     rbac_config.add_role(allocator_addr(), Role::Allocator);
 
@@ -809,7 +809,7 @@ fn test_rbac_user_cannot_allocate() {
 
     // Setup
     vault
-        .deposit(admin_addr(), admin_addr(), 10000, 0, 100)
+        .deposit(curator_addr(), curator_addr(), 10000, 0, 100)
         .unwrap();
 
     // User should not be able to begin allocation
@@ -824,7 +824,7 @@ fn test_rbac_allocator_can_allocate() {
 
     // Setup
     vault
-        .deposit(admin_addr(), admin_addr(), 10000, 0, 100)
+        .deposit(curator_addr(), curator_addr(), 10000, 0, 100)
         .unwrap();
 
     // Allocator should be able to begin allocation
@@ -833,29 +833,29 @@ fn test_rbac_allocator_can_allocate() {
 }
 
 #[test]
-fn test_rbac_admin_can_do_everything() {
+fn test_rbac_curator_can_do_everything() {
     let mut vault = create_rbac_vault();
-    let admin = admin_addr();
+    let curator = curator_addr();
 
     // Deposit
-    vault.deposit(admin, admin, 10000, 0, 100).unwrap();
+    vault.deposit(curator, curator, 10000, 0, 100).unwrap();
 
-    // Begin allocation (admin has all privileges)
+    // Begin allocation (curator has all privileges)
     let op_id = vault
-        .begin_allocating(admin, vec![(0, 5000)], 1000)
+        .begin_allocating(curator, vec![(0, 5000)], 1000)
         .unwrap();
 
     // Sync external assets
     vault
-        .sync_external_assets(admin, 5000, op_id, 1000)
+        .sync_external_assets(curator, 5000, op_id, 1000)
         .unwrap();
 
     // Finish allocation
-    vault.finish_allocating(admin, op_id).unwrap();
+    vault.finish_allocating(curator, op_id).unwrap();
 
     // Begin refresh
-    let op_id = vault.begin_refreshing(admin, vec![0], 1000).unwrap();
-    vault.finish_refreshing(admin, op_id).unwrap();
+    let op_id = vault.begin_refreshing(curator, vec![0], 1000).unwrap();
+    vault.finish_refreshing(curator, op_id).unwrap();
 }
 
 #[test]
@@ -884,14 +884,14 @@ fn test_restrictions_blacklist_blocks_deposit() {
     use templar_vault_kernel::Restrictions;
 
     let mut vault = create_rbac_vault();
-    let admin = admin_addr();
+    let curator = curator_addr();
     let user = user_addr();
 
     let mut blacklist = BTreeSet::new();
     blacklist.insert(user);
 
     vault
-        .set_restrictions(admin, Some(Restrictions::Blacklist(blacklist)))
+        .set_restrictions(curator, Some(Restrictions::Blacklist(blacklist)))
         .unwrap();
 
     let result = vault.deposit(user, user, 1000, 0, 100);

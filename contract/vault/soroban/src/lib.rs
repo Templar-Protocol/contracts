@@ -69,6 +69,10 @@ pub use storage::{
 };
 pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
+pub mod rbac {
+    pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
+}
+
 // Re-export soroban-sdk types for convenience
 pub use soroban_sdk::{Address, Bytes, Env};
 

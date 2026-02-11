@@ -9,6 +9,7 @@ members = [
     "contract/vault/curator-primitives",
     "contract/vault/kernel",
     "contract/vault/near",
+    "contract/vault/soroban",
     "fuzz",
     "client/*",
     "mock/*",
@@ -72,6 +73,9 @@ wiremock = "0.5.22"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[patch.crates-io]
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", rev = "e7902a4b8992b7c253a9d2c29b7401cd9c267805" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

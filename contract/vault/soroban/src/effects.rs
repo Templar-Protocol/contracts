@@ -421,7 +421,7 @@ pub trait Sep41Token {
 ///
 /// This adapter wraps a `StellarAssetClient` and implements the `Sep41Token` trait
 /// for interacting with SEP-41 compliant token contracts. It supports both
-/// standard operations (transfer, burn, balance) and admin operations (mint).
+/// standard operations (transfer, burn, balance) and privileged operations (mint).
 pub struct SdkTokenAdapter<'a> {
     client: StellarAssetClient<'a>,
 }

@@ -39,8 +39,7 @@ use templar_vault_kernel::{
     math::{number::Number, wad::mul_div_floor},
     state::op_state::OpState,
     transitions::{
-        complete_allocation, complete_refresh, start_allocation, start_refresh,
-        TransitionError,
+        complete_allocation, complete_refresh, start_allocation, start_refresh, TransitionError,
     },
     Address,
 };
@@ -118,7 +117,7 @@ impl CrossChainMarketAdapter for PropTestCrossChainAdapter {
 
 fn prop_test_config() -> ContractConfig {
     ContractConfig::new(
-        [1u8; 32],       // admin
+        [1u8; 32],       // curator
         [9u8; 32],       // vault_address
         vec![[2u8; 32]], // guardians
         vec![[3u8; 32]], // allocators

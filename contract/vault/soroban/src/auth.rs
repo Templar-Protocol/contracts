@@ -30,7 +30,7 @@ pub use templar_curator_primitives::rbac::{required_role, Role};
 /// use templar_soroban_runtime::auth::{SorobanAuth, ActionKind};
 ///
 /// let env = Env::default();
-/// let auth = SorobanAuth::new(&env, admin_addr);
+/// let auth = SorobanAuth::new(&env, curator_addr);
 ///
 /// // This will call require_auth() on the caller
 /// auth.verify_and_authorize(ActionKind::Deposit, &caller)?;
@@ -38,8 +38,8 @@ pub use templar_curator_primitives::rbac::{required_role, Role};
 pub struct SorobanAuth<'a> {
     /// The Soroban environment.
     env: &'a Env,
-    /// The vault admin address (for privilege checks).
-    admin: SdkAddress,
+    /// The vault curator address (for privilege checks).
+    curator: SdkAddress,
     /// Whether the vault is paused.
     paused: bool,
     /// Optional guardian address.
@@ -51,8 +51,12 @@ pub struct SorobanAuth<'a> {
 impl<'a> SorobanAuth<'a> {
     #[inline]
     #[must_use]
-    fn is_admin_or(addr: &SdkAddress, delegated: &Option<SdkAddress>, admin: &SdkAddress) -> bool {
-        addr == admin
+    fn is_curator_or(
+        addr: &SdkAddress,
+        delegated: &Option<SdkAddress>,
+        curator: &SdkAddress,
+    ) -> bool {
+        addr == curator
             || delegated
                 .as_ref()
                 .is_some_and(|candidate| candidate == addr)
@@ -62,19 +66,19 @@ impl<'a> SorobanAuth<'a> {
     #[must_use]
     fn has_role(&self, role: Role, caller: &SdkAddress) -> bool {
         match role {
-            Role::Admin | Role::Sentinel => caller == &self.admin,
-            Role::Guardian => Self::is_admin_or(caller, &self.guardian, &self.admin),
-            Role::Allocator => Self::is_admin_or(caller, &self.allocator, &self.admin),
+            Role::Curator | Role::Sentinel => caller == &self.curator,
+            Role::Guardian => Self::is_curator_or(caller, &self.guardian, &self.curator),
+            Role::Allocator => Self::is_curator_or(caller, &self.allocator, &self.curator),
         }
     }
 
     /// Create a new Soroban auth adapter.
     #[inline]
     #[must_use]
-    pub fn new(env: &'a Env, admin: SdkAddress) -> Self {
+    pub fn new(env: &'a Env, curator: SdkAddress) -> Self {
         Self {
             env,
-            admin,
+            curator,
             paused: false,
             guardian: None,
             allocator: None,
@@ -86,13 +90,13 @@ impl<'a> SorobanAuth<'a> {
     #[must_use]
     pub fn with_roles(
         env: &'a Env,
-        admin: SdkAddress,
+        curator: SdkAddress,
         guardian: Option<SdkAddress>,
         allocator: Option<SdkAddress>,
     ) -> Self {
         Self {
             env,
-            admin,
+            curator,
             paused: false,
             guardian,
             allocator,
@@ -122,8 +126,8 @@ impl<'a> SorobanAuth<'a> {
 
         // Check if paused (allow pause action even when paused)
         if self.paused && action != ActionKind::Pause {
-            // Only allow admin to perform actions when paused
-            if !self.has_role(Role::Admin, caller) {
+            // Only allow curator to perform actions when paused
+            if !self.has_role(Role::Curator, caller) {
                 return Err(AuthError::VaultPaused);
             }
         }
@@ -151,11 +155,11 @@ impl<'a> SorobanAuth<'a> {
         }
     }
 
-    /// Get the admin address.
+    /// Get the curator address.
     #[inline]
     #[must_use]
-    pub fn admin(&self) -> &SdkAddress {
-        &self.admin
+    pub fn curator(&self) -> &SdkAddress {
+        &self.curator
     }
 
     /// Check if the vault is paused.
@@ -181,37 +185,37 @@ mod tests {
     #[test]
     fn test_soroban_auth_new() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::new(&env, admin.clone());
+        let auth = SorobanAuth::new(&env, curator.clone());
 
-        assert_eq!(auth.admin(), &admin);
+        assert_eq!(auth.curator(), &curator);
         assert!(!auth.paused());
     }
 
     #[test]
-    fn test_soroban_auth_admin_role() {
+    fn test_soroban_auth_curator_role() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::new(&env, admin.clone());
+        let auth = SorobanAuth::new(&env, curator.clone());
 
-        assert!(auth.has_role(Role::Admin, &admin));
-        assert!(!auth.has_role(Role::Admin, &user));
+        assert!(auth.has_role(Role::Curator, &curator));
+        assert!(!auth.has_role(Role::Curator, &user));
     }
 
     #[test]
     fn test_soroban_auth_guardian_role() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let guardian = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, admin.clone(), Some(guardian.clone()), None);
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), Some(guardian.clone()), None);
 
-        // Admin is always a guardian
-        assert!(auth.has_role(Role::Guardian, &admin));
+        // Curator is always a guardian
+        assert!(auth.has_role(Role::Guardian, &curator));
         // Designated guardian
         assert!(auth.has_role(Role::Guardian, &guardian));
         // Regular user is not
@@ -221,14 +225,14 @@ mod tests {
     #[test]
     fn test_soroban_auth_allocator_role() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, admin.clone(), None, Some(allocator.clone()));
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), None, Some(allocator.clone()));
 
-        // Admin is always an allocator
-        assert!(auth.has_role(Role::Allocator, &admin));
+        // Curator is always an allocator
+        assert!(auth.has_role(Role::Allocator, &curator));
         // Designated allocator
         assert!(auth.has_role(Role::Allocator, &allocator));
         // Regular user is not
@@ -238,10 +242,10 @@ mod tests {
     #[test]
     fn test_soroban_auth_check_role_user_actions() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::new(&env, admin);
+        let auth = SorobanAuth::new(&env, curator);
 
         // User actions allowed for anyone
         assert!(auth.check_role(ActionKind::Deposit, &user).is_ok());
@@ -252,16 +256,16 @@ mod tests {
     #[test]
     fn test_soroban_auth_check_role_guardian_actions() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let guardian = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, admin.clone(), Some(guardian.clone()), None);
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), Some(guardian.clone()), None);
 
         // Guardian can pause
         assert!(auth.check_role(ActionKind::Pause, &guardian).is_ok());
-        // Admin can pause (admin is always guardian)
-        assert!(auth.check_role(ActionKind::Pause, &admin).is_ok());
+        // Curator can pause (curator is always guardian)
+        assert!(auth.check_role(ActionKind::Pause, &curator).is_ok());
         // User cannot pause
         let result = auth.check_role(ActionKind::Pause, &user);
         assert!(matches!(result, Err(AuthError::MissingRole(_))));
@@ -270,11 +274,11 @@ mod tests {
     #[test]
     fn test_soroban_auth_check_role_allocator_actions() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, admin.clone(), None, Some(allocator.clone()));
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), None, Some(allocator.clone()));
 
         // Allocator can do allocation operations
         assert!(auth
@@ -290,8 +294,10 @@ mod tests {
             .check_role(ActionKind::SyncExternalAssets, &allocator)
             .is_ok());
 
-        // Admin can too
-        assert!(auth.check_role(ActionKind::BeginAllocating, &admin).is_ok());
+        // Curator can too
+        assert!(auth
+            .check_role(ActionKind::BeginAllocating, &curator)
+            .is_ok());
 
         // User cannot
         let result = auth.check_role(ActionKind::BeginAllocating, &user);
@@ -299,15 +305,17 @@ mod tests {
     }
 
     #[test]
-    fn test_soroban_auth_check_role_admin_only() {
+    fn test_soroban_auth_check_role_curator_only() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, admin.clone(), None, Some(allocator.clone()));
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), None, Some(allocator.clone()));
 
-        // Only admin can do manual reconcile
-        assert!(auth.check_role(ActionKind::ManualReconcile, &admin).is_ok());
+        // Only curator can do manual reconcile
+        assert!(auth
+            .check_role(ActionKind::ManualReconcile, &curator)
+            .is_ok());
 
         // Allocator cannot
         let result = auth.check_role(ActionKind::ManualReconcile, &allocator);
@@ -317,9 +325,9 @@ mod tests {
     #[test]
     fn test_soroban_auth_set_paused() {
         let env = Env::default();
-        let admin = SdkAddress::generate(&env);
+        let curator = SdkAddress::generate(&env);
 
-        let mut auth = SorobanAuth::new(&env, admin);
+        let mut auth = SorobanAuth::new(&env, curator);
 
         assert!(!auth.paused());
         auth.set_paused(true);
