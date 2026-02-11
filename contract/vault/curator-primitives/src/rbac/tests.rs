@@ -31,8 +31,8 @@ fn test_rbac() -> RbacAuth {
 fn test_role_assignment() {
     let config = RbacConfig::with_admin(admin_addr());
 
-    assert!(config.is_admin(&admin_addr()));
-    assert!(!config.is_admin(&user_addr()));
+    assert!(config.has_role(&admin_addr(), Role::Admin));
+    assert!(!config.has_role(&user_addr(), Role::Admin));
 }
 
 #[test]
@@ -40,10 +40,10 @@ fn test_add_remove_role() {
     let mut config = RbacConfig::new();
 
     config.add_role(guardian_addr(), Role::Guardian);
-    assert!(config.is_guardian(&guardian_addr()));
+    assert!(config.has_role(&guardian_addr(), Role::Guardian));
 
     config.remove_role(&guardian_addr(), Role::Guardian);
-    assert!(!config.is_guardian(&guardian_addr()));
+    assert!(!config.has_role(&guardian_addr(), Role::Guardian));
 }
 
 #[test]
@@ -62,9 +62,9 @@ fn test_sentinel_role() {
     let mut config = RbacConfig::with_admin(admin_addr());
     config.add_role(sentinel_addr(), Role::Sentinel);
 
-    assert!(config.is_sentinel(&sentinel_addr()));
-    assert!(!config.is_sentinel(&user_addr()));
-    assert!(!config.is_sentinel(&guardian_addr()));
+    assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
+    assert!(!config.has_role(&user_addr(), Role::Sentinel));
+    assert!(!config.has_role(&guardian_addr(), Role::Sentinel));
 
     assert_eq!(Role::Sentinel.as_str(), "sentinel");
 
@@ -78,10 +78,10 @@ fn test_sentinel_add_remove() {
     let mut config = RbacConfig::new();
 
     config.add_role(sentinel_addr(), Role::Sentinel);
-    assert!(config.is_sentinel(&sentinel_addr()));
+    assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
 
     config.remove_role(&sentinel_addr(), Role::Sentinel);
-    assert!(!config.is_sentinel(&sentinel_addr()));
+    assert!(!config.has_role(&sentinel_addr(), Role::Sentinel));
 }
 
 #[test]

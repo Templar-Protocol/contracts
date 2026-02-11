@@ -118,34 +118,6 @@ impl RbacConfig {
             .any(|a| &a.address == address && a.role == role)
     }
 
-    /// Check if an address is an admin.
-    #[inline]
-    #[must_use]
-    pub fn is_admin(&self, address: &Address) -> bool {
-        self.has_role(address, Role::Admin)
-    }
-
-    /// Check if an address is a guardian.
-    #[inline]
-    #[must_use]
-    pub fn is_guardian(&self, address: &Address) -> bool {
-        self.has_role(address, Role::Guardian)
-    }
-
-    /// Check if an address is a sentinel.
-    #[inline]
-    #[must_use]
-    pub fn is_sentinel(&self, address: &Address) -> bool {
-        self.has_role(address, Role::Sentinel)
-    }
-
-    /// Check if an address is an allocator.
-    #[inline]
-    #[must_use]
-    pub fn is_allocator(&self, address: &Address) -> bool {
-        self.has_role(address, Role::Allocator)
-    }
-
     /// Get all roles for an address.
     #[must_use]
     pub fn get_roles(&self, address: &Address) -> Vec<Role> {
@@ -206,7 +178,7 @@ impl RbacAuth {
     /// Check if the caller has the required role or is an admin.
     fn has_required_role(&self, caller: &Address, required: Role) -> bool {
         // Admin can do anything
-        if self.config.is_admin(caller) {
+        if self.config.has_role(caller, Role::Admin) {
             return true;
         }
 
@@ -235,7 +207,7 @@ impl AuthAdapter for RbacAuth {
                 return Err(AuthError::VaultPaused);
             }
             // Allow admin to unpause and perform privileged recovery actions
-            if !self.config.is_admin(&caller) {
+            if !self.config.has_role(&caller, Role::Admin) {
                 return Err(AuthError::VaultPaused);
             }
         }

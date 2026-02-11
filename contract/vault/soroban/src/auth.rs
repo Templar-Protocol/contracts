@@ -62,10 +62,9 @@ impl<'a> SorobanAuth<'a> {
     #[must_use]
     fn has_role(&self, role: Role, caller: &SdkAddress) -> bool {
         match role {
-            Role::Admin => self.is_admin(caller),
-            Role::Guardian => self.is_guardian(caller),
-            Role::Sentinel => self.is_admin(caller),
-            Role::Allocator => self.is_allocator(caller),
+            Role::Admin | Role::Sentinel => caller == &self.admin,
+            Role::Guardian => Self::is_admin_or(caller, &self.guardian, &self.admin),
+            Role::Allocator => Self::is_admin_or(caller, &self.allocator, &self.admin),
         }
     }
 
@@ -106,27 +105,6 @@ impl<'a> SorobanAuth<'a> {
         self.paused = paused;
     }
 
-    /// Check if an address is the admin.
-    #[inline]
-    #[must_use]
-    pub fn is_admin(&self, addr: &SdkAddress) -> bool {
-        addr == &self.admin
-    }
-
-    /// Check if an address is a guardian.
-    #[inline]
-    #[must_use]
-    pub fn is_guardian(&self, addr: &SdkAddress) -> bool {
-        Self::is_admin_or(addr, &self.guardian, &self.admin)
-    }
-
-    /// Check if an address is an allocator.
-    #[inline]
-    #[must_use]
-    pub fn is_allocator(&self, addr: &SdkAddress) -> bool {
-        Self::is_admin_or(addr, &self.allocator, &self.admin)
-    }
-
     /// Verify caller signature and authorize an action.
     ///
     /// This is the primary entry point for Soroban contracts. It:
@@ -145,7 +123,7 @@ impl<'a> SorobanAuth<'a> {
         // Check if paused (allow pause action even when paused)
         if self.paused && action != ActionKind::Pause {
             // Only allow admin to perform actions when paused
-            if !self.is_admin(caller) {
+            if !self.has_role(Role::Admin, caller) {
                 return Err(AuthError::VaultPaused);
             }
         }
@@ -212,19 +190,19 @@ mod tests {
     }
 
     #[test]
-    fn test_soroban_auth_is_admin() {
+    fn test_soroban_auth_admin_role() {
         let env = Env::default();
         let admin = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
         let auth = SorobanAuth::new(&env, admin.clone());
 
-        assert!(auth.is_admin(&admin));
-        assert!(!auth.is_admin(&user));
+        assert!(auth.has_role(Role::Admin, &admin));
+        assert!(!auth.has_role(Role::Admin, &user));
     }
 
     #[test]
-    fn test_soroban_auth_is_guardian() {
+    fn test_soroban_auth_guardian_role() {
         let env = Env::default();
         let admin = SdkAddress::generate(&env);
         let guardian = SdkAddress::generate(&env);
@@ -233,15 +211,15 @@ mod tests {
         let auth = SorobanAuth::with_roles(&env, admin.clone(), Some(guardian.clone()), None);
 
         // Admin is always a guardian
-        assert!(auth.is_guardian(&admin));
+        assert!(auth.has_role(Role::Guardian, &admin));
         // Designated guardian
-        assert!(auth.is_guardian(&guardian));
+        assert!(auth.has_role(Role::Guardian, &guardian));
         // Regular user is not
-        assert!(!auth.is_guardian(&user));
+        assert!(!auth.has_role(Role::Guardian, &user));
     }
 
     #[test]
-    fn test_soroban_auth_is_allocator() {
+    fn test_soroban_auth_allocator_role() {
         let env = Env::default();
         let admin = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
@@ -250,11 +228,11 @@ mod tests {
         let auth = SorobanAuth::with_roles(&env, admin.clone(), None, Some(allocator.clone()));
 
         // Admin is always an allocator
-        assert!(auth.is_allocator(&admin));
+        assert!(auth.has_role(Role::Allocator, &admin));
         // Designated allocator
-        assert!(auth.is_allocator(&allocator));
+        assert!(auth.has_role(Role::Allocator, &allocator));
         // Regular user is not
-        assert!(!auth.is_allocator(&user));
+        assert!(!auth.has_role(Role::Allocator, &user));
     }
 
     #[test]
