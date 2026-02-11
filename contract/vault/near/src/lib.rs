@@ -17,7 +17,7 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, serde_json,
     store::IterableMap,
-    AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
     ft::{
@@ -91,13 +91,7 @@ mod impl_vault_external;
 #[cfg(test)]
 mod test_utils;
 
-#[derive(Debug, Clone)]
-#[near(serializers = [borsh])]
-#[derive(BorshStorageKey)]
-/// Internal storage keys used by persistent collections.
-pub enum StorageKey {
-    PendingWithdrawals,
-}
+pub use templar_curator_primitives::near::VaultStorageKey as StorageKey;
 
 #[near(serializers = [borsh])]
 #[derive(Debug, Clone)]

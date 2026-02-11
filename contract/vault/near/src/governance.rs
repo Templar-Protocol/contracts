@@ -12,6 +12,10 @@ use std::collections::VecDeque;
 use templar_common::{panic_with_message, vault::Restrictions};
 use templar_curator_primitives::governance as shared_gov;
 use templar_curator_primitives::governance::PendingValue;
+use templar_curator_primitives::near::{
+    cap_change_error_message, fee_change_error_message, membership_change_error_message,
+    relative_cap_change_error_message, timelock_config_error_message,
+};
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -794,20 +798,13 @@ impl Contract {
                     }
                 };
 
-                let decision = match shared_gov::timelock_config_decision(
+                let decision = shared_gov::timelock_config_decision(
                     current,
                     new,
                     MIN_TIMELOCK_NS,
                     MAX_TIMELOCK_NS,
-                ) {
-                    Ok(decision) => decision,
-                    Err(shared_gov::TimelockConfigError::NoChange) => {
-                        panic_with_message("Already set to this value")
-                    }
-                    Err(shared_gov::TimelockConfigError::OutOfBounds) => {
-                        panic_with_message("Timelock out of bounds")
-                    }
-                };
+                )
+                .unwrap_or_else(|err| panic_with_message(timelock_config_error_message(err)));
                 decision.requires_timelock()
             }
             TimelockedAction::FeesChange { fees } => {
@@ -840,18 +837,8 @@ impl Contract {
                     proposed_max_rate,
                 );
 
-                let decision = match shared_gov::evaluate_fee_change(&current, &proposed) {
-                    Ok(decision) => decision,
-                    Err(shared_gov::FeeChangeError::PerformanceFeeTooHigh) => {
-                        panic_with_message("performance fee too high")
-                    }
-                    Err(shared_gov::FeeChangeError::ManagementFeeTooHigh) => {
-                        panic_with_message("management fee too high")
-                    }
-                    Err(shared_gov::FeeChangeError::NoChange) => {
-                        panic_with_message("No fee changes")
-                    }
-                };
+                let decision = shared_gov::evaluate_fee_change(&current, &proposed)
+                    .unwrap_or_else(|err| panic_with_message(fee_change_error_message(err)));
 
                 decision.timelocked
             }
@@ -918,13 +905,8 @@ impl Contract {
                             .is_none(),
                         "Cap change already pending for this market"
                     );
-                    let decision = match shared_gov::cap_change_decision(Some(cfg.cap.0), new_cap.0)
-                    {
-                        Ok(decision) => decision,
-                        Err(shared_gov::CapChangeError::NoChange) => {
-                            panic_with_message("New cap is same as current")
-                        }
-                    };
+                    let decision = shared_gov::cap_change_decision(Some(cfg.cap.0), new_cap.0)
+                        .unwrap_or_else(|err| panic_with_message(cap_change_error_message(err)));
                     decision.requires_timelock()
                 } else {
                     true
@@ -947,12 +929,8 @@ impl Contract {
                 );
 
                 let current = self.cap_groups.get(cap_group).map(|record| record.cap.0);
-                let decision = match shared_gov::cap_change_decision(current, new_cap.0) {
-                    Ok(decision) => decision,
-                    Err(shared_gov::CapChangeError::NoChange) => {
-                        panic_with_message("New cap is same as current")
-                    }
-                };
+                let decision = shared_gov::cap_change_decision(current, new_cap.0)
+                    .unwrap_or_else(|err| panic_with_message(cap_change_error_message(err)));
                 decision.requires_timelock()
             }
             TimelockedAction::CapGroupRelativeCapChange {
@@ -980,15 +958,10 @@ impl Contract {
                     .cap_groups
                     .get(cap_group)
                     .map(|record| record.relative_cap);
-                let decision = match shared_gov::relative_cap_change_decision(current, new_wad) {
-                    Ok(decision) => decision,
-                    Err(shared_gov::RelativeCapChangeError::RelativeCapTooHigh) => {
-                        panic_with_message("relative cap too high")
-                    }
-                    Err(shared_gov::RelativeCapChangeError::NoChange) => {
-                        panic_with_message("New relative cap is same as current")
-                    }
-                };
+                let decision = shared_gov::relative_cap_change_decision(current, new_wad)
+                    .unwrap_or_else(|err| {
+                        panic_with_message(relative_cap_change_error_message(err))
+                    });
                 decision.requires_timelock()
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
@@ -999,12 +972,8 @@ impl Contract {
                 let rec = self.market_record_by_id_or_panic(*market);
 
                 let changed = rec.cfg.cap_group_id != *cap_group;
-                let decision = match shared_gov::membership_change_decision(changed) {
-                    Ok(decision) => decision,
-                    Err(shared_gov::MembershipChangeError::NoChange) => {
-                        panic_with_message("Market already assigned to this cap group")
-                    }
-                };
+                let decision = shared_gov::membership_change_decision(changed)
+                    .unwrap_or_else(|err| panic_with_message(membership_change_error_message(err)));
 
                 require!(
                     self.governance_timelocks

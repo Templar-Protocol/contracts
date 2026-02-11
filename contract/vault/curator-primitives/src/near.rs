@@ -4,6 +4,10 @@ use crate::governance::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "near",
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
 #[cfg_attr(feature = "near", derive(near_sdk::BorshStorageKey))]
 pub enum VaultStorageKey {
     PendingWithdrawals,
