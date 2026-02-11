@@ -1,5 +1,5 @@
 use rstest::{fixture, rstest};
-use templar_soroban_runtime::{effects::MockInterpreter, EffectContext, EffectInterpreter};
+use templar_soroban_runtime::{EffectContext, EffectInterpreter};
 use templar_vault_kernel::{
     effects::KernelEffect,
     state::op_state::{OpState, RefreshingState},
@@ -9,6 +9,9 @@ use templar_vault_kernel::{
         withdrawal_collected, withdrawal_step_callback, WithdrawalRequest,
     },
 };
+
+mod common;
+use common::MockInterpreter;
 
 #[fixture]
 fn dummy_ctx() -> EffectContext {

@@ -13,7 +13,6 @@ use templar_curator_primitives::{RecoveryContext, RecoveryProgress};
 use templar_soroban_runtime::{
     auth::PermissiveAuth,
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
-    effects::MockInterpreter,
     error::RuntimeError,
     market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
     rbac::{RbacAuth, RbacConfig, Role},
@@ -25,6 +24,9 @@ use templar_vault_kernel::{
     apply_action, Address, AllocatingState, FeesSpec, KernelAction, OpState, PayoutOutcome,
     PayoutState, VaultConfig, VaultState, WithdrawingState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
+
+mod common;
+use common::MockInterpreter;
 
 // Test Helpers
 

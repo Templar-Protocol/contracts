@@ -30,7 +30,6 @@ use proptest::prelude::*;
 use templar_soroban_runtime::{
     auth::PermissiveAuth,
     contract::{ContractConfig, CuratorVault},
-    effects::MockInterpreter,
     error::RuntimeError,
     market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
     storage::MemoryStorage,
@@ -43,6 +42,9 @@ use templar_vault_kernel::{
     },
     Address,
 };
+
+mod common;
+use common::MockInterpreter;
 
 // Test Infrastructure
 
