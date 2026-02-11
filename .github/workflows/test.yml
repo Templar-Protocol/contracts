@@ -44,6 +44,34 @@ jobs:
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
 
+  curator-primitives-feature-matrix:
+    name: Curator Primitives Feature Matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            check_args: -p templar-curator-primitives
+          - name: std
+            check_args: -p templar-curator-primitives --no-default-features --features std
+          - name: serde-borsh
+            check_args: -p templar-curator-primitives --no-default-features --features borsh,serde,schemars,std
+          - name: near
+            check_args: -p templar-curator-primitives --no-default-features --features near,std --target wasm32-unknown-unknown
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust
+
+      - name: cargo check (${{ matrix.name }})
+        run: cargo check ${{ matrix.check_args }}
+
+      - name: cargo test (near)
+        if: matrix.name == 'near'
+        run: cargo test -p templar-curator-primitives --no-default-features --features near-test,std
+
   tests:
     name: Tests
     timeout-minutes: 40
