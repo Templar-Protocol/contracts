@@ -64,11 +64,6 @@ impl MarketLock {
     }
 
     #[must_use]
-    pub fn is_active(&self, current_ns: u64) -> bool {
-        !self.is_expired(current_ns)
-    }
-
-    #[must_use]
     pub fn remaining(&self, current_ns: u64) -> Option<u64> {
         self.expires_at_ns
             .map(|expiry| expiry.saturating_sub(current_ns))
@@ -96,7 +91,7 @@ impl MarketLockSet {
 
     /// Iterator over active (non-expired) locks.
     fn active_iter(&self, current_ns: u64) -> impl Iterator<Item = &MarketLock> + '_ {
-        self.locks.iter().filter(move |l| l.is_active(current_ns))
+        self.locks.iter().filter(move |l| !l.is_expired(current_ns))
     }
 
     #[must_use]
@@ -151,7 +146,7 @@ impl MarketLockSet {
         // Remove any expired locks for this target
         new_set
             .locks
-            .retain(|l| l.target_id != lock.target_id || l.is_active(current_ns));
+            .retain(|l| l.target_id != lock.target_id || !l.is_expired(current_ns));
         new_set.locks.push(lock);
         Ok(new_set)
     }
@@ -191,7 +186,7 @@ impl MarketLockSet {
     #[must_use]
     pub fn cleanup_expired(&self, current_ns: u64) -> Self {
         let mut new_set = self.clone();
-        new_set.locks.retain(|l| l.is_active(current_ns));
+        new_set.locks.retain(|l| !l.is_expired(current_ns));
         new_set
     }
 

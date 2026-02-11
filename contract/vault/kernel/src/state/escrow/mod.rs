@@ -93,20 +93,6 @@ pub fn apply_settlement(
     })
 }
 
-/// Compute a full settlement that burns all escrowed shares.
-#[inline]
-#[must_use]
-pub fn settle_full_burn(entry: &EscrowEntry) -> EscrowSettlement {
-    EscrowSettlement::burn_all(entry.shares)
-}
-
-/// Compute a full settlement that refunds all escrowed shares.
-#[inline]
-#[must_use]
-pub fn settle_full_refund(entry: &EscrowEntry) -> EscrowSettlement {
-    EscrowSettlement::refund_all(entry.shares)
-}
-
 /// Compute a proportional settlement based on actual vs expected assets.
 #[must_use]
 pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSettlement {

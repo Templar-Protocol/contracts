@@ -284,12 +284,11 @@ mod kani_proofs {
         compute_partial_withdrawal, compute_queue_status, compute_settlement,
         compute_settlement_by_price, count_satisfiable, find_request_status, is_past_cooldown,
         is_stale, is_valid_withdrawal_amount, mul_div_ceil, mul_div_floor, mul_wad_floor,
-        payout_complete, settle_full_burn, settle_full_refund, settle_proportional,
-        start_allocation, start_refresh, start_withdrawal, stop_withdrawal, total_burn,
-        total_refund, withdrawal_collected, withdrawal_step_callback, EscrowEntry,
-        EscrowSettlement, Number, OpState, PayoutState, PendingWithdrawal, TransitionError,
-        VaultState, Wad, WithdrawQueue, WithdrawalRequest, WithdrawingState, MAX_PENDING,
-        MAX_PERFORMANCE_FEE_WAD, MAX_QUEUE_LENGTH, MIN_WITHDRAWAL_ASSETS,
+        payout_complete, settle_proportional, start_allocation, start_refresh, start_withdrawal,
+        stop_withdrawal, total_burn, total_refund, withdrawal_collected, withdrawal_step_callback,
+        EscrowEntry, EscrowSettlement, Number, OpState, PayoutState, PendingWithdrawal,
+        TransitionError, VaultState, Wad, WithdrawQueue, WithdrawalRequest, WithdrawingState,
+        MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MAX_QUEUE_LENGTH, MIN_WITHDRAWAL_ASSETS,
     };
 
     fn pending_withdrawal(index: u64, shares: u128, expected: u128, ts: u64) -> PendingWithdrawal {
@@ -1735,7 +1734,7 @@ mod kani_proofs {
         let expected_assets: u128 = kani::any();
 
         let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected_assets);
-        let settlement = settle_full_burn(&entry);
+        let settlement = EscrowSettlement::burn_all(entry.shares);
         assert_eq!(settlement.to_burn, shares);
         assert_eq!(settlement.refund, 0);
     }
@@ -1746,7 +1745,7 @@ mod kani_proofs {
         let expected_assets: u128 = kani::any();
 
         let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected_assets);
-        let settlement = settle_full_refund(&entry);
+        let settlement = EscrowSettlement::refund_all(entry.shares);
         assert_eq!(settlement.to_burn, 0);
         assert_eq!(settlement.refund, shares);
     }

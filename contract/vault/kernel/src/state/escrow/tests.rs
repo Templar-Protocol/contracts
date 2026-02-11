@@ -59,7 +59,7 @@ fn test_apply_settlement_exceeds_escrow() {
 #[test]
 fn test_settle_full_burn() {
     let entry = make_entry(1, 100, 1000);
-    let settlement = settle_full_burn(&entry);
+    let settlement = EscrowSettlement::burn_all(entry.shares);
 
     assert_eq!(settlement.to_burn, 100);
     assert_eq!(settlement.refund, 0);
@@ -68,7 +68,7 @@ fn test_settle_full_burn() {
 #[test]
 fn test_settle_full_refund() {
     let entry = make_entry(1, 100, 1000);
-    let settlement = settle_full_refund(&entry);
+    let settlement = EscrowSettlement::refund_all(entry.shares);
 
     assert_eq!(settlement.to_burn, 0);
     assert_eq!(settlement.refund, 100);
@@ -277,7 +277,7 @@ proptest! {
             0,
             expected_assets,
         );
-        let settlement = settle_full_burn(&entry);
+        let settlement = EscrowSettlement::burn_all(entry.shares);
 
         prop_assert_eq!(settlement.to_burn, shares);
         prop_assert_eq!(settlement.refund, 0);
@@ -294,7 +294,7 @@ proptest! {
             0,
             expected_assets,
         );
-        let settlement = settle_full_refund(&entry);
+        let settlement = EscrowSettlement::refund_all(entry.shares);
 
         prop_assert_eq!(settlement.to_burn, 0);
         prop_assert_eq!(settlement.refund, shares);

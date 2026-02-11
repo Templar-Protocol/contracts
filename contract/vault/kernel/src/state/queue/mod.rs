@@ -63,12 +63,6 @@ impl PendingWithdrawal {
             requested_at_ns,
         }
     }
-
-    #[inline]
-    #[must_use]
-    pub fn is_past_cooldown(&self, now_ns: TimestampNs, cooldown_ns: u64) -> bool {
-        now_ns >= self.requested_at_ns.saturating_add(cooldown_ns)
-    }
 }
 
 /// Result of attempting to satisfy a withdrawal from available assets.

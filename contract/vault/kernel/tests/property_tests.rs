@@ -37,8 +37,8 @@ use templar_vault_kernel::{
     },
     state::{
         escrow::{
-            apply_settlement, can_apply_settlement, compute_escrow_stats, settle_full_burn,
-            settle_full_refund, settle_proportional, EscrowEntry,
+            apply_settlement, can_apply_settlement, compute_escrow_stats, settle_proportional,
+            EscrowEntry,
         },
         op_state::{AllocatingState, OpState, PayoutState, RefreshingState, WithdrawingState},
         queue::{
@@ -1257,7 +1257,7 @@ proptest! {
         expected in 0u128..=u64::MAX as u128,
     ) {
         let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected);
-        let settlement = settle_full_burn(&entry);
+        let settlement = EscrowSettlement::burn_all(entry.shares);
         prop_assert_eq!(settlement.to_burn, shares);
         prop_assert_eq!(settlement.refund, 0);
     }
@@ -1269,7 +1269,7 @@ proptest! {
         expected in 0u128..=u64::MAX as u128,
     ) {
         let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected);
-        let settlement = settle_full_refund(&entry);
+        let settlement = EscrowSettlement::refund_all(entry.shares);
         prop_assert_eq!(settlement.to_burn, 0);
         prop_assert_eq!(settlement.refund, shares);
     }

@@ -35,8 +35,8 @@ pub use math::wad::{
 pub use restrictions::{RestrictionKind, Restrictions};
 pub use state::escrow::{
     apply_settlement, can_apply_settlement, compute_escrow_stats, find_by_owner, is_stale,
-    settle_full_burn, settle_full_refund, settle_proportional, total_burn, total_refund,
-    EscrowEntry, EscrowSettlement, EscrowStats, SettlementResult,
+    settle_proportional, total_burn, total_refund, EscrowEntry, EscrowSettlement, EscrowStats,
+    SettlementResult,
 };
 pub use state::op_state::{
     AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,

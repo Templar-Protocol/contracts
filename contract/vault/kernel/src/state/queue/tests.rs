@@ -266,12 +266,28 @@ fn test_pending_withdrawal_is_past_cooldown() {
     let cooldown = 60_000_000_000u64; // 60 seconds
 
     // Not past cooldown
-    assert!(!w.is_past_cooldown(1_000_000_000_000, cooldown));
-    assert!(!w.is_past_cooldown(1_059_999_999_999, cooldown));
+    assert!(!is_past_cooldown(
+        w.requested_at_ns,
+        1_000_000_000_000,
+        cooldown
+    ));
+    assert!(!is_past_cooldown(
+        w.requested_at_ns,
+        1_059_999_999_999,
+        cooldown
+    ));
 
     // Past cooldown
-    assert!(w.is_past_cooldown(1_060_000_000_000, cooldown));
-    assert!(w.is_past_cooldown(2_000_000_000_000, cooldown));
+    assert!(is_past_cooldown(
+        w.requested_at_ns,
+        1_060_000_000_000,
+        cooldown
+    ));
+    assert!(is_past_cooldown(
+        w.requested_at_ns,
+        2_000_000_000_000,
+        cooldown
+    ));
 }
 
 #[test]
