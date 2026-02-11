@@ -652,8 +652,18 @@ impl Contract {
         self.ensure_idle();
         require!(markets.len() <= MAX_QUEUE_LEN, "too long");
 
-        if let Some(duplicate) = crate::policy::find_duplicate_market_id(&markets) {
-            panic_with_message(&format!("Duplicate market in supply queue: {duplicate}"));
+        {
+            use crate::convert::IntoTargetId;
+            let ids: Vec<u32> = markets.iter().map(IntoTargetId::into_target_id).collect();
+            if let Some(dup) =
+                templar_curator_primitives::policy::target_set::find_duplicate_target_id(&ids)
+            {
+                use crate::convert::IntoMarketId;
+                panic_with_message(&format!(
+                    "Duplicate market in supply queue: {}",
+                    dup.into_market_id()
+                ));
+            }
         }
 
         // Validate all markets are authorized (cap > 0) before charging storage

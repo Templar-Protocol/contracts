@@ -1,28 +1,19 @@
 use super::*;
 
 #[test]
-fn test_action_kind_user_facing() {
-    assert!(ActionKind::Deposit.is_user_facing());
-    assert!(ActionKind::RequestWithdraw.is_user_facing());
-    assert!(ActionKind::ExecuteWithdraw.is_user_facing());
+fn test_action_kind_is_privileged_by_profile() {
+    assert!(!ActionKind::Deposit.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(!ActionKind::RequestWithdraw.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(!ActionKind::ExecuteWithdraw.is_privileged(AuthPolicyProfile::Canonical));
 
-    assert!(!ActionKind::Pause.is_user_facing());
-    assert!(!ActionKind::SetRestrictions.is_user_facing());
-    assert!(!ActionKind::BeginAllocating.is_user_facing());
-    assert!(!ActionKind::FinishAllocating.is_user_facing());
-    assert!(!ActionKind::ManualReconcile.is_user_facing());
-}
+    assert!(ActionKind::Pause.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(ActionKind::SetRestrictions.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(ActionKind::FinishAllocating.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(ActionKind::BeginAllocating.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(ActionKind::AbortAllocating.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(ActionKind::ManualReconcile.is_privileged(AuthPolicyProfile::Canonical));
 
-#[test]
-fn test_action_kind_privileged() {
-    assert!(!ActionKind::Deposit.is_privileged());
-    assert!(!ActionKind::RequestWithdraw.is_privileged());
-
-    assert!(ActionKind::Pause.is_privileged());
-    assert!(ActionKind::SetRestrictions.is_privileged());
-    assert!(ActionKind::BeginAllocating.is_privileged());
-    assert!(ActionKind::AbortAllocating.is_privileged());
-    assert!(ActionKind::ManualReconcile.is_privileged());
+    assert!(ActionKind::ExecuteWithdraw.is_privileged(AuthPolicyProfile::Near));
 }
 
 #[test]

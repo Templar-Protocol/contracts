@@ -707,10 +707,7 @@ where
     }
 
     /// Emit a kernel event to the Soroban ledger using `#[contractevent]` structs.
-    fn emit_event(
-        &self,
-        event: &templar_vault_kernel::effects::KernelEvent,
-    ) -> EffectResult<()> {
+    fn emit_event(&self, event: &templar_vault_kernel::effects::KernelEvent) -> EffectResult<()> {
         use templar_vault_kernel::effects::KernelEvent;
 
         match event {
@@ -804,7 +801,11 @@ where
                 }
                 .publish(self.env);
             }
-            KernelEvent::AllocationStarted { op_id, total, plan_len } => {
+            KernelEvent::AllocationStarted {
+                op_id,
+                total,
+                plan_len,
+            } => {
                 AllocStartEvent {
                     op_id: *op_id,
                     total: to_i128_event(*total)?,
@@ -964,12 +965,7 @@ mod tests {
     }
 
     fn test_context() -> EffectContext {
-        EffectContext::new(
-            1_000_000_000_000,
-            [1u8; 32],
-            [2u8; 32],
-            [3u8; 32],
-        )
+        EffectContext::new(1_000_000_000_000, [1u8; 32], [2u8; 32], [3u8; 32])
     }
 
     #[test]

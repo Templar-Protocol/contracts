@@ -14,10 +14,8 @@
 //!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 
 use soroban_sdk::{token, Address as SdkAddress, Env};
-use templar_vault_kernel::{
-    FeesSpec, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
-};
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
+use templar_vault_kernel::{FeesSpec, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS};
 
 use crate::contract::{get_config_address, VaultDataKey};
 use crate::error::ContractError;
@@ -92,7 +90,9 @@ pub(crate) fn atomic_withdraw_internal(
     state.idle_assets = state.idle_assets.saturating_sub(assets);
 
     // Persist updated state
-    storage.save_state(&versioned).map_err(ContractError::from)?;
+    storage
+        .save_state(&versioned)
+        .map_err(ContractError::from)?;
 
     // Burn shares from owner via share token contract
     let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)?;

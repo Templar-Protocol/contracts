@@ -733,10 +733,8 @@ mod tests {
     fn resync_result_new() {
         let record = ReconciliationRecord::new(1, 2, 3000);
         let events = vec![ReconciliationEvent::started(
-            1,
-            [0u8; 32], // kernel address default
-            0,
-            2,
+            1, [0u8; 32], // kernel address default
+            0, 2,
         )];
 
         let result = ResyncResult::new(record.clone(), events.clone(), 500);

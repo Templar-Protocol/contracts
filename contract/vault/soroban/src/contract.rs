@@ -41,9 +41,9 @@ use crate::effects::{
 use crate::error::{ContractError, RuntimeError};
 use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
 use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
-use crate::rbac::{RbacAuth, RbacConfig};
 use crate::reconciliation::{reconcile_external_assets, ReconciliationRecord};
 use crate::storage::{SorobanStorage, SorobanVaultState, Storage, VersionedState};
+use templar_curator_primitives::rbac::{RbacAuth, RbacConfig};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
 const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";

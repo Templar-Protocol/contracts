@@ -133,21 +133,18 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// Returns true if this action is user-facing (can be called by any user).
+    /// Returns this action's auth policy class under the provided profile.
     #[inline]
     #[must_use]
-    pub const fn is_user_facing(&self) -> bool {
-        matches!(
-            self,
-            ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw
-        )
+    pub const fn policy_class(&self, profile: AuthPolicyProfile) -> AuthPolicyClass {
+        action_policy_class(*self, profile)
     }
 
-    /// Returns true if this action requires privileged access.
+    /// Returns true if this action requires privileged access under the provided profile.
     #[inline]
     #[must_use]
-    pub const fn is_privileged(&self) -> bool {
-        !self.is_user_facing()
+    pub const fn is_privileged(&self, profile: AuthPolicyProfile) -> bool {
+        !matches!(self.policy_class(profile), AuthPolicyClass::Public)
     }
 }
 
@@ -264,7 +261,7 @@ impl AuthAdapter for StrictAuth {
             return Err(AuthError::VaultPaused);
         }
 
-        if action.is_privileged() {
+        if action.is_privileged(AuthPolicyProfile::Canonical) {
             return Err(AuthError::NotAuthorized { caller, action });
         }
 

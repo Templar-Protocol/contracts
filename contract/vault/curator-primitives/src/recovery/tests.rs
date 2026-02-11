@@ -1,7 +1,7 @@
 use super::*;
-use crate::test_utils::{owner_addr, receiver_addr};
 use alloc::string::String;
 use alloc::vec;
+use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 
 #[test]
 fn test_determine_recovery_action_idle() {

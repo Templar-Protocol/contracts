@@ -19,25 +19,16 @@ fn i128_to_u128_with(
 }
 
 #[inline]
-pub(crate) fn u128_to_i128_storage(
-    value: u128,
-    msg: &'static str,
-) -> Result<i128, RuntimeError> {
+pub(crate) fn u128_to_i128_storage(value: u128, msg: &'static str) -> Result<i128, RuntimeError> {
     u128_to_i128_with(value, msg, RuntimeError::storage_error)
 }
 
 #[inline]
-pub(crate) fn i128_to_u128_storage(
-    value: i128,
-    msg: &'static str,
-) -> Result<u128, RuntimeError> {
+pub(crate) fn i128_to_u128_storage(value: i128, msg: &'static str) -> Result<u128, RuntimeError> {
     i128_to_u128_with(value, msg, RuntimeError::storage_error)
 }
 
 #[inline]
-pub(crate) fn u128_to_i128_effect(
-    value: u128,
-    msg: &'static str,
-) -> Result<i128, RuntimeError> {
+pub(crate) fn u128_to_i128_effect(value: u128, msg: &'static str) -> Result<i128, RuntimeError> {
     u128_to_i128_with(value, msg, RuntimeError::effect_failed)
 }

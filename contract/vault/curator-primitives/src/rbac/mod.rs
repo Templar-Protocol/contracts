@@ -231,7 +231,7 @@ impl AuthAdapter for RbacAuth {
         // Check if paused (allow pause action even when paused)
         if self.config.paused && action != ActionKind::Pause {
             // Only allow user to read/check state when paused, but not deposit/withdraw
-            if action.is_user_facing() {
+            if !action.is_privileged(AuthPolicyProfile::Canonical) {
                 return Err(AuthError::VaultPaused);
             }
             // Allow admin to unpause and perform privileged recovery actions

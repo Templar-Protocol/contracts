@@ -29,14 +29,13 @@ extern crate alloc;
 extern crate std;
 
 pub mod auth;
-pub(crate) mod convert;
 pub mod contract;
+pub(crate) mod convert;
 pub mod effects;
 pub mod error;
 pub mod fungible_vault;
 pub mod market;
 pub mod policy;
-pub mod rbac;
 pub mod reconciliation;
 pub mod share_token;
 pub mod storage;
@@ -60,7 +59,6 @@ pub use market::{
     AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt,
     SorobanCrossChainMarketAdapter, SorobanMarketAdapter, TestCrossChainAdapter, TestMarketAdapter,
 };
-pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 pub use reconciliation::{
     build_refresh_plan, reconcile_external_assets, resync_external_assets, ReconciliationEvent,
     ReconciliationRecord, ResyncRequest, ResyncResult,
@@ -69,6 +67,7 @@ pub use storage::{
     MemoryStorage, SorobanStorage, SorobanStorageKey, SorobanVaultState, Storage, StorageVersion,
     VersionedState,
 };
+pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
 // Re-export soroban-sdk types for convenience
 pub use soroban_sdk::{Address, Bytes, Env};

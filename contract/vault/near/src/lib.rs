@@ -656,12 +656,15 @@ impl Contract {
         plan.dedup();
 
         let now = env::block_timestamp();
-        let refresh_plan = crate::policy::build_refresh_plan_from_market_ids(
-            &plan,
-            idle.refresh_cooldown_ns,
-            idle.last_refresh_ns,
-        )
-        .unwrap_or_else(|err| panic_with_message(&format!("Invalid refresh plan: {err:?}")));
+        let refresh_plan = {
+            let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();
+            templar_curator_primitives::policy::target_set::build_refresh_plan_from_targets(
+                &targets,
+                idle.refresh_cooldown_ns,
+                idle.last_refresh_ns,
+            )
+            .unwrap_or_else(|err| panic_with_message(&format!("Invalid refresh plan: {err:?}")))
+        };
         refresh_plan
             .check_cooldown(now)
             .unwrap_or_else(|err| panic_with_message(&format!("Refresh throttled: {err:?}")));
@@ -1407,8 +1410,12 @@ impl Contract {
             return 0;
         };
 
-        // Use curator-primitives for cap group calculations
-        crate::policy::compute_available_capacity_for_common(rec, total_assets)
+        templar_curator_primitives::available_capacity_from_fields(
+            rec.cap.0,
+            rec.relative_cap,
+            rec.principal,
+            total_assets,
+        )
     }
 
     fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
@@ -2083,8 +2090,17 @@ impl Contract {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
 
-        if let Some(duplicate) = crate::policy::find_duplicate_market_id(&route) {
-            panic_with_message(&format!("Duplicate market in withdraw route: {duplicate}"));
+        {
+            let ids: Vec<u32> = route.iter().map(IntoTargetId::into_target_id).collect();
+            if let Some(dup) =
+                templar_curator_primitives::policy::target_set::find_duplicate_target_id(&ids)
+            {
+                use crate::convert::IntoMarketId;
+                panic_with_message(&format!(
+                    "Duplicate market in withdraw route: {}",
+                    dup.into_market_id()
+                ));
+            }
         }
 
         self.ensure_idle();

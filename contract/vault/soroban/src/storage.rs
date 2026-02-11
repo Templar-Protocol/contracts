@@ -88,18 +88,9 @@ impl SorobanVaultState {
         let op_state_id = state.op_state.op_id().unwrap_or(0);
 
         Ok(Self {
-            total_assets: u128_to_i128_storage(
-                state.total_assets,
-                "total_assets exceeds i128",
-            )?,
-            total_shares: u128_to_i128_storage(
-                state.total_shares,
-                "total_shares exceeds i128",
-            )?,
-            idle_assets: u128_to_i128_storage(
-                state.idle_assets,
-                "idle_assets exceeds i128",
-            )?,
+            total_assets: u128_to_i128_storage(state.total_assets, "total_assets exceeds i128")?,
+            total_shares: u128_to_i128_storage(state.total_shares, "total_shares exceeds i128")?,
+            idle_assets: u128_to_i128_storage(state.idle_assets, "idle_assets exceeds i128")?,
             external_assets: u128_to_i128_storage(
                 state.external_assets,
                 "external_assets exceeds i128",
@@ -121,35 +112,21 @@ impl SorobanVaultState {
     /// Note: This creates a base VaultState without op_state/queue details.
     /// Full op_state and withdraw queue must be loaded separately.
     pub fn to_kernel(&self) -> Result<VaultState, RuntimeError> {
-        use templar_vault_kernel::{
-            FeeAccrualAnchor, OpState, WithdrawQueue,
-        };
+        use templar_vault_kernel::{FeeAccrualAnchor, OpState, WithdrawQueue};
 
         let op_state = OpState::Idle;
         let withdraw_queue = WithdrawQueue::new();
 
         Ok(VaultState {
-            total_assets: i128_to_u128_storage(
-                self.total_assets,
-                "total_assets is negative",
-            )?,
-            total_shares: i128_to_u128_storage(
-                self.total_shares,
-                "total_shares is negative",
-            )?,
-            idle_assets: i128_to_u128_storage(
-                self.idle_assets,
-                "idle_assets is negative",
-            )?,
+            total_assets: i128_to_u128_storage(self.total_assets, "total_assets is negative")?,
+            total_shares: i128_to_u128_storage(self.total_shares, "total_shares is negative")?,
+            idle_assets: i128_to_u128_storage(self.idle_assets, "idle_assets is negative")?,
             external_assets: i128_to_u128_storage(
                 self.external_assets,
                 "external_assets is negative",
             )?,
             fee_anchor: FeeAccrualAnchor::new(
-                i128_to_u128_storage(
-                    self.fee_anchor_assets,
-                    "fee_anchor_assets is negative",
-                )?,
+                i128_to_u128_storage(self.fee_anchor_assets, "fee_anchor_assets is negative")?,
                 self.fee_anchor_ns,
             ),
             op_state,
@@ -157,7 +134,6 @@ impl SorobanVaultState {
             next_op_id: self.next_op_id,
         })
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +307,10 @@ impl<'a> SorobanStorage<'a> {
     ///
     /// Call this periodically to prevent state from expiring.
     pub fn extend_ttl(&self, threshold: u32, extend_to: u32) {
-        self.env.storage().instance().extend_ttl(threshold, extend_to);
+        self.env
+            .storage()
+            .instance()
+            .extend_ttl(threshold, extend_to);
         self.env.storage().persistent().extend_ttl(
             &SorobanStorageKey::VaultState,
             threshold,
@@ -442,8 +421,7 @@ impl Storage for SorobanStorage<'_> {
     fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
         let soroban_state = SorobanVaultState::from_kernel(&state.state)?;
         self.save_vault_state(&soroban_state);
-        let op_state =
-            borsh_serialize(&state.state.op_state, "op_state serialize failed")?;
+        let op_state = borsh_serialize(&state.state.op_state, "op_state serialize failed")?;
         let withdraw_queue = borsh_serialize(
             &state.state.withdraw_queue,
             "withdraw queue serialize failed",
@@ -659,8 +637,10 @@ pub trait Storage {
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError>;
 
     /// Persist kernel restrictions for the vault.
-    fn save_restrictions(&mut self, restrictions: &Option<Restrictions>)
-        -> Result<(), RuntimeError>;
+    fn save_restrictions(
+        &mut self,
+        restrictions: &Option<Restrictions>,
+    ) -> Result<(), RuntimeError>;
 }
 
 /// In-memory storage implementation for testing.
@@ -1125,10 +1105,7 @@ mod tests {
             });
 
             let mut pending = BTreeMap::new();
-            pending.insert(
-                3,
-                PendingWithdrawal::new(owner, receiver, 700, 800, 123),
-            );
+            pending.insert(3, PendingWithdrawal::new(owner, receiver, 700, 800, 123));
             state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
             state.total_assets = 1000;
             state.total_shares = 900;

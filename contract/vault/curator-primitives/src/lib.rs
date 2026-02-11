@@ -22,8 +22,6 @@ pub mod rbac;
 pub mod recovery;
 
 #[cfg(test)]
-mod test_utils;
-#[cfg(test)]
 mod tests;
 
 // Re-exports for convenience

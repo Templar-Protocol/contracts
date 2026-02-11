@@ -16,7 +16,7 @@ use crate::recovery::{
     compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
     RecoveryProgress,
 };
-use crate::test_utils::{owner_addr, receiver_addr};
+use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 use templar_vault_kernel::Wad;
 use templar_vault_kernel::{
     AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
