@@ -59,7 +59,7 @@ fn transactions_to_promise(transactions: &[Transaction]) -> Promise {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(key: KeyId, chain_id: U128, execute: Option<Vec<Transaction>>) -> Self {
+    pub fn new(key: KeyId, chain_id: U128, execute: Option<Box<[Transaction]>>) -> Self {
         let mut self_ = Self(StateV1 {
             next_key_index: 0,
             keys: IterableMap::new(StorageKey::Keys),
