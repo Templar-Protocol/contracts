@@ -61,6 +61,60 @@ pub fn queue_schedule<T>(
     queue.push_back(PendingValue::new(value, valid_at_ns));
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingQueueError {
+    NotMature,
+}
+
+#[must_use]
+pub fn queue_has_pending<T>(queue: &VecDeque<PendingValue<T>>, pred: impl Fn(&T) -> bool) -> bool {
+    queue.iter().any(|entry| pred(&entry.value))
+}
+
+pub fn queue_take_mature<T>(
+    queue: &mut VecDeque<PendingValue<T>>,
+    now_ns: TimestampNs,
+    pred: impl Fn(&T) -> bool,
+) -> Result<Option<T>, PendingQueueError> {
+    let Some((index, entry)) = queue
+        .iter()
+        .enumerate()
+        .find(|(_, entry)| pred(&entry.value))
+    else {
+        return Ok(None);
+    };
+
+    if !entry.is_mature(now_ns) {
+        return Err(PendingQueueError::NotMature);
+    }
+
+    let value = queue
+        .remove(index)
+        .unwrap_or_else(|| unreachable!("pending queue index must be valid"))
+        .value;
+    Ok(Some(value))
+}
+
+#[must_use]
+pub fn queue_revoke_pending<T>(
+    queue: &mut VecDeque<PendingValue<T>>,
+    pred: impl Fn(&T) -> bool,
+) -> bool {
+    let mut removed_any = false;
+    queue.retain(|entry| {
+        let keep = !pred(&entry.value);
+        if !keep {
+            removed_any = true;
+        }
+        keep
+    });
+    removed_any
+}
+
+pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) -> Result<bool, E> {
+    decision.map(TimelockDecision::requires_timelock)
+}
+
 /// Decision on whether an action should be timelocked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
@@ -89,18 +143,6 @@ impl TimelockDecision {
 
 /// Generic restrictions enum for shared governance checks.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
-)]
-#[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
 pub enum Restrictions<T> {
     Paused,
     Blacklist(BTreeSet<T>),
@@ -403,5 +445,53 @@ pub fn sentinel_change_decision(has_sentinel: bool) -> TimelockDecision {
         TimelockDecision::Timelocked
     } else {
         TimelockDecision::Immediate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_helpers_handle_pending_lifecycle() {
+        let mut queue = VecDeque::new();
+        queue_schedule(&mut queue, 7u32, 1_000, 500);
+
+        assert!(queue_has_pending(&queue, |v| *v == 7));
+        assert_eq!(
+            queue_take_mature(&mut queue, 1_499, |v| *v == 7),
+            Err(PendingQueueError::NotMature)
+        );
+        assert_eq!(
+            queue_take_mature(&mut queue, 1_500, |v| *v == 7),
+            Ok(Some(7))
+        );
+        assert!(!queue_has_pending(&queue, |v| *v == 7));
+    }
+
+    #[test]
+    fn queue_revoke_pending_removes_matching_entries() {
+        let mut queue = VecDeque::new();
+        queue_schedule(&mut queue, 1u32, 0, 10);
+        queue_schedule(&mut queue, 2u32, 0, 10);
+        queue_schedule(&mut queue, 3u32, 0, 10);
+
+        assert!(queue_revoke_pending(&mut queue, |v| *v % 2 == 0));
+        assert_eq!(queue.len(), 2);
+        assert!(!queue_has_pending(&queue, |v| *v == 2));
+        assert!(!queue_revoke_pending(&mut queue, |v| *v == 9));
+    }
+
+    #[test]
+    fn submission_requires_timelock_maps_decision() {
+        assert_eq!(
+            submission_requires_timelock::<u8>(Ok(TimelockDecision::Immediate)),
+            Ok(false)
+        );
+        assert_eq!(
+            submission_requires_timelock::<u8>(Ok(TimelockDecision::Timelocked)),
+            Ok(true)
+        );
+        assert_eq!(submission_requires_timelock::<u8>(Err(9)), Err(9));
     }
 }

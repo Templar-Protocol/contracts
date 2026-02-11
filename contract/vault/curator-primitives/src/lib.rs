@@ -73,6 +73,8 @@ pub use governance::{
 
 #[cfg(feature = "near")]
 pub use near::{
-    cap_change_error_message, fee_change_error_message, membership_change_error_message,
-    relative_cap_change_error_message, timelock_config_error_message, VaultStorageKey,
+    auth_error_message, cap_change_error_message, fee_change_error_message,
+    membership_change_error_message, near_auth_pattern_for, recovery_outcome_message,
+    relative_cap_change_error_message, timelock_config_error_message, NearAuthPattern,
+    VaultStorageKey,
 };
