@@ -174,9 +174,19 @@ async fn partial_snapshot_no_earnings(#[future(awt)] worker: Worker<Sandbox>) {
     let snapshot_supply_end = c.get_finalized_snapshots_len().await;
     eprintln!("Activation: {snapshot_supply_start} -> {snapshot_supply_end}");
 
-    let (position_1_end, position_2_end) = tokio::join!(
+    let (position_1_end, position_1_pending, position_2_end, position_2_pending) = tokio::join!(
         async { c.get_supply_position(supply_user.id()).await.unwrap() },
+        async {
+            c.get_supply_position_pending_yield(supply_user.id(), None)
+                .await
+                .unwrap()
+        },
         async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
+        async {
+            c.get_supply_position_pending_yield(supply_user_2.id(), None)
+                .await
+                .unwrap()
+        },
     );
 
     eprintln!("Position 1 end: {position_1_end:#?}");
@@ -234,8 +244,5 @@ async fn partial_snapshot_no_earnings(#[future(awt)] worker: Worker<Sandbox>) {
                 .unwrap(),
         ) <= 1
     );
-    assert_eq!(
-        position_1_end.borrow_asset_yield.pending_estimate,
-        position_2_end.borrow_asset_yield.pending_estimate,
-    );
+    assert_eq!(position_1_pending, position_2_pending);
 }
