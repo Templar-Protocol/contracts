@@ -18,6 +18,18 @@ use templar_vault_kernel::types::TimestampNs;
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingValue<T> {
     pub value: T,
@@ -51,6 +63,18 @@ pub fn queue_schedule<T>(
 
 /// Decision on whether an action should be timelocked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum TimelockDecision {
     Immediate,
     Timelocked,
@@ -65,6 +89,18 @@ impl TimelockDecision {
 
 /// Generic restrictions enum for shared governance checks.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum Restrictions<T> {
     Paused,
     Blacklist(BTreeSet<T>),
@@ -127,6 +163,18 @@ impl<'a, R> FeeConfig<'a, R> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub struct FeeChangeDecision {
     pub timelocked: bool,
     pub fee_increase: bool,
@@ -135,6 +183,18 @@ pub struct FeeChangeDecision {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum FeeChangeError {
     NoChange,
     PerformanceFeeTooHigh,
@@ -189,6 +249,18 @@ pub fn evaluate_fee_change<R: PartialEq>(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum TimelockConfigError {
     NoChange,
     OutOfBounds,
@@ -214,6 +286,18 @@ pub fn timelock_config_decision(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum CapChangeError {
     NoChange,
 }
@@ -233,6 +317,18 @@ pub fn cap_change_decision(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum RelativeCapChangeError {
     NoChange,
     RelativeCapTooHigh,
@@ -257,6 +353,18 @@ pub fn relative_cap_change_decision(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum MembershipChangeError {
     NoChange,
 }

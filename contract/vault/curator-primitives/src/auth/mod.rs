@@ -11,6 +11,18 @@ use templar_vault_kernel::{Address, KernelAction};
 
 /// Shared auth policy profile used to classify action authorization behavior.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum AuthPolicyProfile {
     /// Canonical policy used by shared RBAC adapters.
     Canonical,
@@ -20,6 +32,18 @@ pub enum AuthPolicyProfile {
 
 /// Shared authorization class for an action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum AuthPolicyClass {
     /// User-facing/public action (no special role requirement).
     Public,
@@ -95,6 +119,18 @@ pub const fn near_policy_class(action: ActionKind) -> AuthPolicyClass {
 
 /// Kinds of actions that require authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "borsh")),
+    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
+)]
+#[cfg_attr(
+    all(feature = "near", not(feature = "serde")),
+    serde(crate = "near_sdk::serde")
+)]
 pub enum ActionKind {
     /// User deposit action.
     Deposit,
