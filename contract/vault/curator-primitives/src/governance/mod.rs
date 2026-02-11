@@ -19,15 +19,15 @@ use templar_vault_kernel::types::TimestampNs;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,15 +118,15 @@ pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) ->
 /// Decision on whether an action should be timelocked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum TimelockDecision {
@@ -206,15 +206,15 @@ impl<'a, R> FeeConfig<'a, R> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub struct FeeChangeDecision {
@@ -226,15 +226,15 @@ pub struct FeeChangeDecision {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum FeeChangeError {
@@ -292,15 +292,15 @@ pub fn evaluate_fee_change<R: PartialEq>(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum TimelockConfigError {
@@ -329,15 +329,15 @@ pub fn timelock_config_decision(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum CapChangeError {
@@ -360,15 +360,15 @@ pub fn cap_change_decision(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum RelativeCapChangeError {
@@ -396,15 +396,15 @@ pub fn relative_cap_change_decision(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum MembershipChangeError {
@@ -449,49 +449,4 @@ pub fn sentinel_change_decision(has_sentinel: bool) -> TimelockDecision {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn queue_helpers_handle_pending_lifecycle() {
-        let mut queue = VecDeque::new();
-        queue_schedule(&mut queue, 7u32, 1_000, 500);
-
-        assert!(queue_has_pending(&queue, |v| *v == 7));
-        assert_eq!(
-            queue_take_mature(&mut queue, 1_499, |v| *v == 7),
-            Err(PendingQueueError::NotMature)
-        );
-        assert_eq!(
-            queue_take_mature(&mut queue, 1_500, |v| *v == 7),
-            Ok(Some(7))
-        );
-        assert!(!queue_has_pending(&queue, |v| *v == 7));
-    }
-
-    #[test]
-    fn queue_revoke_pending_removes_matching_entries() {
-        let mut queue = VecDeque::new();
-        queue_schedule(&mut queue, 1u32, 0, 10);
-        queue_schedule(&mut queue, 2u32, 0, 10);
-        queue_schedule(&mut queue, 3u32, 0, 10);
-
-        assert!(queue_revoke_pending(&mut queue, |v| *v % 2 == 0));
-        assert_eq!(queue.len(), 2);
-        assert!(!queue_has_pending(&queue, |v| *v == 2));
-        assert!(!queue_revoke_pending(&mut queue, |v| *v == 9));
-    }
-
-    #[test]
-    fn submission_requires_timelock_maps_decision() {
-        assert_eq!(
-            submission_requires_timelock::<u8>(Ok(TimelockDecision::Immediate)),
-            Ok(false)
-        );
-        assert_eq!(
-            submission_requires_timelock::<u8>(Ok(TimelockDecision::Timelocked)),
-            Ok(true)
-        );
-        assert_eq!(submission_requires_timelock::<u8>(Err(9)), Err(9));
-    }
-}
+mod tests;

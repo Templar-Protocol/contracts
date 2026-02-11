@@ -12,36 +12,36 @@ use templar_vault_kernel::{Address, KernelAction};
 /// Shared auth policy profile used to classify action authorization behavior.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum AuthPolicyProfile {
     /// Canonical policy used by shared RBAC adapters.
     Canonical,
-    /// NEAR executor policy (allocator-driven execute-withdraw and sentinel emergency paths).
-    Near,
+    /// Boundary executor policy (allocator-driven execute-withdraw and sentinel emergency paths).
+    Boundary,
 }
 
 /// Shared authorization class for an action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum AuthPolicyClass {
@@ -66,7 +66,7 @@ pub const fn action_policy_class(
 ) -> AuthPolicyClass {
     match profile {
         AuthPolicyProfile::Canonical => canonical_policy_class(action),
-        AuthPolicyProfile::Near => near_policy_class(action),
+        AuthPolicyProfile::Boundary => boundary_policy_class(action),
     }
 }
 
@@ -95,10 +95,10 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
     }
 }
 
-/// NEAR executor policy class for an action.
+/// Boundary executor policy class for an action.
 #[inline]
 #[must_use]
-pub const fn near_policy_class(action: ActionKind) -> AuthPolicyClass {
+pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
     match action {
         ActionKind::Deposit | ActionKind::RequestWithdraw => AuthPolicyClass::Public,
         ActionKind::ExecuteWithdraw
@@ -120,15 +120,15 @@ pub const fn near_policy_class(action: ActionKind) -> AuthPolicyClass {
 /// Kinds of actions that require authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "near", not(feature = "borsh")),
+    all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
 )]
 #[cfg_attr(
-    all(feature = "near", not(feature = "serde")),
+    all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
 pub enum ActionKind {

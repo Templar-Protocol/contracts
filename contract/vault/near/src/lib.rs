@@ -91,7 +91,7 @@ mod impl_vault_external;
 #[cfg(test)]
 mod test_utils;
 
-pub use templar_curator_primitives::near::VaultStorageKey as StorageKey;
+pub use templar_curator_primitives::boundary::VaultStorageKey as StorageKey;
 
 #[near(serializers = [borsh])]
 #[derive(Debug, Clone)]

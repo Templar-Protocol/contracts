@@ -14,8 +14,8 @@ std = []
 borsh = ["dep:borsh"]
 serde = ["dep:serde"]
 schemars = ["dep:schemars"]
-near = ["dep:near-sdk", "dep:borsh"]
-near-test = ["near", "near-sdk/unit-testing"]
+boundary = ["dep:near-sdk", "dep:borsh"]
+boundary-test = ["boundary", "near-sdk/unit-testing"]
 
 [dependencies]
 # Core dependency - vault kernel types

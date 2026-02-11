@@ -5,7 +5,7 @@
 //! NEAR's `Owner` + `Rbac` derive macros.
 
 pub use templar_curator_primitives::auth::ActionKind;
-use templar_curator_primitives::near::{near_auth_pattern_for, NearAuthPattern};
+use templar_curator_primitives::boundary::{boundary_auth_pattern_for, BoundaryAuthPattern};
 
 use super::*;
 
@@ -70,11 +70,11 @@ impl AuthPattern {
 /// - `Pause`/`SetRestrictions` are guardian-level (handled via governance)
 #[must_use]
 pub fn auth_pattern_for(action: ActionKind) -> AuthPattern {
-    match near_auth_pattern_for(action) {
-        NearAuthPattern::OwnerOnly => AuthPattern::OwnerOnly,
-        NearAuthPattern::GuardianOrOwner => AuthPattern::GuardianOrOwner,
-        NearAuthPattern::Allocator => AuthPattern::Allocator,
-        NearAuthPattern::AllocatorOrSentinel => AuthPattern::AllocatorOrSentinel,
+    match boundary_auth_pattern_for(action) {
+        BoundaryAuthPattern::OwnerOnly => AuthPattern::OwnerOnly,
+        BoundaryAuthPattern::GuardianOrOwner => AuthPattern::GuardianOrOwner,
+        BoundaryAuthPattern::Allocator => AuthPattern::Allocator,
+        BoundaryAuthPattern::AllocatorOrSentinel => AuthPattern::AllocatorOrSentinel,
     }
 }
 

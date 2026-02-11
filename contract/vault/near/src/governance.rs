@@ -10,12 +10,12 @@ use near_sdk_contract_tools::ft::nep141::TransferError;
 use near_sdk_contract_tools::ft::Nep141Transfer;
 use std::collections::VecDeque;
 use templar_common::{panic_with_message, vault::Restrictions};
-use templar_curator_primitives::governance as shared_gov;
-use templar_curator_primitives::governance::PendingValue;
-use templar_curator_primitives::near::{
+use templar_curator_primitives::boundary::{
     cap_change_error_message, fee_change_error_message, membership_change_error_message,
     relative_cap_change_error_message, timelock_config_error_message,
 };
+use templar_curator_primitives::governance as shared_gov;
+use templar_curator_primitives::governance::PendingValue;
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, PartialEq, Eq)]

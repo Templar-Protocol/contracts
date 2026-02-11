@@ -16,9 +16,9 @@
 extern crate alloc;
 
 pub mod auth;
+#[cfg(feature = "boundary")]
+pub mod boundary;
 pub mod governance;
-#[cfg(feature = "near")]
-pub mod near;
 pub mod policy;
 pub mod rbac;
 pub mod recovery;
@@ -28,7 +28,7 @@ mod tests;
 
 // Re-exports for convenience
 pub use auth::{
-    action_policy_class, canonical_policy_class, near_policy_class, ActionKind, AuthAdapter,
+    action_policy_class, boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter,
     AuthError, AuthPolicyClass, AuthPolicyProfile, AuthResult, PermissiveAuth, StrictAuth,
 };
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
@@ -71,10 +71,10 @@ pub use governance::{
     Restrictions, TimelockConfigError, TimelockDecision,
 };
 
-#[cfg(feature = "near")]
-pub use near::{
-    auth_error_message, cap_change_error_message, fee_change_error_message,
-    membership_change_error_message, near_auth_pattern_for, recovery_outcome_message,
-    relative_cap_change_error_message, timelock_config_error_message, NearAuthPattern,
+#[cfg(feature = "boundary")]
+pub use boundary::{
+    auth_error_message, boundary_auth_pattern_for, cap_change_error_message,
+    fee_change_error_message, membership_change_error_message, recovery_outcome_message,
+    relative_cap_change_error_message, timelock_config_error_message, BoundaryAuthPattern,
     VaultStorageKey,
 };
