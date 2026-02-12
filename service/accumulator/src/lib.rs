@@ -146,25 +146,22 @@ impl Accumulator {
         }
     }
 
-    async fn next_nonce_and_block_hash(&self) -> anyhow::Result<(u64, CryptoHash)> {
+    async fn next_nonce_and_block_hash(&self) -> AccumulatorResult<(u64, CryptoHash)> {
         let mut state_guard = self.nonce_state.lock().await;
-        let refresh = state_guard
-            .as_ref()
-            .is_none_or(|state| state.fetched_at.elapsed() >= NONCE_STATE_TTL);
-
-        if refresh {
+        let state = if let Some(s) = state_guard
+            .as_mut()
+            .filter(|state| state.fetched_at.elapsed() <= NONCE_STATE_TTL)
+        {
+            s
+        } else {
             let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
-            *state_guard = Some(NonceState {
-                next_nonce: nonce + 1,
+            state_guard.insert(NonceState {
+                next_nonce: nonce,
                 block_hash,
                 fetched_at: Instant::now(),
-            });
-            return Ok((nonce, block_hash));
-        }
+            })
+        };
 
-        let state = state_guard
-            .as_mut()
-            .ok_or(anyhow::anyhow!("Nonce state should be present"))?;
         let nonce = state.next_nonce;
         state.next_nonce += 1;
 
