@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 use futures::StreamExt;
@@ -51,6 +55,9 @@ pub enum AccumulatorError {
     #[error("No outcome for transaction: {0}")]
     NoOutcome(String),
 }
+
+/// How long to keep a cached nonce and block hash before refreshing.
+const NONCE_STATE_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -113,6 +120,13 @@ pub struct Accumulator {
     signer: Arc<Signer>,
     pub market: AccountId,
     timeout: u64,
+    nonce_state: tokio::sync::Mutex<Option<NonceState>>,
+}
+
+struct NonceState {
+    next_nonce: u64,
+    block_hash: CryptoHash,
+    fetched_at: Instant,
 }
 
 impl Accumulator {
@@ -128,7 +142,33 @@ impl Accumulator {
             signer,
             market,
             timeout,
+            nonce_state: tokio::sync::Mutex::new(None),
         }
+    }
+
+    async fn next_nonce_and_block_hash(&self) -> anyhow::Result<(u64, CryptoHash)> {
+        let mut state_guard = self.nonce_state.lock().await;
+        let refresh = state_guard
+            .as_ref()
+            .is_none_or(|state| state.fetched_at.elapsed() >= NONCE_STATE_TTL);
+
+        if refresh {
+            let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+            *state_guard = Some(NonceState {
+                next_nonce: nonce + 1,
+                block_hash,
+                fetched_at: Instant::now(),
+            });
+            return Ok((nonce, block_hash));
+        }
+
+        let state = state_guard
+            .as_mut()
+            .ok_or(anyhow::anyhow!("Nonce state should be present"))?;
+        let nonce = state.next_nonce;
+        state.next_nonce += 1;
+
+        Ok((nonce, state.block_hash))
     }
 
     fn create_tx(
@@ -159,7 +199,7 @@ impl Accumulator {
     pub async fn accumulate(&self, borrow: AccountId, method: &str) -> AccumulatorResult {
         info!("Starting accumulation for market: {}", self.market);
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = self.next_nonce_and_block_hash().await?;
 
         let accumulate_tx = self.create_tx(&borrow, nonce, block_hash, method.to_owned());
 
@@ -312,6 +352,7 @@ mod tests {
     use crate::rpc::ContractSourceMetadata;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
+    use futures::future;
     use near_crypto::{InMemorySigner, KeyType};
     use near_jsonrpc_client::methods::tx::RpcTransactionResponse;
     use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryResponse};
@@ -465,6 +506,41 @@ mod tests {
             protocol_account_id: "protocol.testnet".parse().unwrap(),
             liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn nonce_is_reused_across_concurrent_requests() {
+        let server = MockServer::start().await;
+        let accumulator = build_accumulator(&server, "market.testnet");
+        let call_counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&call_counter);
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("request_type").and_then(JsonValue::as_str),
+                    Some("view_access_key")
+                );
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_body_json(rpc_success_response(&json!(access_key_response(10)), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let results =
+            future::join_all((0..3).map(|_| accumulator.next_nonce_and_block_hash())).await;
+
+        let mut nonces = results
+            .into_iter()
+            .map(|result| result.expect("nonce result").0)
+            .collect::<Vec<_>>();
+        nonces.sort_unstable();
+
+        assert_eq!(nonces, vec![11, 12, 13]);
+        assert_eq!(call_counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -661,7 +737,8 @@ mod tests {
             sent,
             vec!["alice.testnet".to_string(), "bob.testnet".to_string()]
         );
-        assert_eq!(access_key_calls.load(Ordering::SeqCst), 2);
+        // We expect only one access key call for nonce fetching given two concurrent accumulations, we generate nonces locally after that.
+        assert_eq!(access_key_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
