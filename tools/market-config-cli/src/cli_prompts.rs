@@ -2,9 +2,8 @@ use crate::CliResult;
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use market_config_cli::{
     calculator::parameters::CurveParameters,
-    common::shared::map_dialoguer_err,
     curve::{strategy_from_name, CurveInput, ModelArg},
-    editor::utils::prompt_decimal,
+    ui::prompt::{error::map_dialoguer_err, helpers::prompt_decimal},
     CliError,
 };
 use near_sdk::AccountId;
@@ -26,7 +25,7 @@ pub fn prompt_network(network: Option<Network>, theme: &ColorfulTheme) -> CliRes
         .items(&labels)
         .default(0)
         .interact()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
     Ok(networks.get(index).copied().unwrap_or(Network::Testnet))
 }
 
@@ -41,7 +40,7 @@ pub fn prompt_contract_id(
         let value: String = Input::with_theme(theme)
             .with_prompt("Enter contract account ID")
             .interact_text()
-            .map_err(map_dialoguer_err)?;
+            .map_err(|err| map_dialoguer_err(&err))?;
         value
             .parse::<AccountId>()
             .map_err(|e| CliError::InvalidInput(e.to_string()))
@@ -60,7 +59,7 @@ pub fn prompt_path(
         let path: String = Input::with_theme(theme)
             .with_prompt(prompt)
             .interact_text()
-            .map_err(map_dialoguer_err)?;
+            .map_err(|err| map_dialoguer_err(&err))?;
         Ok(PathBuf::from(path))
     }
 }
@@ -71,7 +70,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Starting rate at 0% utilization (e.g., 0.02)")
         .default("0.02".to_string())
         .interact_text()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
     let starting_rate: Decimal = Decimal::from_str(&starting_rate_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid starting rate: {e}")))?;
 
@@ -79,7 +78,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Rate at optimal utilization (e.g., 0.10)")
         .default("0.10".to_string())
         .interact_text()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
     let optimal_rate: Decimal = Decimal::from_str(&optimal_rate_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid optimal rate: {e}")))?;
 
@@ -87,7 +86,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Optimal utilization ratio (e.g., 0.80 for 80%)")
         .default("0.80".to_string())
         .interact_text()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
     let optimal_usage: Decimal = Decimal::from_str(&optimal_usage_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid optimal utilization: {e}")))?;
 
@@ -95,7 +94,7 @@ pub fn prompt_curve_params(theme: &ColorfulTheme) -> CliResult<CurveParameters> 
         .with_prompt("Maximum rate at 100% utilization (e.g., 0.50)")
         .default("0.50".to_string())
         .interact_text()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
     let max_rate: Decimal = Decimal::from_str(&max_rate_input)
         .map_err(|e| CliError::InvalidInput(format!("Invalid max rate: {e}")))?;
 
@@ -113,8 +112,14 @@ pub fn resolve_curve_params(
     input: &CurveInput,
     theme: &ColorfulTheme,
 ) -> CliResult<(CurveParameters, InterestRateStrategy, Option<Decimal>)> {
-    if !input.any_flag_provided() {
-        let model = prompt_model_arg(theme)?;
+    let has_rate_values = input.starting_rate.is_some()
+        || input.optimal_rate.is_some()
+        || input.optimal_usage.is_some()
+        || input.max_rate.is_some()
+        || input.eccentricity.is_some();
+
+    if !has_rate_values {
+        let model = input.model.unwrap_or(prompt_model_arg(theme)?);
         return prompt_model_params(theme, model, input.display_points);
     }
 
@@ -240,7 +245,7 @@ fn prompt_model_arg(theme: &ColorfulTheme) -> CliResult<ModelArg> {
         .items(options)
         .default(0)
         .interact()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
     Ok(match options[idx] {
         "linear" => ModelArg::Linear,
         "exponential" => ModelArg::Exponential,
@@ -322,7 +327,7 @@ fn prompt_display_points(theme: &ColorfulTheme, default: usize) -> CliResult<usi
         .with_prompt("Number of display points for the curve")
         .default(default.to_string())
         .interact_text()
-        .map_err(map_dialoguer_err)?;
+        .map_err(|err| map_dialoguer_err(&err))?;
 
     input
         .parse::<usize>()

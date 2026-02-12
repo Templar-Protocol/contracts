@@ -5354,6 +5354,7 @@ dependencies = [
  "near-primitives 0.31.1",
  "near-sdk",
  "once_cell",
+ "reqwest 0.12.24",
  "rstest",
  "serde",
  "serde_json",

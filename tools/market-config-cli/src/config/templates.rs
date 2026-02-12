@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::str::FromStr;
+use templar_common::number::Decimal;
 
-/// Common template configurations for different types of markets
+use crate::{CliError, CliResult, ConfigBuilder};
+
+/// Common template configurations for different types of markets. These are arbitrary presets
+/// meant to provide sensible defaults for various risk profiles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTemplate {
     pub name: String,
@@ -71,5 +77,82 @@ impl ConfigTemplate {
         Self::list_all()
             .into_iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Apply template defaults to a `ConfigBuilder`.
+    /// # Errors
+    pub fn apply_to_builder(&self, mut builder: ConfigBuilder) -> CliResult<ConfigBuilder> {
+        let data = &self.template_data;
+
+        if let Some(value) = read_u64(data, "time_chunk_duration_ms")? {
+            builder = builder.time_chunk_duration_ms(value);
+        }
+        if let Some(value) = read_decimal(data, "borrow_mcr_maintenance")? {
+            builder = builder.borrow_mcr_maintenance(value);
+        }
+        if let Some(value) = read_decimal(data, "borrow_mcr_liquidation")? {
+            builder = builder.borrow_mcr_liquidation(value);
+        }
+        if let Some(value) = read_decimal(data, "borrow_asset_maximum_usage_ratio")? {
+            builder = builder.borrow_max_usage_ratio(value);
+        }
+        if let Some(value) = read_decimal(data, "liquidation_maximum_spread")? {
+            builder = builder.liquidation_max_spread(value);
+        }
+        if let Some(value) = read_u32(data, "price_maximum_age_s")? {
+            builder = builder.price_max_age_s(value);
+        }
+
+        Ok(builder)
+    }
+}
+
+fn read_u64(data: &Value, key: &str) -> CliResult<Option<u64>> {
+    match data.get(key) {
+        None => Ok(None),
+        Some(Value::Number(num)) => num
+            .as_u64()
+            .ok_or_else(|| CliError::InvalidInput(format!("Invalid {key}: expected u64")))
+            .map(Some),
+        Some(Value::String(value)) => value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|e| CliError::InvalidInput(format!("Invalid {key}: {e}"))),
+        Some(_) => Err(CliError::InvalidInput(format!(
+            "Invalid {key}: expected number or string"
+        ))),
+    }
+}
+
+fn read_u32(data: &Value, key: &str) -> CliResult<Option<u32>> {
+    match data.get(key) {
+        None => Ok(None),
+        Some(Value::Number(num)) => num
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| CliError::InvalidInput(format!("Invalid {key}: expected u32")))
+            .map(Some),
+        Some(Value::String(value)) => value
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|e| CliError::InvalidInput(format!("Invalid {key}: {e}"))),
+        Some(_) => Err(CliError::InvalidInput(format!(
+            "Invalid {key}: expected number or string"
+        ))),
+    }
+}
+
+fn read_decimal(data: &Value, key: &str) -> CliResult<Option<Decimal>> {
+    match data.get(key) {
+        None => Ok(None),
+        Some(Value::String(value)) => Decimal::from_str(value)
+            .map(Some)
+            .map_err(|e| CliError::InvalidInput(format!("Invalid {key}: {e}"))),
+        Some(Value::Number(num)) => Decimal::from_str(&num.to_string())
+            .map(Some)
+            .map_err(|e| CliError::InvalidInput(format!("Invalid {key}: {e}"))),
+        Some(_) => Err(CliError::InvalidInput(format!(
+            "Invalid {key}: expected number or string"
+        ))),
     }
 }
