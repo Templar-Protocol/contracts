@@ -10,6 +10,11 @@ set dotenv-load := true
 #   3. just demo-deposit       # Deposit test tokens
 #   4. just demo-withdraw      # Request and execute withdrawal
 #
+# WITH BLEND INTEGRATION (for yield):
+#   1. just setup
+#   2. just deploy-all-with-blend <BLEND_POOL_ADDRESS>
+#   3. just demo-deposit
+#
 # PREREQUISITES:
 #   - Rust toolchain with wasm32-unknown-unknown target
 #   - Stellar CLI: cargo install --locked stellar-cli --features opt
@@ -22,11 +27,14 @@ set dotenv-load := true
 #   SOROBAN_CONTRACT_ID      Deployed vault contract ID
 #   SOROBAN_ASSET_TOKEN      Underlying asset token contract ID
 #   SOROBAN_ADMIN            Admin address (defaults to identity)
+#   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
+#   BLEND_POOL_ID            Blend pool address
 #
 # =============================================================================
 
 root := justfile_directory() + "/../../.."
 default_wasm := root + "/target/wasm32-unknown-unknown/release/templar_soroban_runtime.wasm"
+blend_adapter_wasm := root + "/target/wasm32-unknown-unknown/release/templar_soroban_blend_adapter.wasm"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -54,6 +62,15 @@ deploy-all: _ensure-setup deploy-test-token deploy init
 	@echo "  Asset Token: $(cat {{state_dir}}/asset_token_id 2>/dev/null || echo 'not found')"
 	@echo ""
 	@echo "Run: just demo-deposit"
+	@echo "For Blend integration: just deploy-blend-adapter"
+
+# Deploy everything including Blend adapter for yield strategies.
+deploy-all-with-blend pool_address: _ensure-setup build-blend-adapter deploy-test-token deploy init
+	@just deploy-blend-adapter "{{pool_address}}"
+	@just link-blend-adapter
+	@echo ""
+	@echo "✓ Full deployment with Blend complete!"
+	@just status
 
 # =============================================================================
 # BUILD
@@ -65,6 +82,17 @@ build:
 	@cargo build --release --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
 	@echo "✓ Built: {{default_wasm}}"
+
+# Build the Blend adapter WASM.
+build-blend-adapter:
+	@echo "Building Blend adapter WASM..."
+	@cargo build --release --target wasm32-unknown-unknown \
+		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-blend-adapter
+	@echo "✓ Built: {{blend_adapter_wasm}}"
+
+# Build all WASMs (vault + blend adapter).
+build-all: build build-blend-adapter
+	@echo "✓ All contracts built"
 
 # Build with size optimization (slower but smaller).
 build-optimized: build
@@ -79,6 +107,10 @@ build-optimized: build
 # Print the default WASM path.
 wasm-path:
 	@echo "{{default_wasm}}"
+
+# Print the Blend adapter WASM path.
+blend-adapter-wasm-path:
+	@echo "{{blend_adapter_wasm}}"
 
 # =============================================================================
 # NETWORK & IDENTITY SETUP
@@ -230,6 +262,159 @@ extend-ttl ledgers="100000":
 		--source "$source" \
 		--ledgers-to-extend {{ledgers}}; \
 	echo "✓ TTL extended"
+
+# =============================================================================
+# BLEND ADAPTER DEPLOYMENT
+# =============================================================================
+#
+# The Blend adapter connects the vault to Blend Protocol pools for yield.
+# It uses a constructor pattern (initialized atomically during deployment).
+#
+# Required: A Blend pool address (get from https://app.blend.capital)
+#
+# Testnet pools (example - verify current addresses):
+#   - USDC Pool: CB...xxx
+#   - XLM Pool:  CD...xxx
+#
+# =============================================================================
+
+# Deploy the Blend adapter contract.
+# Requires: vault must be deployed first, pool_address is the Blend pool to use.
+deploy-blend-adapter pool_address:
+	@wasm="${BLEND_ADAPTER_WASM:-{{blend_adapter_wasm}}}"; \
+	if [ ! -f "$wasm" ]; then \
+		echo "Error: Blend adapter WASM not found at $wasm"; \
+		echo "Run: just build-blend-adapter"; \
+		exit 1; \
+	fi; \
+	vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	if [ -z "$vault_id" ]; then \
+		echo "Error: Vault not deployed. Run 'just deploy' first."; \
+		exit 1; \
+	fi; \
+	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying Blend adapter..."; \
+	echo "  Admin: $admin"; \
+	echo "  Vault: $vault_id"; \
+	echo "  Pool:  {{pool_address}}"; \
+	adapter_id=$(stellar contract deploy \
+		--wasm "$wasm" \
+		--network "$network" \
+		--source "$source" \
+		-- \
+		--admin "$admin" \
+		--vault "$vault_id" \
+		--pool "{{pool_address}}" 2>&1 | tail -1); \
+	echo "✓ Blend adapter deployed: $adapter_id"; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$adapter_id" > "{{state_dir}}/blend_adapter_id"; \
+	echo "{{pool_address}}" > "{{state_dir}}/blend_pool_id"
+
+# Link the Blend adapter to the vault (admin only).
+# Run after deploy-blend-adapter to enable the vault to use it.
+link-blend-adapter:
+	@adapter_id="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: Blend adapter not deployed. Run 'just deploy-blend-adapter <pool>' first."; \
+		exit 1; \
+	fi; \
+	pool_id="${BLEND_POOL_ID:-$(cat {{state_dir}}/blend_pool_id 2>/dev/null)}"; \
+	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	echo "Linking Blend adapter to vault..."; \
+	echo "  Adapter: $adapter_id"; \
+	just invoke set_blend_adapter --caller "$admin" --adapter "$adapter_id"; \
+	if [ -n "$pool_id" ]; then \
+		echo "  Pool: $pool_id"; \
+		just invoke set_blend_pool --caller "$admin" --pool "$pool_id"; \
+	fi; \
+	echo "✓ Blend adapter linked to vault"
+
+# Invoke a function on the Blend adapter contract.
+blend-invoke *args:
+	@adapter_id="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: Blend adapter not deployed."; \
+		exit 1; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	stellar contract invoke \
+		--id "$adapter_id" \
+		--network "$network" \
+		--source "$source" \
+		-- {{args}}
+
+# Get Blend adapter admin.
+blend-adapter-admin:
+	@just blend-invoke admin
+
+# Get Blend adapter's configured vault.
+blend-adapter-vault:
+	@just blend-invoke vault
+
+# Get Blend adapter's configured pool.
+blend-adapter-pool:
+	@just blend-invoke pool
+
+# Get total assets held in Blend pool via adapter.
+# Requires: asset_address is the underlying asset token address.
+blend-adapter-total-assets asset_address:
+	@just blend-invoke total_assets --asset "{{asset_address}}"
+
+# Update the Blend pool address (admin only).
+blend-adapter-set-pool new_pool:
+	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	echo "Updating Blend adapter pool to {{new_pool}}..."; \
+	just blend-invoke set_pool --caller "$admin" --pool "{{new_pool}}"; \
+	echo "{{new_pool}}" > "{{state_dir}}/blend_pool_id"; \
+	echo "✓ Pool updated"
+
+# Update the Blend adapter's vault reference (admin only).
+blend-adapter-set-vault new_vault:
+	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	echo "Updating Blend adapter vault to {{new_vault}}..."; \
+	just blend-invoke set_vault --caller "$admin" --vault "{{new_vault}}"; \
+	echo "✓ Vault updated"
+
+# Rescue stuck assets from the adapter (vault only - for emergencies).
+blend-adapter-rescue asset amount receiver:
+	@vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	echo "Rescuing {{amount}} of {{asset}} to {{receiver}}..."; \
+	just blend-invoke rescue \
+		--caller "$vault_id" \
+		--asset "{{asset}}" \
+		--amount "{{amount}}" \
+		--receiver "{{receiver}}"; \
+	echo "✓ Assets rescued"
+
+# Extend Blend adapter TTL.
+blend-adapter-extend-ttl ledgers="100000":
+	@adapter_id="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Extending TTL for Blend adapter by {{ledgers}} ledgers..."; \
+	stellar contract extend \
+		--id "$adapter_id" \
+		--network "$network" \
+		--source "$source" \
+		--ledgers-to-extend {{ledgers}}; \
+	echo "✓ TTL extended"
+
+# Show Blend adapter status.
+blend-adapter-status:
+	@echo "=== Blend Adapter Status ==="
+	@adapter_id="$(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo 'not deployed')"; \
+	echo "Adapter ID: $adapter_id"
+	@if [ -f "{{state_dir}}/blend_adapter_id" ]; then \
+		echo "Admin:      $(just blend-invoke admin 2>/dev/null || echo 'error')"; \
+		echo "Vault:      $(just blend-invoke vault 2>/dev/null || echo 'error')"; \
+		echo "Pool:       $(just blend-invoke pool 2>/dev/null || echo 'error')"; \
+	fi
 
 # =============================================================================
 # CORE OPERATIONS
@@ -492,14 +677,16 @@ blend-factory:
 status:
 	@echo "=== Deployment Status ==="
 	@echo ""
-	@echo "Network:     ${SOROBAN_NETWORK:-{{default_network}}}"
-	@echo "Identity:    ${SOROBAN_IDENTITY:-{{default_identity}}}"
+	@echo "Network:       ${SOROBAN_NETWORK:-{{default_network}}}"
+	@echo "Identity:      ${SOROBAN_IDENTITY:-{{default_identity}}}"
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || echo 'not found')"; \
-	echo "Address:     $addr"
+	echo "Address:       $addr"
 	@echo ""
-	@echo "Vault ID:    $(cat {{state_dir}}/vault_id 2>/dev/null || echo 'not deployed')"
-	@echo "Asset Token: $(cat {{state_dir}}/asset_token_id 2>/dev/null || echo 'not deployed')"
-	@echo "Admin:       $(cat {{state_dir}}/admin_address 2>/dev/null || echo 'not set')"
+	@echo "Vault ID:      $(cat {{state_dir}}/vault_id 2>/dev/null || echo 'not deployed')"
+	@echo "Asset Token:   $(cat {{state_dir}}/asset_token_id 2>/dev/null || echo 'not deployed')"
+	@echo "Admin:         $(cat {{state_dir}}/admin_address 2>/dev/null || echo 'not set')"
+	@echo "Blend Adapter: $(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo 'not deployed')"
+	@echo "Blend Pool:    $(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo 'not set')"
 	@echo ""
 	@if [ -f "{{state_dir}}/vault_id" ]; then \
 		echo "Vault state:"; \
@@ -528,6 +715,8 @@ export-env:
 	@echo "SOROBAN_CONTRACT_ID=$(cat {{state_dir}}/vault_id 2>/dev/null || echo '')"
 	@echo "SOROBAN_ASSET_TOKEN=$(cat {{state_dir}}/asset_token_id 2>/dev/null || echo '')"
 	@echo "SOROBAN_ADMIN=$(cat {{state_dir}}/admin_address 2>/dev/null || echo '')"
+	@echo "BLEND_ADAPTER_ID=$(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo '')"
+	@echo "BLEND_POOL_ID=$(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo '')"
 
 # Internal: Ensure setup is complete.
 _ensure-setup:
@@ -545,26 +734,36 @@ help:
 	@echo "Templar Soroban Vault — Justfile Commands"
 	@echo ""
 	@echo "QUICK START:"
-	@echo "  just setup         Full setup (build, network, keys, fund)"
-	@echo "  just deploy-all    Deploy vault + test token, initialize"
-	@echo "  just demo-deposit  Run deposit demonstration"
-	@echo "  just demo-withdraw Run withdrawal demonstration"
+	@echo "  just setup                    Full setup (build, network, keys, fund)"
+	@echo "  just deploy-all               Deploy vault + test token, initialize"
+	@echo "  just deploy-all-with-blend <pool>  Deploy with Blend adapter"
+	@echo "  just demo-deposit             Run deposit demonstration"
+	@echo "  just demo-withdraw            Run withdrawal demonstration"
 	@echo ""
 	@echo "BUILD:"
-	@echo "  just build         Build vault WASM"
-	@echo "  just build-optimized Build + optimize WASM size"
+	@echo "  just build                    Build vault WASM"
+	@echo "  just build-blend-adapter      Build Blend adapter WASM"
+	@echo "  just build-all                Build all WASMs"
+	@echo "  just build-optimized          Build + optimize WASM size"
 	@echo ""
 	@echo "SETUP:"
-	@echo "  just network-init  Configure testnet network"
-	@echo "  just keys-init     Generate identity keypair"
-	@echo "  just keys-fund     Fund identity via Friendbot"
-	@echo "  just keys-show     Show identity address"
+	@echo "  just network-init             Configure testnet network"
+	@echo "  just keys-init                Generate identity keypair"
+	@echo "  just keys-fund                Fund identity via Friendbot"
+	@echo "  just keys-show                Show identity address"
 	@echo ""
 	@echo "DEPLOY:"
-	@echo "  just deploy-test-token Deploy native XLM wrapper as test token"
-	@echo "  just deploy        Deploy vault contract"
-	@echo "  just init          Initialize vault"
-	@echo "  just extend-ttl    Extend contract TTL"
+	@echo "  just deploy-test-token        Deploy native XLM wrapper as test token"
+	@echo "  just deploy                   Deploy vault contract"
+	@echo "  just init                     Initialize vault"
+	@echo "  just extend-ttl               Extend contract TTL"
+	@echo ""
+	@echo "BLEND ADAPTER:"
+	@echo "  just deploy-blend-adapter <pool>  Deploy adapter for Blend pool"
+	@echo "  just link-blend-adapter          Link adapter to vault"
+	@echo "  just blend-adapter-status        Show adapter status"
+	@echo "  just blend-adapter-set-pool <p>  Update pool address"
+	@echo "  just blend-adapter-total-assets <asset>  Query pool position"
 	@echo ""
 	@echo "DEPOSITS:"
 	@echo "  just deposit <owner> <receiver> <assets> [min_shares]"
@@ -585,8 +784,8 @@ help:
 	@echo "  just set-metadata [name] [symbol] [decimals]"
 	@echo ""
 	@echo "VIEW:"
-	@echo "  just vault-state   Show vault summary"
-	@echo "  just my-balance    Show share balance"
-	@echo "  just status        Show deployment status"
+	@echo "  just vault-state              Show vault summary"
+	@echo "  just my-balance               Show share balance"
+	@echo "  just status                   Show deployment status"
 	@echo ""
 	@echo "For full command list: just --list"
