@@ -18,15 +18,35 @@ use tokio::{
 };
 use tracing::Instrument;
 
+use templar_common::{
+    asset::{BorrowAsset, FungibleAsset},
+    oracle::pyth::PriceIdentifier,
+};
+
 use crate::{
     inventory::InventoryManager,
     liquidation_strategy::LiquidationStrategy,
     rpc::{list_all_deployments, view},
+    swap::SwapProvider,
     CollateralStrategy, Liquidator, LiquidatorError,
 };
 
+/// Information needed to price a collateral asset and determine its swap target.
+#[derive(Debug, Clone)]
+pub struct CollateralPriceInfo {
+    /// Oracle account to query for price
+    pub oracle_account: AccountId,
+    /// Price identifier for this collateral asset in the oracle
+    pub price_id: PriceIdentifier,
+    /// Decimals for amount conversion (from oracle config)
+    pub decimals: i32,
+    /// Target borrow asset to swap into (derived from market config)
+    pub target_borrow_asset: FungibleAsset<BorrowAsset>,
+}
+
 /// Configuration for the liquidator service
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServiceConfig {
     /// Market registries to monitor
     pub registries: Vec<AccountId>,
@@ -70,6 +90,12 @@ pub struct ServiceConfig {
     pub hermes_url: String,
     /// Enable automatic Pyth price updates before liquidations
     pub auto_update_prices: bool,
+    /// Minimum USD value to attempt a swap (JIT or batch)
+    pub min_swap_value_usd: f64,
+    /// Enable batch swap of accumulated collateral at round start
+    pub batch_swap_on_cycle_start: bool,
+    /// Retry configuration for transient swap errors
+    pub swap_retry_config: crate::swap::SwapRetryConfig,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -81,6 +107,10 @@ pub struct LiquidatorService {
     markets: HashMap<AccountId, Liquidator>,
     /// Swap provider passed to liquidators for immediate post-liquidation swaps
     oneclick_provider: Option<crate::swap::SwapProviderImpl>,
+    /// Oracle fetcher for batch swap USD threshold checks
+    oracle_fetcher: crate::OracleFetcher,
+    /// Collateral asset → price / swap target info (built from market configs)
+    collateral_price_map: HashMap<String, CollateralPriceInfo>,
 }
 
 impl LiquidatorService {
@@ -91,7 +121,12 @@ impl LiquidatorService {
             .as_deref()
             .unwrap_or_else(|| config.network.rpc_url());
 
-        tracing::info!(rpc_url = %rpc_url, "Connecting to RPC");
+        let redacted_url = if let Some(idx) = rpc_url.find('?') {
+            format!("{}?<redacted>", &rpc_url[..idx])
+        } else {
+            rpc_url.to_string()
+        };
+        tracing::info!(rpc_url = %redacted_url, "Connecting to RPC");
 
         let client = JsonRpcClient::connect(rpc_url);
         let signer = InMemorySigner::from_secret_key(
@@ -108,6 +143,30 @@ impl LiquidatorService {
         let (_, oneclick_provider) =
             Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
 
+        // Create oracle fetcher for batch swap price checks
+        let signer_for_oracle = if config.auto_update_prices {
+            Some((config.signer_account.clone(), config.signer_key.clone()))
+        } else {
+            None
+        };
+        let oracle_fetcher = crate::OracleFetcher::new(
+            client.clone(),
+            Some(config.hermes_url.clone()),
+            signer_for_oracle
+                .as_ref()
+                .map(|(account, _)| account.clone()),
+            signer_for_oracle.map(|(_, key)| key),
+        );
+
+        // Log swap configuration
+        tracing::info!(
+            min_swap_usd = %config.min_swap_value_usd,
+            batch_swap_enabled = %config.batch_swap_on_cycle_start,
+            retry_attempts = %config.swap_retry_config.max_attempts,
+            retry_base_delay_ms = %config.swap_retry_config.base_delay_ms,
+            "Swap configuration loaded"
+        );
+
         Self {
             config,
             client,
@@ -115,6 +174,8 @@ impl LiquidatorService {
             inventory,
             markets: HashMap::new(),
             oneclick_provider,
+            oracle_fetcher,
+            collateral_price_map: HashMap::new(),
         }
     }
 
@@ -245,6 +306,16 @@ impl LiquidatorService {
                     }
                 }
                 _ = liquidation_interval.tick() => {
+                    // Refresh collateral inventory (detect accumulated dust from prior runs)
+                    if let Err(e) = self.inventory.write().await.refresh_collateral().await {
+                        tracing::warn!(error = ?e, "Failed to refresh collateral inventory before batch swap");
+                    }
+
+                    // Batch swap accumulated collateral before liquidation round
+                    if self.config.batch_swap_on_cycle_start {
+                        self.batch_swap_collateral().await;
+                    }
+
                     // Refresh borrow asset inventory before liquidations
                     self.refresh_inventory().await;
 
@@ -468,18 +539,15 @@ impl LiquidatorService {
                     Some(self.config.hermes_url.clone()),
                     self.config.auto_update_prices,
                     &signer_for_oracle,
+                    self.config.swap_retry_config.clone(),
+                    self.config.min_swap_value_usd,
                 );
 
                 // Fetch market version for version-specific liquidation logic
                 liquidator.fetch_market_version().await;
 
-                // Test market compatibility (including partial liquidation support if required)
-                let requires_partial = self.config.strategy.requires_partial_liquidation_support();
-                match liquidator
-                    .scanner()
-                    .check_market_compatibility(requires_partial)
-                    .await
-                {
+                // Test market compatibility
+                match liquidator.scanner().check_market_compatibility().await {
                     Ok(()) => {
                         supported_markets.insert(market, liquidator);
                     }
@@ -498,6 +566,14 @@ impl LiquidatorService {
             }
 
             self.markets = supported_markets;
+
+            // Rebuild collateral price map from new market set
+            self.collateral_price_map = Self::build_collateral_price_map(&self.markets);
+            tracing::info!(
+                collateral_assets = self.collateral_price_map.len(),
+                "Built collateral price map"
+            );
+
             Ok(())
         }
         .instrument(refresh_span)
@@ -527,6 +603,254 @@ impl LiquidatorService {
         }
         .instrument(inventory_span)
         .await;
+    }
+
+    /// Build collateral price map from current market configurations.
+    ///
+    /// For each unique collateral asset, stores the oracle info and the preferred
+    /// borrow asset to swap into (preferring USDC variants as they're most liquid).
+    fn build_collateral_price_map(
+        markets: &HashMap<AccountId, Liquidator>,
+    ) -> HashMap<String, CollateralPriceInfo> {
+        let mut map = HashMap::new();
+        for liquidator in markets.values() {
+            let config = liquidator.market_configuration();
+            let collateral_key = config.collateral_asset.to_string();
+
+            let existing_is_usdc = map
+                .get(&collateral_key)
+                .is_some_and(|info: &CollateralPriceInfo| is_usdc_asset(&info.target_borrow_asset));
+
+            // Prefer USDC as target borrow asset when the same collateral appears in
+            // multiple markets (most liquid for rebalancing).
+            if !existing_is_usdc {
+                map.insert(
+                    collateral_key,
+                    CollateralPriceInfo {
+                        oracle_account: config.price_oracle_configuration.account_id.clone(),
+                        price_id: config.price_oracle_configuration.collateral_asset_price_id,
+                        decimals: config.price_oracle_configuration.collateral_asset_decimals,
+                        target_borrow_asset: config.borrow_asset.clone(),
+                    },
+                );
+            }
+        }
+        map
+    }
+
+    /// Fetch USD prices for a set of collateral assets, batching by oracle.
+    async fn fetch_collateral_usd_prices(&self, asset_keys: &[String]) -> HashMap<String, f64> {
+        // Group by oracle for efficient batching
+        let mut oracle_to_assets: HashMap<AccountId, Vec<(String, PriceIdentifier)>> =
+            HashMap::new();
+
+        for key in asset_keys {
+            if let Some(info) = self.collateral_price_map.get(key) {
+                oracle_to_assets
+                    .entry(info.oracle_account.clone())
+                    .or_default()
+                    .push((key.clone(), info.price_id));
+            }
+        }
+
+        let mut prices = HashMap::new();
+
+        for (oracle, assets) in oracle_to_assets {
+            let price_ids: Vec<_> = assets.iter().map(|(_, id)| *id).collect();
+            let response = self
+                .oracle_fetcher
+                .get_oracle_prices(oracle.clone(), &price_ids, 120)
+                .await;
+
+            let response = match response {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        oracle = %oracle,
+                        error = ?e,
+                        "Failed to fetch collateral prices from oracle"
+                    );
+                    continue;
+                }
+            };
+
+            for (asset_key, price_id) in assets {
+                if let Some(Some(price)) = response.get(&price_id) {
+                    #[allow(clippy::cast_precision_loss)]
+                    let usd_price = (price.price.0 as f64) * 10f64.powi(price.expo);
+                    prices.insert(asset_key, usd_price);
+                }
+            }
+        }
+
+        prices
+    }
+
+    /// Calculate USD value of a raw collateral amount.
+    fn collateral_usd_value(&self, asset_key: &str, raw_amount: u128, usd_price: f64) -> f64 {
+        let decimals = self
+            .collateral_price_map
+            .get(asset_key)
+            .map_or(8, |i| i.decimals);
+
+        #[allow(clippy::cast_precision_loss)]
+        let amount = (raw_amount as f64) / 10f64.powi(decimals);
+        amount * usd_price
+    }
+
+    /// Attempt to batch-swap accumulated collateral holdings at cycle start.
+    ///
+    /// For each collateral asset with non-zero balance:
+    /// 1. Fetch its USD price from the oracle
+    /// 2. Skip if below `min_swap_value_usd`
+    /// 3. Swap to the target borrow asset with retry
+    ///
+    /// In dry-run mode, logs what would be swapped without executing.
+    #[allow(clippy::too_many_lines)]
+    async fn batch_swap_collateral(&self) {
+        let holdings = self.inventory.read().await.collateral_holdings();
+        if holdings.is_empty() {
+            tracing::debug!("No collateral holdings to batch swap");
+            return;
+        }
+
+        let asset_keys: Vec<String> = holdings.iter().map(|(a, _)| a.to_string()).collect();
+        let prices = self.fetch_collateral_usd_prices(&asset_keys).await;
+
+        let dry_run = self.config.dry_run;
+        let retry_config = &self.config.swap_retry_config;
+        let mut swapped = 0u32;
+        let mut skipped = 0u32;
+
+        for (collateral_asset, balance) in &holdings {
+            let asset_key = collateral_asset.to_string();
+
+            // Lookup USD price
+            let Some(&usd_price) = prices.get(&asset_key) else {
+                tracing::debug!(asset = %asset_key, "No price available, skipping batch swap");
+                skipped += 1;
+                continue;
+            };
+
+            let usd_value = self.collateral_usd_value(&asset_key, balance.0, usd_price);
+
+            if usd_value < self.config.min_swap_value_usd {
+                tracing::debug!(
+                    asset = %asset_key,
+                    balance = balance.0,
+                    usd_value = format!("${usd_value:.2}"),
+                    threshold = format!("${:.2}", self.config.min_swap_value_usd),
+                    "Collateral below USD threshold, skipping batch swap"
+                );
+                skipped += 1;
+                continue;
+            }
+
+            let Some(info) = self.collateral_price_map.get(&asset_key) else {
+                skipped += 1;
+                continue;
+            };
+
+            // Dry run: log what would happen, skip actual swap
+            if dry_run {
+                tracing::info!(
+                    from = %asset_key,
+                    to = %info.target_borrow_asset,
+                    amount = balance.0,
+                    usd_value = format!("${usd_value:.2}"),
+                    "[DRY RUN] Would batch swap collateral"
+                );
+                swapped += 1;
+                continue;
+            }
+
+            let Some(ref swap_provider) = self.oneclick_provider else {
+                tracing::debug!("No swap provider, skipping batch swap");
+                return;
+            };
+
+            tracing::info!(
+                from = %asset_key,
+                to = %info.target_borrow_asset,
+                amount = balance.0,
+                usd_value = format!("${usd_value:.2}"),
+                "Attempting batch swap of accumulated collateral"
+            );
+
+            let swap_amount = templar_common::asset::FungibleAssetAmount::from(
+                near_sdk::json_types::U128(balance.0),
+            );
+
+            let swap_name = format!("batch:{asset_key}");
+            let provider = swap_provider.clone();
+            let coll = collateral_asset.clone();
+            let borrow = info.target_borrow_asset.clone();
+
+            let result = crate::swap::retry::swap_with_retry(retry_config, &swap_name, || {
+                let provider = provider.clone();
+                let coll = coll.clone();
+                let borrow = borrow.clone();
+                async move {
+                    provider
+                        .swap(&coll, &borrow, swap_amount)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| {
+                            // Classify the AppError into SwapError
+                            let msg = e.to_string();
+                            let kind = if msg.contains("Amount is too low") {
+                                crate::swap::SwapErrorKind::AmountTooLow { message: msg }
+                            } else if msg.contains("Failed to get quote") {
+                                crate::swap::SwapErrorKind::QuoteFailed { message: msg }
+                            } else {
+                                crate::swap::SwapErrorKind::Unknown { message: msg }
+                            };
+                            crate::swap::SwapError::new(kind, "Batch swap")
+                        })
+                }
+            })
+            .await;
+
+            match result {
+                Ok(()) => {
+                    tracing::info!(
+                        from = %asset_key,
+                        usd_value = format!("${usd_value:.2}"),
+                        "Batch swap succeeded"
+                    );
+                    swapped += 1;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("Amount too low") {
+                        tracing::debug!(
+                            from = %asset_key,
+                            error = %e,
+                            "Batch swap skipped - amount too low for provider"
+                        );
+                    } else {
+                        tracing::info!(
+                            from = %asset_key,
+                            error = %e,
+                            "Batch swap failed, will retry next cycle"
+                        );
+                    }
+                    skipped += 1;
+                }
+            }
+        }
+
+        if swapped > 0 || skipped > 0 {
+            if dry_run {
+                tracing::info!(
+                    swapped,
+                    skipped,
+                    "[DRY RUN] Batch swap round summary (no swaps executed)"
+                );
+            } else {
+                tracing::info!(swapped, skipped, "Batch swap round completed");
+            }
+        }
     }
 
     /// Run a single liquidation round across all markets
@@ -581,6 +905,20 @@ impl LiquidatorService {
         .instrument(liquidation_span)
         .await;
     }
+}
+
+/// Check if an asset is a USDC variant (preferred swap target for rebalancing).
+/// Non-critical: only used as a heuristic when the same collateral appears in
+/// multiple markets to prefer swapping into USDC for better liquidity. If no
+/// variant is recognized, batch swap still works but may pick a less liquid target.
+fn is_usdc_asset(asset: &FungibleAsset<BorrowAsset>) -> bool {
+    let s = asset.to_string().to_lowercase();
+    s.contains("usdc")
+        || s.contains("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48") // ETH USDC
+        || s.contains("17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1") // native NEAR USDC
+        || s.contains("5ce3bf3a31af18be40ba30f721101b4341690186") // Solana USDC
+        || s.contains("1100_111bzqbb65gxapavoxqmmcgyo5os3txhqs1uh1cgahkquetujq1tju")
+    // Stellar USDC
 }
 
 /// Check if an error is a rate limit error

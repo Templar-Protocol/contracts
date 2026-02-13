@@ -8,9 +8,6 @@ pub struct Accumulator<T: AssetClass> {
     total: FungibleAssetAmount<T>,
     fraction_as_u128_dividend: U128,
     next_snapshot_index: u32,
-    #[borsh(skip)]
-    #[serde(default, skip_serializing_if = "FungibleAssetAmount::is_zero")]
-    pub pending_estimate: FungibleAssetAmount<T>,
 }
 
 impl<T: AssetClass> Accumulator<T> {
@@ -19,7 +16,6 @@ impl<T: AssetClass> Accumulator<T> {
             total: 0.into(),
             fraction_as_u128_dividend: U128(0),
             next_snapshot_index,
-            pending_estimate: 0.into(),
         }
     }
 

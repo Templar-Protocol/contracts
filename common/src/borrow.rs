@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, json_types::U64, near, AccountId};
+use near_sdk::{json_types::U64, near, AccountId};
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -267,27 +267,7 @@ impl<M> BorrowPositionRef<M> {
 }
 
 impl<M: Deref<Target = Market>> BorrowPositionRef<M> {
-    pub fn estimate_current_snapshot_interest(&self) -> BorrowAssetAmount {
-        let prev_end_timestamp_ms = self.market.get_last_finalized_snapshot().end_timestamp_ms.0;
-        let interest_in_current_snapshot = self.market.interest_rate()
-            * (env::block_timestamp_ms().saturating_sub(prev_end_timestamp_ms))
-            * Decimal::from(self.position.get_borrow_asset_principal())
-            * YEAR_PER_MS;
-        #[allow(clippy::unwrap_used, reason = "Interest rate guaranteed <= APY_LIMIT")]
-        interest_in_current_snapshot.to_u128_ceil().unwrap().into()
-    }
-
-    pub fn with_pending_interest(&mut self) {
-        let pending_estimate = self.calculate_interest(u32::MAX).get_amount()
-            + self.estimate_current_snapshot_interest();
-
-        self.position.interest.pending_estimate = pending_estimate;
-    }
-
-    pub(crate) fn calculate_interest(
-        &self,
-        snapshot_limit: u32,
-    ) -> AccumulationRecord<BorrowAsset> {
+    pub fn calculate_interest(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
         let principal: Decimal = self.position.get_borrow_asset_principal().into();
         let mut next_snapshot_index = self.position.interest.get_next_snapshot_index();
 
@@ -416,6 +396,8 @@ impl<'a> BorrowPositionGuard<'a> {
             "Invariant violation: min() precludes underflow",
         );
         self.position.interest.remove(to_interest);
+
+        self.market.borrow_asset_paid_to_fees += to_fees + to_interest;
 
         let to_principal = {
             let minimum_amount = u128::from(self.market.configuration.borrow_range.minimum);
@@ -767,7 +749,7 @@ impl<'a> BorrowPositionGuard<'a> {
 
 #[cfg(test)]
 mod tests {
-    use near_sdk::{serde_json, test_utils::VMContextBuilder, testing_env};
+    use near_sdk::{env, serde_json, test_utils::VMContextBuilder, testing_env};
     use rstest::rstest;
 
     use crate::{

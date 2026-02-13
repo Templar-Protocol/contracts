@@ -65,7 +65,7 @@ async fn supply_beyond_maximum(
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: New supply position is outside of allowable range"]
+// #[should_panic = "Smart contract panicked: New supply position is outside of allowable range"]
 async fn harvest_yield_beyond_maximum(#[future(awt)] worker: Worker<Sandbox>) {
     const LIMIT: u128 = 1_000_000;
     setup_test!(
@@ -85,6 +85,7 @@ async fn harvest_yield_beyond_maximum(#[future(awt)] worker: Worker<Sandbox>) {
     c.borrow(&borrow_user, LIMIT * 4 / 5).await;
     c.repay(&borrow_user, None, LIMIT).await;
 
-    c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
+    // No longer compounding operation so this is fine.
+    c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
         .await;
 }

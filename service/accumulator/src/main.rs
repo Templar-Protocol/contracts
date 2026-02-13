@@ -3,12 +3,12 @@ use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 use clap::Parser;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
-use templar_accumulator::{rpc::list_all_deployments, Accumulator, Args};
+use templar_accumulator::{rpc::list_all_deployments, Accumulator, AccumulatorResult, Args};
 use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> AccumulatorResult {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
@@ -24,7 +24,7 @@ async fn run_service_with_client(
     client: JsonRpcClient,
     signer: Arc<near_crypto::Signer>,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> anyhow::Result<()> {
+) -> AccumulatorResult {
     let registries = args.registries.clone();
     let timeout = args.timeout;
     let concurrency = args.concurrency;
@@ -71,7 +71,9 @@ async fn run_service_with_client(
             _ = accumulate_ticker.tick() => {
                 for (market, accumulator) in &accumulators {
                     info!("Running accumulation for market: {market}");
-                    accumulator.run_borrow_accumulations(concurrency).await?;
+                    if let Err(err) = accumulator.run_borrow_accumulations(concurrency).await {
+                        error!("Borrow accumulation failed for market {market}: {err}");
+                    }
                 }
 
                 info!("Accumulation job done");
@@ -79,7 +81,9 @@ async fn run_service_with_client(
             _ = static_accumulate_ticker.tick() => {
                 for (market, accumulator) in &accumulators {
                     info!("Running static accumulation for market: {market}");
-                    accumulator.run_static_accumulations(concurrency).await?;
+                    if let Err(err) = accumulator.run_static_accumulations(concurrency).await {
+                        error!("Static accumulation failed for market {market}: {err}");
+                    }
                 }
 
                 info!("Static accumulation job done");
@@ -93,7 +97,7 @@ async fn run_service_with_client(
 async fn run_service(
     args: Args,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> anyhow::Result<()> {
+) -> AccumulatorResult {
     let rpc_url = args
         .rpc_url
         .as_deref()
