@@ -4,9 +4,9 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 
 ## Scope
 
-- Soroban contract entrypoints in `src/contract.rs`.
-- Soroban auth adapter and RBAC wiring in `src/auth.rs`.
-- Soroban storage serialization/versioning in `src/storage.rs`.
+- Soroban contract entrypoints in `src/contract/mod.rs`.
+- Soroban auth adapter and RBAC wiring in `src/auth/mod.rs`.
+- Soroban storage serialization/versioning in `src/storage/mod.rs`.
 - Market adapter interactions used by allocation/refresh/withdraw flows.
 
 ## Assets to Protect
@@ -25,9 +25,9 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 
 ## High-Level Dataflow
 
-1. User signs and calls `deposit_with_min` / `request_withdraw`.
+1. User signs and calls `deposit_with_min` / `request_withdraw` / `execute_withdraw`.
 2. Runtime verifies auth and role policy, applies kernel action, executes effects.
-3. Allocator/curator drives privileged flows (`begin_allocating`, `begin_refreshing`, `sync_external_assets`, finalize/abort paths).
+3. Allocator/curator drives privileged flows (`allocate`, `set_supply_queue`, `set_paused`).
 4. Storage persists `VersionedState` blob and related policy/restriction data.
 5. Read APIs expose vault state and operational telemetry.
 
