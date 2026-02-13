@@ -76,11 +76,12 @@ deploy-all: _ensure-setup build deploy-test-token deploy deploy-share-token depl
 	@echo "For Blend integration: just deploy-blend-adapter"
 
 # Deploy everything including Blend adapter for yield strategies.
+# NOTE: Blend integration requires manual market registration after deployment.
 deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter deploy-test-token deploy deploy-share-token deploy-governance init
 	@just deploy-blend-adapter "{{pool_address}}"
-	@just link-blend-adapter
 	@echo ""
-	@echo "✓ Full deployment with Blend complete!"
+	@echo "✓ Full deployment with Blend adapter complete!"
+	@echo "NOTE: Register the Blend adapter as a market in the vault to enable allocation."
 	@just status
 
 # =============================================================================
@@ -485,25 +486,6 @@ deploy-blend-adapter pool_address:
 	echo "$adapter_id" > "{{state_dir}}/blend_adapter_id"; \
 	echo "{{pool_address}}" > "{{state_dir}}/blend_pool_id"
 
-# Link the Blend adapter to the vault (admin only).
-# Run after deploy-blend-adapter to enable the vault to use it.
-link-blend-adapter:
-	@adapter_id="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
-	if [ -z "$adapter_id" ]; then \
-		echo "Error: Blend adapter not deployed. Run 'just deploy-blend-adapter <pool>' first."; \
-		exit 1; \
-	fi; \
-	pool_id="${BLEND_POOL_ID:-$(cat {{state_dir}}/blend_pool_id 2>/dev/null)}"; \
-	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Linking Blend adapter to vault..."; \
-	echo "  Adapter: $adapter_id"; \
-	just invoke set_blend_adapter --caller "$admin" --adapter "$adapter_id"; \
-	if [ -n "$pool_id" ]; then \
-		echo "  Pool: $pool_id"; \
-		just invoke set_blend_pool --caller "$admin" --pool "$pool_id"; \
-	fi; \
-	echo "✓ Blend adapter linked to vault"
-
 # Invoke a function on the Blend adapter contract.
 blend-invoke *args:
 	@adapter_id="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
@@ -822,28 +804,6 @@ set-metadata name="Templar Vault Share" symbol="tvSHARE" decimals="7":
 		--decimals "{{decimals}}"
 	@echo "✓ Metadata set"
 
-# Configure Blend adapter settings (admin only).
-blend-config:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	adapter="${BLEND_ADAPTER_ID:-}"; \
-	pool="${BLEND_POOL_ID:-}"; \
-	factory="${BLEND_FACTORY_ID:-}"; \
-	if [ -n "$adapter" ]; then \
-		echo "Setting Blend adapter: $adapter"; \
-		just invoke set_blend_adapter --caller "$admin" --adapter "$adapter"; \
-	fi; \
-	if [ -n "$pool" ]; then \
-		echo "Setting Blend pool: $pool"; \
-		just invoke set_blend_pool --caller "$admin" --pool "$pool"; \
-	fi; \
-	if [ -n "$factory" ]; then \
-		echo "Setting Blend factory: $factory"; \
-		just invoke set_blend_factory --caller "$admin" --factory "$factory"; \
-	fi; \
-	if [ -z "$adapter" ] && [ -z "$pool" ] && [ -z "$factory" ]; then \
-		echo "No BLEND_* environment variables set"; \
-	fi
-
 # =============================================================================
 # VIEW FUNCTIONS (Read-only)
 # =============================================================================
@@ -903,18 +863,6 @@ preview-deposit assets:
 # Preview assets for a withdrawal amount.
 preview-withdraw shares:
 	@just invoke preview_withdraw --shares "{{shares}}"
-
-# Get Blend adapter address.
-blend-adapter:
-	@just invoke blend_adapter
-
-# Get Blend pool address.
-blend-pool:
-	@just invoke blend_pool
-
-# Get Blend factory address.
-blend-factory:
-	@just invoke blend_factory
 
 # =============================================================================
 # UTILITIES
@@ -1015,7 +963,6 @@ help:
 	@echo ""
 	@echo "BLEND ADAPTER:"
 	@echo "  just deploy-blend-adapter <pool>  Deploy adapter for Blend pool"
-	@echo "  just link-blend-adapter          Link adapter to vault"
 	@echo "  just blend-adapter-status        Show adapter status"
 	@echo "  just blend-adapter-set-pool <p>  Update pool address"
 	@echo "  just blend-adapter-total-assets <asset>  Query pool position"
@@ -1031,7 +978,8 @@ help:
 	@echo "  just withdraw <assets> <receiver> <owner>"
 	@echo ""
 	@echo "ALLOCATOR:"
-	@echo "  just allocator-sync-positions <idle_assets> <external_assets>"
+	@echo "  just allocate-supply <market_id> <amount>"
+	@echo "  just allocate-withdraw <market_id> <amount>"
 	@echo "  just set-supply-queue '<json_target_ids>'"
 	@echo ""
 	@echo "ADMIN:"
