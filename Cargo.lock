@@ -12028,12 +12028,8 @@ dependencies = [
 
 [[package]]
 name = "stellar-contract-utils"
-version = "0.0.0"
-
-[[package]]
-name = "stellar-contract-utils"
 version = "0.5.0"
-source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?rev=e7902a4b8992b7c253a9d2c29b7401cd9c267805#e7902a4b8992b7c253a9d2c29b7401cd9c267805"
+source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e7902a4b8992b7c253a9d2c29b7401cd9c267805"
 dependencies = [
  "soroban-sdk",
 ]
@@ -12077,7 +12073,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d281a4ff1fa1087782ce95312444035904b62b59450a591c94ecd35b696de333"
 dependencies = [
  "soroban-sdk",
- "stellar-contract-utils 0.5.0",
+ "stellar-contract-utils",
 ]
 
 [[package]]
@@ -12598,7 +12594,7 @@ dependencies = [
  "proptest",
  "rstest",
  "soroban-sdk",
- "stellar-contract-utils 0.0.0",
+ "stellar-contract-utils",
  "stellar-tokens",
  "templar-curator-primitives",
  "templar-vault-kernel",

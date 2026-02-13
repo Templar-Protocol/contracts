@@ -73,10 +73,10 @@ wiremock = "0.5.22"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-stellar-contract-utils = { path = "./vendor/stellar-contract-utils" }
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat" }
 
 [patch.crates-io]
-stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", rev = "e7902a4b8992b7c253a9d2c29b7401cd9c267805" }
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
