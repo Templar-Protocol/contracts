@@ -16,7 +16,7 @@ use crate::math::wad::{
 };
 use crate::restrictions::{RestrictionKind, Restrictions};
 use crate::state::op_state::{OpState, TargetId};
-use crate::state::queue::{is_past_cooldown, WithdrawQueue};
+use crate::state::queue::{is_past_cooldown, QueueError, WithdrawQueue};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
     complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
@@ -453,7 +453,19 @@ fn handle_request_withdraw(
             now_ns,
             config.max_pending_withdrawals,
         )
-        .map_err(|_| KernelError::QueueFull)?;
+        .map_err(|err| match err {
+            QueueError::QueueFull { current, max } => KernelError::QueueFull { current, max },
+            QueueError::CacheOverflow => {
+                KernelError::InvalidState("withdrawal queue cache overflow")
+            }
+            QueueError::WithdrawalNotFound { .. } => {
+                KernelError::InvalidState("withdrawal queue missing entry")
+            }
+            QueueError::QueueEmpty => KernelError::InvalidState("withdrawal queue empty"),
+            QueueError::InvariantViolation { .. } => {
+                KernelError::InvalidState("withdrawal queue invariant violation")
+            }
+        })?;
 
     let effects = vec![
         KernelEffect::TransferShares {

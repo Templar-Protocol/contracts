@@ -24,8 +24,8 @@ pub enum KernelError {
     MinWithdrawal { amount: u128, min: u128 },
 
     /// Withdrawal queue is at capacity.
-    #[display("withdrawal queue full")]
-    QueueFull,
+    #[display("withdrawal queue full: {current}/{max}")]
+    QueueFull { current: u32, max: u32 },
 
     /// No pending withdrawals available to execute.
     #[display("withdrawal queue empty")]
@@ -69,7 +69,7 @@ impl KernelError {
             KernelError::OpIdMismatch { .. } => 1001,
             KernelError::Slippage { .. } => 1002,
             KernelError::MinWithdrawal { .. } => 1003,
-            KernelError::QueueFull => 1004,
+            KernelError::QueueFull { .. } => 1004,
             KernelError::EmptyQueue => 1005,
             KernelError::Cooldown { .. } => 1006,
             KernelError::Transition(_) => 1007,
