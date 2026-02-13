@@ -80,6 +80,13 @@ impl BlendAdapterContract {
             .set(&DataKey::ReentrancyLock, &false);
     }
 
+    /// Update the Blend pool contract address (admin-only).
+    ///
+    /// # Preconditions
+    /// - `caller` must be the admin.
+    /// - `pool` must be a contract address.
+    ///
+    /// Emits `PoolUpdated` on success.
     pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
@@ -96,6 +103,13 @@ impl BlendAdapterContract {
         Ok(())
     }
 
+    /// Update the vault contract address (admin-only).
+    ///
+    /// # Preconditions
+    /// - `caller` must be the admin.
+    /// - `vault` must be a contract address.
+    ///
+    /// Emits `VaultUpdated` on success.
     pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
@@ -112,6 +126,15 @@ impl BlendAdapterContract {
         Ok(())
     }
 
+    /// Supply assets from the adapter into the Blend pool (vault-only).
+    ///
+    /// # Preconditions
+    /// - `caller` must be the configured vault.
+    /// - `amount` must be positive.
+    /// - The vault must have transferred `amount` of `asset` to the adapter
+    ///   prior to calling this method.
+    ///
+    /// Emits `Supply` on success.
     pub fn supply(
         env: Env,
         caller: Address,
@@ -160,6 +183,14 @@ impl BlendAdapterContract {
         })
     }
 
+    /// Withdraw assets from the Blend pool and transfer them to the vault.
+    ///
+    /// # Preconditions
+    /// - `caller` must be the configured vault.
+    /// - `amount` must be positive.
+    ///
+    /// If the pool returns fewer assets than requested, the adapter forwards
+    /// the actual amount received. Emits `Withdraw` with the actual amount.
     pub fn withdraw(
         env: Env,
         caller: Address,
@@ -208,6 +239,14 @@ impl BlendAdapterContract {
         })
     }
 
+    /// Rescue assets held by the adapter and transfer them to `receiver`.
+    ///
+    /// # Preconditions
+    /// - `caller` must be the configured vault.
+    /// - `amount` must be positive.
+    /// - `receiver` must be a contract address and not the adapter itself.
+    ///
+    /// Emits `Rescue` on success.
     pub fn rescue(
         env: Env,
         caller: Address,
@@ -242,6 +281,10 @@ impl BlendAdapterContract {
         })
     }
 
+    /// Query total assets for `asset` from the Blend pool.
+    ///
+    /// Returns an error if reserve data is stale, positions are missing, or
+    /// arithmetic overflows.
     pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
         let pool = get_pool(&env)?;
