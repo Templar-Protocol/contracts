@@ -4353,12 +4353,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 
 [[package]]
-name = "hex-literal"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
-
-[[package]]
 name = "hidapi-rusb"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11144,7 +11138,7 @@ dependencies = [
  "elliptic-curve",
  "generic-array",
  "getrandom 0.2.15",
- "hex-literal 0.4.1",
+ "hex-literal",
  "hmac",
  "k256",
  "num-derive",
@@ -12034,12 +12028,7 @@ dependencies = [
 
 [[package]]
 name = "stellar-contract-utils"
-version = "0.5.0"
-dependencies = [
- "hex-literal 1.1.0",
- "proptest",
- "soroban-sdk",
-]
+version = "0.0.0"
 
 [[package]]
 name = "stellar-contract-utils"
@@ -12088,7 +12077,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d281a4ff1fa1087782ce95312444035904b62b59450a591c94ecd35b696de333"
 dependencies = [
  "soroban-sdk",
- "stellar-contract-utils 0.5.0 (git+https://github.com/Templar-Protocol/stellar-contracts.git?rev=e7902a4b8992b7c253a9d2c29b7401cd9c267805)",
+ "stellar-contract-utils 0.5.0",
 ]
 
 [[package]]
@@ -12491,7 +12480,7 @@ name = "templar-fuzz"
 version = "1.2.1"
 dependencies = [
  "arbitrary",
- "hex-literal 0.4.1",
+ "hex-literal",
  "libfuzzer-sys",
  "near-sdk",
  "primitive-types 0.14.0",
@@ -12527,7 +12516,7 @@ name = "templar-lst-oracle-contract"
 version = "1.2.1"
 dependencies = [
  "getrandom 0.2.15",
- "hex-literal 0.4.1",
+ "hex-literal",
  "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
@@ -12609,7 +12598,7 @@ dependencies = [
  "proptest",
  "rstest",
  "soroban-sdk",
- "stellar-contract-utils 0.5.0",
+ "stellar-contract-utils 0.0.0",
  "stellar-tokens",
  "templar-curator-primitives",
  "templar-vault-kernel",
@@ -12736,7 +12725,7 @@ dependencies = [
 name = "test-utils"
 version = "0.1.0"
 dependencies = [
- "hex-literal 0.4.1",
+ "hex-literal",
  "near-sdk",
  "near-sdk-contract-tools",
  "near-workspaces 0.21.0",
