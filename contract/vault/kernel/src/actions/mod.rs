@@ -317,15 +317,20 @@ fn mint_fee_shares(
     total_supply: &mut u128,
     shares: Number,
     recipient: Address,
-) {
+) -> Result<(), KernelError> {
     if shares > Number::zero() {
         let minted: u128 = shares.into();
+        *total_supply = total_supply
+            .checked_add(minted)
+            .ok_or(KernelError::InvalidState(
+                "fee minting would overflow total_supply",
+            ))?;
         effects.push(KernelEffect::MintShares {
             owner: recipient,
             shares: minted,
         });
-        *total_supply = total_supply.saturating_add(minted);
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -361,9 +366,24 @@ fn handle_deposit(
         });
     }
 
-    state.total_assets = state.total_assets.saturating_add(assets_in);
-    state.idle_assets = state.idle_assets.saturating_add(assets_in);
-    state.total_shares = state.total_shares.saturating_add(shares_out);
+    state.total_assets = state
+        .total_assets
+        .checked_add(assets_in)
+        .ok_or(KernelError::InvalidState(
+            "deposit would overflow total_assets",
+        ))?;
+    state.idle_assets = state
+        .idle_assets
+        .checked_add(assets_in)
+        .ok_or(KernelError::InvalidState(
+            "deposit would overflow idle_assets",
+        ))?;
+    state.total_shares = state
+        .total_shares
+        .checked_add(shares_out)
+        .ok_or(KernelError::InvalidState(
+            "minting would overflow total_shares",
+        ))?;
 
     let effects = vec![
         KernelEffect::TransferAssetsFrom {
@@ -475,18 +495,22 @@ fn handle_execute_withdraw(
     let Some((_, pending_ref)) = state.withdraw_queue.head() else {
         return Err(KernelError::EmptyQueue);
     };
-    let pending = pending_ref.clone();
+    let pending_owner = pending_ref.owner;
+    let pending_receiver = pending_ref.receiver;
+    let pending_escrow_shares = pending_ref.escrow_shares;
+    let pending_expected_assets = pending_ref.expected_assets;
+    let pending_requested_at_ns = pending_ref.requested_at_ns;
 
-    enforce_restrictions(config, restrictions, self_id, &pending.owner)?;
-    enforce_restrictions(config, restrictions, self_id, &pending.receiver)?;
+    enforce_restrictions(config, restrictions, self_id, &pending_owner)?;
+    enforce_restrictions(config, restrictions, self_id, &pending_receiver)?;
 
     if !is_past_cooldown(
-        pending.requested_at_ns,
+        pending_requested_at_ns,
         now_ns,
         config.withdrawal_cooldown_ns,
     ) {
         return Err(KernelError::Cooldown {
-            requested_at: pending.requested_at_ns,
+            requested_at: pending_requested_at_ns,
             now: now_ns,
             cooldown_ns: config.withdrawal_cooldown_ns,
         });
@@ -495,10 +519,10 @@ fn handle_execute_withdraw(
     let op_id = state.allocate_op_id();
     let request = WithdrawalRequest {
         op_id,
-        amount: pending.expected_assets,
-        receiver: pending.receiver,
-        owner: pending.owner,
-        escrow_shares: pending.escrow_shares,
+        amount: pending_expected_assets,
+        receiver: pending_receiver,
+        owner: pending_owner,
+        escrow_shares: pending_escrow_shares,
     };
 
     let result = start_withdrawal(mem::take(&mut state.op_state), request)
@@ -804,9 +828,9 @@ fn handle_refresh_fees(
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
     // Reject backwards time to prevent fee calculation issues
-    if now_ns < state.fee_anchor.timestamp_ns {
+    if now_ns <= state.fee_anchor.timestamp_ns {
         return Err(KernelError::InvalidState(
-            "fee refresh timestamp cannot go backwards",
+            "fee refresh timestamp must advance",
         ));
     }
 
@@ -838,7 +862,7 @@ fn handle_refresh_fees(
         &mut total_supply,
         mgmt_shares,
         config.fees.management.recipient,
-    );
+    )?;
 
     // Performance fees (profit-based)
     let profit = fee_total_assets.saturating_sub(anchor.total_assets);
@@ -857,7 +881,7 @@ fn handle_refresh_fees(
         &mut total_supply,
         perf_shares,
         config.fees.performance.recipient,
-    );
+    )?;
 
     state.total_shares = total_supply;
     state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
