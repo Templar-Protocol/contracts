@@ -12,6 +12,10 @@ use blend_contract_sdk::pool::{Client as PoolClient, Request};
 const REQUEST_SUPPLY: u32 = 0;
 const REQUEST_WITHDRAW: u32 = 1;
 const SCALAR_12: i128 = 1_000_000_000_000;
+/// Re-extend instance TTL when remaining TTL drops below ~30 days.
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+/// Extend instance TTL to the Soroban maximum (~6 months).
+const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -34,6 +38,10 @@ pub enum AdapterError {
     ArithmeticOverflow = 6,
     /// No supply position found for the given reserve index.
     MissingPosition = 7,
+    /// Arithmetic underflow when computing actual withdrawal.
+    ArithmeticUnderflow = 8,
+    /// Withdrawal returned zero assets.
+    ZeroWithdrawal = 9,
 }
 
 #[contract]
@@ -44,6 +52,7 @@ impl BlendAdapterContract {
     /// Runs atomically during contract deployment — no separate `initialize`
     /// transaction that could be front-run.
     pub fn __constructor(env: Env, admin: Address, vault: Address, pool: Address) {
+        extend_instance_ttl(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage().instance().set(&DataKey::Pool, &pool);
@@ -53,12 +62,14 @@ impl BlendAdapterContract {
     }
 
     pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Pool, &pool);
         Ok(())
     }
 
     pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
         env.storage().instance().set(&DataKey::Vault, &vault);
         Ok(())
@@ -70,6 +81,7 @@ impl BlendAdapterContract {
         asset: Address,
         amount: i128,
     ) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
         // Adapter owns the Blend position. The vault should transfer assets to
         // the adapter before calling this method.
         require_vault(&env, &caller)?;
@@ -113,6 +125,7 @@ impl BlendAdapterContract {
         asset: Address,
         amount: i128,
     ) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
         // Adapter owns the Blend position and transfers withdrawn assets back to the vault.
         require_vault(&env, &caller)?;
         if amount <= 0 {
@@ -131,10 +144,18 @@ impl BlendAdapterContract {
             };
             let mut requests = Vec::new(&env);
             requests.push_back(request);
+            let token = soroban_sdk::token::Client::new(&env, &asset);
+            let balance_before = token.balance(&adapter);
             client.submit(&adapter, &adapter, &adapter, &requests);
 
-            let token = soroban_sdk::token::Client::new(&env, &asset);
-            token.transfer(&adapter, &vault, &amount);
+            let balance_after = token.balance(&adapter);
+            let actual_withdrawn = balance_after
+                .checked_sub(balance_before)
+                .ok_or(AdapterError::ArithmeticUnderflow)?;
+            if actual_withdrawn <= 0 {
+                return Err(AdapterError::ZeroWithdrawal);
+            }
+            token.transfer(&adapter, &vault, &actual_withdrawn);
             Ok(())
         })
     }
@@ -146,6 +167,7 @@ impl BlendAdapterContract {
         amount: i128,
         receiver: Address,
     ) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
         // Move unexpected assets held by the adapter to a receiver.
         require_vault(&env, &caller)?;
         if amount <= 0 {
@@ -161,6 +183,7 @@ impl BlendAdapterContract {
     }
 
     pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
+        extend_instance_ttl(&env);
         let pool = get_pool(&env)?;
         let client = PoolClient::new(&env, &pool);
         let reserve = client.get_reserve(&asset);
@@ -177,15 +200,25 @@ impl BlendAdapterContract {
     }
 
     pub fn admin(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
         get_admin(&env)
     }
 
     pub fn vault(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
         get_vault(&env)
     }
 
     pub fn pool(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
         get_pool(&env)
+    }
+
+    /// Extend instance storage TTL (admin-only).
+    pub fn extend_ttl(env: Env, caller: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        Ok(())
     }
 }
 
@@ -224,6 +257,12 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
         return Err(AdapterError::Unauthorized);
     }
     Ok(())
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
 fn with_reentrancy_guard<T>(
