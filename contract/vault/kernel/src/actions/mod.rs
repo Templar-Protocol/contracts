@@ -605,20 +605,22 @@ fn handle_finish_allocating(
     op_id: u64,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    // Clone the pending withdrawal to release the borrow on state,
-    // since allocate_op_id() requires &mut self.
+    // Copy the pending withdrawal fields so we can drop the immutable borrow
+    // before allocating a new op_id.
     let pending = state
         .withdraw_queue
         .head()
         .filter(|(_, w)| is_past_cooldown(w.requested_at_ns, now_ns, config.withdrawal_cooldown_ns))
-        .map(|(_, w)| w.clone());
+        .map(|(_, w)| (w.owner, w.receiver, w.escrow_shares, w.expected_assets));
 
-    let pending_req = pending.map(|w| WithdrawalRequest {
-        op_id: state.allocate_op_id(),
-        amount: w.expected_assets,
-        receiver: w.receiver,
-        owner: w.owner,
-        escrow_shares: w.escrow_shares,
+    let pending_req = pending.map(|(owner, receiver, escrow_shares, expected_assets)| {
+        WithdrawalRequest {
+            op_id: state.allocate_op_id(),
+            amount: expected_assets,
+            receiver,
+            owner,
+            escrow_shares,
+        }
     });
 
     let result = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req)
