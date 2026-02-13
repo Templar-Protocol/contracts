@@ -348,6 +348,73 @@ fn test_soroban_storage_load_state_rejects_incompatible_version(
 }
 
 #[rstest]
+fn test_soroban_storage_loads_legacy_version_state(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+        state.total_assets = 42;
+        let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
+        storage.save_state(&legacy).unwrap();
+
+        let loaded = storage.load_state().unwrap().unwrap();
+        assert_eq!(loaded.version, StorageVersion::new(0));
+        assert_eq!(loaded.state.total_assets, 42);
+    });
+}
+
+#[rstest]
+fn test_soroban_storage_migrates_legacy_state_with_active_op(
+    contract_env: (Env, soroban_sdk::Address),
+) {
+    use alloc::collections::BTreeMap;
+    use templar_vault_kernel::state::queue::{PendingWithdrawal, WithdrawQueue};
+    use templar_vault_kernel::{OpState, WithdrawingState};
+
+    let (env, contract_id) = contract_env;
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+
+        let owner = [1u8; 32];
+        let receiver = [2u8; 32];
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id: 11,
+            index: 1,
+            remaining: 500,
+            collected: 200,
+            receiver,
+            owner,
+            escrow_shares: 700,
+        });
+
+        let mut pending = BTreeMap::new();
+        pending.insert(3, PendingWithdrawal::new(owner, receiver, 700, 800, 123));
+        state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
+        state.total_assets = 1000;
+        state.total_shares = 900;
+        state.idle_assets = 100;
+        state.external_assets = 900;
+        state.next_op_id = 12;
+
+        let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
+        storage.save_state(&legacy).unwrap();
+
+        let loaded = storage.load_state().unwrap().unwrap();
+        assert_eq!(loaded.version, StorageVersion::new(0));
+        assert_eq!(loaded.state, state);
+
+        let migrated = VersionedState::new(loaded.state.clone());
+        storage.save_state(&migrated).unwrap();
+        let reloaded = storage.load_state().unwrap().unwrap();
+        assert_eq!(reloaded.version, StorageVersion::CURRENT);
+        assert_eq!(reloaded.state, state);
+    });
+}
+
+#[rstest]
 #[case(StorageVersion::new(0), true)]
 #[case(StorageVersion::V1, true)]
 #[case(StorageVersion::new(2), false)]
