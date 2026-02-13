@@ -411,7 +411,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
 
     Requires: USER_ACCOUNT, USER_SECRET_KEY
     Optional: UNDERLYING_TOKEN (for deposit test)
-    Optional: ALLOCATOR_ACCOUNT, ALLOCATOR_SECRET_KEY (for reallocate/execute)
+    Optional: ALLOCATOR_ACCOUNT, ALLOCATOR_SECRET_KEY (for allocate/execute)
     """
     # Skip if no user credentials
     if not config.user_account or not config.user_secret_key:

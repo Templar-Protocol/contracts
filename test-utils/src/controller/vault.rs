@@ -88,7 +88,7 @@ impl VaultController {
 
         // Allocator/curator/owner-gated: begins allocation across markets.
         #[call(exec, tgas(300))]
-        pub fn reallocate(delta: AllocationDelta);
+        pub fn allocate(delta: AllocationDelta);
 
         // Allocator-only: executes an existing market-side supply withdrawal
         // request and credits any returned funds to the vault's idle balance.
@@ -322,7 +322,7 @@ impl UnifiedVaultController {
     }
 
     pub async fn allocate(&self, allocator: &Account, delta: AllocationDelta) -> ExecutionSuccess {
-        let e = self.vault.reallocate(allocator, delta).await;
+        let e = self.vault.allocate(allocator, delta).await;
         if self.debug {
             print_execution(&e);
         }

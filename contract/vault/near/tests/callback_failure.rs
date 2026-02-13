@@ -70,7 +70,7 @@ async fn unbrick_recovers_stuck_allocation(#[future(awt)] worker: Worker<Sandbox
 
     // Vault should not be idle (it's in Allocating state)
     // Note: The allocator-driven allocation completes synchronously in the NEAR vault,
-    // so by the time reallocate returns, the vault may already be back to Idle.
+    // so by the time allocate returns, the vault may already be back to Idle.
     // If so, unbrick is a no-op — which is also a valid test outcome.
 
     // Call unbrick to recover

@@ -96,7 +96,7 @@ Roles are enforced via RBAC. The Curator is also granted the Allocator role at i
 - Owner: full control; can act in place of any role.
 - Curator: manages markets and policy (caps/timelocks/enable/disable). Curator is also implicitly granted Allocator.
 - Guardian: can revoke/cancel pending governance actions (timelock/guardian changes, etc.).
-- Sentinel: emergency role distinct from the guardian. Sentinels can revoke any pending governance action, trigger market deallocation (`reallocate` withdraw legs or `execute_rebalance_withdrawal`), and invoke `unbrick` to cancel in-flight withdrawals/payouts. Rotating the sentinel is timelocked just like guardian changes.
+- Sentinel: emergency role distinct from the guardian. Sentinels can revoke any pending governance action, trigger market deallocation (`allocate` withdraw legs or `execute_rebalance_withdrawal`), and invoke `unbrick` to cancel in-flight withdrawals/payouts. Rotating the sentinel is timelocked just like guardian changes.
 - Allocator (operational role): allowed to run allocation and withdrawal execution. This is the role your off-chain keeper bot should hold.
 
 Note
@@ -331,7 +331,7 @@ Important
 - Deposits:
   - User: `ft_transfer_call` to the vault (see token receiver), or an application-level front-end wraps this.
 - Allocation and rebalance:
-  - Allocator/Curator/Owner: `reallocate(AllocationDelta::{Supply, Withdraw})`
+  - Allocator/Curator/Owner: `allocate(AllocationDelta::{Supply, Withdraw})`
   - Allocator/Curator/Owner: `execute_rebalance_withdrawal(market, batch_limit)` for allocator-only rebalance flows
 - Withdrawals:
   - User: `redeem(shares, receiver)` or `withdraw(amount, receiver)`

@@ -259,10 +259,10 @@ async fn fee_decrease_immediate(#[future(awt)] worker: Worker<Sandbox>) {
     );
 }
 
-/// Non-allocator cannot reallocate. After set_is_allocator(true), they can.
+/// Non-allocator cannot allocate. After set_is_allocator(true), they can.
 #[rstest]
 #[tokio::test]
-async fn allocator_role_required_for_reallocation(#[future(awt)] worker: Worker<Sandbox>) {
+async fn allocator_role_required_for_allocation(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
         worker
         extract(vault, c, vault_owner, vault_curator)
@@ -279,9 +279,9 @@ async fn allocator_role_required_for_reallocation(#[future(awt)] worker: Worker<
 
     let market_id = vault.market_id_of(c.market.contract().id()).await;
 
-    // borrow_user is not an allocator — reallocate should fail
+    // borrow_user is not an allocator — allocate should fail
     let result = borrow_user
-        .call(vault.contract().id(), "reallocate")
+        .call(vault.contract().id(), "allocate")
         .args_json(json!({
             "delta": {
                 "Supply": {
@@ -297,7 +297,7 @@ async fn allocator_role_required_for_reallocation(#[future(awt)] worker: Worker<
 
     assert!(
         result.is_failure(),
-        "Non-allocator should not be able to reallocate",
+        "Non-allocator should not be able to allocate",
     );
 
     // Owner grants allocator role to borrow_user
@@ -305,7 +305,7 @@ async fn allocator_role_required_for_reallocation(#[future(awt)] worker: Worker<
         .set_is_allocator(&vault_owner, borrow_user.id().clone(), true)
         .await;
 
-    // Now borrow_user can reallocate
+    // Now borrow_user can allocate
     vault
         .allocate(
             &borrow_user,

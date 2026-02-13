@@ -154,7 +154,7 @@ async fn state_machine_is_locked_when_another_op_is_running(
         .batch(vault.contract().id())
         .call(Function::new("resync_idle_balance").gas(Gas::from_tgas(30)))
         .call(
-            Function::new("reallocate")
+            Function::new("allocate")
                 .args_json(near_sdk::serde_json::json!({
                     "delta": AllocationDelta::Supply(Delta::new(market_id, U128(1))),
                 }))
