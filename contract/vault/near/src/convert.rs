@@ -1,15 +1,14 @@
 use near_sdk::{env, AccountId};
-use std::{collections::BTreeSet, vec::Vec};
+use std::vec::Vec;
 use templar_common::vault::{
     AllocatingState as CommonAllocatingState, MarketId, OpState as CommonOpState,
     PayoutState as CommonPayoutState, RefreshingState as CommonRefreshingState,
-    Restrictions as CommonRestrictions, WithdrawingState as CommonWithdrawingState,
+    WithdrawingState as CommonWithdrawingState,
 };
 use templar_vault_kernel::{
     AllocatingState as KernelAllocatingState, Address, OpState as KernelOpState,
     PayoutState as KernelPayoutState, RefreshingState as KernelRefreshingState,
-    Restrictions as KernelRestrictions, TargetId,
-    WithdrawingState as KernelWithdrawingState,
+    TargetId, WithdrawingState as KernelWithdrawingState,
 };
 
 /// Convert executor-facing identifiers into kernel TargetId.
@@ -67,28 +66,6 @@ pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
     hash.as_slice()
         .try_into()
         .unwrap_or_else(|_| panic!("expected 32-byte sha256 hash"))
-}
-
-fn map_account_set(set: &BTreeSet<AccountId>) -> BTreeSet<Address> {
-    set.iter().map(account_id_to_address).collect()
-}
-
-/// Convert NEAR restrictions (AccountId-based) into kernel restrictions (Address-based).
-///
-/// The mapping is one-way, so kernel restrictions are only suitable for
-/// validation checks; executor code must still use AccountIds for effects.
-pub(crate) fn to_kernel_restrictions(restrictions: &CommonRestrictions) -> KernelRestrictions {
-    match restrictions {
-        CommonRestrictions::Paused => KernelRestrictions::Paused,
-        CommonRestrictions::BlackList(set) => KernelRestrictions::BlackList(map_account_set(set)),
-        CommonRestrictions::WhiteList(set) => KernelRestrictions::WhiteList(map_account_set(set)),
-    }
-}
-
-pub(crate) fn to_kernel_restrictions_opt(
-    restrictions: Option<&CommonRestrictions>,
-) -> Option<KernelRestrictions> {
-    restrictions.map(to_kernel_restrictions)
 }
 
 /// Convert common OpState into kernel OpState for recovery/action dispatch.

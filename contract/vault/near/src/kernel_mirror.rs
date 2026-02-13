@@ -73,8 +73,12 @@ impl Contract {
 #[cfg(test)]
 mod tests {
     use crate::convert::account_id_to_address;
-    use crate::test_utils::{mk, new_test_contract, set_block_ts};
+    use crate::storage_management::{
+        storage_bytes_for_pending_withdrawal, yocto_for_bytes, yocto_for_ft_account,
+    };
+    use crate::test_utils::{mk, new_test_contract, set_block_ts, set_ctx};
     use near_sdk::json_types::{U128, U64};
+    use near_sdk_contract_tools::ft::{Nep141Controller, Nep145};
     use templar_common::vault::MarketConfiguration;
     use templar_vault_kernel::actions::apply_action;
     use templar_vault_kernel::effects::KernelEffect;
@@ -257,5 +261,118 @@ mod tests {
         };
 
         assert_eq!(*pending, expected);
+    }
+
+    #[test]
+    fn test_execute_supply_matches_kernel_deposit() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+        set_block_ts(&vault_id, &vault_id, 1_000);
+
+        let market = mk(9);
+        let cfg = make_market_config(10_000);
+        let market_id = c.insert_market_for_tests(market, cfg, 0);
+        c.supply_queue.push(market_id);
+
+        c.fee_anchor.total_assets = U128(0);
+        c.fee_anchor.timestamp_ns = U64(1_000);
+
+        let sender = mk(1);
+        let deposit = 1_000u128;
+
+        let kernel_state = c.kernel_state_mirror();
+        let kernel_config = c.kernel_config_mirror();
+        let sender_addr = account_id_to_address(&sender);
+        let self_addr = account_id_to_address(&vault_id);
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_addr,
+            KernelAction::Deposit {
+                owner: sender_addr,
+                receiver: sender_addr,
+                assets_in: deposit,
+                min_shares_out: 0,
+                now_ns: 1_000,
+            },
+        )
+        .expect("kernel deposit");
+
+        let refund = c.execute_supply(
+            sender,
+            c.underlying_asset.contract_id().into(),
+            deposit,
+        );
+        assert_eq!(refund, 0);
+
+        let mirror = c.kernel_state_mirror();
+        assert_eq!(mirror.total_assets, result.state.total_assets);
+        assert_eq!(mirror.total_shares, result.state.total_shares);
+        assert_eq!(mirror.idle_assets, result.state.idle_assets);
+        assert_eq!(mirror.external_assets, result.state.external_assets);
+        assert_eq!(mirror.withdraw_queue, result.state.withdraw_queue);
+    }
+
+    #[test]
+    fn test_redeem_matches_kernel_request_withdraw() {
+        let vault_id = mk(0);
+        let mut c = new_test_contract(&vault_id);
+        set_block_ts(&vault_id, &vault_id, 1_000);
+
+        let market = mk(9);
+        let cfg = make_market_config(10_000);
+        let market_id = c.insert_market_for_tests(market, cfg, 0);
+        c.supply_queue.push(market_id);
+
+        let owner = mk(1);
+        let deposit = 2_000u128;
+        let refund = c.execute_supply(
+            owner.clone(),
+            c.underlying_asset.contract_id().into(),
+            deposit,
+        );
+        assert_eq!(refund, 0);
+
+        let shares = c.total_supply() / 2;
+        let receiver = mk(2);
+        let expected_assets = c.convert_to_assets(U128(shares)).0;
+
+        let now = 2_000u64;
+        let storage_deposit = yocto_for_ft_account();
+        set_ctx(&vault_id, &owner, Some(now), Some(storage_deposit));
+        c.storage_deposit(Some(vault_id.clone()), None);
+
+        let attached = yocto_for_bytes(storage_bytes_for_pending_withdrawal());
+        set_ctx(&vault_id, &owner, Some(now), Some(attached));
+
+        let kernel_state = c.kernel_state_mirror();
+        let kernel_config = c.kernel_config_mirror();
+        let owner_addr = account_id_to_address(&owner);
+        let receiver_addr = account_id_to_address(&receiver);
+        let self_addr = account_id_to_address(&vault_id);
+
+        let result = apply_action(
+            kernel_state,
+            &kernel_config,
+            None,
+            &self_addr,
+            KernelAction::RequestWithdraw {
+                owner: owner_addr,
+                receiver: receiver_addr,
+                shares,
+                min_assets_out: expected_assets,
+                now_ns: now,
+            },
+        )
+        .expect("kernel request withdraw");
+
+        let _ = c.redeem(U128(shares), receiver);
+
+        let mirror = c.kernel_state_mirror();
+        assert_eq!(mirror.op_state, result.state.op_state);
+        assert_eq!(mirror.withdraw_queue, result.state.withdraw_queue);
+        assert_eq!(mirror.total_shares, result.state.total_shares);
     }
 }

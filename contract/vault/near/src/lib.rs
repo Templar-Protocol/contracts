@@ -1397,15 +1397,6 @@ impl Contract {
             .fold(0u128, |acc, market| acc.saturating_add(market.cap_room))
     }
 
-    fn cap_group_effective_cap(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
-        let Some(rec) = self.cap_groups.get(cap_group) else {
-            return 0;
-        };
-
-        // Use curator-primitives for cap group calculations
-        crate::policy::compute_effective_cap_for_common(rec, total_assets)
-    }
-
     fn cap_group_room_remaining_at(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
         let Some(rec) = self.cap_groups.get(cap_group) else {
             return 0;
