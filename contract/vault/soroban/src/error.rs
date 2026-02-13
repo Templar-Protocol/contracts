@@ -23,6 +23,16 @@ pub enum ContractError {
     VaultNotIdle = 12,
     /// Insufficient idle assets for the requested withdrawal.
     InsufficientIdleAssets = 13,
+
+    // OpenZeppelin Pausable errors (1000-1099)
+    /// The operation failed because the contract is already paused.
+    EnforcedPause = 1000,
+    /// The operation failed because the contract is not paused.
+    ExpectedPause = 1001,
+
+    // OpenZeppelin Upgradeable errors (1100-1199)
+    /// Migration attempted without a preceding upgrade.
+    MigrationNotAllowed = 1100,
 }
 
 /// Errors that can occur during runtime execution.

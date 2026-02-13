@@ -3,11 +3,11 @@
 //! This module provides versioned storage wrappers for persisting vault state
 //! to the Soroban ledger. It handles schema migrations and forward compatibility.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use derive_more::{From, Into};
-use soroban_sdk::{contracttype, Env};
+use soroban_sdk::{contracttype, Address as SdkAddress, BytesN, Env};
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::{Restrictions, VaultState};
+use templar_vault_kernel::{Address, Restrictions, VaultState};
 
 use crate::error::RuntimeError;
 
@@ -34,6 +34,8 @@ pub enum SorobanStorageKey {
     PolicyState,
     /// Kernel restrictions (pause/allowlist/denylist).
     Restrictions,
+    /// Address book entry mapping kernel address to Soroban address.
+    AddressBook(BytesN<32>),
     /// Storage version number.
     Version,
     /// Contract configuration.
@@ -78,6 +80,28 @@ impl<'a> SorobanStorage<'a> {
     #[must_use]
     pub fn new(env: &'a Env) -> Self {
         Self { env }
+    }
+
+    fn address_key(&self, kernel_addr: &Address) -> SorobanStorageKey {
+        SorobanStorageKey::AddressBook(BytesN::from_array(self.env, kernel_addr))
+    }
+
+    /// Load a kernel-to-Soroban address mapping from persistent storage.
+    pub fn load_address(&self, kernel_addr: &Address) -> Option<SdkAddress> {
+        let key = self.address_key(kernel_addr);
+        self.env.storage().persistent().get(&key)
+    }
+
+    /// Save a kernel-to-Soroban address mapping to persistent storage.
+    pub fn save_address(&self, kernel_addr: &Address, soroban_addr: &SdkAddress) {
+        let key = self.address_key(kernel_addr);
+        self.env.storage().persistent().set(&key, soroban_addr);
+        self.env.storage().persistent().extend_ttl(
+            &key,
+            DEFAULT_TTL_THRESHOLD,
+            DEFAULT_TTL_EXTEND_TO,
+        );
+        self.extend_default_ttl();
     }
 
     fn load_state_blob(&self) -> Option<Vec<u8>> {
@@ -159,20 +183,54 @@ impl<'a> SorobanStorage<'a> {
     }
 
     /// Check if the contract is paused.
+    ///
+    /// Uses OpenZeppelin's Pausable storage for compatibility.
     pub fn is_paused(&self) -> bool {
-        self.env
-            .storage()
-            .instance()
-            .get(&SorobanStorageKey::Paused)
-            .unwrap_or(false)
+        stellar_contract_utils::pausable::paused(self.env)
     }
 
     /// Set the pause state.
+    ///
+    /// Uses a storage key compatible with OpenZeppelin's Pausable module.
+    /// The key must match OZ's `PausableStorageKey::Paused` for interoperability.
     pub fn set_paused(&self, paused: bool) {
+        // OZ PausableStorageKey is: #[contracttype] enum PausableStorageKey { Paused }
+        // We define a compatible key here since OZ's storage module is private.
+        #[soroban_sdk::contracttype]
+        enum OzPausableKey {
+            Paused,
+        }
         self.env
             .storage()
             .instance()
-            .set(&SorobanStorageKey::Paused, &paused);
+            .set(&OzPausableKey::Paused, &paused);
+    }
+
+    /// Check if the contract has the legacy pause key (for migration).
+    pub fn has_legacy_paused(&self) -> bool {
+        self.env
+            .storage()
+            .instance()
+            .has(&SorobanStorageKey::Paused)
+    }
+
+    /// Get the legacy pause value and remove it (for migration).
+    pub fn take_legacy_paused(&self) -> Option<bool> {
+        if self.has_legacy_paused() {
+            let paused: bool = self
+                .env
+                .storage()
+                .instance()
+                .get(&SorobanStorageKey::Paused)
+                .unwrap_or(false);
+            self.env
+                .storage()
+                .instance()
+                .remove(&SorobanStorageKey::Paused);
+            Some(paused)
+        } else {
+            None
+        }
     }
 
     /// Check if storage has been initialized.
@@ -331,6 +389,19 @@ impl Storage for SorobanStorage<'_> {
         self.extend_default_ttl();
         Ok(())
     }
+
+    fn load_address(&self, kernel_addr: &Address) -> Result<Option<SdkAddress>, RuntimeError> {
+        Ok(SorobanStorage::load_address(self, kernel_addr))
+    }
+
+    fn save_address(
+        &mut self,
+        kernel_addr: &Address,
+        soroban_addr: &SdkAddress,
+    ) -> Result<(), RuntimeError> {
+        SorobanStorage::save_address(self, kernel_addr, soroban_addr);
+        Ok(())
+    }
 }
 
 /// Storage version identifier.
@@ -474,6 +545,16 @@ pub trait Storage {
         &mut self,
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError>;
+
+    /// Load a kernel-to-Soroban address mapping.
+    fn load_address(&self, kernel_addr: &Address) -> Result<Option<SdkAddress>, RuntimeError>;
+
+    /// Persist a kernel-to-Soroban address mapping.
+    fn save_address(
+        &mut self,
+        kernel_addr: &Address,
+        soroban_addr: &SdkAddress,
+    ) -> Result<(), RuntimeError>;
 }
 
 /// In-memory storage implementation for testing.
@@ -484,6 +565,7 @@ pub struct MemoryStorage {
     paused: bool,
     policy_state: Option<PolicyState>,
     restrictions: Option<Restrictions>,
+    address_book: BTreeMap<Address, SdkAddress>,
 }
 
 impl MemoryStorage {
@@ -504,6 +586,7 @@ impl MemoryStorage {
             paused: false,
             policy_state: None,
             restrictions: None,
+            address_book: BTreeMap::new(),
         }
     }
 
@@ -521,6 +604,7 @@ impl MemoryStorage {
         self.initialized = false;
         self.policy_state = None;
         self.restrictions = None;
+        self.address_book.clear();
     }
 }
 
@@ -573,6 +657,19 @@ impl Storage for MemoryStorage {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         self.restrictions = restrictions.clone();
+        Ok(())
+    }
+
+    fn load_address(&self, kernel_addr: &Address) -> Result<Option<SdkAddress>, RuntimeError> {
+        Ok(self.address_book.get(kernel_addr).cloned())
+    }
+
+    fn save_address(
+        &mut self,
+        kernel_addr: &Address,
+        soroban_addr: &SdkAddress,
+    ) -> Result<(), RuntimeError> {
+        self.address_book.insert(*kernel_addr, soroban_addr.clone());
         Ok(())
     }
 }

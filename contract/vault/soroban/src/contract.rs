@@ -16,15 +16,14 @@ use crate::fungible_vault::{
 use alloc::vec;
 use alloc::vec::Vec;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, Address as SdkAddress, Bytes, Env,
+    contract, contractimpl, contracttype, panic_with_error, Address as SdkAddress, Bytes, BytesN,
+    Env,
 };
 use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
-use templar_vault_kernel::state::queue::{
-    can_partially_satisfy, compute_full_withdrawal, compute_partial_withdrawal, DEFAULT_COOLDOWN_NS,
-};
+use templar_vault_kernel::state::queue::{compute_full_withdrawal, DEFAULT_COOLDOWN_NS};
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, compute_fee_shares_from_assets,
     convert_to_assets, convert_to_assets_ceil, convert_to_shares, convert_to_shares_ceil,
@@ -388,8 +387,17 @@ where
     }
 
     /// Register a kernel address mapping for effect execution.
-    pub fn register_address(&mut self, kernel_addr: Address, soroban_addr: SdkAddress) {
+    ///
+    /// Persists the mapping so follow-up calls can resolve addresses
+    /// even when the Soroban address is not provided again.
+    pub fn register_address(
+        &mut self,
+        kernel_addr: Address,
+        soroban_addr: SdkAddress,
+    ) -> Result<(), RuntimeError> {
+        self.storage.save_address(&kernel_addr, &soroban_addr)?;
         self.interpreter.register_address(kernel_addr, soroban_addr);
+        Ok(())
     }
 
     /// Save vault state to storage.
@@ -489,16 +497,19 @@ where
                 "vault address mismatch for effect mapping",
             ));
         }
-        self.interpreter
-            .register_address(vault_kernel, vault_sdk.clone());
-        self.interpreter.register_address(ESCROW_ADDRESS, vault_sdk);
+        self.register_address(vault_kernel, vault_sdk.clone())?;
+        self.register_address(ESCROW_ADDRESS, vault_sdk)?;
         Ok(())
     }
 
-    fn register_sdk_address(&mut self, env: &Env, addr: &SdkAddress) -> Address {
+    fn register_sdk_address(
+        &mut self,
+        env: &Env,
+        addr: &SdkAddress,
+    ) -> Result<Address, RuntimeError> {
         let kernel_addr = kernel_address_from_sdk(env, addr);
-        self.interpreter.register_address(kernel_addr, addr.clone());
-        kernel_addr
+        self.register_address(kernel_addr, addr.clone())?;
+        Ok(kernel_addr)
     }
 
     fn kernel_config(&self) -> VaultConfig {
@@ -608,26 +619,26 @@ where
     }
 
     fn ensure_effect_addresses_mapped(
-        &self,
+        &mut self,
         effects: &[KernelEffect],
         ctx: &EffectContext,
     ) -> Result<(), RuntimeError> {
         for effect in effects {
             match effect {
                 KernelEffect::MintShares { owner, .. } | KernelEffect::BurnShares { owner, .. } => {
-                    self.require_mapped(owner)?;
+                    self.ensure_mapped(owner)?;
                 }
                 KernelEffect::TransferShares { from, to, .. } => {
-                    self.require_mapped(from)?;
-                    self.require_mapped(to)?;
+                    self.ensure_mapped(from)?;
+                    self.ensure_mapped(to)?;
                 }
                 KernelEffect::TransferAssets { to, .. } => {
-                    self.require_mapped(&ctx.vault_address)?;
-                    self.require_mapped(to)?;
+                    self.ensure_mapped(&ctx.vault_address)?;
+                    self.ensure_mapped(to)?;
                 }
                 KernelEffect::TransferAssetsFrom { from, to, .. } => {
-                    self.require_mapped(from)?;
-                    self.require_mapped(to)?;
+                    self.ensure_mapped(from)?;
+                    self.ensure_mapped(to)?;
                 }
                 _ => {}
             }
@@ -635,12 +646,15 @@ where
         Ok(())
     }
 
-    fn require_mapped(&self, addr: &Address) -> Result<(), RuntimeError> {
+    fn ensure_mapped(&mut self, addr: &Address) -> Result<(), RuntimeError> {
         if self.interpreter.has_address(addr) {
-            Ok(())
-        } else {
-            Err(RuntimeError::effect_failed("missing address mapping"))
+            return Ok(());
         }
+        if let Some(soroban_addr) = self.storage.load_address(addr)? {
+            self.interpreter.register_address(*addr, soroban_addr);
+            return Ok(());
+        }
+        Err(RuntimeError::effect_failed("missing address mapping"))
     }
 
     // =========================================================================
@@ -694,8 +708,8 @@ where
         now_ns: u64,
     ) -> Result<DepositResult, RuntimeError> {
         self.ensure_vault_mapped(env)?;
-        let caller_kernel = self.register_sdk_address(env, &caller);
-        let receiver_kernel = self.register_sdk_address(env, &receiver);
+        let caller_kernel = self.register_sdk_address(env, &caller)?;
+        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
         self.deposit(
             caller_kernel,
             receiver_kernel,
@@ -754,8 +768,8 @@ where
         now_ns: u64,
     ) -> Result<WithdrawRequestResult, RuntimeError> {
         self.ensure_vault_mapped(env)?;
-        let caller_kernel = self.register_sdk_address(env, &caller);
-        let receiver_kernel = self.register_sdk_address(env, &receiver);
+        let caller_kernel = self.register_sdk_address(env, &caller)?;
+        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
         self.request_withdraw(
             caller_kernel,
             receiver_kernel,
@@ -806,7 +820,7 @@ where
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
         self.ensure_vault_mapped(env)?;
-        let caller_kernel = self.register_sdk_address(env, &caller);
+        let caller_kernel = self.register_sdk_address(env, &caller)?;
         self.execute_withdraw(caller_kernel, now_ns)
     }
 
@@ -839,15 +853,12 @@ where
             return Ok(EffectSummary::new());
         }
 
-        let withdrawal_result = if available_assets >= pending.expected_assets {
-            compute_full_withdrawal(pending, available_assets)
-                .ok_or_else(|| RuntimeError::contract_error("withdrawal not satisfiable"))?
-        } else {
-            if !can_partially_satisfy(pending, available_assets) {
-                return Ok(EffectSummary::new());
-            }
-            compute_partial_withdrawal(pending, available_assets)
-        };
+        if available_assets < pending.expected_assets {
+            return Ok(EffectSummary::new());
+        }
+
+        let withdrawal_result = compute_full_withdrawal(pending, available_assets)
+            .ok_or_else(|| RuntimeError::contract_error("withdrawal not satisfiable"))?;
 
         let assets_out = withdrawal_result.assets_out;
         if assets_out == 0 {
@@ -865,6 +876,7 @@ where
         let collected = withdrawal_collected(self.state().op_state.clone(), op_id, burn_shares)
             .map_err(RuntimeError::transition_error)?;
         let ctx = self.effect_context(now_ns);
+        self.ensure_effect_addresses_mapped(&collected.effects, &ctx)?;
         let mut summary = self.interpreter.execute_effects(&collected.effects, &ctx)?;
         self.state_mut().op_state = collected.new_state;
 
@@ -881,6 +893,7 @@ where
             to: payout.receiver,
             amount: assets_out,
         }];
+        self.ensure_effect_addresses_mapped(&transfer_effects, &ctx)?;
         let transfer_summary = self.interpreter.execute_effects(&transfer_effects, &ctx)?;
         summary.merge(transfer_summary);
 
@@ -1522,11 +1535,30 @@ fn query_vault_field(env: &Env, f: fn(&VaultState) -> u128) -> i128 {
     }
 }
 
+/// Migrate pause state from legacy storage locations to OZ Pausable storage.
+///
+/// Handles migration from:
+/// 1. `VaultDataKey::Paused` (oldest location)
+/// 2. `SorobanStorageKey::Paused` (intermediate location)
+///
+/// Both are migrated to OZ's `PausableStorageKey::Paused`.
 fn migrate_legacy_paused(env: &Env) {
-    if let Some(paused) = env.storage().instance().get(&VaultDataKey::Paused) {
-        let storage = SorobanStorage::new(env);
+    let storage = SorobanStorage::new(env);
+
+    // Migrate from VaultDataKey::Paused (oldest)
+    if let Some(paused) = env
+        .storage()
+        .instance()
+        .get::<_, bool>(&VaultDataKey::Paused)
+    {
         storage.set_paused(paused);
         env.storage().instance().remove(&VaultDataKey::Paused);
+        return; // Only one legacy location should exist
+    }
+
+    // Migrate from SorobanStorageKey::Paused (intermediate)
+    if let Some(paused) = storage.take_legacy_paused() {
+        storage.set_paused(paused);
     }
 }
 
@@ -1534,6 +1566,13 @@ fn with_contract_vault<T>(
     env: &Env,
     f: impl FnOnce(&mut ContractVault<'_>) -> Result<T, RuntimeError>,
 ) -> Result<T, RuntimeError> {
+    // Block operations during migration (upgrade in progress)
+    if stellar_contract_utils::upgradeable::can_complete_migration(env) {
+        return Err(RuntimeError::invalid_state(
+            "migration in progress - call migrate() first",
+        ));
+    }
+
     extend_storage_ttl(env);
     migrate_legacy_paused(env);
     let curator: SdkAddress = get_config_address(env, &VaultDataKey::Curator)
@@ -1758,7 +1797,11 @@ impl SorobanVaultContract {
 
     /// Pause or unpause the vault.
     ///
+    /// Emits both OZ Pausable events (`Paused`/`Unpaused`) and kernel events
+    /// (`PauseUpdated`) for backwards compatibility.
     pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) -> Result<(), ContractError> {
+        use stellar_contract_utils::pausable::{emit_paused, emit_unpaused};
+
         require_signed(&caller);
         let caller_kernel = kernel_address_from_sdk(&env, &caller);
 
@@ -1766,6 +1809,14 @@ impl SorobanVaultContract {
             .map_err(ContractError::from)?;
         env.storage().instance().remove(&VaultDataKey::Paused);
 
+        // Emit OZ Pausable events
+        if paused {
+            emit_paused(&env);
+        } else {
+            emit_unpaused(&env);
+        }
+
+        // Emit kernel event for backwards compatibility
         let payload =
             borsh::to_vec(&templar_vault_kernel::effects::KernelEvent::PauseUpdated { paused })
                 .map_err(|_| RuntimeError::storage_error("failed to serialize pause event"))?;
@@ -1806,6 +1857,24 @@ impl SorobanVaultContract {
     ) -> Result<(), ContractError> {
         require_curator(&env, &caller)?;
         set_config_address(&env, &VaultDataKey::BlendFactory, &factory);
+        Ok(())
+    }
+
+    /// Register a Soroban address for kernel effect execution (curator only).
+    ///
+    /// This persists the mapping so later calls can resolve fee recipients or
+    /// queued withdrawal addresses without re-providing them.
+    pub fn register_address(
+        env: Env,
+        caller: SdkAddress,
+        address: SdkAddress,
+    ) -> Result<(), ContractError> {
+        require_curator(&env, &caller)?;
+        with_contract_vault(&env, |vault| {
+            vault.register_sdk_address(&env, &address)?;
+            Ok(())
+        })
+        .map_err(ContractError::from)?;
         Ok(())
     }
 
@@ -1865,6 +1934,73 @@ impl SorobanVaultContract {
     /// Call periodically to prevent state expiry.
     pub fn extend_ttl(env: Env) {
         extend_storage_ttl(&env);
+    }
+
+    // -------------------------------------------------------------------------
+    // Upgradeable (OZ)
+    // -------------------------------------------------------------------------
+
+    /// Upgrade the contract to a new WASM implementation.
+    ///
+    /// Only the curator can perform upgrades. After calling this, the contract
+    /// enters migration mode and normal operations are blocked until `migrate()`
+    /// is called.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_wasm_hash` - The hash of the new WASM blob uploaded to the ledger.
+    /// * `operator` - The curator address performing the upgrade.
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        operator: SdkAddress,
+    ) -> Result<(), ContractError> {
+        require_curator(&env, &operator)?;
+
+        // Enable migration state before upgrading
+        stellar_contract_utils::upgradeable::enable_migration(&env);
+
+        // Replace contract code - takes effect after this invocation completes
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Complete migration after an upgrade.
+    ///
+    /// Must be called after `upgrade()` before normal operations can resume.
+    /// Runs any pending storage migrations.
+    ///
+    /// # Arguments
+    ///
+    /// * `operator` - The curator address completing the migration.
+    pub fn migrate(env: Env, operator: SdkAddress) -> Result<(), ContractError> {
+        use stellar_contract_utils::upgradeable::{
+            complete_migration, ensure_can_complete_migration,
+        };
+
+        require_curator(&env, &operator)?;
+
+        // Verify we're in migration state (upgrade was called)
+        ensure_can_complete_migration(&env);
+
+        // Run storage migrations
+        migrate_legacy_paused(&env);
+
+        // Extend TTL after migration
+        extend_storage_ttl(&env);
+
+        // Mark migration as complete - normal operations can resume
+        complete_migration(&env);
+
+        Ok(())
+    }
+
+    /// Check if migration is in progress.
+    ///
+    /// Returns true if `upgrade()` was called but `migrate()` has not completed.
+    pub fn is_migrating(env: Env) -> bool {
+        stellar_contract_utils::upgradeable::can_complete_migration(&env)
     }
 }
 
