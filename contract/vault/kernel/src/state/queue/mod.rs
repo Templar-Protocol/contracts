@@ -38,7 +38,8 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
     derive(BorshSerialize, BorshDeserialize, BorshSchema)
 )]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     pub owner: Address,
     pub receiver: Address,
@@ -70,7 +71,8 @@ impl PendingWithdrawal {
 /// Result of attempting to satisfy a withdrawal from available assets.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalResult {
     pub assets_out: u128,
     pub settlement: EscrowSettlement,
@@ -79,7 +81,8 @@ pub struct WithdrawalResult {
 /// Status information for a single withdrawal request in the queue.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalRequestStatus {
     pub index: u32,
     pub depth_assets: u128,
@@ -89,7 +92,8 @@ pub struct WithdrawalRequestStatus {
 /// Aggregate status of the entire withdrawal queue.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct QueueStatus {
     pub length: u32,
     pub total_expected_assets: u128,
@@ -422,7 +426,8 @@ pub use crate::state::vault::MAX_PENDING;
     derive(BorshSerialize, BorshDeserialize, BorshSchema)
 )]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
     pub pending_withdrawals: BTreeMap<u64, PendingWithdrawal>,
@@ -779,7 +784,8 @@ impl WithdrawQueue {
 /// Errors that can occur during queue operations.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum QueueError {
     /// Queue is at maximum capacity.
     QueueFull { current: u32, max: u32 },

@@ -25,7 +25,8 @@ pub const MAX_PENDING: usize = 1024;
 /// based on AUM growth.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeAccrualAnchor {
     pub total_assets: u128,
     pub timestamp_ns: TimestampNs,
@@ -74,7 +75,8 @@ impl Default for FeeAccrualAnchor {
 /// this canonical 32-byte format, typically using a SHA256 hash.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VaultConfig {
     pub fees: FeesSpec,
     pub min_withdrawal_assets: u128,
@@ -108,7 +110,8 @@ impl VaultConfig {
 /// - Operations can only proceed when `op_state` allows them
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VaultState {
     pub total_assets: u128,
     pub total_shares: u128,

@@ -22,7 +22,8 @@ pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 ///
 /// When the `serde` feature is enabled, serializes transparently as Number
 /// (which serializes to a decimal string for JSON compatibility).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Wad(pub Number);
 
 #[cfg(feature = "serde")]
@@ -85,7 +86,7 @@ mod borsh_impl {
 mod schemars_impl {
     use super::*;
     use alloc::string::ToString;
-    use schemars::gen::SchemaGenerator;
+    use schemars::r#gen::SchemaGenerator;
     use schemars::schema::Schema;
     use schemars::JsonSchema;
 

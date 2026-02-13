@@ -45,7 +45,8 @@ pub type TargetId = u32;
 /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IdleState;
 
 /// Supplying idle underlying to targets according to a plan or queue.
@@ -55,7 +56,8 @@ pub struct IdleState;
 /// - On stop/failure: `Idle`.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AllocatingState {
     pub op_id: u64,
     pub index: u32,
@@ -71,7 +73,8 @@ pub struct AllocatingState {
 /// - If the op is stopped or cannot proceed and needs to refund: `Idle` (escrow_shares refunded).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawingState {
     pub op_id: u64,
     pub index: u32,
@@ -89,7 +92,8 @@ pub struct WithdrawingState {
 /// - On failure: `Idle` (with potentially stale AUM data).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RefreshingState {
     pub op_id: u64,
     pub index: u32,
@@ -107,7 +111,8 @@ pub struct RefreshingState {
 /// - On failure, all `escrow_shares` are refunded.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PayoutState {
     pub op_id: u64,
     pub receiver: Address,
@@ -174,7 +179,8 @@ impl RefreshingState {
 /// - `escrow_shares` are refunded on stop/failure or partially burned/refunded on payout success.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, Default, PartialEq, Eq, From, IsVariant)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default, PartialEq, Eq, From, IsVariant)]
 pub enum OpState {
     /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
     #[default]

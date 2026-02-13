@@ -16,7 +16,8 @@ use super::supply_queue::SupplyQueue;
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MarketConfig {
     pub enabled: bool,
     pub cap_group_id: Option<CapGroupId>,
@@ -46,7 +47,8 @@ impl Default for MarketConfig {
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct PolicyState {
     pub markets: BTreeMap<TargetId, MarketConfig>,
     pub principals: BTreeMap<TargetId, u128>,

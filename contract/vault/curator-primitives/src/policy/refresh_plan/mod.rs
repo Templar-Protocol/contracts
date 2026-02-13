@@ -12,7 +12,8 @@ use super::target_set::find_first_duplicate;
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct RefreshPlan {
     /// Ordered list of target IDs to refresh.
     pub targets: Vec<TargetId>,
@@ -125,7 +126,8 @@ impl From<Vec<TargetId>> for RefreshPlan {
 }
 
 /// Errors that can occur during refresh plan operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum RefreshPlanError {
     /// Plan is empty.
     EmptyPlan,

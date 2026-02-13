@@ -464,7 +464,7 @@ fn test_sync_external_assets_reports_failed_market_ids() {
     let invalid_state = matches!(
         &err,
         Err(RuntimeError::InvalidState(msg))
-            if msg.contains("adapter query failed for markets") && msg.contains("1")
+            if msg.contains("adapter query failed for some markets")
     );
     assert!(invalid_state, "unexpected error: {err:?}");
 }

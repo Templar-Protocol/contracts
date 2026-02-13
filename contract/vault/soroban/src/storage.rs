@@ -23,7 +23,8 @@ pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 /// Using `#[contracttype]` allows the key enum to be used with Soroban's
 /// native storage API.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone)]
 pub enum SorobanStorageKey {
     StateBlob,
     /// Policy state (locks, caps, supply queue).
@@ -396,12 +397,12 @@ impl Storage for SorobanStorage<'_> {
 }
 
 /// Storage version identifier.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(
     borsh::BorshSerialize,
     borsh::BorshDeserialize,
     Clone,
     Copy,
-    Debug,
     PartialEq,
     Eq,
     PartialOrd,
@@ -449,7 +450,8 @@ impl Default for StorageVersion {
 /// Versioned state wrapper.
 ///
 /// Wraps vault state with version information for storage migration support.
-#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, PartialEq, Eq)]
 pub struct VersionedState {
     /// Storage schema version.
     pub version: StorageVersion,
@@ -483,7 +485,8 @@ impl Default for VersionedState {
 }
 
 /// Storage key types for different data categories.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StorageKey {
     /// Main vault state.
     VaultState,
@@ -549,7 +552,8 @@ pub trait Storage {
 }
 
 /// In-memory storage implementation for testing.
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct MemoryStorage {
     state: Option<VersionedState>,
     initialized: bool,

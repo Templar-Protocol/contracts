@@ -14,7 +14,8 @@
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Cooldown {
     /// Timestamp of the last operation (nanoseconds), if any.
     pub last_event_ns: Option<u64>,
@@ -119,7 +120,8 @@ impl Cooldown {
 }
 
 /// Errors that can occur during cooldown checks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum CooldownError {
     /// Operation is still on cooldown.
     OnCooldown {

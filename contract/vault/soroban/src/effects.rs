@@ -26,7 +26,8 @@ pub type EffectResult<T> = Result<T, RuntimeError>;
 ///
 /// Contains information about the current execution environment
 /// that effect handlers may need.
-#[derive(Clone, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone)]
 pub struct EffectContext {
     /// Current timestamp in nanoseconds.
     pub now_ns: u64,
@@ -60,7 +61,8 @@ impl EffectContext {
 /// Effect execution summary.
 ///
 /// Tracks the cumulative results of executing a batch of effects.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct EffectSummary {
     /// Total shares minted.
     pub shares_minted: u128,

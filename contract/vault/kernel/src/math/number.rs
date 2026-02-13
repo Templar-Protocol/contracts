@@ -14,7 +14,8 @@ pub type WIDE = U512;
 ///
 /// When the `serde` feature is enabled, serializes to/from a decimal string
 /// for compatibility with JSON-based APIs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Number(pub U256);
 
 #[cfg(feature = "serde")]
@@ -104,7 +105,7 @@ mod borsh_impl {
 mod schemars_impl {
     use super::*;
     use alloc::string::ToString;
-    use schemars::gen::SchemaGenerator;
+    use schemars::r#gen::SchemaGenerator;
     use schemars::schema::Schema;
     use schemars::JsonSchema;
 

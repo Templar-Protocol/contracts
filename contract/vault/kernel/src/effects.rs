@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 /// underlying blockchain (token operations, external calls, etc.).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum KernelEffect {
     /// Mint new share tokens to an owner.
     MintShares { owner: Address, shares: u128 },
@@ -54,7 +55,8 @@ pub enum KernelEffect {
 /// Callback identifiers for async cross-contract calls.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum KernelCallback {
     /// Callback for allocation step completion.
     AllocationStep,
@@ -69,7 +71,8 @@ pub enum KernelCallback {
 /// Events emitted by kernel transitions for indexing and observability.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, IsVariant)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum KernelEvent {
     /// Allocation operation started.
     AllocationStarted {

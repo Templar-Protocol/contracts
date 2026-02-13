@@ -7,7 +7,8 @@ use crate::governance::{
 };
 use crate::recovery::RecoveryOutcome;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     feature = "boundary",
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -56,7 +57,8 @@ pub const fn membership_change_error_message(error: MembershipChangeError) -> &'
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundaryAuthPattern {
     OwnerOnly,
     GuardianOrOwner,
@@ -77,7 +79,7 @@ pub const fn boundary_auth_pattern_for(action: ActionKind) -> BoundaryAuthPatter
 #[must_use]
 pub fn auth_error_message(error: &AuthError) -> String {
     match error {
-        AuthError::NotAuthorized { caller, .. } => format!("Not authorized: {caller:?}"),
+        AuthError::NotAuthorized { caller, .. } => format!("Not authorized: {caller}"),
         AuthError::InvalidProof => String::from("Invalid proof"),
         AuthError::MissingRole(role) => format!("Missing role: {role}"),
         AuthError::VaultPaused => String::from("Vault is paused"),

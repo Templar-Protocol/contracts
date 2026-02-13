@@ -19,7 +19,8 @@ pub use crate::types::EscrowSettlement;
 /// Tracks shares held in escrow for a pending withdrawal.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EscrowEntry {
     pub owner: Address,
     pub shares: u128,
@@ -54,7 +55,8 @@ impl EscrowEntry {
 /// Result of applying a settlement to an escrow entry.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SettlementResult {
     pub burned: u128,
     pub refunded: u128,
@@ -64,7 +66,8 @@ pub struct SettlementResult {
 /// Aggregate escrow statistics.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct EscrowStats {
     pub count: u32,
     pub total_shares: u128,

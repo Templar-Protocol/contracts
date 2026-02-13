@@ -7,10 +7,12 @@
 //! signature verification while sharing the same action kinds and error types.
 
 use alloc::string::String;
+use core::fmt;
 use templar_vault_kernel::{Address, KernelAction};
 
 /// Shared auth policy profile used to classify action authorization behavior.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -31,7 +33,8 @@ pub enum AuthPolicyProfile {
 }
 
 /// Shared authorization class for an action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -118,7 +121,8 @@ pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
 }
 
 /// Kinds of actions that require authorization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -212,11 +216,50 @@ impl From<KernelAction> for ActionKind {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    Admin,
+    Curator,
+    Guardian,
+    Sentinel,
+    Allocator,
+    User,
+}
+
+impl Caller {
+    #[inline]
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "Admin",
+            Self::Curator => "Curator",
+            Self::Guardian => "Guardian",
+            Self::Sentinel => "Sentinel",
+            Self::Allocator => "Allocator",
+            Self::User => "User",
+        }
+    }
+}
+
+impl fmt::Display for Caller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<Address> for Caller {
+    fn from(_: Address) -> Self {
+        Self::User
+    }
+}
+
 /// Authorization error details.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AuthError {
     /// Caller is not authorized for this action.
-    NotAuthorized { caller: Address, action: ActionKind },
+    NotAuthorized { caller: Caller, action: ActionKind },
     /// Invalid proof provided.
     InvalidProof,
     /// Missing required role.
@@ -246,7 +289,8 @@ pub trait AuthAdapter {
 }
 
 /// A permissive auth adapter that allows all actions (for testing).
-#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, Default)]
 pub struct PermissiveAuth;
 
 impl AuthAdapter for PermissiveAuth {
@@ -265,7 +309,8 @@ impl AuthAdapter for PermissiveAuth {
 }
 
 /// A strict auth adapter that denies all privileged actions (for testing).
-#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, Default)]
 pub struct StrictAuth {
     paused: bool,
 }
@@ -298,7 +343,10 @@ impl AuthAdapter for StrictAuth {
         }
 
         if action.is_privileged(AuthPolicyProfile::Canonical) {
-            return Err(AuthError::NotAuthorized { caller, action });
+            return Err(AuthError::NotAuthorized {
+                caller: caller.into(),
+                action,
+            });
         }
 
         Ok(())

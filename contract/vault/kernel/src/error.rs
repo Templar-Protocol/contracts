@@ -5,7 +5,8 @@ use crate::transitions::TransitionError;
 use derive_more::Display;
 
 /// Errors that can occur when applying kernel actions.
-#[derive(Clone, Debug, PartialEq, Eq, Display)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Display)]
 pub enum KernelError {
     /// Action not allowed in the current state.
     #[display("{_0}")]
@@ -48,7 +49,7 @@ pub enum KernelError {
     NotImplemented,
 
     /// Action blocked by access restrictions.
-    #[display("restricted: {_0:?}")]
+    #[display("restricted: {_0}")]
     Restricted(RestrictionKind),
 
     /// Invalid configuration value.

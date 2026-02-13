@@ -16,7 +16,8 @@ use crate::types::Address;
 ///
 /// Unlike [`Restrictions`], this does not carry the full BTreeSet, avoiding
 /// allocations on every auth-failure path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RestrictionKind {
     /// Vault is paused.
     Paused,
@@ -31,7 +32,8 @@ pub enum RestrictionKind {
 /// Supports Pausing, Whitelist, and Blacklist functionality.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, PartialEq, Eq, IsVariant)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum Restrictions {
     /// Vault is paused - all operations blocked.
     Paused,
@@ -41,6 +43,16 @@ pub enum Restrictions {
     /// Whitelist - only specified actors are allowed.
     #[cfg_attr(feature = "serde", serde(rename = "WhiteList"))]
     Whitelist(BTreeSet<Address>),
+}
+
+impl core::fmt::Display for RestrictionKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Paused => f.write_str("Paused"),
+            Self::Blacklisted => f.write_str("Blacklisted"),
+            Self::NotWhitelisted => f.write_str("NotWhitelisted"),
+        }
+    }
 }
 
 impl Restrictions {

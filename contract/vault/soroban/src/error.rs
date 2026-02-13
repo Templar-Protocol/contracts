@@ -36,7 +36,8 @@ pub enum ContractError {
 }
 
 /// Errors that can occur during runtime execution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum RuntimeError {
     /// Authorization failed.
     Unauthorized(String),
@@ -86,8 +87,8 @@ impl RuntimeError {
     /// Create a transition error (alias for kernel_error).
     #[inline]
     #[must_use]
-    pub fn transition_error<E: core::fmt::Debug>(err: E) -> Self {
-        Self::KernelError(alloc::format!("{:?}", err))
+    pub fn transition_error<E: core::fmt::Display>(err: E) -> Self {
+        Self::KernelError(alloc::format!("{}", err))
     }
 
     /// Create an insufficient balance error.
@@ -136,11 +137,57 @@ impl RuntimeError {
     }
 }
 
+impl core::fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unauthorized(msg)
+            | Self::InvalidState(msg)
+            | Self::StorageError(msg)
+            | Self::EffectFailed(msg)
+            | Self::InvalidInput(msg)
+            | Self::KernelError(msg) => write!(f, "{msg}"),
+            Self::InsufficientBalance {
+                available,
+                required,
+            } => {
+                write!(
+                    f,
+                    "insufficient balance: available={available}, required={required}"
+                )
+            }
+        }
+    }
+}
+
+fn action_kind_name(action: crate::auth::ActionKind) -> &'static str {
+    use crate::auth::ActionKind;
+
+    match action {
+        ActionKind::Deposit => "Deposit",
+        ActionKind::RequestWithdraw => "RequestWithdraw",
+        ActionKind::ExecuteWithdraw => "ExecuteWithdraw",
+        ActionKind::Pause => "Pause",
+        ActionKind::SetRestrictions => "SetRestrictions",
+        ActionKind::BeginAllocating => "BeginAllocating",
+        ActionKind::FinishAllocating => "FinishAllocating",
+        ActionKind::SyncExternalAssets => "SyncExternalAssets",
+        ActionKind::BeginRefreshing => "BeginRefreshing",
+        ActionKind::FinishRefreshing => "FinishRefreshing",
+        ActionKind::AbortAllocating => "AbortAllocating",
+        ActionKind::AbortWithdrawing => "AbortWithdrawing",
+        ActionKind::AbortRefreshing => "AbortRefreshing",
+        ActionKind::SettlePayout => "SettlePayout",
+        ActionKind::RefreshFees => "RefreshFees",
+        ActionKind::ManualReconcile => "ManualReconcile",
+        ActionKind::EmergencyReset => "EmergencyReset",
+    }
+}
+
 impl From<crate::auth::AuthError> for RuntimeError {
     fn from(err: crate::auth::AuthError) -> Self {
         match err {
             crate::auth::AuthError::NotAuthorized { caller, action } => RuntimeError::unauthorized(
-                alloc::format!("{:?} not authorized for {:?}", caller, action),
+                alloc::format!("{} not authorized for {}", caller, action_kind_name(action)),
             ),
             crate::auth::AuthError::InvalidProof => RuntimeError::unauthorized("invalid proof"),
             crate::auth::AuthError::MissingRole(role) => {

@@ -37,7 +37,8 @@ use crate::types::Address;
 use derive_more::Display;
 
 /// Error types for state transitions.
-#[derive(Clone, Debug, PartialEq, Eq, Display)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Display)]
 pub enum TransitionError {
     /// Attempted a transition in the wrong state.
     #[display("requires {expected} state, but current state is {actual}")]
@@ -112,7 +113,8 @@ fn validate_plan_index(index: u32, plan_len: usize) -> Result<(), TransitionErro
 }
 
 /// Result of a successful state transition.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TransitionResult {
     /// The new state after the transition.
     pub new_state: OpState,
@@ -354,7 +356,8 @@ pub fn complete_allocation(
 // Withdrawal Transitions
 
 /// Request for a withdrawal operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalRequest {
     /// Unique operation ID.
     pub op_id: u64,

@@ -36,7 +36,8 @@ pub trait SorobanMarketAdapter {
 }
 
 /// Settlement receipt for a cross-chain allocation attempt.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SettlementReceipt {
     /// Operation ID from the kernel.
     pub op_id: u64,
@@ -93,7 +94,8 @@ pub trait SorobanCrossChainMarketAdapter {
 pub type AttemptId = u64;
 
 /// Reference to a market configuration entry.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct MarketRef {
     /// Market target identifier.
     pub market_id: TargetId,
@@ -155,7 +157,8 @@ pub trait CrossChainMarketAdapter {
 }
 
 /// Test implementation of `SorobanMarketAdapter` for use with SDK testutils.
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct TestMarketAdapter {
     /// Total assets to return.
     pub mock_total_assets: i128,
@@ -209,7 +212,8 @@ impl SorobanMarketAdapter for TestMarketAdapter {
 }
 
 /// Test implementation of `SorobanCrossChainMarketAdapter` for use with SDK testutils.
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct TestCrossChainAdapter {
     /// Next attempt ID to return.
     pub next_attempt_id: u64,

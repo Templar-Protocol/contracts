@@ -12,7 +12,8 @@ use super::target_set::find_first_duplicate;
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct WithdrawRouteEntry {
     pub target_id: TargetId,
@@ -50,7 +51,8 @@ impl From<(TargetId, u128)> for WithdrawRouteEntry {
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct WithdrawRoute {
     pub entries: Vec<WithdrawRouteEntry>,
     pub target_amount: u128,
@@ -189,7 +191,8 @@ impl From<(Vec<WithdrawRouteEntry>, u128)> for WithdrawRoute {
 }
 
 /// Errors that can occur during withdraw route operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum WithdrawRouteError {
     /// Target amount must be greater than zero.
     ZeroTargetAmount,

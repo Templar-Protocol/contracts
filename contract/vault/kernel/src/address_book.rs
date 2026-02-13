@@ -3,7 +3,8 @@ use alloc::collections::BTreeMap;
 use crate::types::Address;
 
 /// Simple address map for resolving kernel addresses to chain-specific values.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AddressBook<T> {
     addresses: BTreeMap<Address, T>,
 }

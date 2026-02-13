@@ -30,7 +30,8 @@ use templar_vault_kernel::types::TimestampNs;
     all(feature = "boundary", not(feature = "serde")),
     serde(crate = "near_sdk::serde")
 )]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PendingValue<T> {
     pub value: T,
     pub valid_at_ns: TimestampNs,
@@ -61,7 +62,8 @@ pub fn queue_schedule<T>(
     queue.push_back(PendingValue::new(value, valid_at_ns));
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PendingQueueError {
     NotMature,
 }
@@ -116,7 +118,8 @@ pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) ->
 }
 
 /// Decision on whether an action should be timelocked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -142,7 +145,8 @@ impl TimelockDecision {
 }
 
 /// Generic restrictions enum for shared governance checks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Restrictions<T> {
     Paused,
     Blacklist(BTreeSet<T>),
@@ -204,7 +208,8 @@ impl<'a, R> FeeConfig<'a, R> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -224,7 +229,8 @@ pub struct FeeChangeDecision {
     pub max_rate_relaxed: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -290,7 +296,8 @@ pub fn evaluate_fee_change<R: PartialEq>(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -327,7 +334,8 @@ pub fn timelock_config_decision(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -358,7 +366,8 @@ pub fn cap_change_decision(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -394,7 +403,8 @@ pub fn relative_cap_change_decision(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)

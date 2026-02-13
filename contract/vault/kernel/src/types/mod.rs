@@ -27,7 +27,8 @@ pub type Address = [u8; 32];
 /// to this form (sha256 hash) and maintain the mapping.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
 pub struct AssetId(pub [u8; 32]);
 
 impl AssetId {
@@ -57,7 +58,8 @@ impl AsRef<[u8]> for AssetId {
 /// Settlement result for escrowed shares.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct EscrowSettlement {
     /// Shares to burn (successfully redeemed).
     pub to_burn: u128,
@@ -91,7 +93,8 @@ impl EscrowSettlement {
 /// Kernel version identifier.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, From, Into)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq, From, Into)]
 pub struct KernelVersion(pub u32);
 
 #[cfg(test)]

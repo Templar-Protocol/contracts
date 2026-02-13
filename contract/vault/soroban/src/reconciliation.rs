@@ -16,7 +16,8 @@ use crate::market::{MarketAdapter, MarketRef, SorobanMarketAdapter};
 /// Audit event types for reconciliation operations.
 ///
 /// These events are emitted during reconciliation to provide an audit trail.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ReconciliationEvent {
     /// Reconciliation started.
     Started {
@@ -139,7 +140,8 @@ impl ReconciliationEvent {
 }
 
 /// Summary record for a manual reconciliation run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReconciliationRecord {
     pub op_id: u64,
     pub markets_refreshed: u32,
@@ -160,7 +162,8 @@ impl ReconciliationRecord {
 }
 
 /// Request parameters for the `resync_external_assets` entrypoint.
-#[derive(Clone, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone)]
 pub struct ResyncRequest {
     /// Caller address (kernel format for auth).
     pub caller: KernelAddress,
@@ -196,7 +199,8 @@ impl ResyncRequest {
 }
 
 /// Result of the `resync_external_assets` entrypoint.
-#[derive(Clone, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone)]
 pub struct ResyncResult {
     /// Reconciliation record with summary.
     pub record: ReconciliationRecord,
@@ -310,7 +314,7 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
                 events.push(ReconciliationEvent::failed(
                     request.op_id,
                     timestamp_ns,
-                    alloc::format!("failed to read market {}: {:?}", market_id, e),
+                    alloc::format!("failed to read market {market_id}: {e}"),
                 ));
                 e
             })?;

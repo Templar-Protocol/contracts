@@ -100,6 +100,7 @@ opt-level = "z"
 lto = true
 debug = false
 panic = "abort"
+strip = "symbols"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
 overflow-checks = true
 

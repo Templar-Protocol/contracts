@@ -11,7 +11,8 @@ use typed_builder::TypedBuilder;
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, TypedBuilder)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct SupplyQueueEntry {
     pub target_id: TargetId,
@@ -58,7 +59,8 @@ impl From<(TargetId, u128)> for SupplyQueueEntry {
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct SupplyQueue {
     pub entries: VecDeque<SupplyQueueEntry>,
     pub max_length: usize,
@@ -220,7 +222,8 @@ impl From<Vec<SupplyQueueEntry>> for SupplyQueue {
 }
 
 /// Errors that can occur during supply queue operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum SupplyQueueError {
     /// Queue is at maximum capacity.
     QueueFull { max_length: usize },

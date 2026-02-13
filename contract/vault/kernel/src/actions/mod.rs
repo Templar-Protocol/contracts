@@ -31,7 +31,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 /// Result of applying a kernel action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KernelResult {
     pub state: VaultState,
     pub effects: Vec<KernelEffect>,
@@ -46,7 +47,8 @@ impl KernelResult {
 /// Outcome for payout settlement.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum PayoutOutcome {
     Success {
         burn_shares: u128,
@@ -64,7 +66,8 @@ pub enum PayoutOutcome {
 /// updates state, and returns effects to be executed by the chain-specific runtime.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum KernelAction {
     /// Begin allocating idle assets to external markets according to a plan.
     ///
@@ -163,7 +166,8 @@ pub enum KernelAction {
 /// Effective totals after applying virtual share/asset offsets.
 ///
 /// Named fields prevent callers from confusing supply vs assets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveTotals {
     pub supply: u128,
     pub assets: u128,

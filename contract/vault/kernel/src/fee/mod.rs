@@ -27,7 +27,8 @@ use crate::types::Address;
 /// For spec-compliant 32-byte address recipients, see `FeeSlot`.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Fee<T> {
     /// The fee rate (interpretation depends on T).
     pub fee: T,
@@ -41,7 +42,8 @@ pub struct Fee<T> {
 /// For spec-compliant types, see `FeesSpec`.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Fees<T> {
     /// Performance fee (charged on profits).
     pub performance: Fee<T>,
@@ -67,7 +69,8 @@ pub struct Fees<T> {
 /// this canonical 32-byte format.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeSlot {
     /// The fee rate as a WAD value (1e24 = 100%).
     pub fee_wad: Wad,
@@ -115,7 +118,8 @@ impl Default for FeeSlot {
 /// for performance and predictable serialization.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeesSpec {
     /// Performance fee (charged on profits).
     pub performance: FeeSlot,

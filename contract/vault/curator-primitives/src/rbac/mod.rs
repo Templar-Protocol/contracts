@@ -22,7 +22,8 @@ use crate::auth::{
 };
 
 /// Role types for RBAC.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
@@ -68,7 +69,8 @@ impl Role {
 }
 
 /// Role assignment for an address.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "boundary", not(feature = "borsh")),
     derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
@@ -98,7 +100,8 @@ impl RoleAssignment {
 }
 
 /// RBAC configuration for the vault.
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct RbacConfig {
     /// List of role assignments.
     pub assignments: Vec<RoleAssignment>,
@@ -185,7 +188,8 @@ pub fn required_role(action: ActionKind) -> Option<Role> {
 ///
 /// This adapter enforces role-based access control for curator vault actions.
 /// It checks that the caller has the required role for each action type.
-#[derive(Clone, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone)]
 pub struct RbacAuth {
     /// RBAC configuration.
     pub config: RbacConfig,

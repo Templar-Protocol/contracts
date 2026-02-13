@@ -11,7 +11,8 @@ use typed_builder::TypedBuilder;
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
 #[display("{_0}")]
 pub struct CapGroupId(pub String);
 
@@ -36,7 +37,8 @@ impl From<&str> for CapGroupId {
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, Default, TypedBuilder)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
     /// `None` means no absolute cap.
@@ -198,7 +200,8 @@ impl CapGroup {
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.
     pub cap: CapGroup,
@@ -262,7 +265,8 @@ impl From<CapGroup> for CapGroupRecord {
 }
 
 /// Errors that can occur during cap group operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum CapGroupError {
     /// Allocation would exceed the absolute cap.
     ExceedsAbsoluteCap {

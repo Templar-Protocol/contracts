@@ -85,7 +85,8 @@ fn require_contract_address(addr: &SdkAddress, msg: &'static str) -> Result<(), 
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, Default)]
 struct NoopMarketAdapter;
 
 impl MarketAdapter for NoopMarketAdapter {
@@ -108,7 +109,8 @@ impl MarketAdapter for NoopMarketAdapter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, Default)]
 struct NoopCrossChainAdapter;
 
 impl CrossChainMarketAdapter for NoopCrossChainAdapter {
@@ -164,7 +166,8 @@ fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
 }
 
 /// Contract configuration set at initialization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ContractConfig {
     /// Curator address.
     pub curator: Address,
@@ -276,7 +279,8 @@ impl ContractConfig {
 }
 
 /// Deposit result returned to caller.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DepositResult {
     /// Shares minted to the receiver.
     pub shares_minted: u128,
@@ -287,7 +291,8 @@ pub struct DepositResult {
 }
 
 /// Withdrawal request result.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawRequestResult {
     /// The withdrawal queue position/ID.
     pub request_id: u64,
@@ -296,7 +301,8 @@ pub struct WithdrawRequestResult {
 }
 
 /// Allocation result.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AllocationResult {
     /// Operation ID.
     pub op_id: u64,
@@ -307,7 +313,8 @@ pub struct AllocationResult {
 }
 
 /// Refresh result.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RefreshResult {
     /// Operation ID.
     pub op_id: u64,
@@ -1097,8 +1104,7 @@ where
             // Partial failure: some targets succeeded, others failed. Reject to
             // prevent accepting an unverifiable value.
             return Err(RuntimeError::contract_error(alloc::format!(
-                "sync_external_assets: adapter query failed for markets {:?}",
-                failed_targets
+                "sync_external_assets: adapter query failed for some markets"
             )));
         }
 
@@ -1451,7 +1457,10 @@ where
             .clone()
             .acquire(lock, current_ns)
             .map_err(|e| {
-                RuntimeError::contract_error(alloc::format!("failed to acquire lock: {:?}", e))
+                RuntimeError::contract_error(alloc::format!(
+                    "failed to acquire lock for target {}",
+                    e.target_id
+                ))
             })?;
         let mut next_policy = self.policy_state.clone();
         next_policy.locks = new_locks;
@@ -1491,7 +1500,8 @@ where
 
 /// Storage keys for the Soroban vault contract.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone)]
 pub enum VaultDataKey {
     /// Curator address.
     Curator,
@@ -1517,7 +1527,8 @@ pub enum VaultDataKey {
 
 /// Batched snapshot of vault balances for view calls.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Eq, PartialEq)]
 pub struct VaultSnapshot {
     pub total_shares: i128,
     pub idle_assets: i128,
