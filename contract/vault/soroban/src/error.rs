@@ -87,8 +87,8 @@ impl RuntimeError {
     /// Create a transition error (alias for kernel_error).
     #[inline]
     #[must_use]
-    pub fn transition_error<E: core::fmt::Display>(err: E) -> Self {
-        Self::KernelError(alloc::format!("{}", err))
+    pub fn transition_error() -> Self {
+        Self::KernelError(String::from("transition failed"))
     }
 
     /// Create an insufficient balance error.
@@ -159,39 +159,15 @@ impl core::fmt::Display for RuntimeError {
     }
 }
 
-fn action_kind_name(action: crate::auth::ActionKind) -> &'static str {
-    use crate::auth::ActionKind;
-
-    match action {
-        ActionKind::Deposit => "Deposit",
-        ActionKind::RequestWithdraw => "RequestWithdraw",
-        ActionKind::ExecuteWithdraw => "ExecuteWithdraw",
-        ActionKind::Pause => "Pause",
-        ActionKind::SetRestrictions => "SetRestrictions",
-        ActionKind::BeginAllocating => "BeginAllocating",
-        ActionKind::FinishAllocating => "FinishAllocating",
-        ActionKind::SyncExternalAssets => "SyncExternalAssets",
-        ActionKind::BeginRefreshing => "BeginRefreshing",
-        ActionKind::FinishRefreshing => "FinishRefreshing",
-        ActionKind::AbortAllocating => "AbortAllocating",
-        ActionKind::AbortWithdrawing => "AbortWithdrawing",
-        ActionKind::AbortRefreshing => "AbortRefreshing",
-        ActionKind::SettlePayout => "SettlePayout",
-        ActionKind::RefreshFees => "RefreshFees",
-        ActionKind::ManualReconcile => "ManualReconcile",
-        ActionKind::EmergencyReset => "EmergencyReset",
-    }
-}
-
 impl From<crate::auth::AuthError> for RuntimeError {
     fn from(err: crate::auth::AuthError) -> Self {
         match err {
-            crate::auth::AuthError::NotAuthorized { caller, action } => RuntimeError::unauthorized(
-                alloc::format!("{} not authorized for {}", caller, action_kind_name(action)),
-            ),
+            crate::auth::AuthError::NotAuthorized { .. } => {
+                RuntimeError::unauthorized("not authorized")
+            }
             crate::auth::AuthError::InvalidProof => RuntimeError::unauthorized("invalid proof"),
-            crate::auth::AuthError::MissingRole(role) => {
-                RuntimeError::unauthorized(alloc::format!("missing role: {}", role))
+            crate::auth::AuthError::MissingRole(_) => {
+                RuntimeError::unauthorized("missing required role")
             }
             crate::auth::AuthError::VaultPaused => RuntimeError::invalid_state("vault is paused"),
         }

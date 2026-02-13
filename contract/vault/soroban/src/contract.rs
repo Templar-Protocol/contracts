@@ -24,23 +24,27 @@ use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
+use templar_vault_kernel::error::KernelError;
 use templar_vault_kernel::state::queue::{compute_full_withdrawal, DEFAULT_COOLDOWN_NS};
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, compute_fee_shares_from_assets,
     convert_to_assets, convert_to_assets_ceil, convert_to_shares, convert_to_shares_ceil,
     mul_div_floor, start_allocation, start_refresh, withdrawal_collected, withdrawal_step_callback,
     Address, AssetId, FeeAccrualAnchor, FeesSpec, KernelAction, Number, OpState, PayoutOutcome,
-    Restrictions, TargetId, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    Restrictions, TargetId, TransitionError, VaultConfig, VaultState, MAX_PENDING,
+    MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::auth::{ActionKind, AuthAdapter};
 use crate::effects::{
     AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary, SdkTokenAdapter,
-    SorobanEffectInterpreter,
+    ShareTokenAdapter, SorobanEffectInterpreter,
 };
 use crate::error::{ContractError, RuntimeError};
 use crate::market::{CrossChainMarketAdapter, MarketAdapter, MarketRef};
-use crate::policy::{build_refresh_plan_with_locks, filter_allocation_plan};
+use crate::policy::{
+    build_refresh_plan_with_locks, filter_allocation_plan, SupplyQueue, SupplyQueueEntry,
+};
 use crate::reconciliation::{reconcile_external_assets, ReconciliationRecord};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig};
@@ -66,10 +70,10 @@ fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
 }
 
 fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
-    env.ledger()
-        .timestamp()
-        .checked_mul(1_000_000_000)
-        .ok_or(ContractError::ConversionOverflow)
+    match env.ledger().timestamp().checked_mul(1_000_000_000) {
+        Some(ns) => Ok(ns),
+        None => Err(ContractError::ConversionOverflow),
+    }
 }
 
 fn is_contract_address(addr: &SdkAddress) -> bool {
@@ -141,12 +145,17 @@ impl CrossChainMarketAdapter for NoopCrossChainAdapter {
 }
 
 fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
-    borsh::to_vec(fees).map_err(|_| RuntimeError::storage_error("fees serialize failed"))
+    match borsh::to_vec(fees) {
+        Ok(bytes) => Ok(bytes),
+        Err(_) => Err(RuntimeError::storage_error("fees serialize failed")),
+    }
 }
 
 fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
-    <FeesSpec as borsh::BorshDeserialize>::try_from_slice(bytes)
-        .map_err(|_| RuntimeError::storage_error("fees deserialize failed"))
+    match <FeesSpec as borsh::BorshDeserialize>::try_from_slice(bytes) {
+        Ok(fees) => Ok(fees),
+        Err(_) => Err(RuntimeError::storage_error("fees deserialize failed")),
+    }
 }
 
 pub(crate) fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
@@ -163,6 +172,16 @@ fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
         .instance()
         .set(&VaultDataKey::FeesSpec, &Bytes::from_slice(env, &bytes));
     Ok(())
+}
+
+#[cold]
+fn contract_error(msg: &'static str) -> RuntimeError {
+    RuntimeError::contract_error(msg)
+}
+
+#[cold]
+fn invalid_state_error(msg: &'static str) -> RuntimeError {
+    RuntimeError::invalid_state(msg)
 }
 
 /// Contract configuration set at initialization.
@@ -440,65 +459,51 @@ where
         action: KernelAction,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        self.auth.authorize(kind, caller, None)?;
+        self.authorize(kind, caller)?;
         self.apply_kernel_action(action, now_ns)
     }
 
-    fn begin_operation<F>(
+    fn authorize_and_apply_unit(
         &mut self,
         kind: ActionKind,
         caller: Address,
-        apply: F,
-    ) -> Result<u64, RuntimeError>
-    where
-        F: FnOnce(&mut VaultState, u64) -> Result<OpState, RuntimeError>,
-    {
-        self.auth.authorize(kind, caller, None)?;
-        let state = self.state_mut()?;
-        let op_id = state.next_op_id;
-        state.next_op_id = state
-            .next_op_id
-            .checked_add(1)
-            .ok_or(RuntimeError::invalid_state("op_id overflow"))?;
-        let next_op_state = apply(state, op_id)?;
-        state.op_state = next_op_state;
-        self.save_state()?;
-        Ok(op_id)
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<(), RuntimeError> {
+        let _summary = self.authorize_and_apply(kind, caller, action, now_ns)?;
+        Ok(())
     }
 
-    fn finish_operation<R, F>(
-        &mut self,
-        kind: ActionKind,
-        caller: Address,
-        op_id: u64,
-        apply: F,
-    ) -> Result<R, RuntimeError>
-    where
-        F: FnOnce(&mut VaultState, u64) -> Result<R, RuntimeError>,
-    {
+    fn authorize(&self, kind: ActionKind, caller: Address) -> Result<(), RuntimeError> {
         self.auth.authorize(kind, caller, None)?;
-        let result = {
-            let state = self.state_mut()?;
-            apply(state, op_id)?
+        Ok(())
+    }
+
+    fn reserve_op_id(state: &mut VaultState) -> Result<u64, RuntimeError> {
+        let op_id = state.next_op_id;
+        state.next_op_id = match state.next_op_id.checked_add(1) {
+            Some(next) => next,
+            None => return Err(invalid_state_error("op_id overflow")),
         };
-        self.save_state()?;
-        Ok(result)
+        Ok(op_id)
     }
 
     /// Get a reference to the current vault state.
     #[inline]
     pub fn state(&self) -> Result<&VaultState, RuntimeError> {
-        self.state
-            .as_ref()
-            .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))
+        match self.state.as_ref() {
+            Some(state) => Ok(state),
+            None => Err(RuntimeError::storage_error("vault state not loaded")),
+        }
     }
 
     /// Get a mutable reference to the current vault state.
     #[inline]
     pub fn state_mut(&mut self) -> Result<&mut VaultState, RuntimeError> {
-        self.state
-            .as_mut()
-            .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))
+        match self.state.as_mut() {
+            Some(state) => Ok(state),
+            None => Err(RuntimeError::storage_error("vault state not loaded")),
+        }
     }
 
     /// Build effect context from current state.
@@ -576,7 +581,7 @@ where
 
         let max_total_assets = anchor_assets
             .checked_add(max_increase)
-            .ok_or_else(|| RuntimeError::contract_error("fee accrual overflow"))?;
+            .ok_or_else(|| contract_error("fee accrual overflow"))?;
         Ok(cur_total_assets.min(max_total_assets))
     }
 
@@ -621,14 +626,13 @@ where
         let config = self.kernel_config();
         let restrictions = self.restrictions.as_ref();
         let state = self.state()?.clone();
-        let result = apply_action(
+        let result = kernel_to_runtime(apply_action(
             state,
             &config,
             restrictions,
             &self.config.vault_address,
             action,
-        )
-        .map_err(RuntimeError::transition_error)?;
+        ))?;
 
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&result.effects, &ctx)?;
@@ -693,7 +697,7 @@ where
         self.auth.authorize(ActionKind::Deposit, caller, None)?;
 
         if self.paused {
-            return Err(RuntimeError::contract_error("vault is paused"));
+            return Err(contract_error("vault is paused"));
         }
 
         let summary = self.apply_kernel_action(
@@ -760,7 +764,7 @@ where
 
         let state = self.state()?;
         if state.total_shares == 0 {
-            return Err(RuntimeError::contract_error("no shares in vault"));
+            return Err(contract_error("no shares in vault"));
         }
 
         let request_id = state.withdraw_queue.next_pending_withdrawal_id;
@@ -826,7 +830,7 @@ where
                 self.apply_kernel_action(KernelAction::ExecuteWithdraw { now_ns }, now_ns)?;
             summary.merge(step_summary);
         } else if !op_state.is_withdrawing() {
-            return Err(RuntimeError::contract_error(
+            return Err(contract_error(
                 "vault not in idle or withdrawing state for withdrawal",
             ));
         }
@@ -855,25 +859,22 @@ where
         &mut self,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let (_, pending) = self
-            .state()?
-            .withdraw_queue
-            .head()
-            .ok_or_else(|| RuntimeError::contract_error("withdraw queue empty"))?;
+        let (_, pending) = match self.state()?.withdraw_queue.head() {
+            Some(entry) => entry,
+            None => return Err(contract_error("withdraw queue empty")),
+        };
         let pending = pending.clone();
 
         let withdraw = match self.state()?.op_state.clone() {
             OpState::Withdrawing(state) => state,
-            _ => return Err(RuntimeError::contract_error("withdrawal not in progress")),
+            _ => return Err(contract_error("withdrawal not in progress")),
         };
 
         if pending.owner != withdraw.owner
             || pending.receiver != withdraw.receiver
             || pending.escrow_shares != withdraw.escrow_shares
         {
-            return Err(RuntimeError::contract_error(
-                "withdrawal queue head mismatch",
-            ));
+            return Err(contract_error("withdrawal queue head mismatch"));
         }
 
         let available_assets = self.state()?.idle_assets;
@@ -885,8 +886,10 @@ where
             return Ok(EffectSummary::new());
         }
 
-        let withdrawal_result = compute_full_withdrawal(&pending, available_assets)
-            .ok_or_else(|| RuntimeError::contract_error("withdrawal not satisfiable"))?;
+        let withdrawal_result = match compute_full_withdrawal(&pending, available_assets) {
+            Some(result) => result,
+            None => return Err(contract_error("withdrawal not satisfiable")),
+        };
 
         let assets_out = withdrawal_result.assets_out;
         if assets_out == 0 {
@@ -899,15 +902,19 @@ where
 
         let step = {
             let op_state = self.state()?.op_state.clone();
-            withdrawal_step_callback(op_state, op_id, assets_out)
-                .map_err(RuntimeError::transition_error)?
+            match transition_to_runtime(withdrawal_step_callback(op_state, op_id, assets_out)) {
+                Ok(step) => step,
+                Err(err) => return Err(err),
+            }
         };
         self.state_mut()?.op_state = step.new_state;
 
         let collected = {
             let op_state = self.state()?.op_state.clone();
-            withdrawal_collected(op_state, op_id, burn_shares)
-                .map_err(RuntimeError::transition_error)?
+            match transition_to_runtime(withdrawal_collected(op_state, op_id, burn_shares)) {
+                Ok(collected) => collected,
+                Err(err) => return Err(err),
+            }
         };
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&collected.effects, &ctx)?;
@@ -916,11 +923,7 @@ where
 
         let payout = match &self.state()?.op_state {
             OpState::Payout(state) => state,
-            _ => {
-                return Err(RuntimeError::contract_error(
-                    "expected payout state after withdrawal",
-                ))
-            }
+            _ => return Err(contract_error("expected payout state after withdrawal")),
         };
 
         let transfer_effects = [KernelEffect::TransferAssets {
@@ -932,16 +935,14 @@ where
         summary.merge(transfer_summary);
 
         let state = self.state_mut()?;
-        state.idle_assets =
-            state
-                .idle_assets
-                .checked_sub(assets_out)
-                .ok_or(RuntimeError::invalid_state(
-                    "idle_assets underflow on withdrawal",
-                ))?;
-        state.total_assets = state.idle_assets.checked_add(state.external_assets).ok_or(
-            RuntimeError::invalid_state("total_assets overflow on withdrawal"),
-        )?;
+        state.idle_assets = match state.idle_assets.checked_sub(assets_out) {
+            Some(idle_assets) => idle_assets,
+            None => return Err(invalid_state_error("idle_assets underflow on withdrawal")),
+        };
+        state.total_assets = match state.idle_assets.checked_add(state.external_assets) {
+            Some(total_assets) => total_assets,
+            None => return Err(invalid_state_error("total_assets overflow on withdrawal")),
+        };
 
         let settle_summary = self.apply_kernel_action(
             KernelAction::SettlePayout {
@@ -998,7 +999,10 @@ where
         // Filter plan to exclude locked markets
         let filtered_plan = filter_allocation_plan(&plan, &self.policy_state.locks, current_ns);
 
-        self.begin_operation(ActionKind::BeginAllocating, caller, move |state, op_id| {
+        self.authorize(ActionKind::BeginAllocating, caller)?;
+        let op_id = {
+            let state = self.state_mut()?;
+            let op_id = Self::reserve_op_id(state)?;
             let alloc_total: u128 = filtered_plan.iter().map(|(_, amt)| *amt).sum();
             if alloc_total > state.idle_assets {
                 return Err(RuntimeError::insufficient_balance(
@@ -1007,14 +1011,25 @@ where
                 ));
             }
             state.idle_assets -= alloc_total;
-            state.total_assets = state.idle_assets.checked_add(state.external_assets).ok_or(
-                RuntimeError::invalid_state("total_assets overflow while allocating"),
-            )?;
+            state.total_assets = match state.idle_assets.checked_add(state.external_assets) {
+                Some(total_assets) => total_assets,
+                None => {
+                    return Err(invalid_state_error(
+                        "total_assets overflow while allocating",
+                    ))
+                }
+            };
 
-            let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
-                .map_err(RuntimeError::transition_error)?;
-            Ok(result.new_state)
-        })
+            let result = transition_to_runtime(start_allocation(
+                state.op_state.clone(),
+                filtered_plan,
+                op_id,
+            ))?;
+            state.op_state = result.new_state;
+            op_id
+        };
+        self.save_state()?;
+        Ok(op_id)
     }
 
     /// Sync external assets during an operation.
@@ -1030,7 +1045,7 @@ where
     ) -> Result<(), RuntimeError> {
         self.verify_external_assets_against_adapter(new_external_assets)?;
 
-        let _summary = self.authorize_and_apply(
+        self.authorize_and_apply_unit(
             ActionKind::SyncExternalAssets,
             caller,
             KernelAction::SyncExternalAssets {
@@ -1040,7 +1055,6 @@ where
             },
             now_ns,
         )?;
-
         Ok(())
     }
 
@@ -1080,12 +1094,14 @@ where
                 .total_assets(MarketRef::new(*target_id, asset_id.clone()))
             {
                 Ok(balance) => {
-                    adapter_total =
-                        adapter_total
-                            .checked_add(balance)
-                            .ok_or(RuntimeError::invalid_state(
+                    adapter_total = match adapter_total.checked_add(balance) {
+                        Some(total) => total,
+                        None => {
+                            return Err(invalid_state_error(
                                 "adapter balance sum overflow during verification",
-                            ))?;
+                            ))
+                        }
+                    };
                     ok_count += 1;
                 }
                 Err(_) => {
@@ -1103,9 +1119,9 @@ where
         if !failed_targets.is_empty() {
             // Partial failure: some targets succeeded, others failed. Reject to
             // prevent accepting an unverifiable value.
-            return Err(RuntimeError::contract_error(alloc::format!(
-                "sync_external_assets: adapter query failed for some markets"
-            )));
+            return Err(RuntimeError::contract_error(
+                "sync_external_assets: adapter query failed for some markets",
+            ));
         }
 
         if claimed != adapter_total {
@@ -1124,21 +1140,20 @@ where
         caller: Address,
         op_id: u64,
     ) -> Result<AllocationResult, RuntimeError> {
-        self.finish_operation(
-            ActionKind::FinishAllocating,
-            caller,
-            op_id,
-            |state, op_id| {
-                let transition_result = complete_allocation(state.op_state.clone(), op_id, None)
-                    .map_err(RuntimeError::transition_error)?;
-                state.op_state = transition_result.new_state;
-                Ok(AllocationResult {
-                    op_id,
-                    new_external_assets: state.external_assets,
-                    summary: EffectSummary::new(),
-                })
-            },
-        )
+        self.authorize(ActionKind::FinishAllocating, caller)?;
+        let result = {
+            let state = self.state_mut()?;
+            let transition_result =
+                transition_to_runtime(complete_allocation(state.op_state.clone(), op_id, None))?;
+            state.op_state = transition_result.new_state;
+            AllocationResult {
+                op_id,
+                new_external_assets: state.external_assets,
+                summary: EffectSummary::new(),
+            }
+        };
+        self.save_state()?;
+        Ok(result)
     }
 
     /// Begin a refresh operation.
@@ -1155,11 +1170,17 @@ where
         let filtered_plan =
             build_refresh_plan_with_locks(&plan, &self.policy_state.locks, current_ns);
 
-        self.begin_operation(ActionKind::BeginRefreshing, caller, move |state, op_id| {
-            let result = start_refresh(state.op_state.clone(), filtered_plan, op_id)
-                .map_err(RuntimeError::transition_error)?;
-            Ok(result.new_state)
-        })
+        self.authorize(ActionKind::BeginRefreshing, caller)?;
+        let op_id = {
+            let state = self.state_mut()?;
+            let op_id = Self::reserve_op_id(state)?;
+            let transition_result =
+                transition_to_runtime(start_refresh(state.op_state.clone(), filtered_plan, op_id))?;
+            state.op_state = transition_result.new_state;
+            op_id
+        };
+        self.save_state()?;
+        Ok(op_id)
     }
 
     /// Finish a refresh operation.
@@ -1169,28 +1190,25 @@ where
         caller: Address,
         op_id: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        self.finish_operation(
-            ActionKind::FinishRefreshing,
-            caller,
-            op_id,
-            |state, op_id| {
-                let markets_refreshed = match &state.op_state {
-                    OpState::Refreshing(refresh) => refresh.plan.len() as u32,
-                    _ => 0,
-                };
+        self.authorize(ActionKind::FinishRefreshing, caller)?;
+        let result = {
+            let state = self.state_mut()?;
+            let markets_refreshed = match &state.op_state {
+                OpState::Refreshing(refresh) => refresh.plan.len() as u32,
+                _ => 0,
+            };
+            let transition_result =
+                transition_to_runtime(complete_refresh(state.op_state.clone(), op_id))?;
+            state.op_state = transition_result.new_state;
 
-                let result = complete_refresh(state.op_state.clone(), op_id)
-                    .map_err(RuntimeError::transition_error)?;
-
-                state.op_state = result.new_state;
-
-                Ok(RefreshResult {
-                    op_id,
-                    markets_refreshed,
-                    new_external_assets: state.external_assets,
-                })
-            },
-        )
+            RefreshResult {
+                op_id,
+                markets_refreshed,
+                new_external_assets: state.external_assets,
+            }
+        };
+        self.save_state()?;
+        Ok(result)
     }
 
     /// Abort an allocation operation.
@@ -1201,7 +1219,7 @@ where
         op_id: u64,
         restore_idle: u128,
     ) -> Result<(), RuntimeError> {
-        self.authorize_and_apply(
+        self.authorize_and_apply_unit(
             ActionKind::AbortAllocating,
             caller,
             KernelAction::AbortAllocating {
@@ -1210,19 +1228,17 @@ where
             },
             0,
         )
-        .map(|_| ())
     }
 
     /// Abort a refresh operation.
     ///
     pub fn abort_refreshing(&mut self, caller: Address, op_id: u64) -> Result<(), RuntimeError> {
-        self.authorize_and_apply(
+        self.authorize_and_apply_unit(
             ActionKind::AbortRefreshing,
             caller,
             KernelAction::AbortRefreshing { op_id },
             0,
         )
-        .map(|_| ())
     }
 
     /// Abort a withdrawal operation.
@@ -1233,7 +1249,7 @@ where
         op_id: u64,
         refund_shares: u128,
     ) -> Result<(), RuntimeError> {
-        self.authorize_and_apply(
+        self.authorize_and_apply_unit(
             ActionKind::AbortWithdrawing,
             caller,
             KernelAction::AbortWithdrawing {
@@ -1242,7 +1258,6 @@ where
             },
             0,
         )
-        .map(|_| ())
     }
 
     /// Settle a payout operation.
@@ -1253,13 +1268,12 @@ where
         op_id: u64,
         outcome: PayoutOutcome,
     ) -> Result<(), RuntimeError> {
-        self.authorize_and_apply(
+        self.authorize_and_apply_unit(
             ActionKind::SettlePayout,
             caller,
             KernelAction::SettlePayout { op_id, outcome },
             0,
         )
-        .map(|_| ())
     }
 
     /// Recover from a stuck operation by delegating to curator-primitives.
@@ -1361,7 +1375,7 @@ where
             });
             total_supply = total_supply
                 .checked_add(management_shares_u128)
-                .ok_or_else(|| RuntimeError::contract_error("management fee overflow"))?;
+                .ok_or_else(|| contract_error("management fee overflow"))?;
             next_state.total_shares = total_supply;
         }
 
@@ -1385,7 +1399,7 @@ where
             });
             total_supply = total_supply
                 .checked_add(performance_shares_u128)
-                .ok_or_else(|| RuntimeError::contract_error("performance fee overflow"))?;
+                .ok_or_else(|| contract_error("performance fee overflow"))?;
             next_state.total_shares = total_supply;
         }
 
@@ -1451,17 +1465,11 @@ where
         }
 
         let lock = MarketLock::new(target_id, current_ns).with_expiry(expiry_ns);
-        let new_locks = self
-            .policy_state
-            .locks
-            .clone()
-            .acquire(lock, current_ns)
-            .map_err(|e| {
-                RuntimeError::contract_error(alloc::format!(
-                    "failed to acquire lock for target {}",
-                    e.target_id
-                ))
-            })?;
+        let new_locks = self.policy_state.locks.clone().acquire(lock, current_ns);
+        let new_locks = match new_locks {
+            Ok(locks) => locks,
+            Err(_) => return Err(RuntimeError::contract_error("failed to acquire lock")),
+        };
         let mut next_policy = self.policy_state.clone();
         next_policy.locks = new_locks;
         self.storage.save_policy_state(&next_policy)?;
@@ -1488,6 +1496,44 @@ where
         self.policy_state = next_policy;
 
         Ok(())
+    }
+
+    pub fn set_supply_queue(
+        &mut self,
+        caller: Address,
+        target_ids: Vec<TargetId>,
+    ) -> Result<(), RuntimeError> {
+        self.auth
+            .authorize(ActionKind::SetRestrictions, caller, None)?;
+
+        let mut entries = Vec::with_capacity(target_ids.len());
+        for target_id in target_ids {
+            if entries
+                .iter()
+                .any(|entry: &SupplyQueueEntry| entry.target_id == target_id)
+            {
+                return Err(RuntimeError::invalid_input(
+                    "duplicate market in supply queue",
+                ));
+            }
+            entries.push(SupplyQueueEntry::new(target_id, 1));
+        }
+
+        let mut next_policy = self.policy_state.clone();
+        next_policy.supply_queue = SupplyQueue::from(entries);
+        self.storage.save_policy_state(&next_policy)?;
+        self.policy_state = next_policy;
+
+        Ok(())
+    }
+
+    pub fn supply_queue_targets(&self) -> Vec<TargetId> {
+        self.policy_state
+            .supply_queue
+            .entries
+            .iter()
+            .map(|entry| entry.target_id)
+            .collect()
     }
 
     /// Check if a market is currently locked.
@@ -1545,7 +1591,7 @@ pub struct SorobanVaultContract;
 type ContractVault<'a> = CuratorVault<
     SorobanStorage<'a>,
     RbacAuth,
-    SorobanEffectInterpreter<'a, SdkTokenAdapter<'a>, SdkTokenAdapter<'a>>,
+    SorobanEffectInterpreter<'a, ShareTokenAdapter<'a>, SdkTokenAdapter<'a>>,
     NoopMarketAdapter,
     NoopCrossChainAdapter,
 >;
@@ -1564,15 +1610,27 @@ pub(crate) fn get_config_address(
     env: &Env,
     key: &VaultDataKey,
 ) -> Result<SdkAddress, ContractError> {
-    env.storage()
-        .instance()
-        .get(key)
-        .ok_or(ContractError::MissingConfig)
+    match env.storage().instance().get(key) {
+        Some(address) => Ok(address),
+        None => Err(ContractError::MissingConfig),
+    }
 }
 
 /// Read an optional `SdkAddress` from instance storage.
 fn get_optional_config_address(env: &Env, key: &VaultDataKey) -> Option<SdkAddress> {
     env.storage().instance().get(key)
+}
+
+#[inline]
+fn require_config_address(
+    env: &Env,
+    key: &VaultDataKey,
+    msg: &'static str,
+) -> Result<SdkAddress, RuntimeError> {
+    match get_config_address(env, key) {
+        Ok(addr) => Ok(addr),
+        Err(_) => Err(RuntimeError::storage_error(msg)),
+    }
 }
 
 /// Write an `SdkAddress` into instance storage.
@@ -1632,10 +1690,16 @@ fn migrate_legacy_paused(env: &Env) {
     }
 }
 
-fn with_contract_vault<T>(
-    env: &Env,
-    f: impl FnOnce(&mut ContractVault<'_>) -> Result<T, RuntimeError>,
-) -> Result<T, RuntimeError> {
+struct VaultBootstrap<'a> {
+    config: ContractConfig,
+    storage: SorobanStorage<'a>,
+    auth: RbacAuth,
+    asset_token: SdkAddress,
+    share_token: SdkAddress,
+}
+
+#[inline(never)]
+fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeError> {
     // Block operations during migration (upgrade in progress)
     if stellar_contract_utils::upgradeable::can_complete_migration(env) {
         return Err(RuntimeError::invalid_state(
@@ -1645,12 +1709,12 @@ fn with_contract_vault<T>(
 
     extend_storage_ttl(env);
     migrate_legacy_paused(env);
-    let curator: SdkAddress = get_config_address(env, &VaultDataKey::Curator)
-        .map_err(|_| RuntimeError::storage_error("curator not set"))?;
-    let asset_token: SdkAddress = get_config_address(env, &VaultDataKey::AssetToken)
-        .map_err(|_| RuntimeError::storage_error("asset token not set"))?;
-    let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)
-        .map_err(|_| RuntimeError::storage_error("share token not set"))?;
+    let curator: SdkAddress =
+        require_config_address(env, &VaultDataKey::Curator, "curator not set")?;
+    let asset_token: SdkAddress =
+        require_config_address(env, &VaultDataKey::AssetToken, "asset token not set")?;
+    let share_token: SdkAddress =
+        require_config_address(env, &VaultDataKey::ShareToken, "share token not set")?;
 
     let vault_sdk = env.current_contract_address();
     let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
@@ -1686,21 +1750,67 @@ fn with_contract_vault<T>(
     rbac_config.set_paused(paused);
     let auth = RbacAuth::new(rbac_config);
 
-    let share_adapter = SdkTokenAdapter::new(env, &share_token);
-    let asset_adapter = SdkTokenAdapter::new(env, &asset_token);
-    let interpreter = SorobanEffectInterpreter::new(env, &share_adapter, &asset_adapter);
-
-    let mut vault = CuratorVault::new(
+    Ok(VaultBootstrap {
         config,
         storage,
         auth,
+        asset_token,
+        share_token,
+    })
+}
+
+type ContractVaultCallback<'a> =
+    dyn for<'b> FnMut(&mut ContractVault<'b>) -> Result<(), RuntimeError> + 'a;
+
+#[inline(never)]
+fn with_contract_vault(env: &Env, f: &mut ContractVaultCallback<'_>) -> Result<(), RuntimeError> {
+    let bootstrap = load_vault_bootstrap(env)?;
+    let share_adapter = ShareTokenAdapter::new(env, &bootstrap.share_token);
+    let asset_adapter = SdkTokenAdapter::new(env, &bootstrap.asset_token);
+    let interpreter = SorobanEffectInterpreter::new(env, &share_adapter, &asset_adapter);
+
+    let mut vault = CuratorVault::new(
+        bootstrap.config,
+        bootstrap.storage,
+        bootstrap.auth,
         interpreter,
         NoopMarketAdapter,
         NoopCrossChainAdapter,
     );
     vault.load_state()?;
-
     f(&mut vault)
+}
+
+#[inline]
+fn runtime_to_contract<T>(result: Result<T, RuntimeError>) -> Result<T, ContractError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(ContractError::from(err)),
+    }
+}
+
+#[inline]
+fn kernel_to_runtime<T>(result: Result<T, KernelError>) -> Result<T, RuntimeError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => Err(RuntimeError::transition_error()),
+    }
+}
+
+#[inline]
+fn transition_to_runtime<T>(result: Result<T, TransitionError>) -> Result<T, RuntimeError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => Err(RuntimeError::transition_error()),
+    }
+}
+
+#[inline]
+fn with_contract_vault_contract_error(
+    env: &Env,
+    f: &mut ContractVaultCallback<'_>,
+) -> Result<(), ContractError> {
+    runtime_to_contract(with_contract_vault(env, f))
 }
 
 fn with_reentrancy_guard<T>(
@@ -1740,9 +1850,9 @@ impl SorobanVaultContract {
     /// Returns an error if the contract is already initialized or storage fails.
     pub fn initialize(
         env: Env,
-        curator: SdkAddress,
-        asset_token: SdkAddress,
-        share_token: SdkAddress,
+        curator: soroban_sdk::Address,
+        asset_token: soroban_sdk::Address,
+        share_token: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         // Check not already initialized
@@ -1760,15 +1870,13 @@ impl SorobanVaultContract {
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
-        store_fees_spec(&env, &FeesSpec::zero()).map_err(ContractError::from)?;
+        runtime_to_contract(store_fees_spec(&env, &FeesSpec::zero()))?;
 
         // Initialize vault state in persistent storage using current version.
         let mut storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());
-        storage
-            .save_state(&versioned)
-            .map_err(ContractError::from)?;
-        storage.save_paused(false).map_err(ContractError::from)?;
+        runtime_to_contract(storage.save_state(&versioned))?;
+        runtime_to_contract(storage.save_paused(false))?;
         Ok(())
     }
 
@@ -1777,8 +1885,8 @@ impl SorobanVaultContract {
     /// Use this over the standard `deposit` when you need `min_shares_out` guarantee.
     pub fn deposit_with_min(
         env: Env,
-        owner: SdkAddress,
-        receiver: SdkAddress,
+        owner: soroban_sdk::Address,
+        receiver: soroban_sdk::Address,
         assets: i128,
         min_shares_out: i128,
     ) -> Result<i128, ContractError> {
@@ -1789,29 +1897,31 @@ impl SorobanVaultContract {
             return Err(ContractError::InvalidInput);
         }
 
-        let assets_u128 = u128::try_from(assets).map_err(|_| ContractError::ConversionOverflow)?;
+        let assets_u128 = to_u128(assets)?;
         let min_shares_u128 = if min_shares_out < 0 {
             return Err(ContractError::InvalidInput);
         } else {
-            u128::try_from(min_shares_out).map_err(|_| ContractError::ConversionOverflow)?
+            to_u128(min_shares_out)?
         };
         let now_ns = ledger_timestamp_ns(&env)?;
 
         with_reentrancy_guard(&env, || {
-            let result = with_contract_vault(&env, |vault| {
-                vault.deposit_soroban(
+            let mut shares_minted = 0u128;
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                let result = vault.deposit_soroban(
                     &env,
                     owner.clone(),
                     receiver.clone(),
                     assets_u128,
                     min_shares_u128,
                     now_ns,
-                )
-            })
-            .map_err(ContractError::from)?;
+                )?;
+                shares_minted = result.shares_minted;
+                Ok(())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
 
-            let shares = i128::try_from(result.shares_minted)
-                .map_err(|_| ContractError::ConversionOverflow)?;
+            let shares = to_i128(shares_minted)?;
             Ok(shares)
         })
     }
@@ -1820,8 +1930,8 @@ impl SorobanVaultContract {
     ///
     pub fn request_withdraw(
         env: Env,
-        owner: SdkAddress,
-        receiver: SdkAddress,
+        owner: soroban_sdk::Address,
+        receiver: soroban_sdk::Address,
         shares: i128,
         min_assets_out: i128,
     ) -> Result<u64, ContractError> {
@@ -1831,61 +1941,104 @@ impl SorobanVaultContract {
         if shares <= 0 {
             return Err(ContractError::InvalidInput);
         }
-        let shares_u128 = u128::try_from(shares).map_err(|_| ContractError::ConversionOverflow)?;
+        let shares_u128 = to_u128(shares)?;
         let min_assets_u128 = if min_assets_out < 0 {
             return Err(ContractError::InvalidInput);
         } else {
-            u128::try_from(min_assets_out).map_err(|_| ContractError::ConversionOverflow)?
+            to_u128(min_assets_out)?
         };
         let now_ns = ledger_timestamp_ns(&env)?;
 
         with_reentrancy_guard(&env, || {
-            let result = with_contract_vault(&env, |vault| {
-                vault.request_withdraw_soroban(
+            let mut request_id = 0u64;
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                let result = vault.request_withdraw_soroban(
                     &env,
                     owner.clone(),
                     receiver.clone(),
                     shares_u128,
                     min_assets_u128,
                     now_ns,
-                )
-            })
-            .map_err(ContractError::from)?;
+                )?;
+                request_id = result.request_id;
+                Ok(())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
 
-            Ok(result.request_id)
+            Ok(request_id)
         })
     }
 
     /// Execute a pending withdrawal.
     ///
-    pub fn execute_withdraw(env: Env, caller: SdkAddress) -> Result<(), ContractError> {
+    pub fn execute_withdraw(env: Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
         require_signed(&caller);
         let now_ns = ledger_timestamp_ns(&env)?;
 
         with_reentrancy_guard(&env, || {
-            with_contract_vault(&env, |vault| {
-                vault.execute_withdraw_soroban(&env, caller.clone(), now_ns)
-            })
-            .map_err(ContractError::from)?;
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                vault
+                    .execute_withdraw_soroban(&env, caller.clone(), now_ns)
+                    .map(|_| ())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
             Ok(())
         })?;
         Ok(())
+    }
+
+    pub fn allocator_sync_positions(
+        env: Env,
+        caller: soroban_sdk::Address,
+        idle_assets: i128,
+        external_assets: i128,
+    ) -> Result<(), ContractError> {
+        require_signed(&caller);
+        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        let idle_u128 = to_u128(idle_assets)?;
+        let external_u128 = to_u128(external_assets)?;
+
+        with_reentrancy_guard(&env, || {
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                vault.authorize(ActionKind::SyncExternalAssets, caller_kernel)?;
+                let state = vault.state_mut()?;
+                state.idle_assets = idle_u128;
+                state.external_assets = external_u128;
+                state.total_assets = match idle_u128.checked_add(external_u128) {
+                    Some(total) => total,
+                    None => {
+                        return Err(RuntimeError::invalid_state(
+                            "total_assets overflow while syncing positions",
+                        ))
+                    }
+                };
+                vault.save_state()?;
+                Ok(())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
+            Ok(())
+        })
     }
 
     /// Pause or unpause the vault.
     ///
     /// Emits both OZ Pausable events (`Paused`/`Unpaused`) and kernel events
     /// (`PauseUpdated`) for backwards compatibility.
-    pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) -> Result<(), ContractError> {
+    pub fn set_paused(
+        env: Env,
+        caller: soroban_sdk::Address,
+        paused: bool,
+    ) -> Result<(), ContractError> {
         use stellar_contract_utils::pausable::{emit_paused, emit_unpaused};
 
         ensure_not_reentrant(&env)?;
         require_signed(&caller);
         let caller_kernel = kernel_address_from_sdk(&env, &caller);
 
-        with_contract_vault(&env, |vault| vault.pause(caller_kernel, paused))
-            .map_err(ContractError::from)?;
-        env.storage().instance().remove(&VaultDataKey::Paused);
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.pause(caller_kernel, paused)
+        };
+        with_contract_vault_contract_error(&env, &mut call)?;
 
         // Emit OZ Pausable events
         if paused {
@@ -1896,8 +2049,16 @@ impl SorobanVaultContract {
 
         // Emit kernel event for backwards compatibility
         let payload =
-            borsh::to_vec(&templar_vault_kernel::effects::KernelEvent::PauseUpdated { paused })
-                .map_err(|_| RuntimeError::storage_error("failed to serialize pause event"))?;
+            match borsh::to_vec(&templar_vault_kernel::effects::KernelEvent::PauseUpdated {
+                paused,
+            }) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    return Err(
+                        RuntimeError::storage_error("failed to serialize pause event").into(),
+                    )
+                }
+            };
         crate::effects::KernelEventEnvelope {
             payload: Bytes::from_slice(&env, &payload),
         }
@@ -1905,11 +2066,45 @@ impl SorobanVaultContract {
         Ok(())
     }
 
+    pub fn set_curator(
+        env: Env,
+        caller: soroban_sdk::Address,
+        new_curator: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_curator(&env, &caller)?;
+        set_config_address(&env, &VaultDataKey::Curator, &new_curator);
+        Ok(())
+    }
+
+    pub fn set_supply_queue(
+        env: Env,
+        caller: soroban_sdk::Address,
+        target_ids: soroban_sdk::Vec<u32>,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_signed(&caller);
+        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        let mut queue_targets = Vec::with_capacity(target_ids.len() as usize);
+        for target_id in target_ids.iter() {
+            queue_targets.push(target_id);
+        }
+
+        with_reentrancy_guard(&env, || {
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                vault.set_supply_queue(caller_kernel, queue_targets.clone())?;
+                Ok(())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
+            Ok(())
+        })
+    }
+
     /// Set the Blend adapter contract address (curator only).
     pub fn set_blend_adapter(
         env: Env,
-        caller: SdkAddress,
-        adapter: SdkAddress,
+        caller: soroban_sdk::Address,
+        adapter: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
@@ -1921,8 +2116,8 @@ impl SorobanVaultContract {
     /// Set the Blend pool contract address (curator only).
     pub fn set_blend_pool(
         env: Env,
-        caller: SdkAddress,
-        pool: SdkAddress,
+        caller: soroban_sdk::Address,
+        pool: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
@@ -1934,8 +2129,8 @@ impl SorobanVaultContract {
     /// Set the Blend factory contract address (curator only).
     pub fn set_blend_factory(
         env: Env,
-        caller: SdkAddress,
-        factory: SdkAddress,
+        caller: soroban_sdk::Address,
+        factory: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
@@ -1950,51 +2145,64 @@ impl SorobanVaultContract {
     /// queued withdrawal addresses without re-providing them.
     pub fn register_address(
         env: Env,
-        caller: SdkAddress,
-        address: SdkAddress,
+        caller: soroban_sdk::Address,
+        address: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
-        with_contract_vault(&env, |vault| {
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             vault.register_sdk_address(&env, &address)?;
             Ok(())
-        })
-        .map_err(ContractError::from)?;
+        };
+        with_contract_vault_contract_error(&env, &mut call)?;
         Ok(())
     }
 
     /// Get the curator address.
-    pub fn curator(env: Env) -> Result<SdkAddress, ContractError> {
+    pub fn curator(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::Curator)
     }
 
+    pub fn supply_queue(env: Env) -> soroban_sdk::Vec<u32> {
+        must(&env, ensure_not_reentrant(&env));
+        let mut queue = soroban_sdk::Vec::new(&env);
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            for target_id in vault.supply_queue_targets() {
+                queue.push_back(target_id);
+            }
+            Ok(())
+        };
+        must(&env, with_contract_vault_contract_error(&env, &mut call));
+        queue
+    }
+
     /// Get the asset token address.
-    pub fn asset_token(env: Env) -> Result<SdkAddress, ContractError> {
+    pub fn asset_token(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::AssetToken)
     }
 
     /// Get the share token address.
-    pub fn share_token(env: Env) -> Result<SdkAddress, ContractError> {
+    pub fn share_token(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::ShareToken)
     }
 
     /// Get the Blend adapter contract address.
-    pub fn blend_adapter(env: Env) -> Result<SdkAddress, ContractError> {
+    pub fn blend_adapter(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::BlendAdapter)
     }
 
     /// Get the Blend pool contract address.
-    pub fn blend_pool(env: Env) -> Result<SdkAddress, ContractError> {
+    pub fn blend_pool(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::BlendPool)
     }
 
     /// Get the Blend factory contract address.
-    pub fn blend_factory(env: Env) -> Result<SdkAddress, ContractError> {
+    pub fn blend_factory(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::BlendFactory)
     }
@@ -2051,7 +2259,7 @@ impl SorobanVaultContract {
     pub fn upgrade(
         env: Env,
         new_wasm_hash: BytesN<32>,
-        operator: SdkAddress,
+        operator: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         require_curator(&env, &operator)?;
@@ -2073,7 +2281,7 @@ impl SorobanVaultContract {
     /// # Arguments
     ///
     /// * `operator` - The curator address completing the migration.
-    pub fn migrate(env: Env, operator: SdkAddress) -> Result<(), ContractError> {
+    pub fn migrate(env: Env, operator: soroban_sdk::Address) -> Result<(), ContractError> {
         use stellar_contract_utils::upgradeable::{
             complete_migration, ensure_can_complete_migration,
         };
@@ -2136,7 +2344,7 @@ fn must<T>(env: &Env, result: Result<T, ContractError>) -> T {
 #[contractimpl]
 impl SorobanVaultContract {
     /// Returns the address of the underlying asset managed by the vault.
-    pub fn query_asset(env: Env) -> SdkAddress {
+    pub fn query_asset(env: Env) -> soroban_sdk::Address {
         must(&env, ensure_not_reentrant(&env));
         must(&env, get_config_address(&env, &VaultDataKey::AssetToken))
     }
@@ -2183,7 +2391,7 @@ impl SorobanVaultContract {
     /// Returns the largest safe deposit amount when the vault is idle and
     /// unpaused, 0 otherwise. The cap is constrained to avoid overflow in
     /// kernel accounting and Soroban i128 conversions.
-    pub fn max_deposit(env: Env, _receiver: SdkAddress) -> i128 {
+    pub fn max_deposit(env: Env, _receiver: soroban_sdk::Address) -> i128 {
         must(&env, ensure_not_reentrant(&env));
         match load_state_and_config(&env) {
             Ok((state, config)) => {
@@ -2200,7 +2408,7 @@ impl SorobanVaultContract {
     }
 
     /// Maximum shares that can be minted for `receiver`.
-    pub fn max_mint(env: Env, _receiver: SdkAddress) -> i128 {
+    pub fn max_mint(env: Env, _receiver: soroban_sdk::Address) -> i128 {
         must(&env, ensure_not_reentrant(&env));
         match load_state_and_config(&env) {
             Ok((state, config)) => {
@@ -2220,7 +2428,7 @@ impl SorobanVaultContract {
     ///
     /// Limited by their share balance and available idle assets.
     /// Returns 0 if the vault is not idle.
-    pub fn max_withdraw(env: Env, owner: SdkAddress) -> i128 {
+    pub fn max_withdraw(env: Env, owner: soroban_sdk::Address) -> i128 {
         must(&env, ensure_not_reentrant(&env));
         let Ok((state, config)) = load_state_and_config(&env) else {
             return 0;
@@ -2239,7 +2447,7 @@ impl SorobanVaultContract {
     ///
     /// Limited by their share balance and what idle assets can cover.
     /// Returns 0 if the vault is not idle.
-    pub fn max_redeem(env: Env, owner: SdkAddress) -> i128 {
+    pub fn max_redeem(env: Env, owner: soroban_sdk::Address) -> i128 {
         must(&env, ensure_not_reentrant(&env));
         let Ok((state, config)) = load_state_and_config(&env) else {
             return 0;
@@ -2299,9 +2507,9 @@ impl SorobanVaultContract {
     pub fn deposit(
         env: Env,
         assets: i128,
-        receiver: SdkAddress,
-        from: SdkAddress,
-        operator: SdkAddress,
+        receiver: soroban_sdk::Address,
+        from: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
     ) -> i128 {
         require_signed(&operator);
         must(&env, ensure_not_reentrant(&env));
@@ -2319,9 +2527,9 @@ impl SorobanVaultContract {
     pub fn mint(
         env: Env,
         shares: i128,
-        receiver: SdkAddress,
-        from: SdkAddress,
-        operator: SdkAddress,
+        receiver: soroban_sdk::Address,
+        from: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
     ) -> i128 {
         require_signed(&operator);
         must(&env, ensure_not_reentrant(&env));
@@ -2347,9 +2555,9 @@ impl SorobanVaultContract {
     pub fn withdraw(
         env: Env,
         assets: i128,
-        receiver: SdkAddress,
-        owner: SdkAddress,
-        operator: SdkAddress,
+        receiver: soroban_sdk::Address,
+        owner: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
     ) -> i128 {
         require_signed(&operator);
         require_signed(&owner);
@@ -2387,9 +2595,9 @@ impl SorobanVaultContract {
     pub fn redeem(
         env: Env,
         shares: i128,
-        receiver: SdkAddress,
-        owner: SdkAddress,
-        operator: SdkAddress,
+        receiver: soroban_sdk::Address,
+        owner: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
     ) -> i128 {
         require_signed(&operator);
         require_signed(&owner);

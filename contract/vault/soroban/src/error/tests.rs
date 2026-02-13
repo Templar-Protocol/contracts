@@ -32,6 +32,6 @@ fn test_error_constructors() {
     let err = RuntimeError::contract_error("contract error");
     assert!(matches!(err, RuntimeError::InvalidState(_)));
 
-    let err = RuntimeError::transition_error("transition failed");
+    let err = RuntimeError::transition_error();
     assert!(matches!(err, RuntimeError::KernelError(_)));
 }

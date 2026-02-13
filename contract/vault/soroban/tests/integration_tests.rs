@@ -201,12 +201,9 @@ fn soroban_contract_blend_config_rejects_account_addresses() {
     });
 
     env.as_contract(&contract_id, || {
-        let err = SorobanVaultContract::set_blend_adapter(
-            env.clone(),
-            curator.clone(),
-            account.clone(),
-        )
-        .unwrap_err();
+        let err =
+            SorobanVaultContract::set_blend_adapter(env.clone(), curator.clone(), account.clone())
+                .unwrap_err();
         assert_eq!(err, ContractError::InvalidInput);
     });
 
@@ -218,8 +215,8 @@ fn soroban_contract_blend_config_rejects_account_addresses() {
     });
 
     env.as_contract(&contract_id, || {
-        let err = SorobanVaultContract::set_blend_factory(env.clone(), curator, account)
-            .unwrap_err();
+        let err =
+            SorobanVaultContract::set_blend_factory(env.clone(), curator, account).unwrap_err();
         assert_eq!(err, ContractError::InvalidInput);
     });
 }
@@ -589,7 +586,10 @@ fn test_begin_allocating_decrements_idle_assets(mut vault: TestVault) {
         .unwrap();
 
     assert!(vault.state().unwrap().op_state.is_allocating());
-    assert_eq!(vault.state().unwrap().idle_assets, initial_idle - alloc_total);
+    assert_eq!(
+        vault.state().unwrap().idle_assets,
+        initial_idle - alloc_total
+    );
     assert_eq!(
         vault.state().unwrap().total_assets,
         vault.state().unwrap().idle_assets + vault.state().unwrap().external_assets
@@ -611,7 +611,8 @@ fn test_allocation_flow_abort(mut vault: TestVault) {
         .unwrap();
 
     let restore_idle = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .op_state
         .as_allocating()
         .expect("allocating")
@@ -926,18 +927,14 @@ fn test_rbac_user_cannot_pause() {
 
 #[test]
 fn test_restrictions_blacklist_blocks_deposit() {
-    use std::collections::BTreeSet;
     use templar_vault_kernel::Restrictions;
 
     let mut vault = create_rbac_vault();
     let curator = curator_addr();
     let user = user_addr();
 
-    let mut blacklist = BTreeSet::new();
-    blacklist.insert(user);
-
     vault
-        .set_restrictions(curator, Some(Restrictions::Blacklist(blacklist)))
+        .set_restrictions(curator, Some(Restrictions::Blacklist(vec![user])))
         .unwrap();
 
     let result = vault.deposit(user, user, 1000, 0, 100);
@@ -1052,7 +1049,8 @@ fn test_withdraw_request_basic(mut vault: TestVault) {
     assert!(result.shares_escrowed > 0);
     assert_eq!(result.shares_escrowed, 1000);
     let (id, pending) = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .withdraw_queue
         .head()
         .expect("pending withdrawal");
@@ -1073,7 +1071,8 @@ fn test_withdraw_request_calculates_assets_correctly(mut vault: TestVault) {
     let result = vault.request_withdraw(user, user, 5000, 4000, 200).unwrap();
     assert_eq!(result.shares_escrowed, 5000);
     let (_, pending) = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .withdraw_queue
         .head()
         .expect("pending withdrawal");
@@ -1231,6 +1230,75 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
 }
 
 #[rstest]
+fn test_happy_path_like_near_sequence(mut vault: TestVault) {
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    vault.deposit(user, user, 10_000, 0, 100).unwrap();
+
+    vault.request_withdraw(user, user, 2_000, 0, 101).unwrap();
+    vault
+        .execute_withdraw(user, 101 + DEFAULT_COOLDOWN_NS + 1)
+        .unwrap();
+
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert_eq!(vault.state().unwrap().total_assets, 8_000);
+    assert_eq!(vault.state().unwrap().total_shares, 8_000);
+    assert_eq!(vault.state().unwrap().idle_assets, 8_000);
+    assert_eq!(vault.state().unwrap().external_assets, 0);
+
+    vault.deposit(user, user, 4_000, 0, 200).unwrap();
+    assert_eq!(vault.state().unwrap().total_assets, 12_000);
+    assert_eq!(vault.state().unwrap().total_shares, 12_000);
+    assert_eq!(vault.state().unwrap().idle_assets, 12_000);
+
+    let alloc_op = vault
+        .begin_allocating(allocator, vec![(0, 9_000)], 300)
+        .unwrap();
+    vault
+        .sync_external_assets(allocator, 9_000, alloc_op, 301)
+        .unwrap();
+    vault.finish_allocating(allocator, alloc_op).unwrap();
+
+    assert_eq!(vault.state().unwrap().idle_assets, 3_000);
+    assert_eq!(vault.state().unwrap().external_assets, 9_000);
+    assert_eq!(vault.state().unwrap().total_assets, 12_000);
+
+    vault.request_withdraw(user, user, 4_000, 0, 400).unwrap();
+    vault
+        .execute_withdraw(user, 400 + DEFAULT_COOLDOWN_NS + 1)
+        .unwrap();
+
+    let withdraw_op = match &vault.state().unwrap().op_state {
+        OpState::Withdrawing(state) => state.op_id,
+        _ => panic!("expected withdrawing state"),
+    };
+
+    {
+        let state = vault.state_mut().unwrap();
+        state.idle_assets += 1_000;
+        state.external_assets -= 1_000;
+        state.total_assets = state.idle_assets + state.external_assets;
+    }
+
+    vault
+        .sync_external_assets(allocator, 8_000, withdraw_op, 500)
+        .unwrap();
+
+    vault
+        .execute_withdraw(user, 400 + DEFAULT_COOLDOWN_NS + 2)
+        .unwrap();
+
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert_eq!(vault.state().unwrap().total_assets, 8_000);
+    assert_eq!(vault.state().unwrap().total_shares, 8_000);
+    assert_eq!(vault.state().unwrap().idle_assets, 0);
+    assert_eq!(vault.state().unwrap().external_assets, 8_000);
+}
+
+#[rstest]
 fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     let user = user_addr();
 
@@ -1240,7 +1308,8 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     let second = vault.request_withdraw(user, user, 2000, 0, 1).unwrap();
 
     let (head_id, pending) = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .withdraw_queue
         .head()
         .expect("pending withdrawal");
@@ -1252,7 +1321,8 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
         .unwrap();
 
     let (next_id, next_pending) = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .withdraw_queue
         .head()
         .expect("second pending withdrawal");

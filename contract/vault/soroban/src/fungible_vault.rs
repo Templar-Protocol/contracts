@@ -26,14 +26,24 @@ use templar_vault_kernel::{
 use crate::contract::{get_config_address, load_fees_spec, VaultDataKey};
 use crate::effects::KernelEventEnvelope;
 use crate::error::ContractError;
+use crate::fungible_base::{emit_burn, emit_mint, Base};
 use crate::storage::{SorobanStorage, Storage};
+
+#[inline]
+fn runtime_to_contract<T>(
+    result: Result<T, crate::error::RuntimeError>,
+) -> Result<T, ContractError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(ContractError::from(err)),
+    }
+}
 
 /// Load kernel state and a default config for read-only conversion math.
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
-    let state = storage
-        .load_state()
-        .map_err(ContractError::from)?
+    let state = storage.load_state();
+    let state = runtime_to_contract(state)?
         .map(|v| v.state)
         .unwrap_or_default();
     let config = VaultConfig {
@@ -49,14 +59,17 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
 }
 
 fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
-    env.ledger()
-        .timestamp()
-        .checked_mul(1_000_000_000)
-        .ok_or(ContractError::ConversionOverflow)
+    match env.ledger().timestamp().checked_mul(1_000_000_000) {
+        Some(ns) => Ok(ns),
+        None => Err(ContractError::ConversionOverflow),
+    }
 }
 
 fn emit_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), ContractError> {
-    let payload = borsh::to_vec(event).map_err(|_| ContractError::EffectFailed)?;
+    let payload = match borsh::to_vec(event) {
+        Ok(payload) => payload,
+        Err(_) => return Err(ContractError::EffectFailed),
+    };
     KernelEventEnvelope {
         payload: Bytes::from_slice(env, &payload),
     }
@@ -68,25 +81,50 @@ fn resolve_fee_recipient(
     storage: &SorobanStorage,
     kernel_addr: &templar_vault_kernel::Address,
 ) -> Result<SdkAddress, ContractError> {
-    storage
-        .load_address(kernel_addr)
-        .ok_or(ContractError::EffectFailed)
+    match storage.load_address(kernel_addr) {
+        Some(recipient) => Ok(recipient),
+        None => Err(ContractError::EffectFailed),
+    }
+}
+
+#[inline(never)]
+fn mint_fee_shares(
+    env: &Env,
+    storage: &SorobanStorage,
+    share_token: &SdkAddress,
+    recipient: &templar_vault_kernel::Address,
+    shares: Number,
+) -> Result<u128, ContractError> {
+    if shares.is_zero() {
+        return Ok(0);
+    }
+    let minted: u128 = shares.into();
+    let recipient = resolve_fee_recipient(storage, recipient)?;
+    let shares_i128 = to_i128(minted)?;
+    if share_token == &env.current_contract_address() {
+        Base::update(env, None, Some(&recipient), shares_i128);
+        emit_mint(env, &recipient, shares_i128);
+    } else {
+        StellarAssetClient::new(env, share_token).mint(&recipient, &shares_i128);
+    }
+    Ok(minted)
 }
 
 pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
     let mut storage = SorobanStorage::new(env);
-    let mut versioned = storage
-        .load_state()
-        .map_err(ContractError::from)?
-        .ok_or(ContractError::InvalidState)?;
+    let versioned = storage.load_state();
+    let mut versioned = match runtime_to_contract(versioned)? {
+        Some(versioned) => versioned,
+        None => return Err(ContractError::InvalidState),
+    };
     let state = &mut versioned.state;
     let anchor = state.fee_anchor;
     if now_ns < anchor.timestamp_ns {
         return Err(ContractError::InvalidState);
     }
 
-    let fees = load_fees_spec(env).map_err(ContractError::from)?;
+    let fees = runtime_to_contract(load_fees_spec(env))?;
     let cur_total_assets = state.total_assets;
     let mut total_supply = state.total_shares;
 
@@ -99,7 +137,6 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
     );
 
     let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)?;
-    let share_admin = StellarAssetClient::new(env, &share_token);
 
     let management_shares = compute_management_fee_shares(
         fee_total_assets,
@@ -109,11 +146,14 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
         anchor.timestamp_ns,
         now_ns,
     );
-    if !management_shares.is_zero() {
-        let management_shares_u128: u128 = management_shares.into();
-        let recipient = resolve_fee_recipient(&storage, &fees.management.recipient)?;
-        let shares_i128 = to_i128(management_shares_u128)?;
-        share_admin.mint(&recipient, &shares_i128);
+    let management_shares_u128 = mint_fee_shares(
+        env,
+        &storage,
+        &share_token,
+        &fees.management.recipient,
+        management_shares,
+    )?;
+    if management_shares_u128 > 0 {
         total_supply = total_supply
             .checked_add(management_shares_u128)
             .ok_or(ContractError::InvalidState)?;
@@ -126,11 +166,14 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
         Number::from(cur_total_assets),
         Number::from(total_supply),
     );
-    if !performance_shares.is_zero() {
-        let performance_shares_u128: u128 = performance_shares.into();
-        let recipient = resolve_fee_recipient(&storage, &fees.performance.recipient)?;
-        let shares_i128 = to_i128(performance_shares_u128)?;
-        share_admin.mint(&recipient, &shares_i128);
+    let performance_shares_u128 = mint_fee_shares(
+        env,
+        &storage,
+        &share_token,
+        &fees.performance.recipient,
+        performance_shares,
+    )?;
+    if performance_shares_u128 > 0 {
         total_supply = total_supply
             .checked_add(performance_shares_u128)
             .ok_or(ContractError::InvalidState)?;
@@ -139,9 +182,7 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
     state.total_shares = total_supply;
     state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
 
-    storage
-        .save_state(&versioned)
-        .map_err(ContractError::from)?;
+    runtime_to_contract(storage.save_state(&versioned))?;
     emit_kernel_event(
         env,
         &KernelEvent::FeesRefreshed {
@@ -159,12 +200,19 @@ pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
         Ok(addr) => addr,
         Err(_) => return 0,
     };
-    token::Client::new(env, &share_token).balance(owner)
+    if share_token == env.current_contract_address() {
+        Base::balance(env, owner)
+    } else {
+        token::Client::new(env, &share_token).balance(owner)
+    }
 }
 
 /// Safe u128 → i128 conversion.
 pub(crate) fn to_i128(v: u128) -> Result<i128, ContractError> {
-    i128::try_from(v).map_err(|_| ContractError::ConversionOverflow)
+    match i128::try_from(v) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(ContractError::ConversionOverflow),
+    }
 }
 
 /// Safe i128 → u128 conversion (rejects negative).
@@ -190,36 +238,39 @@ pub(crate) fn atomic_withdraw_internal(
     let mut storage = SorobanStorage::new(env);
 
     // Load and mutate kernel state
-    let mut versioned = storage
-        .load_state()
-        .map_err(ContractError::from)?
-        .ok_or(ContractError::InvalidState)?;
+    let versioned = storage.load_state();
+    let mut versioned = match runtime_to_contract(versioned)? {
+        Some(versioned) => versioned,
+        None => return Err(ContractError::InvalidState),
+    };
     let state = &mut versioned.state;
 
     // Update kernel state totals
-    state.total_shares = state
-        .total_shares
-        .checked_sub(shares)
-        .ok_or(ContractError::InvalidState)?;
-    state.total_assets = state
-        .total_assets
-        .checked_sub(assets)
-        .ok_or(ContractError::InvalidState)?;
-    state.idle_assets = state
-        .idle_assets
-        .checked_sub(assets)
-        .ok_or(ContractError::InvalidState)?;
+    state.total_shares = match state.total_shares.checked_sub(shares) {
+        Some(total_shares) => total_shares,
+        None => return Err(ContractError::InvalidState),
+    };
+    state.total_assets = match state.total_assets.checked_sub(assets) {
+        Some(total_assets) => total_assets,
+        None => return Err(ContractError::InvalidState),
+    };
+    state.idle_assets = match state.idle_assets.checked_sub(assets) {
+        Some(idle_assets) => idle_assets,
+        None => return Err(ContractError::InvalidState),
+    };
 
     // Persist updated state
-    storage
-        .save_state(&versioned)
-        .map_err(ContractError::from)?;
+    runtime_to_contract(storage.save_state(&versioned))?;
 
-    // Burn shares from owner via share token contract
     let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)?;
     let shares_i128 = to_i128(shares)?;
-    let share_client = token::Client::new(env, &share_token);
-    share_client.burn(owner, &shares_i128);
+    if share_token == env.current_contract_address() {
+        Base::update(env, Some(owner), None, shares_i128);
+        emit_burn(env, owner, shares_i128);
+    } else {
+        let share_client = token::Client::new(env, &share_token);
+        share_client.burn(owner, &shares_i128);
+    }
 
     // Transfer underlying assets to receiver
     let asset_token: SdkAddress = get_config_address(env, &VaultDataKey::AssetToken)?;

@@ -849,11 +849,11 @@ fn test_loads_fees_spec_from_storage() {
     });
 
     env.as_contract(&contract_id, || {
-        with_contract_vault(&env, |vault| {
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             assert_eq!(vault.config.fees, fees);
             Ok(())
-        })
-        .unwrap();
+        };
+        with_contract_vault(&env, &mut call).unwrap();
     });
 }
 
@@ -1250,7 +1250,6 @@ fn test_policy_state_getter() {
 fn test_load_state_restores_policy_and_restrictions() {
     use crate::policy::MarketLock;
     use soroban_sdk::testutils::Address as _;
-    use std::collections::BTreeSet;
 
     let env = Env::default();
     env.mock_all_auths();
@@ -1273,9 +1272,7 @@ fn test_load_state_restores_policy_and_restrictions() {
         policy_state.locks = policy_state.locks.acquire(lock, 10).unwrap();
         Storage::save_policy_state(&mut storage, &policy_state).unwrap();
 
-        let mut blacklist = BTreeSet::new();
-        blacklist.insert([9u8; 32]);
-        let restrictions = Restrictions::Blacklist(blacklist);
+        let restrictions = Restrictions::Blacklist(alloc::vec![[9u8; 32]]);
         Storage::save_restrictions(&mut storage, &Some(restrictions.clone())).unwrap();
 
         let mut vault = CuratorVault::new(

@@ -6,7 +6,10 @@ fn u128_to_i128_with(
     msg: &'static str,
     err: fn(&'static str) -> RuntimeError,
 ) -> Result<i128, RuntimeError> {
-    i128::try_from(value).map_err(|_| err(msg))
+    match i128::try_from(value) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(err(msg)),
+    }
 }
 
 #[inline]

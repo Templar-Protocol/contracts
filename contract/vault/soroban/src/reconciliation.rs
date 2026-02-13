@@ -13,6 +13,18 @@ use crate::auth::{ActionKind, AuthAdapter, AuthError};
 use crate::error::RuntimeError;
 use crate::market::{MarketAdapter, MarketRef, SorobanMarketAdapter};
 
+#[inline]
+fn map_auth_error(err: AuthError) -> RuntimeError {
+    match err {
+        AuthError::NotAuthorized { .. } => {
+            RuntimeError::unauthorized("caller not authorized for ManualReconcile")
+        }
+        AuthError::InvalidProof => RuntimeError::unauthorized("invalid proof"),
+        AuthError::MissingRole(_) => RuntimeError::unauthorized("missing required role"),
+        AuthError::VaultPaused => RuntimeError::invalid_state("vault is paused"),
+    }
+}
+
 /// Audit event types for reconciliation operations.
 ///
 /// These events are emitted during reconciliation to provide an audit trail.
@@ -285,17 +297,10 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
     let mut events = Vec::new();
 
     // 1. Authorize caller
-    auth.authorize(ActionKind::ManualReconcile, request.caller, None)
-        .map_err(|e| match e {
-            AuthError::NotAuthorized { .. } => {
-                RuntimeError::unauthorized("caller not authorized for ManualReconcile")
-            }
-            AuthError::InvalidProof => RuntimeError::unauthorized("invalid proof"),
-            AuthError::MissingRole(role) => {
-                RuntimeError::unauthorized(alloc::format!("missing role: {}", role))
-            }
-            AuthError::VaultPaused => RuntimeError::invalid_state("vault is paused"),
-        })?;
+    let auth_result = auth.authorize(ActionKind::ManualReconcile, request.caller, None);
+    if let Err(err) = auth_result {
+        return Err(map_auth_error(err));
+    }
 
     // 2. Emit Started event
     events.push(ReconciliationEvent::started(
@@ -308,16 +313,17 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
     // 3. Read principals from each market
     let mut total_principals: i128 = 0;
     for &market_id in &request.market_ids {
-        let principal = market_adapter
-            .total_assets(env, &request.asset)
-            .map_err(|e| {
+        let principal = match market_adapter.total_assets(env, &request.asset) {
+            Ok(principal) => principal,
+            Err(err) => {
                 events.push(ReconciliationEvent::failed(
                     request.op_id,
                     timestamp_ns,
-                    alloc::format!("failed to read market {market_id}: {e}"),
+                    "failed to read market principal",
                 ));
-                e
-            })?;
+                return Err(err);
+            }
+        };
 
         events.push(ReconciliationEvent::market_read(
             request.op_id,
@@ -327,7 +333,7 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
 
         total_principals = total_principals
             .checked_add(principal)
-            .ok_or(RuntimeError::invalid_state("total principals overflow"))?;
+            .ok_or_else(|| RuntimeError::invalid_state("total principals overflow"))?;
     }
 
     // 4. Convert to u128 (principals should be non-negative after aggregation)
@@ -338,7 +344,7 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
         events.push(ReconciliationEvent::failed(
             request.op_id,
             timestamp_ns,
-            alloc::format!("negative total principals: {}", total_principals),
+            "negative total principals",
         ));
         return Err(RuntimeError::invalid_state("negative total principals"));
     };
@@ -352,15 +358,25 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
 
     // 6. Calculate delta (safe: both values are u128 that passed non-negative check,
     //    and the difference of two non-negative values fits in i128)
-    let new_i128 = i128::try_from(new_external_assets)
-        .map_err(|_| RuntimeError::invalid_state("new_external_assets exceeds i128"))?;
-    let old_i128 = i128::try_from(request.current_external_assets)
-        .map_err(|_| RuntimeError::invalid_state("current_external_assets exceeds i128"))?;
+    let new_i128 = match i128::try_from(new_external_assets) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(RuntimeError::invalid_state(
+                "new_external_assets exceeds i128",
+            ))
+        }
+    };
+    let old_i128 = match i128::try_from(request.current_external_assets) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(RuntimeError::invalid_state(
+                "current_external_assets exceeds i128",
+            ))
+        }
+    };
     let delta = new_i128
         .checked_sub(old_i128)
-        .ok_or(RuntimeError::invalid_state(
-            "external assets delta overflow",
-        ))?;
+        .ok_or_else(|| RuntimeError::invalid_state("external assets delta overflow"))?;
 
     // 7. Emit Completed event
     events.push(ReconciliationEvent::completed(
@@ -403,9 +419,7 @@ pub fn reconcile_external_assets<A: MarketAdapter>(
         let assets = adapter.total_assets(market.clone())?;
         total = total
             .checked_add(assets)
-            .ok_or(RuntimeError::invalid_state(
-                "external assets total overflow",
-            ))?;
+            .ok_or_else(|| RuntimeError::invalid_state("external assets total overflow"))?;
     }
 
     Ok(ReconciliationRecord {
