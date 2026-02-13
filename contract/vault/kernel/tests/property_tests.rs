@@ -482,7 +482,7 @@ proptest! {
         prop_assert_eq!(is_valid, amount >= MIN_WITHDRAWAL_ASSETS);
     }
 
-    /// Property 22: can_enqueue respects MAX_QUEUE_LENGTH
+    /// Property 22: can_enqueue respects MAX_QUEUE_LENGTH (alias of MAX_PENDING)
     #[test]
     fn prop_can_enqueue_bounds(length in 0u32..=2000) {
         let result = can_enqueue(length);
@@ -1677,7 +1677,7 @@ fn fee_shares_with_total_assets_one() {
     );
 }
 
-/// Boundary 10: Queue at exactly MAX_QUEUE_LENGTH rejects next enqueue.
+/// Boundary 10: Queue at exactly MAX_QUEUE_LENGTH (alias of MAX_PENDING) rejects next enqueue.
 #[test]
 fn queue_at_max_rejects_enqueue() {
     assert!(

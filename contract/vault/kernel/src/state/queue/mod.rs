@@ -20,8 +20,10 @@ use crate::types::{Address, EscrowSettlement, TimestampNs};
 pub const MIN_WITHDRAWAL_ASSETS: u128 = 1_000;
 
 /// Maximum queue length before rejecting new requests.
-/// This prevents unbounded queue growth and potential DoS vectors.
-pub const MAX_QUEUE_LENGTH: u32 = 1_000;
+///
+/// This is a legacy alias of [`MAX_PENDING`] to keep queue helpers consistent
+/// with the kernel config limit and avoid ambiguous capacity thresholds.
+pub const MAX_QUEUE_LENGTH: u32 = crate::state::vault::MAX_PENDING as u32;
 
 /// Default cooldown period in nanoseconds (24 hours).
 /// Withdrawals cannot be processed until this time has elapsed.
