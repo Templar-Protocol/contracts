@@ -221,6 +221,10 @@ impl BlendAdapterContract {
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
         }
+        require_contract_address(&receiver, AdapterError::InvalidInput)?;
+        if receiver == env.current_contract_address() {
+            return Err(AdapterError::InvalidInput);
+        }
 
         with_reentrancy_guard(&env, || {
             let adapter = env.current_contract_address();
@@ -578,6 +582,46 @@ mod tests {
                 receiver.clone(),
             );
             assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn rescue_rejects_adapter_receiver() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::rescue(
+                env.clone(),
+                vault.clone(),
+                asset.clone(),
+                100,
+                contract_id.clone(),
+            );
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
+    fn rescue_rejects_non_contract_receiver() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        let account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::rescue(
+                env.clone(),
+                vault.clone(),
+                asset.clone(),
+                100,
+                account,
+            );
+            assert_eq!(result, Err(AdapterError::InvalidInput));
         });
     }
 
