@@ -1,7 +1,7 @@
 use super::*;
 use crate::auth::PermissiveAuth;
 use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
-use crate::storage::MemoryStorage;
+use crate::storage::{MemoryStorage, Storage, StorageVersion, VersionedState};
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use templar_vault_kernel::effects::KernelEffect;
@@ -130,6 +130,81 @@ impl CrossChainMarketAdapter for MockCrossChain {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct FailingPolicyStorage {
+    inner: MemoryStorage,
+    fail_on_save_policy: bool,
+}
+
+impl FailingPolicyStorage {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStorage::new(),
+            fail_on_save_policy: true,
+        }
+    }
+}
+
+impl Storage for FailingPolicyStorage {
+    fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
+        self.inner.load_state()
+    }
+
+    fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
+        self.inner.save_state(state)
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.inner.is_initialized()
+    }
+
+    fn get_version(&self) -> Result<StorageVersion, RuntimeError> {
+        self.inner.get_version()
+    }
+
+    fn load_paused(&self) -> Result<bool, RuntimeError> {
+        self.inner.load_paused()
+    }
+
+    fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
+        self.inner.save_paused(paused)
+    }
+
+    fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
+        self.inner.load_policy_state()
+    }
+
+    fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
+        if self.fail_on_save_policy {
+            return Err(RuntimeError::storage_error("policy save failed"));
+        }
+        self.inner.save_policy_state(state)
+    }
+
+    fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
+        self.inner.load_restrictions()
+    }
+
+    fn save_restrictions(
+        &mut self,
+        restrictions: &Option<Restrictions>,
+    ) -> Result<(), RuntimeError> {
+        self.inner.save_restrictions(restrictions)
+    }
+
+    fn load_address(&self, kernel_addr: &Address) -> Result<Option<SdkAddress>, RuntimeError> {
+        self.inner.load_address(kernel_addr)
+    }
+
+    fn save_address(
+        &mut self,
+        kernel_addr: &Address,
+        soroban_addr: &SdkAddress,
+    ) -> Result<(), RuntimeError> {
+        self.inner.save_address(kernel_addr, soroban_addr)
+    }
+}
+
 fn test_config() -> ContractConfig {
     ContractConfig::new(
         [1u8; 32],
@@ -255,7 +330,7 @@ fn test_begin_allocating() {
     let mut vault = create_test_vault();
     let caller = [3u8; 32]; // allocator
 
-    let state = vault.state_mut();
+    let state = vault.state_mut().unwrap();
     state.idle_assets = 2_000;
     state.total_assets = 2_000;
 
@@ -264,7 +339,7 @@ fn test_begin_allocating() {
         .unwrap();
 
     assert_eq!(op_id, 0);
-    assert!(vault.state().op_state.is_allocating());
+    assert!(vault.state().unwrap().op_state.is_allocating());
 }
 
 #[test]
@@ -272,7 +347,7 @@ fn test_finish_allocating() {
     let mut vault = create_test_vault();
     let caller = [3u8; 32]; // allocator
 
-    let state = vault.state_mut();
+    let state = vault.state_mut().unwrap();
     state.idle_assets = 2_000;
     state.total_assets = 2_000;
 
@@ -283,7 +358,7 @@ fn test_finish_allocating() {
     let result = vault.finish_allocating(caller, op_id).unwrap();
 
     assert_eq!(result.op_id, op_id);
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
 }
 
 #[test]
@@ -291,7 +366,7 @@ fn test_sync_external_assets_rejects_adapter_mismatch_during_refresh() {
     let mut vault = create_test_vault();
     let caller = [3u8; 32]; // allocator
 
-    let state = vault.state_mut();
+    let state = vault.state_mut().unwrap();
     state.idle_assets = 2_000;
     state.total_assets = 2_000;
 
@@ -308,7 +383,7 @@ fn test_sync_external_assets_rejects_adapter_mismatch_during_refresh() {
     );
     assert!(invalid_state, "unexpected error: {err:?}");
 
-    assert!(vault.state().op_state.is_refreshing());
+    assert!(vault.state().unwrap().op_state.is_refreshing());
 }
 
 #[test]
@@ -316,7 +391,7 @@ fn test_sync_external_assets_rejects_when_adapter_unavailable_during_refresh() {
     let mut vault = create_test_vault_with_failing_market();
     let caller = [3u8; 32]; // allocator
 
-    let state = vault.state_mut();
+    let state = vault.state_mut().unwrap();
     state.idle_assets = 2_000;
     state.total_assets = 2_000;
 
@@ -331,8 +406,8 @@ fn test_sync_external_assets_rejects_when_adapter_unavailable_during_refresh() {
     );
     assert!(invalid_state, "unexpected error: {err:?}");
 
-    assert!(vault.state().op_state.is_refreshing());
-    assert_eq!(vault.state().external_assets, 0);
+    assert!(vault.state().unwrap().op_state.is_refreshing());
+    assert_eq!(vault.state().unwrap().external_assets, 0);
 }
 
 #[test]
@@ -343,7 +418,7 @@ fn test_begin_refreshing() {
     let op_id = vault.begin_refreshing(caller, vec![0, 1], 1000).unwrap();
 
     assert_eq!(op_id, 0);
-    assert!(vault.state().op_state.is_refreshing());
+    assert!(vault.state().unwrap().op_state.is_refreshing());
 }
 
 #[test]
@@ -360,7 +435,7 @@ fn test_finish_refreshing_reports_markets_refreshed() {
         .expect("should start refresh");
 
     let expected = vault
-        .state()
+        .state().unwrap()
         .op_state
         .as_refreshing()
         .expect("refreshing state")
@@ -370,7 +445,7 @@ fn test_finish_refreshing_reports_markets_refreshed() {
     let result = vault.finish_refreshing(caller, op_id).unwrap();
 
     assert_eq!(result.markets_refreshed, expected);
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
 }
 
 #[test]
@@ -378,7 +453,7 @@ fn test_sync_external_assets_in_allocating() {
     let mut vault = create_test_vault();
     let caller = [3u8; 32]; // allocator
 
-    let state = vault.state_mut();
+    let state = vault.state_mut().unwrap();
     state.idle_assets = 2_000;
     state.total_assets = 2_000;
 
@@ -390,7 +465,7 @@ fn test_sync_external_assets_in_allocating() {
         .sync_external_assets(caller, 1000, op_id, 1000)
         .unwrap();
 
-    assert_eq!(vault.state().external_assets, 1000);
+    assert_eq!(vault.state().unwrap().external_assets, 1000);
 }
 
 #[test]
@@ -416,7 +491,7 @@ fn test_execute_withdraw_respects_min_withdrawal_assets() {
 
     let (head_id, head_escrow_before, head_expected_before) = {
         let (id, head) = vault
-            .state()
+            .state().unwrap()
             .withdraw_queue
             .head()
             .expect("withdrawal queued");
@@ -424,7 +499,7 @@ fn test_execute_withdraw_respects_min_withdrawal_assets() {
     };
 
     {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
         state.total_assets = state.idle_assets.saturating_add(state.external_assets);
     }
@@ -433,9 +508,9 @@ fn test_execute_withdraw_respects_min_withdrawal_assets() {
 
     assert_eq!(summary.assets_transferred, 0);
     assert_eq!(summary.shares_burned, 0);
-    assert!(vault.state().op_state.is_withdrawing());
+    assert!(vault.state().unwrap().op_state.is_withdrawing());
     let (head_id_after, head_after) = vault
-        .state()
+        .state().unwrap()
         .withdraw_queue
         .head()
         .expect("withdrawal still queued");
@@ -467,7 +542,7 @@ fn test_execute_withdraw_insufficient_idle_no_partial() {
 
     let (head_id, head_escrow_before, head_expected_before) = {
         let (id, head) = vault
-            .state()
+            .state().unwrap()
             .withdraw_queue
             .head()
             .expect("withdrawal queued");
@@ -475,7 +550,7 @@ fn test_execute_withdraw_insufficient_idle_no_partial() {
     };
 
     {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_add(1);
         state.total_assets = state.idle_assets.saturating_add(state.external_assets);
     }
@@ -484,9 +559,9 @@ fn test_execute_withdraw_insufficient_idle_no_partial() {
 
     assert_eq!(summary.assets_transferred, 0);
     assert_eq!(summary.shares_burned, 0);
-    assert!(vault.state().op_state.is_withdrawing());
+    assert!(vault.state().unwrap().op_state.is_withdrawing());
     let (head_id_after, head_after) = vault
-        .state()
+        .state().unwrap()
         .withdraw_queue
         .head()
         .expect("withdrawal still queued");
@@ -593,7 +668,7 @@ fn test_abort_allocating() {
 
     vault.abort_allocating(caller, op_id, 500).unwrap();
 
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
 }
 
 #[test]
@@ -653,6 +728,32 @@ fn test_reentrancy_guard_resets_between_calls() {
 }
 
 #[test]
+fn test_reentrancy_guard_blocks_read_only_entrypoints() {
+    use soroban_sdk::testutils::Address as _;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        with_reentrancy_guard(&env, || {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                SorobanVaultContract::total_shares(env.clone());
+            }));
+            assert!(result.is_err());
+            Ok(())
+        })
+        .unwrap();
+    });
+}
+
+#[test]
 fn test_loads_fees_spec_from_storage() {
     use soroban_sdk::testutils::Address as _;
     use templar_vault_kernel::fee::FeeSlot;
@@ -706,7 +807,7 @@ fn test_refresh_fees_mints_shares() {
     vault.config.fees = fees;
 
     {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.total_assets = 1_500;
         state.total_shares = 1_000;
         state.idle_assets = 1_500;
@@ -744,11 +845,11 @@ fn test_refresh_fees_mints_shares() {
 
     assert_eq!(minted, mgmt_expected + perf_expected);
     assert_eq!(
-        vault.state().total_shares,
+        vault.state().unwrap().total_shares,
         total_supply_after_mgmt + perf_expected
     );
-    assert_eq!(vault.state().fee_anchor.total_assets, 1_500);
-    assert_eq!(vault.state().fee_anchor.timestamp_ns, YEAR_NS);
+    assert_eq!(vault.state().unwrap().fee_anchor.total_assets, 1_500);
+    assert_eq!(vault.state().unwrap().fee_anchor.timestamp_ns, YEAR_NS);
 
     let mint_effects = vault
         .interpreter
@@ -773,7 +874,7 @@ fn test_refresh_fees_zero_elapsed_noop() {
     vault.config.fees = fees;
 
     {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.total_assets = 1_000;
         state.total_shares = 1_000;
         state.idle_assets = 1_000;
@@ -784,14 +885,106 @@ fn test_refresh_fees_zero_elapsed_noop() {
     let minted = vault.refresh_fees([1u8; 32], 123).unwrap();
 
     assert_eq!(minted, 0);
-    assert_eq!(vault.state().total_shares, 1_000);
-    assert_eq!(vault.state().fee_anchor.total_assets, 1_000);
-    assert_eq!(vault.state().fee_anchor.timestamp_ns, 123);
+    assert_eq!(vault.state().unwrap().total_shares, 1_000);
+    assert_eq!(vault.state().unwrap().fee_anchor.total_assets, 1_000);
+    assert_eq!(vault.state().unwrap().fee_anchor.timestamp_ns, 123);
     assert!(!vault
         .interpreter
         .effects
         .iter()
         .any(|effect| matches!(effect, KernelEffect::MintShares { .. })));
+}
+
+#[test]
+fn test_atomic_withdraw_refreshes_fees() {
+    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use soroban_sdk::token::StellarAssetClient;
+    use templar_vault_kernel::fee::FeeSlot;
+    use templar_vault_kernel::math::wad::Wad;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset = asset_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share = share_sac.address();
+    let share_admin_client = StellarAssetClient::new(&env, &share);
+
+    let owner = soroban_sdk::Address::generate(&env);
+    let receiver = soroban_sdk::Address::generate(&env);
+    let operator = soroban_sdk::Address::generate(&env);
+    let mgmt_recipient = soroban_sdk::Address::generate(&env);
+    let perf_recipient = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), curator, asset.clone(), share.clone())
+            .unwrap();
+
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, kernel_address_from_sdk(&env, &perf_recipient)),
+            FeeSlot::new(Wad::one() / 10, kernel_address_from_sdk(&env, &mgmt_recipient)),
+            None,
+        );
+        let bytes = borsh::to_vec(&fees).expect("fees serialize");
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::FeesSpec, &bytes);
+
+        let mut storage = SorobanStorage::new(&env);
+        storage.save_address(
+            &kernel_address_from_sdk(&env, &mgmt_recipient),
+            &mgmt_recipient,
+        );
+        storage.save_address(
+            &kernel_address_from_sdk(&env, &perf_recipient),
+            &perf_recipient,
+        );
+
+        let mut state = VaultState::default();
+        state.total_assets = 1_500;
+        state.total_shares = 1_000;
+        state.idle_assets = 1_500;
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+        storage
+            .save_state(&VersionedState::new(state))
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &1_500);
+    share_admin_client.mint(&owner, &1_000);
+
+    let burned = env.as_contract(&contract_id, || {
+        SorobanVaultContract::withdraw(
+            env.clone(),
+            500,
+            receiver,
+            owner.clone(),
+            operator,
+        )
+    });
+    assert!(burned > 0);
+
+    let share_client = soroban_sdk::token::Client::new(&env, &share);
+    assert!(share_client.balance(&perf_recipient) > 0);
+
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        let versioned = storage.load_state().unwrap().expect("state");
+        assert_eq!(versioned.state.fee_anchor.total_assets, 1_500);
+        assert_eq!(versioned.state.fee_anchor.timestamp_ns, ledger_timestamp_ns(&env));
+    });
 }
 
 // =========================================================================
@@ -820,6 +1013,50 @@ fn test_acquire_and_release_market_lock() {
 
     // Market 1 should now be unlocked
     assert!(!vault.is_market_locked(1, 1500));
+}
+
+#[test]
+fn test_acquire_market_lock_save_failure_is_atomic() {
+    let mut vault = CuratorVault::new(
+        test_config(),
+        FailingPolicyStorage::new(),
+        PermissiveAuth,
+        MockInterpreter::new(),
+        MockMarket,
+        MockCrossChain,
+    );
+    vault.load_state().unwrap();
+
+    let caller = [3u8; 32]; // allocator
+    let result = vault.acquire_market_lock(caller, 1, 200, 100);
+    assert!(result.is_err());
+    assert!(!vault.is_market_locked(1, 150));
+}
+
+#[test]
+fn test_release_market_lock_save_failure_is_atomic() {
+    let mut storage = FailingPolicyStorage::new();
+    storage.fail_on_save_policy = false;
+    let mut vault = CuratorVault::new(
+        test_config(),
+        storage,
+        PermissiveAuth,
+        MockInterpreter::new(),
+        MockMarket,
+        MockCrossChain,
+    );
+    vault.load_state().unwrap();
+
+    let caller = [3u8; 32]; // allocator
+    vault
+        .acquire_market_lock(caller, 1, 200, 100)
+        .expect("lock acquired");
+    assert!(vault.is_market_locked(1, 150));
+
+    vault.storage.fail_on_save_policy = true;
+    let result = vault.release_market_lock(caller, 1);
+    assert!(result.is_err());
+    assert!(vault.is_market_locked(1, 150));
 }
 
 #[test]
@@ -873,7 +1110,7 @@ fn test_begin_allocating_filters_locked_markets() {
     let mut vault = create_test_vault();
     let caller = [3u8; 32]; // allocator
 
-    let state = vault.state_mut();
+    let state = vault.state_mut().unwrap();
     state.idle_assets = 2_000;
     state.total_assets = 2_000;
 
@@ -889,7 +1126,7 @@ fn test_begin_allocating_filters_locked_markets() {
         .expect("should start allocation");
 
     assert_eq!(op_id, 0);
-    assert!(vault.state().op_state.is_allocating());
+    assert!(vault.state().unwrap().op_state.is_allocating());
 
     // The allocation should have filtered out market 1
     // (We can't directly inspect the plan, but the operation should succeed)
@@ -912,7 +1149,7 @@ fn test_begin_refreshing_filters_locked_markets() {
         .expect("should start refresh");
 
     assert_eq!(op_id, 0);
-    assert!(vault.state().op_state.is_refreshing());
+    assert!(vault.state().unwrap().op_state.is_refreshing());
 }
 
 #[test]
@@ -932,7 +1169,7 @@ fn test_allocating_all_locked_markets() {
     // Empty plan is rejected by kernel
     assert!(result.is_err());
     // Vault should still be in idle state
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
 }
 
 #[test]

@@ -1663,14 +1663,7 @@ fn with_reentrancy_guard<T>(
     env: &Env,
     f: impl FnOnce() -> Result<T, ContractError>,
 ) -> Result<T, ContractError> {
-    let locked: bool = env
-        .storage()
-        .instance()
-        .get(&VaultDataKey::ReentrancyLock)
-        .unwrap_or(false);
-    if locked {
-        return Err(ContractError::Reentrancy);
-    }
+    ensure_not_reentrant(env)?;
     env.storage()
         .instance()
         .set(&VaultDataKey::ReentrancyLock, &true);
@@ -1679,6 +1672,19 @@ fn with_reentrancy_guard<T>(
         .instance()
         .set(&VaultDataKey::ReentrancyLock, &false);
     result
+}
+
+fn ensure_not_reentrant(env: &Env) -> Result<(), ContractError> {
+    let locked: bool = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::ReentrancyLock)
+        .unwrap_or(false);
+    if locked {
+        Err(ContractError::Reentrancy)
+    } else {
+        Ok(())
+    }
 }
 
 #[contractimpl]
@@ -1694,6 +1700,7 @@ impl SorobanVaultContract {
         asset_token: SdkAddress,
         share_token: SdkAddress,
     ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         // Check not already initialized
         if env.storage().instance().has(&VaultDataKey::Initialized) {
             return Err(ContractError::AlreadyInitialized);
@@ -1828,6 +1835,7 @@ impl SorobanVaultContract {
     pub fn set_paused(env: Env, caller: SdkAddress, paused: bool) -> Result<(), ContractError> {
         use stellar_contract_utils::pausable::{emit_paused, emit_unpaused};
 
+        ensure_not_reentrant(&env)?;
         require_signed(&caller);
         let caller_kernel = kernel_address_from_sdk(&env, &caller);
 
@@ -1859,6 +1867,7 @@ impl SorobanVaultContract {
         caller: SdkAddress,
         adapter: SdkAddress,
     ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
         require_contract_address(&adapter, "blend adapter must be a contract address")?;
         set_config_address(&env, &VaultDataKey::BlendAdapter, &adapter);
@@ -1871,6 +1880,7 @@ impl SorobanVaultContract {
         caller: SdkAddress,
         pool: SdkAddress,
     ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
         require_contract_address(&pool, "blend pool must be a contract address")?;
         set_config_address(&env, &VaultDataKey::BlendPool, &pool);
@@ -1883,6 +1893,7 @@ impl SorobanVaultContract {
         caller: SdkAddress,
         factory: SdkAddress,
     ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
         require_contract_address(&factory, "blend factory must be a contract address")?;
         set_config_address(&env, &VaultDataKey::BlendFactory, &factory);
@@ -1898,6 +1909,7 @@ impl SorobanVaultContract {
         caller: SdkAddress,
         address: SdkAddress,
     ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         require_curator(&env, &caller)?;
         with_contract_vault(&env, |vault| {
             vault.register_sdk_address(&env, &address)?;
@@ -1909,52 +1921,62 @@ impl SorobanVaultContract {
 
     /// Get the curator address.
     pub fn curator(env: Env) -> Result<SdkAddress, ContractError> {
+        ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::Curator)
     }
 
     /// Get the asset token address.
     pub fn asset_token(env: Env) -> Result<SdkAddress, ContractError> {
+        ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::AssetToken)
     }
 
     /// Get the share token address.
     pub fn share_token(env: Env) -> Result<SdkAddress, ContractError> {
+        ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::ShareToken)
     }
 
     /// Get the Blend adapter contract address.
     pub fn blend_adapter(env: Env) -> Result<SdkAddress, ContractError> {
+        ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::BlendAdapter)
     }
 
     /// Get the Blend pool contract address.
     pub fn blend_pool(env: Env) -> Result<SdkAddress, ContractError> {
+        ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::BlendPool)
     }
 
     /// Get the Blend factory contract address.
     pub fn blend_factory(env: Env) -> Result<SdkAddress, ContractError> {
+        ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::BlendFactory)
     }
 
     /// Check if the vault is paused.
     pub fn is_paused(env: Env) -> bool {
+        must(&env, ensure_not_reentrant(&env));
         let storage = SorobanStorage::new(&env);
         storage.is_paused()
     }
 
     /// Get total shares in circulation.
     pub fn total_shares(env: Env) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         query_vault_field(&env, |s| s.total_shares)
     }
 
     /// Get idle assets (not deployed to markets).
     pub fn idle_assets(env: Env) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         query_vault_field(&env, |s| s.idle_assets)
     }
 
     /// Get external assets (deployed to markets).
     pub fn external_assets(env: Env) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         query_vault_field(&env, |s| s.external_assets)
     }
 
@@ -1962,6 +1984,7 @@ impl SorobanVaultContract {
     ///
     /// Call periodically to prevent state expiry.
     pub fn extend_ttl(env: Env) {
+        must(&env, ensure_not_reentrant(&env));
         extend_storage_ttl(&env);
     }
 
@@ -1984,6 +2007,7 @@ impl SorobanVaultContract {
         new_wasm_hash: BytesN<32>,
         operator: SdkAddress,
     ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         require_curator(&env, &operator)?;
 
         // Enable migration state before upgrading
@@ -2008,6 +2032,7 @@ impl SorobanVaultContract {
             complete_migration, ensure_can_complete_migration,
         };
 
+        ensure_not_reentrant(&env)?;
         require_curator(&env, &operator)?;
 
         // Verify we're in migration state (upgrade was called)
@@ -2029,6 +2054,7 @@ impl SorobanVaultContract {
     ///
     /// Returns true if `upgrade()` was called but `migrate()` has not completed.
     pub fn is_migrating(env: Env) -> bool {
+        must(&env, ensure_not_reentrant(&env));
         stellar_contract_utils::upgradeable::can_complete_migration(&env)
     }
 }
@@ -2065,6 +2091,7 @@ fn must<T>(env: &Env, result: Result<T, ContractError>) -> T {
 impl SorobanVaultContract {
     /// Returns the address of the underlying asset managed by the vault.
     pub fn query_asset(env: Env) -> SdkAddress {
+        must(&env, ensure_not_reentrant(&env));
         must(&env, get_config_address(&env, &VaultDataKey::AssetToken))
     }
 
@@ -2073,11 +2100,13 @@ impl SorobanVaultContract {
     /// Includes both idle assets held in the contract and external assets
     /// deployed to markets.
     pub fn total_assets(env: Env) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         query_vault_field(&env, |s| s.total_assets)
     }
 
     /// Convert assets to shares (floor rounding, favors vault).
     pub fn convert_to_shares(env: Env, assets: i128) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         if assets <= 0 {
             return 0;
         }
@@ -2091,6 +2120,7 @@ impl SorobanVaultContract {
 
     /// Convert shares to assets (floor rounding, favors vault).
     pub fn convert_to_assets(env: Env, shares: i128) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         if shares <= 0 {
             return 0;
         }
@@ -2106,6 +2136,7 @@ impl SorobanVaultContract {
     ///
     /// Returns `i128::MAX` if the vault is idle and unpaused, 0 otherwise.
     pub fn max_deposit(env: Env, _receiver: SdkAddress) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         match load_state_and_config(&env) {
             Ok((state, config)) => {
                 if state.op_state.is_idle() && !config.paused {
@@ -2120,6 +2151,7 @@ impl SorobanVaultContract {
 
     /// Maximum shares that can be minted for `receiver`.
     pub fn max_mint(env: Env, _receiver: SdkAddress) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         match load_state_and_config(&env) {
             Ok((state, config)) => {
                 if state.op_state.is_idle() && !config.paused {
@@ -2137,6 +2169,7 @@ impl SorobanVaultContract {
     /// Limited by their share balance and available idle assets.
     /// Returns 0 if the vault is not idle.
     pub fn max_withdraw(env: Env, owner: SdkAddress) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         let Ok((state, config)) = load_state_and_config(&env) else {
             return 0;
         };
@@ -2155,6 +2188,7 @@ impl SorobanVaultContract {
     /// Limited by their share balance and what idle assets can cover.
     /// Returns 0 if the vault is not idle.
     pub fn max_redeem(env: Env, owner: SdkAddress) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         let Ok((state, config)) = load_state_and_config(&env) else {
             return 0;
         };
@@ -2175,6 +2209,7 @@ impl SorobanVaultContract {
 
     /// Preview assets needed to mint `shares` (ceil — more assets required).
     pub fn preview_mint(env: Env, shares: i128) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         if shares <= 0 {
             return 0;
         }
@@ -2188,6 +2223,7 @@ impl SorobanVaultContract {
 
     /// Preview shares burned to withdraw `assets` (ceil — more shares burned).
     pub fn preview_withdraw(env: Env, assets: i128) -> i128 {
+        must(&env, ensure_not_reentrant(&env));
         if assets <= 0 {
             return 0;
         }
@@ -2216,6 +2252,7 @@ impl SorobanVaultContract {
         operator: SdkAddress,
     ) -> i128 {
         require_signed(&operator);
+        must(&env, ensure_not_reentrant(&env));
         if assets <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -2235,6 +2272,7 @@ impl SorobanVaultContract {
         operator: SdkAddress,
     ) -> i128 {
         require_signed(&operator);
+        must(&env, ensure_not_reentrant(&env));
         if shares <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
@@ -2266,22 +2304,27 @@ impl SorobanVaultContract {
         if assets <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
-        let assets_u128 = must(&env, to_u128(assets));
-        let (state, _config) = must(&env, load_state_and_config(&env));
-        if !state.op_state.is_idle() {
-            panic_with_error!(&env, ContractError::VaultNotIdle);
-        }
-        if assets_u128 > state.idle_assets {
-            panic_with_error!(&env, ContractError::InsufficientIdleAssets);
-        }
-        must(&env, refresh_fees_for_atomic(&env));
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
         must(
             &env,
-            atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn),
-        );
-        must(&env, to_i128(shares_to_burn))
+            with_reentrancy_guard(&env, || {
+                let assets_u128 = must(&env, to_u128(assets));
+                let (state, _config) = must(&env, load_state_and_config(&env));
+                if !state.op_state.is_idle() {
+                    panic_with_error!(&env, ContractError::VaultNotIdle);
+                }
+                if assets_u128 > state.idle_assets {
+                    panic_with_error!(&env, ContractError::InsufficientIdleAssets);
+                }
+                must(&env, refresh_fees_for_atomic(&env));
+                let (state, config) = must(&env, load_state_and_config(&env));
+                let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
+                must(
+                    &env,
+                    atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn),
+                );
+                Ok(must(&env, to_i128(shares_to_burn)))
+            }),
+        )
     }
 
     /// Redeem exactly `shares` for assets, sending to `receiver`.
@@ -2301,22 +2344,27 @@ impl SorobanVaultContract {
         if shares <= 0 {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
-        let shares_u128 = must(&env, to_u128(shares));
-        let (state, _config) = must(&env, load_state_and_config(&env));
-        if !state.op_state.is_idle() {
-            panic_with_error!(&env, ContractError::VaultNotIdle);
-        }
-        must(&env, refresh_fees_for_atomic(&env));
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let assets_out = convert_to_assets(&state, &config, shares_u128);
-        if assets_out > state.idle_assets {
-            panic_with_error!(&env, ContractError::InsufficientIdleAssets);
-        }
         must(
             &env,
-            atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128),
-        );
-        must(&env, to_i128(assets_out))
+            with_reentrancy_guard(&env, || {
+                let shares_u128 = must(&env, to_u128(shares));
+                let (state, _config) = must(&env, load_state_and_config(&env));
+                if !state.op_state.is_idle() {
+                    panic_with_error!(&env, ContractError::VaultNotIdle);
+                }
+                must(&env, refresh_fees_for_atomic(&env));
+                let (state, config) = must(&env, load_state_and_config(&env));
+                let assets_out = convert_to_assets(&state, &config, shares_u128);
+                if assets_out > state.idle_assets {
+                    panic_with_error!(&env, ContractError::InsufficientIdleAssets);
+                }
+                must(
+                    &env,
+                    atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128),
+                );
+                Ok(must(&env, to_i128(assets_out)))
+            }),
+        )
     }
 }
 
