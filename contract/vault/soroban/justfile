@@ -1,4 +1,4 @@
-set dotenv-load := true
+set dotenv-load := false
 
 # =============================================================================
 # Templar Soroban Vault — Deployment & Testing Justfile
@@ -33,8 +33,9 @@ set dotenv-load := true
 # =============================================================================
 
 root := justfile_directory() + "/../../.."
-default_wasm := root + "/target/wasm32-unknown-unknown/release/templar_soroban_runtime.wasm"
-blend_adapter_wasm := root + "/target/wasm32-unknown-unknown/release/templar_soroban_blend_adapter.wasm"
+wasm_dir := root + "/target/wasm32-unknown-unknown/release"
+default_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
+blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -55,7 +56,7 @@ setup: build network-init keys-init keys-fund
 	@echo "  2. just demo-deposit  # Run deposit demo"
 
 # Deploy everything: vault contract + test asset token, then initialize.
-deploy-all: _ensure-setup deploy-test-token deploy init
+deploy-all: _ensure-setup build deploy-test-token deploy init
 	@echo ""
 	@echo "✓ Deployment complete!"
 	@echo "  Vault:       $(cat {{state_dir}}/vault_id 2>/dev/null || echo 'not found')"
@@ -76,33 +77,25 @@ deploy-all-with-blend pool_address: _ensure-setup build-blend-adapter deploy-tes
 # BUILD
 # =============================================================================
 
-# Build the Soroban vault WASM (optimized release).
+# Build and optimize the Soroban vault WASM.
 build:
 	@echo "Building Soroban vault WASM..."
 	@cargo build --release --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
+	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" 2>/dev/null
 	@echo "✓ Built: {{default_wasm}}"
 
-# Build the Blend adapter WASM.
+# Build and optimize the Blend adapter WASM.
 build-blend-adapter:
 	@echo "Building Blend adapter WASM..."
 	@cargo build --release --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-blend-adapter
+	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_blend_adapter.wasm" 2>/dev/null
 	@echo "✓ Built: {{blend_adapter_wasm}}"
 
 # Build all WASMs (vault + blend adapter).
 build-all: build build-blend-adapter
 	@echo "✓ All contracts built"
-
-# Build with size optimization (slower but smaller).
-build-optimized: build
-	@if command -v stellar >/dev/null 2>&1; then \
-		echo "Optimizing WASM..."; \
-		stellar contract optimize --wasm "{{default_wasm}}"; \
-		echo "✓ Optimized WASM"; \
-	else \
-		echo "Note: Install stellar CLI for WASM optimization"; \
-	fi
 
 # Print the default WASM path.
 wasm-path:
@@ -190,11 +183,16 @@ deploy-test-token:
 	@echo "Deploying test asset token (native XLM wrapper)..."
 	@network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
-	token_id=$(stellar contract asset deploy \
+	stellar contract asset deploy \
 		--network "$network" \
-		--source "$source" \
-		--asset native 2>&1 | tail -1); \
-	echo "✓ Asset token deployed: $token_id"; \
+		--source-account "$source" \
+		--asset native 2>/dev/null || true; \
+	token_id=$(stellar contract asset id --asset native --network "$network"); \
+	if [ -z "$token_id" ]; then \
+		echo "Error: failed to resolve native asset contract ID"; \
+		exit 1; \
+	fi; \
+	echo "✓ Asset token: $token_id"; \
 	mkdir -p "{{state_dir}}"; \
 	echo "$token_id" > "{{state_dir}}/asset_token_id"
 
@@ -212,7 +210,11 @@ deploy:
 	contract_id=$(stellar contract deploy \
 		--wasm "$wasm" \
 		--network "$network" \
-		--source "$source" 2>&1 | tail -1); \
+		--source-account "$source"); \
+	if [ -z "$contract_id" ]; then \
+		echo "Error: deploy failed — no contract ID returned"; \
+		exit 1; \
+	fi; \
 	echo "✓ Vault deployed: $contract_id"; \
 	mkdir -p "{{state_dir}}"; \
 	echo "$contract_id" > "{{state_dir}}/vault_id"
@@ -243,7 +245,7 @@ init:
 	stellar contract invoke \
 		--id "$contract_id" \
 		--network "$network" \
-		--source "$source" \
+		--source-account "$source" \
 		-- initialize \
 		--admin "$admin" \
 		--asset_token "$asset_token" \
@@ -259,7 +261,7 @@ extend-ttl ledgers="100000":
 	stellar contract extend \
 		--id "$contract_id" \
 		--network "$network" \
-		--source "$source" \
+		--source-account "$source" \
 		--ledgers-to-extend {{ledgers}}; \
 	echo "✓ TTL extended"
 
@@ -305,11 +307,15 @@ deploy-blend-adapter pool_address:
 	adapter_id=$(stellar contract deploy \
 		--wasm "$wasm" \
 		--network "$network" \
-		--source "$source" \
+		--source-account "$source" \
 		-- \
 		--admin "$admin" \
 		--vault "$vault_id" \
-		--pool "{{pool_address}}" 2>&1 | tail -1); \
+		--pool "{{pool_address}}"); \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: deploy failed — no adapter ID returned"; \
+		exit 1; \
+	fi; \
 	echo "✓ Blend adapter deployed: $adapter_id"; \
 	mkdir -p "{{state_dir}}"; \
 	echo "$adapter_id" > "{{state_dir}}/blend_adapter_id"; \
@@ -346,7 +352,7 @@ blend-invoke *args:
 	stellar contract invoke \
 		--id "$adapter_id" \
 		--network "$network" \
-		--source "$source" \
+		--source-account "$source" \
 		-- {{args}}
 
 # Get Blend adapter admin.
@@ -401,7 +407,7 @@ blend-adapter-extend-ttl ledgers="100000":
 	stellar contract extend \
 		--id "$adapter_id" \
 		--network "$network" \
-		--source "$source" \
+		--source-account "$source" \
 		--ledgers-to-extend {{ledgers}}; \
 	echo "✓ TTL extended"
 
@@ -432,7 +438,7 @@ invoke *args:
 	stellar contract invoke \
 		--id "$contract_id" \
 		--network "$network" \
-		--source "$source" \
+		--source-account "$source" \
 		-- {{args}}
 
 # =============================================================================
