@@ -5,7 +5,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 use derive_more::{From, Into};
-use soroban_sdk::{contracttype, Address as SdkAddress, BytesN, Env};
+use soroban_sdk::{contracttype, Address as SdkAddress, Bytes, BytesN, Env};
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::{Address, Restrictions, VaultState};
 
@@ -116,14 +116,15 @@ impl<'a> SorobanStorage<'a> {
         self.env
             .storage()
             .persistent()
-            .get(&SorobanStorageKey::StateBlob)
+            .get::<_, Bytes>(&SorobanStorageKey::StateBlob)
+            .map(|b| b.to_alloc_vec())
     }
 
     fn save_state_blob(&self, state: &Vec<u8>) {
-        self.env
-            .storage()
-            .persistent()
-            .set(&SorobanStorageKey::StateBlob, state);
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::StateBlob,
+            &Bytes::from_slice(self.env, state),
+        );
     }
 
     /// Load the policy state from persistent storage.
@@ -131,15 +132,16 @@ impl<'a> SorobanStorage<'a> {
         self.env
             .storage()
             .persistent()
-            .get(&SorobanStorageKey::PolicyState)
+            .get::<_, Bytes>(&SorobanStorageKey::PolicyState)
+            .map(|b| b.to_alloc_vec())
     }
 
     /// Save the policy state to persistent storage.
     pub fn save_policy_state(&self, state: &Vec<u8>) {
-        self.env
-            .storage()
-            .persistent()
-            .set(&SorobanStorageKey::PolicyState, state);
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::PolicyState,
+            &Bytes::from_slice(self.env, state),
+        );
     }
 
     /// Load restrictions from persistent storage.
@@ -147,15 +149,16 @@ impl<'a> SorobanStorage<'a> {
         self.env
             .storage()
             .persistent()
-            .get(&SorobanStorageKey::Restrictions)
+            .get::<_, Bytes>(&SorobanStorageKey::Restrictions)
+            .map(|b| b.to_alloc_vec())
     }
 
     /// Save restrictions to persistent storage.
     pub fn save_restrictions(&self, restrictions: &Vec<u8>) {
-        self.env
-            .storage()
-            .persistent()
-            .set(&SorobanStorageKey::Restrictions, restrictions);
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::Restrictions,
+            &Bytes::from_slice(self.env, restrictions),
+        );
     }
 
     /// Clear restrictions from persistent storage.

@@ -348,9 +348,7 @@ fn test_soroban_storage_load_state_rejects_incompatible_version(
 }
 
 #[rstest]
-fn test_soroban_storage_loads_legacy_version_state(
-    contract_env: (Env, soroban_sdk::Address),
-) {
+fn test_soroban_storage_loads_legacy_version_state(contract_env: (Env, soroban_sdk::Address)) {
     let (env, contract_id) = contract_env;
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);

@@ -494,7 +494,8 @@ fn test_finish_refreshing_reports_markets_refreshed() {
         .expect("should start refresh");
 
     let expected = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .op_state
         .as_refreshing()
         .expect("refreshing state")
@@ -550,7 +551,8 @@ fn test_execute_withdraw_respects_min_withdrawal_assets() {
 
     let (head_id, head_escrow_before, head_expected_before) = {
         let (id, head) = vault
-            .state().unwrap()
+            .state()
+            .unwrap()
             .withdraw_queue
             .head()
             .expect("withdrawal queued");
@@ -569,7 +571,8 @@ fn test_execute_withdraw_respects_min_withdrawal_assets() {
     assert_eq!(summary.shares_burned, 0);
     assert!(vault.state().unwrap().op_state.is_withdrawing());
     let (head_id_after, head_after) = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .withdraw_queue
         .head()
         .expect("withdrawal still queued");
@@ -601,7 +604,8 @@ fn test_execute_withdraw_insufficient_idle_no_partial() {
 
     let (head_id, head_escrow_before, head_expected_before) = {
         let (id, head) = vault
-            .state().unwrap()
+            .state()
+            .unwrap()
             .withdraw_queue
             .head()
             .expect("withdrawal queued");
@@ -620,7 +624,8 @@ fn test_execute_withdraw_insufficient_idle_no_partial() {
     assert_eq!(summary.shares_burned, 0);
     assert!(vault.state().unwrap().op_state.is_withdrawing());
     let (head_id_after, head_after) = vault
-        .state().unwrap()
+        .state()
+        .unwrap()
         .withdraw_queue
         .head()
         .expect("withdrawal still queued");
@@ -992,8 +997,14 @@ fn test_atomic_withdraw_refreshes_fees() {
             .unwrap();
 
         let fees = FeesSpec::new(
-            FeeSlot::new(Wad::one() / 10, kernel_address_from_sdk(&env, &perf_recipient)),
-            FeeSlot::new(Wad::one() / 10, kernel_address_from_sdk(&env, &mgmt_recipient)),
+            FeeSlot::new(
+                Wad::one() / 10,
+                kernel_address_from_sdk(&env, &perf_recipient),
+            ),
+            FeeSlot::new(
+                Wad::one() / 10,
+                kernel_address_from_sdk(&env, &mgmt_recipient),
+            ),
             None,
         );
         let bytes = borsh::to_vec(&fees).expect("fees serialize");
@@ -1025,13 +1036,7 @@ fn test_atomic_withdraw_refreshes_fees() {
     share_admin_client.mint(&owner, &1_000);
 
     let burned = env.as_contract(&contract_id, || {
-        SorobanVaultContract::withdraw(
-            env.clone(),
-            500,
-            receiver,
-            owner.clone(),
-            operator,
-        )
+        SorobanVaultContract::withdraw(env.clone(), 500, receiver, owner.clone(), operator)
     });
     assert!(burned > 0);
 

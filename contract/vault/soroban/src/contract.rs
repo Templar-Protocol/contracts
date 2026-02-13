@@ -148,9 +148,9 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
 }
 
 pub(crate) fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
-    let stored: Option<Vec<u8>> = env.storage().instance().get(&VaultDataKey::FeesSpec);
+    let stored: Option<Bytes> = env.storage().instance().get(&VaultDataKey::FeesSpec);
     match stored {
-        Some(bytes) => deserialize_fees_spec(&bytes),
+        Some(bytes) => deserialize_fees_spec(&bytes.to_alloc_vec()),
         None => Ok(FeesSpec::zero()),
     }
 }
@@ -159,7 +159,7 @@ fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
     let bytes = serialize_fees_spec(fees)?;
     env.storage()
         .instance()
-        .set(&VaultDataKey::FeesSpec, &bytes);
+        .set(&VaultDataKey::FeesSpec, &Bytes::from_slice(env, &bytes));
     Ok(())
 }
 
@@ -929,18 +929,16 @@ where
         summary.merge(transfer_summary);
 
         let state = self.state_mut()?;
-        state.idle_assets = state
-            .idle_assets
-            .checked_sub(assets_out)
-            .ok_or(RuntimeError::invalid_state(
-                "idle_assets underflow on withdrawal",
-            ))?;
-        state.total_assets = state
-            .idle_assets
-            .checked_add(state.external_assets)
-            .ok_or(RuntimeError::invalid_state(
-                "total_assets overflow on withdrawal",
-            ))?;
+        state.idle_assets =
+            state
+                .idle_assets
+                .checked_sub(assets_out)
+                .ok_or(RuntimeError::invalid_state(
+                    "idle_assets underflow on withdrawal",
+                ))?;
+        state.total_assets = state.idle_assets.checked_add(state.external_assets).ok_or(
+            RuntimeError::invalid_state("total_assets overflow on withdrawal"),
+        )?;
 
         let settle_summary = self.apply_kernel_action(
             KernelAction::SettlePayout {
@@ -1010,12 +1008,9 @@ where
                 ));
             }
             state.idle_assets -= alloc_total;
-            state.total_assets = state
-                .idle_assets
-                .checked_add(state.external_assets)
-                .ok_or(RuntimeError::invalid_state(
-                    "total_assets overflow while allocating",
-                ))?;
+            state.total_assets = state.idle_assets.checked_add(state.external_assets).ok_or(
+                RuntimeError::invalid_state("total_assets overflow while allocating"),
+            )?;
 
             let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
                 .map_err(RuntimeError::transition_error)?;
@@ -1086,11 +1081,12 @@ where
                 .total_assets(MarketRef::new(*target_id, asset_id.clone()))
             {
                 Ok(balance) => {
-                    adapter_total = adapter_total.checked_add(balance).ok_or(
-                        RuntimeError::invalid_state(
-                            "adapter balance sum overflow during verification",
-                        ),
-                    )?;
+                    adapter_total =
+                        adapter_total
+                            .checked_add(balance)
+                            .ok_or(RuntimeError::invalid_state(
+                                "adapter balance sum overflow during verification",
+                            ))?;
                     ok_count += 1;
                 }
                 Err(_) => {
