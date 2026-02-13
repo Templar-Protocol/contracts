@@ -2,6 +2,7 @@ use super::*;
 use crate::auth::PermissiveAuth;
 use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
 use crate::storage::MemoryStorage;
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use templar_vault_kernel::effects::KernelEffect;
 
@@ -35,6 +36,38 @@ impl AddressRegistrar for MockInterpreter {
 
     fn has_address(&self, _kernel_addr: &[u8; 32]) -> bool {
         true
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct TrackingInterpreter {
+    addresses: BTreeMap<[u8; 32], SdkAddress>,
+    effects: Vec<KernelEffect>,
+}
+
+impl TrackingInterpreter {
+    fn new() -> Self {
+        Self {
+            addresses: BTreeMap::new(),
+            effects: Vec::new(),
+        }
+    }
+}
+
+impl EffectInterpreter for TrackingInterpreter {
+    fn execute_effect(&mut self, effect: &KernelEffect, _ctx: &EffectContext) -> EffectResult<()> {
+        self.effects.push(effect.clone());
+        Ok(())
+    }
+}
+
+impl AddressRegistrar for TrackingInterpreter {
+    fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: SdkAddress) {
+        self.addresses.insert(kernel_addr, soroban_addr);
+    }
+
+    fn has_address(&self, kernel_addr: &[u8; 32]) -> bool {
+        self.addresses.contains_key(kernel_addr)
     }
 }
 
@@ -409,6 +442,141 @@ fn test_execute_withdraw_respects_min_withdrawal_assets() {
     assert_eq!(head_id_after, head_id);
     assert_eq!(head_after.escrow_shares, head_escrow_before);
     assert_eq!(head_after.expected_assets, head_expected_before);
+}
+
+#[test]
+fn test_execute_withdraw_insufficient_idle_no_partial() {
+    let mut vault = create_test_vault();
+    let allocator = [3u8; 32];
+    let owner = [1u8; 32];
+    let receiver = [2u8; 32];
+
+    let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(3);
+    let request_time: u64 = 200;
+    let exec_time = request_time
+        .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+        .saturating_add(1);
+
+    vault
+        .deposit(owner, receiver, deposit_amount, 0, request_time)
+        .unwrap();
+
+    vault
+        .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
+        .unwrap();
+
+    let (head_id, head_escrow_before, head_expected_before) = {
+        let (id, head) = vault
+            .state()
+            .withdraw_queue
+            .head()
+            .expect("withdrawal queued");
+        (id, head.escrow_shares, head.expected_assets)
+    };
+
+    {
+        let state = vault.state_mut();
+        state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_add(1);
+        state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+    }
+
+    let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+
+    assert_eq!(summary.assets_transferred, 0);
+    assert_eq!(summary.shares_burned, 0);
+    assert!(vault.state().op_state.is_withdrawing());
+    let (head_id_after, head_after) = vault
+        .state()
+        .withdraw_queue
+        .head()
+        .expect("withdrawal still queued");
+    assert_eq!(head_id_after, head_id);
+    assert_eq!(head_after.escrow_shares, head_escrow_before);
+    assert_eq!(head_after.expected_assets, head_expected_before);
+}
+
+#[test]
+fn test_address_mapping_persists_for_execute_withdraw() {
+    use soroban_sdk::testutils::Address as _;
+
+    let env = Env::default();
+    let contract_id = env.register(SorobanVaultContract, ());
+
+    env.as_contract(&contract_id, || {
+        let curator = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let vault_sdk = env.current_contract_address();
+        let curator_kernel = kernel_address_from_sdk(&env, &curator);
+        let vault_kernel = kernel_address_from_sdk(&env, &vault_sdk);
+        let asset_kernel = kernel_address_from_sdk(&env, &asset);
+        let share_kernel = kernel_address_from_sdk(&env, &share);
+
+        let config = ContractConfig::new(
+            curator_kernel,
+            vault_kernel,
+            Vec::new(),
+            Vec::new(),
+            asset_kernel,
+            share_kernel,
+        );
+
+        let mut vault = CuratorVault::new(
+            config,
+            MemoryStorage::new(),
+            PermissiveAuth,
+            TrackingInterpreter::new(),
+            MockMarket,
+            MockCrossChain,
+        );
+        vault.load_state().unwrap();
+
+        let owner = SdkAddress::generate(&env);
+        let receiver = SdkAddress::generate(&env);
+        let executor = SdkAddress::generate(&env);
+        let now_ns = 100u64;
+        let assets = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
+
+        vault
+            .deposit_soroban(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
+            .unwrap();
+        vault
+            .request_withdraw_soroban(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
+            .unwrap();
+
+        let storage = vault.storage.clone();
+
+        let mut next_vault = CuratorVault::new(
+            ContractConfig::new(
+                curator_kernel,
+                vault_kernel,
+                Vec::new(),
+                Vec::new(),
+                asset_kernel,
+                share_kernel,
+            ),
+            storage,
+            PermissiveAuth,
+            TrackingInterpreter::new(),
+            MockMarket,
+            MockCrossChain,
+        );
+        next_vault.load_state().unwrap();
+
+        let receiver_kernel = kernel_address_from_sdk(&env, &receiver);
+
+        assert!(!next_vault.interpreter.has_address(&receiver_kernel));
+
+        let exec_time = now_ns
+            .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+            .saturating_add(1);
+        let summary = next_vault
+            .execute_withdraw_soroban(&env, executor, exec_time)
+            .unwrap();
+
+        assert!(summary.assets_transferred > 0);
+        assert!(next_vault.interpreter.has_address(&receiver_kernel));
+    });
 }
 
 #[test]

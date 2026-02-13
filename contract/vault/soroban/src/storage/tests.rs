@@ -59,6 +59,20 @@ fn test_memory_storage_clear() {
 }
 
 #[test]
+fn test_memory_storage_address_book_roundtrip() {
+    use soroban_sdk::testutils::Address as _;
+
+    let env = Env::default();
+    let mut storage = MemoryStorage::new();
+    let kernel_addr = [9u8; 32];
+    let soroban_addr = SdkAddress::generate(&env);
+
+    storage.save_address(&kernel_addr, &soroban_addr).unwrap();
+    let loaded = storage.load_address(&kernel_addr).unwrap();
+    assert_eq!(loaded, Some(soroban_addr));
+}
+
+#[test]
 fn test_storage_key_variants() {
     let key1 = StorageKey::VaultState;
     let key2 = StorageKey::Version;
@@ -73,12 +87,14 @@ fn test_storage_key_variants() {
 
 #[test]
 fn test_soroban_storage_key_variants() {
+    let env = Env::default();
     let key1 = SorobanStorageKey::StateBlob;
     let key2 = SorobanStorageKey::PolicyState;
     let key3 = SorobanStorageKey::Restrictions;
     let key4 = SorobanStorageKey::Version;
     let key5 = SorobanStorageKey::Config;
     let key6 = SorobanStorageKey::Paused;
+    let key7 = SorobanStorageKey::AddressBook(BytesN::from_array(&env, &[0u8; 32]));
 
     // Keys should be distinct
     assert!(matches!(key1, SorobanStorageKey::StateBlob));
@@ -87,6 +103,7 @@ fn test_soroban_storage_key_variants() {
     assert!(matches!(key4, SorobanStorageKey::Version));
     assert!(matches!(key5, SorobanStorageKey::Config));
     assert!(matches!(key6, SorobanStorageKey::Paused));
+    assert!(matches!(key7, SorobanStorageKey::AddressBook(_)));
 }
 
 // Helper to create a registered contract for storage tests
