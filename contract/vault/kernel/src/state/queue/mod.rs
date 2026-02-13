@@ -401,7 +401,6 @@ where
 
 use alloc::collections::BTreeMap;
 
-// Re-export MAX_PENDING from vault module for convenience
 pub use crate::state::vault::MAX_PENDING;
 
 /// Withdrawal queue storage with FIFO ordering.

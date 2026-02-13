@@ -672,10 +672,6 @@ where
         Err(RuntimeError::effect_failed("missing address mapping"))
     }
 
-    // =========================================================================
-    // User-facing entrypoints
-    // =========================================================================
-
     /// Deposit assets into the vault.
     ///
     pub fn deposit(
@@ -981,10 +977,6 @@ where
         self.storage.save_restrictions(&self.restrictions)?;
         Ok(())
     }
-
-    // =========================================================================
-    // Privileged entrypoints (internal/runtime)
-    // =========================================================================
 
     /// Begin an allocation operation.
     ///
@@ -1410,10 +1402,6 @@ where
         Ok(summary.shares_minted)
     }
 
-    // =========================================================================
-    // Policy management methods
-    // =========================================================================
-
     /// Get a reference to the current policy state.
     #[inline]
     #[must_use]
@@ -1501,10 +1489,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Soroban Contract Definition
-// ---------------------------------------------------------------------------
-
 /// Storage keys for the Soroban vault contract.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -1562,10 +1546,6 @@ fn extend_storage_ttl(env: &Env) {
     let storage = SorobanStorage::new(env);
     storage.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
 }
-
-// ---------------------------------------------------------------------------
-// Config address helpers — reduce boilerplate for VaultDataKey get/set
-// ---------------------------------------------------------------------------
 
 /// Read a required `SdkAddress` from instance storage, returning
 /// `ContractError::MissingConfig` when absent.
@@ -2046,10 +2026,6 @@ impl SorobanVaultContract {
         must(&env, ensure_not_reentrant(&env));
         extend_storage_ttl(&env);
     }
-
-    // -------------------------------------------------------------------------
-    // Upgradeable (OZ)
-    // -------------------------------------------------------------------------
 
     /// Upgrade the contract to a new WASM implementation.
     ///

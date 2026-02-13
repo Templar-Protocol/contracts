@@ -7,7 +7,6 @@ use near_sdk::{env, near};
 use std::ops::{Deref, DerefMut};
 use templar_common::vault::{Event, MarketId};
 
-// Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
     cap_group::{
         CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId,

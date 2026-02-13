@@ -39,7 +39,6 @@ pub mod oneclick;
 pub mod provider;
 pub mod r#ref;
 
-// Re-export for convenience
 pub use oneclick::OneClickSwap;
 pub use provider::SwapProviderImpl;
 pub use r#ref::RefSwap;

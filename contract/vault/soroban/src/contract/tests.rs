@@ -1054,10 +1054,6 @@ fn test_atomic_withdraw_refreshes_fees() {
     });
 }
 
-// =========================================================================
-// Policy tests
-// =========================================================================
-
 #[test]
 fn test_acquire_and_release_market_lock() {
     let mut vault = create_test_vault();

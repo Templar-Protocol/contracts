@@ -367,10 +367,6 @@ mod kani_proofs {
         u256_trunc_from_u512(q)
     }
 
-    // =========================================================================
-    // Queue Invariants
-    // =========================================================================
-
     /// Kani Proof: Queue length never exceeds MAX_PENDING
     ///
     /// This proof verifies that the queue implementation correctly enforces
@@ -499,10 +495,6 @@ mod kani_proofs {
         }
     }
 
-    // =========================================================================
-    // Share/Asset Invariants
-    // =========================================================================
-
     /// Kani Proof: No shares minted from zero assets
     ///
     /// This proof verifies that depositing zero assets never results in
@@ -572,10 +564,6 @@ mod kani_proofs {
         // Invariant: total_assets == idle_assets + external_assets
         assert!(total == idle.saturating_add(external));
     }
-
-    // =========================================================================
-    // Escrow/Settlement Invariants
-    // =========================================================================
 
     /// Kani Proof: Settlement conserves shares
     ///
@@ -672,10 +660,6 @@ mod kani_proofs {
         assert_eq!(refund_shares, escrow_shares);
     }
 
-    // =========================================================================
-    // Operation State Invariants
-    // =========================================================================
-
     /// Kani Proof: Abort allocating restore equals remaining
     ///
     /// This proof verifies that when aborting allocation, the restore_idle
@@ -752,10 +736,6 @@ mod kani_proofs {
         // Invariant: reject new requests when busy
         assert_eq!(should_reject, !is_idle);
     }
-
-    // =========================================================================
-    // Math::Number Invariants
-    // =========================================================================
 
     #[kani::proof]
     fn kani_mul_div_floor_matches_u512() {
@@ -1006,10 +986,6 @@ mod kani_proofs {
         let r_hi = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(hi));
         assert!(r_lo.0 >= r_hi.0);
     }
-
-    // =========================================================================
-    // Math::Wad Invariants
-    // =========================================================================
 
     #[kani::proof]
     fn kani_compute_fee_shares_matches_formula() {
@@ -1342,10 +1318,6 @@ mod kani_proofs {
         let max_ratio = U256::from(total_supply) / U256::from(2u8);
         assert!(result.0 <= max_ratio + U256::from(total_supply));
     }
-
-    // =========================================================================
-    // Queue Invariants (Additional)
-    // =========================================================================
 
     #[kani::proof]
     #[kani::unwind(6)]
@@ -1680,10 +1652,6 @@ mod kani_proofs {
         assert_eq!(total, escrow_shares);
     }
 
-    // =========================================================================
-    // Escrow Invariants (Additional)
-    // =========================================================================
-
     #[kani::proof]
     fn kani_settle_proportional_conserves_shares() {
         let shares: u128 = kani::any();
@@ -1869,10 +1837,6 @@ mod kani_proofs {
         assert_eq!(s1.refund, s2.refund);
     }
 
-    // =========================================================================
-    // Vault State Invariants
-    // =========================================================================
-
     #[kani::proof]
     fn kani_vault_state_invariant_holds_when_balanced() {
         let idle: u128 = kani::any();
@@ -1910,10 +1874,6 @@ mod kani_proofs {
         assert_eq!(id2, start.saturating_add(1));
         assert_eq!(state.next_op_id, start.saturating_add(2));
     }
-
-    // =========================================================================
-    // Transition Invariants
-    // =========================================================================
 
     #[kani::proof]
     fn kani_start_allocation_from_idle_succeeds() {
@@ -2205,10 +2165,6 @@ mod kani_proofs {
         let result = start_refresh(OpState::Idle, vec![], op_id);
         assert!(matches!(result, Err(TransitionError::EmptyRefreshPlan)));
     }
-
-    // =========================================================================
-    // Pending Withdrawals Head Invariant (migrated from src/kani.rs)
-    // =========================================================================
 
     fn dummy_withdrawal() -> PendingWithdrawal {
         PendingWithdrawal {

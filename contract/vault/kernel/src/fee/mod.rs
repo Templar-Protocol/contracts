@@ -83,7 +83,6 @@ impl FeeSlot {
         Self { fee_wad, recipient }
     }
 
-    /// Zero constant.
     pub const ZERO: Self = Self {
         fee_wad: Wad::ZERO,
         recipient: [0u8; 32],
@@ -144,7 +143,6 @@ impl FeesSpec {
         }
     }
 
-    /// Zero constant.
     pub const ZERO: Self = Self {
         performance: FeeSlot::ZERO,
         management: FeeSlot::ZERO,

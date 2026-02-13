@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use crate::math::number::Number;
 use crate::types::{Address, TimestampNs};
 
-// Re-export EscrowSettlement from types module
 pub use crate::types::EscrowSettlement;
 
 /// Escrow entry for a single actor.

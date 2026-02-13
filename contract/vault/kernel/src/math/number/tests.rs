@@ -1,386 +1,314 @@
-    use super::*;
-    use proptest::prelude::*;
+use super::*;
+use proptest::prelude::*;
 
-    fn expected_floor(x: u128, y: u128, denom: u128) -> U256 {
-        let prod = U512::from(x) * U512::from(y);
-        let q = prod / U512::from(denom);
-        Number::as_u256_trunc(q)
-    }
+fn expected_floor(x: u128, y: u128, denom: u128) -> U256 {
+    let prod = U512::from(x) * U512::from(y);
+    let q = prod / U512::from(denom);
+    Number::as_u256_trunc(q)
+}
 
-    fn expected_ceil(x: u128, y: u128, denom: u128) -> U256 {
-        let prod = U512::from(x) * U512::from(y);
-        let d = U512::from(denom);
-        let q = prod / d;
-        let r = prod % d;
-        let q = if r.is_zero() { q } else { q + U512::from(1u8) };
-        Number::as_u256_trunc(q)
-    }
+fn expected_ceil(x: u128, y: u128, denom: u128) -> U256 {
+    let prod = U512::from(x) * U512::from(y);
+    let d = U512::from(denom);
+    let q = prod / d;
+    let r = prod % d;
+    let q = if r.is_zero() { q } else { q + U512::from(1u8) };
+    Number::as_u256_trunc(q)
+}
 
-    proptest! {
-        #[test]
-        fn mul_div_floor_matches_u512(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
-            let expected = expected_floor(x, y, denom);
-            prop_assert_eq!(floor.0, expected);
-        }
-
-        #[test]
-        fn mul_div_ceil_matches_u512(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
-            let expected = expected_ceil(x, y, denom);
-            prop_assert_eq!(ceil.0, expected);
-        }
-
-        #[test]
-        fn mul_div_zero_denom_is_zero(x in any::<u128>(), y in any::<u128>()) {
-            let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(0u128));
-            let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(0u128));
-            prop_assert!(floor.is_zero());
-            prop_assert!(ceil.is_zero());
-        }
-
-        // ===================================================================
-        // Property: mul_div_floor <= mul_div_ceil (floor never exceeds ceil)
-        // Invariant: For all x, y, denom > 0: floor(x*y/d) <= ceil(x*y/d)
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_leq_ceil(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
-            let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
-            prop_assert!(floor.0 <= ceil.0, "floor {} > ceil {}", floor.0, ceil.0);
-        }
-
-        // ===================================================================
-        // Property: ceil - floor <= 1 (difference is at most 1)
-        // Invariant: ceil(x*y/d) - floor(x*y/d) <= 1
-        // ===================================================================
-        #[test]
-        fn mul_div_ceil_floor_diff_at_most_one(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
-            let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
-            let diff = ceil.0.saturating_sub(floor.0);
-            prop_assert!(diff <= U256::one(), "diff {} > 1", diff);
-        }
-
-        // ===================================================================
-        // Property: mul_div_floor commutativity in x and y
-        // Invariant: floor(x*y/d) == floor(y*x/d)
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_commutative(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let result1 = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
-            let result2 = Number::mul_div_floor(Number::from(y), Number::from(x), Number::from(denom));
-            prop_assert_eq!(result1.0, result2.0);
-        }
-
-        // ===================================================================
-        // Property: mul_div_ceil commutativity in x and y
-        // Invariant: ceil(x*y/d) == ceil(y*x/d)
-        // ===================================================================
-        #[test]
-        fn mul_div_ceil_commutative(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let result1 = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
-            let result2 = Number::mul_div_ceil(Number::from(y), Number::from(x), Number::from(denom));
-            prop_assert_eq!(result1.0, result2.0);
-        }
-
-        // ===================================================================
-        // Property: Identity - mul_div with denom=1 equals x*y
-        // Invariant: floor(x*y/1) == x*y (when fits in U256)
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_identity_denom_one(
-            x in 0u128..=u64::MAX as u128,
-            y in 0u128..=u64::MAX as u128,
-        ) {
-            let result = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(1u128));
-            let expected = U256::from(x) * U256::from(y);
-            prop_assert_eq!(result.0, expected);
-        }
-
-        // ===================================================================
-        // Property: Zero x or y produces zero
-        // Invariant: floor(0*y/d) == 0 and floor(x*0/d) == 0
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_zero_factor(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let r1 = Number::mul_div_floor(Number::zero(), Number::from(y), Number::from(denom));
-            let r2 = Number::mul_div_floor(Number::from(x), Number::zero(), Number::from(denom));
-            prop_assert!(r1.is_zero());
-            prop_assert!(r2.is_zero());
-        }
-
-        // ===================================================================
-        // Property: Division by self gives x when y == denom
-        // Invariant: floor(x*d/d) == x
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_self_division(
-            x in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let result = Number::mul_div_floor(Number::from(x), Number::from(denom), Number::from(denom));
-            prop_assert_eq!(result.0, U256::from(x));
-        }
-
-        // ===================================================================
-        // Property: saturating_add doesn't overflow
-        // Invariant: a.saturating_add(b) >= a (for any a, b)
-        // ===================================================================
-        #[test]
-        fn saturating_add_no_overflow(a in any::<u128>(), b in any::<u128>()) {
-            let na = Number::from(a);
-            let nb = Number::from(b);
-            let result = na.saturating_add(nb);
-            prop_assert!(result.0 >= na.0, "saturating_add decreased value");
-        }
-
-        // ===================================================================
-        // Property: saturating_sub doesn't underflow
-        // Invariant: a.saturating_sub(b) <= a (for any a, b)
-        // ===================================================================
-        #[test]
-        fn saturating_sub_no_underflow(a in any::<u128>(), b in any::<u128>()) {
-            let na = Number::from(a);
-            let nb = Number::from(b);
-            let result = na.saturating_sub(nb);
-            prop_assert!(result.0 <= na.0, "saturating_sub increased value");
-        }
-
-        // ===================================================================
-        // Property: saturating_add commutativity
-        // Invariant: a.saturating_add(b) == b.saturating_add(a)
-        // ===================================================================
-        #[test]
-        fn saturating_add_commutative(a in any::<u128>(), b in any::<u128>()) {
-            let na = Number::from(a);
-            let nb = Number::from(b);
-            let r1 = na.saturating_add(nb);
-            let r2 = nb.saturating_add(na);
-            prop_assert_eq!(r1.0, r2.0);
-        }
-
-        // ===================================================================
-        // Property: saturating_add identity
-        // Invariant: a.saturating_add(0) == a
-        // ===================================================================
-        #[test]
-        fn saturating_add_identity(a in any::<u128>()) {
-            let na = Number::from(a);
-            let result = na.saturating_add(Number::zero());
-            prop_assert_eq!(result.0, na.0);
-        }
-
-        // ===================================================================
-        // Property: saturating_sub identity
-        // Invariant: a.saturating_sub(0) == a
-        // ===================================================================
-        #[test]
-        fn saturating_sub_identity(a in any::<u128>()) {
-            let na = Number::from(a);
-            let result = na.saturating_sub(Number::zero());
-            prop_assert_eq!(result.0, na.0);
-        }
-
-        // ===================================================================
-        // Property: saturating_sub self produces zero
-        // Invariant: a.saturating_sub(a) == 0
-        // ===================================================================
-        #[test]
-        fn saturating_sub_self_is_zero(a in any::<u128>()) {
-            let na = Number::from(a);
-            let result = na.saturating_sub(na);
-            prop_assert!(result.is_zero());
-        }
-
-        // ===================================================================
-        // Property: as_u128_trunc returns lower bits
-        // Invariant: Number::from(x).as_u128_trunc() == x for x: u128
-        // ===================================================================
-        #[test]
-        fn as_u128_trunc_roundtrip(x in any::<u128>()) {
-            let n = Number::from(x);
-            let back = n.as_u128_trunc();
-            prop_assert_eq!(back, x);
-        }
-
-        // ===================================================================
-        // Property: as_u128_saturating for small values
-        // Invariant: For x <= u128::MAX, as_u128_saturating(Number::from(x)) == x
-        // ===================================================================
-        #[test]
-        fn as_u128_saturating_small_values(x in any::<u128>()) {
-            let n = Number::from(x);
-            let sat = n.as_u128_saturating();
-            prop_assert_eq!(sat, x);
-        }
-
-        // ===================================================================
-        // Property: Monotonicity of mul_div_floor in x
-        // Invariant: If x1 <= x2 then floor(x1*y/d) <= floor(x2*y/d)
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_monotonic_in_x(
-            x1 in any::<u128>(),
-            x2 in any::<u128>(),
-            y in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let (lo, hi) = if x1 <= x2 { (x1, x2) } else { (x2, x1) };
-            let r_lo = Number::mul_div_floor(Number::from(lo), Number::from(y), Number::from(denom));
-            let r_hi = Number::mul_div_floor(Number::from(hi), Number::from(y), Number::from(denom));
-            prop_assert!(r_lo.0 <= r_hi.0, "not monotonic: {} > {}", r_lo.0, r_hi.0);
-        }
-
-        // ===================================================================
-        // Property: Monotonicity of mul_div_floor in y
-        // Invariant: If y1 <= y2 then floor(x*y1/d) <= floor(x*y2/d)
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_monotonic_in_y(
-            x in any::<u128>(),
-            y1 in any::<u128>(),
-            y2 in any::<u128>(),
-            denom in 1u128..=u128::MAX,
-        ) {
-            let (lo, hi) = if y1 <= y2 { (y1, y2) } else { (y2, y1) };
-            let r_lo = Number::mul_div_floor(Number::from(x), Number::from(lo), Number::from(denom));
-            let r_hi = Number::mul_div_floor(Number::from(x), Number::from(hi), Number::from(denom));
-            prop_assert!(r_lo.0 <= r_hi.0, "not monotonic: {} > {}", r_lo.0, r_hi.0);
-        }
-
-        // ===================================================================
-        // Property: Anti-monotonicity of mul_div_floor in denom
-        // Invariant: If d1 <= d2 then floor(x*y/d1) >= floor(x*y/d2)
-        // ===================================================================
-        #[test]
-        fn mul_div_floor_antimonotonic_in_denom(
-            x in any::<u128>(),
-            y in any::<u128>(),
-            d1 in 1u128..=u128::MAX,
-            d2 in 1u128..=u128::MAX,
-        ) {
-            let (lo_d, hi_d) = if d1 <= d2 { (d1, d2) } else { (d2, d1) };
-            let r_lo_d = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(lo_d));
-            let r_hi_d = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(hi_d));
-            // Smaller denominator => larger result
-            prop_assert!(r_lo_d.0 >= r_hi_d.0, "denom monotonicity violated: {} < {}", r_lo_d.0, r_hi_d.0);
-        }
-    }
-
-    // =========================================================================
-    // Unit tests for basic Number operations and operators
-    // =========================================================================
-
+proptest! {
     #[test]
-    fn number_constants() {
-        assert!(Number::ZERO.is_zero());
-        assert!(Number::ONE.is_one());
-        assert!(Number::zero().is_zero());
-        assert!(Number::one().is_one());
+    fn mul_div_floor_matches_u512(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
+        let expected = expected_floor(x, y, denom);
+        prop_assert_eq!(floor.0, expected);
     }
 
     #[test]
-    fn number_from_u128_into_u128() {
-        let val: u128 = 123456789;
-        let n = Number::from(val);
-        let back: u128 = n.into();
-        assert_eq!(back, val);
+    fn mul_div_ceil_matches_u512(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
+        let expected = expected_ceil(x, y, denom);
+        prop_assert_eq!(ceil.0, expected);
     }
 
     #[test]
-    fn number_div_by_u128() {
-        let n = Number::from(100u128);
-        let result = n / 10u128;
-        assert_eq!(u128::from(result), 10);
+    fn mul_div_zero_denom_is_zero(x in any::<u128>(), y in any::<u128>()) {
+        let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(0u128));
+        let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(0u128));
+        prop_assert!(floor.is_zero());
+        prop_assert!(ceil.is_zero());
+    }
+
+    // ===================================================================
+    // Property: mul_div_floor <= mul_div_ceil (floor never exceeds ceil)
+    // Invariant: For all x, y, denom > 0: floor(x*y/d) <= ceil(x*y/d)
+    // ===================================================================
+    #[test]
+    fn mul_div_floor_leq_ceil(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
+        let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
+        prop_assert!(floor.0 <= ceil.0, "floor {} > ceil {}", floor.0, ceil.0);
     }
 
     #[test]
-    fn number_div_by_u256() {
-        let n = Number::from(100u128);
-        let result = n / U256::from(5u128);
-        assert_eq!(u128::from(result), 20);
+    fn mul_div_ceil_floor_diff_at_most_one(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let floor = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
+        let ceil = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
+        let diff = ceil.0.saturating_sub(floor.0);
+        prop_assert!(diff <= U256::one(), "diff {} > 1", diff);
     }
 
     #[test]
-    fn number_div_by_number() {
-        let a = Number::from(100u128);
-        let b = Number::from(4u128);
-        let result = a / b;
-        assert_eq!(u128::from(result), 25);
+    fn mul_div_floor_commutative(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let result1 = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(denom));
+        let result2 = Number::mul_div_floor(Number::from(y), Number::from(x), Number::from(denom));
+        prop_assert_eq!(result1.0, result2.0);
     }
 
     #[test]
-    fn number_add() {
-        let a = Number::from(50u128);
-        let b = Number::from(30u128);
-        let result = a + b;
-        assert_eq!(u128::from(result), 80);
+    fn mul_div_ceil_commutative(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let result1 = Number::mul_div_ceil(Number::from(x), Number::from(y), Number::from(denom));
+        let result2 = Number::mul_div_ceil(Number::from(y), Number::from(x), Number::from(denom));
+        prop_assert_eq!(result1.0, result2.0);
     }
 
     #[test]
-    fn number_sub() {
-        let a = Number::from(100u128);
-        let b = Number::from(40u128);
-        let result = a - b;
-        assert_eq!(u128::from(result), 60);
+    fn mul_div_floor_identity_denom_one(
+        x in 0u128..=u64::MAX as u128,
+        y in 0u128..=u64::MAX as u128,
+    ) {
+        let result = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(1u128));
+        let expected = U256::from(x) * U256::from(y);
+        prop_assert_eq!(result.0, expected);
     }
 
     #[test]
-    fn number_from_into_u256() {
-        let u = U256::from(999u128);
-        let n: Number = u.into();
-        let back: U256 = n.into();
-        assert_eq!(back, u);
+    fn mul_div_floor_zero_factor(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let r1 = Number::mul_div_floor(Number::zero(), Number::from(y), Number::from(denom));
+        let r2 = Number::mul_div_floor(Number::from(x), Number::zero(), Number::from(denom));
+        prop_assert!(r1.is_zero());
+        prop_assert!(r2.is_zero());
     }
 
     #[test]
-    fn as_u128_saturating_large_value() {
-        // Create a Number that exceeds u128::MAX
-        let large = Number(U256::from(u128::MAX) + U256::from(1u128));
-        assert_eq!(large.as_u128_saturating(), u128::MAX);
+    fn mul_div_floor_self_division(
+        x in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let result = Number::mul_div_floor(Number::from(x), Number::from(denom), Number::from(denom));
+        prop_assert_eq!(result.0, U256::from(x));
     }
 
     #[test]
-    fn number_is_zero_is_one() {
-        let zero = Number::from(0u128);
-        let one = Number::from(1u128);
-        let two = Number::from(2u128);
-
-        assert!(zero.is_zero());
-        assert!(!zero.is_one());
-
-        assert!(!one.is_zero());
-        assert!(one.is_one());
-
-        assert!(!two.is_zero());
-        assert!(!two.is_one());
+    fn saturating_add_no_overflow(a in any::<u128>(), b in any::<u128>()) {
+        let na = Number::from(a);
+        let nb = Number::from(b);
+        let result = na.saturating_add(nb);
+        prop_assert!(result.0 >= na.0, "saturating_add decreased value");
     }
+
+    #[test]
+    fn saturating_sub_no_underflow(a in any::<u128>(), b in any::<u128>()) {
+        let na = Number::from(a);
+        let nb = Number::from(b);
+        let result = na.saturating_sub(nb);
+        prop_assert!(result.0 <= na.0, "saturating_sub increased value");
+    }
+
+    #[test]
+    fn saturating_add_commutative(a in any::<u128>(), b in any::<u128>()) {
+        let na = Number::from(a);
+        let nb = Number::from(b);
+        let r1 = na.saturating_add(nb);
+        let r2 = nb.saturating_add(na);
+        prop_assert_eq!(r1.0, r2.0);
+    }
+
+    #[test]
+    fn saturating_add_identity(a in any::<u128>()) {
+        let na = Number::from(a);
+        let result = na.saturating_add(Number::zero());
+        prop_assert_eq!(result.0, na.0);
+    }
+
+    #[test]
+    fn saturating_sub_identity(a in any::<u128>()) {
+        let na = Number::from(a);
+        let result = na.saturating_sub(Number::zero());
+        prop_assert_eq!(result.0, na.0);
+    }
+
+    #[test]
+    fn saturating_sub_self_is_zero(a in any::<u128>()) {
+        let na = Number::from(a);
+        let result = na.saturating_sub(na);
+        prop_assert!(result.is_zero());
+    }
+
+    #[test]
+    fn as_u128_trunc_roundtrip(x in any::<u128>()) {
+        let n = Number::from(x);
+        let back = n.as_u128_trunc();
+        prop_assert_eq!(back, x);
+    }
+
+    #[test]
+    fn as_u128_saturating_small_values(x in any::<u128>()) {
+        let n = Number::from(x);
+        let sat = n.as_u128_saturating();
+        prop_assert_eq!(sat, x);
+    }
+
+    #[test]
+    fn mul_div_floor_monotonic_in_x(
+        x1 in any::<u128>(),
+        x2 in any::<u128>(),
+        y in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let (lo, hi) = if x1 <= x2 { (x1, x2) } else { (x2, x1) };
+        let r_lo = Number::mul_div_floor(Number::from(lo), Number::from(y), Number::from(denom));
+        let r_hi = Number::mul_div_floor(Number::from(hi), Number::from(y), Number::from(denom));
+        prop_assert!(r_lo.0 <= r_hi.0, "not monotonic: {} > {}", r_lo.0, r_hi.0);
+    }
+
+    #[test]
+    fn mul_div_floor_monotonic_in_y(
+        x in any::<u128>(),
+        y1 in any::<u128>(),
+        y2 in any::<u128>(),
+        denom in 1u128..=u128::MAX,
+    ) {
+        let (lo, hi) = if y1 <= y2 { (y1, y2) } else { (y2, y1) };
+        let r_lo = Number::mul_div_floor(Number::from(x), Number::from(lo), Number::from(denom));
+        let r_hi = Number::mul_div_floor(Number::from(x), Number::from(hi), Number::from(denom));
+        prop_assert!(r_lo.0 <= r_hi.0, "not monotonic: {} > {}", r_lo.0, r_hi.0);
+    }
+
+    #[test]
+    fn mul_div_floor_antimonotonic_in_denom(
+        x in any::<u128>(),
+        y in any::<u128>(),
+        d1 in 1u128..=u128::MAX,
+        d2 in 1u128..=u128::MAX,
+    ) {
+        let (lo_d, hi_d) = if d1 <= d2 { (d1, d2) } else { (d2, d1) };
+        let r_lo_d = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(lo_d));
+        let r_hi_d = Number::mul_div_floor(Number::from(x), Number::from(y), Number::from(hi_d));
+        // Smaller denominator => larger result
+        prop_assert!(r_lo_d.0 >= r_hi_d.0, "denom monotonicity violated: {} < {}", r_lo_d.0, r_hi_d.0);
+    }
+}
+
+#[test]
+fn number_constants() {
+    assert!(Number::ZERO.is_zero());
+    assert!(Number::ONE.is_one());
+    assert!(Number::zero().is_zero());
+    assert!(Number::one().is_one());
+}
+
+#[test]
+fn number_from_u128_into_u128() {
+    let val: u128 = 123456789;
+    let n = Number::from(val);
+    let back: u128 = n.into();
+    assert_eq!(back, val);
+}
+
+#[test]
+fn number_div_by_u128() {
+    let n = Number::from(100u128);
+    let result = n / 10u128;
+    assert_eq!(u128::from(result), 10);
+}
+
+#[test]
+fn number_div_by_u256() {
+    let n = Number::from(100u128);
+    let result = n / U256::from(5u128);
+    assert_eq!(u128::from(result), 20);
+}
+
+#[test]
+fn number_div_by_number() {
+    let a = Number::from(100u128);
+    let b = Number::from(4u128);
+    let result = a / b;
+    assert_eq!(u128::from(result), 25);
+}
+
+#[test]
+fn number_add() {
+    let a = Number::from(50u128);
+    let b = Number::from(30u128);
+    let result = a + b;
+    assert_eq!(u128::from(result), 80);
+}
+
+#[test]
+fn number_sub() {
+    let a = Number::from(100u128);
+    let b = Number::from(40u128);
+    let result = a - b;
+    assert_eq!(u128::from(result), 60);
+}
+
+#[test]
+fn number_from_into_u256() {
+    let u = U256::from(999u128);
+    let n: Number = u.into();
+    let back: U256 = n.into();
+    assert_eq!(back, u);
+}
+
+#[test]
+fn as_u128_saturating_large_value() {
+    // Create a Number that exceeds u128::MAX
+    let large = Number(U256::from(u128::MAX) + U256::from(1u128));
+    assert_eq!(large.as_u128_saturating(), u128::MAX);
+}
+
+#[test]
+fn number_is_zero_is_one() {
+    let zero = Number::from(0u128);
+    let one = Number::from(1u128);
+    let two = Number::from(2u128);
+
+    assert!(zero.is_zero());
+    assert!(!zero.is_one());
+
+    assert!(!one.is_zero());
+    assert!(one.is_one());
+
+    assert!(!two.is_zero());
+    assert!(!two.is_one());
+}

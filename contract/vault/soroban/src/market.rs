@@ -16,10 +16,6 @@ use templar_vault_kernel::{AssetId, TargetId};
 
 use crate::error::RuntimeError;
 
-// ---------------------------------------------------------------------------
-// Soroban-style market adapters
-// ---------------------------------------------------------------------------
-
 /// Local Soroban market adapter trait.
 ///
 /// This is the Soroban-native interface using `Env` and `Address` types.
@@ -93,10 +89,6 @@ pub trait SorobanCrossChainMarketAdapter {
     fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
 }
 
-// ---------------------------------------------------------------------------
-// Generic market adapters (for testing and chain-agnostic logic)
-// ---------------------------------------------------------------------------
-
 /// Opaque attempt identifier for cross-chain allocations.
 pub type AttemptId = u64;
 
@@ -161,10 +153,6 @@ pub trait CrossChainMarketAdapter {
     /// Read total assets for a market.
     fn total_assets(&self, market: MarketRef) -> Result<u128, RuntimeError>;
 }
-
-// ---------------------------------------------------------------------------
-// Test implementations for use with soroban-sdk testutils
-// ---------------------------------------------------------------------------
 
 /// Test implementation of `SorobanMarketAdapter` for use with SDK testutils.
 #[derive(Clone, Debug, Default)]

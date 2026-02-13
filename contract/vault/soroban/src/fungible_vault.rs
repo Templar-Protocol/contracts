@@ -13,15 +13,15 @@
 //! - Conversion math uses the kernel's `effective_totals` formula which includes
 //!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 
-use soroban_sdk::{token, Address as SdkAddress, Bytes, Env};
 use soroban_sdk::token::StellarAssetClient;
+use soroban_sdk::{token, Address as SdkAddress, Bytes, Env};
+use templar_vault_kernel::effects::KernelEvent;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
     FeeAccrualAnchor, FeesSpec, Number, VaultConfig, VaultState, MAX_PENDING,
     MIN_WITHDRAWAL_ASSETS,
 };
-use templar_vault_kernel::effects::KernelEvent;
 
 use crate::contract::{get_config_address, load_fees_spec, VaultDataKey};
 use crate::effects::KernelEventEnvelope;
@@ -56,8 +56,7 @@ fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
 }
 
 fn emit_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), ContractError> {
-    let payload =
-        borsh::to_vec(event).map_err(|_| ContractError::EffectFailed)?;
+    let payload = borsh::to_vec(event).map_err(|_| ContractError::EffectFailed)?;
     KernelEventEnvelope {
         payload: Bytes::from_slice(env, &payload),
     }
@@ -121,10 +120,7 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
     }
 
     let profit = fee_total_assets.saturating_sub(anchor.total_assets);
-    let fee_assets = fees
-        .performance
-        .fee_wad
-        .apply_floored(Number::from(profit));
+    let fee_assets = fees.performance.fee_wad.apply_floored(Number::from(profit));
     let performance_shares = compute_fee_shares_from_assets(
         fee_assets,
         Number::from(cur_total_assets),

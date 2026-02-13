@@ -333,11 +333,6 @@ fn mint_fee_shares(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Action handlers — one per substantial `KernelAction` variant.
-// Trivial arms (BeginRefreshing, FinishRefreshing, Pause) stay inline.
-// ---------------------------------------------------------------------------
-
 /// Process a deposit: validate restrictions, convert assets→shares, update totals.
 fn handle_deposit(
     mut state: VaultState,
@@ -366,24 +361,27 @@ fn handle_deposit(
         });
     }
 
-    state.total_assets = state
-        .total_assets
-        .checked_add(assets_in)
-        .ok_or(KernelError::InvalidState(
-            "deposit would overflow total_assets",
-        ))?;
-    state.idle_assets = state
-        .idle_assets
-        .checked_add(assets_in)
-        .ok_or(KernelError::InvalidState(
-            "deposit would overflow idle_assets",
-        ))?;
-    state.total_shares = state
-        .total_shares
-        .checked_add(shares_out)
-        .ok_or(KernelError::InvalidState(
-            "minting would overflow total_shares",
-        ))?;
+    state.total_assets =
+        state
+            .total_assets
+            .checked_add(assets_in)
+            .ok_or(KernelError::InvalidState(
+                "deposit would overflow total_assets",
+            ))?;
+    state.idle_assets =
+        state
+            .idle_assets
+            .checked_add(assets_in)
+            .ok_or(KernelError::InvalidState(
+                "deposit would overflow idle_assets",
+            ))?;
+    state.total_shares =
+        state
+            .total_shares
+            .checked_add(shares_out)
+            .ok_or(KernelError::InvalidState(
+                "minting would overflow total_shares",
+            ))?;
 
     let effects = vec![
         KernelEffect::TransferAssetsFrom {
@@ -534,12 +532,7 @@ fn handle_execute_withdraw(
             .dequeue()
             .ok_or(KernelError::EmptyQueue)?;
         let mut effects = Vec::new();
-        push_refund_shares(
-            &mut effects,
-            *self_id,
-            pending.owner,
-            pending.escrow_shares,
-        );
+        push_refund_shares(&mut effects, *self_id, pending.owner, pending.escrow_shares);
         effects.push(KernelEffect::EmitEvent {
             event: KernelEvent::WithdrawalSkipped {
                 id: pending_id,
@@ -993,10 +986,6 @@ fn handle_emergency_reset(
     Ok(KernelResult::new(state, effects))
 }
 
-// ---------------------------------------------------------------------------
-// Dispatcher
-// ---------------------------------------------------------------------------
-
 /// Apply a kernel action to state, returning updated state and effects.
 pub fn apply_action(
     mut state: VaultState,
@@ -1055,14 +1044,9 @@ pub fn apply_action(
             handle_begin_allocating(state, op_id, plan)
         }
 
-        KernelAction::FinishAllocating { op_id, now_ns } => handle_finish_allocating(
-            state,
-            config,
-            restrictions,
-            self_id,
-            op_id,
-            now_ns,
-        ),
+        KernelAction::FinishAllocating { op_id, now_ns } => {
+            handle_finish_allocating(state, config, restrictions, self_id, op_id, now_ns)
+        }
 
         KernelAction::BeginRefreshing { op_id, plan, .. } => {
             let result = start_refresh(mem::take(&mut state.op_state), plan, op_id)

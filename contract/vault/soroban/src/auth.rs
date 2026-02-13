@@ -7,15 +7,10 @@
 use alloc::string::String;
 use soroban_sdk::{Address as SdkAddress, Env};
 
-// Re-export chain-agnostic types from curator-primitives
 pub use templar_curator_primitives::auth::{
     ActionKind, AuthAdapter, AuthError, AuthResult, PermissiveAuth, StrictAuth,
 };
 pub use templar_curator_primitives::rbac::{required_role, Role};
-
-// ---------------------------------------------------------------------------
-// Soroban Native Auth Adapter
-// ---------------------------------------------------------------------------
 
 /// Soroban native authentication adapter.
 ///

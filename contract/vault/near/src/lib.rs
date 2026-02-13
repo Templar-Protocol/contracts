@@ -65,12 +65,6 @@ const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
 const ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS: &str = "Missing address mapping for withdrawal queue";
 
-// Re-export share math types and functions for tests and external consumers.
-// Note: These types originate from templar_vault_kernel and are available via
-// templar_common::kernel or templar_common::vault::wad with NEAR Borsh compatibility.
-// The NEAR vault still uses templar_common::vault state types (AccountId/U128/U64)
-// to preserve storage layout and JSON APIs. Kernel types use Address ([u8; 32])
-// and plain u128/u64, so swapping requires a migration + Address mapping.
 pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;

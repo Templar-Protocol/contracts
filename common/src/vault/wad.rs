@@ -4,10 +4,8 @@
 //! share math functions. All types are re-exported from `templar_vault_kernel`
 //! with `borsh`/`serde` features enabled for NEAR Borsh/Serde compatibility.
 
-// Re-export Number type and WIDE alias
 pub use templar_vault_kernel::math::number::{Number, WIDE};
 
-// Re-export Wad type and all math functions
 pub use templar_vault_kernel::math::wad::{
     compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, mul_wad_floor,
     Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,

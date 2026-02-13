@@ -203,10 +203,6 @@ fn request_withdraw_blocked_by_blacklist() {
     ));
 }
 
-// =========================================================================
-// Deposit action tests
-// =========================================================================
-
 #[test]
 fn deposit_success() {
     let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
@@ -352,10 +348,6 @@ fn deposit_not_idle_fails() {
         Err(KernelError::InvalidState("deposit requires Idle"))
     ));
 }
-
-// =========================================================================
-// RequestWithdraw action tests
-// =========================================================================
 
 #[test]
 fn request_withdraw_zero_shares_fails() {
@@ -504,10 +496,6 @@ fn request_withdraw_queue_full_fails() {
     assert!(matches!(result, Err(KernelError::QueueFull { .. })));
 }
 
-// =========================================================================
-// ExecuteWithdraw action tests
-// =========================================================================
-
 #[test]
 fn execute_withdraw_empty_queue_fails() {
     let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
@@ -628,10 +616,6 @@ fn execute_withdraw_queue_head_mismatch_fails() {
     ));
 }
 
-// =========================================================================
-// BeginAllocating action tests
-// =========================================================================
-
 #[test]
 fn begin_allocating_success() {
     let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
@@ -676,10 +660,6 @@ fn begin_allocating_exceeds_idle() {
 
     assert!(matches!(result, Err(KernelError::InvalidState(_))));
 }
-
-// =========================================================================
-// FinishAllocating action tests
-// =========================================================================
 
 #[test]
 fn finish_allocating_success() {
@@ -826,10 +806,6 @@ fn execute_withdraw_withdrawing_empty_queue() {
     ));
 }
 
-// =========================================================================
-// BeginRefreshing action tests
-// =========================================================================
-
 #[test]
 fn begin_refreshing_success() {
     let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
@@ -850,10 +826,6 @@ fn begin_refreshing_success() {
 
     assert!(result.state.op_state.as_refreshing().is_some());
 }
-
-// =========================================================================
-// FinishRefreshing action tests
-// =========================================================================
 
 #[test]
 fn finish_refreshing_success() {
@@ -1134,10 +1106,6 @@ fn sync_external_assets_allows_up_to_double() {
     assert_eq!(result.state.total_assets, 2_000);
 }
 
-// =========================================================================
-// AbortRefreshing action tests
-// =========================================================================
-
 #[test]
 fn abort_refreshing_success() {
     use crate::state::op_state::RefreshingState;
@@ -1241,10 +1209,6 @@ fn abort_refreshing_wrong_op_type_fails() {
         ))
     ));
 }
-
-// =========================================================================
-// AbortAllocating action tests
-// =========================================================================
 
 #[test]
 fn abort_allocating_success() {
@@ -1364,10 +1328,6 @@ fn abort_allocating_restore_mismatch_fails() {
         ))
     ));
 }
-
-// =========================================================================
-// AbortWithdrawing action tests
-// =========================================================================
 
 #[test]
 fn abort_withdrawing_success() {
@@ -1587,10 +1547,6 @@ fn abort_withdrawing_empty_queue_fails() {
 
     assert!(matches!(result, Err(KernelError::EmptyQueue)));
 }
-
-// =========================================================================
-// SettlePayout action tests
-// =========================================================================
 
 #[test]
 fn settle_payout_success_burn_only() {

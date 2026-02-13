@@ -123,9 +123,7 @@ mod schemars_impl {
 }
 
 impl Number {
-    /// Zero constant.
     pub const ZERO: Self = Number(U256::zero());
-    /// One constant.
     pub const ONE: Self = Number(U256::one());
 
     #[inline]

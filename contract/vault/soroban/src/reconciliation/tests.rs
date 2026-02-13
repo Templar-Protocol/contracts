@@ -66,10 +66,6 @@ fn reconciliation_record_new() {
     assert_eq!(record.new_external_assets, 50000);
 }
 
-// ---------------------------------------------------------------------------
-// Reconciliation Event Tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn reconciliation_event_started() {
     let caller: KernelAddress = [1u8; 32];
@@ -169,10 +165,6 @@ fn reconciliation_event_failed() {
         _ => panic!("expected Failed event"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Resync External Assets Tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn resync_external_assets_success() {

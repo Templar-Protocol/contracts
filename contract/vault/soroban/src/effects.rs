@@ -14,10 +14,6 @@ fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
     u128_to_i128_effect(value, "event amount overflow")
 }
 
-// ---------------------------------------------------------------------------
-// Contract Events
-// ---------------------------------------------------------------------------
-
 #[contractevent]
 pub struct KernelEventEnvelope {
     pub payload: Bytes,
@@ -25,10 +21,6 @@ pub struct KernelEventEnvelope {
 
 /// Result type for effect operations.
 pub type EffectResult<T> = Result<T, RuntimeError>;
-
-// ---------------------------------------------------------------------------
-// Effect Context
-// ---------------------------------------------------------------------------
 
 /// Context provided to effect handlers.
 ///
@@ -64,10 +56,6 @@ impl EffectContext {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Effect Summary
-// ---------------------------------------------------------------------------
 
 /// Effect execution summary.
 ///

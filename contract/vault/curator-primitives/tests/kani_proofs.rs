@@ -129,10 +129,6 @@ mod proofs {
         }
     }
 
-    // =========================================================================
-    // Cooldown Invariants
-    // =========================================================================
-
     #[kani::proof]
     fn kani_cooldown_unlimited_ready() {
         let now: u64 = kani::any();
@@ -169,10 +165,6 @@ mod proofs {
             assert_eq!(remaining, ready_at.saturating_sub(now));
         }
     }
-
-    // =========================================================================
-    // Cap Group Invariants
-    // =========================================================================
 
     #[kani::proof]
     fn kani_cap_group_unlimited_effective_cap() {
@@ -272,10 +264,6 @@ mod proofs {
         assert!(validate_allocations(&bad, 1000).is_err());
     }
 
-    // =========================================================================
-    // Supply Queue Invariants
-    // =========================================================================
-
     #[kani::proof]
     fn kani_supply_queue_total_matches_sum() {
         let queue = SupplyQueue::new();
@@ -347,10 +335,6 @@ mod proofs {
         assert!(!removed.entries.iter().any(|e| e.target_id == 1));
     }
 
-    // =========================================================================
-    // Market Lock Invariants
-    // =========================================================================
-
     #[kani::proof]
     fn kani_market_lock_expiry_clears_active() {
         let now: u64 = kani::any();
@@ -394,10 +378,6 @@ mod proofs {
         assert!(set.active_count(now) <= set.len());
     }
 
-    // =========================================================================
-    // Refresh Plan Invariants
-    // =========================================================================
-
     #[kani::proof]
     fn kani_refresh_plan_validate_empty_rejects() {
         let plan = RefreshPlan::empty();
@@ -439,10 +419,6 @@ mod proofs {
             .with_last_refresh(last_refresh);
         assert_eq!(plan.is_ready(now), plan.cooldown.is_ready(now));
     }
-
-    // =========================================================================
-    // Policy State Invariants
-    // =========================================================================
 
     #[kani::proof]
     fn kani_policy_state_external_assets_sums_principals() {
@@ -490,10 +466,6 @@ mod proofs {
         let record = state.cap_groups.get(&group).expect("cap group");
         assert_eq!(record.principal, 123);
     }
-
-    // =========================================================================
-    // Withdraw Route Validation
-    // =========================================================================
 
     #[kani::proof]
     fn kani_build_withdraw_route_is_valid() {

@@ -330,10 +330,6 @@ fn test_compute_settlement_by_price() {
     assert_eq!(settlement.refund, 66);
 }
 
-// =========================================================================
-// WithdrawQueue Tests
-// =========================================================================
-
 #[test]
 fn test_withdraw_queue_new() {
     let queue = WithdrawQueue::new();

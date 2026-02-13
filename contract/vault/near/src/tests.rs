@@ -5498,10 +5498,6 @@ fn execute_withdrawal_only_dust_drains_queue() {
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
 }
 
-// ---------------------------------------------------------------------------
-// Cross-chain address collision validation tests (templar-fo28)
-// ---------------------------------------------------------------------------
-
 /// Same AccountId always produces the same kernel Address (deterministic).
 #[test]
 fn address_mapping_is_deterministic() {

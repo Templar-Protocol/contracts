@@ -13,10 +13,6 @@ use crate::auth::{ActionKind, AuthAdapter, AuthError};
 use crate::error::RuntimeError;
 use crate::market::{MarketAdapter, MarketRef, SorobanMarketAdapter};
 
-// ---------------------------------------------------------------------------
-// Audit Events
-// ---------------------------------------------------------------------------
-
 /// Audit event types for reconciliation operations.
 ///
 /// These events are emitted during reconciliation to provide an audit trail.
@@ -142,10 +138,6 @@ impl ReconciliationEvent {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Reconciliation Record
-// ---------------------------------------------------------------------------
-
 /// Summary record for a manual reconciliation run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReconciliationRecord {
@@ -166,10 +158,6 @@ impl ReconciliationRecord {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Resync Request and Result
-// ---------------------------------------------------------------------------
 
 /// Request parameters for the `resync_external_assets` entrypoint.
 #[derive(Clone, Debug)]
@@ -366,7 +354,9 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
         .map_err(|_| RuntimeError::invalid_state("current_external_assets exceeds i128"))?;
     let delta = new_i128
         .checked_sub(old_i128)
-        .ok_or(RuntimeError::invalid_state("external assets delta overflow"))?;
+        .ok_or(RuntimeError::invalid_state(
+            "external assets delta overflow",
+        ))?;
 
     // 7. Emit Completed event
     events.push(ReconciliationEvent::completed(
@@ -409,7 +399,9 @@ pub fn reconcile_external_assets<A: MarketAdapter>(
         let assets = adapter.total_assets(market.clone())?;
         total = total
             .checked_add(assets)
-            .ok_or(RuntimeError::invalid_state("external assets total overflow"))?;
+            .ok_or(RuntimeError::invalid_state(
+                "external assets total overflow",
+            ))?;
     }
 
     Ok(ReconciliationRecord {

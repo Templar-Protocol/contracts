@@ -12,7 +12,9 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, BytesN, Env, String,
 };
-use templar_soroban_blend_adapter::{AdapterError, BlendAdapterContract, BlendAdapterContractClient};
+use templar_soroban_blend_adapter::{
+    AdapterError, BlendAdapterContract, BlendAdapterContractClient,
+};
 
 /// Deploy the full Blend protocol, create a pool with one reserve, and activate it.
 fn setup_blend_pool(
@@ -75,10 +77,6 @@ fn setup_adapter<'a>(
     (adapter, admin, client)
 }
 
-// ---------------------------------------------------------------------------
-// Supply tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn supply_success_deposits_to_pool() {
     let env = Env::default();
@@ -132,10 +130,6 @@ fn withdraw_success_returns_assets() {
         "adapter should still have some supply after partial withdraw"
     );
 }
-
-// ---------------------------------------------------------------------------
-// total_assets tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn total_assets_returns_correct_value_after_supply() {
@@ -206,10 +200,6 @@ fn total_assets_decreases_after_withdraw() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Rescue tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn rescue_transfers_assets_to_receiver() {
     let env = Env::default();
@@ -265,7 +255,10 @@ fn full_supply_withdraw_cycle() {
     // 2. Verify total_assets
     let total = client.total_assets(&asset);
     let diff = (total - amount).abs();
-    assert!(diff <= 1, "total_assets should match supply: {total} vs {amount}");
+    assert!(
+        diff <= 1,
+        "total_assets should match supply: {total} vs {amount}"
+    );
 
     // 3. Withdraw all
     client.withdraw(&vault, &asset, &amount);

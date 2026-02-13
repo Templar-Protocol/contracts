@@ -42,7 +42,6 @@ pub mod scanner;
 pub mod service;
 pub mod swap;
 
-// Re-exports for convenience
 pub use config::Args;
 pub use executor::LiquidationExecutor;
 pub use inventory::InventoryManager;

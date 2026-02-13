@@ -3,7 +3,6 @@
 //! This module re-exports types from the `templar-vault-kernel` crate,
 //! providing the foundation for dual-chain deployment.
 
-// Re-export all public items from the kernel crate
 pub use templar_vault_kernel::*;
 
 // Explicit re-exports for backward compatibility
@@ -25,7 +24,6 @@ pub use templar_vault_kernel::state::queue::{
 };
 pub use templar_vault_kernel::Restrictions;
 
-// Re-export share_math module for consumers that import it as a module
 pub mod share_math {
     //! Re-export of kernel math types for backward compatibility.
     pub use templar_vault_kernel::math::number::{Number, WIDE};
@@ -35,14 +33,12 @@ pub mod share_math {
     };
 }
 
-// Re-export types module for backward compatibility
 pub mod types {
     //! Re-export of kernel types for backward compatibility.
     pub use templar_vault_kernel::types::{ActualIdx, AssetId, ExpectedIdx, TimestampNs};
     pub use templar_vault_kernel::EscrowSettlement;
 }
 
-// Re-export queue module for consumers that import it as a module
 pub mod queue {
     //! Re-export of kernel queue types for backward compatibility.
     pub use templar_vault_kernel::state::queue::{

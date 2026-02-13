@@ -18,7 +18,6 @@ pub mod test_utils;
 pub mod transitions;
 pub mod types;
 
-// Re-exports for convenience
 pub use actions::{
     apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
     convert_to_shares_ceil, effective_totals, preview_deposit_shares, preview_withdraw_assets,

@@ -40,7 +40,6 @@ pub mod reconciliation;
 pub mod share_token;
 pub mod storage;
 
-// Re-exports for convenience
 pub use auth::{ActionKind, AuthAdapter, AuthError, SorobanAuth};
 pub use contract::{
     AllocationResult, ContractConfig, CuratorVault, DepositResult, RefreshResult,
@@ -68,7 +67,6 @@ pub mod rbac {
     pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 }
 
-// Re-export soroban-sdk types for convenience
 pub use soroban_sdk::{Address, Bytes, Env};
 
 // Policy re-exports for convenience

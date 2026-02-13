@@ -18,10 +18,6 @@ pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 /// loss during extended pauses or periods of inactivity.
 pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 
-// ---------------------------------------------------------------------------
-// Soroban Storage Keys
-// ---------------------------------------------------------------------------
-
 /// Storage keys for Soroban ledger storage.
 ///
 /// Using `#[contracttype]` allows the key enum to be used with Soroban's
@@ -44,10 +40,6 @@ pub enum SorobanStorageKey {
     Paused,
 }
 
-// ---------------------------------------------------------------------------
-// Borsh helpers for full op_state + queue persistence
-// ---------------------------------------------------------------------------
-
 fn borsh_serialize<T: borsh::BorshSerialize>(
     value: &T,
     msg: &'static str,
@@ -61,10 +53,6 @@ fn borsh_deserialize<T: borsh::BorshDeserialize>(
 ) -> Result<T, RuntimeError> {
     T::try_from_slice(bytes).map_err(|_| RuntimeError::storage_error(msg))
 }
-
-// ---------------------------------------------------------------------------
-// Soroban Storage Implementation
-// ---------------------------------------------------------------------------
 
 /// Soroban ledger storage implementation.
 ///

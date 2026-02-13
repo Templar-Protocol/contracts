@@ -37,7 +37,6 @@ use templar_vault_kernel::{
             MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
         },
     },
-    FeesSpec, KernelAction,
     state::{
         escrow::{
             apply_settlement, can_apply_settlement, compute_escrow_stats, settle_proportional,
@@ -57,6 +56,7 @@ use templar_vault_kernel::{
         withdrawal_step_callback, TransitionError, WithdrawalRequest,
     },
     types::EscrowSettlement,
+    FeesSpec, KernelAction,
 };
 
 // Arbitrary Strategies
@@ -133,10 +133,6 @@ fn arb_vault_state() -> impl Strategy<Value = VaultState> {
 }
 
 proptest! {
-    // =========================================================================
-    // ACCOUNTING INVARIANTS (1-10)
-    // =========================================================================
-
     /// Property 1: total_assets = idle_assets + external_assets
     /// Invariant: The fundamental accounting equation always holds.
     #[test]
@@ -256,10 +252,6 @@ proptest! {
         let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
         prop_assert!(!result.new_state.is_idle());
     }
-
-    // =========================================================================
-    // QUEUE INVARIANTS (11-25)
-    // =========================================================================
 
     /// Property 11: queue length bounded by MAX_PENDING
     #[test]
@@ -554,10 +546,6 @@ proptest! {
         );
     }
 
-    // =========================================================================
-    // SHARE/ASSET CONVERSION INVARIANTS (26-35)
-    // =========================================================================
-
     /// Property 26: deposit followed by withdrawal returns <= original
     #[test]
     fn prop_deposit_withdraw_inverse(
@@ -776,10 +764,6 @@ proptest! {
         let result2 = mul_div_floor(Number::from(b), Number::from(a), Number::from(denom));
         prop_assert_eq!(result1.0, result2.0);
     }
-
-    // =========================================================================
-    // FEE INVARIANTS (36-45)
-    // =========================================================================
 
     /// Property 36: fee accrual is non-negative
     #[test]
@@ -1005,10 +989,6 @@ proptest! {
             }
         }
     }
-
-    // =========================================================================
-    // STATE TRANSITION INVARIANTS (46-60)
-    // =========================================================================
 
     /// Property 46: start_allocation requires Idle state
     #[test]
@@ -1440,7 +1420,9 @@ proptest! {
 
 // Deterministic Boundary / Edge Case Tests
 
-use templar_vault_kernel::{preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig};
+use templar_vault_kernel::{
+    preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig,
+};
 
 fn default_config() -> VaultConfig {
     VaultConfig {
@@ -1996,10 +1978,6 @@ fn cooldown_u64_max_no_panic() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// AddressBook collision validation tests (templar-fo28)
-// ---------------------------------------------------------------------------
-
 /// AddressBook: insert and resolve round-trips correctly.
 #[test]
 fn address_book_insert_resolve() {
@@ -2059,10 +2037,6 @@ fn address_book_missing_returns_none() {
     assert_eq!(book.resolve(&[42u8; 32]), None);
     assert!(book.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Fee calculation edge case tests (templar-8jum)
-// ---------------------------------------------------------------------------
 
 /// Performance fee when profit is less than fee denominator floors to zero shares.
 #[test]
@@ -2280,10 +2254,6 @@ fn performance_fee_cap_constant() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Queue depth performance tests (templar-26de)
-// ---------------------------------------------------------------------------
-
 /// Build a queue with `n` pending withdrawals, each of `assets` expected.
 fn build_large_queue(n: u32, assets_per: u128) -> WithdrawQueue {
     let mut queue = WithdrawQueue::new();
@@ -2458,10 +2428,6 @@ fn queue_churn_at_high_depth() {
     assert_eq!(status.length, n);
     assert_eq!(status.total_expected_assets, n as u128 * assets_per);
 }
-
-// ---------------------------------------------------------------------------
-// Kernel math boundary/fuzzing tests (templar-33h5)
-// ---------------------------------------------------------------------------
 
 use primitive_types::U256;
 
@@ -2644,10 +2610,6 @@ fn mul_div_floor_cancellation_paths() {
     // x * x / x = x
     assert_eq!(Number::mul_div_floor(x, x, x), x);
 }
-
-// ---------------------------------------------------------------------------
-// Allocation failure and recovery tests (templar-1nn4)
-// ---------------------------------------------------------------------------
 
 /// Allocation step failure at step 2 of 5: returns to Idle with correct total_allocated.
 #[test]

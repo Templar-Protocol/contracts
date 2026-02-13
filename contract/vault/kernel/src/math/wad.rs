@@ -108,7 +108,6 @@ impl Wad {
     /// Scaling factor (1e24).
     pub const SCALE: u128 = 1_000_000_000_000_000_000_000_000u128;
 
-    /// Zero constant.
     pub const ZERO: Self = Wad(Number::ZERO);
 
     /// Returns zero.

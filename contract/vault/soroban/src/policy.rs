@@ -10,7 +10,6 @@ pub use templar_curator_primitives::policy::lock_filter::{
     build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets,
 };
 
-// Re-export curator-primitives types for external consumers
 pub use templar_curator_primitives::policy::{
     cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
     market_lock::{validate_lock_expiry, MarketLock, MarketLockSet},
