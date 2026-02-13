@@ -1052,7 +1052,7 @@ where
         let asset_id = AssetId::from(self.config.asset_address);
         let mut adapter_total: u128 = 0;
         let mut ok_count: usize = 0;
-        let mut had_error = false;
+        let mut failed_targets: Vec<TargetId> = Vec::new();
         for target_id in &targets {
             match self
                 .market
@@ -1063,7 +1063,7 @@ where
                     ok_count += 1;
                 }
                 Err(_) => {
-                    had_error = true;
+                    failed_targets.push(*target_id);
                 }
             }
         }
@@ -1074,12 +1074,13 @@ where
             ));
         }
 
-        if had_error {
+        if !failed_targets.is_empty() {
             // Partial failure: some targets succeeded, others failed. Reject to
             // prevent accepting an unverifiable value.
-            return Err(RuntimeError::contract_error(
-                "sync_external_assets: adapter query failed for some markets",
-            ));
+            return Err(RuntimeError::contract_error(alloc::format!(
+                "sync_external_assets: adapter query failed for markets {:?}",
+                failed_targets
+            )));
         }
 
         if claimed != adapter_total {

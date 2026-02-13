@@ -103,6 +103,29 @@ impl MarketAdapter for FailingMarket {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PartialFailMarket {
+    fail_target: u32,
+}
+
+impl MarketAdapter for PartialFailMarket {
+    fn supply(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn withdraw(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn total_assets(&self, market: MarketRef) -> Result<u128, RuntimeError> {
+        if market.market_id == self.fail_target {
+            Err(RuntimeError::effect_failed("market total_assets failed"))
+        } else {
+            Ok(1000)
+        }
+    }
+}
+
 struct MockCrossChain;
 
 impl CrossChainMarketAdapter for MockCrossChain {
@@ -238,6 +261,22 @@ fn create_test_vault_with_failing_market(
         PermissiveAuth,
         MockInterpreter::new(),
         FailingMarket,
+        MockCrossChain,
+    );
+    vault.load_state().unwrap();
+    vault
+}
+
+fn create_test_vault_with_partial_market(
+    fail_target: u32,
+) -> CuratorVault<MemoryStorage, PermissiveAuth, MockInterpreter, PartialFailMarket, MockCrossChain>
+{
+    let mut vault = CuratorVault::new(
+        test_config(),
+        MemoryStorage::new(),
+        PermissiveAuth,
+        MockInterpreter::new(),
+        PartialFailMarket { fail_target },
         MockCrossChain,
     );
     vault.load_state().unwrap();
@@ -408,6 +447,26 @@ fn test_sync_external_assets_rejects_when_adapter_unavailable_during_refresh() {
 
     assert!(vault.state().unwrap().op_state.is_refreshing());
     assert_eq!(vault.state().unwrap().external_assets, 0);
+}
+
+#[test]
+fn test_sync_external_assets_reports_failed_market_ids() {
+    let mut vault = create_test_vault_with_partial_market(1);
+    let caller = [3u8; 32]; // allocator
+
+    let state = vault.state_mut().unwrap();
+    state.idle_assets = 2_000;
+    state.total_assets = 2_000;
+
+    let op_id = vault.begin_refreshing(caller, vec![0, 1], 1000).unwrap();
+
+    let err = vault.sync_external_assets(caller, 1_000, op_id, 1000);
+    let invalid_state = matches!(
+        &err,
+        Err(RuntimeError::InvalidState(msg))
+            if msg.contains("adapter query failed for markets") && msg.contains("1")
+    );
+    assert!(invalid_state, "unexpected error: {err:?}");
 }
 
 #[test]
