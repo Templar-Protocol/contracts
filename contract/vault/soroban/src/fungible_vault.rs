@@ -13,11 +13,18 @@
 //! - Conversion math uses the kernel's `effective_totals` formula which includes
 //!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 
-use soroban_sdk::{token, Address as SdkAddress, Env};
+use soroban_sdk::{token, Address as SdkAddress, Bytes, Env};
+use soroban_sdk::token::StellarAssetClient;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
-use templar_vault_kernel::{FeesSpec, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS};
+use templar_vault_kernel::{
+    compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
+    FeeAccrualAnchor, FeesSpec, Number, VaultConfig, VaultState, MAX_PENDING,
+    MIN_WITHDRAWAL_ASSETS,
+};
+use templar_vault_kernel::effects::KernelEvent;
 
-use crate::contract::{get_config_address, VaultDataKey};
+use crate::contract::{get_config_address, load_fees_spec, VaultDataKey};
+use crate::effects::KernelEventEnvelope;
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage};
 
@@ -39,6 +46,115 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
         virtual_assets: 0,
     };
     Ok((state, config))
+}
+
+fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
+    env.ledger()
+        .timestamp()
+        .checked_mul(1_000_000_000)
+        .ok_or(ContractError::ConversionOverflow)
+}
+
+fn emit_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), ContractError> {
+    let payload =
+        borsh::to_vec(event).map_err(|_| ContractError::EffectFailed)?;
+    KernelEventEnvelope {
+        payload: Bytes::from_slice(env, &payload),
+    }
+    .publish(env);
+    Ok(())
+}
+
+fn resolve_fee_recipient(
+    storage: &SorobanStorage,
+    kernel_addr: &templar_vault_kernel::Address,
+) -> Result<SdkAddress, ContractError> {
+    storage
+        .load_address(kernel_addr)
+        .ok_or(ContractError::EffectFailed)
+}
+
+pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
+    let now_ns = ledger_timestamp_ns(env)?;
+    let mut storage = SorobanStorage::new(env);
+    let mut versioned = storage
+        .load_state()
+        .map_err(ContractError::from)?
+        .ok_or(ContractError::InvalidState)?;
+    let state = &mut versioned.state;
+    let anchor = state.fee_anchor;
+    if now_ns < anchor.timestamp_ns {
+        return Err(ContractError::InvalidState);
+    }
+
+    let fees = load_fees_spec(env).map_err(ContractError::from)?;
+    let cur_total_assets = state.total_assets;
+    let mut total_supply = state.total_shares;
+
+    let fee_total_assets = total_assets_for_fee_accrual(
+        cur_total_assets,
+        anchor.total_assets,
+        anchor.timestamp_ns,
+        now_ns,
+        fees.max_total_assets_growth_rate,
+    );
+
+    let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)?;
+    let share_admin = StellarAssetClient::new(env, &share_token);
+
+    let management_shares = compute_management_fee_shares(
+        fee_total_assets,
+        cur_total_assets,
+        total_supply,
+        fees.management.fee_wad,
+        anchor.timestamp_ns,
+        now_ns,
+    );
+    if !management_shares.is_zero() {
+        let management_shares_u128: u128 = management_shares.into();
+        let recipient = resolve_fee_recipient(&storage, &fees.management.recipient)?;
+        let shares_i128 = to_i128(management_shares_u128)?;
+        share_admin.mint(&recipient, &shares_i128);
+        total_supply = total_supply
+            .checked_add(management_shares_u128)
+            .ok_or(ContractError::InvalidState)?;
+    }
+
+    let profit = fee_total_assets.saturating_sub(anchor.total_assets);
+    let fee_assets = fees
+        .performance
+        .fee_wad
+        .apply_floored(Number::from(profit));
+    let performance_shares = compute_fee_shares_from_assets(
+        fee_assets,
+        Number::from(cur_total_assets),
+        Number::from(total_supply),
+    );
+    if !performance_shares.is_zero() {
+        let performance_shares_u128: u128 = performance_shares.into();
+        let recipient = resolve_fee_recipient(&storage, &fees.performance.recipient)?;
+        let shares_i128 = to_i128(performance_shares_u128)?;
+        share_admin.mint(&recipient, &shares_i128);
+        total_supply = total_supply
+            .checked_add(performance_shares_u128)
+            .ok_or(ContractError::InvalidState)?;
+    }
+
+    state.total_shares = total_supply;
+    state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
+
+    storage
+        .save_state(&versioned)
+        .map_err(ContractError::from)?;
+    emit_kernel_event(
+        env,
+        &KernelEvent::FeesRefreshed {
+            now_ns,
+            total_assets: cur_total_assets,
+        },
+    )?;
+
+    Ok(())
 }
 
 /// Read the share token balance for an address.

@@ -65,8 +65,11 @@ fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     env.crypto().sha256(&bytes).to_bytes().to_array()
 }
 
-fn ledger_timestamp_ns(env: &Env) -> u64 {
-    env.ledger().timestamp().saturating_mul(1_000_000_000)
+fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
+    env.ledger()
+        .timestamp()
+        .checked_mul(1_000_000_000)
+        .ok_or(ContractError::ConversionOverflow)
 }
 
 fn is_contract_address(addr: &SdkAddress) -> bool {
@@ -1777,7 +1780,7 @@ impl SorobanVaultContract {
         } else {
             u128::try_from(min_shares_out).map_err(|_| ContractError::ConversionOverflow)?
         };
-        let now_ns = ledger_timestamp_ns(&env);
+        let now_ns = ledger_timestamp_ns(&env)?;
 
         with_reentrancy_guard(&env, || {
             let result = with_contract_vault(&env, |vault| {
@@ -1819,7 +1822,7 @@ impl SorobanVaultContract {
         } else {
             u128::try_from(min_assets_out).map_err(|_| ContractError::ConversionOverflow)?
         };
-        let now_ns = ledger_timestamp_ns(&env);
+        let now_ns = ledger_timestamp_ns(&env)?;
 
         with_reentrancy_guard(&env, || {
             let result = with_contract_vault(&env, |vault| {
@@ -1842,7 +1845,7 @@ impl SorobanVaultContract {
     ///
     pub fn execute_withdraw(env: Env, caller: SdkAddress) -> Result<(), ContractError> {
         require_signed(&caller);
-        let now_ns = ledger_timestamp_ns(&env);
+        let now_ns = ledger_timestamp_ns(&env)?;
 
         with_reentrancy_guard(&env, || {
             with_contract_vault(&env, |vault| {

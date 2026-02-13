@@ -1042,7 +1042,10 @@ fn test_atomic_withdraw_refreshes_fees() {
         let storage = SorobanStorage::new(&env);
         let versioned = storage.load_state().unwrap().expect("state");
         assert_eq!(versioned.state.fee_anchor.total_assets, 1_500);
-        assert_eq!(versioned.state.fee_anchor.timestamp_ns, ledger_timestamp_ns(&env));
+        assert_eq!(
+            versioned.state.fee_anchor.timestamp_ns,
+            ledger_timestamp_ns(&env).expect("timestamp")
+        );
     });
 }
 
