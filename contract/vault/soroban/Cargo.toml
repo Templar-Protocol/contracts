@@ -26,9 +26,6 @@ borsh = { version = "1.5", default-features = false, features = ["derive"] }
 # Soroban SDK for Stellar smart contracts
 soroban-sdk = { version = "23.5.1", features = ["alloc"] }
 
-# OpenZeppelin Stellar Contracts — FungibleVault (ERC-4626/SEP-56)
-stellar-tokens = "=0.5.0"
-
 # OpenZeppelin Stellar Contracts — Pausable and Upgradeable utilities
 stellar-contract-utils.workspace = true
 

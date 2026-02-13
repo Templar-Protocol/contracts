@@ -33,6 +33,7 @@ pub mod contract;
 pub(crate) mod convert;
 pub mod effects;
 pub mod error;
+pub mod fungible_base;
 pub mod fungible_vault;
 pub mod market;
 pub mod policy;

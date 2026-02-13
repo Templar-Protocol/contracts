@@ -1,9 +1,8 @@
 //! OpenZeppelin-based share token support for the Soroban vault.
 
 use crate::effects::{EffectResult, Sep41Token};
+use crate::fungible_base::{emit_burn, emit_mint, emit_transfer, Base};
 use soroban_sdk::{Address, Env};
-use stellar_tokens::fungible::burnable::emit_burn;
-use stellar_tokens::fungible::{emit_mint, emit_transfer, Base};
 
 /// Share token adapter that applies share effects directly in-contract.
 pub struct ShareTokenAdapter<'a> {
