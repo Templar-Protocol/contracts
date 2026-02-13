@@ -190,7 +190,7 @@ proptest! {
 
         vault.deposit(user, user, amount, 0, 100).unwrap();
 
-        let state = vault.state();
+        let state = vault.state().unwrap();
         prop_assert_eq!(state.total_assets, state.idle_assets + state.external_assets);
         prop_assert_eq!(state.idle_assets, amount);
         prop_assert_eq!(state.external_assets, 0);
@@ -212,7 +212,7 @@ proptest! {
             expected_total = expected_total.saturating_add(*amount);
         }
 
-        let state = vault.state();
+        let state = vault.state().unwrap();
         prop_assert_eq!(state.total_assets, expected_total);
         prop_assert_eq!(state.total_assets, state.idle_assets + state.external_assets);
     }
@@ -308,7 +308,7 @@ proptest! {
 
         // Allocation flow
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
-        prop_assert!(vault.state().op_state.is_allocating());
+        prop_assert!(vault.state().unwrap().op_state.is_allocating());
 
         // Constrain external_assets within 2x bound (kernel rejects values that
         // would more than double total_assets).
@@ -316,7 +316,7 @@ proptest! {
         vault.sync_external_assets(allocator, external_assets, op_id, 1000).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
-        prop_assert!(vault.state().op_state.is_idle());
+        prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 
     /// Property 7: Refresh flow returns to Idle
@@ -347,12 +347,12 @@ proptest! {
 
         // Refresh flow — claimed value must match adapter total for verification
         let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
-        prop_assert!(vault.state().op_state.is_refreshing());
+        prop_assert!(vault.state().unwrap().op_state.is_refreshing());
 
         vault.sync_external_assets(allocator, adapter_total, op_id, 1000).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
 
-        prop_assert!(vault.state().op_state.is_idle());
+        prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 
     /// Property 8: Abort allocation returns to Idle
@@ -372,14 +372,14 @@ proptest! {
         // Begin and abort
         let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
         let restore_idle = vault
-            .state()
+            .state().unwrap()
             .op_state
             .as_allocating()
             .expect("allocating")
             .remaining;
         vault.abort_allocating(allocator, op_id, restore_idle).unwrap();
 
-        prop_assert!(vault.state().op_state.is_idle());
+        prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 
     /// Property 9: Abort refresh returns to Idle
@@ -401,7 +401,7 @@ proptest! {
         let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         vault.abort_refreshing(allocator, op_id).unwrap();
 
-        prop_assert!(vault.state().op_state.is_idle());
+        prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 }
 
@@ -518,7 +518,7 @@ proptest! {
 
         let soroban_op_id = vault.begin_allocating(allocator, plan, 1000).unwrap();
         vault.finish_allocating(allocator, soroban_op_id).unwrap();
-        prop_assert!(vault.state().op_state.is_idle());
+        prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 
     /// Property 15: Complete refresh returns to Idle (kernel parity)
@@ -541,7 +541,7 @@ proptest! {
 
         let soroban_op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
         vault.finish_refreshing(allocator, soroban_op_id).unwrap();
-        prop_assert!(vault.state().op_state.is_idle());
+        prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 }
 
@@ -654,7 +654,7 @@ proptest! {
         let new_external = deposit_amount.saturating_mul(external_pct as u128) / 100;
         vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
 
-        prop_assert_eq!(vault.state().external_assets, new_external);
+        prop_assert_eq!(vault.state().unwrap().external_assets, new_external);
         vault.finish_allocating(allocator, op_id).unwrap();
     }
 
@@ -681,7 +681,7 @@ proptest! {
         vault.sync_external_assets(allocator, initial_external, op_id, 1000).unwrap();
         vault.finish_allocating(allocator, op_id).unwrap();
 
-        let total_before = vault.state().total_assets;
+        let total_before = vault.state().unwrap().total_assets;
 
         // Refresh with growth — 2x bound: growth <= idle + initial_external
         // (since reference_total = idle + initial_external during refresh)
@@ -696,7 +696,7 @@ proptest! {
         vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
         vault.finish_refreshing(allocator, op_id).unwrap();
 
-        let total_after = vault.state().total_assets;
+        let total_after = vault.state().unwrap().total_assets;
 
         // Total should have increased by growth
         prop_assert!(total_after >= total_before);
