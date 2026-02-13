@@ -13,7 +13,7 @@ use templar_curator_primitives::{RecoveryContext, RecoveryProgress};
 use templar_soroban_runtime::{
     auth::PermissiveAuth,
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
-    error::RuntimeError,
+    error::{ContractError, RuntimeError},
     market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
     rbac::{RbacAuth, RbacConfig, Role},
     storage::{MemoryStorage, SorobanStorage, VersionedState},
@@ -179,6 +179,48 @@ fn soroban_contract_blend_config_roundtrip() {
             SorobanVaultContract::blend_factory(env.clone()).unwrap(),
             factory
         );
+    });
+}
+
+#[test]
+fn soroban_contract_blend_config_rejects_account_addresses() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+    let account = soroban_sdk::Address::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), asset, share).unwrap();
+    });
+
+    env.as_contract(&contract_id, || {
+        let err = SorobanVaultContract::set_blend_adapter(
+            env.clone(),
+            curator.clone(),
+            account.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(err, ContractError::InvalidInput);
+    });
+
+    env.as_contract(&contract_id, || {
+        let err =
+            SorobanVaultContract::set_blend_pool(env.clone(), curator.clone(), account.clone())
+                .unwrap_err();
+        assert_eq!(err, ContractError::InvalidInput);
+    });
+
+    env.as_contract(&contract_id, || {
+        let err = SorobanVaultContract::set_blend_factory(env.clone(), curator, account)
+            .unwrap_err();
+        assert_eq!(err, ContractError::InvalidInput);
     });
 }
 
@@ -423,10 +465,10 @@ fn test_deposit_flow_single(mut vault: TestVault) {
     assert_eq!(result.total_assets, 1000);
 
     // Verify state
-    assert_eq!(vault.state().total_assets, 1000);
-    assert_eq!(vault.state().total_shares, 1000);
-    assert_eq!(vault.state().idle_assets, 1000);
-    assert_eq!(vault.state().external_assets, 0);
+    assert_eq!(vault.state().unwrap().total_assets, 1000);
+    assert_eq!(vault.state().unwrap().total_shares, 1000);
+    assert_eq!(vault.state().unwrap().idle_assets, 1000);
+    assert_eq!(vault.state().unwrap().external_assets, 0);
 }
 
 #[rstest]
@@ -486,7 +528,7 @@ fn test_allocation_flow_basic(mut vault: TestVault) {
         .begin_allocating(allocator, vec![(0, 3000), (1, 2000)], 1000)
         .unwrap();
 
-    assert!(vault.state().op_state.is_allocating());
+    assert!(vault.state().unwrap().op_state.is_allocating());
     assert_eq!(op_id, 0);
 
     // Sync external assets (simulating market supply completion)
@@ -494,13 +536,13 @@ fn test_allocation_flow_basic(mut vault: TestVault) {
         .sync_external_assets(allocator, 5000, op_id, 1000)
         .unwrap();
 
-    assert_eq!(vault.state().external_assets, 5000);
+    assert_eq!(vault.state().unwrap().external_assets, 5000);
 
     // Finish allocation
     let result = vault.finish_allocating(allocator, op_id).unwrap();
 
     assert_eq!(result.op_id, op_id);
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
 }
 
 #[rstest]
@@ -509,18 +551,18 @@ fn test_begin_allocating_decrements_idle_assets(mut vault: TestVault) {
     let user = user_addr();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
-    let initial_idle = vault.state().idle_assets;
+    let initial_idle = vault.state().unwrap().idle_assets;
 
     let alloc_total = 4000;
     let _op_id = vault
         .begin_allocating(allocator, vec![(0, alloc_total)], 1000)
         .unwrap();
 
-    assert!(vault.state().op_state.is_allocating());
-    assert_eq!(vault.state().idle_assets, initial_idle - alloc_total);
+    assert!(vault.state().unwrap().op_state.is_allocating());
+    assert_eq!(vault.state().unwrap().idle_assets, initial_idle - alloc_total);
     assert_eq!(
-        vault.state().total_assets,
-        vault.state().idle_assets + vault.state().external_assets
+        vault.state().unwrap().total_assets,
+        vault.state().unwrap().idle_assets + vault.state().unwrap().external_assets
     );
 }
 
@@ -531,7 +573,7 @@ fn test_allocation_flow_abort(mut vault: TestVault) {
 
     // Setup: deposit some funds
     vault.deposit(user, user, 10000, 0, 100).unwrap();
-    let initial_idle = vault.state().idle_assets;
+    let initial_idle = vault.state().unwrap().idle_assets;
 
     // Begin allocation
     let op_id = vault
@@ -539,7 +581,7 @@ fn test_allocation_flow_abort(mut vault: TestVault) {
         .unwrap();
 
     let restore_idle = vault
-        .state()
+        .state().unwrap()
         .op_state
         .as_allocating()
         .expect("allocating")
@@ -550,10 +592,10 @@ fn test_allocation_flow_abort(mut vault: TestVault) {
         .abort_allocating(allocator, op_id, restore_idle)
         .unwrap();
 
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
     // After abort, idle_assets should be restored to pre-allocation value.
     // begin_allocating decremented idle by 5000, abort restores it.
-    assert_eq!(vault.state().idle_assets, initial_idle);
+    assert_eq!(vault.state().unwrap().idle_assets, initial_idle);
 }
 
 #[rstest]
@@ -587,7 +629,7 @@ fn test_refresh_flow_basic(mut vault: TestVault) {
         .begin_refreshing(allocator, vec![0, 1, 2], 1000)
         .unwrap();
 
-    assert!(vault.state().op_state.is_refreshing());
+    assert!(vault.state().unwrap().op_state.is_refreshing());
 
     // Sync external assets (simulating market read completion)
     vault
@@ -598,8 +640,8 @@ fn test_refresh_flow_basic(mut vault: TestVault) {
     let result = vault.finish_refreshing(allocator, op_id).unwrap();
 
     assert_eq!(result.op_id, op_id);
-    assert!(vault.state().op_state.is_idle());
-    assert_eq!(vault.state().external_assets, 6000);
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert_eq!(vault.state().unwrap().external_assets, 6000);
 }
 
 #[rstest]
@@ -614,7 +656,7 @@ fn test_refresh_flow_abort(mut vault: TestVault) {
     // Abort refresh
     vault.abort_refreshing(allocator, op_id).unwrap();
 
-    assert!(vault.state().op_state.is_idle());
+    assert!(vault.state().unwrap().op_state.is_idle());
 }
 
 #[rstest]
@@ -626,7 +668,7 @@ fn test_abort_withdrawing_clears_queue(mut vault: TestVault) {
     let escrow_shares = 500;
 
     let op_id = {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.total_shares = escrow_shares;
         state
             .withdraw_queue
@@ -657,8 +699,8 @@ fn test_abort_withdrawing_clears_queue(mut vault: TestVault) {
         .abort_withdrawing(allocator, op_id, escrow_shares)
         .unwrap();
 
-    assert!(vault.state().op_state.is_idle());
-    assert!(vault.state().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
     assert!(!vault.interpreter.effects.is_empty());
 }
 
@@ -673,7 +715,7 @@ fn test_settle_payout_success_burns_and_dequeues(mut vault: TestVault) {
     let amount = 1_000;
 
     let op_id = {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.total_shares = escrow_shares;
         state
             .withdraw_queue
@@ -709,10 +751,10 @@ fn test_settle_payout_success_burns_and_dequeues(mut vault: TestVault) {
         )
         .unwrap();
 
-    assert!(vault.state().op_state.is_idle());
-    assert!(vault.state().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
     assert_eq!(
-        vault.state().total_shares,
+        vault.state().unwrap().total_shares,
         escrow_shares.saturating_sub(burn_shares)
     );
 }
@@ -726,7 +768,7 @@ fn test_recover_payout_failure_restores_idle(mut vault: TestVault) {
     let amount = 1_000;
 
     let _op_id = {
-        let state = vault.state_mut();
+        let state = vault.state_mut().unwrap();
         state.total_shares = escrow_shares;
         state.idle_assets = 0;
         state.total_assets = 0;
@@ -758,10 +800,10 @@ fn test_recover_payout_failure_restores_idle(mut vault: TestVault) {
     let summary = vault.recover(allocator, context, progress).unwrap();
 
     assert!(summary.is_some());
-    assert!(vault.state().op_state.is_idle());
-    assert!(vault.state().withdraw_queue.is_empty());
-    assert_eq!(vault.state().idle_assets, amount);
-    assert_eq!(vault.state().total_assets, amount);
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
+    assert_eq!(vault.state().unwrap().idle_assets, amount);
+    assert_eq!(vault.state().unwrap().total_assets, amount);
 }
 
 // RBAC Tests
@@ -936,8 +978,8 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
 
     // 1. Deposit
     vault.deposit(user, user, 10000, 0, 100).unwrap();
-    assert_eq!(vault.state().total_assets, 10000);
-    assert_eq!(vault.state().idle_assets, 10000);
+    assert_eq!(vault.state().unwrap().total_assets, 10000);
+    assert_eq!(vault.state().unwrap().idle_assets, 10000);
 
     // 2. Allocate to markets
     let op_id = vault
@@ -948,7 +990,7 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
         .unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
-    assert_eq!(vault.state().external_assets, 8000);
+    assert_eq!(vault.state().unwrap().external_assets, 8000);
 
     // 3. Refresh markets
     let op_id = vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
@@ -960,7 +1002,7 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
     vault.finish_refreshing(allocator, op_id).unwrap();
 
     // Total assets should now be 10000 + 1000 (growth from 8000 to 9000)
-    assert_eq!(vault.state().external_assets, 9000);
+    assert_eq!(vault.state().unwrap().external_assets, 9000);
     // Total assets = idle (10000 - 8000 = 2000 if we tracked correctly) + external (9000)
     // In our implementation, total_assets is adjusted based on external_assets changes
 }
@@ -980,7 +1022,7 @@ fn test_withdraw_request_basic(mut vault: TestVault) {
     assert!(result.shares_escrowed > 0);
     assert_eq!(result.shares_escrowed, 1000);
     let (id, pending) = vault
-        .state()
+        .state().unwrap()
         .withdraw_queue
         .head()
         .expect("pending withdrawal");
@@ -1001,7 +1043,7 @@ fn test_withdraw_request_calculates_assets_correctly(mut vault: TestVault) {
     let result = vault.request_withdraw(user, user, 5000, 4000, 200).unwrap();
     assert_eq!(result.shares_escrowed, 5000);
     let (_, pending) = vault
-        .state()
+        .state().unwrap()
         .withdraw_queue
         .head()
         .expect("pending withdrawal");
@@ -1070,8 +1112,8 @@ fn test_execute_withdraw_in_idle_state(mut vault: TestVault) {
     // Execute withdraw in idle state
     let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
     assert!(result.is_ok());
-    assert!(vault.state().op_state.is_idle());
-    assert!(vault.state().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
 
 #[rstest]
@@ -1083,12 +1125,12 @@ fn test_execute_withdraw_respects_cooldown(mut vault: TestVault) {
 
     let early = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS - 1);
     assert!(early.is_err());
-    assert!(vault.state().op_state.is_idle());
-    assert!(!vault.state().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert!(!vault.state().unwrap().withdraw_queue.is_empty());
 
     let ok = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
     assert!(ok.is_ok());
-    assert!(vault.state().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
 
 #[rstest]
@@ -1122,8 +1164,8 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
 
     // 1. Deposit
     vault.deposit(user, user, 10000, 0, 100).unwrap();
-    assert_eq!(vault.state().total_assets, 10000);
-    assert_eq!(vault.state().total_shares, 10000);
+    assert_eq!(vault.state().unwrap().total_assets, 10000);
+    assert_eq!(vault.state().unwrap().total_shares, 10000);
 
     // 2. Allocate to markets
     let op_id = vault
@@ -1133,7 +1175,7 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
         .sync_external_assets(allocator, 5000, op_id, 1000)
         .unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
-    assert_eq!(vault.state().external_assets, 5000);
+    assert_eq!(vault.state().unwrap().external_assets, 5000);
 
     // 3. Refresh - markets grew
     let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
@@ -1143,7 +1185,7 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
         .sync_external_assets(allocator, 6000, op_id, 1000)
         .unwrap(); // 20% growth
     vault.finish_refreshing(allocator, op_id).unwrap();
-    assert_eq!(vault.state().external_assets, 6000);
+    assert_eq!(vault.state().unwrap().external_assets, 6000);
 
     // 4. Request withdrawal — use fewer shares so the payout fits in idle.
     // After yield growth: total_assets=11000, total_shares=10000, idle=5000.
@@ -1154,8 +1196,8 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     // 5. Execute withdrawal (in idle state)
     let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
     assert!(result.is_ok());
-    assert!(vault.state().op_state.is_idle());
-    assert!(vault.state().withdraw_queue.is_empty());
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
 
 #[rstest]
@@ -1168,7 +1210,7 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     let second = vault.request_withdraw(user, user, 2000, 0, 1).unwrap();
 
     let (head_id, pending) = vault
-        .state()
+        .state().unwrap()
         .withdraw_queue
         .head()
         .expect("pending withdrawal");
@@ -1180,7 +1222,7 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
         .unwrap();
 
     let (next_id, next_pending) = vault
-        .state()
+        .state().unwrap()
         .withdraw_queue
         .head()
         .expect("second pending withdrawal");
@@ -1197,13 +1239,13 @@ fn test_multiple_deposits_share_calculation(mut vault: TestVault) {
 
     // First deposit - 1:1 ratio
     vault.deposit(user1, user1, 1000, 0, 100).unwrap();
-    assert_eq!(vault.state().total_shares, 1000);
+    assert_eq!(vault.state().unwrap().total_shares, 1000);
 
     // Second deposit - should maintain ratio
     let result = vault.deposit(user2, user2, 2000, 0, 200).unwrap();
     assert_eq!(result.shares_minted, 2000);
-    assert_eq!(vault.state().total_shares, 3000);
-    assert_eq!(vault.state().total_assets, 3000);
+    assert_eq!(vault.state().unwrap().total_shares, 3000);
+    assert_eq!(vault.state().unwrap().total_assets, 3000);
 }
 
 #[rstest]
@@ -1234,9 +1276,9 @@ fn test_share_dilution_after_yield(mut vault: TestVault) {
     vault.finish_refreshing(allocator, op_id).unwrap();
 
     // After refresh: external_assets = 600, total_assets is adjusted by the yield
-    assert_eq!(vault.state().external_assets, 600);
-    let total_assets = vault.state().total_assets;
-    let total_shares = vault.state().total_shares;
+    assert_eq!(vault.state().unwrap().external_assets, 600);
+    let total_assets = vault.state().unwrap().total_assets;
+    let total_shares = vault.state().unwrap().total_shares;
 
     // User2 deposits 1100
     // shares = amount * total_shares / total_assets
@@ -1264,7 +1306,7 @@ fn test_allocation_multiple_markets(mut vault: TestVault) {
         .unwrap();
     vault.finish_allocating(allocator, op_id).unwrap();
 
-    assert_eq!(vault.state().external_assets, 6000);
+    assert_eq!(vault.state().unwrap().external_assets, 6000);
 }
 
 #[rstest]
@@ -1291,7 +1333,7 @@ fn test_refresh_multiple_markets(mut vault: TestVault) {
         .unwrap();
     vault.finish_refreshing(allocator, op_id).unwrap();
 
-    assert_eq!(vault.state().external_assets, 6000);
+    assert_eq!(vault.state().unwrap().external_assets, 6000);
 }
 
 // Concurrency / State Machine Tests

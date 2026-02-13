@@ -11,7 +11,8 @@
 //! macros for deployment on the Stellar network.
 
 use crate::fungible_vault::{
-    atomic_withdraw_internal, load_state_and_config, share_balance, to_i128, to_u128,
+    atomic_withdraw_internal, load_state_and_config, refresh_fees_for_atomic, share_balance,
+    to_i128, to_u128,
 };
 use alloc::vec;
 use alloc::vec::Vec;
@@ -66,6 +67,19 @@ fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
 
 fn ledger_timestamp_ns(env: &Env) -> u64 {
     env.ledger().timestamp().saturating_mul(1_000_000_000)
+}
+
+fn is_contract_address(addr: &SdkAddress) -> bool {
+    let bytes = addr.to_string().to_bytes();
+    matches!(bytes.get(0), Some(b'C'))
+}
+
+fn require_contract_address(addr: &SdkAddress, msg: &'static str) -> Result<(), ContractError> {
+    if is_contract_address(addr) {
+        Ok(())
+    } else {
+        Err(RuntimeError::invalid_input(msg).into())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -130,7 +144,7 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         .map_err(|_| RuntimeError::storage_error("fees deserialize failed"))
 }
 
-fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
+pub(crate) fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
     let stored: Option<Vec<u8>> = env.storage().instance().get(&VaultDataKey::FeesSpec);
     match stored {
         Some(bytes) => deserialize_fees_spec(&bytes),
@@ -430,7 +444,7 @@ where
         F: FnOnce(&mut VaultState, u64) -> Result<OpState, RuntimeError>,
     {
         self.auth.authorize(kind, caller, None)?;
-        let state = self.state_mut();
+        let state = self.state_mut()?;
         let op_id = state.next_op_id;
         state.next_op_id = state.next_op_id.saturating_add(1);
         let next_op_state = apply(state, op_id)?;
@@ -451,7 +465,7 @@ where
     {
         self.auth.authorize(kind, caller, None)?;
         let result = {
-            let state = self.state_mut();
+            let state = self.state_mut()?;
             apply(state, op_id)?
         };
         self.save_state()?;
@@ -459,24 +473,19 @@ where
     }
 
     /// Get a reference to the current vault state.
-    ///
-    /// # Panics
-    ///
-    /// Panics if state has not been loaded.
     #[inline]
-    #[must_use]
-    pub fn state(&self) -> &VaultState {
-        self.state.as_ref().expect("state not loaded")
+    pub fn state(&self) -> Result<&VaultState, RuntimeError> {
+        self.state
+            .as_ref()
+            .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))
     }
 
     /// Get a mutable reference to the current vault state.
-    ///
-    /// # Panics
-    ///
-    /// Panics if state has not been loaded.
     #[inline]
-    pub fn state_mut(&mut self) -> &mut VaultState {
-        self.state.as_mut().expect("state not loaded")
+    pub fn state_mut(&mut self) -> Result<&mut VaultState, RuntimeError> {
+        self.state
+            .as_mut()
+            .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))
     }
 
     /// Build effect context from current state.
@@ -598,7 +607,7 @@ where
     ) -> Result<EffectSummary, RuntimeError> {
         let config = self.kernel_config();
         let restrictions = self.restrictions.as_ref();
-        let state = self.state().clone();
+        let state = self.state()?.clone();
         let result = apply_action(
             state,
             &config,
@@ -690,10 +699,11 @@ where
         )?;
         let shares = summary.shares_minted;
 
+        let state = self.state()?;
         Ok(DepositResult {
             shares_minted: shares,
-            total_shares: self.state().total_shares,
-            total_assets: self.state().total_assets,
+            total_shares: state.total_shares,
+            total_assets: state.total_assets,
         })
     }
 
@@ -736,11 +746,12 @@ where
         self.auth
             .authorize(ActionKind::RequestWithdraw, caller, None)?;
 
-        if self.state().total_shares == 0 {
+        let state = self.state()?;
+        if state.total_shares == 0 {
             return Err(RuntimeError::contract_error("no shares in vault"));
         }
 
-        let request_id = self.state().withdraw_queue.next_pending_withdrawal_id;
+        let request_id = state.withdraw_queue.next_pending_withdrawal_id;
 
         let action = KernelAction::RequestWithdraw {
             owner: caller,
@@ -794,17 +805,18 @@ where
 
         let mut summary = EffectSummary::new();
 
-        if self.state().op_state.is_idle() {
+        let op_state = self.state()?.op_state.clone();
+        if op_state.is_idle() {
             let step_summary =
                 self.apply_kernel_action(KernelAction::ExecuteWithdraw { now_ns }, now_ns)?;
             summary.merge(step_summary);
-        } else if !self.state().op_state.is_withdrawing() {
+        } else if !op_state.is_withdrawing() {
             return Err(RuntimeError::contract_error(
                 "vault not in idle or withdrawing state for withdrawal",
             ));
         }
 
-        if self.state().op_state.is_withdrawing() {
+        if self.state()?.op_state.is_withdrawing() {
             let settle_summary = self.complete_withdrawal_from_idle(now_ns)?;
             summary.merge(settle_summary);
         }
@@ -829,12 +841,13 @@ where
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
         let (_, pending) = self
-            .state()
+            .state()?
             .withdraw_queue
             .head()
             .ok_or_else(|| RuntimeError::contract_error("withdraw queue empty"))?;
+        let pending = pending.clone();
 
-        let withdraw = match &self.state().op_state {
+        let withdraw = match self.state()?.op_state.clone() {
             OpState::Withdrawing(state) => state,
             _ => return Err(RuntimeError::contract_error("withdrawal not in progress")),
         };
@@ -848,7 +861,7 @@ where
             ));
         }
 
-        let available_assets = self.state().idle_assets;
+        let available_assets = self.state()?.idle_assets;
         if available_assets == 0 {
             return Ok(EffectSummary::new());
         }
@@ -857,7 +870,7 @@ where
             return Ok(EffectSummary::new());
         }
 
-        let withdrawal_result = compute_full_withdrawal(pending, available_assets)
+        let withdrawal_result = compute_full_withdrawal(&pending, available_assets)
             .ok_or_else(|| RuntimeError::contract_error("withdrawal not satisfiable"))?;
 
         let assets_out = withdrawal_result.assets_out;
@@ -869,18 +882,24 @@ where
         let refund_shares = withdrawal_result.settlement.refund;
         let op_id = withdraw.op_id;
 
-        let step = withdrawal_step_callback(self.state().op_state.clone(), op_id, assets_out)
-            .map_err(RuntimeError::transition_error)?;
-        self.state_mut().op_state = step.new_state;
+        let step = {
+            let op_state = self.state()?.op_state.clone();
+            withdrawal_step_callback(op_state, op_id, assets_out)
+                .map_err(RuntimeError::transition_error)?
+        };
+        self.state_mut()?.op_state = step.new_state;
 
-        let collected = withdrawal_collected(self.state().op_state.clone(), op_id, burn_shares)
-            .map_err(RuntimeError::transition_error)?;
+        let collected = {
+            let op_state = self.state()?.op_state.clone();
+            withdrawal_collected(op_state, op_id, burn_shares)
+                .map_err(RuntimeError::transition_error)?
+        };
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&collected.effects, &ctx)?;
         let mut summary = self.interpreter.execute_effects(&collected.effects, &ctx)?;
-        self.state_mut().op_state = collected.new_state;
+        self.state_mut()?.op_state = collected.new_state;
 
-        let payout = match &self.state().op_state {
+        let payout = match &self.state()?.op_state {
             OpState::Payout(state) => state,
             _ => {
                 return Err(RuntimeError::contract_error(
@@ -897,7 +916,7 @@ where
         let transfer_summary = self.interpreter.execute_effects(&transfer_effects, &ctx)?;
         summary.merge(transfer_summary);
 
-        let state = self.state_mut();
+        let state = self.state_mut()?;
         state.idle_assets = state.idle_assets.saturating_sub(assets_out);
         state.total_assets = state.idle_assets.saturating_add(state.external_assets);
 
@@ -1016,7 +1035,7 @@ where
     /// skipped. If some queries succeed and others fail (partial failure),
     /// the call is rejected rather than silently accepting an unchecked value.
     fn verify_external_assets_against_adapter(&self, claimed: u128) -> Result<(), RuntimeError> {
-        let state = self.state();
+        let state = self.state()?;
 
         // Only verify during refresh (plan covers all markets).
         // During allocation, plan covers only target markets — can't do exact match.
@@ -1226,8 +1245,8 @@ where
         context: RecoveryContext,
         progress: RecoveryProgress,
     ) -> Result<Option<EffectSummary>, RuntimeError> {
-        let Some(action) = determine_recovery_action(&self.state().op_state, &context, &progress)
-        else {
+        let state = self.state()?;
+        let Some(action) = determine_recovery_action(&state.op_state, &context, &progress) else {
             return Ok(None);
         };
 
@@ -1254,7 +1273,7 @@ where
         let plan: Vec<TargetId> = markets.iter().map(|m| m.market_id).collect();
         let op_id = self.begin_refreshing(caller, plan, now_ns)?;
 
-        let refresh_markets: Vec<MarketRef> = match &self.state().op_state {
+        let refresh_markets: Vec<MarketRef> = match &self.state()?.op_state {
             OpState::Refreshing(refresh) => refresh
                 .plan
                 .iter()
@@ -1290,7 +1309,7 @@ where
         // Authorize
         self.auth.authorize(ActionKind::RefreshFees, caller, None)?;
 
-        let state = self.state().clone();
+        let state = self.state()?.clone();
         let anchor = state.fee_anchor;
         let cur_total_assets = state.total_assets;
         let mut total_supply = state.total_shares;
@@ -1410,14 +1429,18 @@ where
         }
 
         let lock = MarketLock::new(target_id, current_ns).with_expiry(expiry_ns);
-        self.policy_state.locks =
-            self.policy_state
-                .locks
-                .acquire(lock, current_ns)
-                .map_err(|e| {
-                    RuntimeError::contract_error(alloc::format!("failed to acquire lock: {:?}", e))
-                })?;
-        self.storage.save_policy_state(&self.policy_state)?;
+        let new_locks = self
+            .policy_state
+            .locks
+            .clone()
+            .acquire(lock, current_ns)
+            .map_err(|e| {
+                RuntimeError::contract_error(alloc::format!("failed to acquire lock: {:?}", e))
+            })?;
+        let mut next_policy = self.policy_state.clone();
+        next_policy.locks = new_locks;
+        self.storage.save_policy_state(&next_policy)?;
+        self.policy_state = next_policy;
 
         Ok(())
     }
@@ -1433,8 +1456,11 @@ where
         self.auth
             .authorize(ActionKind::BeginAllocating, caller, None)?;
 
-        self.policy_state.locks = self.policy_state.locks.release(target_id);
-        self.storage.save_policy_state(&self.policy_state)?;
+        let new_locks = self.policy_state.locks.clone().release(target_id);
+        let mut next_policy = self.policy_state.clone();
+        next_policy.locks = new_locks;
+        self.storage.save_policy_state(&next_policy)?;
+        self.policy_state = next_policy;
 
         Ok(())
     }
@@ -1834,6 +1860,7 @@ impl SorobanVaultContract {
         adapter: SdkAddress,
     ) -> Result<(), ContractError> {
         require_curator(&env, &caller)?;
+        require_contract_address(&adapter, "blend adapter must be a contract address")?;
         set_config_address(&env, &VaultDataKey::BlendAdapter, &adapter);
         Ok(())
     }
@@ -1845,6 +1872,7 @@ impl SorobanVaultContract {
         pool: SdkAddress,
     ) -> Result<(), ContractError> {
         require_curator(&env, &caller)?;
+        require_contract_address(&pool, "blend pool must be a contract address")?;
         set_config_address(&env, &VaultDataKey::BlendPool, &pool);
         Ok(())
     }
@@ -1856,6 +1884,7 @@ impl SorobanVaultContract {
         factory: SdkAddress,
     ) -> Result<(), ContractError> {
         require_curator(&env, &caller)?;
+        require_contract_address(&factory, "blend factory must be a contract address")?;
         set_config_address(&env, &VaultDataKey::BlendFactory, &factory);
         Ok(())
     }
@@ -2238,13 +2267,15 @@ impl SorobanVaultContract {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
         let assets_u128 = must(&env, to_u128(assets));
-        let (state, config) = must(&env, load_state_and_config(&env));
+        let (state, _config) = must(&env, load_state_and_config(&env));
         if !state.op_state.is_idle() {
             panic_with_error!(&env, ContractError::VaultNotIdle);
         }
         if assets_u128 > state.idle_assets {
             panic_with_error!(&env, ContractError::InsufficientIdleAssets);
         }
+        must(&env, refresh_fees_for_atomic(&env));
+        let (state, config) = must(&env, load_state_and_config(&env));
         let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
         must(
             &env,
@@ -2271,10 +2302,12 @@ impl SorobanVaultContract {
             panic_with_error!(&env, ContractError::InvalidInput);
         }
         let shares_u128 = must(&env, to_u128(shares));
-        let (state, config) = must(&env, load_state_and_config(&env));
+        let (state, _config) = must(&env, load_state_and_config(&env));
         if !state.op_state.is_idle() {
             panic_with_error!(&env, ContractError::VaultNotIdle);
         }
+        must(&env, refresh_fees_for_atomic(&env));
+        let (state, config) = must(&env, load_state_and_config(&env));
         let assets_out = convert_to_assets(&state, &config, shares_u128);
         if assets_out > state.idle_assets {
             panic_with_error!(&env, ContractError::InsufficientIdleAssets);
