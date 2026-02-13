@@ -31,9 +31,5 @@ contract/vault/soroban/test_snapshots/
 .aider*
 **/target
 
-# bv (beads viewer) local config and caches
-.bv/
-.beads/
-
 # Soroban deployment state (local)
 .deploy-state/

@@ -602,6 +602,8 @@ fn handle_begin_allocating(
 fn handle_finish_allocating(
     mut state: VaultState,
     config: &VaultConfig,
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
     op_id: u64,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
@@ -613,14 +615,20 @@ fn handle_finish_allocating(
         .filter(|(_, w)| is_past_cooldown(w.requested_at_ns, now_ns, config.withdrawal_cooldown_ns))
         .map(|(_, w)| (w.owner, w.receiver, w.escrow_shares, w.expected_assets));
 
-    let pending_req = pending.map(|(owner, receiver, escrow_shares, expected_assets)| {
-        WithdrawalRequest {
+    let pending_req = pending.and_then(|(owner, receiver, escrow_shares, expected_assets)| {
+        if enforce_restrictions(config, restrictions, self_id, &owner).is_err() {
+            return None;
+        }
+        if enforce_restrictions(config, restrictions, self_id, &receiver).is_err() {
+            return None;
+        }
+        Some(WithdrawalRequest {
             op_id: state.allocate_op_id(),
             amount: expected_assets,
             receiver,
             owner,
             escrow_shares,
-        }
+        })
     });
 
     let result = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req)
@@ -1047,9 +1055,14 @@ pub fn apply_action(
             handle_begin_allocating(state, op_id, plan)
         }
 
-        KernelAction::FinishAllocating { op_id, now_ns } => {
-            handle_finish_allocating(state, config, op_id, now_ns)
-        }
+        KernelAction::FinishAllocating { op_id, now_ns } => handle_finish_allocating(
+            state,
+            config,
+            restrictions,
+            self_id,
+            op_id,
+            now_ns,
+        ),
 
         KernelAction::BeginRefreshing { op_id, plan, .. } => {
             let result = start_refresh(mem::take(&mut state.op_state), plan, op_id)
