@@ -83,6 +83,7 @@ impl BlendAdapterContract {
     pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
+        require_contract_address(&pool, AdapterError::InvalidInput)?;
         let old_pool = get_pool(&env)?;
         env.storage().instance().set(&DataKey::Pool, &pool);
         env.events().publish(
@@ -98,6 +99,7 @@ impl BlendAdapterContract {
     pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
+        require_contract_address(&vault, AdapterError::InvalidInput)?;
         let old_vault = get_vault(&env)?;
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.events().publish(
@@ -316,6 +318,22 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
         return Err(AdapterError::Unauthorized);
     }
     Ok(())
+}
+
+fn is_contract_address(addr: &Address) -> bool {
+    let bytes = addr.to_string().to_bytes();
+    matches!(bytes.get(0), Some(b'C'))
+}
+
+fn require_contract_address(
+    addr: &Address,
+    err: AdapterError,
+) -> Result<(), AdapterError> {
+    if is_contract_address(addr) {
+        Ok(())
+    } else {
+        Err(err)
+    }
 }
 
 fn extend_instance_ttl(env: &Env) {
@@ -768,6 +786,21 @@ mod tests {
     }
 
     #[test]
+    fn set_pool_rejects_non_contract_address() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_pool(env.clone(), admin, account);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+        });
+    }
+
+    #[test]
     fn set_vault_unauthorized_rejected() {
         let env = Env::default();
         env.mock_all_auths();
@@ -778,6 +811,21 @@ mod tests {
             let result =
                 BlendAdapterContract::set_vault(env.clone(), impostor.clone(), new_vault.clone());
             assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn set_vault_rejects_non_contract_address() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let account = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_vault(env.clone(), admin, account);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
         });
     }
 
