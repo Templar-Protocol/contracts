@@ -555,7 +555,7 @@ impl WithdrawQueue {
 
         let id = self.next_pending_withdrawal_id;
 
-        // Check for cache overflow before modifying state
+        // Compute cache totals first so we can fail without mutating queue state.
         let new_escrow = self
             .cached_total_escrow
             .checked_add(withdrawal.escrow_shares)
@@ -594,6 +594,9 @@ impl WithdrawQueue {
     ///
     /// # Returns
     /// `Some((id, withdrawal))` if non-empty, `None` if empty.
+    ///
+    /// # Panics
+    /// Panics if cached totals underflow, indicating queue cache corruption.
     pub fn dequeue(&mut self) -> Option<(u64, PendingWithdrawal)> {
         if self.is_empty() {
             return None;
