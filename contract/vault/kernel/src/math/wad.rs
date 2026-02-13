@@ -54,9 +54,7 @@ mod serde_impl {
 #[cfg(feature = "borsh")]
 mod borsh_impl {
     use super::*;
-    use alloc::collections::BTreeMap;
-    use borsh::schema::{add_definition, Declaration, Definition};
-    use borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
+    use borsh::{self, BorshDeserialize, BorshSerialize};
 
     impl BorshSerialize for Wad {
         fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
@@ -69,6 +67,14 @@ mod borsh_impl {
             <Number as BorshDeserialize>::deserialize_reader(reader).map(Wad)
         }
     }
+}
+
+#[cfg(feature = "borsh-schema")]
+mod borsh_schema_impl {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use borsh::schema::{add_definition, Declaration, Definition};
+    use borsh::BorshSchema;
 
     impl BorshSchema for Wad {
         fn add_definitions_recursively(definitions: &mut BTreeMap<Declaration, Definition>) {

@@ -30,9 +30,9 @@ use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, compute_fee_shares_from_assets,
     convert_to_assets, convert_to_assets_ceil, convert_to_shares, convert_to_shares_ceil,
     mul_div_floor, start_allocation, start_refresh, withdrawal_collected, withdrawal_step_callback,
-    Address, AssetId, FeeAccrualAnchor, FeesSpec, KernelAction, Number, OpState, PayoutOutcome,
-    Restrictions, TargetId, TransitionError, VaultConfig, VaultState, MAX_PENDING,
-    MIN_WITHDRAWAL_ASSETS,
+    Address, AssetId, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, Number, OpState,
+    PayoutOutcome, Restrictions, TargetId, TransitionError, VaultConfig, VaultState, Wad,
+    MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -202,12 +202,6 @@ pub struct ContractConfig {
     pub share_address: Address,
     /// Fee configuration.
     pub fees: FeesSpec,
-    /// Blend adapter contract address (optional).
-    pub blend_adapter: Option<Address>,
-    /// Blend pool contract address (optional).
-    pub blend_pool: Option<Address>,
-    /// Blend factory contract address (optional).
-    pub blend_factory: Option<Address>,
 }
 
 impl ContractConfig {
@@ -230,34 +224,7 @@ impl ContractConfig {
             asset_address,
             share_address,
             fees: FeesSpec::zero(),
-            blend_adapter: None,
-            blend_pool: None,
-            blend_factory: None,
         }
-    }
-
-    /// Attach a Blend adapter contract address.
-    #[inline]
-    #[must_use]
-    pub fn with_blend_adapter(mut self, adapter: Address) -> Self {
-        self.blend_adapter = Some(adapter);
-        self
-    }
-
-    /// Attach a Blend pool contract address.
-    #[inline]
-    #[must_use]
-    pub fn with_blend_pool(mut self, pool: Address) -> Self {
-        self.blend_pool = Some(pool);
-        self
-    }
-
-    /// Attach a Blend factory contract address.
-    #[inline]
-    #[must_use]
-    pub fn with_blend_factory(mut self, factory: Address) -> Self {
-        self.blend_factory = Some(factory);
-        self
     }
 
     /// Attach a fees configuration.
@@ -1551,18 +1518,13 @@ where
 pub enum VaultDataKey {
     /// Curator address.
     Curator,
+    Governance,
     /// Underlying asset token address.
     AssetToken,
     /// Share token address.
     ShareToken,
     /// Fee configuration (borsh-encoded).
     FeesSpec,
-    /// Blend adapter contract address.
-    BlendAdapter,
-    /// Blend pool contract address.
-    BlendPool,
-    /// Blend factory contract address.
-    BlendFactory,
     /// Reentrancy guard flag.
     ReentrancyLock,
     /// Whether the contract is initialized.
@@ -1614,11 +1576,6 @@ pub(crate) fn get_config_address(
         Some(address) => Ok(address),
         None => Err(ContractError::MissingConfig),
     }
-}
-
-/// Read an optional `SdkAddress` from instance storage.
-fn get_optional_config_address(env: &Env, key: &VaultDataKey) -> Option<SdkAddress> {
-    env.storage().instance().get(key)
 }
 
 #[inline]
@@ -1731,16 +1688,6 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
         share_kernel,
     );
 
-    if let Some(adapter) = get_optional_config_address(env, &VaultDataKey::BlendAdapter) {
-        config = config.with_blend_adapter(kernel_address_from_sdk(env, &adapter));
-    }
-    if let Some(pool) = get_optional_config_address(env, &VaultDataKey::BlendPool) {
-        config = config.with_blend_pool(kernel_address_from_sdk(env, &pool));
-    }
-    if let Some(factory) = get_optional_config_address(env, &VaultDataKey::BlendFactory) {
-        config = config.with_blend_factory(kernel_address_from_sdk(env, &factory));
-    }
-
     let fees = load_fees_spec(env)?;
     config = config.with_fees(fees);
 
@@ -1828,6 +1775,14 @@ fn with_reentrancy_guard<T>(
     result
 }
 
+#[inline(never)]
+fn with_reentrancy_guarded_contract_vault(
+    env: &Env,
+    f: &mut ContractVaultCallback<'_>,
+) -> Result<(), ContractError> {
+    with_reentrancy_guard(env, || with_contract_vault_contract_error(env, f))
+}
+
 fn ensure_not_reentrant(env: &Env) -> Result<(), ContractError> {
     let locked: bool = env
         .storage()
@@ -1851,6 +1806,7 @@ impl SorobanVaultContract {
     pub fn initialize(
         env: Env,
         curator: soroban_sdk::Address,
+        governance: soroban_sdk::Address,
         asset_token: soroban_sdk::Address,
         share_token: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
@@ -1862,6 +1818,7 @@ impl SorobanVaultContract {
 
         // Store configuration
         set_config_address(&env, &VaultDataKey::Curator, &curator);
+        set_config_address(&env, &VaultDataKey::Governance, &governance);
         set_config_address(&env, &VaultDataKey::AssetToken, &asset_token);
         set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
         env.storage()
@@ -1920,9 +1877,7 @@ impl SorobanVaultContract {
                 Ok(())
             };
             with_contract_vault_contract_error(&env, &mut call)?;
-
-            let shares = to_i128(shares_minted)?;
-            Ok(shares)
+            to_i128(shares_minted)
         })
     }
 
@@ -1964,7 +1919,6 @@ impl SorobanVaultContract {
                 Ok(())
             };
             with_contract_vault_contract_error(&env, &mut call)?;
-
             Ok(request_id)
         })
     }
@@ -1975,16 +1929,12 @@ impl SorobanVaultContract {
         require_signed(&caller);
         let now_ns = ledger_timestamp_ns(&env)?;
 
-        with_reentrancy_guard(&env, || {
-            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-                vault
-                    .execute_withdraw_soroban(&env, caller.clone(), now_ns)
-                    .map(|_| ())
-            };
-            with_contract_vault_contract_error(&env, &mut call)?;
-            Ok(())
-        })?;
-        Ok(())
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault
+                .execute_withdraw_soroban(&env, caller.clone(), now_ns)
+                .map(|_| ())
+        };
+        with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
 
     pub fn allocator_sync_positions(
@@ -1998,26 +1948,23 @@ impl SorobanVaultContract {
         let idle_u128 = to_u128(idle_assets)?;
         let external_u128 = to_u128(external_assets)?;
 
-        with_reentrancy_guard(&env, || {
-            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-                vault.authorize(ActionKind::SyncExternalAssets, caller_kernel)?;
-                let state = vault.state_mut()?;
-                state.idle_assets = idle_u128;
-                state.external_assets = external_u128;
-                state.total_assets = match idle_u128.checked_add(external_u128) {
-                    Some(total) => total,
-                    None => {
-                        return Err(RuntimeError::invalid_state(
-                            "total_assets overflow while syncing positions",
-                        ))
-                    }
-                };
-                vault.save_state()?;
-                Ok(())
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.authorize(ActionKind::SyncExternalAssets, caller_kernel)?;
+            let state = vault.state_mut()?;
+            state.idle_assets = idle_u128;
+            state.external_assets = external_u128;
+            state.total_assets = match idle_u128.checked_add(external_u128) {
+                Some(total) => total,
+                None => {
+                    return Err(RuntimeError::invalid_state(
+                        "total_assets overflow while syncing positions",
+                    ))
+                }
             };
-            with_contract_vault_contract_error(&env, &mut call)?;
+            vault.save_state()?;
             Ok(())
-        })
+        };
+        with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
 
     /// Pause or unpause the vault.
@@ -2032,8 +1979,9 @@ impl SorobanVaultContract {
         use stellar_contract_utils::pausable::{emit_paused, emit_unpaused};
 
         ensure_not_reentrant(&env)?;
-        require_signed(&caller);
-        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        require_governance(&env, &caller)?;
+        let curator = get_config_address(&env, &VaultDataKey::Curator)?;
+        let caller_kernel = kernel_address_from_sdk(&env, &curator);
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             vault.pause(caller_kernel, paused)
@@ -2072,8 +2020,32 @@ impl SorobanVaultContract {
         new_curator: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
-        require_curator(&env, &caller)?;
+        require_governance(&env, &caller)?;
         set_config_address(&env, &VaultDataKey::Curator, &new_curator);
+        Ok(())
+    }
+
+    pub fn set_governance(
+        env: Env,
+        caller: soroban_sdk::Address,
+        governance: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        require_contract_address(&governance, "governance must be a contract address")?;
+        set_config_address(&env, &VaultDataKey::Governance, &governance);
+        Ok(())
+    }
+
+    pub fn set_share_token(
+        env: Env,
+        caller: soroban_sdk::Address,
+        share_token: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        require_contract_address(&share_token, "share token must be a contract address")?;
+        set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
         Ok(())
     }
 
@@ -2082,61 +2054,93 @@ impl SorobanVaultContract {
         caller: soroban_sdk::Address,
         target_ids: soroban_sdk::Vec<u32>,
     ) -> Result<(), ContractError> {
-        ensure_not_reentrant(&env)?;
-        require_signed(&caller);
-        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        require_governance(&env, &caller)?;
+        let curator = get_config_address(&env, &VaultDataKey::Curator)?;
+        let caller_kernel = kernel_address_from_sdk(&env, &curator);
         let mut queue_targets = Vec::with_capacity(target_ids.len() as usize);
         for target_id in target_ids.iter() {
             queue_targets.push(target_id);
         }
 
-        with_reentrancy_guard(&env, || {
-            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-                vault.set_supply_queue(caller_kernel, queue_targets.clone())?;
-                Ok(())
-            };
-            with_contract_vault_contract_error(&env, &mut call)?;
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.set_supply_queue(caller_kernel, queue_targets.clone())?;
             Ok(())
-        })
+        };
+        with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
 
-    /// Set the Blend adapter contract address (curator only).
-    pub fn set_blend_adapter(
+    pub fn set_fees(
         env: Env,
         caller: soroban_sdk::Address,
-        adapter: soroban_sdk::Address,
+        performance_fee_wad: i128,
+        performance_recipient: soroban_sdk::Address,
+        management_fee_wad: i128,
+        management_recipient: soroban_sdk::Address,
+        max_growth_rate_wad: Option<i128>,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
-        require_curator(&env, &caller)?;
-        require_contract_address(&adapter, "blend adapter must be a contract address")?;
-        set_config_address(&env, &VaultDataKey::BlendAdapter, &adapter);
+        require_governance(&env, &caller)?;
+
+        if performance_fee_wad < 0 || management_fee_wad < 0 {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let max_rate = match max_growth_rate_wad {
+            Some(value) => {
+                if value < 0 {
+                    return Err(ContractError::InvalidInput);
+                }
+                Some(Wad::from(value as u128))
+            }
+            None => None,
+        };
+
+        let performance_kernel = kernel_address_from_sdk(&env, &performance_recipient);
+        let management_kernel = kernel_address_from_sdk(&env, &management_recipient);
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::from(performance_fee_wad as u128), performance_kernel),
+            FeeSlot::new(Wad::from(management_fee_wad as u128), management_kernel),
+            max_rate,
+        );
+
+        runtime_to_contract(store_fees_spec(&env, &fees))?;
+
+        let storage = SorobanStorage::new(&env);
+        storage.save_address(&performance_kernel, &performance_recipient);
+        storage.save_address(&management_kernel, &management_recipient);
+
         Ok(())
     }
 
-    /// Set the Blend pool contract address (curator only).
-    pub fn set_blend_pool(
+    pub fn set_restrictions(
         env: Env,
         caller: soroban_sdk::Address,
-        pool: soroban_sdk::Address,
+        mode: u32,
+        accounts: soroban_sdk::Vec<soroban_sdk::Address>,
     ) -> Result<(), ContractError> {
-        ensure_not_reentrant(&env)?;
-        require_curator(&env, &caller)?;
-        require_contract_address(&pool, "blend pool must be a contract address")?;
-        set_config_address(&env, &VaultDataKey::BlendPool, &pool);
-        Ok(())
-    }
+        require_governance(&env, &caller)?;
 
-    /// Set the Blend factory contract address (curator only).
-    pub fn set_blend_factory(
-        env: Env,
-        caller: soroban_sdk::Address,
-        factory: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        ensure_not_reentrant(&env)?;
-        require_curator(&env, &caller)?;
-        require_contract_address(&factory, "blend factory must be a contract address")?;
-        set_config_address(&env, &VaultDataKey::BlendFactory, &factory);
-        Ok(())
+        let mut kernel_accounts = Vec::with_capacity(accounts.len() as usize);
+        for account in accounts.iter() {
+            kernel_accounts.push(kernel_address_from_sdk(&env, &account));
+        }
+
+        let restrictions = match mode {
+            0 => None,
+            1 => Some(Restrictions::Paused),
+            2 => Some(Restrictions::Blacklist(kernel_accounts)),
+            3 => Some(Restrictions::Whitelist(kernel_accounts)),
+            _ => return Err(ContractError::InvalidInput),
+        };
+
+        let curator = get_config_address(&env, &VaultDataKey::Curator)?;
+        let caller_kernel = kernel_address_from_sdk(&env, &curator);
+
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.set_restrictions(caller_kernel, restrictions.clone())?;
+            Ok(())
+        };
+        with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
 
     /// Register a Soroban address for kernel effect execution (curator only).
@@ -2164,6 +2168,11 @@ impl SorobanVaultContract {
         get_config_address(&env, &VaultDataKey::Curator)
     }
 
+    pub fn governance(env: Env) -> Result<soroban_sdk::Address, ContractError> {
+        ensure_not_reentrant(&env)?;
+        get_config_address(&env, &VaultDataKey::Governance)
+    }
+
     pub fn supply_queue(env: Env) -> soroban_sdk::Vec<u32> {
         must(&env, ensure_not_reentrant(&env));
         let mut queue = soroban_sdk::Vec::new(&env);
@@ -2187,24 +2196,6 @@ impl SorobanVaultContract {
     pub fn share_token(env: Env) -> Result<soroban_sdk::Address, ContractError> {
         ensure_not_reentrant(&env)?;
         get_config_address(&env, &VaultDataKey::ShareToken)
-    }
-
-    /// Get the Blend adapter contract address.
-    pub fn blend_adapter(env: Env) -> Result<soroban_sdk::Address, ContractError> {
-        ensure_not_reentrant(&env)?;
-        get_config_address(&env, &VaultDataKey::BlendAdapter)
-    }
-
-    /// Get the Blend pool contract address.
-    pub fn blend_pool(env: Env) -> Result<soroban_sdk::Address, ContractError> {
-        ensure_not_reentrant(&env)?;
-        get_config_address(&env, &VaultDataKey::BlendPool)
-    }
-
-    /// Get the Blend factory contract address.
-    pub fn blend_factory(env: Env) -> Result<soroban_sdk::Address, ContractError> {
-        ensure_not_reentrant(&env)?;
-        get_config_address(&env, &VaultDataKey::BlendFactory)
     }
 
     /// Check if the vault is paused.
@@ -2322,6 +2313,16 @@ fn require_curator(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> 
     require_signed(caller);
     let curator: SdkAddress = get_config_address(env, &VaultDataKey::Curator)?;
     if caller != &curator {
+        return Err(ContractError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+    require_signed(caller);
+
+    let governance: SdkAddress = get_config_address(env, &VaultDataKey::Governance)?;
+    if caller != &governance {
         return Err(ContractError::Unauthorized);
     }
     Ok(())

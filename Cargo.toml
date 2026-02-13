@@ -10,6 +10,8 @@ members = [
     "contract/vault/kernel",
     "contract/vault/near",
     "contract/vault/soroban",
+    "contract/vault/soroban-governance",
+    "contract/vault/soroban-share-token",
     "fuzz",
     "client/*",
     "mock/*",
@@ -58,10 +60,10 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
-templar-curator-primitives = { path = "./contract/vault/curator-primitives", features = ["borsh", "serde"] }
+templar-curator-primitives = { path = "./contract/vault/curator-primitives", features = ["borsh-schema", "serde"] }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault/near" }
-templar-vault-kernel = { path = "./contract/vault/kernel", features = ["near", "borsh", "serde", "schemars"] }
+templar-vault-kernel = { path = "./contract/vault/kernel", features = ["near", "borsh-schema", "serde", "schemars"] }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }

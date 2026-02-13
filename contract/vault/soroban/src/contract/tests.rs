@@ -766,7 +766,8 @@ fn test_reentrancy_guard_blocks_nested() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
         let result = with_reentrancy_guard(&env, || with_reentrancy_guard(&env, || Ok(())));
         assert_eq!(result, Err(ContractError::Reentrancy));
     });
@@ -785,7 +786,8 @@ fn test_reentrancy_guard_resets_between_calls() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
         with_reentrancy_guard(&env, || Ok(())).unwrap();
         with_reentrancy_guard(&env, || Ok(())).unwrap();
     });
@@ -805,7 +807,8 @@ fn test_reentrancy_guard_blocks_read_only_entrypoints() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
         with_reentrancy_guard(&env, || {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 SorobanVaultContract::total_shares(env.clone());
@@ -832,7 +835,8 @@ fn test_loads_fees_spec_from_storage() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
     });
 
     let fees = FeesSpec::new(
@@ -993,8 +997,14 @@ fn test_atomic_withdraw_refreshes_fees() {
     let perf_recipient = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset.clone(), share.clone())
-            .unwrap();
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            curator,
+            asset.clone(),
+            share.clone(),
+        )
+        .unwrap();
 
         let fees = FeesSpec::new(
             FeeSlot::new(
@@ -1260,7 +1270,8 @@ fn test_load_state_restores_policy_and_restrictions() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
 
         let mut storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());

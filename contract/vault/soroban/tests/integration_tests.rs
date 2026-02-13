@@ -157,7 +157,14 @@ fn soroban_contract_blend_config_roundtrip() {
     let factory = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), asset, share).unwrap();
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            curator.clone(),
+            asset,
+            share,
+        )
+        .unwrap();
     });
     env.as_contract(&contract_id, || {
         SorobanVaultContract::set_blend_adapter(env.clone(), curator.clone(), adapter.clone())
@@ -197,7 +204,14 @@ fn soroban_contract_blend_config_rejects_account_addresses() {
     );
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), asset, share).unwrap();
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            curator.clone(),
+            asset,
+            share,
+        )
+        .unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -232,7 +246,8 @@ fn soroban_contract_vault_snapshot_matches_fields() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
     });
     env.as_contract(&contract_id, || {
         let snapshot = SorobanVaultContract::vault_snapshot(env.clone());
@@ -303,7 +318,8 @@ fn soroban_contract_preview_deposit_matches_kernel() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
     });
 
     let assets_in = 500u128;
@@ -345,7 +361,8 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
     let share = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -384,7 +401,8 @@ fn soroban_contract_execute_withdraw_queue_empty_errors() {
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -405,7 +423,8 @@ fn soroban_contract_execute_withdraw_non_idle_errors() {
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
+            .unwrap();
     });
 
     env.as_contract(&contract_id, || {

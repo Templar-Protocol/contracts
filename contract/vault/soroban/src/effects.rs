@@ -7,7 +7,6 @@ use templar_vault_kernel::AddressBook;
 
 use crate::convert::u128_to_i128_effect;
 use crate::error::RuntimeError;
-use crate::share_token::ShareTokenAdapter as InternalShareTokenAdapter;
 
 /// Short helper to convert u128 to i128 for event / effect amounts.
 #[inline]
@@ -325,52 +324,7 @@ impl Sep41Token for SdkTokenAdapter<'_> {
     }
 }
 
-pub enum ShareTokenAdapter<'a> {
-    Internal(InternalShareTokenAdapter<'a>),
-    External(SdkTokenAdapter<'a>),
-}
-
-impl<'a> ShareTokenAdapter<'a> {
-    #[inline]
-    #[must_use]
-    pub fn new(env: &'a Env, contract_id: &Address) -> Self {
-        if contract_id == &env.current_contract_address() {
-            Self::Internal(InternalShareTokenAdapter::new(env))
-        } else {
-            Self::External(SdkTokenAdapter::new(env, contract_id))
-        }
-    }
-}
-
-impl Sep41Token for ShareTokenAdapter<'_> {
-    fn mint(&self, to: &Address, amount: i128) -> EffectResult<()> {
-        match self {
-            Self::Internal(adapter) => adapter.mint(to, amount),
-            Self::External(adapter) => adapter.mint(to, amount),
-        }
-    }
-
-    fn burn(&self, from: &Address, amount: i128) -> EffectResult<()> {
-        match self {
-            Self::Internal(adapter) => adapter.burn(from, amount),
-            Self::External(adapter) => adapter.burn(from, amount),
-        }
-    }
-
-    fn transfer(&self, from: &Address, to: &Address, amount: i128) -> EffectResult<()> {
-        match self {
-            Self::Internal(adapter) => adapter.transfer(from, to, amount),
-            Self::External(adapter) => adapter.transfer(from, to, amount),
-        }
-    }
-
-    fn balance(&self, addr: &Address) -> EffectResult<i128> {
-        match self {
-            Self::Internal(adapter) => adapter.balance(addr),
-            Self::External(adapter) => adapter.balance(addr),
-        }
-    }
-}
+pub type ShareTokenAdapter<'a> = SdkTokenAdapter<'a>;
 
 // ---------------------------------------------------------------------------
 // Address Mapping

@@ -5,18 +5,13 @@ use alloc::vec::Vec;
 use crate::types::Address;
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use derive_more::IsVariant;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Side effects produced by kernel state transitions.
-///
-/// The executor layer interprets these effects by interacting with the
-/// underlying blockchain (token operations, external calls, etc.).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq, IsVariant)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum KernelEffect {
     /// Mint new share tokens to an owner.
     MintShares { owner: Address, shares: u128 },
@@ -52,11 +47,10 @@ pub enum KernelEffect {
     EmitEvent { event: KernelEvent },
 }
 
-/// Callback identifiers for async cross-contract calls.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq, IsVariant)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum KernelCallback {
     /// Callback for allocation step completion.
     AllocationStep,
@@ -68,11 +62,10 @@ pub enum KernelCallback {
     PayoutTransfer,
 }
 
-/// Events emitted by kernel transitions for indexing and observability.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq, IsVariant)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum KernelEvent {
     /// Allocation operation started.
     AllocationStarted {

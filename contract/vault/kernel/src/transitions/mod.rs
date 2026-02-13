@@ -34,62 +34,44 @@ use crate::state::op_state::{
     AllocatingState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
 use crate::types::Address;
-use derive_more::Display;
 
 /// Error types for state transitions.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq, Display)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TransitionError {
-    /// Attempted a transition in the wrong state.
-    #[display("requires {expected} state, but current state is {actual}")]
     WrongState {
         expected: &'static str,
         actual: &'static str,
     },
-
-    /// Operation ID mismatch - the callback doesn't match the current operation.
-    #[display("op_id mismatch: expected {expected}, got {actual}")]
-    OpIdMismatch { expected: u64, actual: u64 },
-
-    /// The allocation plan is empty.
-    #[display("allocation plan is empty")]
+    OpIdMismatch {
+        expected: u64,
+        actual: u64,
+    },
     EmptyAllocationPlan,
-
-    /// The refresh plan is empty.
-    #[display("refresh plan is empty")]
     EmptyRefreshPlan,
-
-    /// Zero amount requested for withdrawal.
-    #[display("withdrawal amount is zero")]
     ZeroWithdrawalAmount,
-
-    /// Zero escrow shares - nothing to withdraw.
-    #[display("escrow shares is zero")]
     ZeroEscrowShares,
-
-    /// Invalid index in the operation.
-    #[display("invalid index {index}, max is {max}")]
-    InvalidIndex { index: u32, max: u32 },
-
-    /// Attempted to collect more than remaining.
-    #[display("collection overflow: collected {collected}, remaining {remaining}")]
-    CollectionOverflow { collected: u128, remaining: u128 },
-
-    /// Attempted to allocate more than remaining.
-    #[display("allocation overflow: allocated {allocated}, remaining {remaining}")]
-    AllocationOverflow { allocated: u128, remaining: u128 },
-
-    /// Zero allocation amount reported on success.
-    #[display("zero allocation amount on success")]
+    InvalidIndex {
+        index: u32,
+        max: u32,
+    },
+    CollectionOverflow {
+        collected: u128,
+        remaining: u128,
+    },
+    AllocationOverflow {
+        allocated: u128,
+        remaining: u128,
+    },
     ZeroAllocationAmount,
-
-    /// Burn shares exceed escrow shares.
-    #[display("burn {burn} exceeds escrow {escrow}")]
-    BurnExceedsEscrow { burn: u128, escrow: u128 },
-
-    /// Withdrawal collection is incomplete (remaining > 0).
-    #[display("withdrawal incomplete: remaining {remaining}, collected {collected}")]
-    WithdrawalIncomplete { remaining: u128, collected: u128 },
+    BurnExceedsEscrow {
+        burn: u128,
+        escrow: u128,
+    },
+    WithdrawalIncomplete {
+        remaining: u128,
+        collected: u128,
+    },
 }
 
 impl TransitionError {

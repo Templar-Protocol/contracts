@@ -26,7 +26,6 @@ use templar_vault_kernel::{
 use crate::contract::{get_config_address, load_fees_spec, VaultDataKey};
 use crate::effects::KernelEventEnvelope;
 use crate::error::ContractError;
-use crate::fungible_base::{emit_burn, emit_mint, Base};
 use crate::storage::{SorobanStorage, Storage};
 
 #[inline]
@@ -101,12 +100,7 @@ fn mint_fee_shares(
     let minted: u128 = shares.into();
     let recipient = resolve_fee_recipient(storage, recipient)?;
     let shares_i128 = to_i128(minted)?;
-    if share_token == &env.current_contract_address() {
-        Base::update(env, None, Some(&recipient), shares_i128);
-        emit_mint(env, &recipient, shares_i128);
-    } else {
-        StellarAssetClient::new(env, share_token).mint(&recipient, &shares_i128);
-    }
+    StellarAssetClient::new(env, share_token).mint(&recipient, &shares_i128);
     Ok(minted)
 }
 
@@ -200,11 +194,7 @@ pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
         Ok(addr) => addr,
         Err(_) => return 0,
     };
-    if share_token == env.current_contract_address() {
-        Base::balance(env, owner)
-    } else {
-        token::Client::new(env, &share_token).balance(owner)
-    }
+    token::Client::new(env, &share_token).balance(owner)
 }
 
 /// Safe u128 → i128 conversion.
@@ -264,13 +254,8 @@ pub(crate) fn atomic_withdraw_internal(
 
     let share_token: SdkAddress = get_config_address(env, &VaultDataKey::ShareToken)?;
     let shares_i128 = to_i128(shares)?;
-    if share_token == env.current_contract_address() {
-        Base::update(env, Some(owner), None, shares_i128);
-        emit_burn(env, owner, shares_i128);
-    } else {
-        let share_client = token::Client::new(env, &share_token);
-        share_client.burn(owner, &shares_i128);
-    }
+    let share_client = token::Client::new(env, &share_token);
+    share_client.burn(owner, &shares_i128);
 
     // Transfer underlying assets to receiver
     let asset_token: SdkAddress = get_config_address(env, &VaultDataKey::AssetToken)?;

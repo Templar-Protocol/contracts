@@ -59,28 +59,15 @@ All recipes are in the `justfile`.  Run `just --list` for the full catalogue.
 The build step compiles the WASM and runs `stellar contract optimize` to shrink
 it from ~430KB to ~250KB (required to stay under Soroban's transaction limits).
 
-## Deployment Size Modes
+## Deployment Artifact
 
-The Soroban justfile now produces two vault WASM artifacts:
+The Soroban justfile deploys only the optimized runtime artifact:
 
 - `templar_soroban_runtime.optimized.wasm` (default deploy target)
-- `templar_soroban_runtime.slim.wasm` (optional, smaller)
-
-`slim.wasm` is created by stripping only the `contractspecv0` custom section
-from the optimized artifact. This typically saves ~12-13 KiB.
-
-Tradeoff:
-
-- `optimized.wasm` includes embedded contract spec and works with
-  `stellar contract invoke ... -- <fn> ...` and other spec-driven tooling.
-- `slim.wasm` omits embedded contract spec, so generic/spec-driven invoke UX is
-  not available. It is best used when calls are made via a dedicated client SDK
-  or pre-generated bindings.
 
 Useful commands:
 
 - `just wasm-path` -> optimized deploy artifact
-- `just slim-wasm-path` -> slim deploy artifact
 - `just optimized-wasm-path` -> explicit optimized artifact path
 
 ## State Size and Operational Limits

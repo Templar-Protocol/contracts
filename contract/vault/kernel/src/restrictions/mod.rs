@@ -43,16 +43,6 @@ pub enum Restrictions {
     Whitelist(Vec<Address>),
 }
 
-impl core::fmt::Display for RestrictionKind {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Paused => f.write_str("Paused"),
-            Self::Blacklisted => f.write_str("Blacklisted"),
-            Self::NotWhitelisted => f.write_str("NotWhitelisted"),
-        }
-    }
-}
-
 impl Restrictions {
     /// Check if the given actor is restricted.
     ///

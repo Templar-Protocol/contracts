@@ -12576,6 +12576,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-soroban-governance"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "templar-curator-primitives",
+ "templar-vault-kernel",
+]
+
+[[package]]
 name = "templar-soroban-runtime"
 version = "0.1.0"
 dependencies = [
@@ -12587,6 +12596,13 @@ dependencies = [
  "stellar-contract-utils",
  "templar-curator-primitives",
  "templar-vault-kernel",
+]
+
+[[package]]
+name = "templar-soroban-share-token"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

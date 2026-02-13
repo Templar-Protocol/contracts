@@ -6,7 +6,7 @@ set dotenv-load := false
 #
 # QUICK START (testnet):
 #   1. just setup              # Build, configure network, create & fund identity
-#   2. just deploy-all         # Deploy vault + test token, initialize
+#   2. just deploy-all         # Deploy vault + share token + governance + test token, initialize
 #   3. just demo-deposit       # Deposit test tokens
 #   4. just demo-withdraw      # Request and execute withdrawal
 #
@@ -26,7 +26,10 @@ set dotenv-load := false
 #   SOROBAN_IDENTITY         Identity name (default: templar)
 #   SOROBAN_CONTRACT_ID      Deployed vault contract ID
 #   SOROBAN_ASSET_TOKEN      Underlying asset token contract ID
+#   SOROBAN_SHARE_TOKEN      Share token contract ID
+#   SOROBAN_GOVERNANCE       Governance contract ID
 #   SOROBAN_ADMIN            Admin address (defaults to identity)
+#   SOROBAN_GOV_TIMLOCK_NS   Governance timelock in nanoseconds
 #   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
 #   BLEND_POOL_ID            Blend pool address
 #
@@ -37,9 +40,10 @@ wasm_dir := root + "/target/wasm32-unknown-unknown/release"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
-slim_wasm := wasm_dir + "/templar_soroban_runtime.slim.wasm"
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
+governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
+share_token_wasm := wasm_dir + "/templar_soroban_share_token.optimized.wasm"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -56,21 +60,23 @@ state_dir := justfile_directory() + "/.deploy-state"
 setup: build network-init keys-init keys-fund
 	@echo ""
 	@echo "✓ Setup complete! Next steps:"
-	@echo "  1. just deploy-all    # Deploy vault + test token"
+	@echo "  1. just deploy-all    # Deploy vault + share token + governance + test token"
 	@echo "  2. just demo-deposit  # Run deposit demo"
 
-# Deploy everything: vault contract + test asset token, then initialize.
-deploy-all: _ensure-setup build deploy-test-token deploy init
+# Deploy everything: vault + share token + governance + test asset token, then initialize.
+deploy-all: _ensure-setup build deploy-test-token deploy deploy-share-token deploy-governance init
 	@echo ""
 	@echo "✓ Deployment complete!"
 	@echo "  Vault:       $(cat {{state_dir}}/vault_id 2>/dev/null || echo 'not found')"
+	@echo "  Share Token: $(cat {{state_dir}}/share_token_id 2>/dev/null || echo 'not found')"
+	@echo "  Governance:  $(cat {{state_dir}}/governance_id 2>/dev/null || echo 'not found')"
 	@echo "  Asset Token: $(cat {{state_dir}}/asset_token_id 2>/dev/null || echo 'not found')"
 	@echo ""
 	@echo "Run: just demo-deposit"
 	@echo "For Blend integration: just deploy-blend-adapter"
 
 # Deploy everything including Blend adapter for yield strategies.
-deploy-all-with-blend pool_address: _ensure-setup build-blend-adapter deploy-test-token deploy init
+deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter deploy-test-token deploy deploy-share-token deploy-governance init
 	@just deploy-blend-adapter "{{pool_address}}"
 	@just link-blend-adapter
 	@echo ""
@@ -83,19 +89,18 @@ deploy-all-with-blend pool_address: _ensure-setup build-blend-adapter deploy-tes
 
 # Build and optimize the Soroban vault WASM.
 build:
-	@echo "Building Soroban vault WASM..."
+	@echo "Building Soroban vault/governance/share-token WASMs..."
 	@cargo build --release --target wasm32-unknown-unknown \
-		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
+		--manifest-path "{{root}}/Cargo.toml" \
+		-p templar-soroban-runtime \
+		-p templar-soroban-governance \
+		-p templar-soroban-share-token
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" 2>/dev/null
-	@if ! command -v wasm-strip >/dev/null 2>&1; then \
-		echo "Error: wasm-strip not found. Install wabt (e.g. apt install wabt)."; \
-		exit 1; \
-	fi
-	@wasm-strip --remove-section=contractspecv0 \
-		-o "{{slim_wasm}}" \
-		"{{optimized_wasm}}"
+	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_governance.wasm" 2>/dev/null
+	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_share_token.wasm" 2>/dev/null
 	@echo "✓ Built optimized: {{optimized_wasm}}"
-	@echo "✓ Built deploy-slim: {{slim_wasm}}"
+	@echo "✓ Built governance: {{governance_wasm}}"
+	@echo "✓ Built share token: {{share_token_wasm}}"
 
 # Build and optimize the Blend adapter WASM.
 build-blend-adapter:
@@ -105,7 +110,7 @@ build-blend-adapter:
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_blend_adapter.wasm" 2>/dev/null
 	@echo "✓ Built: {{blend_adapter_wasm}}"
 
-# Build all WASMs (vault + blend adapter).
+# Build all WASMs (vault + governance + share token + blend adapter).
 build-all: build build-blend-adapter
 	@echo "✓ All contracts built"
 
@@ -135,17 +140,9 @@ wasm-analyze rows="250" lines="120":
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \
 	fi; \
 	stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null
-	@if ! command -v wasm-strip >/dev/null 2>&1; then \
-		echo "Error: wasm-strip not found. Install wabt (e.g. apt install wabt)."; \
-		exit 1; \
-	fi
-	@wasm-strip --remove-section=contractspecv0 \
-		-o "{{slim_wasm}}" \
-		"{{optimized_wasm}}"
 	@python "{{justfile_directory()}}/scripts/print_wasm_sizes.py" \
 		--wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" \
-		--optimized "{{optimized_wasm}}" \
-		--deploy "{{slim_wasm}}"
+		--optimized "{{optimized_wasm}}"
 	@just -f "{{justfile_directory()}}/justfile" wasm-analyze-print all "{{lines}}"
 
 # Print wasm analysis reports generated by `wasm-analyze`.
@@ -165,13 +162,17 @@ wasm-path:
 optimized-wasm-path:
 	@echo "{{optimized_wasm}}"
 
-# Print the slim (spec-stripped) WASM path.
-slim-wasm-path:
-	@echo "{{slim_wasm}}"
-
 # Print the Blend adapter WASM path.
 blend-adapter-wasm-path:
 	@echo "{{blend_adapter_wasm}}"
+
+# Print the governance WASM path.
+governance-wasm-path:
+	@echo "{{governance_wasm}}"
+
+# Print the share token WASM path.
+share-token-wasm-path:
+	@echo "{{share_token_wasm}}"
 
 # =============================================================================
 # NETWORK & IDENTITY SETUP
@@ -287,6 +288,89 @@ deploy:
 	mkdir -p "{{state_dir}}"; \
 	echo "$contract_id" > "{{state_dir}}/vault_id"
 
+# Deploy the standalone share token contract.
+deploy-share-token:
+	@wasm="${SOROBAN_SHARE_WASM:-{{share_token_wasm}}}"; \
+	vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	if [ -z "$vault_id" ]; then \
+		echo "Error: Vault not deployed. Run 'just deploy' first."; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$wasm" ]; then \
+		echo "Error: Share token WASM not found at $wasm"; \
+		echo "Run: just build"; \
+		exit 1; \
+	fi; \
+	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	fi; \
+	name="${SOROBAN_SHARE_NAME:-Templar Vault Share}"; \
+	symbol="${SOROBAN_SHARE_SYMBOL:-tvSHARE}"; \
+	decimals="${SOROBAN_SHARE_DECIMALS:-7}"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying share token contract..."; \
+	echo "  Admin: $admin"; \
+	echo "  Vault: $vault_id"; \
+	share_id=$(stellar contract deploy \
+		--wasm "$wasm" \
+		--network "$network" \
+		--source-account "$source" \
+		-- \
+		--admin "$admin" \
+		--vault "$vault_id" \
+		--name "$name" \
+		--symbol "$symbol" \
+		--decimals "$decimals"); \
+	if [ -z "$share_id" ]; then \
+		echo "Error: share token deploy failed"; \
+		exit 1; \
+	fi; \
+	echo "✓ Share token deployed: $share_id"; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$share_id" > "{{state_dir}}/share_token_id"
+
+# Deploy the governance contract.
+deploy-governance:
+	@wasm="${SOROBAN_GOV_WASM:-{{governance_wasm}}}"; \
+	vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	if [ -z "$vault_id" ]; then \
+		echo "Error: Vault not deployed. Run 'just deploy' first."; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$wasm" ]; then \
+		echo "Error: Governance WASM not found at $wasm"; \
+		echo "Run: just build"; \
+		exit 1; \
+	fi; \
+	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	fi; \
+	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-86400000000000}"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying governance contract..."; \
+	echo "  Admin:    $admin"; \
+	echo "  Vault:    $vault_id"; \
+	echo "  Timelock: $timelock_ns ns"; \
+	gov_id=$(stellar contract deploy \
+		--wasm "$wasm" \
+		--network "$network" \
+		--source-account "$source" \
+		-- \
+		--admin "$admin" \
+		--vault "$vault_id" \
+		--timelock_ns "$timelock_ns"); \
+	if [ -z "$gov_id" ]; then \
+		echo "Error: governance deploy failed"; \
+		exit 1; \
+	fi; \
+	echo "✓ Governance deployed: $gov_id"; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$gov_id" > "{{state_dir}}/governance_id"
+
 # Initialize the vault contract.
 init:
 	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
@@ -298,16 +382,24 @@ init:
 	if [ -z "$curator" ]; then \
 		curator="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	fi; \
+	governance="${SOROBAN_GOVERNANCE:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
+	if [ -z "$governance" ]; then \
+		governance="$curator"; \
+	fi; \
 	asset_token="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 	if [ -z "$asset_token" ]; then \
 		echo "Error: No asset token. Run 'just deploy-test-token' first or set SOROBAN_ASSET_TOKEN"; \
 		exit 1; \
 	fi; \
-	share_token="${SOROBAN_SHARE_TOKEN:-$contract_id}"; \
+	share_token="${SOROBAN_SHARE_TOKEN:-$(cat {{state_dir}}/share_token_id 2>/dev/null)}"; \
+	if [ -z "$share_token" ]; then \
+		share_token="$contract_id"; \
+	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Initializing vault..."; \
 	echo "  Curator:     $curator"; \
+	echo "  Governance:  $governance"; \
 	echo "  Asset Token: $asset_token"; \
 	echo "  Share Token: $share_token"; \
 	if ! stellar contract invoke \
@@ -316,6 +408,7 @@ init:
 		--source-account "$source" \
 		-- initialize \
 		--curator "$curator" \
+		--governance "$governance" \
 		--asset_token "$asset_token" \
 		--share_token "$share_token"; then \
 		echo "Error: vault initialize failed"; \
@@ -791,6 +884,8 @@ status:
 	echo "Address:       $addr"
 	@echo ""
 	@echo "Vault ID:      $(cat {{state_dir}}/vault_id 2>/dev/null || echo 'not deployed')"
+	@echo "Share Token:   $(cat {{state_dir}}/share_token_id 2>/dev/null || echo 'not deployed')"
+	@echo "Governance:    $(cat {{state_dir}}/governance_id 2>/dev/null || echo 'not deployed')"
 	@echo "Asset Token:   $(cat {{state_dir}}/asset_token_id 2>/dev/null || echo 'not deployed')"
 	@echo "Admin:         $(cat {{state_dir}}/admin_address 2>/dev/null || echo 'not set')"
 	@echo "Blend Adapter: $(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo 'not deployed')"
@@ -822,6 +917,8 @@ export-env:
 	@echo "SOROBAN_IDENTITY=${SOROBAN_IDENTITY:-{{default_identity}}}"
 	@echo "SOROBAN_CONTRACT_ID=$(cat {{state_dir}}/vault_id 2>/dev/null || echo '')"
 	@echo "SOROBAN_ASSET_TOKEN=$(cat {{state_dir}}/asset_token_id 2>/dev/null || echo '')"
+	@echo "SOROBAN_SHARE_TOKEN=$(cat {{state_dir}}/share_token_id 2>/dev/null || echo '')"
+	@echo "SOROBAN_GOVERNANCE=$(cat {{state_dir}}/governance_id 2>/dev/null || echo '')"
 	@echo "SOROBAN_ADMIN=$(cat {{state_dir}}/admin_address 2>/dev/null || echo '')"
 	@echo "BLEND_ADAPTER_ID=$(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo '')"
 	@echo "BLEND_POOL_ID=$(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo '')"
@@ -865,6 +962,8 @@ help:
 	@echo "DEPLOY:"
 	@echo "  just deploy-test-token        Deploy native XLM wrapper as test token"
 	@echo "  just deploy                   Deploy vault contract"
+	@echo "  just deploy-share-token       Deploy standalone share token contract"
+	@echo "  just deploy-governance        Deploy governance contract"
 	@echo "  just init                     Initialize vault"
 	@echo "  just extend-ttl               Extend contract TTL"
 	@echo ""

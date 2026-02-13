@@ -4,10 +4,12 @@
 //! functions for queue logic. Storage implementation is left to chain-specific
 //! executors (NEAR, Soroban, etc.).
 
-#[cfg(feature = "borsh")]
+#[cfg(feature = "borsh-schema")]
 use alloc::string::ToString;
+#[cfg(feature = "borsh-schema")]
+use borsh::BorshSchema;
 #[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -33,10 +35,8 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[cfg_attr(
-    feature = "borsh",
-    derive(BorshSerialize, BorshDeserialize, BorshSchema)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -407,10 +407,8 @@ use alloc::vec::Vec;
 
 pub use crate::state::vault::MAX_PENDING;
 
-#[cfg_attr(
-    feature = "borsh",
-    derive(BorshSerialize, BorshDeserialize, BorshSchema)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -418,10 +416,8 @@ pub struct PendingWithdrawals {
     entries: Vec<PendingWithdrawalEntry>,
 }
 
-#[cfg_attr(
-    feature = "borsh",
-    derive(BorshSerialize, BorshDeserialize, BorshSchema)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -542,10 +538,8 @@ impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
 /// - FIFO withdrawal ordering; no skipping head
 /// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
 /// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
-#[cfg_attr(
-    feature = "borsh",
-    derive(BorshSerialize, BorshDeserialize, BorshSchema)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]

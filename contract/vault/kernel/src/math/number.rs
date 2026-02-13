@@ -68,13 +68,10 @@ mod serde_impl {
 #[cfg(feature = "borsh")]
 mod borsh_impl {
     use super::*;
-    use alloc::collections::BTreeMap;
-    use borsh::schema::{add_definition, Declaration, Definition};
-    use borsh::{self, BorshDeserialize, BorshSchema, BorshSerialize};
+    use borsh::{self, BorshDeserialize, BorshSerialize};
 
     impl BorshSerialize for Number {
         fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
-            // Serialize as 32 bytes (little-endian)
             let mut bytes = [0u8; 32];
             self.0.write_as_little_endian(&mut bytes);
             writer.write_all(&bytes)
@@ -88,6 +85,14 @@ mod borsh_impl {
             Ok(Number(U256::from_little_endian(&bytes)))
         }
     }
+}
+
+#[cfg(feature = "borsh-schema")]
+mod borsh_schema_impl {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use borsh::schema::{add_definition, Declaration, Definition};
+    use borsh::BorshSchema;
 
     impl BorshSchema for Number {
         fn add_definitions_recursively(definitions: &mut BTreeMap<Declaration, Definition>) {

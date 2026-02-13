@@ -1,6 +1,5 @@
 //! Runtime error types.
 
-use alloc::string::String;
 use soroban_sdk::contracterror;
 
 /// Contract-facing error codes for Soroban entrypoints.
@@ -19,157 +18,95 @@ pub enum ContractError {
     AlreadyInitialized = 9,
     MissingConfig = 10,
     ConversionOverflow = 11,
-    /// Vault is not in Idle state (required for atomic withdraw/redeem).
     VaultNotIdle = 12,
-    /// Insufficient idle assets for the requested withdrawal.
     InsufficientIdleAssets = 13,
-
-    // OpenZeppelin Pausable errors (1000-1099)
-    /// The operation failed because the contract is already paused.
     EnforcedPause = 1000,
-    /// The operation failed because the contract is not paused.
     ExpectedPause = 1001,
-
-    // OpenZeppelin Upgradeable errors (1100-1199)
-    /// Migration attempted without a preceding upgrade.
     MigrationNotAllowed = 1100,
 }
 
 /// Errors that can occur during runtime execution.
+/// Error messages stripped in WASM to reduce binary size.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum RuntimeError {
-    /// Authorization failed.
-    Unauthorized(String),
-    /// Insufficient balance for the operation.
-    InsufficientBalance { available: u128, required: u128 },
-    /// Invalid operation state.
-    InvalidState(String),
-    /// Storage error.
-    StorageError(String),
-    /// Effect execution failed.
-    EffectFailed(String),
-    /// Invalid input parameter.
-    InvalidInput(String),
-    /// Kernel transition error.
-    KernelError(String),
+    Unauthorized,
+    InsufficientBalance,
+    InvalidState,
+    StorageError,
+    EffectFailed,
+    InvalidInput,
+    KernelError,
 }
 
 impl From<RuntimeError> for ContractError {
     fn from(err: RuntimeError) -> Self {
         match err {
-            RuntimeError::Unauthorized(_) => ContractError::Unauthorized,
-            RuntimeError::InsufficientBalance { .. } => ContractError::InsufficientBalance,
-            RuntimeError::InvalidState(_) => ContractError::InvalidState,
-            RuntimeError::StorageError(_) => ContractError::StorageError,
-            RuntimeError::EffectFailed(_) => ContractError::EffectFailed,
-            RuntimeError::InvalidInput(_) => ContractError::InvalidInput,
-            RuntimeError::KernelError(_) => ContractError::KernelError,
+            RuntimeError::Unauthorized => ContractError::Unauthorized,
+            RuntimeError::InsufficientBalance => ContractError::InsufficientBalance,
+            RuntimeError::InvalidState => ContractError::InvalidState,
+            RuntimeError::StorageError => ContractError::StorageError,
+            RuntimeError::EffectFailed => ContractError::EffectFailed,
+            RuntimeError::InvalidInput => ContractError::InvalidInput,
+            RuntimeError::KernelError => ContractError::KernelError,
         }
     }
 }
 
 impl RuntimeError {
-    /// Create an unauthorized error with a message.
     #[inline]
-    #[must_use]
-    pub fn unauthorized(msg: impl Into<String>) -> Self {
-        Self::Unauthorized(msg.into())
+    pub fn unauthorized(_msg: &str) -> Self {
+        Self::Unauthorized
     }
 
-    /// Create a contract error (alias for invalid_state).
     #[inline]
-    #[must_use]
-    pub fn contract_error(msg: impl Into<String>) -> Self {
-        Self::InvalidState(msg.into())
+    pub fn contract_error(_msg: &str) -> Self {
+        Self::InvalidState
     }
 
-    /// Create a transition error (alias for kernel_error).
     #[inline]
-    #[must_use]
     pub fn transition_error() -> Self {
-        Self::KernelError(String::from("transition failed"))
+        Self::KernelError
     }
 
-    /// Create an insufficient balance error.
     #[inline]
-    #[must_use]
-    pub const fn insufficient_balance(available: u128, required: u128) -> Self {
-        Self::InsufficientBalance {
-            available,
-            required,
-        }
+    pub const fn insufficient_balance(_available: u128, _required: u128) -> Self {
+        Self::InsufficientBalance
     }
 
-    /// Create an invalid state error.
     #[inline]
-    #[must_use]
-    pub fn invalid_state(msg: impl Into<String>) -> Self {
-        Self::InvalidState(msg.into())
+    pub fn invalid_state(_msg: &str) -> Self {
+        Self::InvalidState
     }
 
-    /// Create a storage error.
     #[inline]
-    #[must_use]
-    pub fn storage_error(msg: impl Into<String>) -> Self {
-        Self::StorageError(msg.into())
+    pub fn storage_error(_msg: &str) -> Self {
+        Self::StorageError
     }
 
-    /// Create an effect failed error.
     #[inline]
-    #[must_use]
-    pub fn effect_failed(msg: impl Into<String>) -> Self {
-        Self::EffectFailed(msg.into())
+    pub fn effect_failed(_msg: &str) -> Self {
+        Self::EffectFailed
     }
 
-    /// Create an invalid input error.
     #[inline]
-    #[must_use]
-    pub fn invalid_input(msg: impl Into<String>) -> Self {
-        Self::InvalidInput(msg.into())
+    pub fn invalid_input(_msg: &str) -> Self {
+        Self::InvalidInput
     }
 
-    /// Create a kernel error.
     #[inline]
-    #[must_use]
-    pub fn kernel_error(msg: impl Into<String>) -> Self {
-        Self::KernelError(msg.into())
-    }
-}
-
-impl core::fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Unauthorized(msg)
-            | Self::InvalidState(msg)
-            | Self::StorageError(msg)
-            | Self::EffectFailed(msg)
-            | Self::InvalidInput(msg)
-            | Self::KernelError(msg) => write!(f, "{msg}"),
-            Self::InsufficientBalance {
-                available,
-                required,
-            } => {
-                write!(
-                    f,
-                    "insufficient balance: available={available}, required={required}"
-                )
-            }
-        }
+    pub fn kernel_error(_msg: &str) -> Self {
+        Self::KernelError
     }
 }
 
 impl From<crate::auth::AuthError> for RuntimeError {
     fn from(err: crate::auth::AuthError) -> Self {
         match err {
-            crate::auth::AuthError::NotAuthorized { .. } => {
-                RuntimeError::unauthorized("not authorized")
-            }
-            crate::auth::AuthError::InvalidProof => RuntimeError::unauthorized("invalid proof"),
-            crate::auth::AuthError::MissingRole(_) => {
-                RuntimeError::unauthorized("missing required role")
-            }
-            crate::auth::AuthError::VaultPaused => RuntimeError::invalid_state("vault is paused"),
+            crate::auth::AuthError::NotAuthorized { .. } => RuntimeError::Unauthorized,
+            crate::auth::AuthError::InvalidProof => RuntimeError::Unauthorized,
+            crate::auth::AuthError::MissingRole(_) => RuntimeError::Unauthorized,
+            crate::auth::AuthError::VaultPaused => RuntimeError::InvalidState,
         }
     }
 }
