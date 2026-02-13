@@ -89,21 +89,23 @@ fn test_storage_key_variants() {
 fn test_soroban_storage_key_variants() {
     let env = Env::default();
     let key1 = SorobanStorageKey::StateBlob;
-    let key2 = SorobanStorageKey::PolicyState;
-    let key3 = SorobanStorageKey::Restrictions;
-    let key4 = SorobanStorageKey::Version;
-    let key5 = SorobanStorageKey::Config;
-    let key6 = SorobanStorageKey::Paused;
-    let key7 = SorobanStorageKey::AddressBook(BytesN::from_array(&env, &[0u8; 32]));
+    let key2 = SorobanStorageKey::PolicyLocks;
+    let key3 = SorobanStorageKey::PolicySupplyQueue;
+    let key4 = SorobanStorageKey::Restrictions;
+    let key5 = SorobanStorageKey::Version;
+    let key6 = SorobanStorageKey::Config;
+    let key7 = SorobanStorageKey::Paused;
+    let key8 = SorobanStorageKey::AddressBook(BytesN::from_array(&env, &[0u8; 32]));
 
     // Keys should be distinct
     assert!(matches!(key1, SorobanStorageKey::StateBlob));
-    assert!(matches!(key2, SorobanStorageKey::PolicyState));
-    assert!(matches!(key3, SorobanStorageKey::Restrictions));
-    assert!(matches!(key4, SorobanStorageKey::Version));
-    assert!(matches!(key5, SorobanStorageKey::Config));
-    assert!(matches!(key6, SorobanStorageKey::Paused));
-    assert!(matches!(key7, SorobanStorageKey::AddressBook(_)));
+    assert!(matches!(key2, SorobanStorageKey::PolicyLocks));
+    assert!(matches!(key3, SorobanStorageKey::PolicySupplyQueue));
+    assert!(matches!(key4, SorobanStorageKey::Restrictions));
+    assert!(matches!(key5, SorobanStorageKey::Version));
+    assert!(matches!(key6, SorobanStorageKey::Config));
+    assert!(matches!(key7, SorobanStorageKey::Paused));
+    assert!(matches!(key8, SorobanStorageKey::AddressBook(_)));
 }
 
 // Helper to create a registered contract for storage tests

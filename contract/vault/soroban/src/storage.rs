@@ -3,11 +3,13 @@
 //! This module provides versioned storage wrappers for persisting vault state
 //! to the Soroban ledger. It handles schema migrations and forward compatibility.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
 use derive_more::{From, Into};
 use soroban_sdk::{contracttype, Address as SdkAddress, Bytes, BytesN, Env};
+use templar_curator_primitives::policy::market_lock::MarketLockSet;
+use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::{Address, Restrictions, VaultState};
+use templar_vault_kernel::{Address, AddressBook, Restrictions, VaultState};
 
 use crate::error::RuntimeError;
 
@@ -27,8 +29,8 @@ pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 #[derive(Clone)]
 pub enum SorobanStorageKey {
     StateBlob,
-    /// Policy state (locks, caps, supply queue).
-    PolicyState,
+    PolicyLocks,
+    PolicySupplyQueue,
     /// Kernel restrictions (pause/allowlist/denylist).
     Restrictions,
     /// Address book entry mapping kernel address to Soroban address.
@@ -45,14 +47,20 @@ fn borsh_serialize<T: borsh::BorshSerialize>(
     value: &T,
     msg: &'static str,
 ) -> Result<Vec<u8>, RuntimeError> {
-    borsh::to_vec(value).map_err(|_| RuntimeError::storage_error(msg))
+    match borsh::to_vec(value) {
+        Ok(bytes) => Ok(bytes),
+        Err(_) => Err(RuntimeError::storage_error(msg)),
+    }
 }
 
 fn borsh_deserialize<T: borsh::BorshDeserialize>(
     bytes: &[u8],
     msg: &'static str,
 ) -> Result<T, RuntimeError> {
-    T::try_from_slice(bytes).map_err(|_| RuntimeError::storage_error(msg))
+    match T::try_from_slice(bytes) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(RuntimeError::storage_error(msg)),
+    }
 }
 
 /// Soroban ledger storage implementation.
@@ -116,19 +124,32 @@ impl<'a> SorobanStorage<'a> {
         );
     }
 
-    /// Load the policy state from persistent storage.
-    pub fn load_policy_state(&self) -> Option<Vec<u8>> {
+    pub fn load_policy_locks(&self) -> Option<Vec<u8>> {
         self.env
             .storage()
             .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::PolicyState)
+            .get::<_, Bytes>(&SorobanStorageKey::PolicyLocks)
             .map(|b| b.to_alloc_vec())
     }
 
-    /// Save the policy state to persistent storage.
-    pub fn save_policy_state(&self, state: &Vec<u8>) {
+    pub fn save_policy_locks(&self, state: &Vec<u8>) {
         self.env.storage().persistent().set(
-            &SorobanStorageKey::PolicyState,
+            &SorobanStorageKey::PolicyLocks,
+            &Bytes::from_slice(self.env, state),
+        );
+    }
+
+    pub fn load_policy_supply_queue(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get::<_, Bytes>(&SorobanStorageKey::PolicySupplyQueue)
+            .map(|b| b.to_alloc_vec())
+    }
+
+    pub fn save_policy_supply_queue(&self, state: &Vec<u8>) {
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::PolicySupplyQueue,
             &Bytes::from_slice(self.env, state),
         );
     }
@@ -257,10 +278,22 @@ impl<'a> SorobanStorage<'a> {
             .env
             .storage()
             .persistent()
-            .has(&SorobanStorageKey::PolicyState)
+            .has(&SorobanStorageKey::PolicyLocks)
         {
             self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::PolicyState,
+                &SorobanStorageKey::PolicyLocks,
+                threshold,
+                extend_to,
+            );
+        }
+        if self
+            .env
+            .storage()
+            .persistent()
+            .has(&SorobanStorageKey::PolicySupplyQueue)
+        {
+            self.env.storage().persistent().extend_ttl(
+                &SorobanStorageKey::PolicySupplyQueue,
                 threshold,
                 extend_to,
             );
@@ -342,18 +375,41 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        match SorobanStorage::load_policy_state(self) {
-            Some(stored) => Ok(Some(borsh_deserialize::<PolicyState>(
+        let locks = match SorobanStorage::load_policy_locks(self) {
+            Some(stored) => Some(borsh_deserialize::<MarketLockSet>(
                 &stored,
-                "policy_state deserialize failed",
-            )?)),
-            None => Ok(None),
+                "policy_locks deserialize failed",
+            )?),
+            None => None,
+        };
+        let supply_queue = match SorobanStorage::load_policy_supply_queue(self) {
+            Some(stored) => Some(borsh_deserialize::<SupplyQueue>(
+                &stored,
+                "policy_supply_queue deserialize failed",
+            )?),
+            None => None,
+        };
+
+        if locks.is_none() && supply_queue.is_none() {
+            return Ok(None);
         }
+
+        let mut state = PolicyState::new();
+        if let Some(locks) = locks {
+            state.locks = locks;
+        }
+        if let Some(supply_queue) = supply_queue {
+            state.supply_queue = supply_queue;
+        }
+        Ok(Some(state))
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        let bytes = borsh_serialize(state, "policy_state serialize failed")?;
-        SorobanStorage::save_policy_state(self, &bytes);
+        let lock_bytes = borsh_serialize(&state.locks, "policy_locks serialize failed")?;
+        SorobanStorage::save_policy_locks(self, &lock_bytes);
+        let queue_bytes =
+            borsh_serialize(&state.supply_queue, "policy_supply_queue serialize failed")?;
+        SorobanStorage::save_policy_supply_queue(self, &queue_bytes);
         self.extend_default_ttl();
         Ok(())
     }
@@ -560,7 +616,7 @@ pub struct MemoryStorage {
     paused: bool,
     policy_state: Option<PolicyState>,
     restrictions: Option<Restrictions>,
-    address_book: BTreeMap<Address, SdkAddress>,
+    address_book: AddressBook<SdkAddress>,
 }
 
 impl MemoryStorage {
@@ -581,7 +637,7 @@ impl MemoryStorage {
             paused: false,
             policy_state: None,
             restrictions: None,
-            address_book: BTreeMap::new(),
+            address_book: AddressBook::new(),
         }
     }
 
@@ -656,7 +712,7 @@ impl Storage for MemoryStorage {
     }
 
     fn load_address(&self, kernel_addr: &Address) -> Result<Option<SdkAddress>, RuntimeError> {
-        Ok(self.address_book.get(kernel_addr).cloned())
+        Ok(self.address_book.resolve(kernel_addr).cloned())
     }
 
     fn save_address(
