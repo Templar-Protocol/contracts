@@ -348,7 +348,7 @@ deploy-governance:
 	if [ -z "$admin" ]; then \
 		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	fi; \
-	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-86400000000000}"; \
+	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-0}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying governance contract..."; \
@@ -605,6 +605,21 @@ invoke *args:
 		--source-account "$source" \
 		-- {{args}}
 
+# Generic governance contract invocation.
+gov-invoke *args:
+	@gov_id="${SOROBAN_GOVERNANCE:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
+	if [ -z "$gov_id" ]; then \
+		echo "Error: No governance ID. Set SOROBAN_GOVERNANCE or run 'just deploy-governance'"; \
+		exit 1; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	stellar contract invoke \
+		--id "$gov_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- {{args}}
+
 # =============================================================================
 # DEPOSIT OPERATIONS
 # =============================================================================
@@ -688,15 +703,37 @@ withdraw assets receiver owner:
 # ALLOCATOR OPERATIONS (Privileged)
 # =============================================================================
 
-# Allocator helper: directly sync idle/external positions.
-allocator-sync-positions idle_assets external_assets:
-	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
-	echo "Allocator sync idle={{idle_assets}} external={{external_assets}}"; \
-	just invoke allocator_sync_positions \
+# Supply assets to a market.
+allocate-supply market_id amount:
+	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	addr="$(stellar keys address "$source")"; \
+	echo "Allocating {{amount}} to market {{market_id}}..."; \
+	stellar contract invoke \
+		--id "$contract_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- allocate \
 		--caller "$addr" \
-		--idle_assets "{{idle_assets}}" \
-		--external_assets "{{external_assets}}"
-	@echo "✓ Positions synced"
+		--delta '{"Supply":{"amount":"{{amount}}","market":{{market_id}}}}'
+	@echo "✓ Supply complete"
+
+# Withdraw assets from a market.
+allocate-withdraw market_id amount:
+	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	addr="$(stellar keys address "$source")"; \
+	echo "Withdrawing {{amount}} from market {{market_id}}..."; \
+	stellar contract invoke \
+		--id "$contract_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- allocate \
+		--caller "$addr" \
+		--delta '{"Withdraw":{"amount":"{{amount}}","market":{{market_id}}}}'
+	@echo "✓ Withdraw complete"
 
 # Full end-to-end flow:
 # deposit -> withdraw -> deposit -> allocate -> withdraw -> allocate(withdraw) -> withdraw
@@ -712,7 +749,7 @@ demo-e2e-full:
 	echo "3) deposit"; \
 	just deposit "$addr" "$addr" 1000000 0; \
 	echo "4) allocator supplies to market"; \
-	just allocator-sync-positions 1300000 1500000; \
+	just allocate-supply 0 1500000; \
 	echo "5) withdraw (idle)"; \
 	just withdraw 300000 "$addr" "$addr"; \
 	echo "6) user requests withdrawal, allocator withdraws from market"; \
@@ -722,7 +759,7 @@ demo-e2e-full:
 	else \
 		echo "execute_withdraw pending (cooldown/insufficient idle), continuing..."; \
 	fi; \
-	just allocator-sync-positions 2000000 500000; \
+	just allocate-withdraw 0 1000000; \
 	echo "7) user withdraws queued request (execute after cooldown)"; \
 	if ! just execute-withdraw; then \
 		echo "NOTE: execute_withdraw still blocked by cooldown; re-run 'just execute-withdraw' after cooldown window."; \
@@ -761,10 +798,19 @@ set-curator new_curator:
 	echo "{{new_curator}}" > "{{state_dir}}/admin_address"; \
 	echo "✓ Curator updated"
 
+# Set supply queue via governance (submit + accept).
+# Requires governance contract deployed with timelock=0 for instant acceptance.
 set-supply-queue target_ids_json:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Setting supply queue: {{target_ids_json}}"; \
-	just invoke set_supply_queue --caller "$admin" --target_ids "{{target_ids_json}}"; \
+	if [ -z "$admin" ]; then \
+		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	fi; \
+	echo "Setting supply queue via governance: {{target_ids_json}}"; \
+	proposal_id=$(just gov-invoke submit_set_supply_queue \
+		--caller "$admin" \
+		--target_ids "{{target_ids_json}}" 2>&1 | tail -1); \
+	echo "  Submitted proposal: $proposal_id"; \
+	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
 	echo "✓ Supply queue updated"
 
 # Set share token metadata (SEP-41).

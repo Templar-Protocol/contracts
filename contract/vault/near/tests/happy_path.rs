@@ -208,7 +208,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     let market_id = vault.market_id_of(c.market.contract().id()).await;
 
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
@@ -262,7 +262,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     let mkt_id = vault.market_id_of(mkt).await;
 
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(mkt_id, amount)),
         )
@@ -302,7 +302,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     let mkt = c.market.contract().id();
     let mkt_id = vault.market_id_of(mkt).await;
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(mkt_id, amount)),
         )
@@ -323,7 +323,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Create a market-side withdrawal request via allocator reallocation.
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(mkt_id, amount)),
         )
@@ -358,7 +358,7 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
     // Re-allocate idle back into the market so the later borrow/withdraw path
     // in this test continues to exercise the existing state machine behavior.
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(mkt_id, amount)),
         )
@@ -415,7 +415,7 @@ async fn deposit_allowed_during_withdrawal_op(#[future(awt)] worker: Worker<Sand
 
     let market_id = vault.market_id_of(c.market.contract().id()).await;
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
@@ -428,7 +428,7 @@ async fn deposit_allowed_during_withdrawal_op(#[future(awt)] worker: Worker<Sand
     harvest(&c, &vault).await;
 
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(market_id, withdraw_amount)),
         )
@@ -520,7 +520,7 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
 
     // Allocate everything to the market
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, U128(deposit_amount))),
         )
@@ -563,7 +563,7 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
     // market can return (deposit - borrowed = 400).
     let available = deposit_amount - borrow_amount; // 400
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(market_id, U128(available))),
         )
@@ -661,7 +661,7 @@ async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] worker: Worker<Sandbox
 
     // Allocate everything to market
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
@@ -680,7 +680,7 @@ async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] worker: Worker<Sandbox
 
     // Create market-side withdrawal request
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(market_id, amount)),
         )

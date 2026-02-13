@@ -17,8 +17,7 @@ use crate::fungible_vault::{
 use alloc::vec;
 use alloc::vec::Vec;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, Address as SdkAddress, Bytes, BytesN,
-    Env,
+    contract, contractimpl, contracttype, Address as SdkAddress, Bytes, BytesN, Env,
 };
 use templar_curator_primitives::{
     determine_recovery_action, PolicyState, RecoveryContext, RecoveryProgress,
@@ -142,6 +141,22 @@ impl CrossChainMarketAdapter for NoopCrossChainAdapter {
             "cross-chain adapter not configured",
         ))
     }
+}
+
+/// A single market allocation delta specifying a market and an amount in underlying asset units.
+#[contracttype]
+#[derive(Clone)]
+pub struct Delta {
+    pub market: u32,
+    pub amount: u128,
+}
+
+/// Allocation instruction for a single market. `Supply` forwards idle assets to the market. `Withdraw` creates a supply-withdrawal request in the market.
+#[contracttype]
+#[derive(Clone)]
+pub enum AllocationDelta {
+    Supply(Delta),
+    Withdraw(Delta),
 }
 
 fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
@@ -951,6 +966,70 @@ where
         self.restrictions = restrictions;
         self.storage.save_restrictions(&self.restrictions)?;
         Ok(())
+    }
+
+    pub fn allocate(
+        &mut self,
+        caller: Address,
+        delta: &AllocationDelta,
+    ) -> Result<AllocationResult, RuntimeError> {
+        let (market_id, amount, is_supply) = match delta {
+            AllocationDelta::Supply(d) => {
+                if d.amount == 0 {
+                    return Err(RuntimeError::invalid_input("amount must be > 0"));
+                }
+                (d.market, d.amount, true)
+            }
+            AllocationDelta::Withdraw(d) => {
+                if d.amount == 0 {
+                    return Err(RuntimeError::invalid_input("amount must be > 0"));
+                }
+                (d.market, d.amount, false)
+            }
+        };
+
+        self.authorize(ActionKind::BeginAllocating, caller)?;
+
+        let asset_id = AssetId::from(self.config.asset_address);
+        let market_ref = MarketRef::new(market_id, asset_id);
+
+        if is_supply {
+            let state = self.state_mut()?;
+            if amount > state.idle_assets {
+                return Err(RuntimeError::insufficient_balance(
+                    state.idle_assets,
+                    amount,
+                ));
+            }
+
+            self.market.supply(market_ref, amount)?;
+
+            let state = self.state_mut()?;
+            state.idle_assets -= amount;
+            state.external_assets = state.external_assets.saturating_add(amount);
+            state.total_assets = state
+                .idle_assets
+                .checked_add(state.external_assets)
+                .ok_or_else(|| invalid_state_error("total_assets overflow"))?;
+        } else {
+            self.market.withdraw(market_ref, amount)?;
+
+            let state = self.state_mut()?;
+            state.external_assets = state.external_assets.saturating_sub(amount);
+            state.idle_assets += amount;
+            state.total_assets = state
+                .idle_assets
+                .checked_add(state.external_assets)
+                .ok_or_else(|| invalid_state_error("total_assets overflow"))?;
+        }
+
+        self.save_state()?;
+
+        Ok(AllocationResult {
+            op_id: 0,
+            new_external_assets: self.state()?.external_assets,
+            summary: EffectSummary::new(),
+        })
     }
 
     /// Begin an allocation operation.
@@ -1937,34 +2016,22 @@ impl SorobanVaultContract {
         with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
 
-    pub fn allocator_sync_positions(
+    pub fn allocate(
         env: Env,
         caller: soroban_sdk::Address,
-        idle_assets: i128,
-        external_assets: i128,
-    ) -> Result<(), ContractError> {
+        delta: AllocationDelta,
+    ) -> Result<i128, ContractError> {
         require_signed(&caller);
-        let caller_kernel = kernel_address_from_sdk(&env, &caller);
-        let idle_u128 = to_u128(idle_assets)?;
-        let external_u128 = to_u128(external_assets)?;
 
+        let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.authorize(ActionKind::SyncExternalAssets, caller_kernel)?;
-            let state = vault.state_mut()?;
-            state.idle_assets = idle_u128;
-            state.external_assets = external_u128;
-            state.total_assets = match idle_u128.checked_add(external_u128) {
-                Some(total) => total,
-                None => {
-                    return Err(RuntimeError::invalid_state(
-                        "total_assets overflow while syncing positions",
-                    ))
-                }
-            };
-            vault.save_state()?;
+            let caller_kernel = kernel_address_from_sdk(&env, &caller);
+            let result = vault.allocate(caller_kernel, &delta)?;
+            new_external = result.new_external_assets;
             Ok(())
         };
-        with_reentrancy_guarded_contract_vault(&env, &mut call)
+        with_reentrancy_guarded_contract_vault(&env, &mut call)?;
+        to_i128(new_external)
     }
 
     /// Pause or unpause the vault.
@@ -2173,8 +2240,8 @@ impl SorobanVaultContract {
         get_config_address(&env, &VaultDataKey::Governance)
     }
 
-    pub fn supply_queue(env: Env) -> soroban_sdk::Vec<u32> {
-        must(&env, ensure_not_reentrant(&env));
+    pub fn supply_queue(env: Env) -> Result<soroban_sdk::Vec<u32>, ContractError> {
+        ensure_not_reentrant(&env)?;
         let mut queue = soroban_sdk::Vec::new(&env);
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             for target_id in vault.supply_queue_targets() {
@@ -2182,8 +2249,8 @@ impl SorobanVaultContract {
             }
             Ok(())
         };
-        must(&env, with_contract_vault_contract_error(&env, &mut call));
-        queue
+        with_contract_vault_contract_error(&env, &mut call)?;
+        Ok(queue)
     }
 
     /// Get the asset token address.
@@ -2198,43 +2265,36 @@ impl SorobanVaultContract {
         get_config_address(&env, &VaultDataKey::ShareToken)
     }
 
-    /// Check if the vault is paused.
-    pub fn is_paused(env: Env) -> bool {
-        must(&env, ensure_not_reentrant(&env));
+    pub fn is_paused(env: Env) -> Result<bool, ContractError> {
+        ensure_not_reentrant(&env)?;
         let storage = SorobanStorage::new(&env);
-        storage.is_paused()
+        Ok(storage.is_paused())
     }
 
-    /// Snapshot of vault balances for efficient off-chain reads.
-    pub fn vault_snapshot(env: Env) -> VaultSnapshot {
-        must(&env, ensure_not_reentrant(&env));
-        query_vault_snapshot(&env)
+    pub fn vault_snapshot(env: Env) -> Result<VaultSnapshot, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(query_vault_snapshot(&env))
     }
 
-    /// Get total shares in circulation.
-    pub fn total_shares(env: Env) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        query_vault_snapshot(&env).total_shares
+    pub fn total_shares(env: Env) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(query_vault_snapshot(&env).total_shares)
     }
 
-    /// Get idle assets (not deployed to markets).
-    pub fn idle_assets(env: Env) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        query_vault_snapshot(&env).idle_assets
+    pub fn idle_assets(env: Env) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(query_vault_snapshot(&env).idle_assets)
     }
 
-    /// Get external assets (deployed to markets).
-    pub fn external_assets(env: Env) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        query_vault_snapshot(&env).external_assets
+    pub fn external_assets(env: Env) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(query_vault_snapshot(&env).external_assets)
     }
 
-    /// Extend the TTL of contract storage.
-    ///
-    /// Call periodically to prevent state expiry.
-    pub fn extend_ttl(env: Env) {
-        must(&env, ensure_not_reentrant(&env));
+    pub fn extend_ttl(env: Env) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
         extend_storage_ttl(&env);
+        Ok(())
     }
 
     /// Upgrade the contract to a new WASM implementation.
@@ -2295,12 +2355,212 @@ impl SorobanVaultContract {
         Ok(())
     }
 
-    /// Check if migration is in progress.
-    ///
-    /// Returns true if `upgrade()` was called but `migrate()` has not completed.
-    pub fn is_migrating(env: Env) -> bool {
-        must(&env, ensure_not_reentrant(&env));
-        stellar_contract_utils::upgradeable::can_complete_migration(&env)
+    pub fn is_migrating(env: Env) -> Result<bool, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(stellar_contract_utils::upgradeable::can_complete_migration(
+            &env,
+        ))
+    }
+
+    pub fn query_asset(env: Env) -> Result<soroban_sdk::Address, ContractError> {
+        ensure_not_reentrant(&env)?;
+        get_config_address(&env, &VaultDataKey::AssetToken)
+    }
+
+    pub fn total_assets(env: Env) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(query_vault_field(&env, |s| s.total_assets))
+    }
+
+    pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        if assets <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        let assets_u128 = to_u128(assets)?;
+        to_i128(convert_to_shares(&state, &config, assets_u128))
+    }
+
+    pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        if shares <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        let shares_u128 = to_u128(shares)?;
+        to_i128(convert_to_assets(&state, &config, shares_u128))
+    }
+
+    pub fn max_deposit(env: Env, _receiver: soroban_sdk::Address) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        let (state, config) = load_state_and_config(&env)?;
+        if state.op_state.is_idle() && !config.paused {
+            let remaining = u128::MAX.saturating_sub(state.total_assets);
+            let cap = remaining.min(i128::MAX as u128);
+            Ok(cap as i128)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub fn max_mint(env: Env, _receiver: soroban_sdk::Address) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        let (state, config) = load_state_and_config(&env)?;
+        if state.op_state.is_idle() && !config.paused {
+            let remaining = u128::MAX.saturating_sub(state.total_shares);
+            let cap = remaining.min(i128::MAX as u128);
+            Ok(cap as i128)
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub fn max_withdraw(env: Env, owner: soroban_sdk::Address) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        let (state, config) = load_state_and_config(&env)?;
+        if !state.op_state.is_idle() {
+            return Ok(0);
+        }
+        let owner_shares_i128 = share_balance(&env, &owner);
+        let owner_shares = owner_shares_i128.max(0) as u128;
+        let assets_from_shares = convert_to_assets(&state, &config, owner_shares);
+        let max = assets_from_shares.min(state.idle_assets);
+        Ok(i128::try_from(max).unwrap_or(0))
+    }
+
+    pub fn max_redeem(env: Env, owner: soroban_sdk::Address) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        let (state, config) = load_state_and_config(&env)?;
+        if !state.op_state.is_idle() {
+            return Ok(0);
+        }
+        let owner_shares_i128 = share_balance(&env, &owner);
+        let owner_shares = owner_shares_i128.max(0) as u128;
+        let shares_from_idle = convert_to_shares(&state, &config, state.idle_assets);
+        let max = owner_shares.min(shares_from_idle);
+        Ok(i128::try_from(max).unwrap_or(0))
+    }
+
+    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
+        Self::convert_to_shares(env, assets)
+    }
+
+    pub fn preview_mint(env: Env, shares: i128) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        if shares <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        let shares_u128 = to_u128(shares)?;
+        to_i128(convert_to_assets_ceil(&state, &config, shares_u128))
+    }
+
+    pub fn preview_withdraw(env: Env, assets: i128) -> Result<i128, ContractError> {
+        ensure_not_reentrant(&env)?;
+        if assets <= 0 {
+            return Ok(0);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        let assets_u128 = to_u128(assets)?;
+        to_i128(convert_to_shares_ceil(&state, &config, assets_u128))
+    }
+
+    pub fn preview_redeem(env: Env, shares: i128) -> Result<i128, ContractError> {
+        Self::convert_to_assets(env, shares)
+    }
+
+    pub fn deposit(
+        env: Env,
+        assets: i128,
+        receiver: soroban_sdk::Address,
+        from: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
+    ) -> Result<i128, ContractError> {
+        require_signed(&operator);
+        ensure_not_reentrant(&env)?;
+        if assets <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        Self::deposit_with_min(env, from, receiver, assets, 0)
+    }
+
+    pub fn mint(
+        env: Env,
+        shares: i128,
+        receiver: soroban_sdk::Address,
+        from: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
+    ) -> Result<i128, ContractError> {
+        require_signed(&operator);
+        ensure_not_reentrant(&env)?;
+        if shares <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        let (state, config) = load_state_and_config(&env)?;
+        let shares_u128 = to_u128(shares)?;
+        let assets_needed = convert_to_assets_ceil(&state, &config, shares_u128);
+        let assets_i128 = to_i128(assets_needed)?;
+        Self::deposit_with_min(env, from, receiver, assets_i128, shares)?;
+        Ok(assets_i128)
+    }
+
+    pub fn withdraw(
+        env: Env,
+        assets: i128,
+        receiver: soroban_sdk::Address,
+        owner: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
+    ) -> Result<i128, ContractError> {
+        require_signed(&operator);
+        require_signed(&owner);
+        if assets <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        with_reentrancy_guard(&env, || {
+            let assets_u128 = to_u128(assets)?;
+            let (state, _config) = load_state_and_config(&env)?;
+            if !state.op_state.is_idle() {
+                return Err(ContractError::VaultNotIdle);
+            }
+            if assets_u128 > state.idle_assets {
+                return Err(ContractError::InsufficientIdleAssets);
+            }
+            refresh_fees_for_atomic(&env)?;
+            let (state, config) = load_state_and_config(&env)?;
+            let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
+            atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn)?;
+            to_i128(shares_to_burn)
+        })
+    }
+
+    pub fn redeem(
+        env: Env,
+        shares: i128,
+        receiver: soroban_sdk::Address,
+        owner: soroban_sdk::Address,
+        operator: soroban_sdk::Address,
+    ) -> Result<i128, ContractError> {
+        require_signed(&operator);
+        require_signed(&owner);
+        if shares <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        with_reentrancy_guard(&env, || {
+            let shares_u128 = to_u128(shares)?;
+            let (state, _config) = load_state_and_config(&env)?;
+            if !state.op_state.is_idle() {
+                return Err(ContractError::VaultNotIdle);
+            }
+            refresh_fees_for_atomic(&env)?;
+            let (state, config) = load_state_and_config(&env)?;
+            let assets_out = convert_to_assets(&state, &config, shares_u128);
+            if assets_out > state.idle_assets {
+                return Err(ContractError::InsufficientIdleAssets);
+            }
+            atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128)?;
+            to_i128(assets_out)
+        })
     }
 }
 
@@ -2320,313 +2580,11 @@ fn require_curator(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> 
 
 fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
     require_signed(caller);
-
     let governance: SdkAddress = get_config_address(env, &VaultDataKey::Governance)?;
     if caller != &governance {
         return Err(ContractError::Unauthorized);
     }
     Ok(())
-}
-
-#[inline]
-fn must<T>(env: &Env, result: Result<T, ContractError>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(err) => panic_with_error!(env, err),
-    }
-}
-
-// ERC-4626 / FungibleVault methods (SEP-56 compatible)
-//
-// Second #[contractimpl] block exposing the 16 standard FungibleVault
-// methods. Must be in the same module as the #[contract] struct to avoid
-// Soroban macro conflicts with client generation.
-
-#[contractimpl]
-impl SorobanVaultContract {
-    /// Returns the address of the underlying asset managed by the vault.
-    pub fn query_asset(env: Env) -> soroban_sdk::Address {
-        must(&env, ensure_not_reentrant(&env));
-        must(&env, get_config_address(&env, &VaultDataKey::AssetToken))
-    }
-
-    /// Returns the total amount of underlying assets under management.
-    ///
-    /// Includes both idle assets held in the contract and external assets
-    /// deployed to markets.
-    pub fn total_assets(env: Env) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        query_vault_field(&env, |s| s.total_assets)
-    }
-
-    /// Convert assets to shares (floor rounding, favors vault).
-    pub fn convert_to_shares(env: Env, assets: i128) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        if assets <= 0 {
-            return 0;
-        }
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let assets_u128 = must(&env, to_u128(assets));
-        must(
-            &env,
-            to_i128(convert_to_shares(&state, &config, assets_u128)),
-        )
-    }
-
-    /// Convert shares to assets (floor rounding, favors vault).
-    pub fn convert_to_assets(env: Env, shares: i128) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        if shares <= 0 {
-            return 0;
-        }
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let shares_u128 = must(&env, to_u128(shares));
-        must(
-            &env,
-            to_i128(convert_to_assets(&state, &config, shares_u128)),
-        )
-    }
-
-    /// Maximum assets that can be deposited for `receiver`.
-    ///
-    /// Returns the largest safe deposit amount when the vault is idle and
-    /// unpaused, 0 otherwise. The cap is constrained to avoid overflow in
-    /// kernel accounting and Soroban i128 conversions.
-    pub fn max_deposit(env: Env, _receiver: soroban_sdk::Address) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        match load_state_and_config(&env) {
-            Ok((state, config)) => {
-                if state.op_state.is_idle() && !config.paused {
-                    let remaining = u128::MAX.saturating_sub(state.total_assets);
-                    let cap = remaining.min(i128::MAX as u128);
-                    cap as i128
-                } else {
-                    0
-                }
-            }
-            Err(_) => 0,
-        }
-    }
-
-    /// Maximum shares that can be minted for `receiver`.
-    pub fn max_mint(env: Env, _receiver: soroban_sdk::Address) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        match load_state_and_config(&env) {
-            Ok((state, config)) => {
-                if state.op_state.is_idle() && !config.paused {
-                    let remaining = u128::MAX.saturating_sub(state.total_shares);
-                    let cap = remaining.min(i128::MAX as u128);
-                    cap as i128
-                } else {
-                    0
-                }
-            }
-            Err(_) => 0,
-        }
-    }
-
-    /// Maximum assets that `owner` can withdraw atomically.
-    ///
-    /// Limited by their share balance and available idle assets.
-    /// Returns 0 if the vault is not idle.
-    pub fn max_withdraw(env: Env, owner: soroban_sdk::Address) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        let Ok((state, config)) = load_state_and_config(&env) else {
-            return 0;
-        };
-        if !state.op_state.is_idle() {
-            return 0;
-        }
-        let owner_shares_i128 = share_balance(&env, &owner);
-        let owner_shares = owner_shares_i128.max(0) as u128;
-        let assets_from_shares = convert_to_assets(&state, &config, owner_shares);
-        let max = assets_from_shares.min(state.idle_assets);
-        i128::try_from(max).unwrap_or(0)
-    }
-
-    /// Maximum shares that `owner` can redeem atomically.
-    ///
-    /// Limited by their share balance and what idle assets can cover.
-    /// Returns 0 if the vault is not idle.
-    pub fn max_redeem(env: Env, owner: soroban_sdk::Address) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        let Ok((state, config)) = load_state_and_config(&env) else {
-            return 0;
-        };
-        if !state.op_state.is_idle() {
-            return 0;
-        }
-        let owner_shares_i128 = share_balance(&env, &owner);
-        let owner_shares = owner_shares_i128.max(0) as u128;
-        let shares_from_idle = convert_to_shares(&state, &config, state.idle_assets);
-        let max = owner_shares.min(shares_from_idle);
-        i128::try_from(max).unwrap_or(0)
-    }
-
-    /// Preview shares received for a deposit of `assets` (floor — fewer shares).
-    pub fn preview_deposit(env: Env, assets: i128) -> i128 {
-        Self::convert_to_shares(env, assets)
-    }
-
-    /// Preview assets needed to mint `shares` (ceil — more assets required).
-    pub fn preview_mint(env: Env, shares: i128) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        if shares <= 0 {
-            return 0;
-        }
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let shares_u128 = must(&env, to_u128(shares));
-        must(
-            &env,
-            to_i128(convert_to_assets_ceil(&state, &config, shares_u128)),
-        )
-    }
-
-    /// Preview shares burned to withdraw `assets` (ceil — more shares burned).
-    pub fn preview_withdraw(env: Env, assets: i128) -> i128 {
-        must(&env, ensure_not_reentrant(&env));
-        if assets <= 0 {
-            return 0;
-        }
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let assets_u128 = must(&env, to_u128(assets));
-        must(
-            &env,
-            to_i128(convert_to_shares_ceil(&state, &config, assets_u128)),
-        )
-    }
-
-    /// Preview assets received for redeeming `shares` (floor — fewer assets).
-    pub fn preview_redeem(env: Env, shares: i128) -> i128 {
-        Self::convert_to_assets(env, shares)
-    }
-
-    /// Deposit `assets` and mint shares to `receiver`. Returns shares minted.
-    ///
-    /// The `operator` must have authorized the call. `from` provides the assets.
-    /// The vault must be idle and unpaused.
-    pub fn deposit(
-        env: Env,
-        assets: i128,
-        receiver: soroban_sdk::Address,
-        from: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> i128 {
-        require_signed(&operator);
-        must(&env, ensure_not_reentrant(&env));
-        if assets <= 0 {
-            panic_with_error!(&env, ContractError::InvalidInput);
-        }
-        must(
-            &env,
-            Self::deposit_with_min(env.clone(), from, receiver, assets, 0),
-        )
-    }
-
-    /// Mint exactly `shares` to `receiver`, pulling required assets from `from`.
-    /// Returns assets deposited.
-    pub fn mint(
-        env: Env,
-        shares: i128,
-        receiver: soroban_sdk::Address,
-        from: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> i128 {
-        require_signed(&operator);
-        must(&env, ensure_not_reentrant(&env));
-        if shares <= 0 {
-            panic_with_error!(&env, ContractError::InvalidInput);
-        }
-        let (state, config) = must(&env, load_state_and_config(&env));
-        let shares_u128 = must(&env, to_u128(shares));
-        let assets_needed = convert_to_assets_ceil(&state, &config, shares_u128);
-        let assets_i128 = must(&env, to_i128(assets_needed));
-        let _shares_minted = must(
-            &env,
-            Self::deposit_with_min(env.clone(), from, receiver, assets_i128, shares),
-        );
-        assets_i128
-    }
-
-    /// Withdraw exactly `assets` from the vault, burning shares from `owner`.
-    /// Returns shares burned.
-    ///
-    /// Only works when the vault is Idle and has sufficient idle assets.
-    /// For the general case, use `request_withdraw` + `execute_withdraw`.
-    pub fn withdraw(
-        env: Env,
-        assets: i128,
-        receiver: soroban_sdk::Address,
-        owner: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> i128 {
-        require_signed(&operator);
-        require_signed(&owner);
-        if assets <= 0 {
-            panic_with_error!(&env, ContractError::InvalidInput);
-        }
-        must(
-            &env,
-            with_reentrancy_guard(&env, || {
-                let assets_u128 = must(&env, to_u128(assets));
-                let (state, _config) = must(&env, load_state_and_config(&env));
-                if !state.op_state.is_idle() {
-                    panic_with_error!(&env, ContractError::VaultNotIdle);
-                }
-                if assets_u128 > state.idle_assets {
-                    panic_with_error!(&env, ContractError::InsufficientIdleAssets);
-                }
-                must(&env, refresh_fees_for_atomic(&env));
-                let (state, config) = must(&env, load_state_and_config(&env));
-                let shares_to_burn = convert_to_shares_ceil(&state, &config, assets_u128);
-                must(
-                    &env,
-                    atomic_withdraw_internal(&env, &owner, &receiver, assets_u128, shares_to_burn),
-                );
-                Ok(must(&env, to_i128(shares_to_burn)))
-            }),
-        )
-    }
-
-    /// Redeem exactly `shares` for assets, sending to `receiver`.
-    /// Returns assets received.
-    ///
-    /// Only works when the vault is Idle and has sufficient idle assets.
-    /// For the general case, use `request_withdraw` + `execute_withdraw`.
-    pub fn redeem(
-        env: Env,
-        shares: i128,
-        receiver: soroban_sdk::Address,
-        owner: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> i128 {
-        require_signed(&operator);
-        require_signed(&owner);
-        if shares <= 0 {
-            panic_with_error!(&env, ContractError::InvalidInput);
-        }
-        must(
-            &env,
-            with_reentrancy_guard(&env, || {
-                let shares_u128 = must(&env, to_u128(shares));
-                let (state, _config) = must(&env, load_state_and_config(&env));
-                if !state.op_state.is_idle() {
-                    panic_with_error!(&env, ContractError::VaultNotIdle);
-                }
-                must(&env, refresh_fees_for_atomic(&env));
-                let (state, config) = must(&env, load_state_and_config(&env));
-                let assets_out = convert_to_assets(&state, &config, shares_u128);
-                if assets_out > state.idle_assets {
-                    panic_with_error!(&env, ContractError::InsufficientIdleAssets);
-                }
-                must(
-                    &env,
-                    atomic_withdraw_internal(&env, &owner, &receiver, assets_out, shares_u128),
-                );
-                Ok(must(&env, to_i128(assets_out)))
-            }),
-        )
-    }
 }
 
 #[cfg(test)]

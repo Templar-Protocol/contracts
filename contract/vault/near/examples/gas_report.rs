@@ -41,7 +41,7 @@ async fn main() {
     let mut allocation_gas_average = 0f64;
     for _ in 0..ITERATIONS {
         let allocation_gas = vault
-            .reallocate(
+            .allocate(
                 &vault_curator,
                 AllocationDelta::Supply(Delta::new(market_id, user1_amount)),
             )

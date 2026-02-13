@@ -18,7 +18,7 @@ There *is* a way to keep WASM and delegate intent plans for signing by the front
 - `deposit`
 - `refresh_markets`
 - `withdraw` / `redeem`
-- `reallocate`
+- `allocate`
 
 Rather than exposing the full complexity of the vault contract, we lock-in these flows with proper gas attachment, nonce handling, and retry logic. The approach taken here is:
 
@@ -193,7 +193,7 @@ build_real_assets_report() -> RealAssetsReport
 deposit(amount, receiver, deposit_yocto)
 withdraw(assets, receiver, deposit_yocto)
 redeem(shares, receiver, deposit_yocto)
-reallocate(delta)
+allocate(delta)
 refresh_markets(markets)
 execute_withdrawal(route)
 set_fees(fees)
@@ -272,19 +272,19 @@ for market in report.per_market:
     print(f"  {market.market_id}: {market.assets}")
 ```
 
-### Reallocation (Curator Operations)
+### Allocation (Curator Operations)
 
 ```python
 from templar_vault_client import AllocationDelta, Delta
 
 # Supply to a market
-await client.reallocate(AllocationDelta.Supply(Delta(
+await client.allocate(AllocationDelta.Supply(Delta(
     market=market_id,
     amount=amount
 )))
 
 # Withdraw from a market
-await client.reallocate(AllocationDelta.Withdraw(Delta(
+await client.allocate(AllocationDelta.Withdraw(Delta(
     market=market_id,
     amount=amount
 )))

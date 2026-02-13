@@ -814,39 +814,39 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         print("  Set UNDERLYING_TOKEN env var to test deposits")
         after_deposit_idle = initial_idle
 
-    # === Step 3: Reallocate to market (if allocator available and idle > 0) ===
+    # === Step 3: Allocate to market (if allocator available and idle > 0) ===
     if allocator_client and markets and int(after_deposit_idle) > 0:
         market = markets[0]
-        # Reallocate a small amount from idle to market
-        reallocate_amount = str(min(int(after_deposit_idle), 1000000))  # Up to 1 token
+        # Allocate a small amount from idle to market
+        allocate_amount = str(min(int(after_deposit_idle), 1000000))  # Up to 1 token
         print(
-            f"Step 3 - Reallocating {reallocate_amount} to market {market.market_id} ({market.account})..."
+            f"Step 3 - Allocating {allocate_amount} to market {market.market_id} ({market.account})..."
         )
 
         delta = AllocationDelta.SUPPLY(
-            Delta(market=market.market_id, amount=reallocate_amount)
+            Delta(market=market.market_id, amount=allocate_amount)
         )
         try:
-            await allocator_client.reallocate(delta)
-            print("✓ Reallocate transaction submitted")
+            await allocator_client.allocate(delta)
+            print("✓ Allocate transaction submitted")
 
             # Verify idle decreased
             new_idle = await user_client.get_idle_balance()
             print(f"  New idle balance: {new_idle}")
 
             if int(new_idle) < int(after_deposit_idle):
-                print("✓ Reallocate verified: idle balance decreased")
+                print("✓ Allocate verified: idle balance decreased")
             else:
-                print("⚠ Reallocate: idle balance did not decrease (may need harvest)")
+                print("⚠ Allocate: idle balance did not decrease (may need harvest)")
         except Exception as e:
-            print(f"⚠ Reallocate failed: {e}")
+            print(f"⚠ Allocate failed: {e}")
     else:
         if not allocator_client:
-            print("Step 3 - Skipping reallocate: no allocator credentials")
+            print("Step 3 - Skipping allocate: no allocator credentials")
         elif not markets:
-            print("Step 3 - Skipping reallocate: no markets registered")
+            print("Step 3 - Skipping allocate: no markets registered")
         else:
-            print("Step 3 - Skipping reallocate: no idle balance to reallocate")
+            print("Step 3 - Skipping allocate: no idle balance to allocate")
 
     # === Step 4: Request withdrawal (redeem shares) ===
     # Only attempt redeem if shares exist.

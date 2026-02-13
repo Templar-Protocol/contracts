@@ -867,12 +867,7 @@ impl Contract {
     /// Otherwise, the vault will attempt to allocate as much as possible.
     ///
     /// NOTE: Each allocation takes roughly [`ALLOCATE_GAS`] gas. (~21 TGAS)
-    /// So in one allocation cycle, we should do at most ~12 market allocations.
-    /// This is a conservative estimate, and may need to be tweaked.
-    ///
-    ///
-    /// NOTE: When we rewrite this we should use a delta based approach
-    pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
+    pub fn allocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
         match &delta {
             AllocationDelta::Supply(_) => {
                 crate::auth::require_action(crate::auth::ActionKind::BeginAllocating);
@@ -1620,7 +1615,7 @@ impl Contract {
             .unwrap_or(next_pending_withdrawal_id);
 
         self.withdraw_queue = templar_vault_kernel::WithdrawQueue::with_state(
-            pending,
+            pending.iter().map(|(id, w)| (*id, w.clone())),
             next_withdraw_to_execute,
             next_pending_withdrawal_id,
         );

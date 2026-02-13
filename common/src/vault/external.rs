@@ -33,7 +33,7 @@ pub trait VaultExternalInterface {
 
     fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
     fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
-    fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()>;
+    fn allocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()>;
     fn execute_rebalance_withdrawal(
         &mut self,
         market_id: MarketId,

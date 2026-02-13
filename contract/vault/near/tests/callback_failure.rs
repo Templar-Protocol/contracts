@@ -62,7 +62,7 @@ async fn unbrick_recovers_stuck_allocation(#[future(awt)] worker: Worker<Sandbox
 
     // Start allocation — vault transitions out of Idle
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
@@ -149,7 +149,7 @@ async fn vault_usable_after_unbrick_recovery(#[future(awt)] worker: Worker<Sandb
 
     // Allocate, harvest, request withdrawal, start withdrawal
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
@@ -160,7 +160,7 @@ async fn vault_usable_after_unbrick_recovery(#[future(awt)] worker: Worker<Sandb
     harvest(&c, &vault).await;
 
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(market_id, amount)),
         )
@@ -215,7 +215,7 @@ async fn execute_withdrawal_wrong_market_does_not_corrupt(#[future(awt)] worker:
     let market_id = vault.market_id_of(c.market.contract().id()).await;
 
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )
@@ -226,7 +226,7 @@ async fn execute_withdrawal_wrong_market_does_not_corrupt(#[future(awt)] worker:
     harvest(&c, &vault).await;
 
     vault
-        .reallocate(
+        .allocate(
             &vault_curator,
             AllocationDelta::Withdraw(Delta::new(market_id, amount)),
         )

@@ -530,7 +530,7 @@ fn start_allocation_reserves_only_amount(
     let market_id = c
         .market_id_of(&m1)
         .unwrap_or_else(|| templar_common::panic_with_message("market missing"));
-    c.reallocate(AllocationDelta::Supply(Delta::new(market_id, total)));
+    c.allocate(AllocationDelta::Supply(Delta::new(market_id, total)));
 
     let rec = c
         .markets
@@ -571,45 +571,42 @@ fn start_allocation_reserves_only_amount(
 
 #[rstest]
 #[should_panic = "Insufficient principal"]
-fn reallocate_withdraw_insufficient_principal_panics(owner_env: OwnerEnv) {
+fn allocate_withdraw_insufficient_principal_panics(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
-    // Known market with zero principal -> cannot request any withdrawal
     let market_id = contract.insert_market_for_tests(mk(9201), MarketConfiguration::default(), 0);
 
-    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 1)));
+    let _ = contract.allocate(AllocationDelta::Withdraw(Delta::new(market_id, 1)));
 }
 
 #[rstest]
 #[should_panic = "Insufficient principal"]
-fn reallocate_withdraw_zero_amount_panics(owner_env: OwnerEnv) {
+fn allocate_withdraw_zero_amount_panics(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
-    // Principal exists but requested amount is zero -> to_request = 0 -> panic
     let market_id = contract.insert_market_for_tests(mk(9202), MarketConfiguration::default(), 0);
 
-    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 100)));
+    let _ = contract.allocate(AllocationDelta::Withdraw(Delta::new(market_id, 100)));
 }
 
 #[rstest]
-fn reallocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) {
+fn allocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
-    // Principal exists; request larger than principal should cap to principal internally
     let market_id = contract.insert_market_for_tests(mk(9203), MarketConfiguration::default(), 40);
 
     let principal_before = contract.principal_of(market_id);
     assert_eq!(principal_before, 40, "sanity: principal set");
 
-    let res = contract.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 100)));
+    let res = contract.allocate(AllocationDelta::Withdraw(Delta::new(market_id, 100)));
     match res {
         PromiseOrValue::Promise(_) => {}
-        _ => panic!("Expected Promise for withdraw reallocation"),
+        _ => panic!("Expected Promise for withdraw allocation"),
     }
 
     assert!(
         matches!(contract.op_state, OpState::Idle),
-        "reallocate withdraw should not change op_state"
+        "allocate withdraw should not change op_state"
     );
     assert_eq!(
         contract.principal_of(market_id),
@@ -619,7 +616,7 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) 
 }
 
 #[test]
-fn reallocate_accrues_pending_fee_shares() {
+fn allocate_accrues_pending_fee_shares() {
     let vault_id = accounts(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
@@ -645,16 +642,16 @@ fn reallocate_accrues_pending_fee_shares() {
     let assets_before = c.get_total_assets().0;
 
     owner_call_env(vault_id.clone(), &owner);
-    let res = c.reallocate(AllocationDelta::Supply(Delta::new(market_id, 50)));
+    let res = c.allocate(AllocationDelta::Supply(Delta::new(market_id, 50)));
     match res {
         PromiseOrValue::Promise(_) => {}
-        _ => panic!("Expected Promise for supply reallocation"),
+        _ => panic!("Expected Promise for supply allocation"),
     }
 
     let balance_after = c.balance_of(&fee_recipient);
     assert!(
         balance_after > balance_before,
-        "reallocate should mint fee shares when profit exists before planning allocation",
+        "allocate should mint fee shares when profit exists before planning allocation",
     );
     assert_eq!(
         c.get_last_total_assets().0,
@@ -664,7 +661,7 @@ fn reallocate_accrues_pending_fee_shares() {
 }
 
 #[test]
-fn sentinel_can_only_reallocate_withdrawals() {
+fn sentinel_can_only_allocate_withdrawals() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let sentinel = c.get_configuration().sentinel;
@@ -672,14 +669,14 @@ fn sentinel_can_only_reallocate_withdrawals() {
 
     let market_id = c.insert_market_for_tests(mk(9300), MarketConfiguration::default(), 50);
 
-    let withdraw_res = c.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 10)));
+    let withdraw_res = c.allocate(AllocationDelta::Withdraw(Delta::new(market_id, 10)));
     assert!(
         matches!(withdraw_res, PromiseOrValue::Promise(_)),
-        "Sentinel withdraw reallocation should return a Promise"
+        "Sentinel withdraw allocation should return a Promise"
     );
 
     let supply_attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        c.reallocate(AllocationDelta::Supply(Delta::new(market_id, 10)))
+        c.allocate(AllocationDelta::Supply(Delta::new(market_id, 10)))
     }));
     assert!(
         supply_attempt.is_err(),

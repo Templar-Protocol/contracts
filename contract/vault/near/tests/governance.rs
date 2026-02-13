@@ -307,7 +307,7 @@ async fn allocator_role_required_for_reallocation(#[future(awt)] worker: Worker<
 
     // Now borrow_user can reallocate
     vault
-        .reallocate(
+        .allocate(
             &borrow_user,
             AllocationDelta::Supply(Delta::new(market_id, amount)),
         )

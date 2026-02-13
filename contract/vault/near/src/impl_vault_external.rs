@@ -125,8 +125,8 @@ impl VaultExternalInterface for Contract {
         Contract::redeem(self, shares, receiver)
     }
 
-    fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
-        Contract::reallocate(self, delta)
+    fn allocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
+        Contract::allocate(self, delta)
     }
 
     fn execute_rebalance_withdrawal(
