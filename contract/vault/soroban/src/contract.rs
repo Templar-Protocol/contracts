@@ -737,6 +737,9 @@ where
 
     /// Request a withdrawal from the vault.
     ///
+    /// Queues a withdrawal request and escrows shares until it can be
+    /// executed. Actual asset transfer occurs during `execute_withdraw`
+    /// after the configured cooldown has elapsed.
     /// This queues a withdrawal request. The actual withdrawal will be processed
     /// when `execute_withdraw` is called.
     ///
@@ -798,6 +801,9 @@ where
 
     /// Execute a pending withdrawal.
     ///
+    /// Starts or continues processing the queue head. If the vault is idle,
+    /// this begins the withdrawal operation; if already withdrawing, it
+    /// continues settlement from idle assets.
     /// This processes the next pending withdrawal in the queue.
     ///
     pub fn execute_withdraw(
