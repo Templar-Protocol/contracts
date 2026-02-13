@@ -269,22 +269,38 @@ fn with_reentrancy_guard<T>(
     env: &Env,
     f: impl FnOnce() -> Result<T, AdapterError>,
 ) -> Result<T, AdapterError> {
-    let locked: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::ReentrancyLock)
-        .unwrap_or(false);
-    if locked {
-        return Err(AdapterError::Reentrancy);
+    let _guard = ReentrancyGuard::new(env)?;
+    f()
+}
+
+struct ReentrancyGuard<'a> {
+    env: &'a Env,
+}
+
+impl<'a> ReentrancyGuard<'a> {
+    fn new(env: &'a Env) -> Result<Self, AdapterError> {
+        let locked: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReentrancyLock)
+            .unwrap_or(false);
+        if locked {
+            return Err(AdapterError::Reentrancy);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyLock, &true);
+        Ok(Self { env })
     }
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &true);
-    let result = f();
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &false);
-    result
+}
+
+impl Drop for ReentrancyGuard<'_> {
+    fn drop(&mut self) {
+        self.env
+            .storage()
+            .instance()
+            .set(&DataKey::ReentrancyLock, &false);
+    }
 }
 
 #[cfg(test)]
