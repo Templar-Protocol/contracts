@@ -3,7 +3,7 @@ use super::{
 };
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState, MAX_PENDING};
 use crate::{apply_action, compute_fee_shares_from_assets, FeesSpec, KernelAction, Number};
-use crate::effects::KernelEffect;
+use crate::effects::{KernelEffect, KernelEvent};
 use crate::fee::FeeSlot;
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
 use crate::error::KernelError;
@@ -166,6 +166,62 @@ fn refresh_fees_overflow_total_supply_rejected() {
             "fee minting would overflow total_supply"
         ))
     ));
+}
+
+#[test]
+fn execute_withdraw_skips_zero_expected_assets() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    let owner = [3u8; 32];
+    let receiver = [4u8; 32];
+    let escrow_shares = 500;
+
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            escrow_shares,
+            0,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue");
+
+    let self_id = [9u8; 32];
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_id,
+        KernelAction::ExecuteWithdraw { now_ns: 0 },
+    )
+    .expect("execute_withdraw");
+
+    assert!(result.state.op_state.is_idle());
+    assert!(result.state.withdraw_queue.is_empty());
+
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::TransferShares { from, to, shares }
+                if *from == self_id && *to == owner && *shares == escrow_shares
+        )
+    }));
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    id: _,
+                    owner: who,
+                    receiver: dest,
+                    escrow_shares: shares,
+                    expected_assets: 0,
+                },
+            } if *who == owner && *dest == receiver && *shares == escrow_shares
+        )
+    }));
 }
 
 fn minted_shares_for(effects: &[KernelEffect], owner: [u8; 32]) -> u128 {

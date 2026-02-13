@@ -104,6 +104,14 @@ pub enum KernelEvent {
     },
     /// Withdrawal stopped and escrow refunded.
     WithdrawalStopped { op_id: u64, escrow_shares: u128 },
+    /// Withdrawal skipped due to zero expected assets (legacy/dust).
+    WithdrawalSkipped {
+        id: u64,
+        owner: Address,
+        receiver: Address,
+        escrow_shares: u128,
+        expected_assets: u128,
+    },
     /// Refresh operation started.
     RefreshStarted { op_id: u64, plan_len: u32 },
     /// Refresh operation completed.
@@ -180,6 +188,9 @@ impl KernelEvent {
                 owner, receiver, ..
             } => alloc::vec![*owner, *receiver],
             KernelEvent::WithdrawalRequested {
+                owner, receiver, ..
+            } => alloc::vec![*owner, *receiver],
+            KernelEvent::WithdrawalSkipped {
                 owner, receiver, ..
             } => alloc::vec![*owner, *receiver],
             _ => alloc::vec![],

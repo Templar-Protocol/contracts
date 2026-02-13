@@ -516,6 +516,30 @@ fn handle_execute_withdraw(
         });
     }
 
+    if pending_expected_assets == 0 {
+        let (pending_id, pending) = state
+            .withdraw_queue
+            .dequeue()
+            .ok_or(KernelError::EmptyQueue)?;
+        let mut effects = Vec::new();
+        push_refund_shares(
+            &mut effects,
+            *self_id,
+            pending.owner,
+            pending.escrow_shares,
+        );
+        effects.push(KernelEffect::EmitEvent {
+            event: KernelEvent::WithdrawalSkipped {
+                id: pending_id,
+                owner: pending.owner,
+                receiver: pending.receiver,
+                escrow_shares: pending.escrow_shares,
+                expected_assets: pending.expected_assets,
+            },
+        });
+        return Ok(KernelResult::new(state, effects));
+    }
+
     let op_id = state.allocate_op_id();
     let request = WithdrawalRequest {
         op_id,

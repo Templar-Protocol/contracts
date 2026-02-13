@@ -72,6 +72,14 @@ pub enum KernelEventLog {
     #[event_version("1.0.0")]
     WithdrawalStopped { op_id: U64, escrow_shares: U128 },
     #[event_version("1.0.0")]
+    WithdrawalSkipped {
+        id: U64,
+        owner: AccountId,
+        receiver: AccountId,
+        escrow_shares: U128,
+        expected_assets: U128,
+    },
+    #[event_version("1.0.0")]
     RefreshStarted { op_id: U64, plan_len: u32 },
     #[event_version("1.0.0")]
     RefreshCompleted { op_id: U64 },
@@ -201,6 +209,24 @@ fn emit_kernel_event(
             escrow_shares: U128(*escrow_shares),
         }
         .emit(),
+        KernelEvent::WithdrawalSkipped {
+            id,
+            owner,
+            receiver,
+            escrow_shares,
+            expected_assets,
+        } => {
+            let owner = ctx.resolve(owner)?.clone();
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::WithdrawalSkipped {
+                id: U64(*id),
+                owner,
+                receiver,
+                escrow_shares: U128(*escrow_shares),
+                expected_assets: U128(*expected_assets),
+            }
+            .emit()
+        }
         KernelEvent::RefreshStarted { op_id, plan_len } => KernelEventLog::RefreshStarted {
             op_id: U64(*op_id),
             plan_len: *plan_len,
