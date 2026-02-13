@@ -201,9 +201,18 @@ pub(crate) fn atomic_withdraw_internal(
     let state = &mut versioned.state;
 
     // Update kernel state totals
-    state.total_shares = state.total_shares.saturating_sub(shares);
-    state.total_assets = state.total_assets.saturating_sub(assets);
-    state.idle_assets = state.idle_assets.saturating_sub(assets);
+    state.total_shares = state
+        .total_shares
+        .checked_sub(shares)
+        .ok_or(ContractError::InvalidState)?;
+    state.total_assets = state
+        .total_assets
+        .checked_sub(assets)
+        .ok_or(ContractError::InvalidState)?;
+    state.idle_assets = state
+        .idle_assets
+        .checked_sub(assets)
+        .ok_or(ContractError::InvalidState)?;
 
     // Persist updated state
     storage

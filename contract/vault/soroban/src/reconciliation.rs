@@ -333,7 +333,9 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
             principal,
         ));
 
-        total_principals = total_principals.saturating_add(principal);
+        total_principals = total_principals
+            .checked_add(principal)
+            .ok_or(RuntimeError::invalid_state("total principals overflow"))?;
     }
 
     // 4. Convert to u128 (principals should be non-negative after aggregation)
@@ -362,7 +364,9 @@ pub fn resync_external_assets<A: AuthAdapter, M: SorobanMarketAdapter>(
         .map_err(|_| RuntimeError::invalid_state("new_external_assets exceeds i128"))?;
     let old_i128 = i128::try_from(request.current_external_assets)
         .map_err(|_| RuntimeError::invalid_state("current_external_assets exceeds i128"))?;
-    let delta = new_i128.saturating_sub(old_i128);
+    let delta = new_i128
+        .checked_sub(old_i128)
+        .ok_or(RuntimeError::invalid_state("external assets delta overflow"))?;
 
     // 7. Emit Completed event
     events.push(ReconciliationEvent::completed(
@@ -403,7 +407,9 @@ pub fn reconcile_external_assets<A: MarketAdapter>(
     let mut total = 0u128;
     for market in plan {
         let assets = adapter.total_assets(market.clone())?;
-        total = total.saturating_add(assets);
+        total = total
+            .checked_add(assets)
+            .ok_or(RuntimeError::invalid_state("external assets total overflow"))?;
     }
 
     Ok(ReconciliationRecord {

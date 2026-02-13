@@ -449,7 +449,10 @@ where
         self.auth.authorize(kind, caller, None)?;
         let state = self.state_mut()?;
         let op_id = state.next_op_id;
-        state.next_op_id = state.next_op_id.saturating_add(1);
+        state.next_op_id = state
+            .next_op_id
+            .checked_add(1)
+            .ok_or(RuntimeError::invalid_state("op_id overflow"))?;
         let next_op_state = apply(state, op_id)?;
         state.op_state = next_op_state;
         self.save_state()?;
@@ -920,8 +923,18 @@ where
         summary.merge(transfer_summary);
 
         let state = self.state_mut()?;
-        state.idle_assets = state.idle_assets.saturating_sub(assets_out);
-        state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+        state.idle_assets = state
+            .idle_assets
+            .checked_sub(assets_out)
+            .ok_or(RuntimeError::invalid_state(
+                "idle_assets underflow on withdrawal",
+            ))?;
+        state.total_assets = state
+            .idle_assets
+            .checked_add(state.external_assets)
+            .ok_or(RuntimeError::invalid_state(
+                "total_assets overflow on withdrawal",
+            ))?;
 
         let settle_summary = self.apply_kernel_action(
             KernelAction::SettlePayout {
@@ -991,7 +1004,12 @@ where
                 ));
             }
             state.idle_assets -= alloc_total;
-            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            state.total_assets = state
+                .idle_assets
+                .checked_add(state.external_assets)
+                .ok_or(RuntimeError::invalid_state(
+                    "total_assets overflow while allocating",
+                ))?;
 
             let result = start_allocation(state.op_state.clone(), filtered_plan, op_id)
                 .map_err(RuntimeError::transition_error)?;
@@ -1062,7 +1080,11 @@ where
                 .total_assets(MarketRef::new(*target_id, asset_id.clone()))
             {
                 Ok(balance) => {
-                    adapter_total = adapter_total.saturating_add(balance);
+                    adapter_total = adapter_total.checked_add(balance).ok_or(
+                        RuntimeError::invalid_state(
+                            "adapter balance sum overflow during verification",
+                        ),
+                    )?;
                     ok_count += 1;
                 }
                 Err(_) => {
