@@ -411,7 +411,11 @@ mod tests {
                 if request.request_type == REQUEST_SUPPLY {
                     token.transfer(&from, &pool, &request.amount);
                 } else if request.request_type == REQUEST_WITHDRAW {
-                    token.transfer(&pool, &from, &request.amount);
+                    let available = token.balance(&pool);
+                    let to_transfer = request.amount.min(available);
+                    if to_transfer > 0 {
+                        token.transfer(&pool, &from, &to_transfer);
+                    }
                 }
             }
         }
@@ -771,6 +775,43 @@ mod tests {
             AdapterEvent::Withdraw {
                 asset,
                 amount: 400
+            }
+        );
+    }
+
+    #[test]
+    fn withdraw_handles_partial_liquidity() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+        let pool = env.register(MockPoolContract, ());
+        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
+
+        let token = env.register_stellar_asset_contract_v2(admin.clone());
+        let asset = token.address();
+        let token_client = StellarAssetClient::new(&env, &asset);
+        token_client
+            .mock_all_auths()
+            .mint(&pool, &300);
+
+        let vault_before = token_client.balance(&vault);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), 1_000)
+                .unwrap();
+        });
+        let vault_after = token_client.balance(&vault);
+        assert_eq!(vault_after - vault_before, 300);
+
+        let events = adapter_events(&env, &contract_id);
+        assert_eq!(events.len(), 1);
+        let event = events.get(0).unwrap();
+        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
+        assert_eq!(
+            payload,
+            AdapterEvent::Withdraw {
+                asset,
+                amount: 300
             }
         );
     }
