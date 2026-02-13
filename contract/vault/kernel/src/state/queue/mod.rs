@@ -403,9 +403,130 @@ where
 
 // Queue Storage Types
 
-use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 pub use crate::state::vault::MAX_PENDING;
+
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct PendingWithdrawals {
+    entries: Vec<PendingWithdrawalEntry>,
+}
+
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
+struct PendingWithdrawalEntry {
+    id: u64,
+    withdrawal: PendingWithdrawal,
+}
+
+impl PendingWithdrawals {
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[inline]
+    fn locate(&self, id: u64) -> Result<usize, usize> {
+        self.entries.binary_search_by(|entry| entry.id.cmp(&id))
+    }
+
+    pub fn insert(&mut self, id: u64, withdrawal: PendingWithdrawal) -> Option<PendingWithdrawal> {
+        match self.locate(id) {
+            Ok(index) => {
+                let old = core::mem::replace(&mut self.entries[index].withdrawal, withdrawal);
+                Some(old)
+            }
+            Err(index) => {
+                self.entries
+                    .insert(index, PendingWithdrawalEntry { id, withdrawal });
+                None
+            }
+        }
+    }
+
+    pub fn remove(&mut self, id: &u64) -> Option<PendingWithdrawal> {
+        self.locate(*id)
+            .ok()
+            .map(|index| self.entries.remove(index).withdrawal)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn get(&self, id: &u64) -> Option<&PendingWithdrawal> {
+        self.locate(*id)
+            .ok()
+            .map(|index| &self.entries[index].withdrawal)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn get_mut(&mut self, id: &u64) -> Option<&mut PendingWithdrawal> {
+        self.locate(*id)
+            .ok()
+            .map(|index| &mut self.entries[index].withdrawal)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn contains_key(&self, id: &u64) -> bool {
+        self.locate(*id).is_ok()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (&u64, &PendingWithdrawal)> {
+        self.entries
+            .iter()
+            .map(|entry| (&entry.id, &entry.withdrawal))
+    }
+
+    #[inline]
+    pub fn values(&self) -> impl Iterator<Item = &PendingWithdrawal> {
+        self.entries.iter().map(|entry| &entry.withdrawal)
+    }
+
+    #[inline]
+    pub fn keys(&self) -> impl Iterator<Item = &u64> {
+        self.entries.iter().map(|entry| &entry.id)
+    }
+}
+
+impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
+    fn from_iter<T: IntoIterator<Item = (u64, PendingWithdrawal)>>(iter: T) -> Self {
+        let mut entries: Vec<PendingWithdrawalEntry> = iter
+            .into_iter()
+            .map(|(id, withdrawal)| PendingWithdrawalEntry { id, withdrawal })
+            .collect();
+        entries.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+        entries.dedup_by(|a, b| a.id == b.id);
+        Self { entries }
+    }
+}
 
 /// Withdrawal queue storage with FIFO ordering.
 ///
@@ -430,7 +551,7 @@ pub use crate::state::vault::MAX_PENDING;
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
-    pub pending_withdrawals: BTreeMap<u64, PendingWithdrawal>,
+    pub pending_withdrawals: PendingWithdrawals,
     /// ID of the next withdrawal to execute (queue head).
     pub next_withdraw_to_execute: u64,
     /// Next ID to allocate for new withdrawals (monotonic, never decremented).
@@ -465,7 +586,7 @@ impl WithdrawQueue {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            pending_withdrawals: BTreeMap::new(),
+            pending_withdrawals: PendingWithdrawals::new(),
             next_withdraw_to_execute: 0,
             next_pending_withdrawal_id: 0,
             cached_total_escrow: 0,
@@ -475,11 +596,15 @@ impl WithdrawQueue {
 
     /// Create a queue with initial state (for testing or recovery).
     #[must_use]
-    pub fn with_state(
-        pending_withdrawals: BTreeMap<u64, PendingWithdrawal>,
+    pub fn with_state<I>(
+        pending_withdrawals: I,
         next_withdraw_to_execute: u64,
         next_pending_withdrawal_id: u64,
-    ) -> Self {
+    ) -> Self
+    where
+        I: IntoIterator<Item = (u64, PendingWithdrawal)>,
+    {
+        let pending_withdrawals: PendingWithdrawals = pending_withdrawals.into_iter().collect();
         let (cached_total_escrow, cached_total_expected) =
             compute_pending_totals(pending_withdrawals.values());
         Self {
@@ -562,14 +687,20 @@ impl WithdrawQueue {
         let id = self.next_pending_withdrawal_id;
 
         // Compute cache totals first so we can fail without mutating queue state.
-        let new_escrow = self
+        let new_escrow = match self
             .cached_total_escrow
             .checked_add(withdrawal.escrow_shares)
-            .ok_or(QueueError::CacheOverflow)?;
-        let new_expected = self
+        {
+            Some(total) => total,
+            None => return Err(QueueError::CacheOverflow),
+        };
+        let new_expected = match self
             .cached_total_expected
             .checked_add(withdrawal.expected_assets)
-            .ok_or(QueueError::CacheOverflow)?;
+        {
+            Some(total) => total,
+            None => return Err(QueueError::CacheOverflow),
+        };
 
         self.pending_withdrawals.insert(id, withdrawal);
         self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
@@ -677,7 +808,7 @@ impl WithdrawQueue {
     /// # Returns
     /// Iterator yielding `(id, &withdrawal)` pairs in order.
     pub fn iter(&self) -> impl Iterator<Item = (u64, &PendingWithdrawal)> {
-        self.pending_withdrawals.iter().map(|(&k, v)| (k, v))
+        self.pending_withdrawals.iter().map(|(k, v)| (*k, v))
     }
 
     /// Check invariants for the withdrawal queue.

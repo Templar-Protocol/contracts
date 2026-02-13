@@ -187,11 +187,10 @@ pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64)
         return Err(TransitionError::EmptyAllocationPlan);
     }
 
-    let total: u128 = plan
-        .iter()
-        .map(|(_, amt)| amt)
-        .copied()
-        .fold(0u128, |a, b| a.saturating_add(b));
+    let mut total = 0u128;
+    for &(_, amount) in &plan {
+        total = total.saturating_add(amount);
+    }
 
     let plan_len = plan.len() as u32;
     let new_state = OpState::Allocating(AllocatingState {
@@ -254,12 +253,10 @@ pub fn allocation_step_callback(
     if !success {
         // On failure, return to Idle.
         // Compute total_allocated so caller can restore idle_assets correctly.
-        let original_total: u128 = alloc
-            .plan
-            .iter()
-            .map(|(_, amt)| amt)
-            .copied()
-            .fold(0u128, |a, b| a.saturating_add(b));
+        let mut original_total = 0u128;
+        for &(_, amount) in &alloc.plan {
+            original_total = original_total.saturating_add(amount);
+        }
         let total_allocated = original_total.saturating_sub(alloc.remaining);
 
         return Ok(TransitionResult::with_effects(

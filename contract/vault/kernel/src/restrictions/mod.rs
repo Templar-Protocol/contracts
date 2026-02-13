@@ -2,7 +2,7 @@
 //!
 //! Portable across NEAR and Soroban.
 
-use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -14,8 +14,6 @@ use crate::types::Address;
 
 /// Lightweight tag indicating why an actor was restricted.
 ///
-/// Unlike [`Restrictions`], this does not carry the full BTreeSet, avoiding
-/// allocations on every auth-failure path.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RestrictionKind {
@@ -39,10 +37,10 @@ pub enum Restrictions {
     Paused,
     /// Blacklist - specified actors are blocked.
     #[cfg_attr(feature = "serde", serde(rename = "BlackList"))]
-    Blacklist(BTreeSet<Address>),
+    Blacklist(Vec<Address>),
     /// Whitelist - only specified actors are allowed.
     #[cfg_attr(feature = "serde", serde(rename = "WhiteList"))]
-    Whitelist(BTreeSet<Address>),
+    Whitelist(Vec<Address>),
 }
 
 impl core::fmt::Display for RestrictionKind {
@@ -68,14 +66,14 @@ impl Restrictions {
         match self {
             Restrictions::Paused => Some(RestrictionKind::Paused),
             Restrictions::Blacklist(blacklist) => {
-                if blacklist.contains(actor_id) {
+                if blacklist.iter().any(|addr| addr == actor_id) {
                     Some(RestrictionKind::Blacklisted)
                 } else {
                     None
                 }
             }
             Restrictions::Whitelist(whitelist) => {
-                if whitelist.contains(actor_id) || actor_id == self_id {
+                if whitelist.iter().any(|addr| addr == actor_id) || actor_id == self_id {
                     None
                 } else {
                     Some(RestrictionKind::NotWhitelisted)

@@ -1,4 +1,5 @@
 use super::*;
+use primitive_types::U512;
 use proptest::prelude::*;
 
 #[test]

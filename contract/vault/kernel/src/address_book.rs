@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use crate::types::Address;
 
@@ -6,13 +6,13 @@ use crate::types::Address;
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct AddressBook<T> {
-    addresses: BTreeMap<Address, T>,
+    addresses: Vec<(Address, T)>,
 }
 
 impl<T> Default for AddressBook<T> {
     fn default() -> Self {
         Self {
-            addresses: BTreeMap::new(),
+            addresses: Vec::new(),
         }
     }
 }
@@ -23,28 +23,41 @@ impl<T> AddressBook<T> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            addresses: BTreeMap::new(),
+            addresses: Vec::new(),
         }
     }
 
     /// Insert or update an address mapping.
     #[inline]
     pub fn insert(&mut self, address: Address, value: T) {
-        self.addresses.insert(address, value);
+        if let Some((_, existing)) = self
+            .addresses
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == address)
+        {
+            *existing = value;
+            return;
+        }
+        self.addresses.push((address, value));
     }
 
     /// Resolve a kernel address to a stored value.
     #[inline]
     #[must_use]
     pub fn resolve(&self, address: &Address) -> Option<&T> {
-        self.addresses.get(address)
+        self.addresses
+            .iter()
+            .find(|(candidate, _)| candidate == address)
+            .map(|(_, value)| value)
     }
 
     /// Returns true if the address exists in the map.
     #[inline]
     #[must_use]
     pub fn contains(&self, address: &Address) -> bool {
-        self.addresses.contains_key(address)
+        self.addresses
+            .iter()
+            .any(|(candidate, _)| candidate == address)
     }
 
     /// Returns the number of entries in the address book.
@@ -60,10 +73,15 @@ impl<T> AddressBook<T> {
     pub fn is_empty(&self) -> bool {
         self.addresses.is_empty()
     }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.addresses.clear();
+    }
 }
 
-impl<T> From<BTreeMap<Address, T>> for AddressBook<T> {
-    fn from(addresses: BTreeMap<Address, T>) -> Self {
+impl<T> From<Vec<(Address, T)>> for AddressBook<T> {
+    fn from(addresses: Vec<(Address, T)>) -> Self {
         Self { addresses }
     }
 }

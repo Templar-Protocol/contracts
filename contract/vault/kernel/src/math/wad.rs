@@ -5,7 +5,7 @@
 use core::ops::Div;
 
 use derive_more::{From, Into};
-use primitive_types::{U256, U512};
+use primitive_types::U256;
 
 use super::number::Number;
 
@@ -148,20 +148,7 @@ impl Wad {
     #[inline]
     #[must_use]
     pub fn apply_floored(self, amount: Number) -> Number {
-        if amount.is_zero() || self.0.is_zero() {
-            return Number::zero();
-        }
-        if let (Some(amount128), Some(wad128)) = (
-            Number::as_u128_if_fits(amount.0),
-            Number::as_u128_if_fits(self.0 .0),
-        ) {
-            if let Some(prod) = amount128.checked_mul(wad128) {
-                return Number::from(prod / Self::SCALE);
-            }
-        }
-        let prod = amount.0.full_mul(self.0 .0);
-        let q = prod / U512::from(Self::SCALE);
-        Number(Number::as_u256_trunc(q))
+        Number::mul_div_floor(amount, self.0, Number::from(Self::SCALE))
     }
 }
 

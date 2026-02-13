@@ -20,7 +20,7 @@ use crate::state::queue::{is_past_cooldown, QueueError, WithdrawQueue};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::transitions::{
     complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
-    stop_withdrawal, WithdrawalRequest,
+    stop_withdrawal, TransitionError, WithdrawalRequest,
 };
 use crate::types::{Address, TimestampNs};
 use alloc::vec;
@@ -252,7 +252,10 @@ fn require_active_op_id(
     provided: u64,
     action: &'static str,
 ) -> Result<(), KernelError> {
-    let active = op_state.op_id().ok_or(KernelError::InvalidState(action))?;
+    let active = match op_state.op_id() {
+        Some(active) => active,
+        None => return Err(KernelError::InvalidState(action)),
+    };
     if active != provided {
         return Err(KernelError::OpIdMismatch {
             expected: active,
@@ -324,17 +327,43 @@ fn mint_fee_shares(
 ) -> Result<(), KernelError> {
     if shares > Number::zero() {
         let minted: u128 = shares.into();
-        *total_supply = total_supply
-            .checked_add(minted)
-            .ok_or(KernelError::InvalidState(
-                "fee minting would overflow total_supply",
-            ))?;
+        *total_supply = match total_supply.checked_add(minted) {
+            Some(total_supply) => total_supply,
+            None => {
+                return Err(KernelError::InvalidState(
+                    "fee minting would overflow total_supply",
+                ))
+            }
+        };
         effects.push(KernelEffect::MintShares {
             owner: recipient,
             shares: minted,
         });
     }
     Ok(())
+}
+
+#[inline]
+fn map_transition_result<T>(result: Result<T, TransitionError>) -> Result<T, KernelError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(err) => Err(KernelError::Transition(err)),
+    }
+}
+
+#[inline]
+fn map_queue_error(err: QueueError) -> KernelError {
+    match err {
+        QueueError::QueueFull { current, max } => KernelError::QueueFull { current, max },
+        QueueError::CacheOverflow => KernelError::InvalidState("withdrawal queue cache overflow"),
+        QueueError::WithdrawalNotFound { .. } => {
+            KernelError::InvalidState("withdrawal queue missing entry")
+        }
+        QueueError::QueueEmpty => KernelError::InvalidState("withdrawal queue empty"),
+        QueueError::InvariantViolation { .. } => {
+            KernelError::InvalidState("withdrawal queue invariant violation")
+        }
+    }
 }
 
 /// Process a deposit: validate restrictions, convert assets→shares, update totals.
@@ -348,8 +377,12 @@ fn handle_deposit(
     assets_in: u128,
     min_shares_out: u128,
 ) -> Result<KernelResult, KernelError> {
-    enforce_restrictions(config, restrictions, self_id, &owner)?;
-    enforce_restrictions(config, restrictions, self_id, &receiver)?;
+    if let Err(err) = enforce_restrictions(config, restrictions, self_id, &owner) {
+        return Err(err);
+    }
+    if let Err(err) = enforce_restrictions(config, restrictions, self_id, &receiver) {
+        return Err(err);
+    }
     if !state.is_idle() {
         return Err(KernelError::InvalidState("deposit requires Idle"));
     }
@@ -365,27 +398,30 @@ fn handle_deposit(
         });
     }
 
-    state.total_assets =
-        state
-            .total_assets
-            .checked_add(assets_in)
-            .ok_or(KernelError::InvalidState(
+    state.total_assets = match state.total_assets.checked_add(assets_in) {
+        Some(total_assets) => total_assets,
+        None => {
+            return Err(KernelError::InvalidState(
                 "deposit would overflow total_assets",
-            ))?;
-    state.idle_assets =
-        state
-            .idle_assets
-            .checked_add(assets_in)
-            .ok_or(KernelError::InvalidState(
+            ))
+        }
+    };
+    state.idle_assets = match state.idle_assets.checked_add(assets_in) {
+        Some(idle_assets) => idle_assets,
+        None => {
+            return Err(KernelError::InvalidState(
                 "deposit would overflow idle_assets",
-            ))?;
-    state.total_shares =
-        state
-            .total_shares
-            .checked_add(shares_out)
-            .ok_or(KernelError::InvalidState(
+            ))
+        }
+    };
+    state.total_shares = match state.total_shares.checked_add(shares_out) {
+        Some(total_shares) => total_shares,
+        None => {
+            return Err(KernelError::InvalidState(
                 "minting would overflow total_shares",
-            ))?;
+            ))
+        }
+    };
 
     let effects = vec![
         KernelEffect::TransferAssetsFrom {
@@ -422,8 +458,12 @@ fn handle_request_withdraw(
     min_assets_out: u128,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    enforce_restrictions(config, restrictions, self_id, &owner)?;
-    enforce_restrictions(config, restrictions, self_id, &receiver)?;
+    if let Err(err) = enforce_restrictions(config, restrictions, self_id, &owner) {
+        return Err(err);
+    }
+    if let Err(err) = enforce_restrictions(config, restrictions, self_id, &receiver) {
+        return Err(err);
+    }
     if !state.is_idle() {
         return Err(KernelError::InvalidState("request_withdraw requires Idle"));
     }
@@ -445,29 +485,18 @@ fn handle_request_withdraw(
         });
     }
 
-    let id = state
-        .withdraw_queue
-        .enqueue(
-            owner,
-            receiver,
-            shares,
-            expected_assets,
-            now_ns,
-            config.max_pending_withdrawals,
-        )
-        .map_err(|err| match err {
-            QueueError::QueueFull { current, max } => KernelError::QueueFull { current, max },
-            QueueError::CacheOverflow => {
-                KernelError::InvalidState("withdrawal queue cache overflow")
-            }
-            QueueError::WithdrawalNotFound { .. } => {
-                KernelError::InvalidState("withdrawal queue missing entry")
-            }
-            QueueError::QueueEmpty => KernelError::InvalidState("withdrawal queue empty"),
-            QueueError::InvariantViolation { .. } => {
-                KernelError::InvalidState("withdrawal queue invariant violation")
-            }
-        })?;
+    let id = state.withdraw_queue.enqueue(
+        owner,
+        receiver,
+        shares,
+        expected_assets,
+        now_ns,
+        config.max_pending_withdrawals,
+    );
+    let id = match id {
+        Ok(id) => id,
+        Err(err) => return Err(map_queue_error(err)),
+    };
 
     let effects = vec![
         KernelEffect::TransferShares {
@@ -515,8 +544,12 @@ fn handle_execute_withdraw(
     let pending_expected_assets = pending_ref.expected_assets;
     let pending_requested_at_ns = pending_ref.requested_at_ns;
 
-    enforce_restrictions(config, restrictions, self_id, &pending_owner)?;
-    enforce_restrictions(config, restrictions, self_id, &pending_receiver)?;
+    if let Err(err) = enforce_restrictions(config, restrictions, self_id, &pending_owner) {
+        return Err(err);
+    }
+    if let Err(err) = enforce_restrictions(config, restrictions, self_id, &pending_receiver) {
+        return Err(err);
+    }
 
     if !is_past_cooldown(
         pending_requested_at_ns,
@@ -531,10 +564,10 @@ fn handle_execute_withdraw(
     }
 
     if pending_expected_assets == 0 {
-        let (pending_id, pending) = state
-            .withdraw_queue
-            .dequeue()
-            .ok_or(KernelError::EmptyQueue)?;
+        let (pending_id, pending) = match state.withdraw_queue.dequeue() {
+            Some(entry) => entry,
+            None => return Err(KernelError::EmptyQueue),
+        };
         let mut effects = Vec::new();
         push_refund_shares(&mut effects, *self_id, pending.owner, pending.escrow_shares);
         effects.push(KernelEffect::EmitEvent {
@@ -558,8 +591,11 @@ fn handle_execute_withdraw(
         escrow_shares: pending_escrow_shares,
     };
 
-    let result = start_withdrawal(mem::take(&mut state.op_state), request)
-        .map_err(KernelError::Transition)?;
+    let result =
+        match map_transition_result(start_withdrawal(mem::take(&mut state.op_state), request)) {
+            Ok(result) => result,
+            Err(err) => return Err(err),
+        };
     state.op_state = result.new_state;
 
     Ok(KernelResult::new(state, result.effects))
@@ -571,17 +607,24 @@ fn handle_begin_allocating(
     op_id: u64,
     plan: Vec<(TargetId, u128)>,
 ) -> Result<KernelResult, KernelError> {
-    let result = start_allocation(mem::take(&mut state.op_state), plan, op_id)
-        .map_err(KernelError::Transition)?;
+    let result = match map_transition_result(start_allocation(
+        mem::take(&mut state.op_state),
+        plan,
+        op_id,
+    )) {
+        Ok(result) => result,
+        Err(err) => return Err(err),
+    };
 
     // Compute allocation total from the plan and decrement idle_assets.
-    let alloc_total = result
-        .new_state
-        .as_allocating()
-        .ok_or(KernelError::InvalidState(
-            "start_allocation must return Allocating",
-        ))?
-        .remaining;
+    let alloc_total = match result.new_state.as_allocating() {
+        Some(allocating) => allocating.remaining,
+        None => {
+            return Err(KernelError::InvalidState(
+                "start_allocation must return Allocating",
+            ))
+        }
+    };
 
     if alloc_total > state.idle_assets {
         return Err(KernelError::InvalidState(
@@ -628,8 +671,14 @@ fn handle_finish_allocating(
         })
     });
 
-    let result = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req)
-        .map_err(KernelError::Transition)?;
+    let result = match map_transition_result(complete_allocation(
+        mem::take(&mut state.op_state),
+        op_id,
+        pending_req,
+    )) {
+        Ok(result) => result,
+        Err(err) => return Err(err),
+    };
     state.op_state = result.new_state;
     Ok(KernelResult::new(state, result.effects))
 }
@@ -640,11 +689,13 @@ fn handle_sync_external_assets(
     new_external_assets: u128,
     op_id: u64,
 ) -> Result<KernelResult, KernelError> {
-    require_active_op_id(
+    if let Err(err) = require_active_op_id(
         &state.op_state,
         op_id,
         "sync_external_assets requires active op",
-    )?;
+    ) {
+        return Err(err);
+    }
 
     match state.op_state {
         OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => {}
@@ -656,13 +707,14 @@ fn handle_sync_external_assets(
     }
 
     // Overflow protection: idle_assets + new_external must fit in u128.
-    let new_total =
-        state
-            .idle_assets
-            .checked_add(new_external_assets)
-            .ok_or(KernelError::InvalidState(
+    let new_total = match state.idle_assets.checked_add(new_external_assets) {
+        Some(new_total) => new_total,
+        None => {
+            return Err(KernelError::InvalidState(
                 "sync_external_assets overflow: idle + external exceeds u128",
-            ))?;
+            ))
+        }
+    };
 
     // Sanity bound: prevent a compromised allocator from inflating
     // total_assets beyond 2x the previous value. During allocation,
@@ -698,11 +750,13 @@ fn handle_sync_external_assets(
 
 /// Abort a refresh operation, returning to Idle.
 fn handle_abort_refreshing(mut state: VaultState, op_id: u64) -> Result<KernelResult, KernelError> {
-    require_active_op_id(
+    if let Err(err) = require_active_op_id(
         &state.op_state,
         op_id,
         "abort_refreshing requires active op",
-    )?;
+    ) {
+        return Err(err);
+    }
 
     if !matches!(state.op_state, OpState::Refreshing(_)) {
         return Err(KernelError::InvalidState(
@@ -729,7 +783,9 @@ fn handle_abort_allocating(
         }
     };
 
-    check_op_id(alloc.op_id, op_id)?;
+    if let Err(err) = check_op_id(alloc.op_id, op_id) {
+        return Err(err);
+    }
     if restore_idle != alloc.remaining {
         return Err(KernelError::InvalidState(
             "abort_allocating restore_idle mismatch",
@@ -757,22 +813,32 @@ fn handle_abort_withdrawing(
         }
     };
 
-    check_op_id(withdraw.op_id, op_id)?;
+    if let Err(err) = check_op_id(withdraw.op_id, op_id) {
+        return Err(err);
+    }
     if refund_shares != withdraw.escrow_shares {
         return Err(KernelError::InvalidState(
             "abort_withdrawing refund_shares mismatch",
         ));
     }
 
-    validate_queue_head(
+    if let Err(err) = validate_queue_head(
         &state.withdraw_queue,
         &withdraw.owner,
         &withdraw.receiver,
         withdraw.escrow_shares,
-    )?;
+    ) {
+        return Err(err);
+    }
 
-    let result = stop_withdrawal(mem::take(&mut state.op_state), op_id, *self_id)
-        .map_err(KernelError::Transition)?;
+    let result = match map_transition_result(stop_withdrawal(
+        mem::take(&mut state.op_state),
+        op_id,
+        *self_id,
+    )) {
+        Ok(result) => result,
+        Err(err) => return Err(err),
+    };
     state.op_state = result.new_state;
     state.withdraw_queue.dequeue();
     Ok(KernelResult::new(state, result.effects))
@@ -790,14 +856,18 @@ fn handle_settle_payout(
         _ => return Err(KernelError::InvalidState("settle_payout requires Payout")),
     };
 
-    check_op_id(payout.op_id, op_id)?;
+    if let Err(err) = check_op_id(payout.op_id, op_id) {
+        return Err(err);
+    }
 
-    validate_queue_head(
+    if let Err(err) = validate_queue_head(
         &state.withdraw_queue,
         &payout.owner,
         &payout.receiver,
         payout.escrow_shares,
-    )?;
+    ) {
+        return Err(err);
+    }
 
     let escrow_address = *self_id;
     let mut effects = Vec::new();
@@ -821,9 +891,14 @@ fn handle_settle_payout(
                     owner: escrow_address,
                     shares: burn_amount,
                 });
-                state.total_shares = state.total_shares.checked_sub(burn_amount).ok_or(
-                    KernelError::InvalidState("payout burn exceeds total_shares"),
-                )?;
+                state.total_shares = match state.total_shares.checked_sub(burn_amount) {
+                    Some(total_shares) => total_shares,
+                    None => {
+                        return Err(KernelError::InvalidState(
+                            "payout burn exceeds total_shares",
+                        ))
+                    }
+                };
             }
             push_refund_shares(&mut effects, escrow_address, payout.owner, refund_amount);
 
@@ -903,12 +978,14 @@ fn handle_refresh_fees(
         anchor.timestamp_ns,
         now_ns,
     );
-    mint_fee_shares(
+    if let Err(err) = mint_fee_shares(
         &mut effects,
         &mut total_supply,
         mgmt_shares,
         config.fees.management.recipient,
-    )?;
+    ) {
+        return Err(err);
+    }
 
     // Performance fees (profit-based)
     let profit = fee_total_assets.saturating_sub(anchor.total_assets);
@@ -922,12 +999,14 @@ fn handle_refresh_fees(
         Number::from(cur_total_assets),
         Number::from(total_supply),
     );
-    mint_fee_shares(
+    if let Err(err) = mint_fee_shares(
         &mut effects,
         &mut total_supply,
         perf_shares,
         config.fees.performance.recipient,
-    )?;
+    ) {
+        return Err(err);
+    }
 
     state.total_shares = total_supply;
     state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
@@ -949,9 +1028,14 @@ fn handle_emergency_reset(
 ) -> Result<KernelResult, KernelError> {
     let prev_state = mem::take(&mut state.op_state);
     let from_code = prev_state.kind_code();
-    let op_id = prev_state.op_id().ok_or(KernelError::InvalidState(
-        "emergency_reset: vault is already Idle",
-    ))?;
+    let op_id = match prev_state.op_id() {
+        Some(op_id) => op_id,
+        None => {
+            return Err(KernelError::InvalidState(
+                "emergency_reset: vault is already Idle",
+            ))
+        }
+    };
 
     let mut effects = Vec::new();
     let escrow_address = *self_id;
@@ -1053,15 +1137,26 @@ pub fn apply_action(
         }
 
         KernelAction::BeginRefreshing { op_id, plan, .. } => {
-            let result = start_refresh(mem::take(&mut state.op_state), plan, op_id)
-                .map_err(KernelError::Transition)?;
+            let result = match map_transition_result(start_refresh(
+                mem::take(&mut state.op_state),
+                plan,
+                op_id,
+            )) {
+                Ok(result) => result,
+                Err(err) => return Err(err),
+            };
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
 
         KernelAction::FinishRefreshing { op_id, .. } => {
-            let result = complete_refresh(mem::take(&mut state.op_state), op_id)
-                .map_err(KernelError::Transition)?;
+            let result = match map_transition_result(complete_refresh(
+                mem::take(&mut state.op_state),
+                op_id,
+            )) {
+                Ok(result) => result,
+                Err(err) => return Err(err),
+            };
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }

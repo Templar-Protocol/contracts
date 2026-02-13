@@ -198,9 +198,8 @@ impl Number {
         Number(self.0.saturating_sub(other.0))
     }
 
-    #[inline]
-    #[must_use]
-    pub fn mul_div_floor(x: Number, y: Number, denom: Number) -> Number {
+    #[inline(never)]
+    fn mul_div_with_rounding(x: Number, y: Number, denom: Number, round_up: bool) -> Number {
         // Fast path: zero inputs
         if x.is_zero() || y.is_zero() {
             return Number::zero();
@@ -225,49 +224,15 @@ impl Number {
             Self::as_u128_if_fits(denom.0),
         ) {
             if let Some(prod) = x128.checked_mul(y128) {
-                return Number::from(prod / denom128);
-            }
-        }
-        // General path: use U512 for overflow-safe multiplication
-        let prod = x.0.full_mul(y.0);
-        let q = prod / U512::from(denom.0);
-        Number(Self::as_u256_trunc(q))
-    }
-
-    #[allow(clippy::many_single_char_names)]
-    #[inline]
-    #[must_use]
-    pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {
-        // Fast path: zero inputs
-        if x.is_zero() || y.is_zero() {
-            return Number::zero();
-        }
-        if denom.is_zero() {
-            return Number::zero();
-        }
-        // Fast path: denom == 1 (identity division, ceil == floor)
-        if denom.is_one() {
-            return Number(x.0.saturating_mul(y.0));
-        }
-        // Fast path: cancellation when one factor equals denom (exact division)
-        if x.0 == denom.0 {
-            return y;
-        }
-        if y.0 == denom.0 {
-            return x;
-        }
-        if let (Some(x128), Some(y128), Some(denom128)) = (
-            Self::as_u128_if_fits(x.0),
-            Self::as_u128_if_fits(y.0),
-            Self::as_u128_if_fits(denom.0),
-        ) {
-            if let Some(prod) = x128.checked_mul(y128) {
                 let q = prod / denom128;
+                if !round_up {
+                    return Number::from(q);
+                }
                 let r = prod % denom128;
                 return if r == 0 {
                     Number::from(q)
                 } else {
-                    Number::from(q + 1)
+                    Number::from(q.saturating_add(1))
                 };
             }
         }
@@ -275,13 +240,28 @@ impl Number {
         let prod = x.0.full_mul(y.0);
         let d = U512::from(denom.0);
         let q = prod / d;
-        let r = prod % d;
         let base = Number(Self::as_u256_trunc(q));
+        if !round_up {
+            return base;
+        }
+        let r = prod % d;
         if r.is_zero() {
             base
         } else {
             base.saturating_add(Number::one())
         }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn mul_div_floor(x: Number, y: Number, denom: Number) -> Number {
+        Self::mul_div_with_rounding(x, y, denom, false)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {
+        Self::mul_div_with_rounding(x, y, denom, true)
     }
 }
 

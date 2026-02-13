@@ -175,13 +175,9 @@ fn deposit_blocked_when_paused() {
 
 #[test]
 fn request_withdraw_blocked_by_blacklist() {
-    use alloc::collections::BTreeSet;
-
     let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
     let config = test_config();
-    let mut blacklist = BTreeSet::new();
-    blacklist.insert(addr(9));
-    let restrictions = Restrictions::Blacklist(blacklist);
+    let restrictions = Restrictions::Blacklist(alloc::vec![addr(9)]);
 
     let result = apply_action(
         state,
