@@ -27,7 +27,9 @@
 use proptest::prelude::*;
 use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 use templar_vault_kernel::{
+    apply_action,
     effects::{KernelEffect, KernelEvent},
+    fee::FeeSlot,
     math::{
         number::Number,
         wad::{
@@ -35,6 +37,7 @@ use templar_vault_kernel::{
             MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
         },
     },
+    FeesSpec, KernelAction,
     state::{
         escrow::{
             apply_settlement, can_apply_settlement, compute_escrow_stats, settle_proportional,
@@ -943,6 +946,66 @@ proptest! {
         prop_assert!(result1.0 <= result2.0);
     }
 
+    /// Property 45a: fee minting near u128::MAX either succeeds or errors, never truncates
+    #[test]
+    fn prop_fee_mint_overflow_handled(
+        total_supply in (u128::MAX - 1_000_000u128)..=u128::MAX,
+        cur_total_assets in 1u128..=1_000_000u128,
+        fee_wad in (Wad::SCALE / 10)..=Wad::SCALE,
+    ) {
+        let mut state = VaultState::default();
+        state.total_assets = cur_total_assets;
+        state.total_shares = total_supply;
+        state.idle_assets = cur_total_assets;
+        state.fee_anchor = FeeAccrualAnchor::new(0, 0);
+
+        let mut config = default_config();
+        let performance = FeeSlot::new(Wad::from(fee_wad), [9u8; 32]);
+        let management = FeeSlot::zero();
+        config.fees = FeesSpec::new(performance, management, None);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &[0u8; 32],
+            KernelAction::RefreshFees { now_ns: 1 },
+        );
+
+        let fee_assets =
+            Wad::from(fee_wad).apply_floored(Number::from(cur_total_assets));
+        let fee_shares = compute_fee_shares_from_assets(
+            fee_assets,
+            Number::from(cur_total_assets),
+            Number::from(total_supply),
+        );
+        let fee_shares_trunc = fee_shares.as_u128_trunc();
+        let fee_shares_sat = fee_shares.as_u128_saturating();
+        let would_overflow =
+            fee_shares_sat != fee_shares_trunc
+                || total_supply.checked_add(fee_shares_trunc).is_none();
+
+        match result {
+            Ok(result) => {
+                prop_assert!(!would_overflow);
+                let minted: u128 = result
+                    .effects
+                    .iter()
+                    .filter_map(|effect| match effect {
+                        KernelEffect::MintShares { owner, shares } if *owner == [9u8; 32] => {
+                            Some(*shares)
+                        }
+                        _ => None,
+                    })
+                    .sum();
+                prop_assert_eq!(result.state.total_shares, total_supply + minted);
+            }
+            Err(_) => {
+                prop_assert!(would_overflow);
+            }
+        }
+    }
+
     // =========================================================================
     // STATE TRANSITION INVARIANTS (46-60)
     // =========================================================================
@@ -1377,10 +1440,7 @@ proptest! {
 
 // Deterministic Boundary / Edge Case Tests
 
-use templar_vault_kernel::{
-    apply_action, preview_deposit_shares, preview_withdraw_assets, FeeSlot, FeesSpec, KernelAction,
-    PayoutOutcome, VaultConfig,
-};
+use templar_vault_kernel::{preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig};
 
 fn default_config() -> VaultConfig {
     VaultConfig {
@@ -1755,9 +1815,9 @@ fn zero_cooldown_passes_when_now_gte_requested() {
 
 // Overflow / Saturation Tests
 
-/// Overflow 1: Deposit when total_assets near u128::MAX saturates instead of panicking.
+/// Overflow 1: Deposit near u128::MAX should reject instead of saturating.
 #[test]
-fn deposit_near_max_saturates() {
+fn deposit_near_max_rejected() {
     let mut state = default_state();
     state.total_assets = u128::MAX - 10;
     state.idle_assets = u128::MAX - 10;
@@ -1777,12 +1837,12 @@ fn deposit_near_max_saturates() {
             now_ns: 1,
         },
     );
-    // Should succeed (saturating_add) without panic
-    let result = result.expect("Deposit near MAX should succeed via saturation");
-    assert!(
-        result.state.total_assets >= u128::MAX - 10,
-        "total_assets should saturate near MAX"
-    );
+    assert!(matches!(
+        result,
+        Err(templar_vault_kernel::error::KernelError::InvalidState(
+            "deposit would overflow total_assets"
+        ))
+    ));
 }
 
 /// Overflow 2: Fee calculation with extreme values doesn't panic.
@@ -2181,7 +2241,7 @@ fn fee_refresh_updates_anchor() {
     assert_eq!(result.state.fee_anchor.timestamp_ns, 200);
 }
 
-/// Fee anchor at timestamp 0 → RefreshFees at 0 succeeds (not backwards).
+/// Fee anchor at timestamp 0 → RefreshFees at 0 is rejected (must advance).
 #[test]
 fn fee_refresh_at_zero_timestamp() {
     let config = default_config();
@@ -2195,8 +2255,8 @@ fn fee_refresh_at_zero_timestamp() {
         KernelAction::RefreshFees { now_ns: 0 },
     );
     assert!(
-        result.is_ok(),
-        "RefreshFees at timestamp 0 should succeed when anchor is 0"
+        result.is_err(),
+        "RefreshFees at timestamp 0 should reject non-advancing time"
     );
 }
 
