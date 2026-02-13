@@ -2166,13 +2166,17 @@ impl SorobanVaultContract {
 
     /// Maximum assets that can be deposited for `receiver`.
     ///
-    /// Returns `i128::MAX` if the vault is idle and unpaused, 0 otherwise.
+    /// Returns the largest safe deposit amount when the vault is idle and
+    /// unpaused, 0 otherwise. The cap is constrained to avoid overflow in
+    /// kernel accounting and Soroban i128 conversions.
     pub fn max_deposit(env: Env, _receiver: SdkAddress) -> i128 {
         must(&env, ensure_not_reentrant(&env));
         match load_state_and_config(&env) {
             Ok((state, config)) => {
                 if state.op_state.is_idle() && !config.paused {
-                    i128::MAX
+                    let remaining = u128::MAX.saturating_sub(state.total_assets);
+                    let cap = remaining.min(i128::MAX as u128);
+                    cap as i128
                 } else {
                     0
                 }
@@ -2187,7 +2191,9 @@ impl SorobanVaultContract {
         match load_state_and_config(&env) {
             Ok((state, config)) => {
                 if state.op_state.is_idle() && !config.paused {
-                    i128::MAX
+                    let remaining = u128::MAX.saturating_sub(state.total_shares);
+                    let cap = remaining.min(i128::MAX as u128);
+                    cap as i128
                 } else {
                     0
                 }
