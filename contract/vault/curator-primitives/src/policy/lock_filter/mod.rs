@@ -1,6 +1,6 @@
 //! Shared helpers for filtering locked targets from plans.
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::vec::Vec;
 
 use templar_vault_kernel::TargetId;
 
@@ -44,7 +44,7 @@ pub fn filter_supply_queue(
     lock_set: &MarketLockSet,
     current_ns: u64,
 ) -> SupplyQueue {
-    let entries: VecDeque<SupplyQueueEntry> = queue
+    let entries: Vec<SupplyQueueEntry> = queue
         .entries
         .iter()
         .filter(|entry| !lock_set.is_locked(entry.target_id, current_ns))

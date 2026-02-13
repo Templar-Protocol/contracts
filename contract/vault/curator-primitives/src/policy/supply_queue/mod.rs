@@ -1,6 +1,5 @@
 //! Supply queue for managing pending allocation requests.
 
-use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
@@ -62,7 +61,7 @@ impl From<(TargetId, u128)> for SupplyQueueEntry {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct SupplyQueue {
-    pub entries: VecDeque<SupplyQueueEntry>,
+    pub entries: Vec<SupplyQueueEntry>,
     pub max_length: usize,
 }
 
@@ -70,7 +69,7 @@ impl SupplyQueue {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: Vec::new(),
             max_length: 0,
         }
     }
@@ -78,7 +77,7 @@ impl SupplyQueue {
     #[must_use]
     pub fn with_max_length(max_length: usize) -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: Vec::new(),
             max_length,
         }
     }
@@ -133,17 +132,18 @@ impl SupplyQueue {
         }
 
         let mut new_queue = self.clone();
-        let entry = new_queue
-            .entries
-            .pop_front()
-            .ok_or(SupplyQueueError::QueueEmpty)?;
+        let entry = match new_queue.entries.first().cloned() {
+            Some(entry) => entry,
+            None => return Err(SupplyQueueError::QueueEmpty),
+        };
+        new_queue.entries.remove(0);
 
         Ok((new_queue, entry))
     }
 
     #[must_use]
     pub fn peek(&self) -> Option<&SupplyQueueEntry> {
-        self.entries.front()
+        self.entries.first()
     }
 
     #[must_use]
@@ -154,18 +154,21 @@ impl SupplyQueue {
     }
 
     /// Returns totals grouped by target ID.
-    /// Uses O(n log n) aggregation via BTreeMap instead of O(n²) linear search.
     #[must_use]
     pub fn totals_by_target(&self) -> Vec<(TargetId, u128)> {
-        let mut map: BTreeMap<TargetId, u128> = BTreeMap::new();
-
+        let mut totals: Vec<(TargetId, u128)> = Vec::new();
         for entry in &self.entries {
-            map.entry(entry.target_id)
-                .and_modify(|sum| *sum = sum.saturating_add(entry.amount))
-                .or_insert(entry.amount);
+            if let Some((_, sum)) = totals
+                .iter_mut()
+                .find(|(target_id, _)| *target_id == entry.target_id)
+            {
+                *sum = sum.saturating_add(entry.amount);
+            } else {
+                totals.push((entry.target_id, entry.amount));
+            }
         }
-
-        map.into_iter().collect()
+        totals.sort_unstable_by_key(|(target_id, _)| *target_id);
+        totals
     }
 
     /// Remove all entries for a specific target from the queue.
@@ -181,7 +184,7 @@ impl SupplyQueue {
     pub fn drain(&self) -> (Self, Vec<SupplyQueueEntry>) {
         let entries: Vec<SupplyQueueEntry> = self.entries.iter().cloned().collect();
         let empty_queue = Self {
-            entries: VecDeque::new(),
+            entries: Vec::new(),
             max_length: self.max_length,
         };
         (empty_queue, entries)
@@ -215,7 +218,7 @@ impl SupplyQueue {
 impl From<Vec<SupplyQueueEntry>> for SupplyQueue {
     fn from(entries: Vec<SupplyQueueEntry>) -> Self {
         Self {
-            entries: VecDeque::from(entries),
+            entries,
             max_length: 0,
         }
     }

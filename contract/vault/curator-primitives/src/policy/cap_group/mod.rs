@@ -146,13 +146,15 @@ impl CapGroup {
         }
 
         // Use checked_add to detect overflow
-        let new_principal =
-            current_principal
-                .checked_add(amount)
-                .ok_or(CapGroupError::Overflow {
+        let new_principal = match current_principal.checked_add(amount) {
+            Some(new_principal) => new_principal,
+            None => {
+                return Err(CapGroupError::Overflow {
                     current_principal,
                     requested: amount,
-                })?;
+                })
+            }
+        };
 
         if let Some(abs_cap) = self.absolute_cap {
             if new_principal > abs_cap.get() {

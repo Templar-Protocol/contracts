@@ -34,11 +34,11 @@ fn filters_allocation_plan() {
 fn filters_supply_queue_and_preserves_max_length() {
     let lock_set = lock_set_with_target(2);
     let queue = SupplyQueue {
-        entries: VecDeque::from(vec![
+        entries: vec![
             SupplyQueueEntry::new(1, 10),
             SupplyQueueEntry::new(2, 20),
             SupplyQueueEntry::new(3, 30),
-        ]),
+        ],
         max_length: 16,
     };
 
@@ -72,11 +72,11 @@ fn filters_withdraw_route_and_preserves_target_amount() {
 fn builds_allocation_plan_with_locks() {
     let lock_set = lock_set_with_target(2);
     let queue = SupplyQueue {
-        entries: VecDeque::from(vec![
+        entries: vec![
             SupplyQueueEntry::new(1, 10),
             SupplyQueueEntry::new(2, 20),
             SupplyQueueEntry::new(3, 30),
-        ]),
+        ],
         max_length: 16,
     };
 

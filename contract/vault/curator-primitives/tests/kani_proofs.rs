@@ -448,8 +448,15 @@ mod proofs {
         state.set_principal(3, 40);
 
         let totals = state.compute_cap_group_totals();
-        assert_eq!(totals.get(&group_a).copied().unwrap_or(0), 30);
-        assert_eq!(totals.get(&group_b).copied().unwrap_or(0), 40);
+        let total_for = |group_id: &CapGroupId| {
+            totals
+                .iter()
+                .find(|(candidate, _)| candidate == group_id)
+                .map(|(_, total)| *total)
+                .unwrap_or(0)
+        };
+        assert_eq!(total_for(&group_a), 30);
+        assert_eq!(total_for(&group_b), 40);
     }
 
     #[kani::proof]
