@@ -121,12 +121,12 @@ impl AllocatingState {
     /// Advance to the next allocation step after `amount_allocated` was supplied.
     #[inline]
     #[must_use]
-    pub fn advance(&self, amount_allocated: u128) -> Self {
+    pub fn advance(self, amount_allocated: u128) -> Self {
         Self {
             op_id: self.op_id,
             index: self.index.saturating_add(1),
             remaining: self.remaining.saturating_sub(amount_allocated),
-            plan: self.plan.clone(),
+            plan: self.plan,
         }
     }
 }
@@ -152,11 +152,11 @@ impl RefreshingState {
     /// Advance to the next refresh step.
     #[inline]
     #[must_use]
-    pub fn advance(&self) -> Self {
+    pub fn advance(self) -> Self {
         Self {
             op_id: self.op_id,
             index: self.index.saturating_add(1),
-            plan: self.plan.clone(),
+            plan: self.plan,
         }
     }
 }

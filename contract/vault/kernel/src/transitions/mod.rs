@@ -230,7 +230,15 @@ pub fn allocation_step_callback(
     amount_allocated: u128,
     op_id: u64,
 ) -> TransitionRes {
-    let alloc = require_state!(state, Allocating);
+    let alloc = match state {
+        OpState::Allocating(alloc) => alloc,
+        other => {
+            return Err(TransitionError::WrongState {
+                expected: "Allocating",
+                actual: TransitionError::state_name(&other),
+            });
+        }
+    };
 
     if alloc.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
@@ -578,7 +586,15 @@ pub fn start_refresh(state: OpState, plan: Vec<TargetId>, op_id: u64) -> Transit
 /// # Returns
 /// * `Ok(TransitionResult)` with updated Refreshing state
 pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
-    let refresh = require_state!(state, Refreshing);
+    let refresh = match state {
+        OpState::Refreshing(refresh) => refresh,
+        other => {
+            return Err(TransitionError::WrongState {
+                expected: "Refreshing",
+                actual: TransitionError::state_name(&other),
+            });
+        }
+    };
 
     if refresh.op_id != op_id {
         return Err(TransitionError::OpIdMismatch {
