@@ -224,6 +224,36 @@ fn soroban_contract_blend_config_rejects_account_addresses() {
     });
 }
 
+#[test]
+fn soroban_contract_vault_snapshot_matches_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let asset = soroban_sdk::Address::generate(&env);
+    let share = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(env.clone(), curator, asset, share).unwrap();
+    });
+    env.as_contract(&contract_id, || {
+        let snapshot = SorobanVaultContract::vault_snapshot(env.clone());
+        assert_eq!(
+            snapshot.total_shares,
+            SorobanVaultContract::total_shares(env.clone())
+        );
+        assert_eq!(
+            snapshot.idle_assets,
+            SorobanVaultContract::idle_assets(env.clone())
+        );
+        assert_eq!(
+            snapshot.external_assets,
+            SorobanVaultContract::external_assets(env.clone())
+        );
+    });
+}
+
 fn preview_kernel_config(paused: bool) -> VaultConfig {
     VaultConfig {
         fees: FeesSpec::zero(),

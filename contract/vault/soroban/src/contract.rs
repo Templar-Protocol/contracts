@@ -1504,6 +1504,15 @@ pub enum VaultDataKey {
     Paused,
 }
 
+/// Batched snapshot of vault balances for view calls.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultSnapshot {
+    pub total_shares: i128,
+    pub idle_assets: i128,
+    pub external_assets: i128,
+}
+
 /// Soroban vault contract.
 ///
 /// This is the deployable contract that uses Soroban SDK's `#[contract]` macro.
@@ -1559,6 +1568,22 @@ fn query_vault_field(env: &Env, f: fn(&VaultState) -> u128) -> i128 {
         Ok(Some(versioned)) => to_i128(f(&versioned.state)).unwrap_or(0),
         Ok(None) => 0,
         Err(_) => 0,
+    }
+}
+
+fn query_vault_snapshot(env: &Env) -> VaultSnapshot {
+    let storage = SorobanStorage::new(env);
+    match storage.load_state() {
+        Ok(Some(versioned)) => VaultSnapshot {
+            total_shares: to_i128(versioned.state.total_shares).unwrap_or(0),
+            idle_assets: to_i128(versioned.state.idle_assets).unwrap_or(0),
+            external_assets: to_i128(versioned.state.external_assets).unwrap_or(0),
+        },
+        Ok(None) | Err(_) => VaultSnapshot {
+            total_shares: 0,
+            idle_assets: 0,
+            external_assets: 0,
+        },
     }
 }
 
@@ -1963,22 +1988,28 @@ impl SorobanVaultContract {
         storage.is_paused()
     }
 
+    /// Snapshot of vault balances for efficient off-chain reads.
+    pub fn vault_snapshot(env: Env) -> VaultSnapshot {
+        must(&env, ensure_not_reentrant(&env));
+        query_vault_snapshot(&env)
+    }
+
     /// Get total shares in circulation.
     pub fn total_shares(env: Env) -> i128 {
         must(&env, ensure_not_reentrant(&env));
-        query_vault_field(&env, |s| s.total_shares)
+        query_vault_snapshot(&env).total_shares
     }
 
     /// Get idle assets (not deployed to markets).
     pub fn idle_assets(env: Env) -> i128 {
         must(&env, ensure_not_reentrant(&env));
-        query_vault_field(&env, |s| s.idle_assets)
+        query_vault_snapshot(&env).idle_assets
     }
 
     /// Get external assets (deployed to markets).
     pub fn external_assets(env: Env) -> i128 {
         must(&env, ensure_not_reentrant(&env));
-        query_vault_field(&env, |s| s.external_assets)
+        query_vault_snapshot(&env).external_assets
     }
 
     /// Extend the TTL of contract storage.
