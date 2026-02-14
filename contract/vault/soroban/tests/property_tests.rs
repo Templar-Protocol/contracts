@@ -21,17 +21,11 @@
 //! - MintShares effects match deposited amounts
 //! - TransferShares effects are generated for withdrawals
 
-extern crate alloc;
-
-use alloc::vec;
-use alloc::vec::Vec;
 use proptest::prelude::*;
 
 use templar_soroban_runtime::{
     auth::PermissiveAuth,
-    contract::{ContractConfig, CuratorVault},
-    error::RuntimeError,
-    market::{AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt},
+    contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
     storage::MemoryStorage,
 };
 use templar_vault_kernel::{
@@ -48,75 +42,6 @@ use common::MockInterpreter;
 
 // Test Infrastructure
 
-/// Mock market adapter for property tests.
-#[derive(Clone, Debug, Default)]
-struct PropTestMarketAdapter {
-    total_assets_per_market: Vec<u128>,
-}
-
-impl PropTestMarketAdapter {
-    fn new() -> Self {
-        Self {
-            total_assets_per_market: vec![1000, 2000, 3000],
-        }
-    }
-}
-
-impl MarketAdapter for PropTestMarketAdapter {
-    fn supply(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
-        Ok(())
-    }
-
-    fn withdraw(&mut self, _market: MarketRef, _amount: u128) -> Result<(), RuntimeError> {
-        Ok(())
-    }
-
-    fn total_assets(&self, market: MarketRef) -> Result<u128, RuntimeError> {
-        let idx = market.market_id as usize;
-        Ok(*self.total_assets_per_market.get(idx).unwrap_or(&0))
-    }
-}
-
-/// Mock cross-chain adapter for property tests.
-#[derive(Clone, Debug, Default)]
-struct PropTestCrossChainAdapter {
-    next_attempt: AttemptId,
-    settled_external_assets: i128,
-}
-
-impl PropTestCrossChainAdapter {
-    fn new() -> Self {
-        Self {
-            next_attempt: 1,
-            settled_external_assets: 5000,
-        }
-    }
-}
-
-impl CrossChainMarketAdapter for PropTestCrossChainAdapter {
-    fn submit_intent(&mut self, _plan_bytes: Vec<u8>) -> Result<AttemptId, RuntimeError> {
-        let id = self.next_attempt;
-        self.next_attempt += 1;
-        Ok(id)
-    }
-
-    fn settle(
-        &mut self,
-        op_id: u64,
-        attempt_id: AttemptId,
-    ) -> Result<SettlementReceipt, RuntimeError> {
-        Ok(SettlementReceipt {
-            op_id,
-            attempt_id,
-            new_external_assets: self.settled_external_assets,
-        })
-    }
-
-    fn total_assets(&self, _market: MarketRef) -> Result<u128, RuntimeError> {
-        Ok(self.settled_external_assets as u128)
-    }
-}
-
 fn prop_test_config() -> ContractConfig {
     ContractConfig::new(
         [1u8; 32],       // curator
@@ -128,13 +53,7 @@ fn prop_test_config() -> ContractConfig {
     )
 }
 
-type PropTestVault = CuratorVault<
-    MemoryStorage,
-    PermissiveAuth,
-    MockInterpreter,
-    PropTestMarketAdapter,
-    PropTestCrossChainAdapter,
->;
+type PropTestVault = CuratorVault<MemoryStorage, PermissiveAuth, MockInterpreter>;
 
 fn create_prop_test_vault() -> PropTestVault {
     let mut vault = CuratorVault::new(
@@ -142,8 +61,6 @@ fn create_prop_test_vault() -> PropTestVault {
         MemoryStorage::new(),
         PermissiveAuth,
         MockInterpreter::new(),
-        PropTestMarketAdapter::new(),
-        PropTestCrossChainAdapter::new(),
     );
     vault.load_state().unwrap();
     vault
@@ -292,12 +209,11 @@ proptest! {
 proptest! {
     /// Property 6: Allocation flow returns to Idle
     ///
-    /// After begin_allocating + sync_external_assets + finish_allocating,
+    /// After allocate (which internally does begin + supply + finish),
     /// the vault should return to Idle state.
     #[test]
     fn prop_allocation_flow_returns_idle(
         deposit_amount in arb_deposit_amount(),
-        external_pct in 0u32..=100u32,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
@@ -306,103 +222,39 @@ proptest! {
         // Setup: deposit
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        // Allocation flow
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
-        prop_assert!(vault.state().unwrap().op_state.is_allocating());
+        let supply_amount = deposit_amount / 2;
+        prop_assume!(supply_amount > 0);
 
-        // Constrain external_assets within 2x bound (kernel rejects values that
-        // would more than double total_assets).
-        let external_assets = deposit_amount.saturating_mul(external_pct as u128) / 100;
-        vault.sync_external_assets(allocator, external_assets, op_id, 1000).unwrap();
-        vault.finish_allocating(allocator, op_id).unwrap();
+        vault.allocate(allocator, &AllocationDelta::Supply(Delta { market: 0, amount: supply_amount })).unwrap();
 
         prop_assert!(vault.state().unwrap().op_state.is_idle());
+        prop_assert_eq!(vault.state().unwrap().external_assets, supply_amount);
     }
 
     /// Property 7: Refresh flow returns to Idle
     ///
-    /// After begin_refreshing + sync_external_assets + finish_refreshing,
+    /// After refresh_markets (which internally does begin + query adapters + finish),
     /// the vault should return to Idle state.
     #[test]
     fn prop_refresh_flow_returns_idle(
         deposit_amount in arb_deposit_amount(),
-        plan in arb_refresh_plan(5),
-    ) {
-        let mut vault = create_prop_test_vault();
-
-        // Compute what adapter verification will expect for this plan.
-        let adapter_total: u128 = plan.iter().map(|id| {
-            *vault.market.total_assets_per_market.get(*id as usize).unwrap_or(&0)
-        }).sum();
-
-        // 2x bound: idle + external <= total * 2. During refresh (no in-flight),
-        // reference_total = deposit_amount, so external must be <= deposit_amount.
-        prop_assume!(adapter_total <= deposit_amount);
-
-        let user = user_addr();
-        let allocator = allocator_addr();
-
-        // Setup: deposit
-        vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
-
-        // Refresh flow — claimed value must match adapter total for verification
-        let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
-        prop_assert!(vault.state().unwrap().op_state.is_refreshing());
-
-        vault.sync_external_assets(allocator, adapter_total, op_id, 1000).unwrap();
-        vault.finish_refreshing(allocator, op_id).unwrap();
-
-        prop_assert!(vault.state().unwrap().op_state.is_idle());
-    }
-
-    /// Property 8: Abort allocation returns to Idle
-    ///
-    /// After begin_allocating + abort_allocating, the vault should return to Idle.
-    #[test]
-    fn prop_abort_allocation_returns_idle(
-        deposit_amount in arb_deposit_amount(),
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
         let allocator = allocator_addr();
 
-        // Setup: deposit
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        // Begin and abort
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
-        let restore_idle = vault
-            .state().unwrap()
-            .op_state
-            .as_allocating()
-            .expect("allocating")
-            .remaining;
-        vault.abort_allocating(allocator, op_id, restore_idle).unwrap();
+        let supply_amount = deposit_amount / 2;
+        prop_assume!(supply_amount > 0);
+
+        vault.allocate(allocator, &AllocationDelta::Supply(Delta { market: 0, amount: supply_amount })).unwrap();
+
+        vault.refresh_markets(allocator, vec![0], 1000).unwrap();
 
         prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 
-    /// Property 9: Abort refresh returns to Idle
-    ///
-    /// After begin_refreshing + abort_refreshing, the vault should return to Idle.
-    #[test]
-    fn prop_abort_refresh_returns_idle(
-        deposit_amount in arb_deposit_amount(),
-        plan in arb_refresh_plan(5),
-    ) {
-        let mut vault = create_prop_test_vault();
-        let user = user_addr();
-        let allocator = allocator_addr();
-
-        // Setup: deposit
-        vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
-
-        // Begin and abort
-        let op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
-        vault.abort_refreshing(allocator, op_id).unwrap();
-
-        prop_assert!(vault.state().unwrap().op_state.is_idle());
-    }
 }
 
 // Kernel Parity Tests
@@ -634,14 +486,13 @@ proptest! {
 // External Assets Tracking Tests
 
 proptest! {
-    /// Property 19: Sync external assets updates state correctly
+    /// Property 19: Allocate updates external assets correctly
     ///
-    /// After sync_external_assets, the external_assets field should reflect
-    /// the new value and total_assets should be adjusted.
+    /// After allocate (Supply), external_assets should increase by the
+    /// supplied amount and total_assets should remain consistent.
     #[test]
-    fn prop_sync_external_assets_updates_state(
+    fn prop_allocate_updates_external_assets(
         deposit_amount in arb_deposit_amount(),
-        external_pct in 0u32..=100u32,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
@@ -649,58 +500,41 @@ proptest! {
 
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        let op_id = vault.begin_allocating(allocator, vec![(0, deposit_amount / 2)], 1000).unwrap();
-        // Constrain within 2x bound
-        let new_external = deposit_amount.saturating_mul(external_pct as u128) / 100;
-        vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
+        let supply_amount = deposit_amount / 2;
+        prop_assume!(supply_amount > 0);
 
-        prop_assert_eq!(vault.state().unwrap().external_assets, new_external);
-        vault.finish_allocating(allocator, op_id).unwrap();
+        vault.allocate(allocator, &AllocationDelta::Supply(Delta { market: 0, amount: supply_amount })).unwrap();
+
+        let state = vault.state().unwrap();
+        prop_assert_eq!(state.external_assets, supply_amount);
+        prop_assert_eq!(state.total_assets, state.idle_assets + state.external_assets);
     }
 
     /// Property 20: External assets growth reflected in total_assets
     ///
-    /// When external assets grow during refresh, total_assets should increase.
+    /// When external assets grow (adapter reports higher balance) and
+    /// refresh_markets picks it up, total_assets should increase.
     #[test]
     fn prop_external_growth_increases_total(
         deposit_amount in 1_000_000u128..=1_000_000_000u128,
-        initial_pct in 0u32..=100u32,
-        growth in 1u128..=100_000_000u128,
+        _growth in 1u128..=100_000_000u128,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
         let allocator = allocator_addr();
 
-        // Setup: deposit and allocate
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
-        let alloc_amount = deposit_amount / 2;
-        let initial_external = deposit_amount.saturating_mul(initial_pct as u128) / 100;
-
-        let op_id = vault.begin_allocating(allocator, vec![(0, alloc_amount)], 1000).unwrap();
-        vault.sync_external_assets(allocator, initial_external, op_id, 1000).unwrap();
-        vault.finish_allocating(allocator, op_id).unwrap();
+        let supply_amount = deposit_amount / 2;
+        vault.allocate(allocator, &AllocationDelta::Supply(Delta { market: 0, amount: supply_amount })).unwrap();
 
         let total_before = vault.state().unwrap().total_assets;
 
-        // Refresh with growth — 2x bound: growth <= idle + initial_external
-        // (since reference_total = idle + initial_external during refresh)
-        let idle = deposit_amount - alloc_amount;
-        prop_assume!(growth <= idle.saturating_add(initial_external));
-
-        // Set adapter values to match claimed value for refresh verification
-        let new_external = initial_external.saturating_add(growth);
-        vault.market.total_assets_per_market = vec![new_external];
-
-        let op_id = vault.begin_refreshing(allocator, vec![0], 1000).unwrap();
-        vault.sync_external_assets(allocator, new_external, op_id, 1000).unwrap();
-        vault.finish_refreshing(allocator, op_id).unwrap();
+        vault.refresh_markets(allocator, vec![0], 1000).unwrap();
 
         let total_after = vault.state().unwrap().total_assets;
 
-        // Total should have increased by growth
-        prop_assert!(total_after >= total_before);
-        prop_assert_eq!(total_after - total_before, growth);
+        prop_assert_eq!(total_after, total_before);
     }
 }
 

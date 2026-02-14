@@ -26,7 +26,7 @@ pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Wad(pub Number);
 
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", not(feature = "postcard")))]
 mod serde_impl {
     use super::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -37,6 +37,30 @@ mod serde_impl {
             S: Serializer,
         {
             // Transparent serialization via Number - use fully qualified syntax
+            Serialize::serialize(&self.0, serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Wad {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            <Number as Deserialize>::deserialize(deserializer).map(Wad)
+        }
+    }
+}
+
+#[cfg(feature = "postcard")]
+mod postcard_serde_impl {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    impl Serialize for Wad {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
             Serialize::serialize(&self.0, serializer)
         }
     }

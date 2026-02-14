@@ -111,7 +111,7 @@ fn test_guardian_can_pause() {
 
     // User cannot pause
     let result = auth.authorize(ActionKind::Pause, user_addr(), None);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn test_allocator_actions() {
 
     // User cannot do allocation operations
     let result = auth.authorize(ActionKind::BeginAllocating, user_addr(), None);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]
@@ -170,11 +170,11 @@ fn test_manual_reconcile_curator_only() {
 
     // Allocator cannot
     let result = auth.authorize(ActionKind::ManualReconcile, allocator_addr(), None);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 
     // Guardian cannot
     let result = auth.authorize(ActionKind::ManualReconcile, guardian_addr(), None);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]

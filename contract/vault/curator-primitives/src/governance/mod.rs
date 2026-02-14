@@ -90,10 +90,7 @@ pub fn queue_take_mature<T>(
         return Err(PendingQueueError::NotMature);
     }
 
-    let value = queue
-        .remove(index)
-        .unwrap_or_else(|| unreachable!("pending queue index must be valid"))
-        .value;
+    let value = queue.remove(index).unwrap_or_else(|| panic!()).value;
     Ok(Some(value))
 }
 

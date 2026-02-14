@@ -6,10 +6,12 @@
 use alloc::vec::Vec;
 use derive_more::{From, Into};
 use soroban_sdk::{contracttype, Address as SdkAddress, Bytes, BytesN, Env};
+use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
 use templar_curator_primitives::policy::market_lock::MarketLockSet;
+use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::{Address, AddressBook, Restrictions, VaultState};
+use templar_vault_kernel::{Address, AddressBook, Restrictions, TargetId, VaultState};
 
 use crate::error::RuntimeError;
 
@@ -20,10 +22,6 @@ pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 /// loss during extended pauses or periods of inactivity.
 pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 
-/// Storage keys for Soroban ledger storage.
-///
-/// Using `#[contracttype]` allows the key enum to be used with Soroban's
-/// native storage API.
 #[contracttype]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone)]
@@ -31,33 +29,31 @@ pub enum SorobanStorageKey {
     StateBlob,
     PolicyLocks,
     PolicySupplyQueue,
-    /// Kernel restrictions (pause/allowlist/denylist).
+    PolicyMarkets,
+    PolicyPrincipals,
+    PolicyCapGroups,
     Restrictions,
-    /// Address book entry mapping kernel address to Soroban address.
     AddressBook(BytesN<32>),
-    /// Storage version number.
     Version,
-    /// Contract configuration.
     Config,
-    /// Pause flag.
     Paused,
 }
 
-fn borsh_serialize<T: borsh::BorshSerialize>(
+fn pc_serialize<T: serde::Serialize>(
     value: &T,
     msg: &'static str,
 ) -> Result<Vec<u8>, RuntimeError> {
-    match borsh::to_vec(value) {
+    match postcard::to_allocvec(value) {
         Ok(bytes) => Ok(bytes),
         Err(_) => Err(RuntimeError::storage_error(msg)),
     }
 }
 
-fn borsh_deserialize<T: borsh::BorshDeserialize>(
-    bytes: &[u8],
+fn pc_deserialize<'a, T: serde::Deserialize<'a>>(
+    bytes: &'a [u8],
     msg: &'static str,
 ) -> Result<T, RuntimeError> {
-    match T::try_from_slice(bytes) {
+    match postcard::from_bytes(bytes) {
         Ok(value) => Ok(value),
         Err(_) => Err(RuntimeError::storage_error(msg)),
     }
@@ -150,6 +146,51 @@ impl<'a> SorobanStorage<'a> {
     pub fn save_policy_supply_queue(&self, state: &Vec<u8>) {
         self.env.storage().persistent().set(
             &SorobanStorageKey::PolicySupplyQueue,
+            &Bytes::from_slice(self.env, state),
+        );
+    }
+
+    pub fn load_policy_markets(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get::<_, Bytes>(&SorobanStorageKey::PolicyMarkets)
+            .map(|b| b.to_alloc_vec())
+    }
+
+    pub fn save_policy_markets(&self, state: &Vec<u8>) {
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::PolicyMarkets,
+            &Bytes::from_slice(self.env, state),
+        );
+    }
+
+    pub fn load_policy_principals(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get::<_, Bytes>(&SorobanStorageKey::PolicyPrincipals)
+            .map(|b| b.to_alloc_vec())
+    }
+
+    pub fn save_policy_principals(&self, state: &Vec<u8>) {
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::PolicyPrincipals,
+            &Bytes::from_slice(self.env, state),
+        );
+    }
+
+    pub fn load_policy_cap_groups(&self) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get::<_, Bytes>(&SorobanStorageKey::PolicyCapGroups)
+            .map(|b| b.to_alloc_vec())
+    }
+
+    pub fn save_policy_cap_groups(&self, state: &Vec<u8>) {
+        self.env.storage().persistent().set(
+            &SorobanStorageKey::PolicyCapGroups,
             &Bytes::from_slice(self.env, state),
         );
     }
@@ -302,6 +343,42 @@ impl<'a> SorobanStorage<'a> {
             .env
             .storage()
             .persistent()
+            .has(&SorobanStorageKey::PolicyMarkets)
+        {
+            self.env.storage().persistent().extend_ttl(
+                &SorobanStorageKey::PolicyMarkets,
+                threshold,
+                extend_to,
+            );
+        }
+        if self
+            .env
+            .storage()
+            .persistent()
+            .has(&SorobanStorageKey::PolicyPrincipals)
+        {
+            self.env.storage().persistent().extend_ttl(
+                &SorobanStorageKey::PolicyPrincipals,
+                threshold,
+                extend_to,
+            );
+        }
+        if self
+            .env
+            .storage()
+            .persistent()
+            .has(&SorobanStorageKey::PolicyCapGroups)
+        {
+            self.env.storage().persistent().extend_ttl(
+                &SorobanStorageKey::PolicyCapGroups,
+                threshold,
+                extend_to,
+            );
+        }
+        if self
+            .env
+            .storage()
+            .persistent()
             .has(&SorobanStorageKey::Restrictions)
         {
             self.env.storage().persistent().extend_ttl(
@@ -326,7 +403,7 @@ impl Storage for SorobanStorage<'_> {
     fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
         if let Some(stored) = self.load_state_blob() {
             let versioned =
-                borsh_deserialize::<VersionedState>(&stored, "state blob deserialize failed")?;
+                pc_deserialize::<VersionedState>(&stored, "state blob deserialize failed")?;
 
             let version = SorobanStorage::get_version(self)
                 .ok_or_else(|| RuntimeError::storage_error("state version missing"))?;
@@ -347,7 +424,7 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
-        let state_blob = borsh_serialize(state, "state blob serialize failed")?;
+        let state_blob = pc_serialize(state, "state blob serialize failed")?;
         self.save_state_blob(&state_blob);
         self.set_version(state.version.number());
         self.extend_default_ttl();
@@ -376,25 +453,60 @@ impl Storage for SorobanStorage<'_> {
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
         let locks = match SorobanStorage::load_policy_locks(self) {
-            Some(stored) => Some(borsh_deserialize::<MarketLockSet>(
+            Some(stored) => Some(pc_deserialize::<MarketLockSet>(
                 &stored,
                 "policy_locks deserialize failed",
             )?),
             None => None,
         };
         let supply_queue = match SorobanStorage::load_policy_supply_queue(self) {
-            Some(stored) => Some(borsh_deserialize::<SupplyQueue>(
+            Some(stored) => Some(pc_deserialize::<SupplyQueue>(
                 &stored,
                 "policy_supply_queue deserialize failed",
             )?),
             None => None,
         };
+        let markets = match SorobanStorage::load_policy_markets(self) {
+            Some(stored) => Some(pc_deserialize::<OrderedMap<TargetId, MarketConfig>>(
+                &stored,
+                "policy_markets deserialize failed",
+            )?),
+            None => None,
+        };
+        let principals = match SorobanStorage::load_policy_principals(self) {
+            Some(stored) => Some(pc_deserialize::<OrderedMap<TargetId, u128>>(
+                &stored,
+                "policy_principals deserialize failed",
+            )?),
+            None => None,
+        };
+        let cap_groups = match SorobanStorage::load_policy_cap_groups(self) {
+            Some(stored) => Some(pc_deserialize::<OrderedMap<CapGroupId, CapGroupRecord>>(
+                &stored,
+                "policy_cap_groups deserialize failed",
+            )?),
+            None => None,
+        };
 
-        if locks.is_none() && supply_queue.is_none() {
+        if locks.is_none()
+            && supply_queue.is_none()
+            && markets.is_none()
+            && principals.is_none()
+            && cap_groups.is_none()
+        {
             return Ok(None);
         }
 
         let mut state = PolicyState::new();
+        if let Some(markets) = markets {
+            state.markets = markets;
+        }
+        if let Some(principals) = principals {
+            state.principals = principals;
+        }
+        if let Some(cap_groups) = cap_groups {
+            state.cap_groups = cap_groups;
+        }
         if let Some(locks) = locks {
             state.locks = locks;
         }
@@ -405,18 +517,26 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        let lock_bytes = borsh_serialize(&state.locks, "policy_locks serialize failed")?;
+        let lock_bytes = pc_serialize(&state.locks, "policy_locks serialize failed")?;
         SorobanStorage::save_policy_locks(self, &lock_bytes);
         let queue_bytes =
-            borsh_serialize(&state.supply_queue, "policy_supply_queue serialize failed")?;
+            pc_serialize(&state.supply_queue, "policy_supply_queue serialize failed")?;
         SorobanStorage::save_policy_supply_queue(self, &queue_bytes);
+        let market_bytes = pc_serialize(&state.markets, "policy_markets serialize failed")?;
+        SorobanStorage::save_policy_markets(self, &market_bytes);
+        let principal_bytes =
+            pc_serialize(&state.principals, "policy_principals serialize failed")?;
+        SorobanStorage::save_policy_principals(self, &principal_bytes);
+        let cap_group_bytes =
+            pc_serialize(&state.cap_groups, "policy_cap_groups serialize failed")?;
+        SorobanStorage::save_policy_cap_groups(self, &cap_group_bytes);
         self.extend_default_ttl();
         Ok(())
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
         match SorobanStorage::load_restrictions(self) {
-            Some(stored) => Ok(Some(borsh_deserialize::<Restrictions>(
+            Some(stored) => Ok(Some(pc_deserialize::<Restrictions>(
                 &stored,
                 "restrictions deserialize failed",
             )?)),
@@ -429,7 +549,7 @@ impl Storage for SorobanStorage<'_> {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         if let Some(restrictions) = restrictions {
-            let bytes = borsh_serialize(restrictions, "restrictions serialize failed")?;
+            let bytes = pc_serialize(restrictions, "restrictions serialize failed")?;
             SorobanStorage::save_restrictions(self, &bytes);
         } else {
             SorobanStorage::clear_restrictions(self);
@@ -455,16 +575,7 @@ impl Storage for SorobanStorage<'_> {
 /// Storage version identifier.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(
-    borsh::BorshSerialize,
-    borsh::BorshDeserialize,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    From,
-    Into,
+    serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, From, Into,
 )]
 pub struct StorageVersion(pub u32);
 
@@ -507,7 +618,7 @@ impl Default for StorageVersion {
 ///
 /// Wraps vault state with version information for storage migration support.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
 pub struct VersionedState {
     /// Storage schema version.
     pub version: StorageVersion,
@@ -614,7 +725,11 @@ pub struct MemoryStorage {
     state: Option<VersionedState>,
     initialized: bool,
     paused: bool,
-    policy_state: Option<PolicyState>,
+    policy_locks: Option<templar_curator_primitives::policy::market_lock::MarketLockSet>,
+    policy_supply_queue: Option<templar_curator_primitives::policy::supply_queue::SupplyQueue>,
+    policy_markets: Option<OrderedMap<TargetId, MarketConfig>>,
+    policy_principals: Option<OrderedMap<TargetId, u128>>,
+    policy_cap_groups: Option<OrderedMap<CapGroupId, CapGroupRecord>>,
     restrictions: Option<Restrictions>,
     address_book: AddressBook<SdkAddress>,
 }
@@ -635,7 +750,11 @@ impl MemoryStorage {
             state: Some(state),
             initialized: true,
             paused: false,
-            policy_state: None,
+            policy_locks: None,
+            policy_supply_queue: None,
+            policy_markets: None,
+            policy_principals: None,
+            policy_cap_groups: None,
             restrictions: None,
             address_book: AddressBook::new(),
         }
@@ -653,7 +772,11 @@ impl MemoryStorage {
     pub fn clear(&mut self) {
         self.state = None;
         self.initialized = false;
-        self.policy_state = None;
+        self.policy_locks = None;
+        self.policy_supply_queue = None;
+        self.policy_markets = None;
+        self.policy_principals = None;
+        self.policy_cap_groups = None;
         self.restrictions = None;
         self.address_book.clear();
     }
@@ -691,11 +814,40 @@ impl Storage for MemoryStorage {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        Ok(self.policy_state.clone())
+        if self.policy_locks.is_none()
+            && self.policy_supply_queue.is_none()
+            && self.policy_markets.is_none()
+            && self.policy_principals.is_none()
+            && self.policy_cap_groups.is_none()
+        {
+            return Ok(None);
+        }
+
+        let mut state = PolicyState::new();
+        if let Some(markets) = self.policy_markets.clone() {
+            state.markets = markets;
+        }
+        if let Some(principals) = self.policy_principals.clone() {
+            state.principals = principals;
+        }
+        if let Some(cap_groups) = self.policy_cap_groups.clone() {
+            state.cap_groups = cap_groups;
+        }
+        if let Some(locks) = self.policy_locks.clone() {
+            state.locks = locks;
+        }
+        if let Some(supply_queue) = self.policy_supply_queue.clone() {
+            state.supply_queue = supply_queue;
+        }
+        Ok(Some(state))
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        self.policy_state = Some(state.clone());
+        self.policy_locks = Some(state.locks.clone());
+        self.policy_supply_queue = Some(state.supply_queue.clone());
+        self.policy_markets = Some(state.markets.clone());
+        self.policy_principals = Some(state.principals.clone());
+        self.policy_cap_groups = Some(state.cap_groups.clone());
         Ok(())
     }
 

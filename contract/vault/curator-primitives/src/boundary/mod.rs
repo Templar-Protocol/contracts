@@ -81,7 +81,7 @@ pub fn auth_error_message(error: &AuthError) -> String {
     match error {
         AuthError::NotAuthorized { caller, .. } => format!("Not authorized: {caller}"),
         AuthError::InvalidProof => String::from("Invalid proof"),
-        AuthError::MissingRole(role) => format!("Missing role: {role}"),
+        AuthError::MissingRole => String::from("Missing role"),
         AuthError::VaultPaused => String::from("Vault is paused"),
     }
 }

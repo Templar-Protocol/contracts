@@ -21,6 +21,7 @@ pub mod boundary;
 pub mod governance;
 pub mod policy;
 pub mod rbac;
+#[cfg(feature = "recovery")]
 pub mod recovery;
 
 #[cfg(test)]
@@ -33,7 +34,7 @@ pub use auth::{
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
 pub use policy::{
-    cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord},
+    cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord, CapGroupUpdate},
     cap_group_adapter::{
         available_capacity_from_fields, can_allocate_from_fields, cap_group_from_fields,
         cap_group_record_from_fields, effective_cap_from_fields, enforce_from_fields,
@@ -56,6 +57,7 @@ pub use policy::{
     withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
 };
 
+#[cfg(feature = "recovery")]
 pub use recovery::{
     determine_recovery_action, handle_allocation_failure, handle_payout_failure,
     handle_payout_failure_default, handle_refresh_failure, handle_withdrawal_failure,

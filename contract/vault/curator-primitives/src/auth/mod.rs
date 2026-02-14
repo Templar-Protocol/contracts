@@ -6,7 +6,7 @@
 //! The core trait [`AuthAdapter`] allows each chain executor to implement its own
 //! signature verification while sharing the same action kinds and error types.
 
-use alloc::string::String;
+#[cfg(not(target_arch = "wasm32"))]
 use core::fmt;
 use templar_vault_kernel::{Address, KernelAction};
 
@@ -228,6 +228,7 @@ pub enum Caller {
 }
 
 impl Caller {
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -242,6 +243,7 @@ impl Caller {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for Caller {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -254,17 +256,12 @@ impl From<Address> for Caller {
     }
 }
 
-/// Authorization error details.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum AuthError {
-    /// Caller is not authorized for this action.
     NotAuthorized { caller: Caller, action: ActionKind },
-    /// Invalid proof provided.
     InvalidProof,
-    /// Missing required role.
-    MissingRole(String),
-    /// Vault is paused.
+    MissingRole,
     VaultPaused,
 }
 

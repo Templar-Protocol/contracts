@@ -18,7 +18,7 @@ pub type WIDE = U512;
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, From, Into)]
 pub struct Number(pub U256);
 
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", not(feature = "postcard")))]
 mod serde_impl {
     use super::*;
     use alloc::string::ToString;
@@ -61,6 +61,66 @@ mod serde_impl {
             }
 
             deserializer.deserialize_str(NumberVisitor)
+        }
+    }
+}
+
+#[cfg(feature = "postcard")]
+mod postcard_serde_impl {
+    use super::*;
+    use core::fmt;
+    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+
+    impl Serialize for Number {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut bytes = [0u8; 32];
+            self.0.write_as_little_endian(&mut bytes);
+            serializer.serialize_bytes(&bytes)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Number {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct NumberVisitor;
+
+            impl<'de> de::Visitor<'de> for NumberVisitor {
+                type Value = Number;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("32 bytes little-endian U256")
+                }
+
+                fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    if v.len() != 32 {
+                        return Err(E::custom("expected exactly 32 bytes for U256"));
+                    }
+                    Ok(Number(U256::from_little_endian(v)))
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: de::SeqAccess<'de>,
+                {
+                    let mut bytes = [0u8; 32];
+                    for (i, byte) in bytes.iter_mut().enumerate() {
+                        *byte = seq
+                            .next_element()?
+                            .ok_or_else(|| de::Error::invalid_length(i, &self))?;
+                    }
+                    Ok(Number(U256::from_little_endian(&bytes)))
+                }
+            }
+
+            deserializer.deserialize_bytes(NumberVisitor)
         }
     }
 }

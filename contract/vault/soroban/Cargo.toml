@@ -16,20 +16,22 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 # Core dependency - vault kernel types
-templar-vault-kernel = { path = "../kernel", features = ["borsh"] }
+templar-vault-kernel = { path = "../kernel", features = ["postcard"] }
 
 # Curator primitives for policy and recovery
-templar-curator-primitives = { path = "../curator-primitives", features = ["borsh"] }
+templar-curator-primitives = { path = "../curator-primitives", features = ["postcard"] }
 derive_more.workspace = true
-borsh = { version = "1.5", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # Soroban SDK for Stellar smart contracts
 soroban-sdk = { version = "23.5.1", features = ["alloc"] }
 
 # OpenZeppelin Stellar Contracts — Pausable and Upgradeable utilities
-stellar-contract-utils.workspace = true
+stellar-contract-utils = { workspace = true, default-features = false }
 
 [dev-dependencies]
 proptest = "1.4"
 soroban-sdk = { version = "23.5.1", features = ["testutils", "alloc"] }
 rstest.workspace = true
+templar-soroban-runtime = { path = ".", features = ["testutils"] }

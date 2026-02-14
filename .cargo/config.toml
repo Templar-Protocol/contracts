@@ -1,3 +1,10 @@
 [env]
 # https://github.com/rust-lang/cargo/issues/3946#issuecomment-973132993
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "--remap-path-prefix=/home/common/projects/templar/contracts/=",
+    "--remap-path-prefix=/home/common/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/=",
+    "--remap-path-prefix=/nix/store/dh1f42q8br53xriy4manwrzvb223xlja-rust-stable-1.86.0-1.86.0/lib/rustlib/src/rust/=",
+]

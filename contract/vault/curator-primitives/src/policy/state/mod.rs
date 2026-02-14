@@ -15,6 +15,7 @@ use super::supply_queue::SupplyQueue;
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -125,11 +126,13 @@ impl<K, V> IntoIterator for OrderedMap<K, V> {
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct MarketConfig {
     pub enabled: bool,
+    pub cap: u128,
     pub cap_group_id: Option<CapGroupId>,
 }
 
@@ -137,8 +140,15 @@ impl MarketConfig {
     pub fn new(enabled: bool, cap_group_id: Option<CapGroupId>) -> Self {
         Self {
             enabled,
+            cap: 0,
             cap_group_id,
         }
+    }
+
+    #[must_use]
+    pub fn with_cap(mut self, cap: u128) -> Self {
+        self.cap = cap;
+        self
     }
 }
 
@@ -146,6 +156,7 @@ impl Default for MarketConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            cap: 0,
             cap_group_id: None,
         }
     }
@@ -156,6 +167,7 @@ impl Default for MarketConfig {
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]

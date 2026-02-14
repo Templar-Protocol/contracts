@@ -428,7 +428,7 @@ where
     }
 
     fn emit_event(&self, event: &KernelEvent) -> EffectResult<()> {
-        let payload = match borsh::to_vec(event) {
+        let payload = match postcard::to_allocvec(event) {
             Ok(payload) => payload,
             Err(_) => {
                 return Err(RuntimeError::effect_failed(

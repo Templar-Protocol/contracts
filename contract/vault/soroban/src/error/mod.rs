@@ -2,7 +2,6 @@
 
 use soroban_sdk::contracterror;
 
-/// Contract-facing error codes for Soroban entrypoints.
 #[contracterror]
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -105,7 +104,7 @@ impl From<crate::auth::AuthError> for RuntimeError {
         match err {
             crate::auth::AuthError::NotAuthorized { .. } => RuntimeError::Unauthorized,
             crate::auth::AuthError::InvalidProof => RuntimeError::Unauthorized,
-            crate::auth::AuthError::MissingRole(_) => RuntimeError::Unauthorized,
+            crate::auth::AuthError::MissingRole => RuntimeError::Unauthorized,
             crate::auth::AuthError::VaultPaused => RuntimeError::InvalidState,
         }
     }

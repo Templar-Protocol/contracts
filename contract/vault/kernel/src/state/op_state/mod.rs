@@ -44,6 +44,7 @@ pub type TargetId = u32;
 
 /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -55,6 +56,7 @@ pub struct IdleState;
 /// - On completion of allocation: `Withdrawing` (to satisfy pending user requests) or `Idle` (if stopped).
 /// - On stop/failure: `Idle`.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -72,6 +74,7 @@ pub struct AllocatingState {
 /// - When enough is collected to satisfy the request: `Payout`.
 /// - If the op is stopped or cannot proceed and needs to refund: `Idle` (escrow_shares refunded).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -91,6 +94,7 @@ pub struct WithdrawingState {
 /// - On completion: `Idle`.
 /// - On failure: `Idle` (with potentially stale AUM data).
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -110,6 +114,7 @@ pub struct RefreshingState {
 /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
 /// - On failure, all `escrow_shares` are refunded.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -178,6 +183,7 @@ impl RefreshingState {
 /// - `idle_balance` increases only when funds are received and decreases only on payout success.
 /// - `escrow_shares` are refunded on stop/failure or partially burned/refunded on payout success.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default, PartialEq, Eq, From, IsVariant)]
@@ -242,6 +248,7 @@ impl OpState {
     }
 
     /// Returns a human-readable name for the current op state.
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     #[must_use]
     pub const fn kind_name(&self) -> &'static str {

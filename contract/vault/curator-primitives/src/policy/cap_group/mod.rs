@@ -10,6 +10,7 @@ use typed_builder::TypedBuilder;
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
@@ -36,6 +37,7 @@ impl From<&str> for CapGroupId {
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
@@ -201,6 +203,7 @@ impl CapGroup {
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
@@ -289,6 +292,24 @@ pub enum CapGroupError {
     Overflow {
         current_principal: u128,
         requested: u128,
+    },
+}
+
+/// A cap-group governance update (shared across chains).
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
+pub enum CapGroupUpdate {
+    SetCap {
+        cap_group_id: CapGroupId,
+        new_cap: u128,
+    },
+    SetRelativeCap {
+        cap_group_id: CapGroupId,
+        new_relative_cap_wad: u128,
+    },
+    SetMembership {
+        market_id: templar_vault_kernel::TargetId,
+        cap_group_id: Option<CapGroupId>,
     },
 }
 

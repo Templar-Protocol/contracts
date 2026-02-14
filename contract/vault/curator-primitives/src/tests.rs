@@ -12,12 +12,15 @@ use crate::policy::cap_group::CapGroup;
 use crate::policy::refresh_plan::build_refresh_plan;
 use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use crate::policy::withdraw_route::{build_withdraw_route, WithdrawRoute, WithdrawRouteEntry};
+#[cfg(feature = "recovery")]
 use crate::recovery::{
     compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
     RecoveryProgress,
 };
+#[cfg(feature = "recovery")]
 use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 use templar_vault_kernel::Wad;
+#[cfg(feature = "recovery")]
 use templar_vault_kernel::{
     AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
     WithdrawingState,
@@ -306,8 +309,7 @@ fn golden_refresh_plan_building() {
     assert_eq!(plan.cooldown_ns(), 30_000_000_000); // 30 seconds
 }
 
-// Golden Test: Recovery Actions
-
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_recovery_allocating_state() {
     // Simulate an allocating state that got stuck
@@ -345,6 +347,7 @@ fn golden_recovery_allocating_state() {
     assert_eq!(stats.remaining_amount, 500_000_000_000);
 }
 
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_recovery_withdrawing_state() {
     let state = OpState::Withdrawing(WithdrawingState {
@@ -373,6 +376,7 @@ fn golden_recovery_withdrawing_state() {
     }
 }
 
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_recovery_payout_state() {
     let state = OpState::Payout(PayoutState {
@@ -406,8 +410,7 @@ fn golden_recovery_payout_state() {
     }
 }
 
-// Golden Test: Settlement Share Calculations
-
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_settlement_shares_full() {
     // Full withdrawal: collected == expected
@@ -416,6 +419,7 @@ fn golden_settlement_shares_full() {
     assert_eq!(settlement.refund, 0); // Nothing refunded
 }
 
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_settlement_shares_partial() {
     // Partial withdrawal: collected 60% of expected
@@ -426,6 +430,7 @@ fn golden_settlement_shares_partial() {
     assert_eq!(settlement.refund, 400_000_000_000);
 }
 
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_settlement_shares_over_collection() {
     // Over-collection: collected > expected (edge case)
@@ -434,6 +439,7 @@ fn golden_settlement_shares_over_collection() {
     assert_eq!(settlement.refund, 0); // Nothing refunded
 }
 
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_settlement_shares_large_values() {
     // Test with large values to ensure no overflow
@@ -503,6 +509,7 @@ fn golden_full_allocation_cycle() {
     }
 }
 
+#[cfg(feature = "recovery")]
 #[test]
 fn golden_refresh_after_allocation() {
     let snapshot = NearVaultSnapshot::default();

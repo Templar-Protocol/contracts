@@ -36,6 +36,7 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -70,6 +71,7 @@ impl PendingWithdrawal {
 
 /// Result of attempting to satisfy a withdrawal from available assets.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -80,6 +82,7 @@ pub struct WithdrawalResult {
 
 /// Status information for a single withdrawal request in the queue.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -91,6 +94,7 @@ pub struct WithdrawalRequestStatus {
 
 /// Aggregate status of the entire withdrawal queue.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -408,6 +412,7 @@ use alloc::vec::Vec;
 pub use crate::state::vault::MAX_PENDING;
 
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -417,6 +422,7 @@ pub struct PendingWithdrawals {
 }
 
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -539,6 +545,7 @@ impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
 /// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
 /// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -726,8 +733,6 @@ impl WithdrawQueue {
     /// # Returns
     /// `Some((id, withdrawal))` if non-empty, `None` if empty.
     ///
-    /// # Panics
-    /// Panics if cached totals underflow, indicating queue cache corruption.
     pub fn dequeue(&mut self) -> Option<(u64, PendingWithdrawal)> {
         if self.is_empty() {
             return None;
@@ -736,16 +741,26 @@ impl WithdrawQueue {
         let head_id = self.next_withdraw_to_execute;
         let withdrawal = self.pending_withdrawals.remove(&head_id)?;
 
-        // Update cached totals — use checked_sub to detect invariant violations.
-        // If the cache is less than the withdrawal amount, the queue is corrupt.
-        self.cached_total_escrow = self
-            .cached_total_escrow
-            .checked_sub(withdrawal.escrow_shares)
-            .expect("dequeue: cached_total_escrow underflow — queue cache corrupt");
-        self.cached_total_expected = self
-            .cached_total_expected
-            .checked_sub(withdrawal.expected_assets)
-            .expect("dequeue: cached_total_expected underflow — queue cache corrupt");
+        #[cfg(test)]
+        {
+            self.cached_total_escrow = self
+                .cached_total_escrow
+                .checked_sub(withdrawal.escrow_shares)
+                .expect("dequeue: cached_total_escrow underflow — queue cache corrupt");
+            self.cached_total_expected = self
+                .cached_total_expected
+                .checked_sub(withdrawal.expected_assets)
+                .expect("dequeue: cached_total_expected underflow — queue cache corrupt");
+        }
+        #[cfg(not(test))]
+        {
+            self.cached_total_escrow = self
+                .cached_total_escrow
+                .saturating_sub(withdrawal.escrow_shares);
+            self.cached_total_expected = self
+                .cached_total_expected
+                .saturating_sub(withdrawal.expected_assets);
+        }
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self
@@ -908,6 +923,7 @@ impl WithdrawQueue {
 
 /// Errors that can occur during queue operations.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]

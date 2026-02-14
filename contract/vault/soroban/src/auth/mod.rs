@@ -4,7 +4,6 @@
 //! and provides the Soroban-specific [`SorobanAuth`] adapter that integrates with
 //! Soroban's native `require_auth()` authentication.
 
-use alloc::string::String;
 use soroban_sdk::{Address as SdkAddress, Env};
 
 pub use templar_curator_primitives::auth::{
@@ -146,7 +145,7 @@ impl<'a> SorobanAuth<'a> {
         if has_role {
             Ok(())
         } else {
-            Err(AuthError::MissingRole(String::from(role.as_str())))
+            Err(AuthError::MissingRole)
         }
     }
 

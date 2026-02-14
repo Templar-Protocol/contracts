@@ -36,7 +36,6 @@ pub mod error;
 pub mod fungible_vault;
 pub mod market;
 pub mod policy;
-pub mod reconciliation;
 pub mod storage;
 
 pub use auth::{ActionKind, AuthAdapter, AuthError, SorobanAuth};
@@ -50,12 +49,8 @@ pub use effects::{
 };
 pub use error::{ContractError, RuntimeError};
 pub use market::{
-    AttemptId, CrossChainMarketAdapter, MarketAdapter, MarketRef, SettlementReceipt,
-    SorobanCrossChainMarketAdapter, SorobanMarketAdapter, TestCrossChainAdapter, TestMarketAdapter,
-};
-pub use reconciliation::{
-    build_refresh_plan, reconcile_external_assets, resync_external_assets, ReconciliationEvent,
-    ReconciliationRecord, ResyncRequest, ResyncResult,
+    AttemptId, MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter, SorobanMarketAdapter,
+    TestCrossChainAdapter, TestMarketAdapter,
 };
 pub use storage::{
     MemoryStorage, SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,

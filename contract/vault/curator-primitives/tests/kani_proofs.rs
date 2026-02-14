@@ -8,10 +8,11 @@ mod test_equivalents {
     use templar_curator_primitives::policy::withdraw_route::{
         build_withdraw_route, build_withdraw_route_with_liquidity,
     };
-    use templar_curator_primitives::recovery::compute_settlement_shares;
 
+    #[cfg(feature = "recovery")]
     #[test]
     fn settlement_conserves_escrow() {
+        use templar_curator_primitives::recovery::compute_settlement_shares;
         let cases = [
             (100u128, 100u128, 100u128),
             (100u128, 200u128, 50u128),
@@ -57,11 +58,12 @@ mod proofs {
     use templar_curator_primitives::policy::withdraw_route::{
         build_withdraw_route, build_withdraw_route_with_liquidity,
     };
-    use templar_curator_primitives::recovery::compute_settlement_shares;
     use templar_vault_kernel::Wad;
 
+    #[cfg(feature = "recovery")]
     #[kani::proof]
     fn kani_settlement_conserves_escrow() {
+        use templar_curator_primitives::recovery::compute_settlement_shares;
         let escrow: u128 = kani::any();
         let expected: u128 = kani::any();
         let collected: u128 = kani::any();

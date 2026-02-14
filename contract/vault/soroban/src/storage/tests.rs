@@ -91,21 +91,27 @@ fn test_soroban_storage_key_variants() {
     let key1 = SorobanStorageKey::StateBlob;
     let key2 = SorobanStorageKey::PolicyLocks;
     let key3 = SorobanStorageKey::PolicySupplyQueue;
-    let key4 = SorobanStorageKey::Restrictions;
-    let key5 = SorobanStorageKey::Version;
-    let key6 = SorobanStorageKey::Config;
-    let key7 = SorobanStorageKey::Paused;
-    let key8 = SorobanStorageKey::AddressBook(BytesN::from_array(&env, &[0u8; 32]));
+    let key4 = SorobanStorageKey::PolicyMarkets;
+    let key5 = SorobanStorageKey::PolicyPrincipals;
+    let key6 = SorobanStorageKey::PolicyCapGroups;
+    let key7 = SorobanStorageKey::Restrictions;
+    let key8 = SorobanStorageKey::Version;
+    let key9 = SorobanStorageKey::Config;
+    let key10 = SorobanStorageKey::Paused;
+    let key11 = SorobanStorageKey::AddressBook(BytesN::from_array(&env, &[0u8; 32]));
 
     // Keys should be distinct
     assert!(matches!(key1, SorobanStorageKey::StateBlob));
     assert!(matches!(key2, SorobanStorageKey::PolicyLocks));
     assert!(matches!(key3, SorobanStorageKey::PolicySupplyQueue));
-    assert!(matches!(key4, SorobanStorageKey::Restrictions));
-    assert!(matches!(key5, SorobanStorageKey::Version));
-    assert!(matches!(key6, SorobanStorageKey::Config));
-    assert!(matches!(key7, SorobanStorageKey::Paused));
-    assert!(matches!(key8, SorobanStorageKey::AddressBook(_)));
+    assert!(matches!(key4, SorobanStorageKey::PolicyMarkets));
+    assert!(matches!(key5, SorobanStorageKey::PolicyPrincipals));
+    assert!(matches!(key6, SorobanStorageKey::PolicyCapGroups));
+    assert!(matches!(key7, SorobanStorageKey::Restrictions));
+    assert!(matches!(key8, SorobanStorageKey::Version));
+    assert!(matches!(key9, SorobanStorageKey::Config));
+    assert!(matches!(key10, SorobanStorageKey::Paused));
+    assert!(matches!(key11, SorobanStorageKey::AddressBook(_)));
 }
 
 // Helper to create a registered contract for storage tests
@@ -284,7 +290,7 @@ fn test_soroban_storage_load_state_rejects_trailing_bytes(
     env.as_contract(&contract_id, || {
         let storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());
-        let mut bytes = borsh::to_vec(&versioned).unwrap();
+        let mut bytes = postcard::to_allocvec(&versioned).unwrap();
         bytes.push(0xff);
         storage.save_state_blob(&bytes);
 
@@ -304,7 +310,7 @@ fn test_soroban_storage_load_state_rejects_missing_version_key(
     env.as_contract(&contract_id, || {
         let storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());
-        let bytes = borsh::to_vec(&versioned).unwrap();
+        let bytes = postcard::to_allocvec(&versioned).unwrap();
         storage.save_state_blob(&bytes);
 
         let err = Storage::load_state(&storage).unwrap_err();
@@ -320,7 +326,7 @@ fn test_soroban_storage_load_state_rejects_mismatched_version(
     env.as_contract(&contract_id, || {
         let storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(VaultState::default());
-        let bytes = borsh::to_vec(&versioned).unwrap();
+        let bytes = postcard::to_allocvec(&versioned).unwrap();
         storage.save_state_blob(&bytes);
         storage.set_version(StorageVersion::new(2).number());
 
@@ -337,7 +343,7 @@ fn test_soroban_storage_load_state_rejects_incompatible_version(
     env.as_contract(&contract_id, || {
         let storage = SorobanStorage::new(&env);
         let versioned = VersionedState::with_version(StorageVersion::new(2), VaultState::default());
-        let bytes = borsh::to_vec(&versioned).unwrap();
+        let bytes = postcard::to_allocvec(&versioned).unwrap();
         storage.save_state_blob(&bytes);
         storage.set_version(StorageVersion::new(2).number());
 

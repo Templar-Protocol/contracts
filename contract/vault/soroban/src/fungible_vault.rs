@@ -65,7 +65,7 @@ fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
 }
 
 fn emit_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), ContractError> {
-    let payload = match borsh::to_vec(event) {
+    let payload = match postcard::to_allocvec(event) {
         Ok(payload) => payload,
         Err(_) => return Err(ContractError::EffectFailed),
     };
@@ -104,6 +104,7 @@ fn mint_fee_shares(
     Ok(minted)
 }
 
+#[inline(never)]
 pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
     let mut storage = SorobanStorage::new(env);
@@ -218,6 +219,7 @@ pub(crate) fn to_u128(v: i128) -> Result<u128, ContractError> {
 ///
 /// This bypasses the withdrawal queue and is only valid when Idle with
 /// sufficient idle assets (caller must verify these preconditions).
+#[inline(never)]
 pub(crate) fn atomic_withdraw_internal(
     env: &Env,
     owner: &SdkAddress,

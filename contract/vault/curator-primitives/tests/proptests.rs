@@ -3,6 +3,7 @@ use proptest::prelude::*;
 use templar_curator_primitives::policy::withdraw_route::{
     build_withdraw_route, build_withdraw_route_with_liquidity,
 };
+#[cfg(feature = "recovery")]
 use templar_curator_primitives::recovery::compute_settlement_shares;
 
 fn assert_route_order_by_principal(route: &[(u32, u128)]) {
@@ -17,6 +18,7 @@ fn assert_route_order_by_principal(route: &[(u32, u128)]) {
     }
 }
 
+#[cfg(feature = "recovery")]
 proptest! {
     #[test]
     fn prop_compute_settlement_shares_conserves_escrow(
@@ -47,7 +49,9 @@ proptest! {
             prop_assert_eq!(settlement.refund, 0);
         }
     }
+}
 
+proptest! {
     #[test]
     fn prop_build_withdraw_route_is_valid(
         data in prop::collection::vec((1u32..200, 1u64..1_000_000), 1..20),

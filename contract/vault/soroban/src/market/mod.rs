@@ -2,15 +2,6 @@
 //!
 //! Adapters abstract over local Soroban markets and cross-chain Templar markets.
 //!
-//! This module provides two sets of adapter interfaces:
-//!
-//! 1. **Soroban-style adapters** (`SorobanMarketAdapter`, `SorobanCrossChainMarketAdapter`):
-//!    Use Soroban `Env` and `Address` types for direct Soroban contract integration.
-//!
-//! 2. **Generic adapters** (`MarketAdapter`, `CrossChainMarketAdapter`):
-//!    Use kernel types (`MarketRef`) for testing and chain-agnostic logic.
-
-use alloc::vec::Vec;
 use soroban_sdk::{Address, Bytes, Env};
 use templar_vault_kernel::{AssetId, TargetId};
 
@@ -125,35 +116,6 @@ impl From<MarketRef> for (TargetId, AssetId) {
     fn from(value: MarketRef) -> Self {
         (value.market_id, value.asset_id)
     }
-}
-
-/// Generic adapter interface for local Soroban markets.
-///
-/// This is a chain-agnostic interface using kernel types for testing
-/// and generic reconciliation logic.
-pub trait MarketAdapter {
-    /// Supply assets into the target market.
-    fn supply(&mut self, market: MarketRef, amount: u128) -> Result<(), RuntimeError>;
-    /// Withdraw assets from the target market.
-    fn withdraw(&mut self, market: MarketRef, amount: u128) -> Result<(), RuntimeError>;
-    /// Read total assets for a market.
-    fn total_assets(&self, market: MarketRef) -> Result<u128, RuntimeError>;
-}
-
-/// Generic adapter interface for cross-chain Templar markets via intents.
-///
-/// This is a chain-agnostic interface for testing and generic logic.
-pub trait CrossChainMarketAdapter {
-    /// Submit a cross-chain allocation intent. Returns an opaque attempt id.
-    fn submit_intent(&mut self, plan_bytes: Vec<u8>) -> Result<AttemptId, RuntimeError>;
-    /// Settle a completed attempt and return the new external assets.
-    fn settle(
-        &mut self,
-        op_id: u64,
-        attempt_id: AttemptId,
-    ) -> Result<SettlementReceipt, RuntimeError>;
-    /// Read total assets for a market.
-    fn total_assets(&self, market: MarketRef) -> Result<u128, RuntimeError>;
 }
 
 /// Test implementation of `SorobanMarketAdapter` for use with SDK testutils.

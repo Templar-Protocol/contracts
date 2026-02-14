@@ -40,7 +40,8 @@ wasm_dir := root + "/target/wasm32-unknown-unknown/release"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
-default_wasm := optimized_wasm
+deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
+default_wasm := deploy_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.optimized.wasm"
@@ -99,7 +100,10 @@ build:
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" 2>/dev/null
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_governance.wasm" 2>/dev/null
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_share_token.wasm" 2>/dev/null
+	@python "{{justfile_directory()}}/scripts/strip_contractspec.py" \
+		--input "{{optimized_wasm}}" --output "{{deploy_wasm}}"
 	@echo "✓ Built optimized: {{optimized_wasm}}"
+	@echo "✓ Built deploy:    {{deploy_wasm}}"
 	@echo "✓ Built governance: {{governance_wasm}}"
 	@echo "✓ Built share token: {{share_token_wasm}}"
 
@@ -155,13 +159,17 @@ wasm-analyze-print report="all" lines="120":
 		--report "{{report}}" \
 		--lines "{{lines}}"
 
-# Print the default WASM path.
+# Print the default WASM path (deploy artifact, contractspecv0 stripped).
 wasm-path:
 	@echo "{{default_wasm}}"
 
 # Print the optimized (with contract spec) WASM path.
 optimized-wasm-path:
 	@echo "{{optimized_wasm}}"
+
+# Print the deploy (spec-stripped) WASM path.
+deploy-wasm-path:
+	@echo "{{deploy_wasm}}"
 
 # Print the Blend adapter WASM path.
 blend-adapter-wasm-path:

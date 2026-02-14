@@ -39,43 +39,24 @@ use crate::types::Address;
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum TransitionError {
-    WrongState {
-        expected: &'static str,
-        actual: &'static str,
-    },
-    OpIdMismatch {
-        expected: u64,
-        actual: u64,
-    },
+    WrongState,
+    OpIdMismatch { expected: u64, actual: u64 },
     EmptyAllocationPlan,
     EmptyRefreshPlan,
     ZeroWithdrawalAmount,
     ZeroEscrowShares,
-    InvalidIndex {
-        index: u32,
-        max: u32,
-    },
-    CollectionOverflow {
-        collected: u128,
-        remaining: u128,
-    },
-    AllocationOverflow {
-        allocated: u128,
-        remaining: u128,
-    },
+    InvalidIndex { index: u32, max: u32 },
+    CollectionOverflow { collected: u128, remaining: u128 },
+    AllocationOverflow { allocated: u128, remaining: u128 },
     ZeroAllocationAmount,
-    BurnExceedsEscrow {
-        burn: u128,
-        escrow: u128,
-    },
-    WithdrawalIncomplete {
-        remaining: u128,
-        collected: u128,
-    },
+    BurnExceedsEscrow { burn: u128, escrow: u128 },
+    WithdrawalIncomplete { remaining: u128, collected: u128 },
 }
 
 impl TransitionError {
     /// Get the name of an OpState variant as a static string.
+    #[allow(dead_code)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn state_name(state: &OpState) -> &'static str {
         state.kind_name()
     }
@@ -128,10 +109,7 @@ macro_rules! require_state {
         match &$state {
             OpState::$variant(s) => s,
             _ => {
-                return Err(TransitionError::WrongState {
-                    expected: stringify!($variant),
-                    actual: TransitionError::state_name(&$state),
-                });
+                return Err(TransitionError::WrongState);
             }
         }
     };
@@ -141,10 +119,7 @@ macro_rules! require_state {
 macro_rules! require_idle {
     ($state:expr) => {
         if !$state.is_idle() {
-            return Err(TransitionError::WrongState {
-                expected: "Idle",
-                actual: TransitionError::state_name(&$state),
-            });
+            return Err(TransitionError::WrongState);
         }
     };
 }
@@ -216,10 +191,8 @@ pub fn allocation_step_callback(
     let alloc = match state {
         OpState::Allocating(alloc) => alloc,
         other => {
-            return Err(TransitionError::WrongState {
-                expected: "Allocating",
-                actual: TransitionError::state_name(&other),
-            });
+            let _ = other;
+            return Err(TransitionError::WrongState);
         }
     };
 
@@ -571,10 +544,8 @@ pub fn refresh_step_callback(state: OpState, op_id: u64) -> TransitionRes {
     let refresh = match state {
         OpState::Refreshing(refresh) => refresh,
         other => {
-            return Err(TransitionError::WrongState {
-                expected: "Refreshing",
-                actual: TransitionError::state_name(&other),
-            });
+            let _ = other;
+            return Err(TransitionError::WrongState);
         }
     };
 

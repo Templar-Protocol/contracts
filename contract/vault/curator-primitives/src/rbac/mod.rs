@@ -12,7 +12,6 @@
 //! - **Allocator**: Can manage allocations and refreshes
 //! - **User**: Can deposit, withdraw, execute withdrawals
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use templar_vault_kernel::Address;
 
@@ -55,7 +54,7 @@ pub enum Role {
 }
 
 impl Role {
-    /// Get the role name as a string.
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     #[must_use]
     pub fn as_str(&self) -> &'static str {
@@ -250,7 +249,7 @@ impl AuthAdapter for RbacAuth {
         // Check role requirements
         if let Some(required_role) = required_role(action) {
             if !self.has_required_role(&caller, required_role) {
-                return Err(AuthError::MissingRole(String::from(required_role.as_str())));
+                return Err(AuthError::MissingRole);
             }
         }
 

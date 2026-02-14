@@ -337,7 +337,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PendingIds"
+                              "symbol": "PendingQueue"
                             }
                           ]
                         },

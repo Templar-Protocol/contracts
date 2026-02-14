@@ -1,13 +1,19 @@
 #![no_std]
 
+extern crate alloc;
+
+use alloc::collections::{BTreeSet, VecDeque};
+
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
     IntoVal, Symbol, Val, Vec,
 };
 use templar_curator_primitives::governance::{
-    evaluate_fee_change, guardian_change_decision, sentinel_change_decision,
-    timelock_config_decision, FeeChangeError, FeeConfig, TimelockConfigError, TimelockDecision,
+    determine_relaxed, evaluate_fee_change, guardian_change_decision, queue_has_pending,
+    queue_revoke_pending, queue_schedule, queue_take_mature, sentinel_change_decision,
+    timelock_config_decision, FeeChangeError, FeeConfig, PendingQueueError, PendingValue,
+    Restrictions as SharedRestrictions, TimelockConfigError, TimelockDecision,
 };
 use templar_vault_kernel::math::wad::Wad;
 
@@ -26,8 +32,7 @@ enum DataKey {
     TimelockNs,
     Timelocks,
     NextProposalId,
-    PendingIds,
-    PendingProposal(u64),
+    PendingQueue,
     ApprovedOther(Symbol, BytesN<32>),
     CurrentPaused,
     CurrentFees,
@@ -191,6 +196,21 @@ pub struct PendingProposal {
     pub valid_after_ns: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+pub struct QueuedProposal {
+    pub id: u64,
+    pub action: GovernanceAction,
+}
+
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+pub struct StoredPending {
+    pub id: u64,
+    pub action: GovernanceAction,
+    pub valid_at_ns: u64,
+}
+
 #[contractevent]
 #[derive(Clone)]
 pub struct ProposalSubmitted {
@@ -259,7 +279,7 @@ impl SorobanVaultGovernanceContract {
             .set(&DataKey::NextProposalId, &1u64);
         env.storage()
             .instance()
-            .set(&DataKey::PendingIds, &Vec::<u64>::new(&env));
+            .set(&DataKey::PendingQueue, &Vec::<StoredPending>::new(&env));
         env.storage()
             .instance()
             .set(&DataKey::CurrentPaused, &false);
@@ -447,14 +467,19 @@ impl SorobanVaultGovernanceContract {
             extend_instance_ttl(&env);
             require_admin(&env, &caller)?;
 
-            let proposal = load_proposal(&env, proposal_id)?;
             let now_ns = ledger_timestamp_ns(&env)?;
-            if now_ns < proposal.valid_after_ns {
-                return Err(GovernanceError::ProposalNotMature);
-            }
+            let mut queue = load_queue(&env);
+            let proposal =
+                match queue_take_mature(&mut queue, now_ns, |pending| pending.id == proposal_id) {
+                    Ok(Some(proposal)) => proposal,
+                    Ok(None) => return Err(GovernanceError::ProposalNotFound),
+                    Err(PendingQueueError::NotMature) => {
+                        return Err(GovernanceError::ProposalNotMature)
+                    }
+                };
 
             execute_action(&env, &proposal.action)?;
-            remove_proposal(&env, proposal_id);
+            save_queue(&env, &queue);
             ProposalAccepted { id: proposal_id }.publish(&env);
             Ok(())
         })
@@ -470,30 +495,32 @@ impl SorobanVaultGovernanceContract {
             require_admin(&env, &caller)?;
             let now_ns = ledger_timestamp_ns(&env)?;
 
-            for id in load_pending_ids(&env).iter() {
-                let proposal = load_proposal(&env, id)?;
-                if action_kind(&proposal.action) != kind {
-                    continue;
+            let mut queue = load_queue(&env);
+            let proposal = match queue_take_mature(&mut queue, now_ns, |pending| {
+                action_kind(&pending.action) == kind
+            }) {
+                Ok(Some(proposal)) => proposal,
+                Ok(None) => return Err(GovernanceError::ProposalNotFound),
+                Err(PendingQueueError::NotMature) => {
+                    return Err(GovernanceError::ProposalNotMature)
                 }
-                if now_ns < proposal.valid_after_ns {
-                    return Err(GovernanceError::ProposalNotMature);
-                }
+            };
 
-                execute_action(&env, &proposal.action)?;
-                remove_proposal(&env, id);
-                ProposalAccepted { id }.publish(&env);
-                return Ok(id);
-            }
-
-            Err(GovernanceError::ProposalNotFound)
+            execute_action(&env, &proposal.action)?;
+            save_queue(&env, &queue);
+            ProposalAccepted { id: proposal.id }.publish(&env);
+            Ok(proposal.id)
         })
     }
 
     pub fn revoke(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         require_revoker(&env, &caller)?;
-        let _proposal = load_proposal(&env, proposal_id)?;
-        remove_proposal(&env, proposal_id);
+        let mut queue = load_queue(&env);
+        if !queue_revoke_pending(&mut queue, |pending| pending.id == proposal_id) {
+            return Err(GovernanceError::ProposalNotFound);
+        }
+        save_queue(&env, &queue);
         ProposalRevoked { id: proposal_id }.publish(&env);
         Ok(())
     }
@@ -584,24 +611,18 @@ impl SorobanVaultGovernanceContract {
 
             let now_ns = ledger_timestamp_ns(&env)?;
             let timelock_ns = load_timelocks(&env).get(timelock_kind_for_action(&action));
-            let valid_after_ns = now_ns
-                .checked_add(timelock_ns)
-                .ok_or(GovernanceError::ArithmeticOverflow)?;
-
-            let pending = PendingProposal {
-                id,
-                action,
-                valid_after_ns,
-            };
-            env.storage()
-                .instance()
-                .set(&DataKey::PendingProposal(id), &pending);
-
-            let mut pending_ids = load_pending_ids(&env);
-            pending_ids.push_back(id);
-            env.storage()
-                .instance()
-                .set(&DataKey::PendingIds, &pending_ids);
+            let mut queue = load_queue(&env);
+            queue_schedule(
+                &mut queue,
+                QueuedProposal { id, action },
+                now_ns,
+                timelock_ns,
+            );
+            let valid_after_ns = queue
+                .back()
+                .map(|pending| pending.valid_at_ns)
+                .unwrap_or(now_ns);
+            save_queue(&env, &queue);
 
             ProposalSubmitted { id, valid_after_ns }.publish(&env);
             Ok(id)
@@ -745,11 +766,14 @@ fn decide_submission(
                 .get(&DataKey::CurrentRestrictionAccounts)
                 .unwrap_or_else(|| Vec::new(env));
 
-            if current_mode == *mode && same_accounts(&current_accounts, accounts) {
+            if current_mode == *mode && current_accounts == *accounts {
                 return Err(GovernanceError::NoChange);
             }
 
-            if is_restrictions_relaxed(current_mode, &current_accounts, *mode, accounts) {
+            let current_restrictions = to_shared_restrictions(current_mode, &current_accounts);
+            let proposed_restrictions = to_shared_restrictions(*mode, accounts);
+
+            if determine_relaxed(&current_restrictions, &proposed_restrictions) {
                 Ok(TimelockDecision::Timelocked)
             } else {
                 Ok(TimelockDecision::Immediate)
@@ -772,67 +796,28 @@ fn decide_submission(
     }
 }
 
-fn is_restrictions_relaxed(
-    current_mode: RestrictionMode,
-    current_accounts: &Vec<Address>,
-    next_mode: RestrictionMode,
-    next_accounts: &Vec<Address>,
-) -> bool {
-    match (current_mode, next_mode) {
-        (RestrictionMode::None, RestrictionMode::None) => false,
-        (RestrictionMode::None, _) => false,
-        (_, RestrictionMode::None) => true,
-        (RestrictionMode::Paused, RestrictionMode::Paused) => false,
-        (RestrictionMode::Paused, _) => true,
-        (RestrictionMode::Blacklist, RestrictionMode::Blacklist) => {
-            has_any_not_in(current_accounts, next_accounts)
+fn to_shared_restrictions(
+    mode: RestrictionMode,
+    accounts: &Vec<Address>,
+) -> Option<SharedRestrictions<Address>> {
+    match mode {
+        RestrictionMode::None => None,
+        RestrictionMode::Paused => Some(SharedRestrictions::Paused),
+        RestrictionMode::Blacklist => {
+            Some(SharedRestrictions::Blacklist(accounts_to_set(accounts)))
         }
-        (RestrictionMode::Whitelist, RestrictionMode::Whitelist) => {
-            has_any_not_in(next_accounts, current_accounts)
+        RestrictionMode::Whitelist => {
+            Some(SharedRestrictions::Whitelist(accounts_to_set(accounts)))
         }
-        (RestrictionMode::Blacklist, RestrictionMode::Whitelist) => {
-            has_any_in_both(current_accounts, next_accounts)
-        }
-        (RestrictionMode::Whitelist, RestrictionMode::Paused)
-        | (RestrictionMode::Blacklist, RestrictionMode::Paused) => false,
-        (RestrictionMode::Whitelist, RestrictionMode::Blacklist) => true,
     }
 }
 
-fn same_accounts(left: &Vec<Address>, right: &Vec<Address>) -> bool {
-    if left.len() != right.len() {
-        return false;
+fn accounts_to_set(accounts: &Vec<Address>) -> BTreeSet<Address> {
+    let mut set = BTreeSet::new();
+    for account in accounts.iter() {
+        set.insert(account);
     }
-    let mut i = 0;
-    while i < left.len() {
-        if left.get(i).unwrap() != right.get(i).unwrap() {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
-fn has_any_not_in(left: &Vec<Address>, right: &Vec<Address>) -> bool {
-    for addr in left.iter() {
-        if !contains_address(right, &addr) {
-            return true;
-        }
-    }
-    false
-}
-
-fn has_any_in_both(left: &Vec<Address>, right: &Vec<Address>) -> bool {
-    for addr in left.iter() {
-        if contains_address(right, &addr) {
-            return true;
-        }
-    }
-    false
-}
-
-fn contains_address(values: &Vec<Address>, needle: &Address) -> bool {
-    values.iter().any(|candidate| candidate == *needle)
+    set
 }
 
 fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
@@ -888,70 +873,91 @@ fn next_proposal_id(env: &Env) -> Result<u64, GovernanceError> {
     Ok(current)
 }
 
-fn load_pending_ids(env: &Env) -> Vec<u64> {
+fn load_queue(env: &Env) -> VecDeque<PendingValue<QueuedProposal>> {
+    let stored: Vec<StoredPending> = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingQueue)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut queue = VecDeque::new();
+    for item in stored.iter() {
+        queue.push_back(PendingValue::new(
+            QueuedProposal {
+                id: item.id,
+                action: item.action.clone(),
+            },
+            item.valid_at_ns,
+        ));
+    }
+
+    queue
+}
+
+fn save_queue(env: &Env, queue: &VecDeque<PendingValue<QueuedProposal>>) {
+    let mut stored = Vec::new(env);
+    for entry in queue.iter() {
+        stored.push_back(StoredPending {
+            id: entry.value.id,
+            action: entry.value.action.clone(),
+            valid_at_ns: entry.valid_at_ns,
+        });
+    }
     env.storage()
         .instance()
-        .get(&DataKey::PendingIds)
-        .unwrap_or_else(|| Vec::new(env))
+        .set(&DataKey::PendingQueue, &stored);
+}
+
+fn load_pending_ids(env: &Env) -> Vec<u64> {
+    let queue = load_queue(env);
+    let mut ids = Vec::new(env);
+    for entry in queue.iter() {
+        ids.push_back(entry.value.id);
+    }
+    ids
 }
 
 fn load_proposal(env: &Env, proposal_id: u64) -> Result<PendingProposal, GovernanceError> {
-    env.storage()
-        .instance()
-        .get(&DataKey::PendingProposal(proposal_id))
-        .ok_or(GovernanceError::ProposalNotFound)
+    let queue = load_queue(env);
+    for entry in queue.iter() {
+        if entry.value.id == proposal_id {
+            return Ok(PendingProposal {
+                id: entry.value.id,
+                action: entry.value.action.clone(),
+                valid_after_ns: entry.valid_at_ns,
+            });
+        }
+    }
+    Err(GovernanceError::ProposalNotFound)
 }
 
 fn has_pending_action(env: &Env, action: &GovernanceAction) -> bool {
-    for id in load_pending_ids(env).iter() {
-        if let Ok(pending) = load_proposal(env, id) {
-            if pending.action == *action {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn remove_proposal(env: &Env, proposal_id: u64) {
-    env.storage()
-        .instance()
-        .remove(&DataKey::PendingProposal(proposal_id));
-
-    let pending_ids = load_pending_ids(env);
-    let mut next = Vec::new(env);
-    for id in pending_ids.iter() {
-        if id != proposal_id {
-            next.push_back(id);
-        }
-    }
-    env.storage().instance().set(&DataKey::PendingIds, &next);
+    let queue = load_queue(env);
+    queue_has_pending(&queue, |pending| pending.action == *action)
 }
 
 fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
-    let pending_ids = load_pending_ids(env);
-    let mut remaining = Vec::new(env);
-    let mut removed = 0u32;
+    let mut queue = load_queue(env);
+    let mut revoked_ids = Vec::new(env);
 
-    for id in pending_ids.iter() {
-        match load_proposal(env, id) {
-            Ok(proposal) if pred(&proposal.action) => {
-                env.storage()
-                    .instance()
-                    .remove(&DataKey::PendingProposal(id));
-                ProposalRevoked { id }.publish(env);
-                removed = removed.saturating_add(1);
-            }
-            Ok(_) | Err(_) => {
-                remaining.push_back(id);
-            }
+    for entry in queue.iter() {
+        if pred(&entry.value.action) {
+            revoked_ids.push_back(entry.value.id);
         }
     }
 
-    env.storage()
-        .instance()
-        .set(&DataKey::PendingIds, &remaining);
-    removed
+    if revoked_ids.is_empty() {
+        return 0;
+    }
+
+    let _removed = queue_revoke_pending(&mut queue, |pending| pred(&pending.action));
+    save_queue(env, &queue);
+
+    for id in revoked_ids.iter() {
+        ProposalRevoked { id }.publish(env);
+    }
+
+    revoked_ids.len()
 }
 
 fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {

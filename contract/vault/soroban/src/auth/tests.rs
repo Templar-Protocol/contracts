@@ -87,7 +87,7 @@ fn test_soroban_auth_check_role_guardian_actions() {
     assert!(auth.check_role(ActionKind::Pause, &curator).is_ok());
     // User cannot pause
     let result = auth.check_role(ActionKind::Pause, &user);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn test_soroban_auth_check_role_allocator_actions() {
 
     // User cannot
     let result = auth.check_role(ActionKind::BeginAllocating, &user);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn test_soroban_auth_check_role_curator_only() {
 
     // Allocator cannot
     let result = auth.check_role(ActionKind::ManualReconcile, &allocator);
-    assert!(matches!(result, Err(AuthError::MissingRole(_))));
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]

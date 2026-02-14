@@ -290,68 +290,53 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "PendingIds"
+                              "symbol": "PendingQueue"
                             }
                           ]
                         },
                         "val": {
                           "vec": [
                             {
-                              "u64": "2"
-                            }
-                          ]
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "PendingProposal"
-                            },
-                            {
-                              "u64": "2"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "map": [
-                            {
-                              "key": {
-                                "symbol": "action"
-                              },
-                              "val": {
-                                "vec": [
-                                  {
-                                    "symbol": "SetTimelock"
+                              "map": [
+                                {
+                                  "key": {
+                                    "symbol": "action"
                                   },
-                                  {
+                                  "val": {
                                     "vec": [
                                       {
-                                        "symbol": "Curator"
+                                        "symbol": "SetTimelock"
+                                      },
+                                      {
+                                        "vec": [
+                                          {
+                                            "symbol": "Curator"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "u64": "4000000000"
                                       }
                                     ]
-                                  },
-                                  {
-                                    "u64": "4000000000"
                                   }
-                                ]
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "id"
-                              },
-                              "val": {
-                                "u64": "2"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "valid_after_ns"
-                              },
-                              "val": {
-                                "u64": "105000000000"
-                              }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "id"
+                                  },
+                                  "val": {
+                                    "u64": "2"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "valid_at_ns"
+                                  },
+                                  "val": {
+                                    "u64": "105000000000"
+                                  }
+                                }
+                              ]
                             }
                           ]
                         }

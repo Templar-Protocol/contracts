@@ -1,3 +1,5 @@
+#![cfg(feature = "recovery")]
+
 use rstest::rstest;
 use templar_curator_primitives::recovery::{
     compute_payout_failure_outcome, compute_payout_success_outcome,
