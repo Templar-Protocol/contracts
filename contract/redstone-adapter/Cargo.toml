@@ -13,12 +13,15 @@ agnostic-tests = []
 
 [dependencies]
 hex-literal = "1.0.0"
+k256 = { workspace = true, default-features = true, features = ["ecdsa", "sha256"] }
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 redstone = { workspace = true, default-features = false, features = [] }
+sha3.workspace = true
 templar-common.workspace = true
 primitive-types.workspace = true
 
 [dev-dependencies]
+near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
+redstone = { workspace = true, default-features = false, features = ["std"] }
 hex = { workspace = true }
-soroban-sdk = { workspace = true, features = ["testutils"] }

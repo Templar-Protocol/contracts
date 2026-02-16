@@ -14,6 +14,7 @@ use config_values::{
     SignerAddressBs, MAX_TIMESTAMP_AHEAD_MS, MAX_TIMESTAMP_DELAY_MS,
     REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS, SIGNER_COUNT, TRUSTED_UPDATERS, UPDATER_COUNT,
 };
+use sha3::Digest;
 
 pub struct Config {
     pub signer_count_threshold: u8,
@@ -41,11 +42,28 @@ pub const STELLAR_CONFIG: Config = Config {
 
 pub struct NearCrypto;
 
+pub struct KeccackOutput {
+    data: [u8; 32],
+    digest: sha3::Keccak256,
+}
+
+impl AsRef<[u8]> for KeccackOutput {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 impl redstone::Crypto for NearCrypto {
-    type KeccakOutput = [u8; 32];
+    // type KeccakOutput = [u8; 32];
+    type KeccakOutput = KeccackOutput;
 
     fn keccak256(&mut self, input: impl AsRef<[u8]>) -> Self::KeccakOutput {
-        near_sdk::env::keccak256_array(input.as_ref())
+        // near_sdk::env::keccak256_array(input.as_ref())
+        let digest = sha3::Keccak256::new_with_prefix(input);
+        KeccackOutput {
+            digest: digest.clone(),
+            data: digest.finalize().into(),
+        }
     }
 
     fn recover_public_key(
@@ -54,9 +72,23 @@ impl redstone::Crypto for NearCrypto {
         signature_bytes: impl AsRef<[u8]>,
         message_hash: Self::KeccakOutput,
     ) -> Result<redstone::Bytes, redstone::CryptoError> {
-        near_sdk::env::ecrecover(&message_hash, signature_bytes.as_ref(), recovery_byte, true)
-            .ok_or(redstone::CryptoError::RecoverPreHash)
-            .map(|e| e.to_vec().into())
+        // dbg!((recovery_byte, signature_bytes.as_ref(), &message_hash));
+
+        use k256::ecdsa::*;
+        use sha3::Keccak256;
+        let signature_bytes = signature_bytes.as_ref();
+        assert_eq!(signature_bytes.len(), 64);
+        let signature = Signature::try_from(signature_bytes).unwrap();
+        let rec_id = RecoveryId::try_from(recovery_byte).unwrap();
+
+        let result: VerifyingKey =
+            VerifyingKey::recover_from_digest(message_hash.digest, &signature, rec_id).unwrap();
+
+        Ok(result.to_sec1_bytes().to_vec().into())
+
+        // near_sdk::env::ecrecover(&message_hash, signature_bytes.as_ref(), recovery_byte, true)
+        //     .ok_or(redstone::CryptoError::RecoverPreHash)
+        //     .map(|e| e.to_vec().into())
     }
 }
 

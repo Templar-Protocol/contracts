@@ -5,7 +5,7 @@ use near_sdk::{
     json_types::{Base64VecU8, U128, U64},
     near,
     store::IterableMap,
-    BorshStorageKey,
+    BorshStorageKey, PanicOnDefault,
 };
 use near_sdk_contract_tools::{rbac::Rbac, standard::nep297::Event, Rbac};
 use primitive_types::U256;
@@ -40,7 +40,7 @@ pub enum Role {
     Updater,
 }
 
-#[derive(Rbac)]
+#[derive(Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct RedStoneAdapter {
@@ -55,6 +55,13 @@ pub struct GetPrice {
 
 #[near]
 impl RedStoneAdapter {
+    #[init]
+    pub fn new() -> Self {
+        Self {
+            db: IterableMap::new(b"d"),
+        }
+    }
+
     pub fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrice {
         let (timestamp, prices) = get_prices_from_payload(&feed_ids, &payload.0).unwrap();
 
@@ -76,18 +83,19 @@ impl RedStoneAdapter {
     ) -> bool {
         let old_price_data = self.db.get(&feed_id);
 
-        if verifier
-            .verify_timestamp(
-                price_data.write_timestamp.into(),
-                old_price_data.as_ref().map(|pd| pd.write_timestamp.into()),
-                STELLAR_CONFIG.min_interval_between_updates_ms.into(),
-                old_price_data
-                    .as_ref()
-                    .map(|pd| pd.package_timestamp.into()),
-                price_data.package_timestamp.into(),
-            )
-            .is_err()
-        {
+        let timestamp_verification = verifier.verify_timestamp(
+            price_data.write_timestamp.into(),
+            old_price_data.as_ref().map(|pd| pd.write_timestamp.into()),
+            STELLAR_CONFIG.min_interval_between_updates_ms.into(),
+            old_price_data
+                .as_ref()
+                .map(|pd| pd.package_timestamp.into()),
+            price_data.package_timestamp.into(),
+        );
+
+        eprintln!("{timestamp_verification:?}");
+
+        if timestamp_verification.is_err() {
             return false;
         }
 
@@ -105,12 +113,14 @@ impl RedStoneAdapter {
             UpdateTimestampVerifier::Untrusted
         };
 
-        let (package_timestamp, prices) = get_prices_from_payload(&feed_ids, &payload.0).unwrap();
+        let (package_timestamp, prices) =
+            dbg!(get_prices_from_payload(&feed_ids, &payload.0).unwrap());
         let write_timestamp = near_sdk::env::block_timestamp_ms();
 
         let mut updated_feeds = vec![];
 
         for (feed_id, price) in prices.iter() {
+            eprintln!("{feed_id}: {price}");
             let price_data = PriceData {
                 price: price.to_string(),
                 package_timestamp,
@@ -193,10 +203,10 @@ fn get_prices_from_payload(
 
     let mut config = STELLAR_CONFIG.redstone_config::<redstone::network::StdEnv>(
         (),
-        feed_ids,
+        dbg!(feed_ids),
         block_timestamp.into(),
     )?;
-    let result = process_payload(&mut config, payload.to_vec())?;
+    let result = dbg!(process_payload(&mut config, payload.to_vec()))?;
 
     let mut prices = Vec::with_capacity(result.values.len());
 
