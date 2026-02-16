@@ -1192,13 +1192,6 @@ impl Contract {
                     .emit();
                 }
 
-                if !performance_recipient_changed {
-                    self.fees.performance.recipient = fees.performance.recipient.clone();
-                }
-
-                if !management_recipient_changed {
-                    self.fees.management.recipient = fees.management.recipient.clone();
-                }
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 // Tightening restrictions should invalidate any pending relax/unpause.
