@@ -1,4 +1,4 @@
-use super::*;
+use super::{buffer, near, Gas};
 
 pub const DAY_NS: u64 = 86_400_000_000_000;
 pub const YEAR_NS: u64 = 365 * DAY_NS;
