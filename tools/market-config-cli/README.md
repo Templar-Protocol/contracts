@@ -42,10 +42,8 @@ market-config-cli = { path = "../market-config-cli" }
 The easiest way to create a configuration:
 
 ```bash
-# Long form
 market-config-cli interactive --output my-market-config.json --network testnet
-
-# Shortcut alias
+# or the shortcut alias
 market-config-cli i --output my-market-config.json --network testnet
 ```
 
@@ -63,6 +61,25 @@ market-config-cli from-contract \
 ```
 
 After fetching, the CLI can optionally step you through quick edits grouped by section (Basic, Oracle, Risk, Interest Rate, Ranges, Fees, Yield) so you can adjust only what you need.
+
+Under the hood both the interactive wizard and the sectioned editor use the same prompt engine (`MarketPrompter`). As a library you can call:
+
+```rust
+use market_config_cli::{InteractivePrompt, ConfigEditor};
+use dialoguer::theme::ColorfulTheme;
+use templar_common::utils::Network;
+
+let theme = ColorfulTheme::default();
+let network = Network::Testnet;
+
+// Full wizard
+let interactive = InteractivePrompt::new(&theme, network);
+let config = interactive.run_interactive().await?;
+
+// Sectioned edit on an existing config
+let editor = ConfigEditor::new(&theme, network);
+let updated = editor.edit_config(config).await?;
+```
 
 ### Use a Template
 
@@ -94,7 +111,7 @@ Validate an existing configuration file:
 
 ```bash
 market-config-cli validate \
-  --config my-market-config.json \
+  --config-path my-market-config.json \
   --network testnet
 ```
 
@@ -114,7 +131,21 @@ market-config-cli calculate-curve \
   --starting-rate 0.02 \
   --optimal-rate 0.10 \
   --optimal-usage 0.80 \
-  --max-rate 0.50
+  --max-rate 0.50 \
+  --display-points 12
+
+# linear model
+market-config-cli calculate-curve \
+  --model linear \
+  --starting-rate 0.02 \
+  --optimal-rate 0.10
+
+# exponential model
+market-config-cli calculate-curve \
+  --model exponential \
+  --starting-rate 0.02 \
+  --optimal-rate 0.50 \
+  --eccentricity 3.0
 ```
 
 This will output a JSON representation of the interest rate strategy that can be copied into your configuration.
@@ -127,6 +158,8 @@ The CLI includes built-in templates for common market types:
 - **Standard Crypto**: Typical parameters for volatile crypto collateral (e.g., USDC/NEAR)
 - **High Volatility**: Conservative parameters for highly volatile assets
 
+Templates only prefill a subset of fields (primarily risk/oracle defaults). You’ll still be prompted to enter the remaining required configuration values.
+
 ## Library Usage
 
 You can use the CLI as a library in your Rust code:
@@ -134,6 +167,8 @@ You can use the CLI as a library in your Rust code:
 ```rust
 use market_config_cli::{ConfigBuilder, ConfigValidator, InterestRateCalculator};
 use common::number::Decimal;
+use market_config_cli::ContractReader;
+use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -162,6 +197,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let strategy = calculator.calculate_piecewise(
         "0.02", "0.10", "0.80", "0.50"
     )?;
+
+    // Read a config from a deployed contract
+    let reader = if let Ok(url) = env::var("NEAR_RPC_URL") {
+        ContractReader::from_rpc_url(&url)?
+    } else {
+        ContractReader::new(Network::Testnet)?
+    };
+    let config = reader
+        .read_config("market.testnet".parse()?)
+        .await?;
 
     Ok(())
 }
@@ -246,6 +291,7 @@ cargo test --test integration_tests -- --ignored
 
 - Subcommands (aliases): `interactive` (`i`), `from-contract` (`fc`), `from-template` (`ft`), `validate` (`v`), `calculate-curve` (`calc`).
 - Interest rate selection uses the concrete `InterestRateStrategy` variants (linear, piecewise, exponential) with dedicated prompts per model.
+- `calculate-curve` defaults to the piecewise model unless `--model` is specified; it supports `--model` and `--eccentricity` (for exponential), plus `--display-points` for ASCII curve output density.
 - Warnings/success messages are styled for clarity; token decimals are validated on-chain (NEP-141 via `ft_metadata`, NEP-245 via bundled omni tokens data).
 
 ### CLI walkthroughs

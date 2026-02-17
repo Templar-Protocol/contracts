@@ -9,22 +9,18 @@
 //!
 //! # Error Handling
 //!
-//! All RPC operations return `RpcResult<T>` which wraps various RPC-level errors.
-//! These are converted to `LiquidatorError` at the application level.
+//! All RPC operations return `AccumulatorResult<T>` which wraps accumulator error variants.
 
 use std::{collections::HashMap, time::Duration};
 
 use futures::{StreamExt, TryStreamExt};
 use near_crypto::Signer;
-use near_jsonrpc_client::{
-    errors::JsonRpcError,
-    methods::{
-        query::{RpcQueryError, RpcQueryRequest},
-        send_tx::RpcSendTransactionRequest,
-        tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
-    },
-    JsonRpcClient,
+use near_jsonrpc_client::methods::{
+    query::RpcQueryRequest,
+    send_tx::RpcSendTransactionRequest,
+    tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
 };
+use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
     hash::CryptoHash,
@@ -41,48 +37,7 @@ use templar_common::borrow::BorrowPosition;
 use tokio::time::Instant;
 use tracing::instrument;
 
-/// Error types for RPC operations
-#[derive(Debug, thiserror::Error)]
-pub enum RpcError {
-    /// Failed to query view method
-    #[error("Failed to query view method: {0}")]
-    ViewMethodError(#[from] JsonRpcError<RpcQueryError>),
-    /// Failed to get access key data
-    #[error("Failed to get access key data: {0}")]
-    AccessKeyDataError(JsonRpcError<RpcQueryError>),
-    /// Got wrong response kind from RPC
-    #[error("Got wrong response kind from RPC: {0}")]
-    WrongResponseKind(String),
-    /// Failed to send transaction
-    #[error("Failed to send transaction: {0}")]
-    SendTransactionError(#[from] JsonRpcError<RpcTransactionError>),
-    /// Failed to deserialize response
-    #[error("Failed to deserialize response: {0}")]
-    DeserializeError(#[from] near_sdk::serde_json::Error),
-    /// Timeout exceeded
-    #[error("Timeout exceeded after {0}s (waited {1}s)")]
-    TimeoutError(u64, u64),
-    /// No outcome for transaction
-    #[error("No outcome for transaction: {0}")]
-    NoOutcome(String),
-}
-
-/// Error types for application-level operations
-#[derive(Debug, thiserror::Error)]
-pub enum AppError {
-    /// RPC operation failed
-    #[error("RPC error: {0}")]
-    Rpc(#[from] RpcError),
-    /// Validation error
-    #[error("Validation error: {0}")]
-    ValidationError(String),
-    /// Serialization error
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
-}
-
-pub type RpcResult<T = ()> = Result<T, RpcError>;
-pub type AppResult<T = ()> = Result<T, AppError>;
+use crate::{AccumulatorError, AccumulatorResult};
 
 /// Borrow positions map type
 pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
@@ -137,12 +92,12 @@ impl Network {
 ///
 /// # Returns
 ///
-/// Tuple of (nonce, block_hash) to use when constructing a transaction
+/// Tuple of (nonce, `block_hash`) to use when constructing a transaction
 #[instrument(skip(client), level = "debug")]
 pub async fn get_access_key_data(
     client: &JsonRpcClient,
     signer: &Signer,
-) -> RpcResult<(u64, CryptoHash)> {
+) -> AccumulatorResult<(u64, CryptoHash)> {
     let access_key_query_response = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
@@ -152,12 +107,12 @@ pub async fn get_access_key_data(
             },
         })
         .await
-        .map_err(RpcError::AccessKeyDataError)?;
+        .map_err(AccumulatorError::AccessKeyDataError)?;
 
     let nonce = match access_key_query_response.kind {
         QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
         _ => {
-            return Err(RpcError::WrongResponseKind(format!(
+            return Err(AccumulatorError::WrongResponseKind(format!(
                 "Expected AccessKey got {:?}",
                 access_key_query_response.kind
             )));
@@ -179,7 +134,10 @@ pub async fn get_access_key_data(
 ///
 /// True if the account exists, false otherwise
 #[instrument(skip(client), level = "debug")]
-pub async fn account_exists(client: &JsonRpcClient, account_id: &AccountId) -> RpcResult<bool> {
+pub async fn account_exists(
+    client: &JsonRpcClient,
+    account_id: &AccountId,
+) -> AccumulatorResult<bool> {
     let result = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
@@ -195,7 +153,7 @@ pub async fn account_exists(client: &JsonRpcClient, account_id: &AccountId) -> R
             if e.handler_error().is_some() {
                 Ok(false)
             } else {
-                Err(RpcError::ViewMethodError(e))
+                Err(AccumulatorError::ViewMethodError(e))
             }
         }
     }
@@ -229,7 +187,7 @@ pub async fn view<T: DeserializeOwned>(
     account_id: AccountId,
     function_name: &str,
     args: impl Serialize,
-) -> RpcResult<T> {
+) -> AccumulatorResult<T> {
     let access_key_query_response = client
         .call(RpcQueryRequest {
             block_reference: BlockReference::latest(),
@@ -242,7 +200,7 @@ pub async fn view<T: DeserializeOwned>(
         .await?;
 
     let QueryResponseKind::CallResult(result) = access_key_query_response.kind else {
-        return Err(RpcError::WrongResponseKind(format!(
+        return Err(AccumulatorError::WrongResponseKind(format!(
             "Expected CallResult got {:?}",
             access_key_query_response.kind
         )));
@@ -275,7 +233,7 @@ pub async fn send_tx(
     signer: &Signer,
     timeout: u64,
     tx: Transaction,
-) -> RpcResult<FinalExecutionStatus> {
+) -> AccumulatorResult<FinalExecutionStatus> {
     let (tx_hash, _size) = tx.get_hash_and_size();
 
     let called_at = Instant::now();
@@ -300,7 +258,7 @@ pub async fn send_tx(
 
                 loop {
                     if Instant::now() >= deadline {
-                        return Err(RpcError::TimeoutError(
+                        return Err(AccumulatorError::TimeoutError(
                             timeout,
                             called_at.elapsed().as_secs(),
                         ));
@@ -334,7 +292,7 @@ pub async fn send_tx(
     };
 
     let Some(outcome) = result.final_execution_outcome else {
-        return Err(RpcError::NoOutcome(tx_hash.to_string()));
+        return Err(AccumulatorError::NoOutcome(tx_hash.to_string()));
     };
 
     Ok(outcome.into_outcome().status)
@@ -361,7 +319,7 @@ pub async fn list_deployments(
     registry: AccountId,
     _count: Option<u32>,
     _offset: Option<u32>,
-) -> RpcResult<Vec<AccountId>> {
+) -> AccumulatorResult<Vec<AccountId>> {
     let mut all_deployments = Vec::new();
     let page_size = 500;
     let mut current_offset = 0;
@@ -424,7 +382,7 @@ pub async fn get_contract_version(
     client: &JsonRpcClient,
     contract_id: &AccountId,
 ) -> Option<String> {
-    let result: Result<ContractSourceMetadata, RpcError> = view(
+    let result: Result<ContractSourceMetadata, AccumulatorError> = view(
         client,
         contract_id.clone(),
         "contract_source_metadata",
@@ -454,7 +412,7 @@ pub async fn list_all_deployments(
     client: JsonRpcClient,
     registries: Vec<AccountId>,
     concurrency: usize,
-) -> RpcResult<Vec<AccountId>> {
+) -> AccumulatorResult<Vec<AccountId>> {
     let all_markets: Vec<AccountId> = futures::stream::iter(registries)
         .map(|registry| {
             let client = client.clone();

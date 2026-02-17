@@ -40,11 +40,10 @@ fi
 # Configuration with defaults (see .env.example for all options)
 NETWORK="${NETWORK:-mainnet}"
 REGISTRIES="${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}"
-LIQUIDATION_STRATEGY="${LIQUIDATION_STRATEGY:-partial}"
 LIQUIDATION_SCAN_INTERVAL="${LIQUIDATION_SCAN_INTERVAL:-600}"
 REGISTRY_REFRESH_INTERVAL="${REGISTRY_REFRESH_INTERVAL:-3600}"
 CONCURRENCY="${CONCURRENCY:-10}"
-PARTIAL_LIQUIDATION_PERCENTAGE="${PARTIAL_LIQUIDATION_PERCENTAGE:-50}"
+PARTIAL_LIQUIDATION_PERCENTAGE="${PARTIAL_LIQUIDATION_PERCENTAGE}"
 FIXED_LIQUIDATION_AMOUNT_USD="${FIXED_LIQUIDATION_AMOUNT_USD}"
 LOOP_LIQUIDATION="${LOOP_LIQUIDATION:-false}"
 MAX_LOOP_ITERATIONS="${MAX_LOOP_ITERATIONS:-10}"
@@ -67,18 +66,16 @@ IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
 PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes.pyth.network}"
 AUTO_UPDATE_PRICES="${AUTO_UPDATE_PRICES:-false}"
 
-# Build binary if needed
+# Build binary
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
 BINARY_PATH="$PROJECT_ROOT/target/debug/liquidator"
 
+info "Building liquidator..."
+cd "$PROJECT_ROOT"
+cargo build -p templar-liquidator --bin liquidator
 if [ ! -f "$BINARY_PATH" ]; then
-    warn "Building liquidator binary..."
-    cd "$PROJECT_ROOT"
-    cargo build -p templar-liquidator --bin liquidator
-    if [ ! -f "$BINARY_PATH" ]; then
-        error "Build failed"
-        exit 1
-    fi
+    error "Build failed"
+    exit 1
 fi
 
 # Print configuration
@@ -88,7 +85,16 @@ echo ""
 echo "  Network:              $NETWORK"
 echo "  Account:              $SIGNER_ACCOUNT_ID"
 echo "  Registries:           $REGISTRIES"
-echo "  Liquidation Strategy: $LIQUIDATION_STRATEGY"
+
+# Show liquidation strategy
+if [ -n "$FIXED_LIQUIDATION_AMOUNT_USD" ]; then
+    echo "  Liquidation Strategy: Fixed Amount ($FIXED_LIQUIDATION_AMOUNT_USD USD)"
+elif [ -n "$PARTIAL_LIQUIDATION_PERCENTAGE" ]; then
+    echo "  Liquidation Strategy: Percentage ($PARTIAL_LIQUIDATION_PERCENTAGE%)"
+else
+    echo "  Liquidation Strategy: Percentage (100% - default)"
+fi
+
 echo "  Min Profit:           ${MIN_PROFIT_BPS} bps"
 echo "  Dry Run:              $DRY_RUN"
 
@@ -122,11 +128,9 @@ CMD_ARGS=(
     "--network" "$NETWORK"
     "--signer-account" "$SIGNER_ACCOUNT_ID"
     "--signer-key" "$SIGNER_KEY"
-    "--liquidation-strategy" "$LIQUIDATION_STRATEGY"
     "--liquidation-scan-interval" "$LIQUIDATION_SCAN_INTERVAL"
     "--registry-refresh-interval" "$REGISTRY_REFRESH_INTERVAL"
     "--concurrency" "$CONCURRENCY"
-    "--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE"
     "--min-profit-bps" "$MIN_PROFIT_BPS"
     "--transaction-timeout" "$TRANSACTION_TIMEOUT"
 )
@@ -140,10 +144,13 @@ done
 # Add RPC_URL if set
 [ -n "$RPC_URL" ] && CMD_ARGS+=("--rpc-url" "$RPC_URL")
 
+# Add liquidation strategy arguments (mutually exclusive)
+[ -n "$PARTIAL_LIQUIDATION_PERCENTAGE" ] && CMD_ARGS+=("--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE")
+[ -n "$FIXED_LIQUIDATION_AMOUNT_USD" ] && CMD_ARGS+=("--fixed-liquidation-amount-usd" "$FIXED_LIQUIDATION_AMOUNT_USD")
+
 # Add loop liquidation arguments
 [ "$LOOP_LIQUIDATION" = "true" ] && CMD_ARGS+=("--loop-liquidation")
 [ -n "$MAX_LOOP_ITERATIONS" ] && CMD_ARGS+=("--max-loop-iterations" "$MAX_LOOP_ITERATIONS")
-[ -n "$FIXED_LIQUIDATION_AMOUNT_USD" ] && CMD_ARGS+=("--fixed-liquidation-amount-usd" "$FIXED_LIQUIDATION_AMOUNT_USD")
 
 # Add collateral strategy arguments
 CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")

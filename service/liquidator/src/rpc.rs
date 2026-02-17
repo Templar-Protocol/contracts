@@ -265,44 +265,45 @@ pub async fn send_tx(
     {
         Ok(res) => res,
         Err(e) => {
+            // Check if the error is a timeout that we should retry
+            if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                return Err(e.into());
+            }
+
+            // Poll with exponential backoff until we get a final result
+            let mut poll_interval = Duration::from_millis(500);
+
             loop {
-                if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                    return Err(e.into());
+                if Instant::now() >= deadline {
+                    return Err(RpcError::TimeoutError(
+                        timeout,
+                        called_at.elapsed().as_secs(),
+                    ));
                 }
 
-                // Poll with exponential backoff
-                let mut poll_interval = Duration::from_millis(500);
+                tokio::time::sleep(poll_interval).await;
 
-                loop {
-                    if Instant::now() >= deadline {
-                        return Err(RpcError::TimeoutError(
-                            timeout,
-                            called_at.elapsed().as_secs(),
-                        ));
+                // Exponential backoff up to MAX_POLL_INTERVAL
+                poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
+
+                let status = client
+                    .call(RpcTransactionStatusRequest {
+                        transaction_info: TransactionInfo::TransactionId {
+                            sender_account_id: signer.get_account_id(),
+                            tx_hash,
+                        },
+                        wait_until: TxExecutionStatus::Final,
+                    })
+                    .await;
+
+                match status {
+                    Ok(result) => break result,
+                    Err(e)
+                        if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) =>
+                    {
+                        // Continue polling on timeout
                     }
-
-                    tokio::time::sleep(poll_interval).await;
-
-                    // Exponential backoff up to MAX_POLL_INTERVAL
-                    poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
-
-                    let status = client
-                        .call(RpcTransactionStatusRequest {
-                            transaction_info: TransactionInfo::TransactionId {
-                                sender_account_id: signer.get_account_id(),
-                                tx_hash,
-                            },
-                            wait_until: TxExecutionStatus::Final,
-                        })
-                        .await;
-
-                    let Err(e) = status else {
-                        break;
-                    };
-
-                    if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                        return Err(e.into());
-                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
         }

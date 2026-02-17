@@ -67,9 +67,18 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
-        let mut borrow_position = self.borrow_position_ref(account_id)?;
-        borrow_position.with_pending_interest();
+        let borrow_position = self.borrow_position_ref(account_id)?;
         Some(borrow_position.inner().clone())
+    }
+
+    fn get_borrow_position_pending_interest(
+        &self,
+        account_id: AccountId,
+        snapshot_limit: Option<u32>,
+    ) -> Option<BorrowAssetAmount> {
+        let limit = snapshot_limit.unwrap_or(u32::MAX);
+        let position = self.borrow_position_ref(account_id)?;
+        Some(position.calculate_interest(limit).get_amount())
     }
 
     fn get_borrow_status(
@@ -155,9 +164,18 @@ impl MarketExternalInterface for Contract {
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
-        let mut supply_position = self.supply_position_ref(account_id)?;
-        supply_position.with_pending_yield_estimate();
-        Some(supply_position.inner().clone())
+        let position = self.supply_position_ref(account_id)?;
+        Some(position.inner().clone())
+    }
+
+    fn get_supply_position_pending_yield(
+        &self,
+        account_id: AccountId,
+        snapshot_limit: Option<u32>,
+    ) -> Option<BorrowAssetAmount> {
+        let limit = snapshot_limit.unwrap_or(u32::MAX);
+        let position = self.supply_position_ref(account_id)?;
+        Some(position.calculate_yield(limit).get_amount())
     }
 
     /// If the predecessor has already entered the queue, calling this function
@@ -299,27 +317,12 @@ impl MarketExternalInterface for Contract {
         let predecessor = env::predecessor_account_id();
         let account_id = account_id.unwrap_or_else(|| predecessor.clone());
 
-        require!(
-            account_id == predecessor || !matches!(mode, HarvestYieldMode::Compounding),
-            "Only the position holder can compound yield",
-        );
-
         let snapshot = self.snapshot();
         let Some(mut supply_position) = self.supply_position_guard(snapshot, account_id) else {
             return BorrowAssetAmount::zero();
         };
 
         match mode {
-            HarvestYieldMode::Compounding => {
-                let proof = supply_position.accumulate_yield();
-                let total_yield = supply_position.total_yield();
-                supply_position.record_yield_compound(proof, total_yield);
-                require!(
-                    supply_position.is_within_allowable_range(),
-                    "New supply position is outside of allowable range",
-                );
-                return total_yield;
-            }
             HarvestYieldMode::SnapshotLimit(limit) => {
                 supply_position.accumulate_yield_partial(limit);
             }
