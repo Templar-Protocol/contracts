@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments, clippy::used_underscore_binding)]
 
 use core::cmp::Ordering;
 use std::fmt::Display;
@@ -41,10 +41,10 @@ macro_rules! unwrap_or_return {
 
 pub(crate) use unwrap_or_return;
 
-pub(crate) fn or_stop<'a, S>(
-    contract: &'a mut Contract,
+pub(crate) fn or_stop<S>(
+    contract: &mut Contract,
     op_id: u64,
-) -> Result<OpGuard<'a, S>, PromiseOrValue<()>>
+) -> Result<OpGuard<'_, S>, PromiseOrValue<()>>
 where
     S: GuardSpec<Contract, Error = Error>,
 {
@@ -203,7 +203,7 @@ impl Contract {
             .plan
             .iter()
             .filter(|m| m.0 != market_id)
-            .cloned()
+            .copied()
             .collect();
 
         allocating.set_market_principal(market_id, new_principal);
@@ -851,6 +851,7 @@ impl Contract {
     }
 
     #[private]
+    #[allow(clippy::too_many_lines)]
     pub fn resync_idle_balance_01_settle(
         &mut self,
         #[callback_result] balance: Result<U128, PromiseError>,
