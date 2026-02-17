@@ -36,7 +36,6 @@ jobs:
     if: needs.check-changes.outputs.should-run-contracts == 'true'
     uses: ./.github/workflows/test.yml
     with:
-      timeout-minutes: 40
       skip_coverage: true
 
   gas-report:
@@ -121,7 +120,7 @@ jobs:
 
       - name: Add market version to registry
         run: |
-          ./script/ci/add-version-to-registry.sh \
+          ./script/ci/add-market-version.sh \
             --account     "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --registry    "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             --version-key "${{ env.MARKET_VERSION_ID }}" \

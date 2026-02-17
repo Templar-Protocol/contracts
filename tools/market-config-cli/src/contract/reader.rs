@@ -1,26 +1,27 @@
 use crate::{rpc::view, CliError, CliResult};
-use near_jsonrpc_client::{
-    methods::query::RpcQueryRequest, JsonRpcClient, NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL,
-};
+use near_jsonrpc_client::{methods::query::RpcQueryRequest, JsonRpcClient};
 use near_primitives::types::{AccountId, Finality};
 use near_sdk::serde_json::json;
-use templar_common::market::MarketConfiguration;
+use templar_common::{market::MarketConfiguration, utils::Network};
 
 pub struct ContractReader {
     client: JsonRpcClient,
 }
 
 impl ContractReader {
-    pub fn new(network: &str) -> Self {
-        let rpc_url = match network {
-            "mainnet" => NEAR_MAINNET_RPC_URL,
-            "testnet" => NEAR_TESTNET_RPC_URL,
-            _ => panic!("Invalid network: {network}. Use 'mainnet' or 'testnet'"),
-        };
-
-        Self {
+    /// # Errors
+    pub fn new(network: Network) -> CliResult<Self> {
+        let rpc_url = network.rpc_url();
+        Ok(Self {
             client: JsonRpcClient::connect(rpc_url),
-        }
+        })
+    }
+
+    /// # Errors
+    pub fn from_rpc_url(rpc_url: &str) -> CliResult<Self> {
+        Ok(Self {
+            client: JsonRpcClient::connect(rpc_url),
+        })
     }
 
     /// Read the market configuration from a deployed contract
@@ -61,7 +62,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_contract_exists() {
-        let reader = ContractReader::new("testnet");
+        let reader = ContractReader::new(Network::Testnet).expect("reader should construct");
         // Known testnet account
         let account: AccountId = "templar-in-training.testnet".parse().unwrap();
         let exists = reader.contract_exists(account.clone()).await.unwrap();

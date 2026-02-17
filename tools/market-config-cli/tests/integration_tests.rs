@@ -1,4 +1,4 @@
-use market_config_cli::{config::ConfigBuilder, interactive::prompts::parse_price_id, CliError};
+use market_config_cli::{config::ConfigBuilder, ui::prompt::parsers::parse_price_id, CliError};
 use std::str::FromStr;
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::YieldWeights, number::Decimal,

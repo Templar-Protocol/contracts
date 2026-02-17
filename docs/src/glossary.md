@@ -4,7 +4,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 ## A
 
-**APY (Annual Percentage Yield)**: The total return on an investment over one year, including compound interest. In Templar, this represents the effective yearly return for suppliers or the cost for borrowers.
+**APY (Annual Percentage Yield)**: The total return on an investment over one year. In Templar, this represents the effective yearly return for suppliers or the cost for borrowers.
 
 **Asset Pair**: The combination of collateral asset and borrow asset that defines a market (e.g., BTC/USDC means Bitcoin collateral, USDC borrowing).
 
@@ -22,7 +22,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 **Collateralization Ratio (CR)**: The ratio of collateral value to borrowed value. A 150% ratio means $150 of collateral backs $100 of debt.
 
-**Compounding**: The process of automatically reinvesting earned yield to generate additional returns over time.
+**Compounding**: The process of reinvesting earned yield to generate additional returns over time.
 
 ## D
 
@@ -42,7 +42,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 ## H
 
-**Harvest Yield**: The action of claiming accumulated yield from a supply position. Can be withdrawn or compounded.
+**Harvest Yield**: The action of claiming accumulated yield from a supply position, which can then be withdrawn.
 
 ## I
 

@@ -75,8 +75,10 @@ impl MarketController {
         #[view] pub fn get_current_snapshot() -> Snapshot;
         #[view] pub fn list_supply_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, SupplyPosition>;
         #[view] pub fn get_supply_position(account_id: &AccountId) -> Option<SupplyPosition>;
+        #[view] pub fn get_supply_position_pending_yield(account_id: &AccountId, snapshot_limit: Option<u32>) -> Option<BorrowAssetAmount>;
         #[view] pub fn list_borrow_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, BorrowPosition>;
         #[view] pub fn get_borrow_position(account_id: &AccountId) -> Option<BorrowPosition>;
+        #[view] pub fn get_borrow_position_pending_interest(account_id: &AccountId, snapshot_limit: Option<u32>) -> Option<BorrowAssetAmount>;
         #[view] pub fn get_borrow_status(account_id: &AccountId, oracle_response: OracleResponse) -> Option<BorrowStatus>;
         #[view] pub fn get_static_yield(account_id: &AccountId) -> Option<Accumulator<BorrowAsset>>;
         #[view] pub fn get_supply_withdrawal_request_status(account_id: &AccountId) -> Option<WithdrawalRequestStatus>;

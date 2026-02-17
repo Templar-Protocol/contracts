@@ -5,7 +5,7 @@ use near_sdk::{
 use std::num::NonZeroU128;
 
 #[derive(Debug, Clone)]
-#[near(serializers = [json])]
+#[near(serializers = [borsh, json])]
 #[serde(deny_unknown_fields)]
 pub struct Transaction {
     pub receiver_id: AccountId,
@@ -25,7 +25,7 @@ impl Transaction {
 }
 
 #[derive(Debug, Clone)]
-#[near(serializers = [json])]
+#[near(serializers = [borsh, json])]
 #[serde(deny_unknown_fields)]
 pub struct FunctionCallAction {
     pub function_name: String,
@@ -69,7 +69,7 @@ impl From<FunctionCallAction> for Action {
 }
 
 #[derive(Debug, Clone)]
-#[near(serializers = [json])]
+#[near(serializers = [borsh, json])]
 #[non_exhaustive]
 #[serde(deny_unknown_fields)]
 pub enum Action {
