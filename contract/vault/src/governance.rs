@@ -1191,7 +1191,6 @@ impl Contract {
                     }
                     .emit();
                 }
-
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 // Tightening restrictions should invalidate any pending relax/unpause.

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    AccountId, AllocationDelta, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+    Fees, MarketId, Promise, PromiseOrValue, RealAssetsReport, Restrictions, TimelockKind,
+    VaultConfiguration, U128, U64,
+};
 
 #[near_sdk::ext_contract(ext_vault)]
 pub trait VaultExternalInterface {
