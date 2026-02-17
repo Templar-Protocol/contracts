@@ -261,13 +261,9 @@ impl Contract {
             op_state: OpState::Idle,
             next_op_id: 1,
             last_refresh_ns: 0,
-            refresh_cooldown_ns: refresh_cooldown_ns
-                .map(|v| v.0)
-                .unwrap_or(DEFAULT_REFRESH_COOLDOWN_NS),
+            refresh_cooldown_ns: refresh_cooldown_ns.map_or(DEFAULT_REFRESH_COOLDOWN_NS, |v| v.0),
             idle_resync_last_ns: 0,
-            idle_resync_cooldown_ns: idle_resync_cooldown_ns
-                .map(|v| v.0)
-                .unwrap_or(120_000_000_000),
+            idle_resync_cooldown_ns: idle_resync_cooldown_ns.map_or(120_000_000_000, |v| v.0),
             idle_resync_inflight_op_id: 0,
             pending_withdrawals: IterableMap::new(
                 [
@@ -384,7 +380,6 @@ impl Contract {
             .emit();
 
             let expected_assets = pending.expected_assets;
-            let _escrow_shares = pending.escrow_shares;
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
 
@@ -755,7 +750,7 @@ impl Contract {
                     total: U128(total),
                     plan: plan
                         .iter()
-                        .cloned()
+                        .copied()
                         .map(|(market, amount)| (market, amount.into()))
                         .collect(),
                 }
@@ -1062,8 +1057,8 @@ impl Contract {
     }
 
     pub fn get_market_account_by_id(&self, market_id: U64) -> Option<AccountId> {
-        self.market_account_by_id(MarketId::from(market_id.0 as u32))
-            .cloned()
+        let id = u32::try_from(market_id.0).ok()?;
+        self.market_account_by_id(MarketId::from(id)).cloned()
     }
 
     pub fn list_markets_with_ids(&self) -> Vec<(U64, AccountId)> {
@@ -1122,6 +1117,7 @@ impl Contract {
             .collect()
     }
 
+    #[cfg(test)]
     fn market_room_upper_bound(&self) -> u128 {
         self.supply_queue_market_infos()
             .iter()
@@ -1156,6 +1152,7 @@ impl Contract {
         self.cap_group_room_remaining_at(cap_group, self.total_assets_for_caps())
     }
 
+    #[cfg(test)]
     fn max_allocatable_room_at(&self, total_assets: u128) -> u128 {
         let markets = self.supply_queue_market_infos();
         self.max_allocatable_room_at_precomputed(total_assets, &markets)
@@ -1196,7 +1193,7 @@ impl Contract {
     fn relative_cap_rounding_slack(&self) -> u128 {
         let mut groups = HashSet::<CapGroupId>::new();
 
-        for market in self.supply_queue.iter() {
+        for market in &self.supply_queue {
             let Some(group_id) = self.market_cap_group_id(*market) else {
                 continue;
             };
@@ -1242,10 +1239,7 @@ impl Contract {
         if old == new {
             return;
         }
-        let entry = self
-            .cap_groups
-            .entry(cap_group.clone())
-            .or_insert_with(CapGroupRecord::default);
+        let entry = self.cap_groups.entry(cap_group.clone()).or_default();
         if new >= old {
             entry.principal = entry.principal.saturating_add(new - old);
         } else {

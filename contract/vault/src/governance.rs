@@ -832,8 +832,7 @@ impl Contract {
                     self.fees.max_total_assets_growth_rate,
                     max_total_assets_growth_rate,
                 ) {
-                    (None, None) => false,
-                    (None, Some(_)) => false,
+                    (None, None | Some(_)) => false,
                     (Some(_), None) => true,
                     (Some(old), Some(new)) => new > old,
                 };
@@ -847,7 +846,7 @@ impl Contract {
                     "No restriction changes"
                 );
 
-                let is_relaxing = self.determine_relaxed(restrictions);
+                let is_relaxing = self.determine_relaxed(restrictions.as_ref());
 
                 if is_relaxing {
                     Self::assert_guardian_or_owner();
@@ -1018,13 +1017,18 @@ impl Contract {
         }
     }
 
-    fn determine_relaxed(&self, restrictions: &Option<Restrictions>) -> bool {
+    fn determine_relaxed(&self, restrictions: Option<&Restrictions>) -> bool {
         let is_relaxing = match (&self.gate.restrictions, restrictions) {
-            (None, None) => false,
-            (None, Some(_)) => false,
-            (Some(_), None) => true,
-            (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
-            (Some(Restrictions::Paused), Some(_)) => true,
+            (None, None | Some(_))
+            | (
+                Some(
+                    Restrictions::Paused | Restrictions::WhiteList(_) | Restrictions::BlackList(_),
+                ),
+                Some(Restrictions::Paused),
+            ) => false,
+            (Some(_), None)
+            | (Some(Restrictions::Paused), Some(_))
+            | (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
             (Some(Restrictions::BlackList(old)), Some(Restrictions::BlackList(new))) => {
                 old.difference(new).next().is_some()
             }
@@ -1034,13 +1038,11 @@ impl Contract {
             (Some(Restrictions::BlackList(old)), Some(Restrictions::WhiteList(new))) => {
                 old.intersection(new).next().is_some()
             }
-            (Some(Restrictions::WhiteList(_)), Some(Restrictions::Paused))
-            | (Some(Restrictions::BlackList(_)), Some(Restrictions::Paused)) => false,
-            (Some(Restrictions::WhiteList(_)), Some(Restrictions::BlackList(_))) => true,
         };
         is_relaxing
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply_immediately(&mut self, action: &TimelockedAction) {
         match action {
             TimelockedAction::GuardianChange { account } => {
@@ -1205,7 +1207,7 @@ impl Contract {
                     "No restriction changes"
                 );
 
-                self.gate.restrictions = restrictions.clone();
+                self.gate.restrictions.clone_from(restrictions);
                 Event::RestrictionsSet {
                     restrictions: restrictions.clone(),
                 }
@@ -1236,10 +1238,7 @@ impl Contract {
                 mkt.cfg.cap = *new_cap;
             }
             TimelockedAction::CapGroupChange { cap_group, new_cap } => {
-                let record = self
-                    .cap_groups
-                    .entry(cap_group.clone())
-                    .or_insert_with(CapGroupRecord::default);
+                let record = self.cap_groups.entry(cap_group.clone()).or_default();
                 record.cap = *new_cap;
                 Event::CapGroupSet {
                     cap_group: cap_group.clone(),
@@ -1254,10 +1253,7 @@ impl Contract {
                 let new_wad = Wad::from(new_relative_cap.0);
                 require!(new_wad <= Wad::one(), "relative cap too high");
 
-                let record = self
-                    .cap_groups
-                    .entry(cap_group.clone())
-                    .or_insert_with(CapGroupRecord::default);
+                let record = self.cap_groups.entry(cap_group.clone()).or_default();
                 record.relative_cap = new_wad;
 
                 Event::CapGroupRelativeCapSet {
@@ -1288,7 +1284,7 @@ impl Contract {
                 }
 
                 let rec = self.market_record_by_id_mut_or_panic(market_id);
-                rec.cfg.cap_group_id = cap_group.clone();
+                rec.cfg.cap_group_id.clone_from(cap_group);
                 Event::CapGroupMembershipSet {
                     market: market_id,
                     cap_group: cap_group.clone(),

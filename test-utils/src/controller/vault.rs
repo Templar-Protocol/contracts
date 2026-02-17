@@ -280,12 +280,10 @@ impl UnifiedVaultController {
     }
 
     pub async fn market_id_of(&self, market: &AccountId) -> MarketId {
-        let id = self
-            .vault
+        self.vault
             .get_market_id_of_account(market.clone())
             .await
-            .unwrap_or_else(|| panic!("Unknown market: {market}"));
-        MarketId::from(id)
+            .unwrap_or_else(|| panic!("Unknown market: {market}"))
     }
 
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {

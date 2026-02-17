@@ -3008,7 +3008,7 @@ fn governance_set_curator_grants_allocator() {
     );
     c.set_supply_queue(vec![market_id]);
     assert_eq!(c.supply_queue.len(), 1);
-    assert_eq!(c.supply_queue.iter().next(), Some(&market_id));
+    assert_eq!(c.supply_queue.first(), Some(&market_id));
 }
 
 #[test]
@@ -3039,7 +3039,7 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
     );
     c.set_supply_queue(vec![market_id]);
     assert_eq!(c.supply_queue.len(), 1);
-    assert_eq!(c.supply_queue.iter().next(), Some(&market_id));
+    assert_eq!(c.supply_queue.first(), Some(&market_id));
 }
 
 #[test]
@@ -4177,7 +4177,7 @@ fn resolve_market_helpers_supply_and_withdraw() {
     let m1 = MarketId(1001);
     let m2 = MarketId(1002);
     c.withdraw_route = vec![m1, m2];
-    assert_eq!(c.withdraw_route.get(0).copied(), Some(m1));
+    assert_eq!(c.withdraw_route.first().copied(), Some(m1));
     assert_eq!(c.withdraw_route.get(1).copied(), Some(m2));
     assert_eq!(c.withdraw_route.get(2).copied(), None);
 }

@@ -46,7 +46,7 @@ impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
     }
 }
 
-impl<'a, S: GuardSpec<Contract>> Deref for OpGuard<'a, S> {
+impl<S: GuardSpec<Contract>> Deref for OpGuard<'_, S> {
     type Target = Contract;
 
     fn deref(&self) -> &Self::Target {
@@ -54,7 +54,7 @@ impl<'a, S: GuardSpec<Contract>> Deref for OpGuard<'a, S> {
     }
 }
 
-impl<'a, S: GuardSpec<Contract>> DerefMut for OpGuard<'a, S> {
+impl<S: GuardSpec<Contract>> DerefMut for OpGuard<'_, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -69,8 +69,7 @@ impl GuardSpec<Contract> for IdleSpec {
         match &target.op_state {
             OpState::Idle => Ok(&IdleState),
             op_state => panic_with_message(&format!(
-                "Invariant: Only one op in flight; current op_state = {:?}",
-                op_state
+                "Invariant: Only one op in flight; current op_state = {op_state:?}"
             )),
         }
     }
@@ -91,7 +90,7 @@ impl GuardSpec<Contract> for AllocatingSpec {
 
     fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
         match &target.op_state {
-            OpState::Allocating(state) if op_id.map_or(true, |id| state.op_id == id) => Ok(state),
+            OpState::Allocating(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
             _ => Err(Error::NotAllocating),
         }
     }
@@ -112,7 +111,7 @@ impl GuardSpec<Contract> for WithdrawingSpec {
 
     fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
         match &target.op_state {
-            OpState::Withdrawing(state) if op_id.map_or(true, |id| state.op_id == id) => Ok(state),
+            OpState::Withdrawing(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
             _ => Err(Error::NotWithdrawing),
         }
     }
@@ -133,7 +132,7 @@ impl GuardSpec<Contract> for RefreshingSpec {
 
     fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
         match &target.op_state {
-            OpState::Refreshing(state) if op_id.map_or(true, |id| state.op_id == id) => Ok(state),
+            OpState::Refreshing(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
             _ => Err(Error::NotRefreshing),
         }
     }
@@ -154,7 +153,7 @@ impl GuardSpec<Contract> for PayoutSpec {
 
     fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
         match &target.op_state {
-            OpState::Payout(state) if op_id.map_or(true, |id| state.op_id == id) => Ok(state),
+            OpState::Payout(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
             _ => Err(Error::NotPayout),
         }
     }
