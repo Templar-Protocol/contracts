@@ -86,32 +86,24 @@ fn test_storage_key_variants() {
 }
 
 #[test]
-fn test_soroban_storage_key_variants() {
-    let env = Env::default();
-    let key1 = SorobanStorageKey::StateBlob;
-    let key2 = SorobanStorageKey::PolicyLocks;
-    let key3 = SorobanStorageKey::PolicySupplyQueue;
-    let key4 = SorobanStorageKey::PolicyMarkets;
-    let key5 = SorobanStorageKey::PolicyPrincipals;
-    let key6 = SorobanStorageKey::PolicyCapGroups;
-    let key7 = SorobanStorageKey::Restrictions;
-    let key8 = SorobanStorageKey::Version;
-    let key9 = SorobanStorageKey::Config;
-    let key10 = SorobanStorageKey::Paused;
-    let key11 = SorobanStorageKey::AddressBook(BytesN::from_array(&env, &[0u8; 32]));
-
-    // Keys should be distinct
-    assert!(matches!(key1, SorobanStorageKey::StateBlob));
-    assert!(matches!(key2, SorobanStorageKey::PolicyLocks));
-    assert!(matches!(key3, SorobanStorageKey::PolicySupplyQueue));
-    assert!(matches!(key4, SorobanStorageKey::PolicyMarkets));
-    assert!(matches!(key5, SorobanStorageKey::PolicyPrincipals));
-    assert!(matches!(key6, SorobanStorageKey::PolicyCapGroups));
-    assert!(matches!(key7, SorobanStorageKey::Restrictions));
-    assert!(matches!(key8, SorobanStorageKey::Version));
-    assert!(matches!(key9, SorobanStorageKey::Config));
-    assert!(matches!(key10, SorobanStorageKey::Paused));
-    assert!(matches!(key11, SorobanStorageKey::AddressBook(_)));
+fn test_soroban_storage_key_constants_are_distinct() {
+    // All Symbol constants should be distinct from each other
+    let keys: [Symbol; 9] = [
+        SorobanStorageKey::StateBlob,
+        SorobanStorageKey::PolicyLocks,
+        SorobanStorageKey::PolicySupplyQueue,
+        SorobanStorageKey::PolicyMarkets,
+        SorobanStorageKey::PolicyPrincipals,
+        SorobanStorageKey::PolicyCapGroups,
+        SorobanStorageKey::Restrictions,
+        SorobanStorageKey::Version,
+        SorobanStorageKey::Paused,
+    ];
+    for i in 0..keys.len() {
+        for j in (i + 1)..keys.len() {
+            assert_ne!(keys[i], keys[j], "keys at index {i} and {j} collide");
+        }
+    }
 }
 
 // Helper to create a registered contract for storage tests

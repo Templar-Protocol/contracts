@@ -14,7 +14,7 @@
 //!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 
 use soroban_sdk::token::StellarAssetClient;
-use soroban_sdk::{token, Address as SdkAddress, Bytes, Env};
+use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::effects::KernelEvent;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -24,19 +24,11 @@ use templar_vault_kernel::{
 };
 
 use crate::contract::{get_config_address, load_fees_spec, VaultDataKey};
-use crate::effects::KernelEventEnvelope;
+use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_i128};
+use crate::effects::publish_kernel_event;
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage};
 
-#[inline]
-fn runtime_to_contract<T>(
-    result: Result<T, crate::error::RuntimeError>,
-) -> Result<T, ContractError> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(err) => Err(ContractError::from(err)),
-    }
-}
 
 /// Load kernel state and a default config for read-only conversion math.
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
@@ -57,23 +49,8 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
     Ok((state, config))
 }
 
-fn ledger_timestamp_ns(env: &Env) -> Result<u64, ContractError> {
-    match env.ledger().timestamp().checked_mul(1_000_000_000) {
-        Some(ns) => Ok(ns),
-        None => Err(ContractError::ConversionOverflow),
-    }
-}
-
-fn emit_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), ContractError> {
-    let payload = match postcard::to_allocvec(event) {
-        Ok(payload) => payload,
-        Err(_) => return Err(ContractError::EffectFailed),
-    };
-    KernelEventEnvelope {
-        payload: Bytes::from_slice(env, &payload),
-    }
-    .publish(env);
-    Ok(())
+fn emit_kernel_event(env: &Env, event: &KernelEvent) {
+    publish_kernel_event(env, event);
 }
 
 fn resolve_fee_recipient(
@@ -184,7 +161,7 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
             now_ns,
             total_assets: cur_total_assets,
         },
-    )?;
+    );
 
     Ok(())
 }
@@ -198,21 +175,6 @@ pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
     token::Client::new(env, &share_token).balance(owner)
 }
 
-/// Safe u128 → i128 conversion.
-pub(crate) fn to_i128(v: u128) -> Result<i128, ContractError> {
-    match i128::try_from(v) {
-        Ok(value) => Ok(value),
-        Err(_) => Err(ContractError::ConversionOverflow),
-    }
-}
-
-/// Safe i128 → u128 conversion (rejects negative).
-pub(crate) fn to_u128(v: i128) -> Result<u128, ContractError> {
-    if v < 0 {
-        return Err(ContractError::InvalidInput);
-    }
-    Ok(v as u128)
-}
 
 /// Perform an atomic withdrawal by directly updating kernel state
 /// and transferring tokens.

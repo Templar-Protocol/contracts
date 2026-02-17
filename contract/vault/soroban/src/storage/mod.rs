@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 use derive_more::{From, Into};
-use soroban_sdk::{contracttype, Address as SdkAddress, Bytes, BytesN, Env};
+use soroban_sdk::{symbol_short, Address as SdkAddress, Bytes, BytesN, Env, Symbol};
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
 use templar_curator_primitives::policy::market_lock::MarketLockSet;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
@@ -22,21 +22,22 @@ pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 /// loss during extended pauses or periods of inactivity.
 pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 
-#[contracttype]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone)]
-pub enum SorobanStorageKey {
-    StateBlob,
-    PolicyLocks,
-    PolicySupplyQueue,
-    PolicyMarkets,
-    PolicyPrincipals,
-    PolicyCapGroups,
-    Restrictions,
-    AddressBook(BytesN<32>),
-    Version,
-    Config,
-    Paused,
+/// Internal persistent storage keys. Using Symbol constants instead of a
+/// `#[contracttype]` enum to avoid contractspec bloat and enum conversion codegen.
+#[allow(non_upper_case_globals)]
+pub struct SorobanStorageKey;
+
+#[allow(non_upper_case_globals)]
+impl SorobanStorageKey {
+    pub const StateBlob: Symbol = symbol_short!("stblob");
+    pub const PolicyLocks: Symbol = symbol_short!("plocks");
+    pub const PolicySupplyQueue: Symbol = symbol_short!("psupplyq");
+    pub const PolicyMarkets: Symbol = symbol_short!("pmkts");
+    pub const PolicyPrincipals: Symbol = symbol_short!("pprncpls");
+    pub const PolicyCapGroups: Symbol = symbol_short!("pcapgrps");
+    pub const Restrictions: Symbol = symbol_short!("restrict");
+    pub const Version: Symbol = symbol_short!("version");
+    pub const Paused: Symbol = symbol_short!("paused_l"); // legacy pause key (migration)
 }
 
 fn pc_serialize<T: serde::Serialize>(
@@ -75,8 +76,10 @@ impl<'a> SorobanStorage<'a> {
         Self { env }
     }
 
-    fn address_key(&self, kernel_addr: &Address) -> SorobanStorageKey {
-        SorobanStorageKey::AddressBook(BytesN::from_array(self.env, kernel_addr))
+    const SK_ADDRBOOK: Symbol = symbol_short!("addrbook");
+
+    fn address_key(&self, kernel_addr: &Address) -> (Symbol, BytesN<32>) {
+        (Self::SK_ADDRBOOK, BytesN::from_array(self.env, kernel_addr))
     }
 
     /// Load a kernel-to-Soroban address mapping from persistent storage.
@@ -243,21 +246,14 @@ impl<'a> SorobanStorage<'a> {
         stellar_contract_utils::pausable::paused(self.env)
     }
 
-    /// Set the pause state.
-    ///
-    /// Uses a storage key compatible with OpenZeppelin's Pausable module.
-    /// The key must match OZ's `PausableStorageKey::Paused` for interoperability.
+    /// Set the pause state using OpenZeppelin's Pausable module.
     pub fn set_paused(&self, paused: bool) {
-        // OZ PausableStorageKey is: #[contracttype] enum PausableStorageKey { Paused }
-        // We define a compatible key here since OZ's storage module is private.
-        #[soroban_sdk::contracttype]
-        enum OzPausableKey {
-            Paused,
+        use stellar_contract_utils::pausable;
+        if paused && !self.is_paused() {
+            pausable::pause(self.env);
+        } else if !paused && self.is_paused() {
+            pausable::unpause(self.env);
         }
-        self.env
-            .storage()
-            .instance()
-            .set(&OzPausableKey::Paused, &paused);
     }
 
     /// Check if the contract has the legacy pause key (for migration).
@@ -303,95 +299,22 @@ impl<'a> SorobanStorage<'a> {
             .storage()
             .instance()
             .extend_ttl(threshold, extend_to);
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::StateBlob)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::StateBlob,
-                threshold,
-                extend_to,
-            );
+        let p = self.env.storage().persistent();
+        // Extend each persistent key if it exists.
+        for key in &[
+            SorobanStorageKey::StateBlob,
+            SorobanStorageKey::PolicyLocks,
+            SorobanStorageKey::PolicySupplyQueue,
+            SorobanStorageKey::PolicyMarkets,
+            SorobanStorageKey::PolicyPrincipals,
+            SorobanStorageKey::PolicyCapGroups,
+            SorobanStorageKey::Restrictions,
+        ] {
+            if p.has(key) {
+                p.extend_ttl(key, threshold, extend_to);
+            }
         }
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::PolicyLocks)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::PolicyLocks,
-                threshold,
-                extend_to,
-            );
-        }
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::PolicySupplyQueue)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::PolicySupplyQueue,
-                threshold,
-                extend_to,
-            );
-        }
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::PolicyMarkets)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::PolicyMarkets,
-                threshold,
-                extend_to,
-            );
-        }
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::PolicyPrincipals)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::PolicyPrincipals,
-                threshold,
-                extend_to,
-            );
-        }
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::PolicyCapGroups)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::PolicyCapGroups,
-                threshold,
-                extend_to,
-            );
-        }
-        if self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::Restrictions)
-        {
-            self.env.storage().persistent().extend_ttl(
-                &SorobanStorageKey::Restrictions,
-                threshold,
-                extend_to,
-            );
-        }
-        self.env.storage().persistent().extend_ttl(
-            &SorobanStorageKey::Version,
-            threshold,
-            extend_to,
-        );
+        p.extend_ttl(&SorobanStorageKey::Version, threshold, extend_to);
     }
 
     fn extend_default_ttl(&self) {

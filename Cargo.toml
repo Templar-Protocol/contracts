@@ -10,6 +10,7 @@ members = [
     "contract/vault/kernel",
     "contract/vault/near",
     "contract/vault/soroban",
+    "contract/vault/soroban-blend-adapter",
     "contract/vault/soroban-governance",
     "contract/vault/soroban-share-token",
     "fuzz",
@@ -104,6 +105,20 @@ debug = false
 panic = "abort"
 strip = "symbols"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
+overflow-checks = true
+
+# Dependencies don't need overflow-check panic strings in WASM — saves ~2.5 KiB.
+# Our code uses explicit checked_* arithmetic everywhere.
+[profile.release.package."*"]
+overflow-checks = false
+
+[profile.release.package.templar-soroban-runtime]
+overflow-checks = true
+
+[profile.release.package.templar-vault-kernel]
+overflow-checks = true
+
+[profile.release.package.templar-curator-primitives]
 overflow-checks = true
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification

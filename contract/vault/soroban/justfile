@@ -41,7 +41,7 @@ debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runti
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
 deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
-default_wasm := deploy_wasm
+default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.optimized.wasm"
@@ -100,7 +100,7 @@ build:
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" 2>/dev/null
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_governance.wasm" 2>/dev/null
 	@stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_share_token.wasm" 2>/dev/null
-	@python "{{justfile_directory()}}/scripts/strip_contractspec.py" \
+	@python3 "{{justfile_directory()}}/scripts/strip_contractspec.py" \
 		--input "{{optimized_wasm}}" --output "{{deploy_wasm}}"
 	@echo "✓ Built optimized: {{optimized_wasm}}"
 	@echo "✓ Built deploy:    {{deploy_wasm}}"
@@ -145,7 +145,7 @@ wasm-analyze rows="250" lines="120":
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \
 	fi; \
 	stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null
-	@python "{{justfile_directory()}}/scripts/print_wasm_sizes.py" \
+	@python3 "{{justfile_directory()}}/scripts/print_wasm_sizes.py" \
 		--wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" \
 		--optimized "{{optimized_wasm}}"
 	@just -f "{{justfile_directory()}}/justfile" wasm-analyze-print all "{{lines}}"
@@ -154,7 +154,7 @@ wasm-analyze rows="250" lines="120":
 # Usage: just wasm-analyze-print [report] [lines]
 # report: top | dominators | monos | all
 wasm-analyze-print report="all" lines="120":
-	@python "{{justfile_directory()}}/scripts/print_wasm_analysis.py" \
+	@python3 "{{justfile_directory()}}/scripts/print_wasm_analysis.py" \
 		--dir "{{wasm_analysis_dir}}" \
 		--report "{{report}}" \
 		--lines "{{lines}}"
@@ -565,6 +565,45 @@ blend-adapter-extend-ttl ledgers="100000":
 		--ledgers-to-extend {{ledgers}}; \
 	echo "✓ TTL extended"
 
+# Supply tokens from adapter into the Blend pool (admin-only).
+# Tokens must already be on the adapter address.
+blend-supply asset amount:
+	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	echo "Supplying {{amount}} to Blend pool..."; \
+	just blend-invoke supply_balance \
+		--caller "$admin" \
+		--asset "{{asset}}" \
+		--amount "{{amount}}"; \
+	echo "✓ Supplied to Blend"
+
+# Withdraw tokens from Blend pool and send to vault (admin-only).
+blend-withdraw asset amount:
+	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	echo "Withdrawing {{amount}} from Blend pool to vault..."; \
+	just blend-invoke withdraw_to_vault \
+		--caller "$admin" \
+		--asset "{{asset}}" \
+		--amount "{{amount}}"; \
+	echo "✓ Withdrawn from Blend to vault"
+
+# Transfer tokens to the adapter address (for funding before blend-supply).
+fund-adapter amount:
+	@asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
+	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	addr="$(stellar keys address "$source")"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	echo "Transferring {{amount}} to adapter ($adapter)..."; \
+	stellar contract invoke \
+		--id "$asset" \
+		--network "$network" \
+		--source-account "$source" \
+		-- transfer \
+		--from "$addr" \
+		--to "$adapter" \
+		--amount "{{amount}}"; \
+	echo "✓ Adapter funded"
+
 # Show Blend adapter status.
 blend-adapter-status:
 	@echo "=== Blend Adapter Status ==="
@@ -694,8 +733,10 @@ withdraw assets receiver owner:
 # =============================================================================
 
 # Supply assets to a market.
+# Allocate supply to a market via adapter (accounting + transfer + adapter.supply).
 allocate-supply market_id amount:
 	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	addr="$(stellar keys address "$source")"; \
@@ -704,14 +745,17 @@ allocate-supply market_id amount:
 		--id "$contract_id" \
 		--network "$network" \
 		--source-account "$source" \
-		-- allocate \
+		-- allocate_supply \
 		--caller "$addr" \
-		--delta '{"Supply":{"amount":"{{amount}}","market":{{market_id}}}}'
+		--adapter "$adapter" \
+		--market "{{market_id}}" \
+		--amount "{{amount}}"
 	@echo "✓ Supply complete"
 
-# Withdraw assets from a market.
+# Withdraw from a market via adapter (adapter.withdraw + accounting).
 allocate-withdraw market_id amount:
 	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	addr="$(stellar keys address "$source")"; \
@@ -720,9 +764,12 @@ allocate-withdraw market_id amount:
 		--id "$contract_id" \
 		--network "$network" \
 		--source-account "$source" \
-		-- allocate \
+		--instruction-leeway 5000000 \
+		-- allocate_withdraw \
 		--caller "$addr" \
-		--delta '{"Withdraw":{"amount":"{{amount}}","market":{{market_id}}}}'
+		--adapter "$adapter" \
+		--market "{{market_id}}" \
+		--amount "{{amount}}"
 	@echo "✓ Withdraw complete"
 
 # Full end-to-end flow:
@@ -762,6 +809,52 @@ demo-e2e-finalize:
 	@just execute-withdraw
 	@just vault-state
 
+# Full Blend integration e2e (direct adapter invocation):
+# deposit -> set supply queue -> supply_to_market -> verify -> withdraw_from_market -> vault withdraw
+demo-e2e-blend:
+	@echo "=== BLEND INTEGRATION E2E (direct invocation) ==="
+	@asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
+	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
+	addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	echo ""; \
+	echo "--- Step 1: Register Blend adapter in vault address book ---"; \
+	just register-address "$adapter"; \
+	sleep 4; \
+	echo ""; \
+	echo "--- Step 2: Configure supply queue via governance ---"; \
+	just set-supply-queue '[0]'; \
+	sleep 4; \
+	echo ""; \
+	echo "--- Step 3: Deposit 2 XLM (20000000 stroops) into vault ---"; \
+	just deposit "$addr" "$addr" 20000000 0; \
+	sleep 4; \
+	echo ""; \
+	echo "--- Vault state after deposit ---"; \
+	just vault-state; \
+	echo ""; \
+	echo "--- Step 4: Supply 10000000 to market 0 (accounting + transfer + adapter) ---"; \
+	just allocate-supply 0 10000000; \
+	sleep 4; \
+	echo ""; \
+	echo "--- Vault state after supply ---"; \
+	just vault-state; \
+	echo ""; \
+	echo "--- Step 5: Verify Blend position ---"; \
+	echo "Blend position:"; \
+	just blend-adapter-total-assets "$asset"; \
+	echo ""; \
+	echo "--- Step 6: Withdraw 10000000 from market 0 (adapter + accounting) ---"; \
+	just allocate-withdraw 0 10000000; \
+	sleep 4; \
+	echo ""; \
+	echo "--- Step 7: Withdraw from vault ---"; \
+	just withdraw 5000000 "$addr" "$addr"; \
+	echo ""; \
+	echo "=== Final vault state ==="; \
+	just vault-state; \
+	echo ""; \
+	echo "✓ Blend e2e complete!"
+
 # =============================================================================
 # ADMIN OPERATIONS
 # =============================================================================
@@ -779,6 +872,16 @@ unpause:
 	echo "Unpausing vault..."; \
 	just invoke set_paused --caller "$admin" --paused false; \
 	echo "✓ Vault unpaused"
+
+# Register an address in the vault's address book (curator-only).
+# This maps a kernel address index to a Soroban contract/account address.
+register-address address:
+	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	echo "Registering address {{address}} in vault..."; \
+	just invoke register_address \
+		--caller "$admin" \
+		--address "{{address}}"; \
+	echo "✓ Address registered"
 
 set-curator new_curator:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
@@ -798,8 +901,10 @@ set-supply-queue target_ids_json:
 	echo "Setting supply queue via governance: {{target_ids_json}}"; \
 	proposal_id=$(just gov-invoke submit_set_supply_queue \
 		--caller "$admin" \
-		--target_ids "{{target_ids_json}}" 2>&1 | tail -1); \
+		--target_ids "{{target_ids_json}}" 2>/dev/null | tail -1); \
 	echo "  Submitted proposal: $proposal_id"; \
+	echo "  Waiting for ledger confirmation..."; \
+	sleep 6; \
 	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
 	echo "✓ Supply queue updated"
 
@@ -820,8 +925,8 @@ set-metadata name="Templar Vault Share" symbol="tvSHARE" decimals="7":
 vault-state:
 	@echo "=== Vault State ==="
 	@echo "Total Assets:  $(just invoke total_assets 2>/dev/null || echo 'error')"
-	@echo "Total Shares:  $(just invoke total_shares 2>/dev/null || echo 'error')"
-	@echo "Idle Assets:   $(just invoke idle_assets 2>/dev/null || echo 'error')"
+	@snapshot="$(just invoke vault_snapshot 2>/dev/null || echo 'error')"; \
+	echo "Snapshot:      $snapshot"
 	@echo "Paused:        $(just invoke is_paused 2>/dev/null || echo 'error')"
 
 # Get admin address.
@@ -930,7 +1035,9 @@ _ensure-setup:
 	@if ! stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} >/dev/null 2>&1; then \
 		echo "Error: Identity not found. Run 'just setup' first."; \
 		exit 1; \
-	fi
+	fi; \
+	mkdir -p "{{state_dir}}"; \
+	stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} > "{{state_dir}}/admin_address"
 
 # =============================================================================
 # HELP
@@ -972,8 +1079,13 @@ help:
 	@echo "BLEND ADAPTER:"
 	@echo "  just deploy-blend-adapter <pool>  Deploy adapter for Blend pool"
 	@echo "  just blend-adapter-status        Show adapter status"
-	@echo "  just blend-adapter-set-pool <p>  Update pool address"
 	@echo "  just blend-adapter-total-assets <asset>  Query pool position"
+	@echo "  just allocate-supply <mkt> <amt>  Supply to market via adapter"
+	@echo "  just allocate-withdraw <mkt> <amt>  Withdraw from market via adapter"
+	@echo "  just blend-supply <asset> <amt>  Supply tokens to Blend pool (manual)"
+	@echo "  just blend-withdraw <asset> <amt>  Withdraw from Blend (manual)"
+	@echo "  just fund-adapter <amount>       Transfer tokens to adapter (manual)"
+	@echo "  just demo-e2e-blend              Full Blend integration e2e"
 	@echo ""
 	@echo "DEPOSITS:"
 	@echo "  just deposit <owner> <receiver> <assets> [min_shares]"

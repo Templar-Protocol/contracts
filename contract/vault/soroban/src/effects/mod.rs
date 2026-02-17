@@ -1,7 +1,6 @@
 //! Effect interpreter for kernel effects on Soroban.
 
-use alloc::vec::Vec;
-use soroban_sdk::{contractevent, token::StellarAssetClient, Address, Bytes, Env};
+use soroban_sdk::{symbol_short, token::StellarAssetClient, Address, Bytes, Env};
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
 use templar_vault_kernel::AddressBook;
 
@@ -14,9 +13,19 @@ fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
     u128_to_i128_effect(value, "event amount overflow")
 }
 
-#[contractevent]
-pub struct KernelEventEnvelope {
-    pub payload: Bytes,
+/// Publish a KernelEvent via postcard serialization as a raw Soroban event.
+///
+/// Uses a single `symbol_short!("kernel")` topic with a postcard-encoded
+/// `Bytes` payload. This avoids `#[contractevent]` spec bloat while keeping
+/// the same event data available to indexers.
+#[inline(never)]
+#[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
+pub fn publish_kernel_event(env: &Env, event: &KernelEvent) {
+    let payload = postcard::to_allocvec(event).expect("kernel event serialize");
+    env.events().publish(
+        (symbol_short!("kernel"),),
+        Bytes::from_slice(env, &payload),
+    );
 }
 
 /// Result type for effect operations.
@@ -391,8 +400,6 @@ where
     pub asset_token: &'a A,
     /// Address mapping from kernel to Soroban addresses.
     pub address_map: AddressMap,
-    /// Recorded events.
-    pub events: Vec<templar_vault_kernel::effects::KernelEvent>,
 }
 
 impl<'a, S, A> SorobanEffectInterpreter<'a, S, A>
@@ -409,7 +416,6 @@ where
             share_token,
             asset_token,
             address_map: AddressMap::new(env),
-            events: Vec::new(),
         }
     }
 
@@ -427,21 +433,6 @@ where
         }
     }
 
-    fn emit_event(&self, event: &KernelEvent) -> EffectResult<()> {
-        let payload = match postcard::to_allocvec(event) {
-            Ok(payload) => payload,
-            Err(_) => {
-                return Err(RuntimeError::effect_failed(
-                    "kernel event serialization failed",
-                ))
-            }
-        };
-        KernelEventEnvelope {
-            payload: Bytes::from_slice(self.env, &payload),
-        }
-        .publish(self.env);
-        Ok(())
-    }
 }
 
 impl<S, A> AddressRegistrar for SorobanEffectInterpreter<'_, S, A>
@@ -500,8 +491,7 @@ where
             }
 
             KernelEffect::EmitEvent { event } => {
-                self.emit_event(event)?;
-                self.events.push(event.clone());
+                publish_kernel_event(self.env, event);
                 Ok(())
             }
 

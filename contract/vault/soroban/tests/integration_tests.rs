@@ -64,10 +64,11 @@ fn soroban_contract_vault_snapshot_matches_fields() {
             .unwrap();
     });
     env.as_contract(&contract_id, || {
-        let snapshot = SorobanVaultContract::vault_snapshot(env.clone()).unwrap();
-        assert_eq!(snapshot.total_shares, 0);
-        assert_eq!(snapshot.idle_assets, 0);
-        assert_eq!(snapshot.external_assets, 0);
+        let (total_shares, idle_assets, external_assets) =
+            SorobanVaultContract::vault_snapshot(env.clone()).unwrap();
+        assert_eq!(total_shares, 0);
+        assert_eq!(idle_assets, 0);
+        assert_eq!(external_assets, 0);
     });
 }
 

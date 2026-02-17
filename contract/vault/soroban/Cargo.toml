@@ -16,7 +16,7 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 # Core dependency - vault kernel types
-templar-vault-kernel = { path = "../kernel", features = ["postcard"] }
+templar-vault-kernel = { path = "../kernel", features = ["postcard", "soroban"] }
 
 # Curator primitives for policy and recovery
 templar-curator-primitives = { path = "../curator-primitives", features = ["postcard"] }

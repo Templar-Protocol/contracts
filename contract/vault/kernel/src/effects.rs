@@ -3,14 +3,15 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::types::Address;
-#[cfg(feature = "borsh")]
+#[cfg(all(feature = "borsh", not(feature = "soroban")))]
 use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", not(feature = "soroban")))]
 use serde::{Deserialize, Serialize};
 
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+// KernelEffect: gate all serde behind not(soroban) — never serialized in Soroban.
+#[cfg_attr(all(feature = "borsh", not(feature = "soroban")), derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde"), not(feature = "soroban")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(all(feature = "serde", not(feature = "soroban")), derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum KernelEffect {
@@ -48,9 +49,9 @@ pub enum KernelEffect {
     EmitEvent { event: KernelEvent },
 }
 
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "borsh", not(feature = "soroban")), derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde"), not(feature = "soroban")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(all(feature = "serde", not(feature = "soroban")), derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum KernelCallback {
@@ -64,9 +65,11 @@ pub enum KernelCallback {
     PayoutTransfer,
 }
 
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+// KernelEvent: keep Serialize for postcard event emission, gate Deserialize behind not(soroban).
+#[cfg_attr(all(feature = "borsh", not(feature = "soroban")), derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(all(feature = "postcard", not(feature = "serde"), not(feature = "soroban")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(all(feature = "serde", not(feature = "soroban")), derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "serde", feature = "soroban"), derive(serde::Serialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum KernelEvent {

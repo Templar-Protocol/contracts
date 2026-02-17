@@ -45,7 +45,7 @@ pub use contract::{
 };
 pub use effects::{
     AddressMap, AddressRegistrar, EffectContext, EffectInterpreter, EffectResult, EffectSummary,
-    KernelEventEnvelope, SdkTokenAdapter, Sep41Token, SorobanEffectInterpreter,
+    SdkTokenAdapter, Sep41Token, SorobanEffectInterpreter,
 };
 pub use error::{ContractError, RuntimeError};
 pub use market::{

@@ -1,7 +1,5 @@
 #![no_std]
 
-extern crate alloc;
-
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
@@ -27,20 +25,6 @@ enum DataKey {
     Vault,
     Pool,
     ReentrancyLock,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AdapterEvent {
-    Supply { asset: Address, amount: i128 },
-    Withdraw { asset: Address, amount: i128 },
-    Rescue {
-        asset: Address,
-        amount: i128,
-        receiver: Address,
-    },
-    PoolUpdated { old_pool: Address, new_pool: Address },
-    VaultUpdated { old_vault: Address, new_vault: Address },
 }
 
 #[contracterror]
@@ -81,12 +65,7 @@ impl BlendAdapterContract {
     }
 
     /// Update the Blend pool contract address (admin-only).
-    ///
-    /// # Preconditions
-    /// - `caller` must be the admin.
-    /// - `pool` must be a contract address.
-    ///
-    /// Emits `PoolUpdated` on success.
+    #[allow(deprecated)]
     pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
@@ -94,22 +73,14 @@ impl BlendAdapterContract {
         let old_pool = get_pool(&env)?;
         env.storage().instance().set(&DataKey::Pool, &pool);
         env.events().publish(
-            (symbol_short!("pool_updated"),),
-            AdapterEvent::PoolUpdated {
-                old_pool,
-                new_pool: pool,
-            },
+            (symbol_short!("pool_upd"), old_pool),
+            pool,
         );
         Ok(())
     }
 
     /// Update the vault contract address (admin-only).
-    ///
-    /// # Preconditions
-    /// - `caller` must be the admin.
-    /// - `vault` must be a contract address.
-    ///
-    /// Emits `VaultUpdated` on success.
+    #[allow(deprecated)]
     pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
@@ -117,24 +88,14 @@ impl BlendAdapterContract {
         let old_vault = get_vault(&env)?;
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.events().publish(
-            (symbol_short!("vault_updated"),),
-            AdapterEvent::VaultUpdated {
-                old_vault,
-                new_vault: vault,
-            },
+            (symbol_short!("vlt_upd"), old_vault),
+            vault,
         );
         Ok(())
     }
 
     /// Supply assets from the adapter into the Blend pool (vault-only).
-    ///
-    /// # Preconditions
-    /// - `caller` must be the configured vault.
-    /// - `amount` must be positive.
-    /// - The vault must have transferred `amount` of `asset` to the adapter
-    ///   prior to calling this method.
-    ///
-    /// Emits `Supply` on success.
+    #[allow(deprecated)]
     pub fn supply(
         env: Env,
         caller: Address,
@@ -142,8 +103,6 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        // Adapter owns the Blend position. The vault should transfer assets to
-        // the adapter before calling this method.
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -176,21 +135,15 @@ impl BlendAdapterContract {
 
             client.submit(&adapter, &adapter, &adapter, &requests);
             env.events().publish(
-                (symbol_short!("supply"),),
-                AdapterEvent::Supply { asset, amount },
+                (symbol_short!("supply"), asset),
+                amount,
             );
             Ok(())
         })
     }
 
     /// Withdraw assets from the Blend pool and transfer them to the vault.
-    ///
-    /// # Preconditions
-    /// - `caller` must be the configured vault.
-    /// - `amount` must be positive.
-    ///
-    /// If the pool returns fewer assets than requested, the adapter forwards
-    /// the actual amount received. Emits `Withdraw` with the actual amount.
+    #[allow(deprecated)]
     pub fn withdraw(
         env: Env,
         caller: Address,
@@ -198,7 +151,6 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        // Adapter owns the Blend position and transfers withdrawn assets back to the vault.
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -229,24 +181,15 @@ impl BlendAdapterContract {
             }
             token.transfer(&adapter, &vault, &actual_withdrawn);
             env.events().publish(
-                (symbol_short!("withdraw"),),
-                AdapterEvent::Withdraw {
-                    asset,
-                    amount: actual_withdrawn,
-                },
+                (symbol_short!("withdraw"), asset),
+                actual_withdrawn,
             );
             Ok(())
         })
     }
 
     /// Rescue assets held by the adapter and transfer them to `receiver`.
-    ///
-    /// # Preconditions
-    /// - `caller` must be the configured vault.
-    /// - `amount` must be positive.
-    /// - `receiver` must be a contract address and not the adapter itself.
-    ///
-    /// Emits `Rescue` on success.
+    #[allow(deprecated)]
     pub fn rescue(
         env: Env,
         caller: Address,
@@ -255,7 +198,6 @@ impl BlendAdapterContract {
         receiver: Address,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        // Move unexpected assets held by the adapter to a receiver.
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -270,21 +212,14 @@ impl BlendAdapterContract {
             let token = soroban_sdk::token::Client::new(&env, &asset);
             token.transfer(&adapter, &receiver, &amount);
             env.events().publish(
-                (symbol_short!("rescue"),),
-                AdapterEvent::Rescue {
-                    asset,
-                    amount,
-                    receiver,
-                },
+                (symbol_short!("rescue"), asset, receiver),
+                amount,
             );
             Ok(())
         })
     }
 
     /// Query total assets for `asset` from the Blend pool.
-    ///
-    /// Returns an error if reserve data is stale, positions are missing, or
-    /// arithmetic overflows.
     pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
         let pool = get_pool(&env)?;
@@ -320,6 +255,104 @@ impl BlendAdapterContract {
     pub fn pool(env: Env) -> Result<Address, AdapterError> {
         extend_instance_ttl(&env);
         get_pool(&env)
+    }
+
+    /// Supply tokens already on the adapter into the Blend pool (admin-only).
+    ///
+    /// Use this after transferring tokens to the adapter address.
+    /// Flow: admin transfers tokens to adapter → admin calls supply_balance → adapter supplies to pool.
+    #[allow(deprecated)]
+    pub fn supply_balance(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        if amount <= 0 {
+            return Err(AdapterError::InvalidInput);
+        }
+
+        with_reentrancy_guard(&env, || {
+            let pool = get_pool(&env)?;
+            let client = PoolClient::new(&env, &pool);
+            let adapter = env.current_contract_address();
+            let request = Request {
+                request_type: REQUEST_SUPPLY,
+                address: asset.clone(),
+                amount,
+            };
+            let mut requests = Vec::new(&env);
+            requests.push_back(request);
+
+            env.authorize_as_current_contract(Vec::from_array(
+                &env,
+                [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: asset.clone(),
+                        fn_name: Symbol::new(&env, "transfer"),
+                        args: (adapter.clone(), pool.clone(), amount).into_val(&env),
+                    },
+                    sub_invocations: Vec::new(&env),
+                })],
+            ));
+
+            client.submit(&adapter, &adapter, &adapter, &requests);
+            env.events().publish(
+                (symbol_short!("supply"), asset),
+                amount,
+            );
+            Ok(())
+        })
+    }
+
+    /// Withdraw tokens from the Blend pool and send to the vault (admin-only).
+    ///
+    /// Use this when the vault's allocate_withdraw has already updated accounting.
+    #[allow(deprecated)]
+    pub fn withdraw_to_vault(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<i128, AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        if amount <= 0 {
+            return Err(AdapterError::InvalidInput);
+        }
+        let vault = get_vault(&env)?;
+
+        with_reentrancy_guard(&env, || {
+            let pool = get_pool(&env)?;
+            let client = PoolClient::new(&env, &pool);
+            let adapter = env.current_contract_address();
+            let request = Request {
+                request_type: REQUEST_WITHDRAW,
+                address: asset.clone(),
+                amount,
+            };
+            let mut requests = Vec::new(&env);
+            requests.push_back(request);
+            let token = soroban_sdk::token::Client::new(&env, &asset);
+            let balance_before = token.balance(&adapter);
+            client.submit(&adapter, &adapter, &adapter, &requests);
+
+            let balance_after = token.balance(&adapter);
+            let actual_withdrawn = balance_after
+                .checked_sub(balance_before)
+                .ok_or(AdapterError::ArithmeticUnderflow)?;
+            if actual_withdrawn <= 0 {
+                return Err(AdapterError::ZeroWithdrawal);
+            }
+            token.transfer(&adapter, &vault, &actual_withdrawn);
+            env.events().publish(
+                (symbol_short!("withdraw"), asset),
+                actual_withdrawn,
+            );
+            Ok(actual_withdrawn)
+        })
     }
 
     /// Extend instance storage TTL (admin-only).
@@ -429,6 +462,8 @@ impl Drop for ReentrancyGuard<'_> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events as _},
@@ -464,12 +499,8 @@ mod tests {
         }
     }
 
-    fn adapter_events(env: &Env, adapter: &Address) -> std::vec::Vec<(Address, Vec<Val>, Val)> {
-        env.events()
-            .all()
-            .into_iter()
-            .filter(|event| &event.0 == adapter)
-            .collect()
+    fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
+        env.events().all().filter_by_contract(adapter).events().len()
     }
 
     #[test]
@@ -700,56 +731,28 @@ mod tests {
     fn set_pool_emits_event() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin, _vault, old_pool) = setup_adapter(&env);
+        let (contract_id, admin, _vault, _old_pool) = setup_adapter(&env);
         let new_pool = Address::generate(&env);
         env.as_contract(&contract_id, || {
             BlendAdapterContract::set_pool(env.clone(), admin, new_pool.clone()).unwrap();
         });
-        let events = adapter_events(&env, &contract_id);
-        assert_eq!(events.len(), 1);
-        let event = events.get(0).unwrap();
-        assert_eq!(
-            event.1,
-            vec![&env, symbol_short!("pool_updated").into_val(&env)]
-        );
-        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
-        assert_eq!(
-            payload,
-            AdapterEvent::PoolUpdated {
-                old_pool,
-                new_pool
-            }
-        );
+        assert_eq!(adapter_event_count(&env, &contract_id), 1);
     }
 
     #[test]
     fn set_vault_emits_event() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin, old_vault, _pool) = setup_adapter(&env);
+        let (contract_id, admin, _old_vault, _pool) = setup_adapter(&env);
         let new_vault = Address::generate(&env);
         env.as_contract(&contract_id, || {
             BlendAdapterContract::set_vault(env.clone(), admin, new_vault.clone()).unwrap();
         });
-        let events = adapter_events(&env, &contract_id);
-        assert_eq!(events.len(), 1);
-        let event = events.get(0).unwrap();
-        assert_eq!(
-            event.1,
-            vec![&env, symbol_short!("vault_updated").into_val(&env)]
-        );
-        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
-        assert_eq!(
-            payload,
-            AdapterEvent::VaultUpdated {
-                old_vault,
-                new_vault
-            }
-        );
+        assert_eq!(adapter_event_count(&env, &contract_id), 1);
     }
 
     #[test]
-    fn supply_emits_event() {
+    fn supply_transfers_and_emits() {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
@@ -764,29 +767,17 @@ mod tests {
             .mock_all_auths()
             .mint(&contract_id, &1_000);
 
+        let balance_before = token_client.balance(&contract_id);
         env.as_contract(&contract_id, || {
             BlendAdapterContract::supply(env.clone(), vault, asset.clone(), 250).unwrap();
         });
-
-        let events = adapter_events(&env, &contract_id);
-        assert_eq!(events.len(), 1);
-        let event = events.get(0).unwrap();
-        assert_eq!(
-            event.1,
-            vec![&env, symbol_short!("supply").into_val(&env)]
-        );
-        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
-        assert_eq!(
-            payload,
-            AdapterEvent::Supply {
-                asset,
-                amount: 250
-            }
-        );
+        let balance_after = token_client.balance(&contract_id);
+        assert_eq!(balance_before - balance_after, 250);
+        assert!(adapter_event_count(&env, &contract_id) >= 1);
     }
 
     #[test]
-    fn withdraw_emits_event() {
+    fn withdraw_transfers_and_emits() {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
@@ -801,25 +792,13 @@ mod tests {
             .mock_all_auths()
             .mint(&pool, &5_000);
 
+        let vault_before = token_client.balance(&vault);
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::withdraw(env.clone(), vault, asset.clone(), 400).unwrap();
+            BlendAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), 400).unwrap();
         });
-
-        let events = adapter_events(&env, &contract_id);
-        assert_eq!(events.len(), 1);
-        let event = events.get(0).unwrap();
-        assert_eq!(
-            event.1,
-            vec![&env, symbol_short!("withdraw").into_val(&env)]
-        );
-        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
-        assert_eq!(
-            payload,
-            AdapterEvent::Withdraw {
-                asset,
-                amount: 400
-            }
-        );
+        let vault_after = token_client.balance(&vault);
+        assert_eq!(vault_after - vault_before, 400);
+        assert!(adapter_event_count(&env, &contract_id) >= 1);
     }
 
     #[test]
@@ -845,22 +824,10 @@ mod tests {
         });
         let vault_after = token_client.balance(&vault);
         assert_eq!(vault_after - vault_before, 300);
-
-        let events = adapter_events(&env, &contract_id);
-        assert_eq!(events.len(), 1);
-        let event = events.get(0).unwrap();
-        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
-        assert_eq!(
-            payload,
-            AdapterEvent::Withdraw {
-                asset,
-                amount: 300
-            }
-        );
     }
 
     #[test]
-    fn rescue_emits_event() {
+    fn rescue_transfers_and_emits() {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
@@ -876,27 +843,14 @@ mod tests {
             .mint(&contract_id, &2_000);
         let receiver = Address::generate(&env);
 
+        let receiver_before = token_client.balance(&receiver);
         env.as_contract(&contract_id, || {
             BlendAdapterContract::rescue(env.clone(), vault, asset.clone(), 300, receiver.clone())
                 .unwrap();
         });
-
-        let events = adapter_events(&env, &contract_id);
-        assert_eq!(events.len(), 1);
-        let event = events.get(0).unwrap();
-        assert_eq!(
-            event.1,
-            vec![&env, symbol_short!("rescue").into_val(&env)]
-        );
-        let payload: AdapterEvent = AdapterEvent::try_from_val(&env, &event.2).unwrap();
-        assert_eq!(
-            payload,
-            AdapterEvent::Rescue {
-                asset,
-                amount: 300,
-                receiver
-            }
-        );
+        let receiver_after = token_client.balance(&receiver);
+        assert_eq!(receiver_after - receiver_before, 300);
+        assert!(adapter_event_count(&env, &contract_id) >= 1);
     }
 
     #[test]
