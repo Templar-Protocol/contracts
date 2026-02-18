@@ -26,7 +26,7 @@ pub use spec::*;
 #[derive(Debug)]
 pub enum Request<S: Spec> {
     Update {
-        price_ids: Box<[S::PriceIdentifier]>,
+        feed_ids: Box<[S::FeedId]>,
         send: oneshot::Sender<Result<Option<CryptoHash>, UpdateError>>,
     },
 }
@@ -54,9 +54,9 @@ async fn start<S: Spec>(
                     break;
                 };
                 match request {
-                    Request::Update { price_ids, send } => {
+                    Request::Update { feed_ids, send } => {
                         #[allow(clippy::unwrap_used, reason = "Sender should not drop")]
-                        send.send(client.update(&price_ids).await).unwrap();
+                        send.send(client.update(&feed_ids).await).unwrap();
                     }
                 }
             }
@@ -80,7 +80,7 @@ pub enum UpdateError {
 
 #[derive(Debug)]
 struct Client<S: Spec> {
-    last_updated: HashMap<S::PriceIdentifier, Instant>,
+    last_updated: HashMap<S::FeedId, Instant>,
     spec: Arc<S>,
     near: Near,
     cache: Cache,
@@ -99,7 +99,7 @@ impl<S: Spec> Client<S> {
     #[tracing::instrument(skip(self))]
     pub async fn update(
         &mut self,
-        price_ids: &[S::PriceIdentifier],
+        price_ids: &[S::FeedId],
     ) -> Result<Option<CryptoHash>, UpdateError> {
         let send_updates_for = IntoIterator::into_iter(price_ids)
             .filter(|id| {
@@ -189,11 +189,11 @@ impl<S: Spec> Handle<S> {
     #[tracing::instrument(skip(self))]
     pub async fn update(
         &self,
-        price_ids: Box<[S::PriceIdentifier]>,
+        feed_ids: Box<[S::FeedId]>,
     ) -> Result<Option<CryptoHash>, UpdateError> {
         let (send, recv) = oneshot::channel();
         self.send
-            .send(Request::Update { price_ids, send })
+            .send(Request::Update { feed_ids, send })
             .await
             .unwrap();
         recv.await.unwrap()

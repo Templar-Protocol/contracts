@@ -45,7 +45,7 @@ impl PythSpec {
     ///
     /// - [`reqwest::Error`]
     /// - Response deserialization.
-    async fn get_latest_price_updates_vaa(
+    async fn latest_vaa(
         &self,
         price_ids: &[pyth::PriceIdentifier],
     ) -> Result<Vec<u8>, reqwest::Error> {
@@ -83,7 +83,7 @@ impl PythSpec {
 }
 
 impl Spec for PythSpec {
-    type PriceIdentifier = pyth::PriceIdentifier;
+    type FeedId = pyth::PriceIdentifier;
     type Error = reqwest::Error;
 
     fn name() -> &'static str {
@@ -99,11 +99,8 @@ impl Spec for PythSpec {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn update_actions(
-        &self,
-        price_ids: &[Self::PriceIdentifier],
-    ) -> Result<Vec<Action>, Self::Error> {
-        let vaa = self.get_latest_price_updates_vaa(price_ids).await?;
+    async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
+        let vaa = self.latest_vaa(feed_ids).await?;
         Ok(vec![FunctionCallAction {
             method_name: "update_price_feeds".to_string(),
             args: serde_json::to_vec(&json!({ "data": hex::encode(vaa) })).unwrap(),

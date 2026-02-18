@@ -202,7 +202,7 @@ impl Drop for RedStoneSpec {
 }
 
 impl Spec for RedStoneSpec {
-    type PriceIdentifier = String;
+    type FeedId = String;
     type Error = std::io::Error;
 
     fn name() -> &'static str {
@@ -217,11 +217,9 @@ impl Spec for RedStoneSpec {
         self.config.refresh
     }
 
-    async fn update_actions(
-        &self,
-        price_ids: &[Self::PriceIdentifier],
-    ) -> Result<Vec<Action>, Self::Error> {
-        let (req, recv) = Request::fetch(price_ids.to_vec());
+    #[tracing::instrument(skip(self))]
+    async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
+        let (req, recv) = Request::fetch(feed_ids.to_vec());
         self.bridge_send.send(req).await.unwrap();
         let payload_string_hex = recv.await.unwrap().unwrap();
         let payload_vec = hex::decode(&payload_string_hex).unwrap();
@@ -229,7 +227,7 @@ impl Spec for RedStoneSpec {
         Ok(vec![FunctionCallAction {
             method_name: "write_prices".to_string(),
             args: serde_json::to_vec(&json!({
-                "feed_ids": price_ids,
+                "feed_ids": feed_ids,
                 "payload": Base64VecU8(payload_vec),
             }))
             .unwrap(),
