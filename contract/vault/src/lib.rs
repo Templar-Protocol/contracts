@@ -264,7 +264,8 @@ impl Contract {
             last_refresh_ns: 0,
             refresh_cooldown_ns: refresh_cooldown_ns.map_or(DEFAULT_REFRESH_COOLDOWN_NS, |v| v.0),
             idle_resync_last_ns: 0,
-            idle_resync_cooldown_ns: idle_resync_cooldown_ns.map_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS, |v| v.0),
+            idle_resync_cooldown_ns: idle_resync_cooldown_ns
+                .map_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS, |v| v.0),
             idle_resync_inflight_op_id: 0,
             pending_withdrawals: IterableMap::new(
                 [
