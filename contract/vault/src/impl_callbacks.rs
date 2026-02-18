@@ -813,7 +813,6 @@ impl Contract {
         market_id: MarketId,
         op_id: u64,
         index: u32,
-        _before: U128,
     ) -> PromiseOrValue<RealAssetsReport> {
         let Ok(mut refreshing) = OpGuard::<RefreshingSpec>::expect(self, Some(op_id)) else {
             return PromiseOrValue::Value(self.build_real_assets_report());

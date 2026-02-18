@@ -53,6 +53,7 @@ use templar_common::{
 };
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
+const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120_000_000_000; // 120 seconds
 
 pub mod aum;
 pub mod governance;
@@ -263,7 +264,7 @@ impl Contract {
             last_refresh_ns: 0,
             refresh_cooldown_ns: refresh_cooldown_ns.map_or(DEFAULT_REFRESH_COOLDOWN_NS, |v| v.0),
             idle_resync_last_ns: 0,
-            idle_resync_cooldown_ns: idle_resync_cooldown_ns.map_or(120_000_000_000, |v| v.0),
+            idle_resync_cooldown_ns: idle_resync_cooldown_ns.map_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS, |v| v.0),
             idle_resync_inflight_op_id: 0,
             pending_withdrawals: IterableMap::new(
                 [
@@ -1993,8 +1994,6 @@ impl Contract {
         }
 
         let market_id = plan[index as usize];
-        let before = self.principal_of(market_id);
-
         let market_account = self.market_account_by_id_or_panic(market_id).clone();
 
         PromiseOrValue::Promise(
@@ -2005,7 +2004,7 @@ impl Contract {
                 .then(
                     Self::ext(env::current_account_id())
                         .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
-                        .refresh_01_settle(market_id, op_id, index, U128(before)),
+                        .refresh_01_settle(market_id, op_id, index),
                 ),
         )
     }

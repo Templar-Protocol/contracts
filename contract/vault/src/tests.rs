@@ -1379,10 +1379,10 @@ fn refresh_markets_updates_principals_and_emits_events() {
     assert!(matches!(c.op_state, OpState::Refreshing(_)));
 
     let pos1 = SupplyPosition::new(0);
-    let _ = c.refresh_01_settle(Ok(Some(pos1)), m1_id, op_id, 0, U128(10));
+    let _ = c.refresh_01_settle(Ok(Some(pos1)), m1_id, op_id, 0);
 
     let pos2 = SupplyPosition::new(0);
-    let res = c.refresh_01_settle(Ok(Some(pos2)), m2_id, op_id, 1, U128(20));
+    let res = c.refresh_01_settle(Ok(Some(pos2)), m2_id, op_id, 1);
     if let PromiseOrValue::Value(report) = res {
         assert_eq!(report.total_assets, c.get_total_assets());
     }
@@ -1427,7 +1427,7 @@ fn refresh_markets_throttles_without_time_advance() {
     let _ = c.refresh_markets(vec![market_id]);
 
     let pos = SupplyPosition::new(0);
-    let _ = c.refresh_01_settle(Ok(Some(pos)), market_id, op_id, 0, U128(0));
+    let _ = c.refresh_01_settle(Ok(Some(pos)), market_id, op_id, 0);
     assert!(matches!(c.op_state, OpState::Idle));
 
     set_ctx_with_gas(
