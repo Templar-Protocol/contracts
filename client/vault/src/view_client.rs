@@ -66,6 +66,7 @@ impl VaultViewClient {
 
 impl VaultViewClient {
     #[inline]
+    #[allow(clippy::unused_self)]
     fn near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
         parse_account_id(id)
     }
@@ -100,6 +101,7 @@ impl VaultViewClient {
         .await
     }
 
+    #[allow(clippy::unused_async)]
     async fn vault_call_with(
         &self,
         _method: &str,
@@ -116,6 +118,7 @@ impl VaultViewClient {
         self.vault_call_with(method, args, None, None).await
     }
 
+    #[allow(clippy::unused_async)]
     async fn vault_call_returning<T: DeserializeOwned>(
         &self,
         _method: &str,

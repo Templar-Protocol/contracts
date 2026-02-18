@@ -58,6 +58,7 @@ impl PoolHealth {
             })
             .collect();
 
+        #[allow(clippy::cast_possible_truncation)]
         Self {
             total_keys: pool.len() as u32,
             healthy_keys: pool.healthy_count() as u32,

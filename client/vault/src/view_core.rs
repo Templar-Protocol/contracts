@@ -94,7 +94,7 @@ pub(crate) fn build_view_cache(config: &KeyPoolConfig) -> Option<ViewCache> {
     if config.view_cache_capacity > 0 {
         Some(
             ViewCache::builder()
-                .max_capacity(config.view_cache_capacity as u64)
+                .max_capacity(u64::from(config.view_cache_capacity))
                 .time_to_live(Duration::from_secs(config.view_cache_ttl_seconds))
                 .build(),
         )

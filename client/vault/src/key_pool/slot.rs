@@ -51,10 +51,7 @@ impl NonceState {
     }
 
     fn needs_refresh(&self, ttl: Duration) -> bool {
-        self.block_hash_at
-            .map(|t| t.elapsed() > ttl)
-            .unwrap_or(true)
-            || self.local_nonce.is_none()
+        self.block_hash_at.is_none_or(|t| t.elapsed() > ttl) || self.local_nonce.is_none()
     }
 
     fn invalidate(&mut self) {
@@ -93,8 +90,8 @@ impl KeySlot {
         }
     }
 
-    /// Acquire exclusive access for a transaction. Increments in_flight immediately
-    /// (cancellation-safe via defer guard), then waits for tx_lock.
+    /// Acquire exclusive access for a transaction. Increments `in_flight` immediately
+    /// (cancellation-safe via defer guard), then waits for `tx_lock`.
     pub async fn acquire(&self) -> KeySlotGuard<'_> {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
         let reservation = defer({
@@ -104,12 +101,12 @@ impl KeySlot {
             }
         });
 
-        let _tx_guard = self.tx_lock.lock().await;
+        let tx_guard = self.tx_lock.lock().await;
         reservation.disarm();
 
         KeySlotGuard {
             slot: self,
-            _tx_guard,
+            _tx_guard: tx_guard,
         }
     }
 

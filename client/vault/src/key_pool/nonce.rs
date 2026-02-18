@@ -34,7 +34,7 @@ pub async fn fetch_access_key_data(
     let nonce = match response.kind {
         QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
         other => {
-            bail!("Expected AccessKey response, got {:?}", other);
+            bail!("Expected AccessKey response, got {other:?}");
         }
     };
 

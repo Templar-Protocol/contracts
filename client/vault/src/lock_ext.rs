@@ -9,6 +9,7 @@ use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::ErrorWrapper;
 
 /// Extension trait for `Mutex` to handle poisoned locks.
+#[allow(dead_code)]
 pub trait MutexExt<T> {
     /// Lock the mutex, returning an error if poisoned.
     fn lock_or_poison(&self) -> Result<MutexGuard<'_, T>, ErrorWrapper>;
@@ -29,6 +30,7 @@ impl<T> MutexExt<T> for Mutex<T> {
 }
 
 /// Extension trait for `RwLock` to handle poisoned locks.
+#[allow(dead_code)]
 pub trait RwLockExt<T> {
     /// Acquire a read lock, returning an error if poisoned.
     fn read_or_poison(&self) -> Result<RwLockReadGuard<'_, T>, ErrorWrapper>;

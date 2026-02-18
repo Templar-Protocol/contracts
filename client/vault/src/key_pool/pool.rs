@@ -98,6 +98,7 @@ impl KeyPool {
             return Err(PoolError::AllKeysUnhealthy);
         }
 
+        #[allow(clippy::unwrap_used)] // healthy is guaranteed non-empty by the check above
         let min_in_flight = healthy.iter().map(|s| s.in_flight_count()).min().unwrap();
 
         let candidates: Vec<_> = healthy
@@ -141,8 +142,7 @@ mod tests {
     use near_crypto::{KeyType, SecretKey};
 
     fn test_signer(suffix: &str) -> InMemorySigner {
-        let account_id: near_account_id::AccountId =
-            format!("test{}.near", suffix).parse().unwrap();
+        let account_id: near_account_id::AccountId = format!("test{suffix}.near").parse().unwrap();
         let secret_key = SecretKey::from_random(KeyType::ED25519);
         InMemorySigner {
             account_id,

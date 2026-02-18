@@ -1032,12 +1032,12 @@ impl Display for ErrorWrapper {
         match self {
             ErrorWrapper::Timeout(msg) => write!(f, "Timeout: {msg}"),
             ErrorWrapper::InvalidNonce => write!(f, "InvalidNonce"),
-            ErrorWrapper::InvalidAccountId(msg) => write!(f, "{msg}"),
-            ErrorWrapper::InvalidU128(msg) => write!(f, "{msg}"),
+            ErrorWrapper::InvalidAccountId(msg)
+            | ErrorWrapper::InvalidU128(msg)
+            | ErrorWrapper::Wrapped(msg) => write!(f, "{msg}"),
             ErrorWrapper::Rpc(msg) => write!(f, "RPC error: {msg}"),
             ErrorWrapper::Serde(msg) => write!(f, "Serde error: {msg}"),
             ErrorWrapper::TransactionFailed(msg) => write!(f, "Transaction failed: {msg}"),
-            ErrorWrapper::Wrapped(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -1095,13 +1095,13 @@ mod tests {
     #[test]
     fn error_wrapper_display_happy_path() {
         let err = ErrorWrapper::from(anyhow::anyhow!("boom"));
-        let s = format!("{}", err);
+        let s = format!("{err}");
         assert!(s.contains("boom"));
     }
 
     #[test]
     fn default_gas_is_nonzero() {
-        assert!(super::DEFAULT_GAS > 0);
+        assert_ne!(super::DEFAULT_GAS, 0);
     }
 
     #[rstest]
@@ -1326,8 +1326,11 @@ mod tests {
 
                 if is_self && !in_guard && l.contains("fn no_json_string_api_regressions") {
                     in_guard = true;
-                    brace_depth = l.chars().filter(|&c| c == '{').count() as i32
-                        - l.chars().filter(|&c| c == '}').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let open = l.chars().filter(|&c| c == '{').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let close = l.chars().filter(|&c| c == '}').count() as i32;
+                    brace_depth = open - close;
                     if brace_depth <= 0 {
                         brace_depth = 1;
                     }
@@ -1335,21 +1338,29 @@ mod tests {
                 }
 
                 if in_guard {
-                    brace_depth += l.chars().filter(|&c| c == '{').count() as i32;
-                    brace_depth -= l.chars().filter(|&c| c == '}').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let open = l.chars().filter(|&c| c == '{').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let close = l.chars().filter(|&c| c == '}').count() as i32;
+                    brace_depth += open;
+                    brace_depth -= close;
                     if brace_depth == 0 {
                         in_guard = false;
                     }
                     continue;
                 }
 
-                if l.contains("ForeignJson") {
-                    panic!("ForeignJson not allowed: {}: {}", file.display(), l);
-                }
+                assert!(
+                    !l.contains("ForeignJson"),
+                    "ForeignJson not allowed: {}: {l}",
+                    file.display()
+                );
 
-                if l.starts_with("pub ") && l.contains("fn ") && l.contains("_json") {
-                    panic!("*_json API not allowed: {}: {}", file.display(), l);
-                }
+                assert!(
+                    !(l.starts_with("pub ") && l.contains("fn ") && l.contains("_json")),
+                    "*_json API not allowed: {}: {l}",
+                    file.display()
+                );
             }
         }
     }

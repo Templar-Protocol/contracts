@@ -257,7 +257,7 @@ impl<'de> Deserialize<'de> for Wad {
         let mut acc = U256::zero();
         let ten = U256::from(10u8);
         for b in s.bytes() {
-            let d = (b - b'0') as u8;
+            let d = b - b'0';
             acc = acc
                 .checked_mul(ten)
                 .ok_or_else(|| near_sdk::serde::de::Error::custom("Wad decimal overflow"))?;

@@ -13,6 +13,7 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 license = "MIT"
 repository = "https://github.com/Templar-Protocol/contracts"
 edition = "2021"
@@ -70,10 +71,11 @@ must_use_candidate = "allow"
 large_futures = "allow"
 redundant_closure_for_method_calls = "allow"
 module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 unwrap_used = "warn"
 expect_used = "warn"
 large_digit_groups = "warn"
-missing_panics_doc = "allow"
 wildcard_imports = "warn"
 
 [profile.dev]

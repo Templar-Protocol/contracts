@@ -31,9 +31,9 @@ impl RetryState {
     pub fn new(config: Option<RetryConfig>) -> Self {
         let config = config.map(|c| c.normalized());
         Self {
-            attempts_left: config.map(|r| r.max_attempts).unwrap_or(1),
-            backoff_ms: config.map(|r| r.initial_backoff_ms).unwrap_or(0),
-            max_backoff_ms: config.map(|r| r.max_backoff_ms).unwrap_or(0),
+            attempts_left: config.map_or(1, |r| r.max_attempts),
+            backoff_ms: config.map_or(0, |r| r.initial_backoff_ms),
+            max_backoff_ms: config.map_or(0, |r| r.max_backoff_ms),
         }
     }
 

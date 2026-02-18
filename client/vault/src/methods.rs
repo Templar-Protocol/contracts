@@ -21,7 +21,7 @@ macro_rules! impl_view_cache_methods {
                 }
 
                 let cache = $crate::ViewCache::builder()
-                    .max_capacity(capacity as u64)
+                    .max_capacity(u64::from(capacity))
                     .time_to_live(Duration::from_secs(ttl_seconds))
                     .build();
 
@@ -137,7 +137,7 @@ macro_rules! impl_vault_view_methods {
                     .view::<Option<NearAccountId>>(
                         &self.vault,
                         "get_market_account_by_id",
-                        (U64::from(market_id.0 as u64),),
+                        (U64::from(u64::from(market_id.0)),),
                     )
                     .await
                     .map_err($crate::ErrorWrapper::from)?;
