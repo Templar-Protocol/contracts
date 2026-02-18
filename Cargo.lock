@@ -7718,7 +7718,6 @@ dependencies = [
  "near-sdk-contract-tools",
  "primitive-types 0.10.1",
  "redstone",
- "sha3",
  "templar-common",
 ]
 
