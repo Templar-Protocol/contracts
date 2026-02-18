@@ -47,7 +47,8 @@ pub struct App {
     pub accounts: Arc<RwLock<AccountData>>,
     pub relay_near: Near,
     pub ua_near: Near,
-    pub pyth: oracle::Handle<oracle::PythSpec>,
+    pub pyth: Option<oracle::Handle<oracle::PythSpec>>,
+    pub redstone: Option<oracle::Handle<oracle::RedStoneSpec>>,
     pub cache: Arc<Cache>,
     pub database: Database,
 }
@@ -79,12 +80,13 @@ impl App {
 
         let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
 
-        let pyth = oracle::PythSpec::handle(
-            args.pyth.clone(),
-            relay_near.clone(),
-            cache.clone(),
-            kill.clone(),
-        );
+        let pyth = args.pyth.clone().map(|args| {
+            oracle::PythSpec::handle(args, relay_near.clone(), cache.clone(), kill.clone())
+        });
+
+        let redstone = args.redstone.clone().map(|args| {
+            oracle::RedStoneSpec::handle(args, relay_near.clone(), cache.clone(), kill.clone())
+        });
 
         tokio::spawn(broom::start(
             database.clone(),
@@ -100,6 +102,7 @@ impl App {
             relay_near,
             ua_near,
             pyth,
+            redstone,
             cache: Arc::new(cache),
             database,
         }

@@ -16,6 +16,8 @@ use tokio::{
     time::Instant,
 };
 
+use crate::cache::Cache;
+
 use super::near::Near;
 
 mod spec;
@@ -34,9 +36,10 @@ async fn start<S: Spec>(
     mut recv: mpsc::Receiver<Request<S>>,
     spec: Arc<S>,
     near: Near,
+    cache: Cache,
     kill: watch::Sender<()>,
 ) {
-    let mut client = Client::new(spec, near);
+    let mut client = Client::new(spec, near, cache);
     let mut on_kill = kill.subscribe();
 
     loop {
@@ -66,7 +69,7 @@ async fn start<S: Spec>(
 #[derive(thiserror::Error, Debug)]
 pub enum UpdateError {
     #[error("Failed to construct update transaction: {0}")]
-    UpdateTransaction(Box<dyn std::error::Error + Send + Sync>),
+    UpdateActions(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     JsonRpc(#[from] JsonRpcError<near_jsonrpc_client::methods::tx::RpcTransactionError>),
     #[error("Unknown RPC error")]
@@ -80,14 +83,16 @@ struct Client<S: Spec> {
     last_updated: HashMap<S::PriceIdentifier, Instant>,
     spec: Arc<S>,
     near: Near,
+    cache: Cache,
 }
 
 impl<S: Spec> Client<S> {
-    pub fn new(spec: Arc<S>, near: Near) -> Self {
+    pub fn new(spec: Arc<S>, near: Near, cache: Cache) -> Self {
         Self {
             last_updated: HashMap::new(),
             spec,
             near,
+            cache,
         }
     }
 
@@ -114,11 +119,16 @@ impl<S: Spec> Client<S> {
 
         // Start timing from when we request the prices
         let now = Instant::now();
-        let signed_transaction = self
+        let actions = self
             .spec
-            .update_transaction(&send_updates_for)
+            .update_actions(&send_updates_for)
             .await
-            .map_err(|e| UpdateError::UpdateTransaction(Box::new(e)))?;
+            .map_err(|e| UpdateError::UpdateActions(Box::new(e)))?;
+        tracing::debug!(?actions, "Update actions");
+        let signed_transaction = self
+            .near
+            .sign_transaction(&self.cache, self.spec.oracle_id().to_owned(), actions)
+            .await;
         tracing::debug!(?signed_transaction, "Signed oracle update transaction");
 
         let transaction_hash = signed_transaction.get_hash();
@@ -162,9 +172,9 @@ pub struct Handle<S: Spec> {
 }
 
 impl<S: Spec> Handle<S> {
-    pub fn new(spec: Arc<S>, near: Near, kill: watch::Sender<()>) -> Self {
+    pub fn new(spec: Arc<S>, near: Near, cache: Cache, kill: watch::Sender<()>) -> Self {
         let (send, recv) = mpsc::channel(16);
-        tokio::spawn(start(recv, spec, near, kill));
+        tokio::spawn(start(recv, spec, near, cache, kill));
 
         Self { send }
     }

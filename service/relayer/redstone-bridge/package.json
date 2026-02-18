@@ -1,0 +1,24 @@
+{
+  "name": "redstone-bridge-js",
+  "version": "0.0.0",
+  "description": "RedStone bridge JavaScript slave process",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "dev:start": "tsc && node ./dist/index.js",
+    "start": "node ./dist/index.js"
+  },
+  "author": "Templar Protocol",
+  "license": "MIT",
+  "dependencies": {
+    "@redstone-finance/protocol": "^0.9.0",
+    "@redstone-finance/sdk": "^0.9.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "typescript": "^5.9.3"
+  }
+}

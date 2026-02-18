@@ -25,9 +25,9 @@ pub struct Configuration {
     #[clap(flatten)]
     pub ua: UniversalAccount,
     #[clap(flatten)]
-    pub pyth: Pyth,
-    // #[clap(flatten)]
-    // pub redstone: RedStone,
+    pub redstone: Option<RedStone>,
+    #[clap(flatten)]
+    pub pyth: Option<Pyth>,
     #[clap(flatten)]
     pub cache: Cache,
     /// Broom batch size.
@@ -44,6 +44,7 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
 
 #[derive(Args, Debug, Clone)]
 pub struct RedStone {
+    /// Path to Node.js interpreter (or equivalent).
     #[arg(
         id = "redstone-nodejs-path",
         long = "redstone-nodejs-path",
@@ -51,7 +52,7 @@ pub struct RedStone {
         default_value = "node"
     )]
     pub nodejs_path: PathBuf,
-
+    /// Path to the Redstone bridge JS application.
     #[arg(
         id = "redstone-bridge-path",
         long = "redstone-bridge-path",
@@ -59,7 +60,7 @@ pub struct RedStone {
         default_value = "./redstone-bridge/dist/index.js"
     )]
     pub bridge_path: PathBuf,
-    /// Do not push price updates to RedStone oracle if the last push was less
+    /// Do not push price updates to Redstone oracle if the last push was less
     /// than this long ago, even if requested.
     #[arg(
         id = "redstone-refresh-secs",
@@ -89,7 +90,7 @@ pub struct RedStone {
         id = "redstone-update-deposit",
         long = "redstone-update-deposit",
         env = "REDSTONE_UPDATE_DEPOSIT",
-        default_value = "0.01 NEAR"
+        default_value = "0 NEAR"
     )]
     pub update_deposit: NearToken,
 }

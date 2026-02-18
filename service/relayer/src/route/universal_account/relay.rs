@@ -228,7 +228,13 @@ pub async fn relay(
         .intersection(&update_price_feeds)
         .copied();
 
-    if let Err(e) = app.pyth.update(request_price_updates.collect()).await {
+    if let Err(e) = app
+        .pyth
+        .as_ref()
+        .unwrap()
+        .update(request_price_updates.collect())
+        .await
+    {
         tracing::error!(error = ?e, "Failed to update requested Pyth prices");
         return SimpleResponse::Failure {
             error: e.to_string(),

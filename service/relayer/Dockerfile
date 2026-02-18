@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.86.0 AS builder
+FROM rust:1.86.0 AS rust-builder
 
 WORKDIR /usr/src/relayer
 
@@ -14,8 +14,20 @@ RUN \
     --mount=type=cache,target=/usr/local/rustup \
     cargo build --package templar-relayer --profile release
 
+# Node builder
+FROM node:24-slim as node-builder
+
+WORKDIR /usr/src/redstone-bridge
+
+COPY service/relayer/redstone-bridge/package*.json ./
+RUN npm install
+
+COPY service/relayer/redstone-bridge/tsconfig.json ./
+COPY service/relayer/redstone-bridge/src ./src
+RUN npm run build
+
 # Runtime image
-FROM debian:12-slim
+FROM node:24-slim
 
 RUN apt-get update && \
     apt-get install -y ca-certificates libssl3 && \
@@ -23,6 +35,9 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=builder /usr/src/relayer/target/release/templar-relayer /usr/local/bin/templar-relayer
+COPY --from=rust-builder /usr/src/relayer/target/release/templar-relayer /usr/local/bin/templar-relayer
+COPY --from=node-builder /usr/src/redstone-bridge/dist/* /app/redstone-bridge
+
+ENV REDSTONE_BRIDGE_PATH=/app/redstone-bridge/index.js
 
 CMD [ "templar-relayer" ]
