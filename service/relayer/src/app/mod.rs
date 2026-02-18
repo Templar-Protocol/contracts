@@ -32,7 +32,7 @@ use crate::{
             Database,
         },
         near::{Near, ViewError, STORAGE_DEPOSIT_GAS},
-        pyth::Pyth,
+        oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
     AccountData, AssetTransfer, ContractData,
@@ -47,7 +47,7 @@ pub struct App {
     pub accounts: Arc<RwLock<AccountData>>,
     pub relay_near: Near,
     pub ua_near: Near,
-    pub pyth: Pyth,
+    pub pyth: oracle::Handle<oracle::PythSpec>,
     pub cache: Arc<Cache>,
     pub database: Database,
 }
@@ -79,7 +79,7 @@ impl App {
 
         let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
 
-        let pyth = Pyth::new(
+        let pyth = oracle::PythSpec::handle(
             args.pyth.clone(),
             relay_near.clone(),
             cache.clone(),

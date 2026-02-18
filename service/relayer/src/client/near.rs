@@ -389,6 +389,42 @@ impl Near {
         .sign(signer)
     }
 
+    // #[must_use]
+    // pub async fn construct_redstone_update_transaction(
+    //     &self,
+    //     cache: &Cache,
+    //     oracle_id: AccountId,
+    //     payload: Vec<u8>,
+    //     gas: near_sdk::Gas,
+    //     deposit: near_sdk::NearToken,
+    // ) -> SignedTransaction {
+    //     let signer = self.next_signer();
+    //     let public_key = signer.public_key();
+
+    //     let (nonce, block_hash) = cache
+    //         .nonce(self.account_id.clone(), public_key.clone())
+    //         .await;
+
+    //     todo!();
+
+    //     let action = FunctionCallAction {
+    //         method_name: "update_price_feeds".to_string(),
+    //         args: serde_json::to_vec(&json!({ "data": hex::encode(payload) })).unwrap(),
+    //         gas: gas.as_gas(),
+    //         deposit: deposit.as_yoctonear(),
+    //     };
+
+    //     Transaction::V0(TransactionV0 {
+    //         signer_id: self.account_id.clone(),
+    //         public_key,
+    //         nonce,
+    //         receiver_id: oracle_id,
+    //         block_hash,
+    //         actions: vec![action.into()],
+    //     })
+    //     .sign(signer)
+    // }
+
     #[must_use]
     pub async fn construct_pyth_update_transaction(
         &self,

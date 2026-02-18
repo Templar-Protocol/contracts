@@ -30,7 +30,7 @@ use templar_common::{oracle::pyth::PriceIdentifier, registry::DeployMode};
 use templar_relayer::{
     app::{args, App, Configuration},
     cache::Cache,
-    client::{near::Near, pyth::Pyth},
+    client::{near::Near, oracle},
     route::{
         relay::RelayRequest as SdaRelayRequest,
         universal_account::{
@@ -617,7 +617,8 @@ pub async fn pyth_updates() {
 
     let cache = Cache::new(near.clone(), cache_args, kill.clone());
 
-    let pyth = Pyth::new(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
+    let pyth =
+        oracle::PythSpec::handle(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
 
     let price_id = PriceIdentifier(
         hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")

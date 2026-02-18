@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use std::time::Duration;
+use std::{path::PathBuf, str::FromStr};
 
 use clap::{Args, Parser};
 use near_crypto::SecretKey;
@@ -26,6 +26,8 @@ pub struct Configuration {
     pub ua: UniversalAccount,
     #[clap(flatten)]
     pub pyth: Pyth,
+    // #[clap(flatten)]
+    // pub redstone: RedStone,
     #[clap(flatten)]
     pub cache: Cache,
     /// Broom batch size.
@@ -38,6 +40,58 @@ pub struct Configuration {
 
 fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
     Ok(Duration::from_secs(u64::from_str(s)?))
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct RedStone {
+    #[arg(
+        id = "redstone-nodejs-path",
+        long = "redstone-nodejs-path",
+        env = "REDSTONE_NODEJS_PATH",
+        default_value = "node"
+    )]
+    pub nodejs_path: PathBuf,
+
+    #[arg(
+        id = "redstone-bridge-path",
+        long = "redstone-bridge-path",
+        env = "REDSTONE_BRIDGE_PATH",
+        default_value = "./redstone-bridge/dist/index.js"
+    )]
+    pub bridge_path: PathBuf,
+    /// Do not push price updates to RedStone oracle if the last push was less
+    /// than this long ago, even if requested.
+    #[arg(
+        id = "redstone-refresh-secs",
+        long = "redstone-refresh-secs",
+        env = "REDSTONE_REFRESH_SECS",
+        value_parser = duration_from_secs,
+        default_value = "3"
+    )]
+    pub refresh: Duration,
+    /// Oracle ID to push price updates to.
+    #[arg(
+        id = "redstone-oracle-id",
+        long = "redstone-oracle-id",
+        env = "REDSTONE_ORACLE_ID"
+    )]
+    pub oracle_id: AccountId,
+    /// How much gas (in units of Tgas) to attach to oracle price update calls.
+    #[arg(
+        id = "redstone-update-gas",
+        long = "redstone-update-gas",
+        env = "REDSTONE_UPDATE_GAS",
+        default_value = "300 Tgas"
+    )]
+    pub update_gas: near_sdk::Gas,
+    /// How much NEAR to attach as a deposit to oracle price update calls.
+    #[arg(
+        id = "redstone-update-deposit",
+        long = "redstone-update-deposit",
+        env = "REDSTONE_UPDATE_DEPOSIT",
+        default_value = "0.01 NEAR"
+    )]
+    pub update_deposit: NearToken,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Duration,
 };
 
@@ -9,35 +10,33 @@ use near_primitives::{
     hash::CryptoHash,
     views::{FinalExecutionStatus, TxExecutionStatus},
 };
-use near_sdk::serde::Deserialize;
-use templar_common::oracle::pyth::PriceIdentifier;
 use tokio::{
     select,
     sync::{mpsc, oneshot, watch},
     time::Instant,
 };
 
-use crate::{app::args, cache::Cache};
-
 use super::near::Near;
 
+mod spec;
+pub use spec::*;
+
 #[derive(Debug)]
-pub enum PythRequest {
+pub enum Request<S: Spec> {
     Update {
-        price_ids: Box<[PriceIdentifier]>,
+        price_ids: Box<[S::PriceIdentifier]>,
         send: oneshot::Sender<Result<Option<CryptoHash>, UpdateError>>,
     },
 }
 
-#[tracing::instrument(skip_all, name = "pyth_service")]
-async fn start(
-    mut recv: mpsc::Receiver<PythRequest>,
-    args: args::Pyth,
+#[tracing::instrument(skip_all, name = "oracle_service", fields(oracle_name = S::name()))]
+async fn start<S: Spec>(
+    mut recv: mpsc::Receiver<Request<S>>,
+    spec: Arc<S>,
     near: Near,
-    cache: Cache,
     kill: watch::Sender<()>,
 ) {
-    let mut pyth = PythClient::new(args, near, cache);
+    let mut client = Client::new(spec, near);
     let mut on_kill = kill.subscribe();
 
     loop {
@@ -48,14 +47,13 @@ async fn start(
             }
             request = recv.recv() => {
                 let Some(request) = request else {
-                    tracing::debug!("Pyth sender dropped, exiting.");
+                    tracing::debug!("Sender dropped, exiting.");
                     break;
                 };
-                tracing::debug!("Handling request: {request:?}");
                 match request {
-                    PythRequest::Update { price_ids, send } => {
+                    Request::Update { price_ids, send } => {
                         #[allow(clippy::unwrap_used, reason = "Sender should not drop")]
-                        send.send(pyth.update(&price_ids).await).unwrap();
+                        send.send(client.update(&price_ids).await).unwrap();
                     }
                 }
             }
@@ -67,8 +65,8 @@ async fn start(
 
 #[derive(thiserror::Error, Debug)]
 pub enum UpdateError {
-    #[error(transparent)]
-    Reqwest(#[from] reqwest::Error),
+    #[error("Failed to construct update transaction: {0}")]
+    UpdateTransaction(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     JsonRpc(#[from] JsonRpcError<near_jsonrpc_client::methods::tx::RpcTransactionError>),
     #[error("Unknown RPC error")]
@@ -78,34 +76,31 @@ pub enum UpdateError {
 }
 
 #[derive(Debug)]
-struct PythClient {
-    http: reqwest::Client,
-    last_updated: HashMap<PriceIdentifier, Instant>,
-    args: args::Pyth,
+struct Client<S: Spec> {
+    last_updated: HashMap<S::PriceIdentifier, Instant>,
+    spec: Arc<S>,
     near: Near,
-    cache: Cache,
 }
 
-impl PythClient {
-    pub fn new(args: args::Pyth, near: Near, cache: Cache) -> Self {
+impl<S: Spec> Client<S> {
+    pub fn new(spec: Arc<S>, near: Near) -> Self {
         Self {
-            http: reqwest::Client::new(),
             last_updated: HashMap::new(),
-            args,
+            spec,
             near,
-            cache,
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn update(
         &mut self,
-        price_ids: &[PriceIdentifier],
+        price_ids: &[S::PriceIdentifier],
     ) -> Result<Option<CryptoHash>, UpdateError> {
         let send_updates_for = IntoIterator::into_iter(price_ids)
             .filter(|id| {
                 self.last_updated
-                    .get(id)
-                    .is_none_or(|i| i.elapsed() > self.args.refresh)
+                    .get(*id)
+                    .is_none_or(|i| i.elapsed() > self.spec.refresh())
             })
             .collect::<HashSet<_>>();
 
@@ -113,25 +108,18 @@ impl PythClient {
             return Ok(None);
         }
 
-        let send_updates_for: Vec<_> = send_updates_for.into_iter().copied().collect();
+        let send_updates_for: Vec<_> = send_updates_for.into_iter().cloned().collect();
 
-        tracing::info!(price_ids = ?send_updates_for, "Sending update for Pyth prices");
+        tracing::info!(price_ids = ?send_updates_for, "Sending update for prices");
 
         // Start timing from when we request the prices
         let now = Instant::now();
-        let vaa = self.get_latest_price_updates_vaa(&send_updates_for).await?;
-        tracing::debug!(vaa = hex::encode(&vaa), "Retrieved VAA");
         let signed_transaction = self
-            .near
-            .construct_pyth_update_transaction(
-                &self.cache,
-                self.args.oracle_id.clone(),
-                vaa,
-                self.args.update_gas,
-                self.args.update_deposit,
-            )
-            .await;
-        tracing::debug!(?signed_transaction, "Signed Pyth update transaction.");
+            .spec
+            .update_transaction(&send_updates_for)
+            .await
+            .map_err(|e| UpdateError::UpdateTransaction(Box::new(e)))?;
+        tracing::debug!(?signed_transaction, "Signed oracle update transaction");
 
         let transaction_hash = signed_transaction.get_hash();
 
@@ -139,7 +127,7 @@ impl PythClient {
             .near
             .send_transaction(signed_transaction, TxExecutionStatus::Final)
             .await?;
-        tracing::debug!(?transaction_result, "Pyth update transaction sent");
+        tracing::debug!(?transaction_result, "Oracle update transaction sent");
 
         if let Some(o) = transaction_result.final_execution_outcome {
             match o.into_outcome().status {
@@ -149,11 +137,11 @@ impl PythClient {
                     Err(UpdateError::UnknownRpcError)
                 }
                 FinalExecutionStatus::Failure(error) => {
-                    tracing::error!(?error, "Pyth update transaction failed");
+                    tracing::error!(?error, "Oracle update transaction failed");
                     Err(error.into())
                 }
                 FinalExecutionStatus::SuccessValue(..) => {
-                    tracing::debug!("Pyth update succeeded");
+                    tracing::debug!("Oracle update succeeded");
 
                     self.last_updated
                         .extend(send_updates_for.into_iter().map(|id| (id, now)));
@@ -166,59 +154,17 @@ impl PythClient {
             Err(UpdateError::UnknownRpcError)
         }
     }
-
-    /// Fetch just the update payload for a set of price IDs.
-    ///
-    /// # Errors
-    ///
-    /// - [`reqwest::Error`]
-    /// - Response deserialization.
-    #[tracing::instrument(skip(self))]
-    pub async fn get_latest_price_updates_vaa(
-        &self,
-        price_ids: &[PriceIdentifier],
-    ) -> Result<Vec<u8>, reqwest::Error> {
-        #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
-        struct ResponseBody {
-            binary: Binary,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
-        struct Binary {
-            data: [Data; 1],
-        }
-
-        #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
-        struct Data(#[serde(deserialize_with = "hex::deserialize")] Vec<u8>);
-
-        let mut request = self
-            .http
-            .get(format!("{}/v2/updates/price/latest", self.args.hermes_url));
-
-        for id in price_ids {
-            request = request.query(&[("ids[]", id)]);
-        }
-
-        let response = request.send().await?.error_for_status()?;
-
-        let body = response.json::<ResponseBody>().await?;
-        let [vaa] = body.binary.data;
-        Ok(vaa.0)
-    }
 }
 
 #[derive(Debug, Clone)]
-pub struct Pyth {
-    send: mpsc::Sender<PythRequest>,
+pub struct Handle<S: Spec> {
+    send: mpsc::Sender<Request<S>>,
 }
 
-impl Pyth {
-    pub fn new(args: args::Pyth, near: Near, cache: Cache, kill: watch::Sender<()>) -> Self {
+impl<S: Spec> Handle<S> {
+    pub fn new(spec: Arc<S>, near: Near, kill: watch::Sender<()>) -> Self {
         let (send, recv) = mpsc::channel(16);
-        tokio::spawn(start(recv, args, near, cache, kill));
+        tokio::spawn(start(recv, spec, near, kill));
 
         Self { send }
     }
@@ -230,13 +176,14 @@ impl Pyth {
     /// - Unexpected/inconsistent RPC behavior
     /// - Transaction failure
     #[allow(clippy::unwrap_used)]
+    #[tracing::instrument(skip(self))]
     pub async fn update(
         &self,
-        price_ids: Box<[PriceIdentifier]>,
+        price_ids: Box<[S::PriceIdentifier]>,
     ) -> Result<Option<CryptoHash>, UpdateError> {
         let (send, recv) = oneshot::channel();
         self.send
-            .send(PythRequest::Update { price_ids, send })
+            .send(Request::Update { price_ids, send })
             .await
             .unwrap();
         recv.await.unwrap()
