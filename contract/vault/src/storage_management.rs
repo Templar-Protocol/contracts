@@ -1,6 +1,6 @@
-use near_sdk::{env, require, AccountId};
-use std::collections::BTreeSet;
-use templar_common::vault::{storage_bytes_for_account_id, PendingWithdrawal};
+use near_sdk::{env, require};
+use std::collections::HashSet;
+use templar_common::vault::{storage_bytes_for_account_id, MarketId, PendingWithdrawal};
 
 /// Set of hacks because near-sdk does not support borshschema and its overkill to implement
 /// We do not implement refunds for storage management ops, to avoid any potential issues with
@@ -44,7 +44,9 @@ pub fn yocto_for_bytes(bytes: u64) -> u128 {
 }
 
 #[must_use]
-pub fn yocto_for_queue_additions(current: &BTreeSet<AccountId>, new: &[AccountId]) -> u128 {
+pub fn yocto_for_queue_additions(current: &[MarketId], new: &[MarketId]) -> u128 {
+    let current: HashSet<MarketId> = current.iter().copied().collect();
+
     new.iter().fold(0u128, |acc, id| {
         if current.contains(id) {
             acc

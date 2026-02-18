@@ -8,10 +8,7 @@ use crate::impl_callbacks::WithdrawReconciliation;
 use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::test_utils::*;
-use crate::wad::compute_fee_shares;
-use crate::wad::Wad;
 use crate::Contract;
-use crate::MarketRecord;
 use crate::Number;
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
@@ -28,20 +25,29 @@ use near_sdk_contract_tools::owner::OwnerExternal;
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
+use templar_common::supply::SupplyPosition;
+use templar_common::vault::wad::{
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
+    MAX_PERFORMANCE_FEE_WAD,
+};
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
 use templar_common::vault::DepositMsg;
-use templar_common::vault::Error;
 use templar_common::vault::EscrowSettlement;
+use templar_common::vault::Fee;
+use templar_common::vault::Fees;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
-use templar_common::vault::MAX_TIMELOCK_NS;
-use templar_common::vault::{AllocatingState, MarketConfiguration, Restrictions, WithdrawingState};
+use templar_common::vault::{
+    AllocatingState, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+    IdleResyncOutcome, MarketConfiguration, MarketId, Restrictions, WithdrawingState,
+    MAX_TIMELOCK_NS, YEAR_NS,
+};
 
 #[fixture]
 fn vault_id() -> AccountId {
-    accounts(0)
+    mk(0)
 }
 
 #[fixture]
@@ -82,6 +88,25 @@ fn build_owner_env(vault_id: AccountId) -> OwnerEnv {
     }
 }
 
+fn build_fees(
+    performance_fee: Wad,
+    management_fee: Wad,
+    performance_recipient: AccountId,
+    management_recipient: AccountId,
+) -> Fees<U128> {
+    Fees {
+        performance: Fee {
+            fee: U128(u128::from(performance_fee)),
+            recipient: performance_recipient,
+        },
+        management: Fee {
+            fee: U128(u128::from(management_fee)),
+            recipient: management_recipient,
+        },
+        max_total_assets_growth_rate: None,
+    }
+}
+
 #[fixture]
 fn owner_env(#[default(vault_id())] vault_id: AccountId) -> OwnerEnv {
     build_owner_env(vault_id)
@@ -94,6 +119,7 @@ fn enabled_market_100() -> (AccountId, MarketConfiguration) {
         cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
     (m, cfg)
 }
@@ -106,24 +132,44 @@ fn c(vault_id: AccountId, #[default(Vec::new())] markets: Vec<MarketFixture>) ->
     let mut c = new_test_contract(&vault_id);
 
     println!("Markets to do {:?}", markets);
-    for (market_id, cap, enabled, principal, in_supply_queue) in markets {
-        c.markets.insert(
-            market_id.clone(),
-            MarketRecord {
-                cfg: MarketConfiguration {
-                    cap: U128(cap),
-                    enabled,
-                    removable_at: 0,
-                },
-                principal,
+    for (market_account, cap, enabled, principal, in_supply_queue) in markets {
+        let market_id = c.insert_market_for_tests(
+            market_account,
+            MarketConfiguration {
+                cap: U128(cap),
+                enabled,
+                removable_at: 0,
+                cap_group_id: None,
             },
+            principal,
         );
+
         if in_supply_queue {
-            c.supply_queue.insert(market_id.clone());
+            c.supply_queue.push(market_id);
         }
     }
 
     c
+}
+
+fn must_market_id(c: &Contract, market: &AccountId) -> MarketId {
+    c.market_id_of(market)
+        .unwrap_or_else(|| templar_common::panic_with_message("market missing"))
+}
+
+fn must_market_record<'a>(c: &'a Contract, market: &AccountId) -> &'a crate::MarketRecord {
+    let market_id = must_market_id(c, market);
+    c.markets.get(&market_id).expect("market must exist")
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(msg) => *msg,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(msg) => (*msg).to_string(),
+            Err(_) => String::new(),
+        },
+    }
 }
 
 #[fixture]
@@ -146,7 +192,7 @@ fn receiver() -> AccountId {
 
 #[fixture]
 fn owner() -> AccountId {
-    accounts(1)
+    mk(1)
 }
 
 proptest! {
@@ -206,21 +252,164 @@ proptest! {
     }
 }
 
+#[test]
+fn prop_get_max_deposit_matches_bruteforce() {
+    let vault_id = mk(0);
+    let contract = std::cell::RefCell::new(new_test_contract(&vault_id));
+
+    let strategy = (
+        0u128..=100,
+        0u128..=100,
+        any::<bool>(),
+        0u128..=100,
+        0u8..=20,
+        0u128..=100,
+        0u8..=20,
+        0u128..=100,
+        0u8..=20,
+        prop::collection::vec(
+            (
+                0u128..=100,
+                0u128..=150,
+                prop::option::of(0u8..3),
+                any::<bool>(),
+            ),
+            0..=6,
+        ),
+    );
+
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    });
+
+    runner
+        .run(
+            &strategy,
+            |(
+                idle_total,
+                alloc_remaining,
+                is_allocating,
+                group0_cap,
+                group0_rel_tenths,
+                group1_cap,
+                group1_rel_tenths,
+                group2_cap,
+                group2_rel_tenths,
+                markets,
+            )| {
+                let mut c = contract.borrow_mut();
+
+                c.markets.clear();
+                c.cap_groups.clear();
+                c.supply_queue.clear();
+                c.op_state = OpState::Idle;
+                c.idle_balance = 0;
+
+                let remaining = if is_allocating {
+                    alloc_remaining.min(idle_total)
+                } else {
+                    0
+                };
+                c.idle_balance = idle_total.saturating_sub(remaining);
+
+                if remaining > 0 {
+                    c.op_state = OpState::Allocating(AllocatingState {
+                        op_id: 1,
+                        index: 0,
+                        remaining,
+                        plan: vec![],
+                    });
+                }
+
+                let group_ids = [
+                    CapGroupId("prop-group-0".to_string()),
+                    CapGroupId("prop-group-1".to_string()),
+                    CapGroupId("prop-group-2".to_string()),
+                ];
+
+                let mut group_principal = [0u128; 3];
+                let mut total_principal = 0u128;
+                for (_cap, principal, group_idx, _in_queue) in markets.iter() {
+                    total_principal = total_principal.saturating_add(*principal);
+                    if let Some(idx) = group_idx {
+                        group_principal[*idx as usize] =
+                            group_principal[*idx as usize].saturating_add(*principal);
+                    }
+                }
+
+                let group_caps = [group0_cap, group1_cap, group2_cap];
+                let group_rel_tenths = [group0_rel_tenths, group1_rel_tenths, group2_rel_tenths];
+                for i in 0..3usize {
+                    let relative_cap = Wad::from(Wad::SCALE / 10 * u128::from(group_rel_tenths[i]));
+                    c.cap_groups.insert(
+                        group_ids[i].clone(),
+                        CapGroupRecord {
+                            cap: U128(group_caps[i]),
+                            relative_cap,
+                            principal: group_principal[i],
+                        },
+                    );
+                }
+
+                for (idx, (cap, principal, group_idx, in_queue)) in markets.iter().enumerate() {
+                    let market = mk(10_000 + idx as u32);
+                    let cap_group_id = group_idx.map(|i| group_ids[i as usize].clone());
+                    let cfg = MarketConfiguration {
+                        cap: U128(*cap),
+                        enabled: true,
+                        removable_at: 0,
+                        cap_group_id,
+                    };
+
+                    let market_id = c.insert_market_for_tests(market, cfg, *principal);
+
+                    if *in_queue && *cap > 0 {
+                        c.supply_queue.push(market_id);
+                    }
+                }
+
+                let base_total_assets = c
+                    .idle_balance
+                    .saturating_add(total_principal)
+                    .saturating_add(remaining);
+                prop_assert_eq!(c.total_assets_for_caps(), base_total_assets);
+
+                let rounding_slack = c.relative_cap_rounding_slack();
+                let upper = c.market_room_upper_bound();
+
+                let mut expected = 0u128;
+                for x in 0..=upper {
+                    let total_assets = base_total_assets.saturating_add(x);
+                    let room = c.max_allocatable_room_at(total_assets);
+                    if x <= room.saturating_add(rounding_slack) {
+                        expected = x;
+                    }
+                }
+
+                prop_assert_eq!(c.get_max_deposit().0, expected);
+                Ok(())
+            },
+        )
+        .unwrap();
+}
+
 #[rstest(len => [2usize, 3, 5])]
 #[should_panic = "Duplicate market"]
 fn prop_supply_queue_mustnt_have_duplicates(len: usize) {
     let mut c = new_test_contract(&mk(0));
-    setup_env(&accounts(0), &accounts(1), vec![]);
+    setup_env(&mk(0), &mk(1), vec![]);
 
     // Build a queue with a duplicate market id
     let base = 100u32;
-    let dup = mk(base);
-    let mut queue: Vec<AccountId> = Vec::with_capacity(len);
+    let dup = MarketId::from(base);
+    let mut queue: Vec<MarketId> = Vec::with_capacity(len);
     if len >= 1 {
-        queue.push(dup.clone());
+        queue.push(dup);
     }
     for i in 1..len.saturating_sub(1) {
-        queue.push(mk(base + i as u32));
+        queue.push(MarketId::from(base + i as u32));
     }
     if len >= 2 {
         queue.push(dup);
@@ -234,15 +423,16 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     let mut c = c_vault_env;
 
     // Seed total supply so fees can mint
-    let user = accounts(1);
+    let user = mk(1);
     c.deposit_unchecked(&user, 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_000;
 
-    c.performance_fee = Wad::one() / 10;
+    c.fees.performance.fee = Wad::one() / 10;
 
-    // Baseline: last_total_assets = current, so no profit => no fee
-    c.last_total_assets = c.get_total_assets().0;
+    // Baseline: anchor = current, so no profit => no fee
+    c.fee_anchor.total_assets = c.get_total_assets();
+    c.fee_anchor.timestamp_ns = env::block_timestamp().into();
     let ts_before = c.total_supply();
     c.internal_accrue_fee();
     assert_eq!(c.total_supply(), ts_before, "no profit => no fee minted");
@@ -251,8 +441,8 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
     c.idle_balance = 1_500;
     let expect = compute_fee_shares(
         c.get_total_assets().0.into(),
-        c.last_total_assets.into(),
-        c.performance_fee,
+        c.fee_anchor.total_assets.0.into(),
+        c.fees.performance.fee,
         c.total_supply().into(),
     );
     c.internal_accrue_fee();
@@ -268,7 +458,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     let mut c = c_vault_env;
 
     let receiver = mk(7);
-    let owner = accounts(1);
+    let owner = mk(1);
 
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
@@ -289,7 +479,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
         0,
         PendingWithdrawal {
             receiver: mk(9),
-            owner: accounts(1),
+            owner: mk(1),
             escrow_shares: 100,
             expected_assets: amount,
             requested_at: 0,
@@ -309,9 +499,10 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
 #[should_panic = "unauthorized market"]
 fn set_supply_queue_rejects_zero_cap() {
     let mut c = new_test_contract(&mk(0));
-    setup_env(&mk(0), &accounts(1), vec![]);
+    setup_env(&mk(0), &mk(1), vec![]);
 
-    c.set_supply_queue(vec![mk(100)]);
+    let market_id = c.insert_market_for_tests(mk(100), MarketConfiguration::default(), 0);
+    c.set_supply_queue(vec![market_id]);
 }
 
 #[rstest]
@@ -324,7 +515,7 @@ fn execute_supply_wrong_token_refunds_full(c_vault_env: Contract) {
         vec![],
     );
 
-    let sender = accounts(1);
+    let sender = mk(1);
     let wrong_token: AccountId = "wrong.token".parse().unwrap();
     let deposit = 1_000u128;
 
@@ -343,19 +534,16 @@ fn start_allocation_reserves_only_amount(
     let total = c.get_max_deposit().0.min(c.idle_balance);
     owner_call_env(env::current_account_id(), &owner());
     let m1 = mk(2000);
-    c.reallocate(AllocationDelta::Supply(Delta::new(m1.clone(), total)));
+    let market_id = c
+        .market_id_of(&m1)
+        .unwrap_or_else(|| templar_common::panic_with_message("market missing"));
+    c.reallocate(AllocationDelta::Supply(Delta::new(market_id, total)));
 
-    if let Some(rec) = c.markets.get_mut(&m1) {
-        rec.principal = 80;
-    } else {
-        c.markets.insert(
-            m1.clone(),
-            MarketRecord {
-                cfg: MarketConfiguration::default(),
-                principal: 80,
-            },
-        );
-    }
+    let rec = c
+        .markets
+        .get_mut(&market_id)
+        .unwrap_or_else(|| templar_common::panic_with_message("market missing"));
+    rec.principal = 80;
     // Force completion and exit op
     match c.op_state.clone() {
         crate::OpState::Allocating(AllocatingState {
@@ -394,16 +582,9 @@ fn reallocate_withdraw_insufficient_principal_panics(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Known market with zero principal -> cannot request any withdrawal
-    let m = mk(9201);
-    contract.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 0,
-        },
-    );
+    let market_id = contract.insert_market_for_tests(mk(9201), MarketConfiguration::default(), 0);
 
-    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(m, 1)));
+    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 1)));
 }
 
 #[rstest]
@@ -412,14 +593,9 @@ fn reallocate_withdraw_zero_amount_panics(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Principal exists but requested amount is zero -> to_request = 0 -> panic
-    let m = mk(9202);
-    let rec = MarketRecord {
-        cfg: MarketConfiguration::default(),
-        principal: 0,
-    };
-    contract.markets.insert(m.clone(), rec.clone());
+    let market_id = contract.insert_market_for_tests(mk(9202), MarketConfiguration::default(), 0);
 
-    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(m, 100)));
+    let _ = contract.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 100)));
 }
 
 #[rstest]
@@ -427,19 +603,12 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) 
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Principal exists; request larger than principal should cap to principal internally
-    let m = mk(9203);
-    contract.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 40,
-        },
-    );
+    let market_id = contract.insert_market_for_tests(mk(9203), MarketConfiguration::default(), 40);
 
-    let principal_before = contract.principal_of(&m);
+    let principal_before = contract.principal_of(market_id);
     assert_eq!(principal_before, 40, "sanity: principal set");
 
-    let res = contract.reallocate(AllocationDelta::Withdraw(Delta::new(m.clone(), 100)));
+    let res = contract.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 100)));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise for withdraw reallocation"),
@@ -450,7 +619,7 @@ fn reallocate_withdraw_returns_promise_and_does_not_mutate(owner_env: OwnerEnv) 
         "reallocate withdraw should not change op_state"
     );
     assert_eq!(
-        contract.principal_of(&m),
+        contract.principal_of(market_id),
         principal_before,
         "principal must not change when only creating a withdraw request"
     );
@@ -465,24 +634,25 @@ fn reallocate_accrues_pending_fee_shares() {
 
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.performance_fee = Wad::one() / 10;
+    c.fees.performance.fee = Wad::one() / 10;
     c.idle_balance += 500;
 
-    let market = mk(9204);
+    let market_account = mk(9204);
     let cfg = MarketConfiguration {
         cap: U128(10_000),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    c.markets.insert(market.clone(), cfg.into());
-    c.supply_queue.insert(market.clone());
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
+    c.supply_queue.push(market_id);
 
-    let fee_recipient = c.fee_recipient.clone();
+    let fee_recipient = c.fees.performance.recipient.clone();
     let balance_before = c.balance_of(&fee_recipient);
     let assets_before = c.get_total_assets().0;
 
     owner_call_env(vault_id.clone(), &owner);
-    let res = c.reallocate(AllocationDelta::Supply(Delta::new(market, 50)));
+    let res = c.reallocate(AllocationDelta::Supply(Delta::new(market_id, 50)));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise for supply reallocation"),
@@ -494,8 +664,49 @@ fn reallocate_accrues_pending_fee_shares() {
         "reallocate should mint fee shares when profit exists before planning allocation",
     );
     assert_eq!(
-        c.last_total_assets, assets_before,
+        c.get_last_total_assets().0,
+        assets_before,
         "accrual should snapshot assets before allocation bookkeeping",
+    );
+}
+
+#[test]
+fn sentinel_can_only_reallocate_withdrawals() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let sentinel = c.get_configuration().sentinel;
+    setup_env(&vault_id, &sentinel, vec![]);
+
+    let market_id = c.insert_market_for_tests(mk(9300), MarketConfiguration::default(), 50);
+
+    let withdraw_res = c.reallocate(AllocationDelta::Withdraw(Delta::new(market_id, 10)));
+    assert!(
+        matches!(withdraw_res, PromiseOrValue::Promise(_)),
+        "Sentinel withdraw reallocation should return a Promise"
+    );
+
+    let supply_attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.reallocate(AllocationDelta::Supply(Delta::new(market_id, 10)))
+    }));
+    assert!(
+        supply_attempt.is_err(),
+        "Sentinel must not be allowed to run supply allocations"
+    );
+}
+
+#[test]
+fn sentinel_can_execute_rebalance_withdrawal() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let sentinel = c.get_configuration().sentinel;
+    setup_env(&vault_id, &sentinel, vec![]);
+
+    let market_id = c.insert_market_for_tests(mk(9400), MarketConfiguration::default(), 25);
+
+    let res = c.execute_rebalance_withdrawal(market_id, None);
+    assert!(
+        matches!(res, PromiseOrValue::Promise(_)),
+        "Sentinel rebalance should return a Promise"
     );
 }
 
@@ -507,7 +718,7 @@ fn reallocate_accrues_pending_fee_shares() {
     case(50u128, 10u128, 0u128, 500u128)      // denom clamp to 1
 )]
 fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, expect: u128) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     assert_eq!(
@@ -518,7 +729,7 @@ fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, exp
 
 #[test]
 fn compute_effective_totals_fee_share_and_virtuals() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let cur = 1_500u128.into();
@@ -537,7 +748,7 @@ fn compute_effective_totals_fee_share_and_virtuals() {
 
 #[test]
 fn compute_escrow_settlement_burns_min_and_refunds_rest() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let s1: (u128, u128) = EscrowSettlement::new(100, 40).into();
@@ -562,23 +773,22 @@ fn cap_zero_keeps_enabled_and_submit_removal_works(owner_env: OwnerEnv) {
 
     // Seed a known, enabled market with cap > 0
     let cfg = MarketConfiguration {
-        cap: U128(10),
+        cap: U128(10_000),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    contract
-        .markets
-        .insert(m.clone(), MarketRecord { cfg, principal: 0 });
+    let _ = contract.insert_market_for_tests(m.clone(), cfg, 0);
 
     contract.submit_cap(m.clone(), U128(0));
-    let cfg_after = &contract.markets.get(&m).expect("market must exist").cfg;
+    let cfg_after = &must_market_record(&contract, &m).cfg;
     assert_eq!(cfg_after.cap.0, 0, "cap must be updated to 0");
     assert!(cfg_after.enabled, "enabled must remain true when cap is 0");
 
     set_block_ts(&vault_id, &owner, 2);
 
     contract.submit_market_removal(m.clone());
-    let cfg_after2 = contract.markets.get(&m).expect("market must exist");
+    let cfg_after2 = must_market_record(&contract, &m);
     assert!(cfg_after2.cfg.removable_at > 0, "removal must be scheduled");
 }
 
@@ -592,13 +802,7 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled(owner_env: OwnerEnv) {
 
     let m = mk(8002);
 
-    contract.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 0,
-        },
-    );
+    let _ = contract.insert_market_for_tests(m.clone(), MarketConfiguration::default(), 0);
 
     // Submit raise -> pending
     let raise = 5u128;
@@ -613,13 +817,13 @@ fn accept_cap_raise_enables_and_cap_zero_keeps_enabled(owner_env: OwnerEnv) {
     );
     contract.accept_cap(m.clone());
 
-    let cfg1 = &contract.markets.get(&m).unwrap().cfg;
+    let cfg1 = &must_market_record(&contract, &m).cfg;
     assert_eq!(cfg1.cap.0, raise);
     assert!(cfg1.enabled, "market should be enabled after raise");
 
     // Now lower back to 0 and ensure enabled stays true
     contract.submit_cap(m.clone(), U128(0));
-    let cfg2 = &contract.markets.get(&m).unwrap().cfg;
+    let cfg2 = &must_market_record(&contract, &m).cfg;
     assert_eq!(cfg2.cap.0, 0);
     assert!(cfg2.enabled, "enabled must remain true on cap=0");
 }
@@ -699,20 +903,14 @@ fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
 
 #[test]
 fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let market = mk(8008);
     let before_principal = 1_000u128;
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
-    );
-    c.withdraw_route = vec![market.clone()];
+    let market_id =
+        c.insert_market_for_tests(mk(8008), MarketConfiguration::default(), before_principal);
+    c.withdraw_route = vec![market_id];
 
     let need = 150u128;
     let collected_start = 0u128;
@@ -723,7 +921,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         remaining: need,
         receiver: mk(9),
         collected: collected_start,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 100,
     });
 
@@ -738,7 +936,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
     let res = c.execute_withdraw_03_settle(
         after_balance,
         1,
-        0,
+        market_id,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -775,7 +973,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         panic!("expected Withdrawing state after under-credit scenario");
     }
 
-    let rec = c.markets.get(&market).expect("market must exist");
+    let rec = c.markets.get(&market_id).expect("market must exist");
     assert!(
         rec.principal <= before_principal,
         "principal must not increase during withdraw settlement",
@@ -789,20 +987,14 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
 
 #[test]
 fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let market = mk(8009);
     let before_principal = 1_000u128;
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
-    );
-    c.withdraw_route = vec![market.clone()];
+    let market_id =
+        c.insert_market_for_tests(mk(8009), MarketConfiguration::default(), before_principal);
+    c.withdraw_route = vec![market_id];
 
     let need = 120u128;
 
@@ -812,7 +1004,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         remaining: need,
         receiver: mk(10),
         collected: 0,
-        owner: accounts(2),
+        owner: mk(2),
         escrow_shares: 100,
     });
 
@@ -824,7 +1016,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
     let res = c.execute_withdraw_03_settle(
         after_balance,
         2,
-        0,
+        market_id,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -855,20 +1047,14 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
 
 #[test]
 fn withdraw_idle_balance_resyncs_on_external_deposit() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let market = mk(8010);
     let before_principal = 1_000u128;
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
-    );
-    c.withdraw_route = vec![market.clone()];
+    let market_id =
+        c.insert_market_for_tests(mk(8010), MarketConfiguration::default(), before_principal);
+    c.withdraw_route = vec![market_id];
 
     c.idle_balance = 1_150; // simulate deposit arriving after before_balance snapshot
 
@@ -878,7 +1064,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
         remaining: 300,
         receiver: mk(11),
         collected: 0,
-        owner: accounts(3),
+        owner: mk(3),
         escrow_shares: 200,
     });
 
@@ -889,7 +1075,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
     let res = c.execute_withdraw_03_settle(
         after_balance,
         42,
-        0,
+        market_id,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -917,20 +1103,18 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
 
 #[test]
 fn withdraw_over_credit_triggers_payout_with_capped_amount() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let market = mk(8011);
     let before_principal = 1_000u128;
-    c.markets.insert(
+    let market_id = c.insert_market_for_tests(
         market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
+        MarketConfiguration::default(),
+        before_principal,
     );
-    c.withdraw_route = vec![market.clone()];
+    c.withdraw_route = vec![market_id];
 
     let need = 120u128;
     let inflow = 200u128;
@@ -941,7 +1125,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         remaining: need,
         receiver: mk(12),
         collected: 0,
-        owner: accounts(4),
+        owner: mk(4),
         escrow_shares: 150,
     });
 
@@ -953,7 +1137,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
     let res = c.execute_withdraw_03_settle(
         after_balance,
         43,
-        0,
+        market_id,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -976,7 +1160,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         panic!("expected Payout state after over-credit scenario");
     }
 
-    let rec = c.markets.get(&market).expect("market must exist");
+    let rec = c.markets.get(&market_id).expect("market must exist");
     assert!(
         rec.principal <= before_principal,
         "principal must not increase during withdraw settlement",
@@ -991,22 +1175,20 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
 
 #[test]
 fn withdraw_balance_read_failure_stops_operation() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let market = mk(8012);
     let before_principal = 500u128;
-    c.markets.insert(
+    let market_id = c.insert_market_for_tests(
         market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
+        MarketConfiguration::default(),
+        before_principal,
     );
-    c.withdraw_route = vec![market.clone()];
+    c.withdraw_route = vec![market_id];
 
-    let owner = accounts(5);
+    let owner = mk(5);
     let receiver = mk(13);
     c.pending_withdrawals.insert(
         0,
@@ -1034,7 +1216,7 @@ fn withdraw_balance_read_failure_stops_operation() {
     let res = c.execute_withdraw_03_settle(
         Err(near_sdk::PromiseError::Failed),
         op_id,
-        0,
+        market_id,
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
@@ -1052,18 +1234,16 @@ fn withdraw_balance_read_failure_stops_operation() {
 
 #[test]
 fn rebalance_resyncs_idle_on_external_deposit() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let market = mk(8012);
     let before_principal = 500u128;
-    c.markets.insert(
+    let market_id = c.insert_market_for_tests(
         market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
+        MarketConfiguration::default(),
+        before_principal,
     );
 
     c.idle_balance = 1_150;
@@ -1080,7 +1260,7 @@ fn rebalance_resyncs_idle_on_external_deposit() {
     let res = c.rebalance_withdraw_03_settle(
         after_balance,
         7,
-        market.clone(),
+        market_id,
         U128(before_principal),
         U128(before_principal),
         before_balance,
@@ -1095,37 +1275,30 @@ fn rebalance_resyncs_idle_on_external_deposit() {
     );
     assert!(matches!(c.op_state, OpState::Idle));
 
-    let rec = c.markets.get(&market).expect("market must exist");
+    let rec = c.markets.get(&market_id).expect("market must exist");
     assert_eq!(rec.principal, before_principal);
 }
 
 #[test]
 fn rebalance_balance_read_failure_stops_operation() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let market = mk(8014);
     let before_principal = 600u128;
-    c.markets.insert(
+    let market_id = c.insert_market_for_tests(
         market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before_principal,
-        },
+        MarketConfiguration::default(),
+        before_principal,
     );
 
     let op_id = 11;
-    let market_index = c
-        .markets
-        .keys()
-        .position(|m| m == &market)
-        .expect("market must exist") as u32;
 
-    c.market_execution_lock.lock(market_index);
+    c.market_execution_lock.lock(market_id);
     c.op_state = OpState::Allocating(AllocatingState {
         op_id,
-        index: market_index,
+        index: 0,
         remaining: 0,
         plan: vec![],
     });
@@ -1133,7 +1306,7 @@ fn rebalance_balance_read_failure_stops_operation() {
     let res = c.rebalance_withdraw_03_settle(
         Err(near_sdk::PromiseError::Failed),
         op_id,
-        market.clone(),
+        market_id,
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
@@ -1164,7 +1337,7 @@ fn rebalance_balance_read_failure_stops_operation() {
     case(1u128, 1_000_000_000_000_000_000u128)
 )]
 fn convert_roundtrip_bounds_cases(assets: u128, shares: u128) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
 
@@ -1183,6 +1356,455 @@ fn convert_roundtrip_bounds_cases(assets: u128, shares: u128) {
     );
 }
 
+#[test]
+fn refresh_markets_updates_principals_and_emits_events() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    let m1 = mk(7001);
+    let m2 = mk(7002);
+    let m1_id = c.insert_market_for_tests(m1, MarketConfiguration::default(), 10);
+    let m2_id = c.insert_market_for_tests(m2, MarketConfiguration::default(), 20);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![]);
+    assert!(matches!(c.op_state, OpState::Refreshing(_)));
+
+    let pos1 = SupplyPosition::new(0);
+    let _ = c.refresh_01_settle(Ok(Some(pos1)), m1_id, op_id, 0);
+
+    let pos2 = SupplyPosition::new(0);
+    let res = c.refresh_01_settle(Ok(Some(pos2)), m2_id, op_id, 1);
+    if let PromiseOrValue::Value(report) = res {
+        assert_eq!(report.total_assets, c.get_total_assets());
+    }
+    assert!(matches!(c.op_state, OpState::Idle));
+
+    let logs = near_sdk::test_utils::get_logs().join("\n");
+    assert!(
+        logs.contains("refresh_started"),
+        "missing refresh start event logs"
+    );
+    assert!(
+        logs.contains("refresh_completed"),
+        "missing refresh completed event logs"
+    );
+}
+
+#[test]
+#[should_panic(expected = "Refresh throttled")]
+fn refresh_markets_throttles_without_time_advance() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let market_id = c.insert_market_for_tests(mk(7003), MarketConfiguration::default(), 0);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![market_id]);
+
+    let pos = SupplyPosition::new(0);
+    let _ = c.refresh_01_settle(Ok(Some(pos)), market_id, op_id, 0);
+    assert!(matches!(c.op_state, OpState::Idle));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    c.refresh_markets(vec![market_id]);
+}
+
+#[test]
+fn idle_resync_callback_increase_updates_idle_and_bumps_fee_anchor() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report =
+        c.resync_idle_balance_01_settle(Ok(U128(150)), op_id, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::Ok);
+    assert_eq!(report.before_idle, U128(100));
+    assert_eq!(report.actual_idle, U128(150));
+    assert_eq!(report.after_idle, U128(150));
+    assert_eq!(report.increased_by, U128(50));
+    assert_eq!(report.decreased_by, U128(0));
+    assert_eq!(report.fee_anchor_bump, U128(50));
+    assert_eq!(report.resynced_at_ns.0, finished_at_ns);
+
+    assert_eq!(c.idle_balance, 150);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_050);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(joined.contains("\"event\":\"idle_resync_completed\""));
+}
+
+#[test]
+fn idle_resync_callback_decrease_updates_idle_without_bumping_fee_anchor() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report = c.resync_idle_balance_01_settle(Ok(U128(80)), op_id, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::Ok);
+    assert_eq!(report.before_idle, U128(100));
+    assert_eq!(report.actual_idle, U128(80));
+    assert_eq!(report.after_idle, U128(80));
+    assert_eq!(report.increased_by, U128(0));
+    assert_eq!(report.decreased_by, U128(20));
+    assert_eq!(report.fee_anchor_bump, U128(0));
+    assert_eq!(report.resynced_at_ns.0, finished_at_ns);
+
+    assert_eq!(c.idle_balance, 80);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(joined.contains("\"event\":\"idle_resync_completed\""));
+}
+
+#[test]
+fn idle_resync_callback_balance_read_failure_stops_and_clears_inflight() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report = c.resync_idle_balance_01_settle(
+        Err(near_sdk::PromiseError::Failed),
+        op_id,
+        caller.clone(),
+        U128(100),
+        0,
+    );
+
+    assert_eq!(report.outcome, IdleResyncOutcome::BalanceReadFailed);
+    assert_eq!(report.before_idle, U128(100));
+    assert_eq!(report.actual_idle, U128(100));
+    assert_eq!(report.after_idle, U128(100));
+    assert_eq!(report.increased_by, U128(0));
+    assert_eq!(report.decreased_by, U128(0));
+    assert_eq!(report.fee_anchor_bump, U128(0));
+    assert_eq!(report.resynced_at_ns.0, finished_at_ns);
+
+    assert_eq!(c.idle_balance, 100);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(
+        joined.contains("\"event\":\"idle_resync_stopped\"")
+            && joined.contains("BalanceReadFailed")
+    );
+}
+
+#[test]
+fn idle_resync_callback_mismatched_op_id_is_ignored_without_mutating_state() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    c.idle_resync_inflight_op_id = 999;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id: 999,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report = c.resync_idle_balance_01_settle(Ok(U128(150)), 888, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::Ignored);
+    assert_eq!(c.idle_balance, 100);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert_eq!(c.idle_resync_inflight_op_id, 999);
+    assert!(matches!(c.op_state, OpState::Allocating(_)));
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(joined.contains("\"event\":\"idle_resync_callback_ignored\""));
+}
+
+#[test]
+fn idle_resync_callback_unexpected_state_clears_inflight_and_returns_idle() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let op_id = 42u64;
+    c.idle_resync_inflight_op_id = op_id;
+    c.op_state = OpState::Idle;
+
+    c.idle_balance = 100;
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = 777.into();
+
+    let finished_at_ns = 1_234u64;
+    set_ctx_with_gas(&vault_id, &caller, Some(finished_at_ns), None, None);
+
+    let report =
+        c.resync_idle_balance_01_settle(Ok(U128(150)), op_id, caller.clone(), U128(100), 0);
+
+    assert_eq!(report.outcome, IdleResyncOutcome::UnexpectedState);
+    assert_eq!(c.idle_balance, 100);
+    assert_eq!(c.fee_anchor.total_assets.0, 1_000);
+    assert_eq!(c.fee_anchor.timestamp_ns.0, 777);
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.idle_resync_inflight_op_id, 0);
+
+    let joined = near_sdk::test_utils::get_logs().join("\n");
+    assert!(
+        joined.contains("\"event\":\"idle_resync_stopped\"")
+            && joined.contains("IdleResyncUnexpectedState")
+    );
+}
+
+#[test]
+fn idle_resync_cooldown_throttles_and_allows_after_cooldown() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    let caller = mk(1);
+
+    let mut logs = String::new();
+
+    let cooldown = c.idle_resync_cooldown_ns;
+    let t0 = cooldown.saturating_add(1);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.resync_idle_balance();
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    set_ctx_with_gas(&vault_id, &caller, Some(t0.saturating_add(5)), None, None);
+    let _ = c.resync_idle_balance_01_settle(Ok(U128(0)), op_id, caller.clone(), U128(0), t0);
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let throttled =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.resync_idle_balance()));
+    let throttled_msg = throttled
+        .err()
+        .map(panic_payload_to_string)
+        .unwrap_or_default();
+    assert!(throttled_msg.contains("Idle resync throttled"));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0.saturating_add(cooldown)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id2 = c.next_op_id;
+    let _ = c.resync_idle_balance();
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        Some(t0.saturating_add(cooldown).saturating_add(5)),
+        None,
+        None,
+    );
+    let _ = c.resync_idle_balance_01_settle(
+        Ok(U128(0)),
+        op_id2,
+        caller.clone(),
+        U128(0),
+        t0.saturating_add(cooldown),
+    );
+    logs.push_str(&near_sdk::test_utils::get_logs().join("\n"));
+
+    assert!(logs.contains("\"event\":\"idle_resync_started\""));
+    assert!(logs.contains("\"event\":\"idle_resync_completed\""));
+}
+
+#[test]
+#[should_panic(expected = "Cannot deposit during idle resync")]
+fn execute_supply_is_blocked_during_idle_resync() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    c.idle_resync_inflight_op_id = 1;
+
+    let sender = mk(1);
+    let asset_id = c.underlying_asset.contract_id().into();
+    let _ = c.execute_supply(sender, asset_id, 1);
+}
+
+#[test]
+#[should_panic(expected = "Cannot withdraw/redeem during idle resync")]
+fn withdraw_is_blocked_during_idle_resync() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    c.idle_resync_inflight_op_id = 1;
+
+    let caller = mk(1);
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.withdraw(U128(1), mk(2));
+}
+
+#[test]
+#[should_panic(expected = "Cannot withdraw/redeem during idle resync")]
+fn redeem_is_blocked_during_idle_resync() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    c.idle_resync_last_ns = 0;
+    c.idle_resync_cooldown_ns = 120_000_000_000;
+    c.idle_resync_inflight_op_id = 0;
+
+    c.idle_resync_inflight_op_id = 1;
+
+    let caller = mk(1);
+    set_ctx_with_gas(
+        &vault_id,
+        &caller,
+        None,
+        Some(crate::storage_management::yocto_for_ft_account()),
+        None,
+    );
+    let _ = c.redeem(U128(1), mk(2));
+}
+
 #[rstest(
     cap,
     cur,
@@ -1199,7 +1821,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     idle: u128,
     req: Option<u128>,
 ) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -1208,15 +1830,10 @@ fn clamp_allocation_total_matches_min_bounds_cases(
         cap: U128(cap),
         enabled: cap > 0,
         removable_at: 0,
+        cap_group_id: None,
     };
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg,
-            principal: cur,
-        },
-    );
-    c.supply_queue.insert(m.clone());
+    let market_id = c.insert_market_for_tests(m.clone(), cfg, cur);
+    c.supply_queue.push(market_id);
     c.idle_balance = idle;
 
     let room = cap.saturating_sub(cur);
@@ -1236,52 +1853,64 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     case(789u128, 1_011u128)
 )]
 fn total_assets_sums_all_markets_cases(principal: u128, idle: u128) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let mut c = new_test_contract(&vault_id);
 
-    let m = mk(7003);
-    c.markets.insert(
-        m.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal,
-        },
-    );
+    let _ = c.insert_market_for_tests(mk(7003), MarketConfiguration::default(), principal);
     c.idle_balance = idle;
 
     assert_eq!(c.get_total_assets().0, idle.saturating_add(principal));
 }
 
 #[rstest]
-fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
+fn set_fees_accrues_before_switching_recipient(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&mk(1), 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
-    contract.last_total_assets = 1_000;
-    contract.performance_fee = Wad::one() / 10;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
+    contract.fees.performance.fee = Wad::one() / 10;
 
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect = compute_fee_shares(
         cur.into(),
         1_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let old_recipient = contract.fee_recipient.clone();
+    let old_recipient = contract.fees.performance.recipient.clone();
     let old_balance = contract.balance_of(&old_recipient);
 
-    // Switch fee recipient; should accrue to old recipient first
-    let new_recipient = accounts(3);
-    contract.set_fee_recipient(new_recipient.clone());
+    // Switch fee recipient; should accrue to old recipient first.
+    let new_recipient = mk(3);
+    contract.set_fees(build_fees(
+        contract.fees.performance.fee,
+        contract.fees.management.fee,
+        new_recipient.clone(),
+        new_recipient.clone(),
+    ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        1,
+        "recipient change should be timelocked"
+    );
+    assert_eq!(
+        contract.fees.performance.recipient.clone(),
+        old_recipient,
+        "recipient should not change until accept"
+    );
+
+    contract.accept_fees();
 
     assert_eq!(
         contract.balance_of(&old_recipient),
@@ -1294,44 +1923,64 @@ fn set_fee_recipient_accrues_before_switch(owner_env: OwnerEnv) {
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
-        contract.fee_recipient, new_recipient,
+        contract.fees.performance.recipient.clone(),
+        new_recipient,
         "recipient should be updated"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets.0, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
 #[rstest]
-fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
+fn set_fees_accrues_before_switching_recipient_variant(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(2), 2_000)
+        .deposit_unchecked(&mk(2), 2_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=2000, current=2400
     contract.idle_balance = 2_400;
-    contract.last_total_assets = 2_000;
-    contract.performance_fee = Wad::one() / 20;
+    contract.fee_anchor.total_assets = 2_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
+    contract.fees.performance.fee = Wad::one() / 20;
 
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect = compute_fee_shares(
         cur.into(),
         2_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let old_recipient = contract.fee_recipient.clone();
+    let old_recipient = contract.fees.performance.recipient.clone();
     let old_balance = contract.balance_of(&old_recipient);
 
-    // Switch fee recipient; should accrue to old recipient first
-    let new_recipient = accounts(3);
-    contract.set_fee_recipient(new_recipient.clone());
+    // Switch fee recipient; should accrue to old recipient first.
+    let new_recipient = mk(3);
+    contract.set_fees(build_fees(
+        contract.fees.performance.fee,
+        contract.fees.management.fee,
+        new_recipient.clone(),
+        new_recipient.clone(),
+    ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        1,
+        "recipient change should be timelocked"
+    );
+    assert_eq!(
+        contract.fees.performance.recipient.clone(),
+        old_recipient,
+        "recipient should not change until accept"
+    );
+
+    contract.accept_fees();
 
     assert_eq!(
         contract.balance_of(&old_recipient),
@@ -1344,112 +1993,557 @@ fn set_fee_recipient_accrues_before_switch_variant(owner_env: OwnerEnv) {
         "total supply must increase by minted fee shares"
     );
     assert_eq!(
-        contract.fee_recipient, new_recipient,
+        contract.fees.performance.recipient, new_recipient,
         "recipient should be updated"
     );
+
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets.0, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
 #[rstest]
-fn set_performance_fee_accrues_with_old_rate_then_updates(owner_env: OwnerEnv) {
+fn set_fees_increase_is_timelocked(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.fees.performance.fee = Wad::one() / 100;
+    let before = contract.fees.performance.fee;
+
+    let increased = Wad::one() / 10;
+
+    contract.set_fees(build_fees(
+        increased,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        1,
+        "fee increase should be timelocked"
+    );
+    assert_eq!(
+        contract.fees.performance.fee, before,
+        "fee should not change until accept"
+    );
+
+    contract.accept_fees();
+
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+    assert_eq!(contract.fees.performance.fee, increased);
+}
+
+#[rstest]
+fn set_fees_accrues_with_old_rate_then_updates_performance(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&mk(1), 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=1000, current=1500
     contract.idle_balance = 1_500;
-    contract.last_total_assets = 1_000;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
 
     // Old rate = 10%, new rate = 1%
-    contract.performance_fee = Wad::one() / 10;
+    contract.fees.performance.fee = Wad::one() / 10;
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect_old = compute_fee_shares(
         cur.into(),
         1_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let recipient = contract.fee_recipient.clone();
+    let recipient = contract.fees.performance.recipient.clone();
     let bal_before = contract.balance_of(&recipient);
 
-    contract.set_performance_fee(Wad::one() / 100);
+    contract.set_fees(build_fees(
+        Wad::one() / 100,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
 
     assert_eq!(
         contract.balance_of(&recipient),
         bal_before + expect_old.as_u128_trunc(),
-        "accrual must use the old fee rate before updating"
+        "accrual must use the old fee rate before updating",
     );
+
+    assert_eq!(
+        contract.fees.performance.fee,
+        Wad::one() / 100,
+        "performance fee must be updated to the new rate"
+    );
+
     assert_eq!(
         contract.total_supply(),
         ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
-        contract.performance_fee,
-        crate::wad::Wad::one() / 100,
+        contract.fees.performance.fee,
+        Wad::one() / 100,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets.0, cur,
+        "fee anchor must update to current after accrual"
     );
 }
 
 #[rstest]
-fn set_performance_fee_accrues_with_old_rate_then_updates_variant(owner_env: OwnerEnv) {
+fn set_fees_accrues_with_old_rate_then_updates_performance_variant(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 
     // Seed supply so fee shares can mint
     contract
-        .deposit_unchecked(&accounts(2), 2_000)
+        .deposit_unchecked(&mk(2), 2_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Simulate profit: last=2000, current=2400
     contract.idle_balance = 2_400;
-    contract.last_total_assets = 2_000;
+    contract.fee_anchor.total_assets = 2_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
 
     // Old rate = 5%, new rate = 0.5%
-    contract.performance_fee = Wad::one() / 20;
+    contract.fees.performance.fee = Wad::one() / 20;
     let cur = contract.get_total_assets().0;
     let ts_before = contract.total_supply();
     let expect_old = compute_fee_shares(
         cur.into(),
         2_000.into(),
-        contract.performance_fee,
+        contract.fees.performance.fee,
         ts_before.into(),
     );
 
-    let recipient = contract.fee_recipient.clone();
+    let recipient = contract.fees.performance.recipient.clone();
     let bal_before = contract.balance_of(&recipient);
 
-    contract.set_performance_fee(Wad::one() / 200);
+    contract.set_fees(build_fees(
+        Wad::one() / 200,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
 
     assert_eq!(
         contract.balance_of(&recipient),
         bal_before + expect_old.as_u128_trunc(),
-        "accrual must use the old fee rate before updating"
+        "accrual must use the old fee rate before updating",
     );
+
+    assert_eq!(
+        contract.fees.performance.fee,
+        Wad::one() / 200,
+        "performance fee must be updated to the new rate"
+    );
+
     assert_eq!(
         contract.total_supply(),
         ts_before + expect_old.as_u128_trunc(),
         "total supply must reflect fee shares minted at old rate"
     );
     assert_eq!(
-        contract.performance_fee,
-        crate::wad::Wad::one() / 200,
+        contract.fees.performance.fee,
+        Wad::one() / 200,
         "performance fee must be updated to the new rate"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current after accrual"
+        contract.fee_anchor.total_assets.0, cur,
+        "fee anchor must update to current after accrual"
+    );
+}
+
+#[rstest]
+#[should_panic(expected = "management fee too high")]
+fn set_fees_rejects_management_fee_above_cap(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.set_fees(build_fees(
+        contract.fees.performance.fee,
+        Wad::from(MAX_MANAGEMENT_FEE_WAD + 1),
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+}
+
+#[rstest]
+#[should_panic(expected = "performance fee too high")]
+fn set_fees_rejects_performance_fee_above_cap(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.set_fees(build_fees(
+        Wad::from(MAX_PERFORMANCE_FEE_WAD + 1),
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+}
+
+#[rstest]
+fn restrictions_pause_is_immediate_for_sentinel(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    let sentinel = contract.get_configuration().sentinel;
+
+    set_ctx(&vault_id, &sentinel, None, None);
+    contract.set_restrictions(Some(Restrictions::Paused));
+
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+}
+
+#[rstest]
+fn restrictions_unpause_is_timelocked(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    // Emergency pause applies immediately.
+    contract.set_restrictions(Some(Restrictions::Paused));
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+
+    // Unpause is a relax, so it must be timelocked.
+    contract.set_restrictions(None);
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert_eq!(contract.governance_timelocks.pending_len(), 1);
+
+    contract.accept_restrictions();
+
+    assert_eq!(contract.get_restrictions(), None);
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+}
+
+#[rstest]
+#[should_panic]
+fn restrictions_unpause_by_sentinel_panics(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    contract.set_restrictions(Some(Restrictions::Paused));
+
+    let sentinel = contract.get_configuration().sentinel;
+    set_ctx(&vault_id, &sentinel, None, None);
+
+    // Sentinel can pause immediately, but cannot relax/unpause.
+    contract.set_restrictions(None);
+}
+
+#[rstest]
+#[should_panic(expected = "management fee too high")]
+fn init_rejects_management_fee_above_cap(vault_id: AccountId) {
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    // Basic accounts
+    let owner = mk(1);
+    let curator = mk(2);
+    let guardian = mk(3);
+    let sentinel = mk(7);
+    let fee_recipient = mk(4);
+    let skim_recipient = mk(5);
+    let underlying_token_id = mk(6);
+
+    let mut cfg = ::test_utils::vault_configuration(
+        owner,
+        curator,
+        guardian,
+        sentinel,
+        underlying_token_id,
+        skim_recipient,
+        fee_recipient,
+    );
+
+    cfg.fees.management.fee = Wad::from(MAX_MANAGEMENT_FEE_WAD + 1);
+
+    let _ = Contract::new(cfg);
+}
+
+#[rstest]
+#[should_panic(expected = "performance fee too high")]
+fn init_rejects_performance_fee_above_cap(vault_id: AccountId) {
+    setup_env(&vault_id, &vault_id, vec![]);
+
+    // Basic accounts
+    let owner = mk(1);
+    let curator = mk(2);
+    let guardian = mk(3);
+    let sentinel = mk(7);
+    let fee_recipient = mk(4);
+    let skim_recipient = mk(5);
+    let underlying_token_id = mk(6);
+
+    let mut cfg = ::test_utils::vault_configuration(
+        owner,
+        curator,
+        guardian,
+        sentinel,
+        underlying_token_id,
+        skim_recipient,
+        fee_recipient,
+    );
+
+    cfg.fees.performance.fee = Wad::from(MAX_PERFORMANCE_FEE_WAD + 1);
+
+    let _ = Contract::new(cfg);
+}
+
+#[rstest]
+fn management_fee_accrues_proportionally(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    contract.fees.management.fee = Wad::one() / 20;
+    contract.fees.performance.fee = Wad::zero();
+
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    contract.idle_balance = 1_000;
+
+    let initial_supply = contract.total_supply();
+    let cur_assets = contract.get_total_assets().0;
+    let recipient = contract.fees.management.recipient.clone();
+    let elapsed = YEAR_NS / 2;
+
+    set_block_ts(&vault_id, &vault_id, elapsed);
+    contract.internal_accrue_fee();
+
+    let expected_fee_assets = mul_div_floor(
+        contract
+            .fees
+            .management
+            .fee
+            .apply_floored(Number::from(cur_assets)),
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let expected_shares = compute_fee_shares_from_assets(
+        expected_fee_assets,
+        cur_assets.into(),
+        initial_supply.into(),
+    );
+
+    assert_eq!(
+        contract.total_supply(),
+        initial_supply + expected_shares.as_u128_trunc(),
+        "management fee shares must mint proportionally to elapsed time",
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        expected_shares.as_u128_trunc(),
+        "management fee recipient must receive minted shares",
+    );
+    assert_eq!(
+        contract.fee_anchor.total_assets.0, cur_assets,
+        "fee anchor assets must remain unchanged after management accrual",
+    );
+    assert_eq!(
+        contract.fee_anchor.timestamp_ns.0, elapsed,
+        "fee anchor timestamp must update to now after accrual",
+    );
+}
+
+#[rstest]
+fn management_fee_zero_elapsed_is_noop(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    contract.fees.management.fee = Wad::one() / 20;
+    contract.fees.performance.fee = Wad::zero();
+
+    contract
+        .deposit_unchecked(&accounts(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    contract.idle_balance = 1_000;
+
+    let initial_supply = contract.total_supply();
+    let recipient = contract.fees.management.recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
+
+    set_block_ts(&vault_id, &vault_id, env::block_timestamp());
+    contract.internal_accrue_fee();
+
+    assert_eq!(
+        contract.total_supply(),
+        initial_supply,
+        "no mint when elapsed is zero"
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        bal_before,
+        "recipient balance unchanged when elapsed is zero"
+    );
+}
+
+#[rstest]
+fn management_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    // Seed supply so total_supply > 0
+    contract
+        .deposit_unchecked(&mk(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    contract.fees.performance.fee = Wad::zero();
+    contract.fees.management.fee = Wad::one() / 20; // 5% annual
+    contract.fees.max_total_assets_growth_rate = Some(Wad::one() / 5); // 20% annual
+
+    // last=1_000, cur=2_000
+    contract.idle_balance = 2_000;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = 0.into();
+
+    let ts_before = contract.total_supply();
+    let recipient = contract.fees.management.recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
+
+    // Half a year elapsed: max allowed growth = 1_000 * 20% * 0.5 = 100
+    let elapsed = YEAR_NS / 2;
+    set_block_ts(&vault_id, &vault_id, elapsed);
+
+    contract.internal_accrue_fee();
+
+    let annual_max_increase = contract
+        .fees
+        .max_total_assets_growth_rate
+        .expect("max rate")
+        .apply_floored(Number::from(1_000u128));
+    let max_increase = mul_div_floor(
+        annual_max_increase,
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let fee_total_assets = 1_000u128.saturating_add(max_increase.as_u128_trunc());
+
+    let annual_fee_assets = contract
+        .fees
+        .management
+        .fee
+        .apply_floored(Number::from(fee_total_assets));
+    let fee_assets = mul_div_floor(
+        annual_fee_assets,
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let expected_shares = compute_fee_shares_from_assets(
+        fee_assets,
+        Number::from(2_000u128),
+        Number::from(ts_before),
+    );
+
+    let minted = expected_shares.as_u128_trunc();
+
+    assert_eq!(
+        contract.total_supply(),
+        ts_before + minted,
+        "total supply must reflect minted management fee shares",
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        bal_before + minted,
+        "management fee shares should be rate-limited",
+    );
+    assert_eq!(
+        contract.fee_anchor.total_assets,
+        2_000.into(),
+        "fee anchor must sync to current after accrual",
+    );
+}
+
+#[rstest]
+fn performance_fee_is_rate_limited_by_max_total_assets_growth_rate(owner_env: OwnerEnv) {
+    let OwnerEnv {
+        vault_id,
+        mut contract,
+        ..
+    } = owner_env;
+
+    // Seed supply so total_supply > 0
+    contract
+        .deposit_unchecked(&mk(1), 1_000)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    contract.fees.management.fee = Wad::zero();
+    contract.fees.performance.fee = Wad::one() / 2; // 50% performance fee
+    contract.fees.max_total_assets_growth_rate = Some(Wad::one() / 5); // 20% annual
+
+    // last=1_000, cur=2_000
+    contract.idle_balance = 2_000;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = 0.into();
+
+    let ts_before = contract.total_supply();
+    let recipient = contract.fees.performance.recipient.clone();
+    let bal_before = contract.balance_of(&recipient);
+
+    // 0.1 year elapsed: max allowed growth = 1_000 * 20% * 0.1 = 20
+    let elapsed = YEAR_NS / 10;
+    set_block_ts(&vault_id, &vault_id, elapsed);
+
+    contract.internal_accrue_fee();
+
+    let annual_max_increase = contract
+        .fees
+        .max_total_assets_growth_rate
+        .expect("max rate")
+        .apply_floored(Number::from(1_000u128));
+    let max_increase = mul_div_floor(
+        annual_max_increase,
+        Number::from(u128::from(elapsed)),
+        Number::from(u128::from(YEAR_NS)),
+    );
+    let fee_total_assets = 1_000u128.saturating_add(max_increase.as_u128_trunc());
+
+    let profit = fee_total_assets.saturating_sub(1_000);
+    let fee_assets = contract
+        .fees
+        .performance
+        .fee
+        .apply_floored(Number::from(profit));
+    let expected_shares = compute_fee_shares_from_assets(
+        fee_assets,
+        Number::from(2_000u128),
+        Number::from(ts_before),
+    );
+
+    let minted = expected_shares.as_u128_trunc();
+
+    assert_eq!(
+        contract.total_supply(),
+        ts_before + minted,
+        "total supply must reflect minted performance fee shares",
+    );
+    assert_eq!(
+        contract.balance_of(&recipient),
+        bal_before + minted,
+        "performance fee shares should be rate-limited",
+    );
+    assert_eq!(
+        contract.fee_anchor.total_assets,
+        2_000.into(),
+        "fee anchor must sync to current after accrual",
     );
 }
 
@@ -1459,16 +2553,17 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
 
     // Seed supply so total_supply > 0
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&mk(1), 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
     // Loss scenario: last=1000, current=800
     contract.idle_balance = 800;
-    contract.last_total_assets = 1_000;
-    contract.performance_fee = Wad::one() / 10;
+    contract.fee_anchor.total_assets = 1_000.into();
+    contract.fee_anchor.timestamp_ns = env::block_timestamp().into();
+    contract.fees.performance.fee = Wad::one() / 10;
 
     let ts_before = contract.total_supply();
-    let fr = contract.fee_recipient.clone();
+    let fr = contract.fees.performance.recipient.clone();
     let bal_before = contract.balance_of(&fr);
     let cur = contract.get_total_assets().0;
 
@@ -1485,8 +2580,9 @@ fn internal_accrue_fee_mints_zero_on_loss_and_updates_last(owner_env: OwnerEnv) 
         "fee recipient balance must remain unchanged on loss"
     );
     assert_eq!(
-        contract.last_total_assets, cur,
-        "last_total_assets must update to current even on loss"
+        contract.fee_anchor.total_assets,
+        cur.into(),
+        "fee anchor must update to current after accrual"
     );
 }
 
@@ -1498,10 +2594,10 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
     let mut c = c_asset_env;
 
     let (m, cfg) = enabled_market_100;
-    c.markets.insert(m.clone(), cfg.into());
-    c.supply_queue.insert(m);
+    let market_id = c.insert_market_for_tests(m, cfg, 0);
+    c.supply_queue.push(market_id);
 
-    let sender = accounts(1);
+    let sender = mk(1);
     let deposit = 50u128;
     let expect_shares = c.preview_deposit(U128(deposit)).0;
 
@@ -1525,9 +2621,11 @@ fn ft_on_transfer_supply_accepts_full_and_mints_shares(
         "idle must increase by accepted deposit"
     );
     assert_eq!(
-        c.last_total_assets, deposit,
-        "last_total_assets must increase by accepted deposit"
+        c.fee_anchor.total_assets,
+        deposit.into(),
+        "fee anchor must increase by accepted deposit"
     );
+
     assert!(
         matches!(c.op_state, OpState::Idle),
         "must remain idle when min_batch not reached"
@@ -1543,10 +2641,10 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
 
     let (m, mut cfg) = enabled_market_100;
     cfg.cap = U128(50); // override cap for this case
-    c.markets.insert(m.clone(), cfg.into());
-    c.supply_queue.insert(m);
+    let market_id = c.insert_market_for_tests(m, cfg, 0);
+    c.supply_queue.push(market_id);
 
-    let sender = accounts(2);
+    let sender = mk(2);
     let deposit = 80u128;
     let accept = 50u128;
     let expect_shares = c.preview_deposit(U128(accept)).0;
@@ -1571,28 +2669,175 @@ fn ft_on_transfer_supply_partial_refund_when_capped(
         "idle increases by accepted amount only"
     );
     assert_eq!(
-        c.last_total_assets, accept,
-        "last_total_assets increases by accepted amount only"
+        c.fee_anchor.total_assets,
+        accept.into(),
+        "fee anchor increases by accepted amount only"
     );
+}
+
+#[test]
+fn cap_group_limits_total_room() {
+    let vault_id = accounts(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let group = CapGroupId("group-a".to_string());
+    c.cap_groups.insert(
+        group.clone(),
+        CapGroupRecord {
+            cap: U128(150),
+            relative_cap: Wad::one(),
+            principal: 0,
+        },
+    );
+
+    for offset in 0..2 {
+        let cfg = MarketConfiguration {
+            cap: U128(100),
+            enabled: true,
+            removable_at: 0,
+            cap_group_id: Some(group.clone()),
+        };
+        let market_id = c.insert_market_for_tests(mk(9200 + offset), cfg, 0);
+        c.supply_queue.push(market_id);
+    }
+
+    assert_eq!(c.get_max_single_market_deposit().0, 100);
+    assert_eq!(c.get_max_deposit().0, 150);
+}
+
+#[test]
+fn cap_group_relative_caps_scale_with_aum() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset: AccountId = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    let half = Wad::one() / 2;
+
+    let group_a = CapGroupId("group-ra".to_string());
+    let group_b = CapGroupId("group-rb".to_string());
+
+    c.cap_groups.insert(
+        group_a.clone(),
+        CapGroupRecord {
+            cap: U128(10_000),
+            relative_cap: half,
+            principal: 0,
+        },
+    );
+    c.cap_groups.insert(
+        group_b.clone(),
+        CapGroupRecord {
+            cap: U128(10_000),
+            relative_cap: half,
+            principal: 0,
+        },
+    );
+
+    let m1_id = c.insert_market_for_tests(
+        mk(9310),
+        MarketConfiguration {
+            cap: U128(1_000),
+            enabled: true,
+            removable_at: 0,
+            cap_group_id: Some(group_a.clone()),
+        },
+        0,
+    );
+    c.supply_queue.push(m1_id);
+
+    let m2_id = c.insert_market_for_tests(
+        mk(9311),
+        MarketConfiguration {
+            cap: U128(1_000),
+            enabled: true,
+            removable_at: 0,
+            cap_group_id: Some(group_b.clone()),
+        },
+        0,
+    );
+    c.supply_queue.push(m2_id);
+
+    assert_eq!(c.get_max_deposit().0, 2_000);
+
+    let sender = mk(1);
+    let res = c.ft_on_transfer(
+        sender,
+        U128(3_000),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 1_000),
+        _ => panic!("expected refund"),
+    }
+
+    assert_eq!(c.idle_balance, 2_000);
+}
+
+#[test]
+fn cap_group_refunds_when_saturated() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let asset: AccountId = c.underlying_asset.contract_id().into();
+    setup_env(&vault_id, &asset, vec![]);
+
+    let group = CapGroupId("group-b".to_string());
+    c.cap_groups.insert(
+        group.clone(),
+        CapGroupRecord {
+            cap: U128(50),
+            relative_cap: Wad::one(),
+            principal: 0,
+        },
+    );
+
+    let market_account = mk(9300);
+    let cfg = MarketConfiguration {
+        cap: U128(100),
+        enabled: true,
+        removable_at: 0,
+        cap_group_id: Some(group.clone()),
+    };
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
+    c.supply_queue.push(market_id);
+    c.set_market_principal(market_id, 50);
+
+    assert_eq!(c.get_max_deposit().0, 0);
+
+    let sender = accounts(5);
+    let res = c.ft_on_transfer(
+        sender,
+        U128(25),
+        serde_json::to_string(&DepositMsg::Supply).unwrap(),
+    );
+    match res {
+        PromiseOrValue::Value(U128(refund)) => assert_eq!(refund, 25),
+        _ => panic!("expected refund"),
+    }
+
+    assert_eq!(c.idle_balance, 0);
+    assert_eq!(c.get_max_deposit().0, 0);
 }
 
 #[test]
 #[should_panic = "Invalid token ID"]
 fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&mk(42));
     setup_env(&vault_id, &vault_id, vec![]);
 
-    let m = mk(9003);
+    let market_account = mk(9003);
     let cfg = MarketConfiguration {
         cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    c.markets.insert(m.clone(), cfg.into());
-    c.supply_queue.insert(m);
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
+    c.supply_queue.push(market_id);
 
-    let sender = accounts(3);
+    let sender = mk(3);
     let deposit = 70u128;
 
     let res = c.ft_on_transfer(
@@ -1611,11 +2856,11 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
 #[test]
 #[should_panic = "Invalid deposit msg"]
 fn ft_on_transfer_invalid_msg_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
-    let _ = c.ft_on_transfer(accounts(4), U128(10), "not-json".into());
+    let _ = c.ft_on_transfer(mk(4), U128(10), "not-json".into());
 }
 
 #[rstest]
@@ -1631,9 +2876,9 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
         vec![],
     );
 
-    let (m, cfg) = enabled_market_100;
-    c.markets.insert(m.clone(), cfg.into());
-    c.supply_queue.insert(m);
+    let (market_account, cfg) = enabled_market_100;
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
+    c.supply_queue.push(market_id);
 
     let sender: AccountId = c.underlying_asset.contract_id().into();
 
@@ -1647,13 +2892,13 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
 #[test]
 #[should_panic = "Invalid deposit msg"]
 fn mt_on_transfer_invalid_msg_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let _ = c.mt_on_transfer(
-        accounts(1),
-        vec![accounts(1)],
+        mk(1),
+        vec![mk(1)],
         vec!["t".to_string()],
         vec![U128(1)],
         "bad".into(),
@@ -1663,13 +2908,13 @@ fn mt_on_transfer_invalid_msg_panics() {
 #[test]
 #[should_panic = "This contract only accepts one token at a time."]
 fn mt_on_transfer_rejects_multiple_tokens() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let _ = c.mt_on_transfer(
-        accounts(2),
-        vec![accounts(2)],
+        mk(2),
+        vec![mk(2)],
         vec!["a".to_string(), "b".to_string()],
         vec![U128(1)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
@@ -1679,13 +2924,13 @@ fn mt_on_transfer_rejects_multiple_tokens() {
 #[test]
 #[should_panic = "Invalid input length"]
 fn mt_on_transfer_rejects_invalid_input_lengths() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let _ = c.mt_on_transfer(
-        accounts(3),
-        vec![accounts(3), accounts(4)],
+        mk(3),
+        vec![mk(3), mk(4)],
         vec!["t".to_string()],
         vec![U128(1)],
         serde_json::to_string(&DepositMsg::Supply).unwrap(),
@@ -1694,7 +2939,7 @@ fn mt_on_transfer_rejects_invalid_input_lengths() {
 
 #[test]
 fn mt_on_transfer_wrong_asset_refunds_full() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let old_ft_id = c.underlying_asset.contract_id().into();
     setup_env(&vault_id, &old_ft_id, vec![]);
@@ -1703,11 +2948,11 @@ fn mt_on_transfer_wrong_asset_refunds_full() {
 
     c.underlying_asset = FungibleAsset::nep245(old_ft_id.clone(), token_id.clone());
 
-    let sender = accounts(5);
+    let sender = mk(5);
     let amount = 25u128;
 
     let res = c.mt_on_transfer(
-        accounts(3),
+        mk(3),
         vec![sender.clone()],
         vec![token_id],
         vec![U128(amount)],
@@ -1727,31 +2972,32 @@ fn mt_on_transfer_wrong_asset_refunds_full() {
 #[test]
 #[should_panic = "Deposit amount must be greater than zero"]
 fn execute_supply_zero_amount_rejected() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let asset_id = c.underlying_asset.contract_id().into();
-    let sender_id = accounts(4);
+    let sender_id = mk(4);
     c.execute_supply(sender_id.clone(), asset_id, 0);
 }
 
 #[test]
 fn governance_set_curator_grants_allocator() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let m1 = mk(9101);
+    let market_account = mk(9101);
     let cfg = MarketConfiguration {
         cap: U128(1),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    c.markets.insert(m1.clone(), cfg.into());
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
 
-    let new_cur = accounts(3);
+    let new_cur = mk(3);
     c.set_curator(new_cur.clone());
 
     set_ctx(
@@ -1760,27 +3006,28 @@ fn governance_set_curator_grants_allocator() {
         None,
         Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
     );
-    c.set_supply_queue(vec![m1.clone()]);
+    c.set_supply_queue(vec![market_id]);
     assert_eq!(c.supply_queue.len(), 1);
-    assert_eq!(c.supply_queue.iter().next(), Some(&m1));
+    assert_eq!(c.supply_queue.first(), Some(&market_id));
 }
 
 #[test]
 fn governance_set_is_allocator_grant_allows_queue_ops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let grantee = accounts(4);
+    let grantee = mk(4);
 
-    let m1 = mk(9102);
+    let market_account = mk(9102);
     let cfg = MarketConfiguration {
         cap: U128(1),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    c.markets.insert(m1.clone(), cfg.into());
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
 
     c.set_is_allocator(grantee.clone(), true);
 
@@ -1790,30 +3037,31 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
         None,
         Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
     );
-    c.set_supply_queue(vec![m1.clone()]);
+    c.set_supply_queue(vec![market_id]);
     assert_eq!(c.supply_queue.len(), 1);
-    assert_eq!(c.supply_queue.iter().next(), Some(&m1));
+    assert_eq!(c.supply_queue.first(), Some(&market_id));
 }
 
 #[test]
 #[should_panic]
 fn governance_set_is_allocator_revoke_disallows_queue_ops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let grantee = accounts(12);
+    let grantee = mk(12);
     c.set_is_allocator(grantee.clone(), true);
 
-    let m1 = mk(9103);
+    let market_account = mk(9103);
     let cfg = MarketConfiguration {
         cap: U128(1),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
 
-    c.markets.insert(m1.clone(), cfg.into());
+    let market_id = c.insert_market_for_tests(market_account, cfg, 0);
 
     // Revoke Allocator role; subsequent queue op by grantee should panic due to lack of rights
     c.set_is_allocator(grantee.clone(), false);
@@ -1823,7 +3071,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
         None,
         Some(yocto_for_bytes(storage_bytes_for_queue_account_id())),
     );
-    c.set_supply_queue(vec![m1]);
+    c.set_supply_queue(vec![market_id]);
 }
 
 #[rstest(
@@ -1831,8 +3079,8 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     case("set_curator"),
     case("set_is_allocator"),
     case("set_skim_recipient"),
-    case("set_fee_recipient"),
-    case("set_performance_fee"),
+    case("set_fees"),
+    case("set_restrictions"),
     case("submit_guardian"),
     case("submit_timelock"),
     case("submit_cap"),
@@ -1841,7 +3089,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
 )]
 fn governance_abdicate_blocks_further_changes(method_name: &str) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let vault_id = accounts(0);
+        let vault_id = mk(0);
         let mut c = new_test_contract(&vault_id);
         let owner = c.own_get_owner().unwrap();
 
@@ -1850,24 +3098,31 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
         c.abdicate(method_name.to_string());
         match method_name {
             "set_curator" => {
-                c.set_curator(accounts(2));
+                c.set_curator(mk(2));
             }
             "set_is_allocator" => {
-                c.set_is_allocator(accounts(4), false);
+                c.set_is_allocator(mk(4), false);
             }
             "submit_guardian" => {
-                c.submit_guardian(accounts(5));
+                c.submit_guardian(mk(5));
                 c.accept_guardian();
                 c.revoke_pending_guardian();
             }
             "set_skim_recipient" => {
-                c.set_skim_recipient(accounts(1));
+                c.set_skim_recipient(mk(1));
             }
-            "set_fee_recipient" => {
-                c.set_fee_recipient(accounts(1));
+            "set_fees" => {
+                c.set_fees(build_fees(
+                    Wad::one() / 10,
+                    c.fees.management.fee,
+                    accounts(1),
+                    c.fees.management.recipient.clone(),
+                ));
             }
-            "set_performance_fee" => {
-                c.set_performance_fee(Wad::one() / 10);
+            "set_restrictions" => {
+                c.set_restrictions(Some(Restrictions::Paused));
+                c.accept_restrictions();
+                c.revoke_pending_restrictions();
             }
             "submit_timelock" => {
                 let cur = c.get_configuration().initial_timelock_ns;
@@ -1918,13 +3173,13 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
 #[test]
 #[should_panic = "Timelock not elapsed yet"]
 fn governance_accept_guardian_not_yet_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
     // First, ensure a guardian is set by submitting and accepting once.
-    let initial_guardian = accounts(1);
+    let initial_guardian = mk(1);
     c.submit_guardian(initial_guardian.clone());
     set_ctx(
         &vault_id,
@@ -1935,9 +3190,15 @@ fn governance_accept_guardian_not_yet_panics() {
     c.accept_guardian();
 
     let max_timelock = MAX_TIMELOCK_NS;
-    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
+    c.governance_timelocks = Timelocks::new(
+        max_timelock,
+        max_timelock,
+        max_timelock,
+        max_timelock,
+        max_timelock,
+    );
     // Now submit another guardian change but do not advance time.
-    let new_g = accounts(5);
+    let new_g = mk(5);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(new_g);
     c.accept_guardian();
@@ -1946,12 +3207,12 @@ fn governance_accept_guardian_not_yet_panics() {
 #[test]
 #[should_panic]
 fn governance_submit_accept_and_revoke_guardian() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let new_g = accounts(4);
+    let new_g = mk(4);
     c.submit_guardian(new_g.clone());
 
     set_ctx(
@@ -1963,7 +3224,7 @@ fn governance_submit_accept_and_revoke_guardian() {
     c.accept_guardian();
 
     // Stage another pending and then revoke it
-    let another = accounts(3);
+    let another = mk(3);
     set_ctx(&vault_id, &owner, None, None);
     c.submit_guardian(another);
     c.revoke_pending_guardian();
@@ -1972,8 +3233,68 @@ fn governance_submit_accept_and_revoke_guardian() {
 }
 
 #[test]
+fn governance_submit_accept_and_revoke_sentinel() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let new_sentinel = mk(4);
+    c.submit_sentinel(new_sentinel.clone());
+
+    let future = env::block_timestamp().saturating_add(1_000_000_000);
+    set_ctx(&vault_id, &owner, Some(future), None);
+    c.accept_sentinel();
+
+    let cfg = c.get_configuration();
+    assert_eq!(
+        cfg.sentinel, new_sentinel,
+        "Sentinel should update after accept"
+    );
+
+    // Stage another change and revoke it as the sentinel
+    let another = mk(3);
+    set_ctx(&vault_id, &owner, None, None);
+    c.submit_sentinel(another);
+
+    let sentinel = cfg.sentinel;
+    set_ctx(&vault_id, &sentinel, None, None);
+    c.revoke_pending_sentinel();
+
+    set_ctx(&vault_id, &owner, None, None);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.accept_sentinel()));
+    assert!(
+        result.is_err(),
+        "accept_sentinel should panic when nothing pending"
+    );
+}
+
+#[test]
+fn sentinel_can_revoke_pending_cap_change() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let market = mk(9020);
+    let new_cap = U128(1);
+    c.submit_cap(market.clone(), new_cap);
+
+    assert_eq!(c.governance_timelocks.pending_len(), 1);
+
+    let sentinel = c.get_configuration().sentinel;
+    set_ctx(&vault_id, &sentinel, None, None);
+    c.revoke_pending_cap(market.clone());
+
+    assert!(
+        !c.governance_timelocks.has_pending(),
+        "Sentinel should be able to revoke pending caps"
+    );
+}
+
+#[test]
 fn governance_submit_accept_timelock_increase_then_decrease() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2007,7 +3328,7 @@ fn governance_submit_accept_timelock_increase_then_decrease() {
 #[test]
 #[should_panic = "No pending change"]
 fn governance_accept_timelock_without_pending_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2018,7 +3339,7 @@ fn governance_accept_timelock_without_pending_panics() {
 #[test]
 #[should_panic = "No pending change"]
 fn governance_revoke_pending_timelock_then_accept_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2035,27 +3356,169 @@ fn governance_revoke_pending_timelock_then_accept_panics() {
 
 #[test]
 fn governance_submit_cap_immediate_decrease() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
     let m = mk(9104);
     let cfg = MarketConfiguration {
-        cap: U128(10),
+        cap: U128(100),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    c.markets.insert(m.clone(), cfg.into());
 
-    c.submit_cap(m.clone(), U128(3));
-    let after = c.markets.get(&m).unwrap();
-    assert_eq!(after.cfg.cap, U128(3));
+    let _market_id = c.insert_market_for_tests(m.clone(), cfg, 0);
+
+    c.submit_cap(m.clone(), U128(50));
+    let cfg_after = must_market_record(&c, &m);
+    assert_eq!(
+        cfg_after.cfg.cap.0, 50,
+        "cap decrease must apply immediately"
+    );
+}
+
+#[test]
+fn cap_group_membership_moves_principal() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0, 0);
+
+    let group_a = CapGroupId("ga".to_string());
+    let group_b = CapGroupId("gb".to_string());
+
+    c.submit_cap_group_update(CapGroupUpdate::SetCap {
+        cap_group: group_a.clone(),
+        new_cap: U128(200),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
+        cap_group: group_a.clone(),
+    });
+    c.submit_cap_group_update(CapGroupUpdate::SetCap {
+        cap_group: group_b.clone(),
+        new_cap: U128(300),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
+        cap_group: group_b.clone(),
+    });
+
+    let market = mk(9400);
+    let cfg = MarketConfiguration {
+        cap: U128(200),
+        enabled: true,
+        removable_at: 0,
+        cap_group_id: Some(group_a.clone()),
+    };
+    let market_id = c.insert_market_for_tests(market.clone(), cfg, 80);
+
+    c.submit_cap_group_update(CapGroupUpdate::SetMarketCapGroup {
+        market: market_id,
+        cap_group: Some(group_b.clone()),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetMarketCapGroup { market: market_id });
+
+    let rec = c.markets.get(&market_id).expect("market must exist");
+    assert_eq!(rec.cfg.cap_group_id, Some(group_b.clone()));
+
+    assert_eq!(
+        c.cap_groups
+            .get(&group_a)
+            .expect("group a must exist")
+            .principal,
+        0
+    );
+    assert_eq!(
+        c.cap_groups
+            .get(&group_b)
+            .expect("group b must exist")
+            .principal,
+        80
+    );
+}
+
+#[test]
+fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0, 0);
+
+    let group = CapGroupId("gr".to_string());
+
+    c.submit_cap_group_update(CapGroupUpdate::SetCap {
+        cap_group: group.clone(),
+        new_cap: U128(1_000),
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
+        cap_group: group.clone(),
+    });
+
+    assert_eq!(
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
+        Wad::one()
+    );
+
+    let half = Wad::one() / 2;
+    c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
+        cap_group: group.clone(),
+        new_relative_cap: U128(u128::from(half)),
+    });
+
+    assert_eq!(
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
+        half
+    );
+    assert!(
+        !c.governance_timelocks.has_pending(),
+        "decreasing relative cap should apply immediately"
+    );
+
+    c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
+        cap_group: group.clone(),
+        new_relative_cap: U128(u128::from(Wad::one())),
+    });
+
+    assert!(
+        c.governance_timelocks.has_pending(),
+        "increasing relative cap should be timelocked"
+    );
+    assert_eq!(
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
+        half,
+        "relative cap should not update until accepted"
+    );
+
+    c.accept_cap_group_update(CapGroupUpdateKey::SetRelativeCap {
+        cap_group: group.clone(),
+    });
+
+    assert_eq!(
+        c.cap_groups
+            .get(&group)
+            .expect("group must exist")
+            .relative_cap,
+        Wad::one(),
+    );
 }
 
 #[test]
 fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2073,7 +3536,7 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
     );
     c.accept_cap(m.clone());
 
-    let cfg = &c.markets.get(&m).unwrap().cfg;
+    let cfg = &must_market_record(&c, &m).cfg;
     assert_eq!(cfg.cap.0, 5);
     assert!(
         cfg.enabled,
@@ -2084,7 +3547,7 @@ fn governance_submit_and_accept_cap_new_market_creates_and_enables() {
 #[test]
 #[should_panic = "No pending cap change for this market"]
 fn governance_revoke_pending_cap_then_accept_panics() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2101,7 +3564,7 @@ fn governance_revoke_pending_cap_then_accept_panics() {
 
 #[test]
 fn governance_submit_and_revoke_market_removal() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -2113,53 +3576,66 @@ fn governance_submit_and_revoke_market_removal() {
         cap: U128(0),
         enabled: true,
         removable_at: 0,
+        cap_group_id: None,
     };
-    let mut rec: MarketRecord = cfg.into();
-    rec.principal = 1;
-    c.markets.insert(m.clone(), rec);
+
+    let _market_id = c.insert_market_for_tests(m.clone(), cfg, 1);
 
     c.submit_market_removal(m.clone());
     c.accept_market_removal(m.clone());
-    let after = c.markets.get(&m).unwrap();
+    let after = must_market_record(&c, &m);
     assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
 
     c.revoke_pending_market_removal(m.clone());
-    let after2 = c.markets.get(&m).unwrap();
+    let after2 = must_market_record(&c, &m);
     assert_eq!(after2.cfg.removable_at, 0, "removal must be revoked");
 }
 
 #[test]
 fn governance_set_skim_recipient_updates_field() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
-    let owner = accounts(1);
+    let owner = mk(1);
     setup_env(&vault_id, &owner, vec![]);
 
-    let new_recipient = accounts(4);
+    let new_recipient = mk(4);
     c.set_skim_recipient(new_recipient.clone());
     assert_eq!(c.skim_recipient, new_recipient);
 }
 
 #[test]
-fn governance_set_fee_recipient_no_fee_does_not_accrue() {
-    let vault_id = accounts(0);
+fn governance_set_fees_zero_fee_recipient_change_no_accrue() {
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
-    let owner = accounts(1);
+    let owner = mk(1);
 
     owner_call_env(vault_id, &owner);
 
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
     c.idle_balance = 1_500;
-    c.last_total_assets = 1_000;
-    c.performance_fee = Wad::zero();
+    c.fee_anchor.total_assets = 1_000.into();
+    c.fee_anchor.timestamp_ns = env::block_timestamp().into();
+    c.fees.performance.fee = Wad::zero();
+    c.fees.management.fee = Wad::zero();
 
     let ts_before = c.total_supply();
-    let last_before = c.last_total_assets;
+    let last_before = c.fee_anchor.total_assets;
 
-    let new_recipient = accounts(5);
+    let new_recipient = mk(5);
+    let old_recipient = c.fees.performance.recipient.clone();
 
-    c.set_fee_recipient(new_recipient.clone());
+    c.set_fees(build_fees(
+        c.fees.performance.fee,
+        c.fees.management.fee,
+        new_recipient.clone(),
+        new_recipient.clone(),
+    ));
+
+    assert_eq!(c.governance_timelocks.pending_len(), 1);
+    assert_eq!(c.fees.performance.recipient, old_recipient);
+
+    c.accept_fees();
 
     assert_eq!(
         c.total_supply(),
@@ -2167,10 +3643,11 @@ fn governance_set_fee_recipient_no_fee_does_not_accrue() {
         "no fee shares minted when fee=0"
     );
     assert_eq!(
-        c.last_total_assets, last_before,
-        "last_total_assets should not change when fee=0"
+        c.fee_anchor.total_assets, last_before,
+        "fee anchor should not change when fee=0"
     );
-    assert_eq!(c.fee_recipient, new_recipient);
+    assert_eq!(c.fees.performance.recipient, new_recipient);
+    assert_eq!(c.governance_timelocks.pending_len(), 0);
 }
 
 fn owner_call_env(vault_id: AccountId, owner: &AccountId) {
@@ -2191,12 +3668,12 @@ fn owner_call_env(vault_id: AccountId, owner: &AccountId) {
 #[test]
 #[should_panic = "Refusing to skim the underlying token"]
 fn skim_rejects_underlying_token() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let recipient = accounts(4);
+    let recipient = mk(4);
     c.set_skim_recipient(recipient.clone());
 
     let underlying: AccountId = c.underlying_asset.contract_id().into();
@@ -2206,12 +3683,12 @@ fn skim_rejects_underlying_token() {
 #[test]
 #[should_panic = "Refusing to skim the share token"]
 fn skim_rejects_share_token() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let recipient = accounts(4);
+    let recipient = mk(4);
     c.set_skim_recipient(recipient.clone());
 
     let share_token: AccountId = vault_id.clone();
@@ -2226,7 +3703,7 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
 
     c.supply_01_handle_transfer(
         Ok(U128(1)),
-        accounts(1),
+        MarketId(1),
         0,
         2,
         Default::default(),
@@ -2238,7 +3715,7 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
 
 #[test]
 fn after_supply_1_check_allocating_not_allocating_index() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(
         &vault_id,
         &vault_id,
@@ -2261,7 +3738,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
 
     c.supply_01_handle_transfer(
         Ok(U128(1)),
-        accounts(1),
+        MarketId(1),
         op_id + 1,
         0,
         Default::default(),
@@ -2273,7 +3750,7 @@ fn after_supply_1_check_allocating_not_allocating_index() {
 
 #[test]
 fn after_supply_1_check_allocating() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(
         &vault_id,
         &vault_id,
@@ -2284,6 +3761,8 @@ fn after_supply_1_check_allocating() {
     );
 
     let mut c = new_test_contract(&vault_id);
+
+    let market_id = c.insert_market_for_tests(mk(3), MarketConfiguration::default(), 0);
 
     let op_id = 1;
 
@@ -2296,7 +3775,7 @@ fn after_supply_1_check_allocating() {
 
     c.supply_01_handle_transfer(
         Ok(U128(1)),
-        accounts(3),
+        market_id,
         op_id,
         0,
         Default::default(),
@@ -2318,9 +3797,10 @@ fn after_supply_1_check_allocating() {
 fn after_exec_withdraw_read_none_to_payout(
     #[with(vault_id(), vec![(mk(8), 0, true, 100, false)])] mut c: Contract,
 ) {
-    let (market, _record) = c.markets.clone().into_iter().next().unwrap();
+    let (market_id, record) = c.markets.clone().into_iter().next().unwrap();
+    let _market_account = record.account.clone();
     let principal = 100u128;
-    c.withdraw_route = vec![market.clone()];
+    c.withdraw_route = vec![market_id];
 
     let op_id = 42;
     let index = 0;
@@ -2330,11 +3810,17 @@ fn after_exec_withdraw_read_none_to_payout(
         remaining: 60,
         receiver: mk(9),
         collected: 10,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 50,
     });
 
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), 42, 0, U128(principal), U128(0));
+    let res = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        op_id,
+        market_id,
+        U128(principal),
+        U128(0),
+    );
     match res {
         PromiseOrValue::Promise(_p) => {}
         _ => panic!("Expected a Promise to proceed to balance settlement"),
@@ -2343,7 +3829,7 @@ fn after_exec_withdraw_read_none_to_payout(
     let res2 = c.execute_withdraw_03_settle(
         Ok(U128(principal)),
         op_id,
-        index,
+        market_id,
         U128(principal),
         U128(0),
         U128(0),
@@ -2355,7 +3841,7 @@ fn after_exec_withdraw_read_none_to_payout(
     }
 
     assert_eq!(
-        c.markets.get(&market).map(|r| r.principal).unwrap(),
+        c.markets.get(&market_id).map(|r| r.principal).unwrap(),
         0,
         "Market principal should be updated to 0"
     );
@@ -2378,7 +3864,7 @@ fn after_exec_withdraw_read_none_to_payout(
 #[test]
 #[should_panic(expected = "No balance to skim")]
 fn after_skim_balance_zero_noop() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let mut c = new_test_contract(&vault_id);
@@ -2392,7 +3878,7 @@ fn after_skim_balance_zero_noop() {
 
 #[test]
 fn after_skim_balance_positive_returns_promise() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
     let mut c = new_test_contract(&vault_id);
@@ -2413,19 +3899,17 @@ fn after_skim_balance_positive_returns_promise() {
 fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collected: u128) {
     use templar_common::vault::PendingWithdrawal;
 
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let market = mk(8);
-    c.withdraw_route = vec![market.clone()];
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: before,
-        },
+    let market_account = mk(8);
+    let market_id = c.insert_market_for_tests(
+        market_account.clone(),
+        MarketConfiguration::default(),
+        before,
     );
+    c.withdraw_route = vec![market_id];
 
     let initial_idle = c.idle_balance;
 
@@ -2435,7 +3919,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         remaining: need,
         receiver: mk(9),
         collected,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 0,
     });
 
@@ -2443,7 +3927,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         0,
         PendingWithdrawal {
             receiver: mk(9),
-            owner: accounts(1),
+            owner: mk(1),
             escrow_shares: 0,
             expected_assets: collected,
             requested_at: 0,
@@ -2453,7 +3937,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     let res = c.execute_withdraw_02_reconcile_position(
         Err(near_sdk::PromiseError::Failed),
         99,
-        0,
+        market_id,
         U128(before),
         U128(0),
     );
@@ -2463,7 +3947,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     }
 
     assert_eq!(
-        c.markets.get(&market).map_or(u128::MAX, |r| r.principal),
+        c.markets.get(&market_id).map_or(u128::MAX, |r| r.principal),
         before,
         "principal must remain unchanged on read failure"
     );
@@ -2484,19 +3968,13 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
     pass_index => [false, true]
 )]
 fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_index: bool) {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let market = mk(8);
-    c.withdraw_route = vec![market.clone()];
-    c.markets.insert(
-        market.clone(),
-        MarketRecord {
-            cfg: MarketConfiguration::default(),
-            principal: 10,
-        },
-    );
+    let market_account = mk(8);
+    let market_id = c.insert_market_for_tests(market_account, MarketConfiguration::default(), 10);
+    c.withdraw_route = vec![market_id];
 
     let real_op = 5u64;
     let real_idx = 0u32;
@@ -2507,7 +3985,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         remaining: 1,
         receiver: mk(9),
         collected: 1,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 0,
     });
 
@@ -2515,7 +3993,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         real_idx as u64,
         PendingWithdrawal {
             receiver: mk(9),
-            owner: accounts(1),
+            owner: mk(1),
             escrow_shares: 0,
             expected_assets: 1,
             requested_at: 0,
@@ -2523,10 +4001,14 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     );
 
     let call_op = if pass_op { real_op } else { real_op + 1 };
-    let call_idx = if pass_index { real_idx } else { real_idx + 1 };
+    let call_market = if pass_index {
+        market_id
+    } else {
+        MarketId(market_id.0.saturating_add(1))
+    };
 
     let r =
-        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_idx, U128(10), U128(0));
+        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_market, U128(10), U128(0));
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
@@ -2546,9 +4028,10 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
 fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])] mut c: Contract) {
     use near_sdk_contract_tools::ft::Nep141Controller as _;
 
-    let market = mk(8);
-    c.withdraw_route = vec![market.clone()];
-    let owner = accounts(1);
+    let market_account = mk(8);
+    let market_id = must_market_id(&c, &market_account);
+    c.withdraw_route = vec![market_id];
+    let owner = mk(1);
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
@@ -2579,7 +4062,8 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
     let owner_before = c.balance_of(&owner);
 
     // Read result with need=0 ensures credited=0; triggers refund branch
-    let res = c.execute_withdraw_02_reconcile_position(Ok(None), op_id, index, U128(0), U128(0));
+    let res =
+        c.execute_withdraw_02_reconcile_position(Ok(None), op_id, market_id, U128(0), U128(0));
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to proceed to balance settlement"),
@@ -2588,7 +4072,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
     let res2 = c.execute_withdraw_03_settle(
         Ok(U128(0)), // no inflow observed
         op_id,
-        index,
+        market_id,
         U128(0), // before_principal
         U128(0), // new_principal reported
         U128(0), // before_balance
@@ -2624,7 +4108,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
 
 #[test]
 fn ctx_allocating_ok_and_err() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2652,12 +4136,12 @@ fn ctx_allocating_ok_and_err() {
 
 #[test]
 fn ctx_withdrawing_ok_and_err() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     let recv = mk(1);
-    let owner = accounts(1);
+    let owner = mk(1);
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
@@ -2685,31 +4169,28 @@ fn ctx_withdrawing_ok_and_err() {
 
 #[test]
 fn resolve_market_helpers_supply_and_withdraw() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     // Withdraw resolver uses withdraw_route only
-    let m1 = mk(1001);
-    let m2 = mk(1002);
-    c.withdraw_route = vec![m1.clone(), m2.clone()];
-    assert_eq!(c.resolve_withdraw_market(0).unwrap(), &m1);
-    assert_eq!(c.resolve_withdraw_market(1).unwrap(), &m2);
-    assert!(matches!(
-        c.resolve_withdraw_market(2),
-        Err(Error::MissingMarket(2))
-    ));
+    let m1 = MarketId(1001);
+    let m2 = MarketId(1002);
+    c.withdraw_route = vec![m1, m2];
+    assert_eq!(c.withdraw_route.first().copied(), Some(m1));
+    assert_eq!(c.withdraw_route.get(1).copied(), Some(m2));
+    assert_eq!(c.withdraw_route.get(2).copied(), None);
 }
 
 #[test]
 fn after_supply_2_read_missing_position_stops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     // Resolve market via supply_queue
-    let market = mk(42);
-    c.supply_queue.insert(market.clone());
+    let market = MarketId(42);
+    c.supply_queue.push(market);
 
     // Must be in Allocating ctx
     c.op_state = OpState::Allocating(AllocatingState {
@@ -2731,13 +4212,13 @@ fn after_supply_2_read_missing_position_stops() {
 
 #[test]
 fn after_supply_2_read_read_failed_stops() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
     // Resolve market via supply_queue
-    let market = mk(43);
-    c.supply_queue.insert(market);
+    let market = MarketId(43);
+    c.supply_queue.push(market);
 
     // Must be in Allocating ctx
     c.op_state = OpState::Allocating(AllocatingState {
@@ -2750,7 +4231,7 @@ fn after_supply_2_read_read_failed_stops() {
     // Read failure -> stop_and_exit
     let res = c.supply_02_position_read(
         Err(near_sdk::PromiseError::Failed),
-        accounts(3),
+        market,
         7,
         0,
         U128(0),
@@ -2771,8 +4252,9 @@ fn after_create_withdraw_req_success_returns_promise(
     receiver: AccountId,
     owner: AccountId,
 ) {
-    let market = mk(50);
-    c.withdraw_route = vec![market.clone()];
+    let market_account = mk(50);
+    let market_id = must_market_id(&c, &market_account);
+    c.withdraw_route = vec![market_id];
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 21,
@@ -2784,7 +4266,7 @@ fn after_create_withdraw_req_success_returns_promise(
         escrow_shares: 5,
     });
 
-    let res = c.withdraw_01_handle_create_request(Ok(()), 21, 0, U128(60));
+    let res = c.withdraw_01_handle_create_request(Ok(()), 21, market_id, U128(60));
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value(()) when create succeeds and execution is deferred"),
@@ -2796,7 +4278,7 @@ fn after_create_withdraw_req_success_returns_promise(
 #[test]
 #[should_panic(expected = "Couldnt create withdraw request in market")]
 fn rebalance_create_failure_keeps_idle_and_unlocks() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -2806,7 +4288,7 @@ fn rebalance_create_failure_keeps_idle_and_unlocks() {
         "no locks should be held initially",
     );
 
-    let market = mk(51);
+    let market = MarketId(51);
     let amount = U128(100);
 
     c.rebalance_withdraw_01_after_create_request(
@@ -2829,8 +4311,9 @@ fn rebalance_create_failure_keeps_idle_and_unlocks() {
 fn after_exec_withdraw_req_returns_promise(
     #[with(vault_id(), vec![(mk(60), 0, true, 10, false)])] mut c: Contract,
 ) {
-    let market = mk(60);
-    c.withdraw_route = vec![market.clone()];
+    let market_account = mk(60);
+    let market_id = must_market_id(&c, &market_account);
+    c.withdraw_route = vec![market_id];
 
     let op_id = 33;
     c.op_state = OpState::Withdrawing(WithdrawingState {
@@ -2839,11 +4322,12 @@ fn after_exec_withdraw_req_returns_promise(
         remaining: 5,
         receiver: mk(9),
         collected: 0,
-        owner: accounts(1),
+        owner: mk(1),
         escrow_shares: 0,
     });
 
-    let res = c.execute_withdraw_01_execute_withdraw_fetch_position(Ok(U128(1)), op_id, 0, None);
+    let res =
+        c.execute_withdraw_01_execute_withdraw_fetch_position(Ok(U128(1)), op_id, market_id, None);
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),
@@ -2861,9 +4345,11 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     owner: AccountId,
     receiver: AccountId,
 ) {
-    let m1 = mk(70);
-    let m2 = mk(71);
-    c.withdraw_route = vec![m1.clone(), m2.clone()];
+    let m1_account = mk(70);
+    let m2_account = mk(71);
+    let m1 = must_market_id(&c, &m1_account);
+    let m2 = must_market_id(&c, &m2_account);
+    c.withdraw_route = vec![m1, m2];
     let record_principal = 10u128;
 
     let op_id = 0;
@@ -2883,7 +4369,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     let res = c.execute_withdraw_02_reconcile_position(
         Ok(None),
         op_id,
-        index,
+        m1,
         U128(0),
         U128(before_balance),
     );
@@ -2899,7 +4385,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     c.execute_withdraw_03_settle(
         Ok(U128(record_principal)), // after_balance
         op_id,
-        index,
+        m1,
         U128(record_principal), // before_principal
         U128(0),
         U128(before_balance),
@@ -3049,6 +4535,111 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
 }
 
 #[rstest]
+fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
+    mut c: Contract,
+    owner: AccountId,
+    receiver: AccountId,
+) {
+    use near_sdk_contract_tools::ft::Nep141Controller as _;
+
+    let escrow: u128 = 10;
+    let amount = 77;
+
+    // Seed escrowed shares into the vault's own account so a wrong reconcile would refund them.
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+
+    // Simulate that op_id=2 is the *current* payout.
+    let head: u64 = 1;
+    c.next_withdraw_to_execute = head;
+    c.pending_withdrawals.insert(
+        head,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: amount,
+            requested_at: 0,
+        },
+    );
+    c.pending_withdrawals.insert(
+        head.saturating_add(1),
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: 0,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    let market = MarketId(999);
+    c.withdraw_route = vec![market];
+    c.market_execution_lock.lock(market);
+
+    c.idle_balance = 123;
+    c.op_state = OpState::Payout(PayoutState {
+        op_id: 2,
+        receiver: receiver.clone(),
+        amount,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+        burn_shares: 0,
+    });
+
+    let supply_before = c.total_supply();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let idle_before = c.idle_balance;
+    let head_before = c.next_withdraw_to_execute;
+    let len_before = c.pending_withdrawals.len();
+    let route_before = c.withdraw_route.clone();
+    let locked_before = c.market_execution_lock.is_locked(market);
+
+    // Simulate a late callback from a previous payout op_id=1.
+    let res = c.stop_and_exit_payout_01_reconcile(Ok(U128(999)), 1, None);
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from reconcile"),
+    }
+
+    assert!(matches!(
+        c.op_state,
+        OpState::Payout(PayoutState { op_id: 2, .. })
+    ));
+    assert_eq!(c.total_supply(), supply_before, "supply must not change");
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before,
+        "vault balance must not change"
+    );
+    assert_eq!(
+        c.balance_of(&owner),
+        owner_before,
+        "owner must not be refunded"
+    );
+    assert_eq!(c.idle_balance, idle_before, "idle_balance must not resync");
+    assert_eq!(
+        c.next_withdraw_to_execute, head_before,
+        "queue head must not advance"
+    );
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        len_before,
+        "queue must not dequeue"
+    );
+    assert_eq!(
+        c.withdraw_route, route_before,
+        "withdraw route must not clear"
+    );
+    assert_eq!(
+        c.market_execution_lock.is_locked(market),
+        locked_before,
+        "market lock must not clear"
+    );
+}
+
+#[rstest]
 fn stop_and_exit_payout_zero_escrow_just_idle(
     mut c: Contract,
     owner: AccountId,
@@ -3098,7 +4689,7 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
 
 #[test]
 fn unbrick_withdrawing_refunds_and_dequeues() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3123,7 +4714,7 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     );
 
     // Simulate an in-flight withdrawing state
-    c.withdraw_route = vec![mk(1001)];
+    c.withdraw_route = vec![MarketId(1001)];
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
         index: 0,
@@ -3226,7 +4817,7 @@ fn simple_accrual_10_percent_fee() {
 
 #[test]
 fn unbrick_noop_when_not_withdrawing() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3256,6 +4847,60 @@ fn unbrick_noop_when_not_withdrawing() {
         vault_before
     );
     assert_eq!(c.balance_of(&owner), owner_before);
+}
+
+#[test]
+fn sentinel_can_unbrick_withdrawing_state() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    let id_before = c.queue_tail();
+    let receiver = mk(19);
+    c.pending_withdrawals.insert(
+        id_before,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    c.withdraw_route = vec![MarketId(1901)];
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id: 77,
+        index: 0,
+        remaining: 1,
+        receiver,
+        collected: 0,
+        owner: owner.clone(),
+        escrow_shares: escrow,
+    });
+
+    let len_before = c.pending_withdrawals.len();
+    let sentinel = c.get_configuration().sentinel;
+    setup_env(&vault_id, &sentinel, vec![]);
+
+    let res = c.unbrick();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from sentinel unbrick"),
+    }
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert!(c.withdraw_route.is_empty());
+    assert_eq!(
+        c.pending_withdrawals.len(),
+        len_before.saturating_sub(1),
+        "Sentinel unbrick should dequeue head"
+    );
 }
 
 #[rstest(
@@ -3411,7 +5056,7 @@ fn fee_shares_upper_bound_by_total_supply(fee: Wad, ts: Number, last: Number, pr
 
 #[test]
 fn peek_next_pending_withdrawal_id_empty_returns_none() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
 
@@ -3443,7 +5088,7 @@ fn peek_next_pending_withdrawal_id_empty_returns_none() {
 
 #[test]
 fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
@@ -3454,7 +5099,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     c.pending_withdrawals.insert(
         id1,
         PendingWithdrawal {
-            owner: accounts(1),
+            owner: mk(1),
             receiver: mk(9),
             escrow_shares: 1,
             expected_assets: 1,
@@ -3466,7 +5111,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     c.pending_withdrawals.insert(
         id2,
         PendingWithdrawal {
-            owner: accounts(2),
+            owner: mk(2),
             receiver: mk(10),
             escrow_shares: 2,
             expected_assets: 2,
@@ -3505,7 +5150,7 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
 
 #[test]
 fn execute_withdrawal_empty_queue_noop() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
@@ -3540,10 +5185,10 @@ fn execute_withdrawal_accrues_fee_shares() {
 
     c.deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.performance_fee = Wad::one() / 10;
+    c.fees.performance.fee = Wad::one() / 10;
     c.idle_balance += 250;
 
-    let fee_recipient = c.fee_recipient.clone();
+    let fee_recipient = c.fees.performance.recipient.clone();
     let balance_before = c.balance_of(&fee_recipient);
 
     let res = c.execute_withdrawal(vec![]);
@@ -3558,8 +5203,8 @@ fn execute_withdrawal_accrues_fee_shares() {
         "execute_withdrawal should mint pending performance fees",
     );
     assert_eq!(
-        c.last_total_assets,
-        c.get_total_assets().0,
+        c.get_last_total_assets(),
+        c.get_total_assets(),
         "last_total_assets should sync with current assets after accrual",
     );
 }
@@ -3572,7 +5217,8 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
     setup_env(&near_sdk::env::current_account_id(), &owner_id, vec![]);
 
     // Prepare a withdraw market so a non-empty route makes sense
-    let m1 = mk(1234);
+    let market_account = mk(1234);
+    let market_id = must_market_id(&c, &market_account);
 
     // Enqueue a dust head (expected_assets = 0)
     let head_before = c.queue_tail();
@@ -3605,7 +5251,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
 
     c.idle_balance = 0; // force route-based execution
 
-    let res = c.execute_withdrawal(vec![m1.clone()]);
+    let res = c.execute_withdrawal(vec![market_id]);
     match res {
         PromiseOrValue::Value(()) => {}
         _ => panic!("Expected Value(()) to signal offchain to execute next market"),
@@ -3626,7 +5272,11 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
         Some(near_sdk::json_types::U64(id1)),
         "current request should be the second item"
     );
-    assert_eq!(c.withdraw_route, vec![m1], "route must be set from input");
+    assert_eq!(
+        c.withdraw_route,
+        vec![market_id],
+        "route must be set from input"
+    );
 
     match &c.op_state {
         OpState::Withdrawing(s) => {
@@ -3646,7 +5296,7 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
 
 #[test]
 fn execute_withdrawal_only_dust_drains_queue() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
