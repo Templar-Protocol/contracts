@@ -1,23 +1,18 @@
+use near_sdk::near;
 use redstone::{ConfigFactory, SignerAddress, TimestampMillis};
 
-#[cfg(not(feature = "agnostic-tests"))]
 mod config_prod;
-#[cfg(feature = "agnostic-tests")]
+pub use config_prod::prod;
 mod config_test;
+pub use config_test::test;
 
-#[cfg(not(feature = "agnostic-tests"))]
-use config_prod as config_values;
-#[cfg(feature = "agnostic-tests")]
-use config_test as config_values;
-use config_values::{
-    SignerAddressBs, MAX_TIMESTAMP_AHEAD_MS, MAX_TIMESTAMP_DELAY_MS,
-    REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS, SIGNER_COUNT, TRUSTED_UPDATERS, UPDATER_COUNT,
-};
+pub type SignerAddressBs = [u8; 20];
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
 pub struct Config {
     pub signer_count_threshold: u8,
-    pub signers: [SignerAddressBs; SIGNER_COUNT],
-    pub trusted_updaters: [&'static str; UPDATER_COUNT],
+    pub signers: Vec<SignerAddressBs>,
     pub max_timestamp_delay_ms: u64,
     pub max_timestamp_ahead_ms: u64,
     pub min_interval_between_updates_ms: u64,
@@ -28,15 +23,6 @@ pub const DATA_STALENESS: TimestampMillis = TimestampMillis::from_millis(30 * 60
 pub const FEED_TTL_SECS: u32 = 2 * 24 * 60 * 60;
 pub const FEED_TTL_THRESHOLD: u32 = FEED_TTL_SECS / 5;
 pub const FEED_TTL_EXTEND_TO: u32 = FEED_TTL_SECS * 3 / 10;
-
-pub const STELLAR_CONFIG: Config = Config {
-    signer_count_threshold: 3,
-    signers: REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS,
-    trusted_updaters: TRUSTED_UPDATERS,
-    max_timestamp_ahead_ms: MAX_TIMESTAMP_AHEAD_MS,
-    max_timestamp_delay_ms: MAX_TIMESTAMP_DELAY_MS,
-    min_interval_between_updates_ms: 40_000,
-};
 
 pub struct NearCrypto;
 

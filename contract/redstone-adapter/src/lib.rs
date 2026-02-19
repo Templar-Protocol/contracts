@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use config::Config;
 use near_sdk::{
     env,
     json_types::{Base64VecU8, U128, U64},
@@ -16,13 +17,9 @@ use redstone::{
     ConfigFactory, FeedValue,
 };
 
-use crate::{
-    config::{DATA_STALENESS, STELLAR_CONFIG},
-    event::WritePrices,
-    utils::feed_to_string,
-};
+use crate::{config::DATA_STALENESS, event::WritePrices, utils::feed_to_string};
 
-mod config;
+pub mod config;
 mod event;
 mod utils;
 
@@ -44,6 +41,7 @@ pub enum Role {
 #[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct RedStoneAdapter {
+    pub config: Config,
     pub db: IterableMap<String, PriceData>,
 }
 
@@ -56,14 +54,15 @@ pub struct GetPrice {
 #[near]
 impl RedStoneAdapter {
     #[init]
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
         Self {
+            config,
             db: IterableMap::new(b"d"),
         }
     }
 
     pub fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrice {
-        let (timestamp, prices) = get_prices_from_payload(&feed_ids, &payload.0).unwrap();
+        let (timestamp, prices) = self.get_prices_from_payload(&feed_ids, &payload.0).unwrap();
 
         if prices.len() != feed_ids.len() {
             templar_common::panic_with_message("Missing feed code");
@@ -86,7 +85,7 @@ impl RedStoneAdapter {
         let timestamp_verification = verifier.verify_timestamp(
             price_data.write_timestamp.into(),
             old_price_data.as_ref().map(|pd| pd.write_timestamp.into()),
-            STELLAR_CONFIG.min_interval_between_updates_ms.into(),
+            self.config.min_interval_between_updates_ms.into(),
             old_price_data
                 .as_ref()
                 .map(|pd| pd.package_timestamp.into()),
@@ -114,7 +113,7 @@ impl RedStoneAdapter {
         };
 
         let (package_timestamp, prices) =
-            dbg!(get_prices_from_payload(&feed_ids, &payload.0).unwrap());
+            dbg!(self.get_prices_from_payload(&feed_ids, &payload.0).unwrap());
         let write_timestamp = near_sdk::env::block_timestamp_ms();
 
         let mut updated_feeds = vec![];
@@ -187,34 +186,35 @@ impl RedStoneAdapter {
     }
 
     pub fn unique_signer_threshold(&self) -> u64 {
-        STELLAR_CONFIG.signer_count_threshold as u64
-    }
-}
-
-fn get_prices_from_payload(
-    feed_ids: &[String],
-    payload: &[u8],
-) -> Result<(u64, Vec<(String, U256)>), RedStoneError> {
-    let feed_ids = feed_ids
-        .iter()
-        .map(|id| id.clone().into_bytes().into())
-        .collect();
-    let block_timestamp = near_sdk::env::block_timestamp_ms();
-
-    let mut config = STELLAR_CONFIG.redstone_config::<redstone::network::StdEnv>(
-        (),
-        dbg!(feed_ids),
-        block_timestamp.into(),
-    )?;
-    let result = dbg!(process_payload(&mut config, payload.to_vec()))?;
-
-    let mut prices = Vec::with_capacity(result.values.len());
-
-    for FeedValue { value, feed } in result.values {
-        let price = U256::from_big_endian(&value.0);
-        let feed_string = feed_to_string(feed);
-        prices.push((feed_string, price));
+        self.config.signer_count_threshold as u64
     }
 
-    Ok((result.timestamp.as_millis(), prices))
+    fn get_prices_from_payload(
+        &self,
+        feed_ids: &[String],
+        payload: &[u8],
+    ) -> Result<(u64, Vec<(String, U256)>), RedStoneError> {
+        let feed_ids = feed_ids
+            .iter()
+            .map(|id| id.clone().into_bytes().into())
+            .collect();
+        let block_timestamp = near_sdk::env::block_timestamp_ms();
+
+        let mut config = self.config.redstone_config::<redstone::network::StdEnv>(
+            (),
+            dbg!(feed_ids),
+            block_timestamp.into(),
+        )?;
+        let result = dbg!(process_payload(&mut config, payload.to_vec()))?;
+
+        let mut prices = Vec::with_capacity(result.values.len());
+
+        for FeedValue { value, feed } in result.values {
+            let price = U256::from_big_endian(&value.0);
+            let feed_string = feed_to_string(feed);
+            prices.push((feed_string, price));
+        }
+
+        Ok((result.timestamp.as_millis(), prices))
+    }
 }

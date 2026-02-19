@@ -1,6 +1,4 @@
-use redstone::{FeedId, TimestampMillis};
-
-const MS_IN_SEC: u64 = 1_000;
+use redstone::FeedId;
 
 pub fn feed_to_string(feed: FeedId) -> String {
     let feed_bytes = feed.to_array();

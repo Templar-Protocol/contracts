@@ -1,9 +1,8 @@
 use hex_literal::hex;
 
-pub type SignerAddressBs = [u8; 20];
+use super::{Config, SignerAddressBs};
 
 pub const SIGNER_COUNT: usize = 5;
-pub const UPDATER_COUNT: usize = 1;
 
 pub const MAX_TIMESTAMP_AHEAD_MS: u64 = 3 * 60 * 1_000;
 pub const MAX_TIMESTAMP_DELAY_MS: u64 = 3 * 60 * 1_000;
@@ -16,4 +15,12 @@ pub const REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS: [SignerAddressBs; SIGNER_COUNT]
     hex!("9c5ae89c4af6aa32ce58588dbaf90d18a855b6de"),
 ];
 
-pub const TRUSTED_UPDATERS: [&str; UPDATER_COUNT] = ["trusted_updater.near"];
+pub fn prod() -> Config {
+    Config {
+        signer_count_threshold: 3,
+        signers: REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS.to_vec(),
+        max_timestamp_ahead_ms: MAX_TIMESTAMP_AHEAD_MS,
+        max_timestamp_delay_ms: MAX_TIMESTAMP_DELAY_MS,
+        min_interval_between_updates_ms: 40_000,
+    }
+}

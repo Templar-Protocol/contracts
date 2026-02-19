@@ -21,6 +21,7 @@ templar-common.workspace = true
 primitive-types.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
 redstone = { workspace = true, default-features = false, features = ["std"] }
-hex = { workspace = true }
+rstest.workspace = true
