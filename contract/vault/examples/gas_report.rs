@@ -23,6 +23,7 @@ async fn main() {
     let max = c.borrow_asset.balance_of(user1.id()).await;
     let g = || rand::thread_rng().gen_range(0..=max);
     let m = c.market.contract().id().clone();
+    let market_id = vault.market_id_of(&m).await;
 
     let user1_amount = max / ITERATIONS as u128;
 
@@ -42,7 +43,7 @@ async fn main() {
         let allocation_gas = vault
             .reallocate(
                 &vault_curator,
-                AllocationDelta::Supply(Delta::new(m.clone(), user1_amount)),
+                AllocationDelta::Supply(Delta::new(market_id, user1_amount)),
             )
             .await
             .total_gas_burnt

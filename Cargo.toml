@@ -44,7 +44,7 @@ near-sdk = { version = "5.17.2", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
 near-workspaces = { version = "0.21.0", features = ["unstable"] }
 p256 = "0.13.2"
-primitive-types = { version = "0.10.1" }
+primitive-types = { version = "0.14.0", features = ["serde"] }
 rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 solana-sdk = "3.0.0"
