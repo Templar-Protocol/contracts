@@ -10,9 +10,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{rbac::Rbac, standard::nep297::Event, Rbac};
 use primitive_types::U256;
 use redstone::{
-    contract::verification::{verify_data_staleness, UpdateTimestampVerifier},
-    core::process_payload,
-    network::error::Error as RedStoneError,
+    contract::verification, core::process_payload, network::error::Error as RedStoneError,
     ConfigFactory, FeedValue,
 };
 
@@ -28,14 +26,11 @@ mod event;
 pub mod feed_data;
 mod utils;
 
-fn panic(s: impl AsRef<str>) -> ! {
-    #[cfg(target_family = "wasm")]
-    {
-        near_sdk::env::panic_str(s.as_ref())
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        panic!("{}", s.as_ref())
+pub struct NearEnv;
+
+impl redstone::network::Environment for NearEnv {
+    fn print<F: FnOnce() -> String>(print_content: F) {
+        near_sdk::log!("{}", print_content());
     }
 }
 
@@ -59,44 +54,87 @@ pub struct GetPrices {
     pub prices: Vec<U128>,
 }
 
+struct PricePackage {
+    timestamp: u64,
+    prices: Vec<FeedPrice>,
+}
+
+struct FeedPrice {
+    feed_id: String,
+    price: U256,
+}
+
 impl RedStoneAdapter {
     fn feed_data<'a>(&'a self, feed_id: &str) -> &'a FeedData {
         let f = self
             .db
             .get(feed_id)
-            .unwrap_or_else(|| panic("missing feed"));
+            .unwrap_or_else(|| env::panic_str("missing feed"));
 
-        verify_data_staleness(
+        verification::verify_data_staleness(
             f.write_timestamp.into(),
             env::block_timestamp_ms().into(),
             DATA_STALENESS,
         )
-        .unwrap_or_else(|e| panic(e.to_string()));
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         f
     }
 
     fn update_feed(
         &mut self,
-        verifier: &UpdateTimestampVerifier,
+        is_trusted: bool,
         feed_id: String,
-        price_data: &FeedData,
-    ) -> Result<(), RedStoneError> {
-        let old_price_data = self.db.get(&feed_id);
+        feed_data: FeedData,
+    ) -> Result<FeedData, RedStoneError> {
+        let now = feed_data.write_timestamp.into();
+        let new_pkg = feed_data.package_timestamp.into();
 
-        verifier.verify_timestamp(
-            price_data.write_timestamp.into(),
-            old_price_data.as_ref().map(|pd| pd.write_timestamp.into()),
-            self.config.min_interval_between_updates_ms.into(),
-            old_price_data
-                .as_ref()
-                .map(|pd| pd.package_timestamp.into()),
-            price_data.package_timestamp.into(),
-        )?;
+        let old = self.db.get(&feed_id);
+        let old_write = old.map(|d| d.write_timestamp.into());
+        let old_pkg = old.map(|d| d.package_timestamp.into());
 
-        self.db.insert(feed_id, price_data.clone());
+        if is_trusted {
+            verification::verify_trusted_update(now, old_write, old_pkg, new_pkg)?;
+        } else {
+            let interval = self.config.min_interval_between_updates_ms.into();
+            verification::verify_untrusted_update(now, old_write, interval, old_pkg, new_pkg)?;
+        }
 
-        Ok(())
+        self.db.insert(feed_id, feed_data.clone());
+
+        Ok(feed_data)
+    }
+
+    fn price_package(
+        &self,
+        feed_ids: &[String],
+        payload: &[u8],
+    ) -> Result<PricePackage, RedStoneError> {
+        let feed_ids = feed_ids
+            .iter()
+            .map(|id| id.clone().into_bytes().into())
+            .collect();
+        let block_timestamp = near_sdk::env::block_timestamp_ms();
+
+        let mut config =
+            self.config
+                .redstone_config::<NearEnv>((), feed_ids, block_timestamp.into())?;
+        let result = process_payload(&mut config, payload.to_vec())?;
+
+        let prices = result
+            .values
+            .into_iter()
+            .map(|FeedValue { value, feed }| FeedPrice {
+                feed_id: feed_to_string(feed),
+                price: U256::from_big_endian(&value.0),
+            })
+            .collect();
+
+        Ok(PricePackage {
+            timestamp: result.timestamp.as_millis(),
+            prices,
+        })
     }
 }
 
@@ -114,57 +152,26 @@ impl RedStoneAdapter {
         &self.config
     }
 
+    pub fn unique_signer_threshold(&self) -> U64 {
+        U64(u64::from(self.config.signer_count_threshold))
+    }
+
     pub fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices {
-        let (timestamp, prices) = self
-            .get_prices_from_payload(&feed_ids, &payload.0)
-            .unwrap_or_else(|e| panic(e.to_string()));
+        let PricePackage { timestamp, prices } = self
+            .price_package(&feed_ids, &payload.0)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         if prices.len() != feed_ids.len() {
-            panic("Missing feed code");
+            env::panic_str("Missing feed code");
         }
 
         GetPrices {
-            timestamp: timestamp.into(),
+            timestamp: U64(timestamp),
             prices: prices
                 .into_iter()
-                .map(|(_, price)| U128(price.low_u128()))
+                .map(|f| U128(f.price.low_u128()))
                 .collect(),
         }
-    }
-
-    pub fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8) {
-        let updater = env::predecessor_account_id();
-
-        let verifier = if Self::has_role(&updater, &Role::Updater) {
-            UpdateTimestampVerifier::Trusted
-        } else {
-            UpdateTimestampVerifier::Untrusted
-        };
-
-        let (package_timestamp, prices) = self
-            .get_prices_from_payload(&feed_ids, &payload.0)
-            .unwrap_or_else(|e| panic(e.to_string()));
-        let write_timestamp = env::block_timestamp_ms();
-
-        let mut updated_feeds = vec![];
-
-        for (feed_id, price) in prices {
-            let feed_data = FeedData {
-                price,
-                package_timestamp,
-                write_timestamp,
-            };
-
-            if let Ok(()) = self.update_feed(&verifier, feed_id.clone(), &feed_data) {
-                updated_feeds.push(feed_data);
-            }
-        }
-
-        WritePrices {
-            updater,
-            updated_feeds,
-        }
-        .emit();
     }
 
     pub fn read_prices(&self, feed_ids: Vec<String>) -> Vec<U256> {
@@ -174,8 +181,8 @@ impl RedStoneAdapter {
             .collect()
     }
 
-    pub fn read_timestamp(&self, feed_id: String) -> u64 {
-        self.feed_data(&feed_id).package_timestamp
+    pub fn read_timestamp(&self, feed_id: String) -> U64 {
+        U64(self.feed_data(&feed_id).package_timestamp)
     }
 
     pub fn read_price_data_for_feed(&self, feed_id: String) -> &FeedData {
@@ -189,37 +196,33 @@ impl RedStoneAdapter {
             .collect()
     }
 
-    pub fn unique_signer_threshold(&self) -> u64 {
-        u64::from(self.config.signer_count_threshold)
-    }
+    pub fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8) {
+        let updater = env::predecessor_account_id();
 
-    fn get_prices_from_payload(
-        &self,
-        feed_ids: &[String],
-        payload: &[u8],
-    ) -> Result<(u64, Vec<(String, U256)>), RedStoneError> {
-        let feed_ids = feed_ids
-            .iter()
-            .map(|id| id.clone().into_bytes().into())
-            .collect();
-        let block_timestamp = near_sdk::env::block_timestamp_ms();
+        let is_trusted = Self::has_role(&updater, &Role::Updater);
 
-        let mut config = self.config.redstone_config::<redstone::network::StdEnv>(
-            (),
-            feed_ids,
-            block_timestamp.into(),
-        )?;
-        let result = process_payload(&mut config, payload.to_vec())?;
+        let PricePackage { timestamp, prices } = self
+            .price_package(&feed_ids, &payload.0)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let write_timestamp = env::block_timestamp_ms();
 
-        let prices = result
-            .values
+        let updated_feeds = prices
             .into_iter()
-            .map(|FeedValue { value, feed }| {
-                let price = U256::from_big_endian(&value.0);
-                (feed_to_string(feed), price)
-            })
-            .collect();
+            .flat_map(|FeedPrice { feed_id, price }| {
+                let feed_data = FeedData {
+                    price,
+                    package_timestamp: timestamp,
+                    write_timestamp,
+                };
 
-        Ok((result.timestamp.as_millis(), prices))
+                self.update_feed(is_trusted, feed_id, feed_data)
+            })
+            .collect::<Vec<_>>();
+
+        WritePrices {
+            updater,
+            updated_feeds,
+        }
+        .emit();
     }
 }

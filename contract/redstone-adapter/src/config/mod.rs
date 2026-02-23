@@ -40,6 +40,7 @@ impl redstone::Crypto for NearCrypto {
         message_hash: Self::KeccakOutput,
     ) -> Result<redstone::Bytes, redstone::CryptoError> {
         use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+
         let signature_bytes = signature_bytes.as_ref();
         let signature = Signature::try_from(signature_bytes)
             .map_err(|_| redstone::CryptoError::Signature(signature_bytes.to_vec()))?;
