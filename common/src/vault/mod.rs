@@ -661,7 +661,7 @@ pub struct Locker {
 impl Locker {
     pub fn lock(&mut self, market: MarketId) {
         if self.is_locked(market) {
-            env::panic_str("Market is locked");
+            crate::panic_with_message("Market is locked");
         }
         Event::LockChange {
             is_locked: true,
