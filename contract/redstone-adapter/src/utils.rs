@@ -24,6 +24,8 @@ fn test_feed_to_string_simple() {
 
     let convert_btc_feed_id_to_string = feed_to_string(btc_feed_id);
 
+    assert_eq!(convert_btc_feed_id_to_string, "BTC");
+
     let non_btc_feed_id_array: [u8; 32] = [
         66, 84, 67, 0, 67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0,
@@ -33,8 +35,5 @@ fn test_feed_to_string_simple() {
 
     let convert_non_btc_feed_id_to_string = feed_to_string(non_btc_feed_id);
 
-    assert_ne!(
-        convert_btc_feed_id_to_string,
-        convert_non_btc_feed_id_to_string
-    );
+    assert_eq!(convert_non_btc_feed_id_to_string, "BTC\0C");
 }

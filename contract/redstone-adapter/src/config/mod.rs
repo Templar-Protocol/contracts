@@ -39,13 +39,14 @@ impl redstone::Crypto for NearCrypto {
         signature_bytes: impl AsRef<[u8]>,
         message_hash: Self::KeccakOutput,
     ) -> Result<redstone::Bytes, redstone::CryptoError> {
-        use k256::ecdsa::*;
+        use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
         let signature_bytes = signature_bytes.as_ref();
-        let signature = Signature::try_from(signature_bytes).unwrap();
-        let rec_id = RecoveryId::try_from(recovery_byte).unwrap();
-
-        let result: VerifyingKey =
-            VerifyingKey::recover_from_prehash(&message_hash, &signature, rec_id).unwrap();
+        let signature = Signature::try_from(signature_bytes)
+            .map_err(|_| redstone::CryptoError::Signature(signature_bytes.to_vec()))?;
+        let r_id = RecoveryId::try_from(recovery_byte)
+            .map_err(|_| redstone::CryptoError::RecoveryByte(recovery_byte))?;
+        let result = VerifyingKey::recover_from_prehash(&message_hash, &signature, r_id)
+            .map_err(|_| redstone::CryptoError::RecoverPreHash)?;
 
         Ok(result.to_encoded_point(false).to_bytes().to_vec().into())
     }
@@ -68,7 +69,7 @@ impl ConfigFactory<(), NearCrypto> for Config {
         self.max_timestamp_ahead_ms
     }
 
-    fn make_crypto(_: ()) -> NearCrypto {
+    fn make_crypto((): ()) -> NearCrypto {
         NearCrypto
     }
 }
