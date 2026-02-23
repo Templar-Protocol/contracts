@@ -10,7 +10,9 @@ use near_sdk::{
 use near_sdk_contract_tools::{rbac::Rbac, standard::nep297::Event, Rbac};
 use primitive_types::U256;
 use redstone::{
-    contract::verification, core::process_payload, network::error::Error as RedStoneError,
+    contract::verification,
+    core::process_payload,
+    network::{error::Error as RedStoneError, StdEnv},
     ConfigFactory, FeedValue,
 };
 
@@ -25,14 +27,6 @@ pub mod config;
 mod event;
 pub mod feed_data;
 mod utils;
-
-pub struct NearEnv;
-
-impl redstone::network::Environment for NearEnv {
-    fn print<F: FnOnce() -> String>(print_content: F) {
-        near_sdk::log!("{}", print_content());
-    }
-}
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -72,7 +66,7 @@ impl RedStoneAdapter {
             .unwrap_or_else(|| env::panic_str("missing feed"));
 
         verification::verify_data_staleness(
-            f.write_timestamp.into(),
+            f.write_timestamp.0.into(),
             env::block_timestamp_ms().into(),
             DATA_STALENESS,
         )
@@ -87,12 +81,12 @@ impl RedStoneAdapter {
         feed_id: String,
         feed_data: FeedData,
     ) -> Result<FeedData, RedStoneError> {
-        let now = feed_data.write_timestamp.into();
-        let new_pkg = feed_data.package_timestamp.into();
+        let now = feed_data.write_timestamp.0.into();
+        let new_pkg = feed_data.package_timestamp.0.into();
 
         let old = self.db.get(&feed_id);
-        let old_write = old.map(|d| d.write_timestamp.into());
-        let old_pkg = old.map(|d| d.package_timestamp.into());
+        let old_write = old.map(|d| d.write_timestamp.0.into());
+        let old_pkg = old.map(|d| d.package_timestamp.0.into());
 
         if is_trusted {
             verification::verify_trusted_update(now, old_write, old_pkg, new_pkg)?;
@@ -119,7 +113,7 @@ impl RedStoneAdapter {
 
         let mut config =
             self.config
-                .redstone_config::<NearEnv>((), feed_ids, block_timestamp.into())?;
+                .redstone_config::<StdEnv>((), feed_ids, block_timestamp.into())?;
         let result = process_payload(&mut config, payload.to_vec())?;
 
         let prices = result
@@ -182,7 +176,7 @@ impl RedStoneAdapter {
     }
 
     pub fn read_timestamp(&self, feed_id: String) -> U64 {
-        U64(self.feed_data(&feed_id).package_timestamp)
+        self.feed_data(&feed_id).package_timestamp
     }
 
     pub fn read_price_data_for_feed(&self, feed_id: String) -> &FeedData {
@@ -211,8 +205,8 @@ impl RedStoneAdapter {
             .flat_map(|FeedPrice { feed_id, price }| {
                 let feed_data = FeedData {
                     price,
-                    package_timestamp: timestamp,
-                    write_timestamp,
+                    package_timestamp: U64(timestamp),
+                    write_timestamp: U64(write_timestamp),
                 };
 
                 self.update_feed(is_trusted, feed_id, feed_data)

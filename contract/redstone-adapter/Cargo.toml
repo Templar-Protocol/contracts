@@ -13,7 +13,7 @@ hex-literal.workspace = true
 k256 = { workspace = true, default-features = true, features = ["ecdsa", "sha256"] }
 near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
-primitive-types = { workspace = true, features = ["serde"] }
+primitive-types.workspace = true
 redstone = { workspace = true, default-features = false, features = [] }
 
 [dev-dependencies]
