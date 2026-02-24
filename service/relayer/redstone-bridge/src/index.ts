@@ -10,15 +10,25 @@ console.log("Connecting to relayer", args.socket);
 
 const client = net.createConnection({ path: args.socket });
 
+client.on("error", (e) => {
+  console.error("Connection error", e);
+  process.exit(1);
+});
+
 const rl = readline.createInterface({
   input: client,
   terminal: false,
 });
 
 rl.on("line", async (data) => {
-  const message = Request.parse(JSON.parse(data));
-  const response = await handle(args, message);
-  client.write(JSON.stringify(response) + "\n");
+  try {
+    const message = Request.parse(JSON.parse(data));
+    const response = await handle(args, message);
+    client.write(JSON.stringify(response) + "\n");
+  } catch (e) {
+    console.error("Failed to process message", data, e);
+    process.exit(1);
+  }
 });
 
 client.on("end", () => {
