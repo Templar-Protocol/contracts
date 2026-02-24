@@ -164,6 +164,7 @@ fn start_messenger(kill: watch::Sender<()>) -> mpsc::Sender<Request> {
                     tracing::debug!(?ipc_request, "Sending IPC request");
 
                     write.write_all(&serde_json::to_vec(&ipc_request).unwrap()).await.unwrap();
+                    write.write_u8(b'\n').await.unwrap();
                 },
             }
         }

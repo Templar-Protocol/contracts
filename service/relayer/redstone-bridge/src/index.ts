@@ -1,4 +1,5 @@
 import net from "node:net";
+import readline from "node:readline";
 import { parseArgs } from "./args.js";
 import { Request } from "./msg.js";
 import handle from "./handle.js";
@@ -9,12 +10,14 @@ console.log("Connecting to relayer", args.socket);
 
 const client = net.createConnection({ path: args.socket });
 
-client.on("data", async (data) => {
-  const dataStr = data.toString();
-  const message = Request.parse(JSON.parse(dataStr));
+const rl = readline.createInterface({
+  input: client,
+  terminal: false,
+});
 
+rl.on("line", async (data) => {
+  const message = Request.parse(JSON.parse(data));
   const response = await handle(args, message);
-
   client.write(JSON.stringify(response) + "\n");
 });
 
