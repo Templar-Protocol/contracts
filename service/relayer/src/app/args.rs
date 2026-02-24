@@ -46,12 +46,12 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
 pub struct RedStone {
     /// Path to Node.js interpreter (or equivalent).
     #[arg(
-        id = "redstone-nodejs-path",
-        long = "redstone-nodejs-path",
-        env = "REDSTONE_NODEJS_PATH",
+        id = "redstone-node-path",
+        long = "redstone-node-path",
+        env = "REDSTONE_NODE_PATH",
         default_value = "node"
     )]
-    pub nodejs_path: PathBuf,
+    pub node_path: PathBuf,
     /// Path to the Redstone bridge JS application.
     #[arg(
         id = "redstone-bridge-path",
