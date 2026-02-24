@@ -16,28 +16,34 @@ RUN \
 
 # Node builder
 FROM node:24-slim as node-builder
+ENV NODE_ENV=development
 
 WORKDIR /usr/src/redstone-bridge
 
 COPY service/relayer/redstone-bridge/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY service/relayer/redstone-bridge/tsconfig.json ./
 COPY service/relayer/redstone-bridge/src ./src
 RUN npm run build
 
 # Runtime image
-FROM node:24-slim
+FROM node:24-slim as production
+ENV NODE_ENV=production
 
 RUN apt-get update && \
     apt-get install -y ca-certificates libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+RUN mkdir -p /app/redstone-bridge/dist
+WORKDIR /app/redstone-bridge
+COPY service/relayer/redstone-bridge/package*.json .
+RUN npm ci
 
 COPY --from=rust-builder /usr/src/relayer/target/release/templar-relayer /usr/local/bin/templar-relayer
-COPY --from=node-builder /usr/src/redstone-bridge/dist/* /app/redstone-bridge
+COPY --from=node-builder /usr/src/redstone-bridge/dist/* /app/redstone-bridge/dist
 
-ENV REDSTONE_BRIDGE_PATH=/app/redstone-bridge/index.js
+WORKDIR /app
+ENV REDSTONE_BRIDGE_PATH=/app/redstone-bridge/dist/index.js
 
 CMD [ "templar-relayer" ]
