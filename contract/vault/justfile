@@ -13,10 +13,10 @@ default:
 # --------------------------------------------------------------------
 
 kernel-test:
-	cargo test -p templar-vault-kernel
+	cargo test -p templar-vault-kernel --features all-actions
 
 kernel-prop:
-	cargo test -p templar-vault-kernel --test property_tests
+	cargo test -p templar-vault-kernel --features all-actions --test property_tests
 
 curator-test:
 	cargo test -p templar-curator-primitives

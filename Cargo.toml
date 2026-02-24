@@ -79,7 +79,7 @@ serde_json = "1"
 stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
 
 [patch.crates-io]
-stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

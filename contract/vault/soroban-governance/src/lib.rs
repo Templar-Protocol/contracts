@@ -7,13 +7,15 @@ use alloc::collections::{BTreeSet, VecDeque};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
-    IntoVal, Symbol, Val, Vec,
+    IntoVal, String as SdkString, Symbol, Val, Vec,
 };
 use templar_curator_primitives::governance::{
-    determine_relaxed, evaluate_fee_change, guardian_change_decision, queue_has_pending,
-    queue_revoke_pending, queue_schedule, queue_take_mature, sentinel_change_decision,
-    timelock_config_decision, FeeChangeError, FeeConfig, PendingQueueError, PendingValue,
-    Restrictions as SharedRestrictions, TimelockConfigError, TimelockDecision,
+    cap_change_decision, determine_relaxed, evaluate_fee_change, guardian_change_decision,
+    market_removal_decision, membership_change_decision, queue_has_pending, queue_revoke_pending,
+    queue_schedule, queue_take_mature, relative_cap_change_decision, sentinel_change_decision,
+    timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
+    PendingQueueError, PendingValue, RelativeCapChangeError, Restrictions as SharedRestrictions,
+    TimelockConfigError, TimelockDecision,
 };
 use templar_vault_kernel::math::wad::Wad;
 
@@ -39,6 +41,8 @@ enum DataKey {
     CurrentRestrictionMode,
     CurrentRestrictionAccounts,
     ReentrancyLock,
+    Abdicated(Symbol),
+    SkimRecipient,
 }
 
 #[contracttype]
@@ -52,6 +56,10 @@ pub enum TimelockKind {
     Restrictions,
     Guardian,
     Sentinel,
+    Cap,
+    MarketRemoval,
+    CapGroup,
+    Skim,
     TimelockConfig,
     Other,
 }
@@ -67,6 +75,10 @@ pub enum GovernanceActionKind {
     Restrictions,
     Guardian,
     Sentinel,
+    Cap,
+    MarketRemoval,
+    CapGroup,
+    Skim,
     TimelockConfig,
     Other,
 }
@@ -82,6 +94,10 @@ pub struct Timelocks {
     pub restrictions_ns: u64,
     pub guardian_ns: u64,
     pub sentinel_ns: u64,
+    pub cap_ns: u64,
+    pub market_removal_ns: u64,
+    pub cap_group_ns: u64,
+    pub skim_ns: u64,
     pub timelock_config_ns: u64,
     pub other_ns: u64,
 }
@@ -97,6 +113,10 @@ impl Timelocks {
             restrictions_ns: default_ns,
             guardian_ns: default_ns,
             sentinel_ns: default_ns,
+            cap_ns: default_ns,
+            market_removal_ns: default_ns,
+            cap_group_ns: default_ns,
+            skim_ns: default_ns,
             timelock_config_ns: default_ns,
             other_ns: default_ns,
         }
@@ -112,6 +132,10 @@ impl Timelocks {
             TimelockKind::Restrictions => self.restrictions_ns,
             TimelockKind::Guardian => self.guardian_ns,
             TimelockKind::Sentinel => self.sentinel_ns,
+            TimelockKind::Cap => self.cap_ns,
+            TimelockKind::MarketRemoval => self.market_removal_ns,
+            TimelockKind::CapGroup => self.cap_group_ns,
+            TimelockKind::Skim => self.skim_ns,
             TimelockKind::TimelockConfig => self.timelock_config_ns,
             TimelockKind::Other => self.other_ns,
         }
@@ -127,6 +151,10 @@ impl Timelocks {
             TimelockKind::Restrictions => self.restrictions_ns = value,
             TimelockKind::Guardian => self.guardian_ns = value,
             TimelockKind::Sentinel => self.sentinel_ns = value,
+            TimelockKind::Cap => self.cap_ns = value,
+            TimelockKind::MarketRemoval => self.market_removal_ns = value,
+            TimelockKind::CapGroup => self.cap_group_ns = value,
+            TimelockKind::Skim => self.skim_ns = value,
             TimelockKind::TimelockConfig => self.timelock_config_ns = value,
             TimelockKind::Other => self.other_ns = value,
         }
@@ -184,6 +212,13 @@ pub enum GovernanceAction {
     SetRestrictions(RestrictionMode, Vec<Address>),
     SetGuardian(Address),
     SetSentinel(Address),
+    SetCap(u32, i128),
+    RemoveMarket(u32),
+    SetGroupCap(SdkString, i128),
+    SetGroupRelCap(SdkString, i128),
+    SetGroupMember(u32, SdkString),
+    SetSkimRecipient(Address),
+    Skim(Address),
     SetTimelock(TimelockKind, u64),
     Other(Symbol, BytesN<32>),
 }
@@ -249,6 +284,7 @@ pub enum GovernanceError {
     NoChange = 9,
     TimelockOutOfBounds = 10,
     OtherNotApproved = 11,
+    Abdicated = 12,
 }
 
 #[contract]
@@ -399,6 +435,91 @@ impl SorobanVaultGovernanceContract {
             caller,
             GovernanceAction::SetTimelock(kind, new_timelock_ns),
         )
+    }
+
+    pub fn submit_set_cap(
+        env: Env,
+        caller: Address,
+        market_id: u32,
+        new_cap: i128,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetCap(market_id, new_cap))
+    }
+
+    pub fn submit_remove_market(
+        env: Env,
+        caller: Address,
+        market_id: u32,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::RemoveMarket(market_id))
+    }
+
+    pub fn submit_set_group_cap(
+        env: Env,
+        caller: Address,
+        cap_group_id: SdkString,
+        new_cap: i128,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(
+            env,
+            caller,
+            GovernanceAction::SetGroupCap(cap_group_id, new_cap),
+        )
+    }
+
+    pub fn submit_set_group_rel_cap(
+        env: Env,
+        caller: Address,
+        cap_group_id: SdkString,
+        new_relative_cap_wad: i128,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(
+            env,
+            caller,
+            GovernanceAction::SetGroupRelCap(cap_group_id, new_relative_cap_wad),
+        )
+    }
+
+    pub fn submit_set_group_member(
+        env: Env,
+        caller: Address,
+        market_id: u32,
+        cap_group_id: SdkString,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(
+            env,
+            caller,
+            GovernanceAction::SetGroupMember(market_id, cap_group_id),
+        )
+    }
+
+    pub fn submit_set_skim_recipient(
+        env: Env,
+        caller: Address,
+        recipient: Address,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetSkimRecipient(recipient))
+    }
+
+    pub fn submit_skim(env: Env, caller: Address, token: Address) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::Skim(token))
+    }
+
+    pub fn abdicate(env: Env, caller: Address, method_name: Symbol) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::Abdicated(method_name), &true);
+        Ok(())
+    }
+
+    pub fn is_abdicated(env: Env, method_name: Symbol) -> bool {
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Abdicated(method_name))
+            .unwrap_or(false)
     }
 
     pub fn submit_other(
@@ -589,6 +710,7 @@ impl SorobanVaultGovernanceContract {
         with_reentrancy_guard(&env, || {
             extend_instance_ttl(&env);
             require_admin(&env, &caller)?;
+            require_not_abdicated(&env, &action)?;
             validate_action(&action)?;
 
             let id = next_proposal_id(&env)?;
@@ -640,6 +762,14 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
         GovernanceAction::SetGuardian(_) => GovernanceActionKind::Guardian,
         GovernanceAction::SetSentinel(_) => GovernanceActionKind::Sentinel,
+        GovernanceAction::SetCap(_, _) => GovernanceActionKind::Cap,
+        GovernanceAction::RemoveMarket(_) => GovernanceActionKind::MarketRemoval,
+        GovernanceAction::SetGroupCap(_, _)
+        | GovernanceAction::SetGroupRelCap(_, _)
+        | GovernanceAction::SetGroupMember(_, _) => GovernanceActionKind::CapGroup,
+        GovernanceAction::SetSkimRecipient(_) | GovernanceAction::Skim(_) => {
+            GovernanceActionKind::Skim
+        }
         GovernanceAction::SetTimelock(_, _) => GovernanceActionKind::TimelockConfig,
         GovernanceAction::Other(_, _) => GovernanceActionKind::Other,
     }
@@ -655,6 +785,12 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
         GovernanceAction::SetGuardian(_) => TimelockKind::Guardian,
         GovernanceAction::SetSentinel(_) => TimelockKind::Sentinel,
+        GovernanceAction::SetCap(_, _) => TimelockKind::Cap,
+        GovernanceAction::RemoveMarket(_) => TimelockKind::MarketRemoval,
+        GovernanceAction::SetGroupCap(_, _)
+        | GovernanceAction::SetGroupRelCap(_, _)
+        | GovernanceAction::SetGroupMember(_, _) => TimelockKind::CapGroup,
+        GovernanceAction::SetSkimRecipient(_) | GovernanceAction::Skim(_) => TimelockKind::Skim,
         GovernanceAction::SetTimelock(_, _) => TimelockKind::TimelockConfig,
         GovernanceAction::Other(_, _) => TimelockKind::Other,
     }
@@ -668,6 +804,17 @@ fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
             let _ = to_wad(params.management_fee_wad)?;
             if let Some(max_rate) = params.max_growth_rate_wad {
                 let _ = to_wad(max_rate)?;
+            }
+            Ok(())
+        }
+        GovernanceAction::SetCap(_, new_cap) | GovernanceAction::SetGroupCap(_, new_cap) => {
+            let _ = to_wad(*new_cap)?;
+            Ok(())
+        }
+        GovernanceAction::SetGroupRelCap(_, new_relative_cap_wad) => {
+            let relative = to_wad(*new_relative_cap_wad)?;
+            if relative > Wad::one() {
+                return Err(GovernanceError::InvalidInput);
             }
             Ok(())
         }
@@ -779,6 +926,47 @@ fn decide_submission(
                 Ok(TimelockDecision::Immediate)
             }
         }
+        GovernanceAction::SetCap(_, new_cap) => {
+            let decision = cap_change_decision(None, to_wad(*new_cap)?.into());
+            match decision {
+                Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
+                Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
+                Err(CapChangeError::NoChange) => Err(GovernanceError::NoChange),
+            }
+        }
+        GovernanceAction::RemoveMarket(_) => Ok(market_removal_decision(1)),
+        GovernanceAction::SetGroupCap(_, new_cap) => {
+            let decision = cap_change_decision(None, to_wad(*new_cap)?.into());
+            match decision {
+                Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
+                Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
+                Err(CapChangeError::NoChange) => Err(GovernanceError::NoChange),
+            }
+        }
+        GovernanceAction::SetGroupRelCap(_, new_relative_cap_wad) => {
+            match relative_cap_change_decision(None, to_wad(*new_relative_cap_wad)?) {
+                Ok(decision) => Ok(decision),
+                Err(RelativeCapChangeError::NoChange) => Err(GovernanceError::NoChange),
+                Err(RelativeCapChangeError::RelativeCapTooHigh) => {
+                    Err(GovernanceError::InvalidInput)
+                }
+            }
+        }
+        GovernanceAction::SetGroupMember(_, cap_group_id) => {
+            let changed = !cap_group_id.is_empty();
+            match membership_change_decision(changed) {
+                Ok(decision) => Ok(decision),
+                Err(MembershipChangeError::NoChange) => Err(GovernanceError::NoChange),
+            }
+        }
+        GovernanceAction::SetSkimRecipient(next) => {
+            let current: Option<Address> = env.storage().instance().get(&DataKey::SkimRecipient);
+            if current.as_ref() == Some(next) {
+                return Err(GovernanceError::NoChange);
+            }
+            Ok(TimelockDecision::Timelocked)
+        }
+        GovernanceAction::Skim(_) => Ok(TimelockDecision::Immediate),
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
         | GovernanceAction::SetSupplyQueue(_) => Ok(TimelockDecision::Timelocked),
@@ -1013,10 +1201,58 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 .set(&DataKey::CurrentRestrictionAccounts, accounts);
         }
         GovernanceAction::SetGuardian(guardian) => {
+            let fn_name = Symbol::new(env, "set_guardians");
+            let args = (governance.clone(), Vec::from_array(env, [guardian.clone()]));
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
             env.storage().instance().set(&DataKey::Guardian, guardian);
         }
         GovernanceAction::SetSentinel(sentinel) => {
+            let fn_name = Symbol::new(env, "set_sentinel");
+            let args = (governance.clone(), sentinel.clone());
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
             env.storage().instance().set(&DataKey::Sentinel, sentinel);
+        }
+        GovernanceAction::SetCap(market_id, new_cap) => {
+            let fn_name = Symbol::new(env, "set_cap");
+            let args = (governance.clone(), *market_id, *new_cap);
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
+        }
+        GovernanceAction::RemoveMarket(market_id) => {
+            let fn_name = Symbol::new(env, "remove_market");
+            let args = (governance.clone(), *market_id);
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
+        }
+        GovernanceAction::SetGroupCap(cap_group_id, new_cap) => {
+            let fn_name = Symbol::new(env, "set_group_cap");
+            let args = (governance.clone(), cap_group_id.clone(), *new_cap);
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
+        }
+        GovernanceAction::SetGroupRelCap(cap_group_id, new_relative_cap_wad) => {
+            let fn_name = Symbol::new(env, "set_group_rel_cap");
+            let args = (
+                governance.clone(),
+                cap_group_id.clone(),
+                *new_relative_cap_wad,
+            );
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
+        }
+        GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            let fn_name = Symbol::new(env, "set_group_member");
+            let args = (governance.clone(), *market_id, cap_group_id.clone());
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
+        }
+        GovernanceAction::SetSkimRecipient(recipient) => {
+            let fn_name = Symbol::new(env, "set_skim_recipient");
+            let args = (governance.clone(), recipient.clone());
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
+            env.storage()
+                .instance()
+                .set(&DataKey::SkimRecipient, recipient);
+        }
+        GovernanceAction::Skim(token) => {
+            let fn_name = Symbol::new(env, "skim");
+            let args = (governance.clone(), token.clone());
+            authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }
         GovernanceAction::SetTimelock(kind, new_timelock_ns) => {
             validate_timelock_ns(*new_timelock_ns)?;
@@ -1100,6 +1336,41 @@ fn require_vault_caller(env: &Env, caller: &Address) -> Result<(), GovernanceErr
     Ok(())
 }
 
+fn method_name_for_action(env: &Env, action: &GovernanceAction) -> Symbol {
+    match action {
+        GovernanceAction::SetGuardian(_) => Symbol::new(env, "submit_guardian"),
+        GovernanceAction::SetSentinel(_) => Symbol::new(env, "submit_sentinel"),
+        GovernanceAction::SetFees(_) => Symbol::new(env, "set_fees"),
+        GovernanceAction::SetRestrictions(_, _) => Symbol::new(env, "set_restrictions"),
+        GovernanceAction::SetCap(_, _) => Symbol::new(env, "submit_cap"),
+        GovernanceAction::RemoveMarket(_) => Symbol::new(env, "submit_market_removal"),
+        GovernanceAction::SetGroupCap(_, _)
+        | GovernanceAction::SetGroupRelCap(_, _)
+        | GovernanceAction::SetGroupMember(_, _) => Symbol::new(env, "submit_cap_group_update"),
+        GovernanceAction::SetSkimRecipient(_) => Symbol::new(env, "set_skim_recipient"),
+        GovernanceAction::Skim(_) => Symbol::new(env, "skim"),
+        GovernanceAction::SetPaused(_) => Symbol::new(env, "set_paused"),
+        GovernanceAction::SetCurator(_) => Symbol::new(env, "set_curator"),
+        GovernanceAction::SetGovernance(_) => Symbol::new(env, "set_governance"),
+        GovernanceAction::SetSupplyQueue(_) => Symbol::new(env, "set_supply_queue"),
+        GovernanceAction::SetTimelock(_, _) => Symbol::new(env, "submit_timelock"),
+        GovernanceAction::Other(_, _) => Symbol::new(env, "other"),
+    }
+}
+
+fn require_not_abdicated(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
+    let method_name = method_name_for_action(env, action);
+    let abdicated: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Abdicated(method_name))
+        .unwrap_or(false);
+    if abdicated {
+        return Err(GovernanceError::Abdicated);
+    }
+    Ok(())
+}
+
 fn ledger_timestamp_ns(env: &Env) -> Result<u64, GovernanceError> {
     env.ledger()
         .timestamp()
@@ -1161,6 +1432,8 @@ mod tests {
     #[derive(Clone, Eq, PartialEq)]
     enum MockVaultKey {
         Paused,
+        Guardian,
+        Sentinel,
     }
 
     #[contractimpl]
@@ -1174,6 +1447,14 @@ mod tests {
                 .instance()
                 .get(&MockVaultKey::Paused)
                 .unwrap_or(false)
+        }
+
+        pub fn guardian(env: Env) -> Option<Address> {
+            env.storage().instance().get(&MockVaultKey::Guardian)
+        }
+
+        pub fn sentinel(env: Env) -> Option<Address> {
+            env.storage().instance().get(&MockVaultKey::Sentinel)
         }
 
         pub fn set_curator(_env: Env, _caller: Address, _new_curator: Address) {}
@@ -1194,6 +1475,118 @@ mod tests {
         }
 
         pub fn set_restrictions(_env: Env, _caller: Address, _mode: u32, _accounts: Vec<Address>) {}
+
+        pub fn set_cap(_env: Env, _caller: Address, _market_id: u32, _new_cap: i128) {}
+
+        pub fn remove_market(_env: Env, _caller: Address, _market_id: u32) {}
+
+        pub fn set_group_cap(
+            _env: Env,
+            _caller: Address,
+            _cap_group_id: SdkString,
+            _new_cap: i128,
+        ) {
+        }
+
+        pub fn set_group_rel_cap(
+            _env: Env,
+            _caller: Address,
+            _cap_group_id: SdkString,
+            _new_relative_cap_wad: i128,
+        ) {
+        }
+
+        pub fn set_group_member(
+            _env: Env,
+            _caller: Address,
+            _market_id: u32,
+            _cap_group_id: SdkString,
+        ) {
+        }
+
+        pub fn set_skim_recipient(_env: Env, _caller: Address, _recipient: Address) {}
+
+        pub fn skim(_env: Env, _caller: Address, _token: Address) {}
+
+        pub fn set_guardians(env: Env, _caller: Address, guardians: Vec<Address>) {
+            let guardian = if guardians.is_empty() {
+                None
+            } else {
+                Some(guardians.get_unchecked(0))
+            };
+            env.storage()
+                .instance()
+                .set(&MockVaultKey::Guardian, &guardian);
+        }
+
+        pub fn set_sentinel(env: Env, _caller: Address, sentinel: Address) {
+            env.storage()
+                .instance()
+                .set(&MockVaultKey::Sentinel, &sentinel);
+        }
+    }
+
+    #[test]
+    fn sentinel_first_change_immediate_second_timelocked() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        env.ledger().set(LedgerInfo {
+            timestamp: 100,
+            protocol_version: 23,
+            ..Default::default()
+        });
+
+        let admin = Address::generate(&env);
+        let vault = env.register(MockVault, ());
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&admin, &vault, &(5_000_000_000u64)),
+        );
+
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        let id1 = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_sentinel(
+                env.clone(),
+                admin.clone(),
+                first.clone(),
+            )
+            .unwrap()
+        });
+        assert_eq!(id1, 1);
+
+        let on_vault = env.as_contract(&vault, || MockVault::sentinel(env.clone()));
+        assert_eq!(on_vault, Some(first));
+
+        let id2 = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_sentinel(
+                env.clone(),
+                admin.clone(),
+                second.clone(),
+            )
+            .unwrap()
+        });
+        assert_eq!(id2, 2);
+
+        let early = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), id2)
+        });
+        assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+        env.ledger().set(LedgerInfo {
+            timestamp: 106,
+            protocol_version: 23,
+            ..Default::default()
+        });
+
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), id2).unwrap()
+        });
+
+        let on_vault = env.as_contract(&vault, || MockVault::sentinel(env.clone()));
+        assert_eq!(on_vault, Some(second));
     }
 
     #[test]
@@ -1421,5 +1814,72 @@ mod tests {
             SorobanVaultGovernanceContract::check_other(env.clone(), key, payload_hash)
         });
         assert!(!approved_after);
+    }
+
+    #[test]
+    fn abdicated_action_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 100,
+            protocol_version: 23,
+            ..Default::default()
+        });
+
+        let admin = Address::generate(&env);
+        let vault = env.register(MockVault, ());
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&admin, &vault, &(5_000_000_000u64)),
+        );
+
+        let abdicated = Symbol::new(&env, "submit_cap");
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::abdicate(env.clone(), admin.clone(), abdicated.clone())
+                .unwrap();
+        });
+
+        let submit_result = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 7, 10)
+        });
+        assert_eq!(submit_result, Err(GovernanceError::Abdicated));
+    }
+
+    #[test]
+    fn cap_action_is_timelocked_and_accepts_after_maturity() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 100,
+            protocol_version: 23,
+            ..Default::default()
+        });
+
+        let admin = Address::generate(&env);
+        let vault = env.register(MockVault, ());
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&admin, &vault, &(5_000_000_000u64)),
+        );
+
+        let proposal_id = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 10)
+                .unwrap()
+        });
+
+        let early = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+        });
+        assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+        env.ledger().set(LedgerInfo {
+            timestamp: 106,
+            protocol_version: 23,
+            ..Default::default()
+        });
+
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+        });
     }
 }

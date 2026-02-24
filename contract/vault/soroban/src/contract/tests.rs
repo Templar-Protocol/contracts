@@ -662,6 +662,79 @@ fn test_atomic_withdraw_refreshes_fees() {
 }
 
 #[test]
+fn test_phase1_deposit_with_min_resource_probe() {
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::StellarAssetClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset = asset_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share = share_sac.address();
+
+    let owner = soroban_sdk::Address::generate(&env);
+    let receiver = soroban_sdk::Address::generate(&env);
+    let deposit_assets = 1_000_000_i128;
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            curator.clone(),
+            asset.clone(),
+            share.clone(),
+        )
+        .unwrap();
+    });
+
+    asset_admin_client.mint(&owner, &deposit_assets);
+
+    let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+    let share_client = soroban_sdk::token::Client::new(&env, &share);
+    let owner_assets_before = asset_client.balance(&owner);
+
+    env.cost_estimate().budget().reset_default();
+    let minted = env
+        .as_contract(&contract_id, || {
+            SorobanVaultContract::deposit_with_min(
+                env.clone(),
+                owner.clone(),
+                receiver.clone(),
+                deposit_assets,
+                0,
+            )
+        })
+        .expect("deposit_with_min should succeed");
+    let resources = env.cost_estimate().resources();
+
+    std::println!(
+        "phase1 real deposit probe: assets_in={} shares_out={} instructions={} mem_bytes={} writes={} read_entries={}",
+        deposit_assets,
+        minted,
+        resources.instructions,
+        resources.mem_bytes,
+        resources.write_entries,
+        resources.disk_read_entries + resources.memory_read_entries
+    );
+
+    assert!(minted > 0);
+    assert_eq!(share_client.balance(&receiver), minted);
+    assert_eq!(
+        asset_client.balance(&owner),
+        owner_assets_before - deposit_assets
+    );
+    assert_eq!(asset_client.balance(&contract_id), deposit_assets);
+}
+
+#[test]
 fn test_policy_state_getter() {
     let vault = create_test_vault();
 

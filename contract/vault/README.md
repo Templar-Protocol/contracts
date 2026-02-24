@@ -44,13 +44,13 @@ The kernel contains 70+ property-based tests that verify core invariants:
 
 ```bash
 # Run all kernel property tests
-cargo test -p templar-vault-kernel --test property_tests
+cargo test -p templar-vault-kernel --features all-actions --test property_tests
 
 # Run specific property categories
-cargo test -p templar-vault-kernel --test property_tests prop_accounting
-cargo test -p templar-vault-kernel --test property_tests prop_queue
-cargo test -p templar-vault-kernel --test property_tests prop_fee
-cargo test -p templar-vault-kernel --test property_tests prop_conversion
+cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_accounting
+cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_queue
+cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_fee
+cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_conversion
 ```
 
 Key invariants tested:
@@ -100,7 +100,7 @@ To verify parity across all implementations:
 set -e
 
 echo "=== Running Kernel Property Tests ==="
-cargo test -p templar-vault-kernel --test property_tests
+cargo test -p templar-vault-kernel --features all-actions --test property_tests
 
 echo "=== Running Kernel Kani Proofs (test equivalents) ==="
 cargo test -p templar-vault-kernel --test kani_proofs
@@ -201,7 +201,7 @@ proptest! {
 ## CI Integration
 
 The property tests run in CI via:
-- `cargo test -p templar-vault-kernel` (kernel + properties)
+- `cargo test -p templar-vault-kernel --features all-actions` (kernel + properties)
 - `cargo test -p templar-vault-contract` (NEAR integration)
 - `cargo test --manifest-path contract/vault/soroban/Cargo.toml` (Soroban)
 

@@ -92,3 +92,7 @@ Parity tests check behavioral equivalence across the shared kernel and chain exe
 ## Threat Model
 
 - Soroban-specific STRIDE: `contract/vault/soroban/STRIDE.md`
+
+## Share Token Policy
+
+- Soroban share-token transfers are vault-only; end users cannot call transfer directly.

@@ -35,8 +35,18 @@ action-recovery = []
 action-sync-external = []
 # RefreshFees
 action-refresh-fees = []
+action-pause = []
+action-allocation-lifecycle = []
+action-refresh-lifecycle = []
 # Convenience: enable every optional action handler.
-all-actions = ["action-recovery", "action-sync-external", "action-refresh-fees"]
+all-actions = [
+    "action-recovery",
+    "action-sync-external",
+    "action-refresh-fees",
+    "action-pause",
+    "action-allocation-lifecycle",
+    "action-refresh-lifecycle",
+]
 
 [dependencies]
 derive_more.workspace = true

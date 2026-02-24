@@ -23,7 +23,8 @@ use alloc::vec::Vec;
 use core::mem;
 use core::num::NonZeroU128;
 use soroban_sdk::{
-    contract, contractimpl, Address as SdkAddress, Bytes, BytesN, Env, IntoVal, Symbol, Val,
+    contract, contractimpl, contracttype, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
+    IntoVal, Symbol, Val,
 };
 use templar_curator_primitives::governance::{
     cap_change_decision, market_removal_decision, membership_change_decision,
@@ -40,7 +41,8 @@ use templar_vault_kernel::{
     convert_to_shares, convert_to_shares_ceil, start_allocation, start_refresh,
     withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor, FeeSlot, FeesSpec,
     KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, TransitionError, VaultConfig,
-    VaultState, Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
+    MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -51,11 +53,23 @@ use crate::effects::{
 use crate::error::{ContractError, RuntimeError};
 use crate::policy::{build_refresh_plan_with_locks, SupplyQueue, SupplyQueueEntry};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
-use templar_curator_primitives::rbac::{RbacAuth, RbacConfig};
+use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
 const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
+const FEE_CHANGE_TIMELOCK_NS: u64 = 86_400_000_000_000;
 use crate::storage::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
+
+#[contracttype]
+#[derive(Clone)]
+struct PendingFeesChange {
+    performance_fee_wad: i128,
+    performance_recipient: SdkAddress,
+    management_fee_wad: i128,
+    management_recipient: SdkAddress,
+    max_growth_rate_wad: Option<i128>,
+    valid_at_ns: u64,
+}
 
 /// Deterministic one-way mapping from Soroban address to kernel Address.
 ///
@@ -71,7 +85,6 @@ fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     let bytes = Bytes::from_slice(env, &raw);
     env.crypto().sha256(&bytes).to_bytes().to_array()
 }
-
 
 fn is_contract_address(addr: &SdkAddress) -> bool {
     let bytes = addr.to_string().to_bytes();
@@ -376,7 +389,7 @@ where
     }
 
     #[inline(never)]
-    fn apply_kernel_action(
+    fn apply_kernel_action_local(
         &mut self,
         action: KernelAction,
         now_ns: u64,
@@ -417,6 +430,15 @@ where
                 Err(e)
             }
         }
+    }
+
+    #[inline(never)]
+    fn apply_kernel_action(
+        &mut self,
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.apply_kernel_action_local(action, now_ns)
     }
 
     #[inline(never)]
@@ -1267,10 +1289,17 @@ impl VaultDataKey {
     pub const Governance: soroban_sdk::Symbol = soroban_sdk::symbol_short!("govrnce");
     pub const AssetToken: soroban_sdk::Symbol = soroban_sdk::symbol_short!("asset");
     pub const ShareToken: soroban_sdk::Symbol = soroban_sdk::symbol_short!("share");
+    pub const Sentinel: soroban_sdk::Symbol = soroban_sdk::symbol_short!("sntnl");
     pub const FeesSpec: soroban_sdk::Symbol = soroban_sdk::symbol_short!("fees");
     pub const ReentrancyLock: soroban_sdk::Symbol = soroban_sdk::symbol_short!("reentry");
     pub const Initialized: soroban_sdk::Symbol = soroban_sdk::symbol_short!("init");
     pub const Paused: soroban_sdk::Symbol = soroban_sdk::symbol_short!("paused");
+    pub const Guardians: soroban_sdk::Symbol = soroban_sdk::symbol_short!("guards");
+    pub const Allocators: soroban_sdk::Symbol = soroban_sdk::symbol_short!("allctrs");
+    pub const AllowedAdapters: soroban_sdk::Symbol = soroban_sdk::symbol_short!("adapters");
+    pub const SkimRecipient: soroban_sdk::Symbol = soroban_sdk::symbol_short!("skimrcp");
+    pub const FeeTimelockNs: soroban_sdk::Symbol = soroban_sdk::symbol_short!("feetlck");
+    pub const PendingFees: soroban_sdk::Symbol = soroban_sdk::symbol_short!("pndfees");
 }
 
 #[contract]
@@ -1281,6 +1310,119 @@ type ContractVault<'a> = CuratorVault<
     RbacAuth,
     SorobanEffectInterpreter<'a, ShareTokenAdapter<'a>, SdkTokenAdapter<'a>>,
 >;
+
+/// Emit a lightweight admin/governance event.
+/// Uses raw Soroban events with `symbol_short!` topics to avoid postcard overhead.
+#[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
+#[inline(never)]
+fn emit_admin_event(env: &Env, action: soroban_sdk::Symbol) {
+    env.events().publish((symbol_short!("admin"),), action);
+}
+
+/// Emit an allocation event with market and amount data.
+#[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
+#[inline(never)]
+fn emit_alloc_event(env: &Env, market: u32, amount: i128, supply: bool) {
+    env.events()
+        .publish((symbol_short!("alloc"), supply), (market, amount));
+}
+
+/// Check that the adapter is in the governance-managed allowlist.
+/// If no allowlist is set, all adapters are allowed (backwards-compatible).
+fn require_allowed_adapter(env: &Env, adapter: &SdkAddress) -> Result<(), ContractError> {
+    let allowed: Option<soroban_sdk::Vec<SdkAddress>> =
+        env.storage().instance().get(&VaultDataKey::AllowedAdapters);
+    if let Some(list) = allowed {
+        for a in list.iter() {
+            if a == *adapter {
+                return Ok(());
+            }
+        }
+        return Err(ContractError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, ContractError> {
+    let adapters: Option<soroban_sdk::Vec<SdkAddress>> =
+        env.storage().instance().get(&VaultDataKey::AllowedAdapters);
+    let Some(adapters) = adapters else {
+        return Err(ContractError::InvalidInput);
+    };
+
+    let mut queue_index: Option<u32> = None;
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        for (idx, target_id) in vault.supply_queue_targets().iter().enumerate() {
+            if *target_id == market {
+                queue_index = Some(
+                    u32::try_from(idx)
+                        .map_err(|_| RuntimeError::invalid_input("index overflow"))?,
+                );
+                return Ok(());
+            }
+        }
+        Err(RuntimeError::invalid_input("market not in supply queue"))
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+
+    let index = queue_index.ok_or(ContractError::InvalidInput)?;
+    adapters.get(index).ok_or(ContractError::InvalidInput)
+}
+
+fn current_supply_queue_len(env: &Env) -> Result<u32, ContractError> {
+    let mut len: u32 = 0;
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        len = u32::try_from(vault.supply_queue_targets().len())
+            .map_err(|_| RuntimeError::invalid_input("queue overflow"))?;
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+    Ok(len)
+}
+
+
+fn apply_fee_change(
+    env: &Env,
+    performance_fee_wad: i128,
+    performance_recipient: SdkAddress,
+    management_fee_wad: i128,
+    management_recipient: SdkAddress,
+    max_growth_rate_wad: Option<i128>,
+) -> Result<(), ContractError> {
+    if performance_fee_wad < 0 || management_fee_wad < 0 {
+        return Err(ContractError::InvalidInput);
+    }
+    if performance_fee_wad as u128 > MAX_PERFORMANCE_FEE_WAD {
+        return Err(ContractError::InvalidInput);
+    }
+    if management_fee_wad as u128 > MAX_MANAGEMENT_FEE_WAD {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let max_rate = match max_growth_rate_wad {
+        Some(value) => {
+            if value < 0 {
+                return Err(ContractError::InvalidInput);
+            }
+            Some(Wad::from(value as u128))
+        }
+        None => None,
+    };
+
+    let performance_kernel = kernel_address_from_sdk(env, &performance_recipient);
+    let management_kernel = kernel_address_from_sdk(env, &management_recipient);
+    let fees = FeesSpec::new(
+        FeeSlot::new(Wad::from(performance_fee_wad as u128), performance_kernel),
+        FeeSlot::new(Wad::from(management_fee_wad as u128), management_kernel),
+        max_rate,
+    );
+
+    runtime_to_contract(store_fees_spec(env, &fees))?;
+    let storage = SorobanStorage::new(env);
+    storage.save_address(&performance_kernel, &performance_recipient);
+    storage.save_address(&management_kernel, &management_recipient);
+    Ok(())
+}
 
 fn extend_storage_ttl(env: &Env) {
     env.storage()
@@ -1397,6 +1539,8 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
     migrate_legacy_paused(env);
     let curator: SdkAddress =
         require_config_address(env, &VaultDataKey::Curator, "curator not set")?;
+    let governance: SdkAddress =
+        require_config_address(env, &VaultDataKey::Governance, "governance not set")?;
     let asset_token: SdkAddress =
         require_config_address(env, &VaultDataKey::AssetToken, "asset token not set")?;
     let share_token: SdkAddress =
@@ -1405,6 +1549,7 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
     let vault_sdk = env.current_contract_address();
     let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
     let curator_kernel = kernel_address_from_sdk(env, &curator);
+    let governance_kernel = kernel_address_from_sdk(env, &governance);
     let asset_kernel = kernel_address_from_sdk(env, &asset_token);
     let share_kernel = kernel_address_from_sdk(env, &share_token);
 
@@ -1423,6 +1568,28 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
     let storage = SorobanStorage::new(env);
     let paused = storage.is_paused();
     let mut rbac_config = RbacConfig::with_curator(curator_kernel);
+    rbac_config.add_role(governance_kernel, Role::Curator);
+    // Load guardians from storage and add to RBAC config.
+    let guard_addrs: Option<soroban_sdk::Vec<SdkAddress>> =
+        env.storage().instance().get(&VaultDataKey::Guardians);
+    if let Some(guardians) = guard_addrs {
+        for g in guardians.iter() {
+            rbac_config.add_role(kernel_address_from_sdk(env, &g), Role::Guardian);
+        }
+    }
+
+    // Load allocators from storage and add to RBAC config.
+    let alloc_addrs: Option<soroban_sdk::Vec<SdkAddress>> =
+        env.storage().instance().get(&VaultDataKey::Allocators);
+    if let Some(allocators) = alloc_addrs {
+        for a in allocators.iter() {
+            rbac_config.add_role(kernel_address_from_sdk(env, &a), Role::Allocator);
+        }
+    }
+    let sentinel: Option<SdkAddress> = env.storage().instance().get(&VaultDataKey::Sentinel);
+    if let Some(sentinel_addr) = sentinel {
+        rbac_config.add_role(kernel_address_from_sdk(env, &sentinel_addr), Role::Sentinel);
+    }
     rbac_config.set_paused(paused);
     let auth = RbacAuth::new(rbac_config);
 
@@ -1454,7 +1621,6 @@ fn with_contract_vault(env: &Env, f: &mut ContractVaultCallback<'_>) -> Result<(
     vault.load_state()?;
     f(&mut vault)
 }
-
 
 #[inline]
 fn kernel_to_runtime<T>(result: Result<T, KernelError>) -> Result<T, RuntimeError> {
@@ -1536,12 +1702,16 @@ impl SorobanVaultContract {
         set_config_address(&env, &VaultDataKey::Governance, &governance);
         set_config_address(&env, &VaultDataKey::AssetToken, &asset_token);
         set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
+        set_config_address(&env, &VaultDataKey::SkimRecipient, &governance);
         env.storage()
             .instance()
             .set(&VaultDataKey::ReentrancyLock, &false);
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::FeeTimelockNs, &FEE_CHANGE_TIMELOCK_NS);
         runtime_to_contract(store_fees_spec(&env, &FeesSpec::zero()))?;
 
         // Initialize vault state in persistent storage using current version.
@@ -1648,11 +1818,12 @@ impl SorobanVaultContract {
     pub fn allocate_supply(
         env: Env,
         caller: soroban_sdk::Address,
-        adapter: soroban_sdk::Address,
         market: u32,
         amount: i128,
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
+        let adapter = adapter_for_market(&env, market)?;
+        require_allowed_adapter(&env, &adapter)?;
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
         }
@@ -1674,10 +1845,14 @@ impl SorobanVaultContract {
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)?;
 
+        emit_alloc_event(&env, market, amount, true);
         // transfer tokens from vault to adapter, then invoke adapter.supply()
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
-        soroban_sdk::token::Client::new(&env, &asset_token)
-            .transfer(&env.current_contract_address(), &adapter, &amount);
+        soroban_sdk::token::Client::new(&env, &asset_token).transfer(
+            &env.current_contract_address(),
+            &adapter,
+            &amount,
+        );
         call_adapter(&env, &adapter, "supply", &asset_token, amount);
 
         to_i128(new_external)
@@ -1686,11 +1861,12 @@ impl SorobanVaultContract {
     pub fn allocate_withdraw(
         env: Env,
         caller: soroban_sdk::Address,
-        adapter: soroban_sdk::Address,
         #[allow(unused_variables)] market: u32,
         amount: i128,
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
+        let adapter = adapter_for_market(&env, market)?;
+        require_allowed_adapter(&env, &adapter)?;
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
         }
@@ -1716,6 +1892,7 @@ impl SorobanVaultContract {
             Ok(())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)?;
+        emit_alloc_event(&env, market, amount, false);
         to_i128(new_external)
     }
 
@@ -1779,6 +1956,7 @@ impl SorobanVaultContract {
         ensure_not_reentrant(&env)?;
         require_governance(&env, &caller)?;
         set_config_address(&env, &VaultDataKey::Curator, &new_curator);
+        emit_admin_event(&env, symbol_short!("s_curatr"));
         Ok(())
     }
 
@@ -1791,19 +1969,18 @@ impl SorobanVaultContract {
         require_governance(&env, &caller)?;
         require_contract_address(&governance)?;
         set_config_address(&env, &VaultDataKey::Governance, &governance);
+        emit_admin_event(&env, symbol_short!("s_gov"));
         Ok(())
     }
 
     pub fn set_share_token(
         env: Env,
         caller: soroban_sdk::Address,
-        share_token: soroban_sdk::Address,
+        _share_token: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
         require_governance(&env, &caller)?;
-        require_contract_address(&share_token)?;
-        set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
-        Ok(())
+        Err(ContractError::InvalidState)
     }
 
     pub fn set_supply_queue(
@@ -1811,6 +1988,15 @@ impl SorobanVaultContract {
         caller: soroban_sdk::Address,
         target_ids: soroban_sdk::Vec<u32>,
     ) -> Result<(), ContractError> {
+        if let Some(adapters) = env
+            .storage()
+            .instance()
+            .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
+        {
+            if adapters.len() != target_ids.len() {
+                return Err(ContractError::InvalidInput);
+            }
+        }
         let caller_kernel = governance_caller(&env, &caller)?;
         let mut queue_targets = Vec::with_capacity(target_ids.len() as usize);
         for target_id in target_ids.iter() {
@@ -1894,7 +2080,11 @@ impl SorobanVaultContract {
     ) -> Result<(), ContractError> {
         let caller_kernel = governance_caller(&env, &caller)?;
         let s = sdk_string_to_alloc(cap_group_id)?;
-        let group = if s.is_empty() { None } else { Some(CapGroupId::new(s)) };
+        let group = if s.is_empty() {
+            None
+        } else {
+            Some(CapGroupId::new(s))
+        };
         let internal = CapGroupUpdate::SetMembership {
             market_id,
             cap_group_id: group,
@@ -1917,35 +2107,36 @@ impl SorobanVaultContract {
         ensure_not_reentrant(&env)?;
         require_governance(&env, &caller)?;
 
-        if performance_fee_wad < 0 || management_fee_wad < 0 {
-            return Err(ContractError::InvalidInput);
-        }
-
-        let max_rate = match max_growth_rate_wad {
-            Some(value) => {
-                if value < 0 {
-                    return Err(ContractError::InvalidInput);
-                }
-                Some(Wad::from(value as u128))
-            }
-            None => None,
-        };
-
-        let performance_kernel = kernel_address_from_sdk(&env, &performance_recipient);
-        let management_kernel = kernel_address_from_sdk(&env, &management_recipient);
-        let fees = FeesSpec::new(
-            FeeSlot::new(Wad::from(performance_fee_wad as u128), performance_kernel),
-            FeeSlot::new(Wad::from(management_fee_wad as u128), management_kernel),
-            max_rate,
-        );
-
-        runtime_to_contract(store_fees_spec(&env, &fees))?;
-
-        let storage = SorobanStorage::new(&env);
-        storage.save_address(&performance_kernel, &performance_recipient);
-        storage.save_address(&management_kernel, &management_recipient);
-
+        apply_fee_change(
+            &env,
+            performance_fee_wad,
+            performance_recipient,
+            management_fee_wad,
+            management_recipient,
+            max_growth_rate_wad,
+        )?;
+        emit_admin_event(&env, symbol_short!("s_fees"));
         Ok(())
+    }
+
+    pub fn accept_fees(env: Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        Err(ContractError::InvalidState)
+    }
+
+    pub fn revoke_pending_fees(
+        env: Env,
+        caller: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        Err(ContractError::InvalidState)
+    }
+
+    pub fn pending_fees_valid_at(env: Env) -> Result<Option<u64>, ContractError> {
+        ensure_not_reentrant(&env)?;
+        Ok(None)
     }
 
     pub fn set_restrictions(
@@ -1973,21 +2164,131 @@ impl SorobanVaultContract {
             vault.set_restrictions(caller_kernel, restrictions.clone())?;
             Ok(())
         };
-        with_reentrancy_guarded_contract_vault(&env, &mut call)
+        with_reentrancy_guarded_contract_vault(&env, &mut call)?;
+        emit_admin_event(&env, symbol_short!("s_rstrct"));
+        Ok(())
     }
 
-    pub fn register_address(
+    /// Set the guardian addresses. Guardians can pause/unpause the vault.
+    pub fn set_sentinel(
         env: Env,
         caller: soroban_sdk::Address,
-        address: soroban_sdk::Address,
+        sentinel: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
-        require_curator(&env, &caller)?;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.register_sdk_address(&env, &address)?;
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
+        require_governance(&env, &caller)?;
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Sentinel, &sentinel);
+        emit_admin_event(&env, symbol_short!("s_sntnl"));
+        Ok(())
+    }
+
+    /// Set the guardian addresses. Guardians can pause/unpause the vault.
+    pub fn set_guardians(
+        env: Env,
+        caller: soroban_sdk::Address,
+        guardians: soroban_sdk::Vec<soroban_sdk::Address>,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Guardians, &guardians);
+        emit_admin_event(&env, symbol_short!("s_guards"));
+        Ok(())
+    }
+
+    /// Set the allocator addresses. Allocators can manage allocations and refreshes.
+    pub fn set_allocators(
+        env: Env,
+        caller: soroban_sdk::Address,
+        allocators: soroban_sdk::Vec<soroban_sdk::Address>,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::Allocators, &allocators);
+        emit_admin_event(&env, symbol_short!("s_allctr"));
+        Ok(())
+    }
+
+    pub fn set_allowed_adapters(
+        env: Env,
+        caller: soroban_sdk::Address,
+        adapters: soroban_sdk::Vec<soroban_sdk::Address>,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        let queue_len = current_supply_queue_len(&env)?;
+        if queue_len > 0 && adapters.len() != queue_len {
+            return Err(ContractError::InvalidInput);
+        }
+        if adapters.is_empty() {
+            env.storage()
+                .instance()
+                .remove(&VaultDataKey::AllowedAdapters);
+        } else {
+            env.storage()
+                .instance()
+                .set(&VaultDataKey::AllowedAdapters, &adapters);
+        }
+        emit_admin_event(&env, symbol_short!("s_adaptr"));
+        Ok(())
+    }
+
+    pub fn set_skim_recipient(
+        env: Env,
+        caller: soroban_sdk::Address,
+        recipient: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        set_config_address(&env, &VaultDataKey::SkimRecipient, &recipient);
+        emit_admin_event(&env, symbol_short!("s_skimr"));
+        Ok(())
+    }
+
+    pub fn skim(
+        env: Env,
+        caller: soroban_sdk::Address,
+        token: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+        let asset = get_config_address(&env, &VaultDataKey::AssetToken)?;
+        let share = get_config_address(&env, &VaultDataKey::ShareToken)?;
+        if token == asset || token == share {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let recipient = get_config_address(&env, &VaultDataKey::SkimRecipient)?;
+        let client = soroban_sdk::token::Client::new(&env, &token);
+        let balance = client.balance(&env.current_contract_address());
+        if balance <= 0 {
+            return Err(ContractError::InvalidState);
+        }
+
+        client.transfer(&env.current_contract_address(), &recipient, &balance);
+        emit_admin_event(&env, symbol_short!("skim"));
+        Ok(())
+    }
+
+    /// Cancel a pending migration if migrate() has not been called.
+    /// This reverts the vault to normal operation after a failed or abandoned upgrade.
+    pub fn cancel_migration(env: Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
+        ensure_not_reentrant(&env)?;
+        require_governance(&env, &caller)?;
+
+        if !stellar_contract_utils::upgradeable::can_complete_migration(&env) {
+            return Err(ContractError::InvalidState);
+        }
+
+        // Clear the migration flag so normal operations resume.
+        stellar_contract_utils::upgradeable::complete_migration(&env);
+
+        emit_admin_event(&env, symbol_short!("cnc_migr"));
         Ok(())
     }
 
@@ -2115,14 +2416,14 @@ impl SorobanVaultContract {
         operator: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
         ensure_not_reentrant(&env)?;
-        require_curator(&env, &operator)?;
+        require_governance(&env, &operator)?;
 
         // Enable migration state before upgrading
         stellar_contract_utils::upgradeable::enable_migration(&env);
 
         // Replace contract code - takes effect after this invocation completes
         env.deployer().update_current_contract_wasm(new_wasm_hash);
-
+        emit_admin_event(&env, symbol_short!("upgrade"));
         Ok(())
     }
 
@@ -2132,7 +2433,7 @@ impl SorobanVaultContract {
         };
 
         ensure_not_reentrant(&env)?;
-        require_curator(&env, &operator)?;
+        require_governance(&env, &operator)?;
 
         // Verify we're in migration state (upgrade was called)
         ensure_can_complete_migration(&env);
@@ -2145,7 +2446,7 @@ impl SorobanVaultContract {
 
         // Mark migration as complete - normal operations can resume
         complete_migration(&env);
-
+        emit_admin_event(&env, symbol_short!("migrate"));
         Ok(())
     }
 
@@ -2291,20 +2592,15 @@ fn require_signed(addr: &SdkAddress) {
     addr.require_auth();
 }
 
-fn require_curator(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
-    require_signed(caller);
-    let curator: SdkAddress = get_config_address(env, &VaultDataKey::Curator)?;
-    if caller != &curator {
-        return Err(ContractError::Unauthorized);
-    }
-    Ok(())
-}
-
 fn max_deposit_or_mint(env: &Env, use_shares: bool) -> Result<i128, ContractError> {
     ensure_not_reentrant(env)?;
     let (state, config) = load_state_and_config(env)?;
     if state.op_state.is_idle() && !config.paused {
-        let total = if use_shares { state.total_shares } else { state.total_assets };
+        let total = if use_shares {
+            state.total_shares
+        } else {
+            state.total_assets
+        };
         let remaining = u128::MAX.saturating_sub(total);
         Ok(remaining.min(i128::MAX as u128) as i128)
     } else {
@@ -2375,7 +2671,10 @@ fn atomic_withdraw_impl(
             }
             (assets_out, amount_u128)
         } else {
-            (amount_u128, convert_to_shares_ceil(&state, &config, amount_u128))
+            (
+                amount_u128,
+                convert_to_shares_ceil(&state, &config, amount_u128),
+            )
         };
         atomic_withdraw_internal(env, owner, receiver, assets, shares)?;
         result = if is_redeem { assets } else { shares };
@@ -2396,8 +2695,7 @@ fn call_adapter(env: &Env, adapter: &SdkAddress, fn_name: &str, asset: &SdkAddre
 #[inline(never)]
 fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
     require_governance(env, caller)?;
-    let curator = get_config_address(env, &VaultDataKey::Curator)?;
-    Ok(kernel_address_from_sdk(env, &curator))
+    Ok(kernel_address_from_sdk(env, caller))
 }
 
 #[cfg(test)]

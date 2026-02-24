@@ -377,6 +377,22 @@
                           "map": [
                             {
                               "key": {
+                                "symbol": "cap_group_ns"
+                              },
+                              "val": {
+                                "u64": "5000000000"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "cap_ns"
+                              },
+                              "val": {
+                                "u64": "5000000000"
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "curator_ns"
                               },
                               "val": {
@@ -409,6 +425,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "market_removal_ns"
+                              },
+                              "val": {
+                                "u64": "5000000000"
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "other_ns"
                               },
                               "val": {
@@ -434,6 +458,14 @@
                             {
                               "key": {
                                 "symbol": "sentinel_ns"
+                              },
+                              "val": {
+                                "u64": "5000000000"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "skim_ns"
                               },
                               "val": {
                                 "u64": "5000000000"

@@ -379,4 +379,34 @@ mod tests {
         });
         assert_eq!(bal, 1000);
     }
+
+    #[test]
+    #[should_panic]
+    fn non_vault_cannot_transfer() {
+        let env = Env::default();
+        env.ledger().set(LedgerInfo {
+            timestamp: 100,
+            protocol_version: 23,
+            ..Default::default()
+        });
+
+        let admin = Address::generate(&env);
+        let vault = Address::generate(&env);
+        let token = env.register(
+            SorobanShareTokenContract,
+            (
+                &admin,
+                &vault,
+                &String::from_str(&env, "Templar Share"),
+                &String::from_str(&env, "tvSHARE"),
+                &7u32,
+            ),
+        );
+
+        let user = Address::generate(&env);
+        env.as_contract(&token, || {
+            let _ =
+                SorobanShareTokenContract::transfer(env.clone(), user.clone(), admin.clone(), 1);
+        });
+    }
 }

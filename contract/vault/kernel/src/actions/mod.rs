@@ -23,10 +23,11 @@ use crate::state::vault::FeeAccrualAnchor;
 use crate::state::vault::{VaultConfig, VaultState};
 #[cfg(any(feature = "action-recovery", test))]
 use crate::transitions::stop_withdrawal;
-use crate::transitions::{
-    complete_allocation, complete_refresh, start_allocation, start_refresh, start_withdrawal,
-    TransitionError, WithdrawalRequest,
-};
+#[cfg(any(feature = "action-allocation-lifecycle", test))]
+use crate::transitions::{complete_allocation, start_allocation};
+#[cfg(any(feature = "action-refresh-lifecycle", test))]
+use crate::transitions::{complete_refresh, start_refresh};
+use crate::transitions::{start_withdrawal, TransitionError, WithdrawalRequest};
 use crate::types::{Address, TimestampNs};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -51,7 +52,10 @@ impl KernelResult {
 
 /// Outcome for payout settlement.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -71,7 +75,10 @@ pub enum PayoutOutcome {
 /// These actions drive the vault state machine. Each action validates preconditions,
 /// updates state, and returns effects to be executed by the chain-specific runtime.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -604,6 +611,7 @@ fn handle_execute_withdraw(
 }
 
 /// Start an allocation: transition to Allocating and decrement idle assets.
+#[cfg(any(feature = "action-allocation-lifecycle", test))]
 fn handle_begin_allocating(
     mut state: VaultState,
     op_id: u64,
@@ -641,6 +649,7 @@ fn handle_begin_allocating(
 }
 
 /// Finish an allocation, optionally chaining into a pending withdrawal.
+#[cfg(any(feature = "action-allocation-lifecycle", test))]
 fn handle_finish_allocating(
     mut state: VaultState,
     config: &VaultConfig,
@@ -1081,6 +1090,7 @@ fn handle_emergency_reset(
 }
 
 /// Apply a kernel action to state, returning updated state and effects.
+#[allow(unused_mut)]
 pub fn apply_action(
     mut state: VaultState,
     config: &VaultConfig,
@@ -1134,14 +1144,21 @@ pub fn apply_action(
             handle_execute_withdraw(state, config, restrictions, self_id, now_ns)
         }
 
+        #[cfg(any(feature = "action-allocation-lifecycle", test))]
         KernelAction::BeginAllocating { op_id, plan, .. } => {
             handle_begin_allocating(state, op_id, plan)
         }
+        #[cfg(not(any(feature = "action-allocation-lifecycle", test)))]
+        KernelAction::BeginAllocating { .. } => Err(KernelError::NotImplemented),
 
+        #[cfg(any(feature = "action-allocation-lifecycle", test))]
         KernelAction::FinishAllocating { op_id, now_ns } => {
             handle_finish_allocating(state, config, restrictions, self_id, op_id, now_ns)
         }
+        #[cfg(not(any(feature = "action-allocation-lifecycle", test)))]
+        KernelAction::FinishAllocating { .. } => Err(KernelError::NotImplemented),
 
+        #[cfg(any(feature = "action-refresh-lifecycle", test))]
         KernelAction::BeginRefreshing { op_id, plan, .. } => {
             let result = match map_transition_result(start_refresh(
                 mem::take(&mut state.op_state),
@@ -1154,7 +1171,10 @@ pub fn apply_action(
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
+        #[cfg(not(any(feature = "action-refresh-lifecycle", test)))]
+        KernelAction::BeginRefreshing { .. } => Err(KernelError::NotImplemented),
 
+        #[cfg(any(feature = "action-refresh-lifecycle", test))]
         KernelAction::FinishRefreshing { op_id, .. } => {
             let result = match map_transition_result(complete_refresh(
                 mem::take(&mut state.op_state),
@@ -1166,6 +1186,8 @@ pub fn apply_action(
             state.op_state = result.new_state;
             Ok(KernelResult::new(state, result.effects))
         }
+        #[cfg(not(any(feature = "action-refresh-lifecycle", test)))]
+        KernelAction::FinishRefreshing { .. } => Err(KernelError::NotImplemented),
 
         #[cfg(any(feature = "action-sync-external", test))]
         KernelAction::SyncExternalAssets {
@@ -1201,12 +1223,15 @@ pub fn apply_action(
             handle_settle_payout(state, self_id, op_id, outcome)
         }
 
+        #[cfg(any(feature = "action-pause", test))]
         KernelAction::Pause { paused } => Ok(KernelResult::new(
             state,
             vec![KernelEffect::EmitEvent {
                 event: crate::effects::KernelEvent::PauseUpdated { paused },
             }],
         )),
+        #[cfg(not(any(feature = "action-pause", test)))]
+        KernelAction::Pause { .. } => Err(KernelError::NotImplemented),
 
         #[cfg(any(feature = "action-refresh-fees", test))]
         KernelAction::RefreshFees { now_ns } => handle_refresh_fees(state, config, now_ns),
