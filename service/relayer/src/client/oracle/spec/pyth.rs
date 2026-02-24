@@ -1,10 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use near_primitives::action::{Action, FunctionCallAction};
-use near_sdk::{
-    serde::Deserialize,
-    serde_json::{self, json},
-};
+use near_sdk::serde::Deserialize;
 use templar_common::oracle::pyth;
 use tokio::sync::watch;
 
@@ -101,9 +98,10 @@ impl Spec for PythSpec {
     #[tracing::instrument(skip(self))]
     async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
         let vaa = self.latest_vaa(feed_ids).await?;
+        let args = format!(r#"{{"data":"{}"}}"#, hex::encode(vaa)).into_bytes();
         Ok(vec![FunctionCallAction {
             method_name: "update_price_feeds".to_string(),
-            args: serde_json::to_vec(&json!({ "data": hex::encode(vaa) })).unwrap(),
+            args,
             gas: self.config.update_gas.as_gas(),
             deposit: self.config.update_deposit.as_yoctonear(),
         }
