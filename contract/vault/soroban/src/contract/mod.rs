@@ -23,8 +23,8 @@ use alloc::vec::Vec;
 use core::mem;
 use core::num::NonZeroU128;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
-    IntoVal, Symbol, Val,
+    contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env, IntoVal,
+    Symbol, Val,
 };
 use templar_curator_primitives::governance::{
     cap_change_decision, market_removal_decision, membership_change_decision,
@@ -57,19 +57,7 @@ use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
 const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
-const FEE_CHANGE_TIMELOCK_NS: u64 = 86_400_000_000_000;
 use crate::storage::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
-
-#[contracttype]
-#[derive(Clone)]
-struct PendingFeesChange {
-    performance_fee_wad: i128,
-    performance_recipient: SdkAddress,
-    management_fee_wad: i128,
-    management_recipient: SdkAddress,
-    max_growth_rate_wad: Option<i128>,
-    valid_at_ns: u64,
-}
 
 /// Deterministic one-way mapping from Soroban address to kernel Address.
 ///
@@ -137,86 +125,6 @@ fn contract_error(msg: &'static str) -> RuntimeError {
 #[cold]
 fn invalid_state_error(msg: &'static str) -> RuntimeError {
     RuntimeError::invalid_state(msg)
-}
-
-/// Contract configuration set at initialization.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq)]
-pub struct ContractConfig {
-    /// Curator address.
-    pub curator: Address,
-    /// Vault contract address.
-    pub vault_address: Address,
-    /// Guardian addresses (can pause).
-    pub guardians: Vec<Address>,
-    /// Allocator addresses (can manage allocations).
-    pub allocators: Vec<Address>,
-    /// Underlying asset contract address.
-    pub asset_address: Address,
-    /// Share token contract address.
-    pub share_address: Address,
-    /// Fee configuration.
-    pub fees: FeesSpec,
-}
-
-impl ContractConfig {
-    /// Create a new contract configuration.
-    #[inline]
-    #[must_use]
-    pub fn new(
-        curator: Address,
-        vault_address: Address,
-        guardians: Vec<Address>,
-        allocators: Vec<Address>,
-        asset_address: Address,
-        share_address: Address,
-    ) -> Self {
-        Self {
-            curator,
-            vault_address,
-            guardians,
-            allocators,
-            asset_address,
-            share_address,
-            fees: FeesSpec::zero(),
-        }
-    }
-
-    /// Attach a fees configuration.
-    #[inline]
-    #[must_use]
-    pub fn with_fees(mut self, fees: FeesSpec) -> Self {
-        self.fees = fees;
-        self
-    }
-
-    /// Check if the given address is the curator.
-    #[inline]
-    #[must_use]
-    pub fn is_curator(&self, addr: &Address) -> bool {
-        &self.curator == addr
-    }
-
-    /// Check if the given address is a guardian.
-    #[inline]
-    #[must_use]
-    pub fn is_guardian(&self, addr: &Address) -> bool {
-        self.guardians.iter().any(|g| g == addr)
-    }
-
-    /// Check if the given address is an allocator.
-    #[inline]
-    #[must_use]
-    pub fn is_allocator(&self, addr: &Address) -> bool {
-        self.allocators.iter().any(|a| a == addr)
-    }
-
-    /// Check if the address has privileged access (curator or allocator).
-    #[inline]
-    #[must_use]
-    pub fn is_privileged(&self, addr: &Address) -> bool {
-        self.is_curator(addr) || self.is_allocator(addr)
-    }
 }
 
 /// Curator vault contract.
@@ -1277,31 +1185,6 @@ where
     }
 }
 
-/// Internal storage keys for vault config (instance storage).
-/// Using Symbol constants instead of a `#[contracttype]` enum
-/// to avoid contractspec bloat and enum conversion codegen.
-#[allow(non_upper_case_globals)]
-pub struct VaultDataKey;
-
-#[allow(non_upper_case_globals)]
-impl VaultDataKey {
-    pub const Curator: soroban_sdk::Symbol = soroban_sdk::symbol_short!("curator");
-    pub const Governance: soroban_sdk::Symbol = soroban_sdk::symbol_short!("govrnce");
-    pub const AssetToken: soroban_sdk::Symbol = soroban_sdk::symbol_short!("asset");
-    pub const ShareToken: soroban_sdk::Symbol = soroban_sdk::symbol_short!("share");
-    pub const Sentinel: soroban_sdk::Symbol = soroban_sdk::symbol_short!("sntnl");
-    pub const FeesSpec: soroban_sdk::Symbol = soroban_sdk::symbol_short!("fees");
-    pub const ReentrancyLock: soroban_sdk::Symbol = soroban_sdk::symbol_short!("reentry");
-    pub const Initialized: soroban_sdk::Symbol = soroban_sdk::symbol_short!("init");
-    pub const Paused: soroban_sdk::Symbol = soroban_sdk::symbol_short!("paused");
-    pub const Guardians: soroban_sdk::Symbol = soroban_sdk::symbol_short!("guards");
-    pub const Allocators: soroban_sdk::Symbol = soroban_sdk::symbol_short!("allctrs");
-    pub const AllowedAdapters: soroban_sdk::Symbol = soroban_sdk::symbol_short!("adapters");
-    pub const SkimRecipient: soroban_sdk::Symbol = soroban_sdk::symbol_short!("skimrcp");
-    pub const FeeTimelockNs: soroban_sdk::Symbol = soroban_sdk::symbol_short!("feetlck");
-    pub const PendingFees: soroban_sdk::Symbol = soroban_sdk::symbol_short!("pndfees");
-}
-
 #[contract]
 pub struct SorobanVaultContract;
 
@@ -1379,7 +1262,6 @@ fn current_supply_queue_len(env: &Env) -> Result<u32, ContractError> {
     with_contract_vault_contract_error(env, &mut call)?;
     Ok(len)
 }
-
 
 fn apply_fee_change(
     env: &Env,
@@ -1516,14 +1398,6 @@ fn migrate_legacy_paused(env: &Env) {
     if let Some(paused) = storage.take_legacy_paused() {
         storage.set_paused(paused);
     }
-}
-
-struct VaultBootstrap<'a> {
-    config: ContractConfig,
-    storage: SorobanStorage<'a>,
-    auth: RbacAuth,
-    asset_token: SdkAddress,
-    share_token: SdkAddress,
 }
 
 #[inline(never)]
@@ -1709,9 +1583,6 @@ impl SorobanVaultContract {
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::FeeTimelockNs, &FEE_CHANGE_TIMELOCK_NS);
         runtime_to_contract(store_fees_spec(&env, &FeesSpec::zero()))?;
 
         // Initialize vault state in persistent storage using current version.

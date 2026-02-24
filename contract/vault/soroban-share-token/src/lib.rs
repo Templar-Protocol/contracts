@@ -1,63 +1,14 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, String,
-};
+mod types;
+pub use types::*;
+
+use soroban_sdk::{contract, contractimpl, Address, Env, String};
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const BALANCE_TTL_THRESHOLD: u32 = 501_120;
 const BALANCE_TTL_EXTEND_TO: u32 = 518_400;
-
-#[contracttype]
-#[derive(Clone)]
-enum DataKey {
-    Admin,
-    Vault,
-    Name,
-    Symbol,
-    Decimals,
-    TotalSupply,
-    Balance(Address),
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct Transfer {
-    #[topic]
-    pub from: Address,
-    #[topic]
-    pub to: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct Mint {
-    #[topic]
-    pub to: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct Burn {
-    #[topic]
-    pub from: Address,
-    pub amount: i128,
-}
-
-#[contracterror]
-#[repr(u32)]
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-pub enum ShareTokenError {
-    Unauthorized = 1,
-    InvalidInput = 2,
-    MissingConfig = 3,
-    InsufficientBalance = 4,
-    ArithmeticOverflow = 5,
-}
 
 #[contract]
 pub struct SorobanShareTokenContract;
@@ -326,87 +277,4 @@ fn extend_instance_ttl(env: &Env) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-    use soroban_sdk::IntoVal;
-
-    #[contract]
-    struct VaultCaller;
-
-    #[contractimpl]
-    impl VaultCaller {
-        fn mint(env: Env, token: Address, to: Address, amount: i128) {
-            env.invoke_contract::<Result<(), ShareTokenError>>(
-                &token,
-                &soroban_sdk::Symbol::new(&env, "mint"),
-                (to, amount).into_val(&env),
-            )
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn vault_can_mint() {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().set(LedgerInfo {
-            timestamp: 100,
-            protocol_version: 23,
-            ..Default::default()
-        });
-
-        let admin = Address::generate(&env);
-        let vault = env.register(VaultCaller, ());
-        let token = env.register(
-            SorobanShareTokenContract,
-            (
-                &admin,
-                &vault,
-                &String::from_str(&env, "Templar Share"),
-                &String::from_str(&env, "tvSHARE"),
-                &7u32,
-            ),
-        );
-        let user = Address::generate(&env);
-
-        env.as_contract(&vault, || {
-            VaultCaller::mint(env.clone(), token.clone(), user.clone(), 1000);
-        });
-
-        let bal = env.as_contract(&token, || {
-            SorobanShareTokenContract::balance(env.clone(), user)
-        });
-        assert_eq!(bal, 1000);
-    }
-
-    #[test]
-    #[should_panic]
-    fn non_vault_cannot_transfer() {
-        let env = Env::default();
-        env.ledger().set(LedgerInfo {
-            timestamp: 100,
-            protocol_version: 23,
-            ..Default::default()
-        });
-
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let token = env.register(
-            SorobanShareTokenContract,
-            (
-                &admin,
-                &vault,
-                &String::from_str(&env, "Templar Share"),
-                &String::from_str(&env, "tvSHARE"),
-                &7u32,
-            ),
-        );
-
-        let user = Address::generate(&env);
-        env.as_contract(&token, || {
-            let _ =
-                SorobanShareTokenContract::transfer(env.clone(), user.clone(), admin.clone(), 1);
-        });
-    }
-}
+mod tests;
