@@ -2,7 +2,7 @@
   "name": "redstone-bridge-js",
   "version": "0.0.0",
   "description": "RedStone bridge JavaScript slave process",
-  "main": "index.js",
+  "main": "dist/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
