@@ -53,4 +53,4 @@ In the event that a frontend compromise is detected or suspected, Templar's resp
 
 ---
 
-*For questions or to report a security concern related to the Templar frontend, please contact the team via our official Discord or reach out on Twitter at [@TemplarFi](https://twitter.com/TemplarFi).*
+*For questions or to report a security concern related to the Templar frontend, see [Security Reporting](https://docs.templarfi.org/guide/security.html).*
