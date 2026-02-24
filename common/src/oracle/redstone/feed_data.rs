@@ -4,14 +4,32 @@ use near_sdk::{
 };
 use primitive_types::U256;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near_sdk::near(serializers = [json, borsh])]
-pub struct FeedData {
+pub struct SerializableU256(
     #[borsh(serialize_with = "u256_borsh_ser", deserialize_with = "u256_borsh_de")]
     #[serde(with = "u256_serde")]
-    pub price: U256,
-    pub package_timestamp: U64,
-    pub write_timestamp: U64,
+    pub primitive_types::U256,
+);
+
+impl std::ops::Deref for SerializableU256 {
+    type Target = primitive_types::U256;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<primitive_types::U256> for SerializableU256 {
+    fn from(value: primitive_types::U256) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SerializableU256> for primitive_types::U256 {
+    fn from(value: SerializableU256) -> Self {
+        value.0
+    }
 }
 
 mod u256_serde {
@@ -36,6 +54,14 @@ fn u256_borsh_de<R: io::Read>(reader: &mut R) -> Result<U256, io::Error> {
     Ok(U256(borsh::BorshDeserialize::deserialize_reader(reader)?))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[near_sdk::near(serializers = [json, borsh])]
+pub struct FeedData {
+    pub price: SerializableU256,
+    pub package_timestamp: U64,
+    pub write_timestamp: U64,
+}
+
 #[cfg(test)]
 mod tests {
     use near_sdk::serde_json;
@@ -45,7 +71,7 @@ mod tests {
     #[test]
     fn json() {
         let fd = FeedData {
-            price: 3333u128.into(),
+            price: SerializableU256(3333u128.into()),
             package_timestamp: U64(5555),
             write_timestamp: U64(6666),
         };

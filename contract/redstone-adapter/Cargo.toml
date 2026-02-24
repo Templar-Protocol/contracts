@@ -9,18 +9,14 @@ version = "0.1.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-hex-literal.workspace = true
-k256 = { workspace = true, default-features = true, features = ["ecdsa", "sha256"] }
 near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
 primitive-types.workspace = true
-redstone = { workspace = true, default-features = false, features = [] }
-thiserror.workspace = true
+templar-common = { workspace = true, features = ["redstone"] }
 
 [dev-dependencies]
-hex.workspace = true
+hex-literal.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
-redstone = { workspace = true, default-features = false, features = ["std"] }
 rstest.workspace = true
 
 # fields to configure build with WASM reproducibility, according to specs
