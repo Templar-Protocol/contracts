@@ -354,9 +354,9 @@ mod tests {
 
     #[tokio::test]
     async fn update_actions() {
-        tracing_subscriber::fmt()
+        let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
-            .init();
+            .try_init();
 
         let redstone_args = args::RedStone {
             refresh: Duration::from_secs(25),
