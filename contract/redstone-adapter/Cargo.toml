@@ -15,6 +15,7 @@ near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
 primitive-types.workspace = true
 redstone = { workspace = true, default-features = false, features = [] }
+thiserror.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

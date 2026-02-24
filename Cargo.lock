@@ -12387,6 +12387,7 @@ dependencies = [
  "primitive-types 0.10.1",
  "redstone",
  "rstest",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

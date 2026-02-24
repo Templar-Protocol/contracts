@@ -19,13 +19,13 @@ use redstone::{
 use crate::{
     config::{Config, DATA_STALENESS},
     event::WritePrices,
-    feed_data::FeedData,
     utils::feed_to_string,
 };
 
 pub mod config;
 mod event;
-pub mod feed_data;
+mod feed_data;
+pub use feed_data::FeedData;
 mod utils;
 
 #[derive(BorshStorageKey)]
@@ -48,7 +48,7 @@ pub struct GetPrices {
     pub prices: Vec<U128>,
 }
 
-struct PricePackage {
+struct Payload {
     timestamp: u64,
     prices: Vec<FeedPrice>,
 }
@@ -58,33 +58,38 @@ struct FeedPrice {
     price: U256,
 }
 
-impl RedStoneAdapter {
-    fn feed_data<'a>(&'a self, feed_id: &str) -> &'a FeedData {
-        let f = self
-            .db
-            .get(feed_id)
-            .unwrap_or_else(|| env::panic_str("missing feed"));
+#[derive(thiserror::Error, Debug)]
+pub enum FeedDataError {
+    #[error("Missing feed")]
+    MissingFeed,
+    #[error("RedStone error: {0}")]
+    RedStone(#[from] RedStoneError),
+}
 
-        verification::verify_data_staleness(
+type Result<T> = std::result::Result<T, FeedDataError>;
+
+impl RedStoneAdapter {
+    fn feed_data<'a>(&'a self, feed_id: &str) -> Result<&'a FeedData> {
+        let f = self.db.get(feed_id).ok_or(FeedDataError::MissingFeed)?;
+
+        Ok(verification::verify_data_staleness(
             f.write_timestamp.0.into(),
             env::block_timestamp_ms().into(),
             DATA_STALENESS,
         )
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        f
+        .map(|()| f)?)
     }
 
     fn update_feed(
         &mut self,
         is_trusted: bool,
-        feed_id: String,
+        feed_id: &str,
         feed_data: FeedData,
-    ) -> Result<FeedData, RedStoneError> {
+    ) -> std::result::Result<FeedData, RedStoneError> {
         let now = feed_data.write_timestamp.0.into();
         let new_pkg = feed_data.package_timestamp.0.into();
 
-        let old = self.db.get(&feed_id);
+        let old = self.db.get(feed_id);
         let old_write = old.map(|d| d.write_timestamp.0.into());
         let old_pkg = old.map(|d| d.package_timestamp.0.into());
 
@@ -95,16 +100,16 @@ impl RedStoneAdapter {
             verification::verify_untrusted_update(now, old_write, interval, old_pkg, new_pkg)?;
         }
 
-        self.db.insert(feed_id, feed_data.clone());
+        self.db.insert(feed_id.to_string(), feed_data.clone());
 
         Ok(feed_data)
     }
 
-    fn price_package(
+    fn payload(
         &self,
         feed_ids: &[String],
         payload: &[u8],
-    ) -> Result<PricePackage, RedStoneError> {
+    ) -> std::result::Result<Payload, RedStoneError> {
         let feed_ids = feed_ids
             .iter()
             .map(|id| id.clone().into_bytes().into())
@@ -125,7 +130,7 @@ impl RedStoneAdapter {
             })
             .collect();
 
-        Ok(PricePackage {
+        Ok(Payload {
             timestamp: result.timestamp.as_millis(),
             prices,
         })
@@ -150,54 +155,93 @@ impl RedStoneAdapter {
         U64(u64::from(self.config.signer_count_threshold))
     }
 
-    pub fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices {
-        let PricePackage { timestamp, prices } = self
-            .price_package(&feed_ids, &payload.0)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    /// Validates prices given a payload. For pull-style usage (payload is
+    /// attached to original transaction). Does not write to storage.
+    ///
+    /// # Errors
+    ///
+    /// - Feed ID is unknown or missing from payload.
+    /// - [`RedStoneError`]
+    #[handle_result]
+    pub fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> Result<GetPrices> {
+        let Payload { timestamp, prices } = self.payload(&feed_ids, &payload.0)?;
 
         if prices.len() != feed_ids.len() {
-            env::panic_str("Missing feed code");
+            return Err(FeedDataError::MissingFeed);
         }
 
-        GetPrices {
+        Ok(GetPrices {
             timestamp: U64(timestamp),
             prices: prices
                 .into_iter()
                 .map(|f| U128(f.price.low_u128()))
                 .collect(),
-        }
+        })
     }
 
-    pub fn read_prices(&self, feed_ids: Vec<String>) -> Vec<U256> {
+    /// Read prices from storage.
+    ///
+    /// # Errors
+    ///
+    /// - Feed ID missing.
+    /// - [`RedStoneError`]
+    #[handle_result]
+    pub fn read_prices(&self, feed_ids: Vec<String>) -> Result<Vec<U256>> {
         feed_ids
             .into_iter()
-            .map(|feed_id| self.feed_data(&feed_id).price)
+            .map(|feed_id| Ok(self.feed_data(&feed_id)?.price))
             .collect()
     }
 
-    pub fn read_timestamp(&self, feed_id: String) -> U64 {
-        self.feed_data(&feed_id).package_timestamp
+    /// Read a single feed's price data timestamp from storage.
+    ///
+    /// # Errors
+    ///
+    /// - Feed ID missing.
+    /// - [`RedStoneError`]
+    #[handle_result]
+    pub fn read_timestamp(&self, feed_id: String) -> Result<U64> {
+        Ok(self.feed_data(&feed_id)?.package_timestamp)
     }
 
-    pub fn read_price_data_for_feed(&self, feed_id: String) -> &FeedData {
+    /// Read a single feed's price data from storage.
+    ///
+    /// # Errors
+    ///
+    /// - Feed ID missing.
+    /// - [`RedStoneError`]
+    #[handle_result]
+    pub fn read_price_data_for_feed(&self, feed_id: String) -> Result<&FeedData> {
         self.feed_data(&feed_id)
     }
 
-    pub fn read_price_data(&self, feed_ids: Vec<String>) -> Vec<&FeedData> {
+    /// Read multiple feeds' price data from storage.
+    ///
+    /// # Errors
+    ///
+    /// - Feed ID missing.
+    /// - [`RedStoneError`]
+    #[handle_result]
+    pub fn read_price_data(&self, feed_ids: Vec<String>) -> Result<Vec<&FeedData>> {
         feed_ids
             .into_iter()
             .map(|feed_id| self.feed_data(&feed_id))
             .collect()
     }
 
-    pub fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8) {
+    /// Write price data to storage.
+    ///
+    /// # Errors
+    ///
+    /// - Feed ID missing.
+    /// - [`RedStoneError`]
+    #[handle_result]
+    pub fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8) -> Result<()> {
         let updater = env::predecessor_account_id();
 
         let is_trusted = Self::has_role(&updater, &Role::Updater);
 
-        let PricePackage { timestamp, prices } = self
-            .price_package(&feed_ids, &payload.0)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+        let Payload { timestamp, prices } = self.payload(&feed_ids, &payload.0)?;
         let write_timestamp = env::block_timestamp_ms();
 
         let updated_feeds = prices
@@ -209,7 +253,8 @@ impl RedStoneAdapter {
                     write_timestamp: U64(write_timestamp),
                 };
 
-                self.update_feed(is_trusted, feed_id, feed_data)
+                self.update_feed(is_trusted, &feed_id, feed_data)
+                    .inspect_err(|e| near_sdk::log!("Error updating feed {feed_id}: {e}"))
             })
             .collect::<Vec<_>>();
 
@@ -218,5 +263,7 @@ impl RedStoneAdapter {
             updated_feeds,
         }
         .emit();
+
+        Ok(())
     }
 }
