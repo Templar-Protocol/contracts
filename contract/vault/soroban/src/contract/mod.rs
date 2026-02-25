@@ -35,7 +35,7 @@ use templar_curator_primitives::policy::state::MarketConfig;
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::error::KernelError;
-use templar_vault_kernel::state::queue::{compute_full_withdrawal, DEFAULT_COOLDOWN_NS};
+use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, convert_to_assets, convert_to_assets_ceil,
     convert_to_shares, convert_to_shares_ceil, start_allocation, start_refresh,
@@ -212,11 +212,14 @@ where
 
     /// Save vault state to storage.
     pub fn save_state(&mut self) -> Result<(), RuntimeError> {
-        if let Some(ref state) = self.state {
-            let versioned = VersionedState::new(state.clone());
-            self.storage.save_state(&versioned)?;
+        if let Some(state) = self.state.take() {
+            let versioned = VersionedState::new(state);
+            let result = self.storage.save_state(&versioned);
+            self.state = Some(versioned.state);
+            result
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     fn authorize(&self, kind: ActionKind, caller: Address) -> Result<(), RuntimeError> {
@@ -323,21 +326,11 @@ where
         };
 
         let ctx = self.effect_context(now_ns);
-        if let Err(e) = self.ensure_effect_addresses_mapped(&result.effects, &ctx) {
-            self.state = Some(result.state);
-            return Err(e);
-        }
-        match self.interpreter.execute_effects(&result.effects, &ctx) {
-            Ok(summary) => {
-                self.state = Some(result.state);
-                self.save_state()?;
-                Ok(summary)
-            }
-            Err(e) => {
-                self.state = Some(result.state);
-                Err(e)
-            }
-        }
+        self.ensure_effect_addresses_mapped(&result.effects, &ctx)?;
+        let summary = self.interpreter.execute_effects(&result.effects, &ctx)?;
+        self.state = Some(result.state);
+        self.save_state()?;
+        Ok(summary)
     }
 
     #[inline(never)]
@@ -558,46 +551,39 @@ where
         &mut self,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let (_, pending) = match self.state()?.withdraw_queue.head() {
-            Some(entry) => entry,
-            None => return Err(contract_error("withdraw queue empty")),
+        // Extract fields from pending and withdraw state to avoid cloning structs.
+        // All fields are Copy types (Address=[u8;32], u128, u64).
+        let (pending_owner, pending_receiver, pending_escrow, pending_expected) = {
+            let (_, p) = self.state()?.withdraw_queue.head()
+                .ok_or_else(|| contract_error("withdraw queue empty"))?;
+            (p.owner, p.receiver, p.escrow_shares, p.expected_assets)
         };
-        let pending = pending.clone();
 
-        let withdraw = match &self.state()?.op_state {
-            OpState::Withdrawing(state) => state.clone(),
+        let withdraw_op_id = match &self.state()?.op_state {
+            OpState::Withdrawing(w) => {
+                if pending_owner != w.owner
+                    || pending_receiver != w.receiver
+                    || pending_escrow != w.escrow_shares
+                {
+                    return Err(contract_error("withdrawal queue head mismatch"));
+                }
+                w.op_id
+            }
             _ => return Err(contract_error("withdrawal not in progress")),
         };
 
-        if pending.owner != withdraw.owner
-            || pending.receiver != withdraw.receiver
-            || pending.escrow_shares != withdraw.escrow_shares
-        {
-            return Err(contract_error("withdrawal queue head mismatch"));
-        }
-
         let available_assets = self.state()?.idle_assets;
-        if available_assets == 0 {
+        if available_assets == 0 || available_assets < pending_expected {
             return Ok(EffectSummary::new());
         }
 
-        if available_assets < pending.expected_assets {
-            return Ok(EffectSummary::new());
-        }
-
-        let withdrawal_result = match compute_full_withdrawal(&pending, available_assets) {
-            Some(result) => result,
-            None => return Err(contract_error("withdrawal not satisfiable")),
-        };
-
-        let assets_out = withdrawal_result.assets_out;
-        if assets_out == 0 {
-            return Ok(EffectSummary::new());
-        }
-
-        let burn_shares = withdrawal_result.settlement.to_burn;
-        let refund_shares = withdrawal_result.settlement.refund;
-        let op_id = withdraw.op_id;
+        // Inline the compute_full_withdrawal logic to avoid reconstructing PendingWithdrawal.
+        // compute_full_withdrawal checks can_satisfy (expected <= available) and returns
+        // burn_all(escrow_shares). We already checked available >= expected above.
+        let assets_out = pending_expected;
+        let burn_shares = pending_escrow;
+        let refund_shares = 0u128;
+        let op_id = withdraw_op_id;
 
         let step = {
             let op_state = mem::take(&mut self.state_mut()?.op_state);
@@ -942,7 +928,7 @@ where
     }
 
     pub fn get_fee_anchor(&self) -> Result<FeeAccrualAnchor, RuntimeError> {
-        Ok(self.state()?.fee_anchor.clone())
+        Ok(self.state()?.fee_anchor)
     }
 
     pub fn get_fees(&self) -> &FeesSpec {
@@ -1004,10 +990,8 @@ where
             entries.push(SupplyQueueEntry::new(target_id, 1));
         }
 
-        let mut next_policy = self.policy_state.clone();
-        next_policy.supply_queue = SupplyQueue::from(entries);
-        self.storage.save_policy_state(&next_policy)?;
-        self.policy_state = next_policy;
+        self.policy_state.supply_queue = SupplyQueue::from(entries);
+        self.storage.save_policy_state(&self.policy_state)?;
 
         Ok(())
     }
@@ -1775,12 +1759,12 @@ impl SorobanVaultContract {
         require_signed(&caller);
         let now_ns = ledger_timestamp_ns(&env)?;
 
-        let markets_vec: Vec<TargetId> = markets.iter().collect();
+        let mut markets_vec: Option<Vec<TargetId>> = Some(markets.iter().collect());
 
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let caller_kernel = kernel_address_from_sdk(&env, &caller);
-            let op_id = vault.begin_refreshing(caller_kernel, markets_vec.clone(), now_ns)?;
+            let op_id = vault.begin_refreshing(caller_kernel, markets_vec.take().unwrap(), now_ns)?;
             let result = vault.finish_refreshing(caller_kernel, op_id)?;
             new_external = result.new_external_assets;
             Ok(())
@@ -1869,13 +1853,16 @@ impl SorobanVaultContract {
             }
         }
         let caller_kernel = governance_caller(&env, &caller)?;
-        let mut queue_targets = Vec::with_capacity(target_ids.len() as usize);
-        for target_id in target_ids.iter() {
-            queue_targets.push(target_id);
-        }
+        let mut queue_targets: Option<Vec<TargetId>> = {
+            let mut v = Vec::with_capacity(target_ids.len() as usize);
+            for target_id in target_ids.iter() {
+                v.push(target_id);
+            }
+            Some(v)
+        };
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.set_supply_queue(caller_kernel, queue_targets.clone())?;
+            vault.set_supply_queue(caller_kernel, queue_targets.take().unwrap())?;
             Ok(())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)
@@ -1920,8 +1907,9 @@ impl SorobanVaultContract {
             cap_group_id: CapGroupId::new(sdk_string_to_alloc(cap_group_id)?),
             new_cap: to_u128(new_cap)?,
         };
+        let mut internal = Some(internal);
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.update_cap_group(caller_kernel, internal.clone())
+            vault.update_cap_group(caller_kernel, internal.take().unwrap())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
@@ -1937,8 +1925,9 @@ impl SorobanVaultContract {
             cap_group_id: CapGroupId::new(sdk_string_to_alloc(cap_group_id)?),
             new_relative_cap_wad: to_u128(new_relative_cap_wad)?,
         };
+        let mut internal = Some(internal);
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.update_cap_group(caller_kernel, internal.clone())
+            vault.update_cap_group(caller_kernel, internal.take().unwrap())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
@@ -1960,8 +1949,9 @@ impl SorobanVaultContract {
             market_id,
             cap_group_id: group,
         };
+        let mut internal = Some(internal);
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.update_cap_group(caller_kernel, internal.clone())
+            vault.update_cap_group(caller_kernel, internal.take().unwrap())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)
     }
@@ -2023,16 +2013,16 @@ impl SorobanVaultContract {
             kernel_accounts.push(kernel_address_from_sdk(&env, &account));
         }
 
-        let restrictions = match mode {
+        let mut restrictions = Some(match mode {
             0 => None,
             1 => Some(Restrictions::Paused),
             2 => Some(Restrictions::Blacklist(kernel_accounts)),
             3 => Some(Restrictions::Whitelist(kernel_accounts)),
             _ => return Err(ContractError::InvalidInput),
-        };
+        });
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.set_restrictions(caller_kernel, restrictions.clone())?;
+            vault.set_restrictions(caller_kernel, restrictions.take().unwrap())?;
             Ok(())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)?;
@@ -2231,7 +2221,7 @@ impl SorobanVaultContract {
         ensure_not_reentrant(&env)?;
         let mut groups = soroban_sdk::Vec::new(&env);
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            for (id, rec) in vault.get_cap_groups() {
+            for (id, rec) in vault.policy_state().cap_groups.iter() {
                 let sdk_id = soroban_sdk::String::from_str(&env, &id.0);
                 let abs_cap = rec.cap.absolute_cap.map(|c| c.get() as i128).unwrap_or(0);
                 groups.push_back((sdk_id, abs_cap, rec.principal as i128));
