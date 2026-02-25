@@ -1,9 +1,4 @@
-use near_sdk::{
-    json_types::{U128, U64},
-    near,
-    store::IterableMap,
-    IntoStorageKey,
-};
+use near_sdk::{json_types::U64, near, store::IterableMap, IntoStorageKey};
 use primitive_types::U256;
 use redstone::{
     contract::verification,
@@ -155,10 +150,7 @@ impl RedStoneAdapter {
 
         Ok(GetPrices {
             timestamp: U64(timestamp),
-            prices: prices
-                .into_iter()
-                .map(|f| U128(f.price.low_u128()))
-                .collect(),
+            prices: prices.into_iter().map(|f| f.price.into()).collect(),
         })
     }
 

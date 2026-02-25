@@ -1,7 +1,7 @@
 use feed_data::{FeedData, SerializableU256};
 use near_sdk::{
     ext_contract,
-    json_types::{Base64VecU8, U128, U64},
+    json_types::{Base64VecU8, U64},
     near,
 };
 
@@ -15,7 +15,7 @@ mod utils;
 #[near(serializers = [json])]
 pub struct GetPrices {
     pub timestamp: U64,
-    pub prices: Vec<U128>,
+    pub prices: Vec<SerializableU256>,
 }
 
 #[ext_contract(ext_redstone)]
