@@ -1,9 +1,9 @@
-import {
-  getSignersForDataServiceId,
-  requestRedstonePayload,
-} from "@redstone-finance/sdk";
-import type { Request, Response } from "./msg.js";
 import type { Args } from "./args.js";
+import type { Request, Response } from "./msg.js";
+import {
+  requestRedstonePayload,
+  getSignersForDataServiceId,
+} from "@redstone-finance/sdk";
 
 export default async function handle(
   args: Args,

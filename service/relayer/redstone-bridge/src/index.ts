@@ -1,5 +1,5 @@
-import net from "node:net";
-import readline from "node:readline";
+import * as net from "node:net";
+import * as readline from "node:readline";
 import { parseArgs } from "./args.js";
 import { Request } from "./msg.js";
 import handle from "./handle.js";

@@ -1,14 +1,14 @@
 {
-  "name": "redstone-bridge-js",
+  "name": "templar-redstone-bridge",
   "version": "0.0.0",
   "description": "RedStone bridge JavaScript slave process",
   "main": "dist/index.js",
-  "type": "module",
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
     "dev:start": "tsc && node ./dist/index.js",
-    "start": "node ./dist/index.js"
+    "start": "node ./dist/index.js",
+    "test": "jest"
   },
   "author": "Templar Protocol",
   "license": "MIT",
@@ -18,7 +18,10 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^25.2.3",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
     "typescript": "^5.9.3"
   }
 }

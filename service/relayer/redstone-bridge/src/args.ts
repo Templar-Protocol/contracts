@@ -14,17 +14,24 @@ const DataServiceId = z.literal([
   "redstone-perun-demo-1",
 ]);
 
-const Args = z.object({
-  ["socket"]: z.string().default("/tmp/templar_redstone_bridge.sock"),
-  ["data-service-id"]: DataServiceId.default("redstone-primary-demo"),
-  ["unique-signers-count"]: z.uint32().default(3),
-  ["wait-for-all-gateways-time-ms"]: z.uint32().default(1000),
-  ["max-timestamp-deviation-ms"]: z.uint32().default(60 * 1000),
-  ["authorized-signers"]: DataServiceId.optional(),
+const stringToInt = z.codec(z.string().regex(z.regexes.integer), z.int(), {
+  decode: (str) => Number.parseInt(str, 10),
+  encode: (num) => num.toString(),
 });
+
+export const Args = z
+  .object({
+    ["socket"]: z.string().default("/tmp/templar_redstone_bridge.sock"),
+    ["data-service-id"]: DataServiceId.default("redstone-primary-demo"),
+    ["unique-signers-count"]: stringToInt.default(3),
+    ["wait-for-all-gateways-time-ms"]: stringToInt.default(1000),
+    ["max-timestamp-deviation-ms"]: stringToInt.default(60 * 1000),
+    ["authorized-signers"]: DataServiceId.optional(),
+  })
+  .strict();
 export type Args = z.infer<typeof Args>;
 
-export function parseArgs(argv: string[]): z.infer<typeof Args> {
+export function parseArgs(argv: string[]): Args {
   const argsObj = {} as any;
 
   for (let i = 0; i < argv.length; i += 2) {
@@ -36,5 +43,5 @@ export function parseArgs(argv: string[]): z.infer<typeof Args> {
     argsObj[key.slice(2)] = value;
   }
 
-  return Args.parse(argsObj);
+  return Args.decode(argsObj);
 }
