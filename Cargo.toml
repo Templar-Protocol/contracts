@@ -51,7 +51,6 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 sha3 = "0.10.8"
 solana-sdk = "3.0.0"
-soroban-sdk = "23.0.3"
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault" }

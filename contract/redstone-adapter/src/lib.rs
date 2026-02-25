@@ -5,7 +5,7 @@ use near_sdk::{
     json_types::{Base64VecU8, U64},
     near, BorshStorageKey, PanicOnDefault,
 };
-use near_sdk_contract_tools::{rbac::Rbac, standard::nep297::Event, Rbac};
+use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::oracle::redstone::{
     adapter::{FeedDataError, RedStoneAdapter, WritePrices},
     config::Config,
