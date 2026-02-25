@@ -7608,8 +7608,6 @@ version = "3.0.0"
 source = "git+https://github.com/redstone-finance/rust-sdk?tag=3.1.0-pre1#34adf71128812a190fa9f30922907f51464af697"
 dependencies = [
  "hex-literal",
- "k256",
- "sha3",
  "thiserror 2.0.17",
 ]
 
@@ -12224,14 +12222,19 @@ dependencies = [
  "borsh 1.5.7",
  "clap",
  "hex",
+ "hex-literal",
+ "k256",
  "near-contract-standards",
  "near-jsonrpc-client 0.18.0",
  "near-primitives 0.31.1",
  "near-sdk",
+ "near-sdk-contract-tools",
  "primitive-types 0.10.1",
  "rand 0.8.5",
+ "redstone",
  "rstest",
  "schemars",
+ "templar-common",
  "thiserror 2.0.17",
 ]
 
@@ -12376,18 +12379,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-contract"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.15",
+ "hex-literal",
+ "near-contract-standards",
+ "near-sdk",
+ "near-sdk-contract-tools",
+ "near-workspaces 0.21.0",
+ "rstest",
+ "templar-common",
+ "test-utils",
+ "tokio",
+]
+
+[[package]]
 name = "templar-redstone-adapter-contract"
 version = "0.1.0"
 dependencies = [
- "hex",
  "hex-literal",
- "k256",
  "near-sdk",
  "near-sdk-contract-tools",
  "primitive-types 0.10.1",
- "redstone",
  "rstest",
- "thiserror 2.0.17",
+ "templar-common",
 ]
 
 [[package]]

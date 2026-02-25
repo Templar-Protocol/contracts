@@ -18,7 +18,7 @@ pub struct GetPrices {
     pub prices: Vec<U128>,
 }
 
-#[ext_contract(redstone_ext)]
+#[ext_contract(ext_redstone)]
 pub trait RedStoneContractInterface {
     fn unique_signer_threshold(&self) -> U64;
     fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices;

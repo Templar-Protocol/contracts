@@ -27,6 +27,7 @@ near-primitives = { workspace = true, optional = true }
 rstest.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 rand = "0.8"
+templar-common = { path = ".", features = ["redstone"] }
 
 [lints]
 workspace = true

@@ -1,10 +1,10 @@
 use near_sdk::near;
 
-use super::{price_transformer::PriceTransformer, OraclePriceId};
+use super::{price_transformer::ProxyPriceTransformer, OraclePriceId};
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json, borsh])]
 pub enum Proxy {
-    Transformer(PriceTransformer),
+    Transformer(ProxyPriceTransformer),
     List(Vec<OraclePriceId>),
 }

@@ -52,6 +52,11 @@ impl RedStoneAdapter {
         }
     }
 
+    pub fn decimals(&self, feed_id: &str) -> u32 {
+        let _ = feed_id;
+        8
+    }
+
     /// Retrieves fresh feed data from storage.
     ///
     /// # Errors
@@ -206,6 +211,7 @@ pub struct WritePrices {
     pub failures: Vec<(String, RedStoneError)>,
 }
 
+#[allow(clippy::cast_sign_loss)]
 #[cfg(test)]
 mod tests {
     use hex_literal::hex;
