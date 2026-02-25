@@ -2322,6 +2322,33 @@ fn refresh_fees_rejects_backwards_time() {
     ));
 }
 
+#[test]
+fn refresh_fees_requires_idle_state() {
+    use crate::state::op_state::AllocatingState;
+
+    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 7,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees { now_ns: 12_345 },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState("refresh_fees requires Idle"))
+    ));
+}
+
 // =========================================================================
 // Helper function tests
 // =========================================================================

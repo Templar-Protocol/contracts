@@ -535,13 +535,13 @@ fn handle_execute_withdraw(
     self_id: &Address,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    if state.op_state.is_withdrawing() {
-        return Err(KernelError::invalid_state(
-            "execute_withdraw requires Idle (use withdrawal callbacks to advance)",
-        ));
-    }
     if !state.op_state.is_idle() {
-        return Err(KernelError::invalid_state("execute_withdraw requires Idle"));
+        let message = if state.op_state.is_withdrawing() {
+            "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+        } else {
+            "execute_withdraw requires Idle"
+        };
+        return Err(KernelError::invalid_state(message));
     }
 
     let Some((_, pending_ref)) = state.withdraw_queue.head() else {
@@ -959,6 +959,10 @@ fn handle_refresh_fees(
     config: &VaultConfig,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
+    if !state.is_idle() {
+        return Err(KernelError::invalid_state("refresh_fees requires Idle"));
+    }
+
     // Reject backwards time to prevent fee calculation issues
     if now_ns <= state.fee_anchor.timestamp_ns {
         return Err(KernelError::invalid_state(
