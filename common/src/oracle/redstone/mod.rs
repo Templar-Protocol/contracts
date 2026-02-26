@@ -1,30 +1,38 @@
-use feed_data::{FeedData, SerializableU256};
+use std::collections::HashMap;
+
 use near_sdk::{
     ext_contract,
     json_types::{Base64VecU8, U64},
     near,
 };
 
-pub mod adapter;
+mod adapter;
+pub use adapter::*;
 pub mod config;
-pub mod event;
-pub mod feed_data;
-mod utils;
+pub use config::Config;
+mod event;
+pub use event::*;
+mod feed_data;
+pub use feed_data::*;
+mod feed_id;
+pub use feed_id::*;
+mod serializable_u256;
+pub use serializable_u256::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub struct GetPrices {
     pub timestamp: U64,
-    pub prices: Vec<SerializableU256>,
+    pub prices: HashMap<FeedId, SerializableU256>,
 }
 
 #[ext_contract(ext_redstone)]
 pub trait RedStoneContractInterface {
     fn unique_signer_threshold(&self) -> U64;
-    fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices;
-    fn read_prices(&self, feed_ids: Vec<String>) -> Vec<SerializableU256>;
-    fn read_timestamp(&self, feed_id: String) -> U64;
-    fn read_price_data_for_feed(&self, feed_id: String) -> &FeedData;
-    fn read_price_data(&self, feed_ids: Vec<String>) -> Vec<&FeedData>;
-    fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8);
+    fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices;
+    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
+    fn read_timestamp(&self, feed_id: FeedId) -> U64;
+    fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData;
+    fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData>;
+    fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8);
 }

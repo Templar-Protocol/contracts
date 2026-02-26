@@ -1,11 +1,14 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::sync::OnceLock;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 use near_sdk::{
-    assert_one_yocto, borsh::BorshSerialize, collections::UnorderedMap, env, near, require,
-    serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas, IntoStorageKey,
-    PanicOnDefault, PromiseError, PromiseOrValue, PromiseResult,
+    assert_one_yocto, borsh::BorshSerialize, collections::UnorderedMap, env, json_types::U64, near,
+    require, serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas,
+    IntoStorageKey, PanicOnDefault, PromiseError, PromiseOrValue, PromiseResult,
 };
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::{
@@ -14,7 +17,7 @@ use templar_common::{
     oracle::{
         proxy::{Oracle, Proxy, Role},
         pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
-        redstone::{ext_redstone, feed_data::FeedData},
+        redstone::{self, ext_redstone, FeedData},
         OraclePriceId,
     },
     self_ext,
@@ -177,13 +180,15 @@ impl Contract {
             return PromiseOrValue::Value(OracleResponse::new());
         }
 
-        let mut pyth_price_ids = Vec::with_capacity(price_ids.len());
-        let mut redstone_price_ids = Vec::with_capacity(price_ids.len());
+        let max_age_ms = age * 1000;
+
+        let mut pyth_price_ids = HashSet::with_capacity(price_ids.len());
+        let mut redstone_price_ids = HashSet::with_capacity(price_ids.len());
         let mut promises = Vec::with_capacity(price_ids.len());
 
         for price_id in &price_ids {
             let Some(proxy) = self.proxies.get(price_id) else {
-                pyth_price_ids.push(*price_id);
+                pyth_price_ids.insert(*price_id);
                 continue;
             };
 
@@ -191,10 +196,10 @@ impl Contract {
                 Proxy::Transformer(transformer) => {
                     match transformer.price_id {
                         OraclePriceId::Pyth(id) => {
-                            pyth_price_ids.push(id);
+                            pyth_price_ids.insert(id);
                         }
                         OraclePriceId::RedStone(id) => {
-                            redstone_price_ids.push(id);
+                            redstone_price_ids.insert(id);
                         }
                     }
                     promises.push(transformer.call.promise());
@@ -203,10 +208,10 @@ impl Contract {
                     for id in ids {
                         match id {
                             OraclePriceId::Pyth(id) => {
-                                pyth_price_ids.push(id);
+                                pyth_price_ids.insert(id);
                             }
                             OraclePriceId::RedStone(id) => {
-                                redstone_price_ids.push(id);
+                                redstone_price_ids.insert(id);
                             }
                         }
                     }
@@ -219,7 +224,7 @@ impl Contract {
         let pyth_promise = (!pyth_price_ids.is_empty()).then(|| {
             ext_pyth::ext(self.pyth_id.clone())
                 .with_static_gas(Gas::from_tgas(3))
-                .list_ema_prices_no_older_than(pyth_price_ids, age)
+                .list_ema_prices_no_older_than(Vec::from_iter(pyth_price_ids), age)
         });
         if pyth_promise.is_some() {
             oracles.push(Oracle::Pyth);
@@ -228,7 +233,7 @@ impl Contract {
         let redstone_promise = (!redstone_price_ids.is_empty()).then(|| {
             ext_redstone::ext(self.redstone_id.clone())
                 .with_static_gas(Gas::from_tgas(3))
-                .read_price_data(redstone_price_ids.clone())
+                .read_price_data(Vec::from_iter(redstone_price_ids))
         });
         if redstone_promise.is_some() {
             oracles.push(Oracle::RedStone);
@@ -250,8 +255,8 @@ impl Contract {
         PromiseOrValue::Promise(promise.then(
             self_ext!(Gas::from_tgas(3)).list_ema_prices_no_older_than_01_consume_results(
                 oracles,
-                redstone_price_ids,
                 price_ids,
+                U64(max_age_ms),
             ),
         ))
     }
@@ -260,21 +265,20 @@ impl Contract {
     pub fn list_ema_prices_no_older_than_01_consume_results(
         &self,
         oracles: Vec<Oracle>,
-        redstone_price_ids: Vec<String>,
         original_price_ids: Vec<PriceIdentifier>,
+        max_age_ms: U64,
     ) -> OracleResponse {
-        fn callback_result<T: DeserializeOwned>(index: u64) -> T {
+        fn callback_result<T: DeserializeOwned>(index: u64) -> Option<T> {
             match env::promise_result(index) {
-                PromiseResult::Successful(vec) => serde_json::from_slice(&vec)
-                    .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
-                PromiseResult::Failed => {
-                    templar_common::panic_with_message(&format!("Promise index {index} failed"))
-                }
+                PromiseResult::Successful(vec) => serde_json::from_slice(&vec).ok(),
+                PromiseResult::Failed => None,
             }
         }
 
+        let now_ms = env::block_timestamp_ms();
+
         let pyth_result = |price_identifier: &PriceIdentifier| -> Option<pyth::Price> {
-            static RESPONSE: OnceLock<OracleResponse> = OnceLock::new();
+            static RESPONSE: OnceLock<Option<OracleResponse>> = OnceLock::new();
             RESPONSE
                 .get_or_init(|| {
                     callback_result::<OracleResponse>(
@@ -288,16 +292,18 @@ impl Contract {
                             }) as u64,
                     )
                 })
+                .as_ref()?
                 .get(price_identifier)?
                 .clone()
         };
 
         #[allow(clippy::cast_possible_truncation)]
-        let redstone_result = |index: u64| -> Option<FeedData> {
-            static RESPONSE: OnceLock<Vec<FeedData>> = OnceLock::new();
+        let redstone_result = |feed_id: &redstone::FeedId| -> Option<FeedData> {
+            static RESPONSE: OnceLock<Option<HashMap<redstone::FeedId, FeedData>>> =
+                OnceLock::new();
             RESPONSE
                 .get_or_init(|| {
-                    callback_result::<Vec<FeedData>>(
+                    callback_result::<HashMap<redstone::FeedId, FeedData>>(
                         oracles
                             .iter()
                             .position(|o| *o == Oracle::RedStone)
@@ -308,23 +314,21 @@ impl Contract {
                             }) as u64,
                     )
                 })
-                .get(index as usize)
+                .as_ref()?
+                .get(feed_id)
                 .cloned()
         };
 
-        let get_price = |price_id: OraclePriceId| match price_id {
-            OraclePriceId::Pyth(id) => pyth_result(&id),
-            OraclePriceId::RedStone(id) => redstone_result(
-                redstone_price_ids
-                    .iter()
-                    .position(|p| p == &id)
-                    .unwrap_or_else(|| {
-                        templar_common::panic_with_message(
-                            "Invariant violation: RedStone ID not requested",
-                        )
-                    }) as u64,
-            )
-            .and_then(|f| f.to_pyth_price(8)),
+        let get_price = |price_id: OraclePriceId| {
+            let price = match price_id {
+                OraclePriceId::Pyth(id) => pyth_result(&id),
+                OraclePriceId::RedStone(id) => {
+                    redstone_result(&id).and_then(|f| f.to_pyth_price(8))
+                }
+            }?;
+            let price_age_ms =
+                now_ms.saturating_sub(u64::try_from(price.publish_time).unwrap_or(0));
+            (price_age_ms <= max_age_ms.0).then_some(price)
         };
 
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
@@ -344,7 +348,9 @@ impl Contract {
 
                     result.insert(
                         price_id,
-                        price.and_then(|price| transformer.action.apply(price, input)),
+                        price
+                            .zip(input)
+                            .and_then(|(price, input)| transformer.action.apply(price, input)),
                     );
                 }
                 Proxy::List(ids) => {

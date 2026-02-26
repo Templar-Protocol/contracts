@@ -2,7 +2,7 @@ use near_sdk::serde_json::json;
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::{
     pyth::{self, OracleResponse, PriceIdentifier},
-    redstone::feed_data::FeedData,
+    redstone::{FeedData, FeedId},
 };
 use tokio::sync::OnceCell;
 
@@ -51,6 +51,6 @@ impl MockOracleController {
         pub fn set_pyth_price(price_identifier: PriceIdentifier, price: Option<pyth::Price>);
 
         #[call(exec)]
-        pub fn set_redstone_price(feed_id: String, data: Option<FeedData>);
+        pub fn set_redstone_price(feed_id: FeedId, data: Option<FeedData>);
     }
 }

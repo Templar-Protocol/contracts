@@ -9,16 +9,13 @@ use near_sdk::{
 };
 use templar_common::oracle::{
     pyth::{Price, PriceIdentifier, Pyth},
-    redstone::{
-        feed_data::{FeedData, SerializableU256},
-        GetPrices, RedStoneContractInterface,
-    },
+    redstone::{FeedData, FeedId, GetPrices, RedStoneContractInterface, SerializableU256},
 };
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
-    redstone_prices: LookupMap<String, FeedData>,
+    redstone_prices: LookupMap<FeedId, FeedData>,
     pyth_prices: LookupMap<PriceIdentifier, Price>,
 }
 
@@ -32,7 +29,7 @@ impl Contract {
         }
     }
 
-    pub fn set_redstone_price(&mut self, feed_id: String, data: Option<FeedData>) {
+    pub fn set_redstone_price(&mut self, feed_id: FeedId, data: Option<FeedData>) {
         if let Some(data) = data {
             self.redstone_prices.insert(feed_id, data);
         } else {
@@ -80,48 +77,52 @@ impl RedStoneContractInterface for Contract {
         U64(3)
     }
 
-    fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices {
+    fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices {
         env::abort()
     }
 
-    fn read_prices(&self, feed_ids: Vec<String>) -> Vec<SerializableU256> {
+    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
         feed_ids
             .into_iter()
             .map(|feed_id| {
-                self.redstone_prices
+                let price = self
+                    .redstone_prices
                     .get(&feed_id)
                     .unwrap_or_else(|| unknown())
-                    .price
+                    .price;
+                (feed_id, price)
             })
             .collect()
     }
 
-    fn read_timestamp(&self, feed_id: String) -> U64 {
+    fn read_timestamp(&self, feed_id: FeedId) -> U64 {
         self.redstone_prices
             .get(&feed_id)
             .unwrap_or_else(|| unknown())
             .package_timestamp
     }
 
-    fn read_price_data_for_feed(&self, feed_id: String) -> &FeedData {
+    fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData {
         self.redstone_prices
             .get(&feed_id)
-            .as_ref()
             .unwrap_or_else(|| unknown())
+            .clone()
     }
 
-    fn read_price_data(&self, feed_ids: Vec<String>) -> Vec<&FeedData> {
+    fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
         feed_ids
             .into_iter()
             .map(|feed_id| {
-                self.redstone_prices
+                let data = self
+                    .redstone_prices
                     .get(&feed_id)
-                    .unwrap_or_else(|| unknown())
+                    .unwrap_or_else(|| unknown());
+                (feed_id, data.clone())
             })
             .collect()
     }
 
-    fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8) {
+    fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8) {
         env::abort()
     }
 }

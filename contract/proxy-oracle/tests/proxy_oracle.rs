@@ -6,7 +6,7 @@ use templar_common::{
     oracle::{
         proxy::{Oracle, Proxy},
         pyth::{self, PriceIdentifier},
-        redstone::feed_data::FeedData,
+        redstone::FeedData,
         OraclePriceId,
     },
     primitive_types,
@@ -18,6 +18,18 @@ use test_utils::{
     worker, ContractController, MockOracleController,
 };
 
+fn norm_price(price: &pyth::Price) -> u64 {
+    u64::try_from(price.price.0).ok().map_or(0, |p| {
+        let f = 10u64.pow(price.expo.unsigned_abs());
+        if price.expo.is_negative() {
+            p / f
+        } else {
+            p * f
+        }
+    })
+}
+
+#[allow(clippy::cast_possible_truncation)]
 #[rstest::rstest]
 #[tokio::test]
 pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
@@ -42,7 +54,7 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
                     price: I64($val),
                     conf: U64(0),
                     expo: 0,
-                    publish_time: 0,
+                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as i64,
                 })
             )
         };
@@ -52,9 +64,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         (redstone . $id: ident = $val: literal) => {
             set!(
                 redstone.$id = Some(FeedData {
-                    price: primitive_types::U256::from($val * 100_000_000).into(),
-                    package_timestamp: U64(0),
-                    write_timestamp: U64(0),
+                    price: primitive_types::U256::from($val * 100_000_000_u128).into(),
+                    package_timestamp: U64(
+                        std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
+                    ),
+                    write_timestamp: U64(
+                        std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
+                    ),
                 })
             )
         };
@@ -69,7 +85,7 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
 
     let btc_proxy_def = Proxy::list([
         OraclePriceId::Pyth(CRYPTO_BTC_USD),
-        OraclePriceId::RedStone("BTC".to_string()),
+        OraclePriceId::RedStone("BTC".into()),
     ]);
 
     proxy_oracle
@@ -95,51 +111,40 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
 
     set!(redstone.BTC = 100_000).await;
     let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id], 60_u32)
+        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
     assert_eq!(
-        result,
-        HashMap::from_iter([
-            (
-                btc_proxy_id,
-                Some(pyth::Price {
-                    price: I64(100_000),
-                    conf: U64(0),
-                    expo: 0,
-                    publish_time: 0,
-                }),
-            ),
-            (CRYPTO_BTC_USD, None)
-        ])
+        result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
+        Some(100_000),
     );
+    assert!(result.get(&CRYPTO_BTC_USD).unwrap().is_none());
 
     // Pyth appears first on the list
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
     let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id], 60_u32)
+        .list_ema_prices_no_older_than(
+            &actor,
+            vec![
+                btc_proxy_id,
+                CRYPTO_BTC_USD,
+                btc_proxy_id,
+                CRYPTO_BTC_USD,
+                CRYPTO_BTC_USD,
+            ],
+            60_u32,
+        )
         .await;
     assert_eq!(
-        result,
-        HashMap::from_iter([
-            (
-                btc_proxy_id,
-                Some(pyth::Price {
-                    price: I64(90_000),
-                    conf: U64(0),
-                    expo: 0,
-                    publish_time: 0,
-                }),
-            ),
-            (
-                CRYPTO_BTC_USD,
-                Some(pyth::Price {
-                    price: I64(90_000),
-                    conf: U64(0),
-                    expo: 0,
-                    publish_time: 0,
-                }),
-            ),
-        ]),
+        result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
+        Some(90_000),
+    );
+    assert_eq!(
+        result
+            .get(&CRYPTO_BTC_USD)
+            .unwrap()
+            .as_ref()
+            .map(norm_price),
+        Some(90_000),
     );
 
     // set!(redstone.ETH = 1_000).await;

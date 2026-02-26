@@ -12,5 +12,5 @@ pub mod redstone;
 pub enum OraclePriceId {
     Pyth(PriceIdentifier),
     #[cfg(feature = "redstone")]
-    RedStone(String),
+    RedStone(crate::oracle::redstone::FeedId),
 }

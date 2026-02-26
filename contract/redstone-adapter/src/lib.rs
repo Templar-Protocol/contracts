@@ -1,5 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
+use std::collections::HashMap;
+
 use near_sdk::{
     env,
     json_types::{Base64VecU8, U64},
@@ -7,11 +9,8 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::oracle::redstone::{
-    adapter::{FeedDataError, RedStoneAdapter, WritePrices},
-    config::Config,
-    event::RedStoneEvent,
-    feed_data::{FeedData, SerializableU256},
-    GetPrices, RedStoneContractInterface,
+    Config, FeedData, FeedDataError, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
+    RedStoneEvent, SerializableU256, WritePrices,
 };
 
 #[derive(BorshStorageKey)]
@@ -47,44 +46,51 @@ impl RedStoneContractInterface for Contract {
         U64(u64::from(self.adapter.config.signer_count_threshold))
     }
 
-    fn get_prices(&self, feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices {
+    fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices {
         self.adapter
             .get_prices(&feed_ids, &payload.0, env::block_timestamp_ms())
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 
-    fn read_prices(&self, feed_ids: Vec<String>) -> Vec<SerializableU256> {
+    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
         let now = env::block_timestamp_ms();
         feed_ids
             .into_iter()
-            .map(|feed_id| Ok(self.adapter.feed_data(&feed_id, now)?.price))
-            .collect::<Result<Vec<_>, FeedDataError>>()
+            .map(|feed_id| {
+                let price = self.adapter.feed_data(&feed_id, now)?.price;
+                Ok((feed_id, price))
+            })
+            .collect::<Result<HashMap<_, _>, FeedDataError>>()
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 
-    fn read_timestamp(&self, feed_id: String) -> U64 {
+    fn read_timestamp(&self, feed_id: FeedId) -> U64 {
         self.adapter
             .feed_data(&feed_id, env::block_timestamp_ms())
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
             .package_timestamp
     }
 
-    fn read_price_data_for_feed(&self, feed_id: String) -> &FeedData {
+    fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData {
         self.adapter
             .feed_data(&feed_id, env::block_timestamp_ms())
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+            .clone()
     }
 
-    fn read_price_data(&self, feed_ids: Vec<String>) -> Vec<&FeedData> {
+    fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
         let now = env::block_timestamp_ms();
         feed_ids
             .into_iter()
-            .map(|feed_id| self.adapter.feed_data(&feed_id, now))
-            .collect::<Result<Vec<_>, _>>()
+            .map(|feed_id| {
+                let data = self.adapter.feed_data(&feed_id, now)?;
+                Ok((feed_id, data.clone()))
+            })
+            .collect::<Result<HashMap<_, _>, FeedDataError>>()
             .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
     }
 
-    fn write_prices(&mut self, feed_ids: Vec<String>, payload: Base64VecU8) {
+    fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8) {
         let updater = env::predecessor_account_id();
 
         let is_trusted = Self::has_role(&updater, &Role::Updater);

@@ -35,5 +35,5 @@ workspace = true
 [features]
 default = []
 non-contract-usage = ["near-sdk/non-contract-usage"]
-redstone = ["dep:redstone", "dep:k256", "dep:hex-literal", "dep:near-sdk-contract-tools"]
+redstone = ["dep:redstone", "dep:k256", "dep:hex-literal", "dep:near-sdk-contract-tools", "borsh/rc"]
 rpc = ["dep:clap", "dep:near-jsonrpc-client", "dep:near-primitives"]

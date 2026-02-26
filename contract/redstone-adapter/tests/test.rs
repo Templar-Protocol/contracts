@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use hex_literal::hex;
 use near_sdk::{
     json_types::U64,
@@ -5,7 +7,7 @@ use near_sdk::{
     testing_env,
 };
 use primitive_types::U256;
-use templar_common::oracle::redstone::{config, feed_data::FeedData, RedStoneContractInterface};
+use templar_common::oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface};
 
 use templar_redstone_adapter_contract::*;
 
@@ -28,7 +30,7 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
 
     let mut ra = Contract::new(config::prod());
 
-    let prices = vec!["ETH".to_string(), "BTC".to_string()];
+    let prices = vec!["ETH".into(), "BTC".into()];
 
     ra.write_prices(prices.clone(), input.to_vec().into());
 
@@ -49,7 +51,7 @@ fn output() {
 
     let mut ra = Contract::new(config::prod());
 
-    let prices = vec!["ETH".to_string(), "BTC".to_string()];
+    let prices = vec!["ETH".into(), "BTC".into()];
 
     ra.write_prices(prices.clone(), input.to_vec().into());
 
@@ -57,18 +59,24 @@ fn output() {
 
     assert_eq!(
         price_data,
-        vec![
-            &FeedData {
-                price: U256::from(195_692_129_540_u128).into(),
-                package_timestamp: U64(1_770_985_144_000),
-                write_timestamp: U64(1_770_985_144_000),
-            },
-            &FeedData {
-                price: U256::from(6_698_556_748_915_u128).into(),
-                package_timestamp: U64(1_770_985_144_000),
-                write_timestamp: U64(1_770_985_144_000),
-            },
-        ]
+        HashMap::<FeedId, _>::from_iter([
+            (
+                "ETH".into(),
+                FeedData {
+                    price: U256::from(195_692_129_540_u128).into(),
+                    package_timestamp: U64(1_770_985_144_000),
+                    write_timestamp: U64(1_770_985_144_000),
+                }
+            ),
+            (
+                "BTC".into(),
+                FeedData {
+                    price: U256::from(6_698_556_748_915_u128).into(),
+                    package_timestamp: U64(1_770_985_144_000),
+                    write_timestamp: U64(1_770_985_144_000),
+                }
+            ),
+        ])
     );
 
     assert_eq!(

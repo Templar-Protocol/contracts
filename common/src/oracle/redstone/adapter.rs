@@ -10,8 +10,7 @@ use redstone::{
 use super::{
     config::{Config, DATA_STALENESS},
     feed_data::FeedData,
-    utils::feed_to_string,
-    GetPrices,
+    FeedId, GetPrices,
 };
 
 #[derive(Debug)]
@@ -30,13 +29,23 @@ pub enum FeedDataError {
 }
 
 struct Payload {
-    timestamp: u64,
+    timestamp_ms: u64,
     prices: Vec<FeedPrice>,
 }
 
+// TODO: Remove
 struct FeedPrice {
-    feed_id: String,
+    feed_id: FeedId,
     price: U256,
+}
+
+impl From<FeedValue> for FeedPrice {
+    fn from(FeedValue { feed, value }: FeedValue) -> Self {
+        Self {
+            feed_id: feed.into(),
+            price: U256::from_big_endian(&value.0),
+        }
+    }
 }
 
 impl RedStoneAdapter {
@@ -100,13 +109,13 @@ impl RedStoneAdapter {
 
     fn payload(
         &self,
-        feed_ids: &[String],
+        feed_ids: &[FeedId],
         payload: &[u8],
         timestamp_ms: u64,
     ) -> Result<Payload, RedStoneError> {
         let feed_ids = feed_ids
             .iter()
-            .map(|id| id.clone().into_bytes().into())
+            .map(|id| id.as_bytes().to_vec().into())
             .collect();
 
         let mut config =
@@ -118,13 +127,13 @@ impl RedStoneAdapter {
             .values
             .into_iter()
             .map(|FeedValue { value, feed }| FeedPrice {
-                feed_id: feed_to_string(feed),
+                feed_id: feed.into(),
                 price: U256::from_big_endian(&value.0),
             })
             .collect();
 
         Ok(Payload {
-            timestamp: result.timestamp.as_millis(),
+            timestamp_ms: result.timestamp.as_millis(),
             prices,
         })
     }
@@ -138,11 +147,14 @@ impl RedStoneAdapter {
     /// - [`RedStoneError`]
     pub fn get_prices(
         &self,
-        feed_ids: &[String],
+        feed_ids: &[FeedId],
         payload: &[u8],
         timestamp_ms: u64,
     ) -> Result<GetPrices, FeedDataError> {
-        let Payload { timestamp, prices } = self.payload(feed_ids, payload, timestamp_ms)?;
+        let Payload {
+            timestamp_ms: timestamp,
+            prices,
+        } = self.payload(feed_ids, payload, timestamp_ms)?;
 
         if prices.len() != feed_ids.len() {
             return Err(FeedDataError::MissingFeed);
@@ -150,7 +162,10 @@ impl RedStoneAdapter {
 
         Ok(GetPrices {
             timestamp: U64(timestamp),
-            prices: prices.into_iter().map(|f| f.price.into()).collect(),
+            prices: prices
+                .into_iter()
+                .map(|f| (f.feed_id, f.price.into()))
+                .collect(),
         })
     }
 
@@ -163,11 +178,14 @@ impl RedStoneAdapter {
     pub fn write_prices(
         &mut self,
         is_trusted: bool,
-        feed_ids: &[String],
+        feed_ids: &[FeedId],
         payload: &[u8],
         timestamp_ms: u64,
     ) -> Result<WritePrices, FeedDataError> {
-        let Payload { timestamp, prices } = self.payload(feed_ids, payload, timestamp_ms)?;
+        let Payload {
+            timestamp_ms: timestamp,
+            prices,
+        } = self.payload(feed_ids, payload, timestamp_ms)?;
 
         let (updated_feeds, failures) = prices.into_iter().fold(
             (Vec::new(), Vec::new()),
@@ -200,7 +218,7 @@ impl RedStoneAdapter {
 
 pub struct WritePrices {
     pub updated_feeds: Vec<FeedData>,
-    pub failures: Vec<(String, RedStoneError)>,
+    pub failures: Vec<(FeedId, RedStoneError)>,
 }
 
 #[allow(clippy::cast_sign_loss)]
@@ -228,7 +246,7 @@ mod tests {
     fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
         let mut ra = RedStoneAdapter::new(b"a", config::prod());
 
-        let prices = vec!["ETH".to_string(), "BTC".to_string()];
+        let prices = vec!["ETH".into(), "BTC".into()];
 
         ra.write_prices(true, &prices, input, timestamp).unwrap();
 
@@ -243,7 +261,7 @@ mod tests {
 
         let mut ra = RedStoneAdapter::new(b"a", config::prod());
 
-        let prices = vec!["ETH".to_string(), "BTC".to_string()];
+        let prices = vec!["ETH".into(), "BTC".into()];
 
         let wp = ra.write_prices(true, &prices, &input, timestamp).unwrap();
 

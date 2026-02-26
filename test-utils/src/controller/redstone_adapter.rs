@@ -1,12 +1,12 @@
+use std::collections::HashMap;
+
 use near_sdk::{
     json_types::{Base64VecU8, U64},
     serde_json::json,
 };
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::redstone::{
-    config::Config,
-    feed_data::{FeedData, SerializableU256},
-    GetPrices,
+    config::Config, FeedData, FeedId, GetPrices, SerializableU256,
 };
 use tokio::sync::OnceCell;
 
@@ -59,13 +59,13 @@ pub trait RedStoneAdapterController: ContractController {
     define! {
         #[view] fn get_config() -> Config;
         #[view] fn unique_signer_threshold() -> U64;
-        #[view] fn get_prices(feed_ids: Vec<String>, payload: Base64VecU8) -> GetPrices;
-        #[view] fn read_prices(feed_ids: Vec<String>) -> Vec<SerializableU256>;
-        #[view] fn read_timestamp(feed_id: String) -> U64;
-        #[view] fn read_price_data_for_feed(feed_id: String) -> FeedData;
-        #[view] fn read_price_data(feed_ids: Vec<String>) -> Vec<FeedData>;
+        #[view] fn get_prices(feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices;
+        #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
+        #[view] fn read_timestamp(feed_id: FeedId) -> U64;
+        #[view] fn read_price_data_for_feed(feed_id: FeedId) -> FeedData;
+        #[view] fn read_price_data(feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData>;
 
         #[call(exec)]
-        fn write_prices(feed_ids: Vec<String>, payload: Base64VecU8);
+        fn write_prices(feed_ids: Vec<FeedId>, payload: Base64VecU8);
     }
 }
