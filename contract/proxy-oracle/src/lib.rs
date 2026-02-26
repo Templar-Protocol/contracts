@@ -15,7 +15,7 @@ use templar_common::{
     contract::list,
     number::Decimal,
     oracle::{
-        proxy::{Oracle, Proxy, Role},
+        proxy::{Oracle, Proxy, ProxyOracleEvent, Role},
         pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone, FeedData},
         OraclePriceId,
@@ -50,7 +50,7 @@ impl Contract {
 
         let deployer = env::predecessor_account_id();
 
-        Rbac::add_role(&mut self_, &deployer, &Role::ModifyRoles);
+        Rbac::add_role(&mut self_, &deployer, &Role::ModifyRole);
         Rbac::add_role(&mut self_, &deployer, &Role::SetOracleId);
         Rbac::add_role(&mut self_, &deployer, &Role::AddProxy);
         Rbac::add_role(&mut self_, &deployer, &Role::Upgrade);
@@ -62,10 +62,9 @@ impl Contract {
     fn assert_role_or_self(&self, role: Role) {
         let predecessor = env::predecessor_account_id();
         let current = env::current_account_id();
-        require!(
-            predecessor == current || <Self as Rbac>::has_role(&predecessor, &role),
-            "missing role"
-        );
+        if !(predecessor == current || <Self as Rbac>::has_role(&predecessor, &role)) {
+            templar_common::panic_with_message(&format!("Missing role: {role:?}"));
+        }
     }
 
     #[payable]
@@ -77,7 +76,7 @@ impl Contract {
         allow_removing_final_member: Option<bool>,
     ) {
         assert_one_yocto();
-        self.assert_role_or_self(Role::ModifyRoles);
+        self.assert_role_or_self(Role::ModifyRole);
 
         let set = set.unwrap_or(true);
         let allow_removing_final_member = allow_removing_final_member.unwrap_or(false);
@@ -86,7 +85,14 @@ impl Contract {
             for role in roles {
                 <Self as Rbac>::with_members_of_mut(&role, |r| {
                     for account_id in &account_ids {
-                        r.insert(account_id);
+                        if r.insert(account_id) {
+                            ProxyOracleEvent::ModifyRole {
+                                account_id: account_id.clone(),
+                                role: role.clone(),
+                                set: true,
+                            }
+                            .emit();
+                        }
                     }
                 });
             }
@@ -94,11 +100,18 @@ impl Contract {
             for role in roles {
                 <Self as Rbac>::with_members_of_mut(&role, |r| {
                     for account_id in &account_ids {
-                        r.remove(account_id);
+                        if r.remove(account_id) {
+                            ProxyOracleEvent::ModifyRole {
+                                account_id: account_id.clone(),
+                                role: role.clone(),
+                                set: false,
+                            }
+                            .emit();
+                        }
                     }
 
                     if !allow_removing_final_member {
-                        require!(!r.is_empty(), "removing final member disallowed");
+                        require!(!r.is_empty(), "Deny removing final member");
                     }
                 });
             }
@@ -119,12 +132,18 @@ impl Contract {
 
         match oracle {
             Oracle::Pyth => {
-                self.pyth_id = account_id;
+                self.pyth_id = account_id.clone();
             }
             Oracle::RedStone => {
-                self.redstone_id = account_id;
+                self.redstone_id = account_id.clone();
             }
         }
+
+        ProxyOracleEvent::SetOracleId {
+            oracle,
+            oracle_id: account_id,
+        }
+        .emit();
     }
 
     pub fn list_proxies(&self, offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier> {
@@ -136,13 +155,21 @@ impl Contract {
     }
 
     #[payable]
-    pub fn add_proxy(&mut self, id: PriceIdentifier, proxy: Proxy) {
+    pub fn add_proxy(&mut self, proxy: Proxy) -> PriceIdentifier {
         assert_one_yocto();
         self.assert_role_or_self(Role::AddProxy);
 
+        let id = proxy.id().unwrap_or_else(|e| {
+            templar_common::panic_with_message(&format!("Failed to calculate proxy ID: {e}"))
+        });
+
         if self.proxies.insert(&id, &proxy).is_some() {
-            templar_common::panic_with_message("Price identifier collision");
+            templar_common::panic_with_message(&format!("Proxy identifier collision: {id}"));
         }
+
+        ProxyOracleEvent::AddProxy { id, proxy }.emit();
+
+        id
     }
 
     // impl Pyth:
@@ -167,6 +194,7 @@ impl Contract {
         result.unwrap_or(false)
     }
 
+    // TODO: Recalculate gas values
     // GAS:
     // Base: 3 (underlying oracle) + 2 (entry) + 3 (callback) + n*3 (redemption rate calls)
     // Max should be 3 + 2 + 3 + 2 * 3 = 14, plus a bit of buffer => 15
@@ -275,57 +303,43 @@ impl Contract {
             }
         }
 
-        let now_ms = env::block_timestamp_ms();
+        let oracle_ix = |oracle: Oracle| -> u64 {
+            match &oracles[..] {
+                [a] | [a, _] if a == &oracle => 0,
+                [_, a] if a == &oracle => 1,
+                _ => templar_common::panic_with_message("Invariant violation: oracle not invoked"),
+            }
+        };
 
         let pyth_result = |price_identifier: &PriceIdentifier| -> Option<pyth::Price> {
             static RESPONSE: OnceLock<Option<OracleResponse>> = OnceLock::new();
             RESPONSE
-                .get_or_init(|| {
-                    callback_result::<OracleResponse>(
-                        oracles
-                            .iter()
-                            .position(|o| *o == Oracle::Pyth)
-                            .unwrap_or_else(|| {
-                                templar_common::panic_with_message(
-                                    "Invariant violation: oracle not invoked",
-                                )
-                            }) as u64,
-                    )
-                })
+                .get_or_init(|| callback_result(oracle_ix(Oracle::Pyth)))
                 .as_ref()?
                 .get(price_identifier)?
                 .clone()
         };
 
         #[allow(clippy::cast_possible_truncation)]
-        let redstone_result = |feed_id: &redstone::FeedId| -> Option<FeedData> {
+        let redstone_result = |feed_id: &redstone::FeedId| -> Option<pyth::Price> {
             static RESPONSE: OnceLock<Option<HashMap<redstone::FeedId, FeedData>>> =
                 OnceLock::new();
             RESPONSE
-                .get_or_init(|| {
-                    callback_result::<HashMap<redstone::FeedId, FeedData>>(
-                        oracles
-                            .iter()
-                            .position(|o| *o == Oracle::RedStone)
-                            .unwrap_or_else(|| {
-                                templar_common::panic_with_message(
-                                    "Invariant violation: oracle not invoked",
-                                )
-                            }) as u64,
-                    )
-                })
+                .get_or_init(|| callback_result(oracle_ix(Oracle::RedStone)))
                 .as_ref()?
                 .get(feed_id)
                 .cloned()
+                .and_then(|p| p.to_pyth_price())
         };
 
+        let now_ms = env::block_timestamp_ms();
         let get_price = |price_id: OraclePriceId| {
             let price = match price_id {
                 OraclePriceId::Pyth(id) => pyth_result(&id),
-                OraclePriceId::RedStone(id) => {
-                    redstone_result(&id).and_then(|f| f.to_pyth_price(8))
-                }
+                OraclePriceId::RedStone(id) => redstone_result(&id),
             }?;
+
+            // Filter for staleness
             let price_age_ms =
                 now_ms.saturating_sub(u64::try_from(price.publish_time).unwrap_or(0));
             (price_age_ms <= max_age_ms.0).then_some(price)

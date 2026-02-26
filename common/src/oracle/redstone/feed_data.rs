@@ -14,12 +14,12 @@ pub struct FeedData {
 }
 
 impl FeedData {
-    pub fn to_pyth_price(&self, decimals: i32) -> Option<pyth::Price> {
+    pub fn to_pyth_price(&self) -> Option<pyth::Price> {
         let (price, exponent) = approximate_u256(self.price.into());
         Some(pyth::Price {
             price: I64(price),
             conf: U64(0),
-            expo: exponent.checked_sub(decimals)?,
+            expo: exponent.checked_sub(super::DECIMALS)?,
             publish_time: self.package_timestamp.0.try_into().ok()?,
         })
     }

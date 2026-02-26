@@ -56,8 +56,8 @@ impl ProxyOracleController {
         pub fn set_role(account_ids: Vec<AccountId>, roles: Vec<Role>, set: Option<bool>, allow_removing_final_member: Option<bool>);
         #[call(exec, yocto(1))]
         pub fn set_oracle_id(oracle: Oracle, account_id: AccountId);
-        #[call(exec, yocto(1))]
-        pub fn add_proxy(id: PriceIdentifier, proxy: Proxy);
+        #[call(yocto(1))]
+        pub fn add_proxy(proxy: Proxy) -> PriceIdentifier;
 
         #[call]
         pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;

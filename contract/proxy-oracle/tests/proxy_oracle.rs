@@ -5,7 +5,7 @@ use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
     oracle::{
         proxy::{Oracle, Proxy},
-        pyth::{self, PriceIdentifier},
+        pyth,
         redstone::FeedData,
         OraclePriceId,
     },
@@ -79,18 +79,18 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         };
     }
 
-    let btc_proxy_id = PriceIdentifier(hex_literal::hex!(
-        "b7c0000000000000000000000000000000000000000000000000000000000000"
-    ));
-
     let btc_proxy_def = Proxy::list([
         OraclePriceId::Pyth(CRYPTO_BTC_USD),
         OraclePriceId::RedStone("BTC".into()),
     ]);
 
-    proxy_oracle
-        .add_proxy(proxy_oracle.account(), btc_proxy_id, btc_proxy_def.clone())
+    let btc_proxy_id = btc_proxy_def.id().unwrap();
+
+    let result = proxy_oracle
+        .add_proxy(proxy_oracle.account(), btc_proxy_def.clone())
         .await;
+
+    assert_eq!(result, btc_proxy_id, "should return correct ID");
 
     assert_eq!(
         proxy_oracle.list_proxies(None, None).await,

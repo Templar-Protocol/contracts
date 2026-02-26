@@ -56,11 +56,6 @@ impl RedStoneAdapter {
         }
     }
 
-    pub fn decimals(&self, feed_id: &str) -> u32 {
-        let _ = feed_id;
-        8
-    }
-
     /// Retrieves fresh feed data from storage.
     ///
     /// # Errors

@@ -6,6 +6,9 @@ use near_sdk::{
     near,
 };
 
+/// All RedStone feeds report 8 decimals.
+pub const DECIMALS: i32 = 8;
+
 mod adapter;
 pub use adapter::*;
 pub mod config;
