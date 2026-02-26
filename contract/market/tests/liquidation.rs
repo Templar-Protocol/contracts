@@ -549,19 +549,19 @@ async fn extreme_prices(
         })
     );
 
-    c.set_collateral_asset_price_exact(pyth::Price {
+    c.set_collateral_asset_price_exact(Some(pyth::Price {
         price: collateral_price.into(),
         conf: 0.into(),
         expo: collateral_exponent,
         publish_time: 0,
-    })
+    }))
     .await;
-    c.set_borrow_asset_price_exact(pyth::Price {
+    c.set_borrow_asset_price_exact(Some(pyth::Price {
         price: borrow_price.into(),
         conf: 0.into(),
         expo: borrow_exponent,
         publish_time: 0,
-    })
+    }))
     .await;
 
     tokio::join!(
@@ -576,18 +576,18 @@ async fn extreme_prices(
     let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
 
     tokio::join!(
-        c.set_collateral_asset_price_exact(pyth::Price {
+        c.set_collateral_asset_price_exact(Some(pyth::Price {
             price: new_collateral_price.into(),
             conf: 0.into(),
             expo: new_collateral_exponent,
             publish_time: 0,
-        }),
-        c.set_borrow_asset_price_exact(pyth::Price {
+        })),
+        c.set_borrow_asset_price_exact(Some(pyth::Price {
             price: new_borrow_price.into(),
             conf: 0.into(),
             expo: new_borrow_exponent,
             publish_time: 0,
-        }),
+        })),
     );
     let (liquidate, price) = c
         .liquidatable_collateral_with_spread(borrow_user.id())

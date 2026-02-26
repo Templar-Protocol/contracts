@@ -4,7 +4,7 @@ use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
     ft::FtController,
     market::{MarketController, UnifiedMarketController},
-    oracle::OracleController,
+    mock_oracle::MockOracleController,
     registry::RegistryController,
     storage_management::StorageManagementController,
     universal_account::UniversalAccountController,
@@ -242,7 +242,7 @@ pub async fn setup_everything(
 
     let (market, price_oracle, borrow_asset, collateral_asset, vault) = tokio::join!(
         MarketController::deploy(market, &config),
-        OracleController::deploy(price_oracle),
+        MockOracleController::deploy(price_oracle),
         async {
             if config.borrow_asset.is_nep141(borrow_asset.id()) {
                 TokenController::Ft {

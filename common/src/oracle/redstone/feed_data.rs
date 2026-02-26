@@ -1,59 +1,59 @@
 use near_sdk::{
-    borsh::{self, io},
     json_types::{I64, U64},
+    serde,
 };
 use primitive_types::U256;
+use schemars::JsonSchema;
 
 use crate::oracle::pyth;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[near_sdk::near(serializers = [json, borsh])]
-pub struct SerializableU256(
-    #[borsh(serialize_with = "u256_borsh_ser", deserialize_with = "u256_borsh_de")]
-    #[serde(with = "u256_serde")]
-    pub primitive_types::U256,
-);
-
-impl std::ops::Deref for SerializableU256 {
-    type Target = primitive_types::U256;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+#[near_sdk::near(serializers = [borsh])]
+pub struct SerializableU256([u64; 4]);
 
 impl From<primitive_types::U256> for SerializableU256 {
     fn from(value: primitive_types::U256) -> Self {
-        Self(value)
+        Self(value.0)
     }
 }
 
 impl From<SerializableU256> for primitive_types::U256 {
     fn from(value: SerializableU256) -> Self {
-        value.0
+        primitive_types::U256(value.0)
     }
 }
 
-mod u256_serde {
-    use near_sdk::serde;
-    use primitive_types::U256;
-
-    pub fn serialize<S: serde::Serializer>(x: &U256, ser: S) -> Result<S::Ok, S::Error> {
-        serde::Serialize::serialize(&x.to_string(), ser)
+impl JsonSchema for SerializableU256 {
+    fn schema_name() -> String {
+        "U256".to_string()
     }
 
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<U256, D::Error> {
-        let s = <String as serde::Deserialize>::deserialize(de)?;
-        U256::from_dec_str(&s).map_err(serde::de::Error::custom)
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = gen.subschema_for::<String>().into_object();
+        schema.metadata().description = Some("unsigned 256-bit integer".to_string());
+        schema.into()
     }
 }
 
-fn u256_borsh_ser<W: io::Write>(x: &U256, writer: &mut W) -> Result<(), io::Error> {
-    borsh::BorshSerialize::serialize(&x.0, writer)
+impl serde::Serialize for SerializableU256 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serde::Serialize::serialize(&U256(self.0).to_string(), serializer)
+    }
 }
 
-fn u256_borsh_de<R: io::Read>(reader: &mut R) -> Result<U256, io::Error> {
-    Ok(U256(borsh::BorshDeserialize::deserialize_reader(reader)?))
+impl<'de> serde::Deserialize<'de> for SerializableU256 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        U256::from_dec_str(&s)
+            .map(Self::from)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,7 +66,7 @@ pub struct FeedData {
 
 impl FeedData {
     pub fn to_pyth_price(&self, decimals: i32) -> Option<pyth::Price> {
-        let (price, exponent) = approximate_u256(*self.price);
+        let (price, exponent) = approximate_u256(self.price.into());
         Some(pyth::Price {
             price: I64(price),
             conf: U64(0),
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn json() {
         let fd = FeedData {
-            price: SerializableU256(3333u128.into()),
+            price: U256::from(3333).into(),
             package_timestamp: U64(5555),
             write_timestamp: U64(6666),
         };

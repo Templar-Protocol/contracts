@@ -20,7 +20,7 @@ pub async fn deploy_from_registry() {
     );
 
     let (price_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::deploy(price_oracle),
+        MockOracleController::deploy(price_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
@@ -114,7 +114,7 @@ async fn deploy_with_access_key() {
     );
 
     let (price_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::deploy(price_oracle),
+        MockOracleController::deploy(price_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );
@@ -176,7 +176,7 @@ pub async fn market_id_collision() {
     );
 
     let (price_oracle, borrow_asset, collateral_asset) = tokio::join!(
-        OracleController::deploy(price_oracle),
+        MockOracleController::deploy(price_oracle),
         FtController::deploy(borrow_asset, "Borrow Asset", "BORROW"),
         FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL"),
     );

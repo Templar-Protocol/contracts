@@ -12,7 +12,7 @@ use templar_common::{
     contract::list,
     number::Decimal,
     oracle::{
-        proxy::Proxy,
+        proxy::{Oracle, Proxy, Role},
         pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{ext_redstone, feed_data::FeedData},
         OraclePriceId,
@@ -20,44 +20,28 @@ use templar_common::{
     self_ext,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub enum Oracle {
-    Pyth,
-    RedStone,
-}
-
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
     Proxied,
 }
 
-#[derive(Debug, Clone, BorshStorageKey)]
-#[near(serializers = [json, borsh])]
-pub enum Role {
-    ModifyRoles,
-    SetOracleId,
-    AddProxy,
-    Upgrade,
-}
-
 #[derive(Debug, Rbac, PanicOnDefault)]
 #[near(contract_state)]
 #[rbac(roles = "Role")]
 pub struct Contract {
-    pub redstone_id: AccountId,
     pub pyth_id: AccountId,
+    pub redstone_id: AccountId,
     pub proxies: UnorderedMap<PriceIdentifier, Proxy>,
 }
 
 #[near]
 impl Contract {
     #[init]
-    pub fn new(redstone_id: AccountId, pyth_id: AccountId) -> Self {
+    pub fn new(pyth_id: AccountId, redstone_id: AccountId) -> Self {
         let mut self_ = Self {
-            redstone_id,
             pyth_id,
+            redstone_id,
             proxies: UnorderedMap::new(StorageKey::Proxied.into_storage_key()),
         };
 
@@ -373,6 +357,8 @@ impl Contract {
 
         result
     }
+
+    // TODO: Upgradability
 }
 
 #[cfg(target_arch = "wasm32")]

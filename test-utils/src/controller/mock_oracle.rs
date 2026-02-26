@@ -1,24 +1,29 @@
 use near_sdk::serde_json::json;
 use near_workspaces::{Account, Contract};
-use templar_common::oracle::pyth::{self, OracleResponse, PriceIdentifier};
+use templar_common::oracle::{
+    pyth::{self, OracleResponse, PriceIdentifier},
+    redstone::feed_data::FeedData,
+};
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
 
-use super::ContractController;
+use super::{redstone_adapter::RedStoneAdapterController, ContractController};
 
 #[derive(Clone)]
-pub struct OracleController {
+pub struct MockOracleController {
     pub contract: Contract,
 }
 
-impl ContractController for OracleController {
+impl ContractController for MockOracleController {
     fn contract(&self) -> &Contract {
         &self.contract
     }
 }
 
-impl OracleController {
+impl RedStoneAdapterController for MockOracleController {}
+
+impl MockOracleController {
     pub async fn deploy(account: Account) -> Self {
         static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
 
@@ -43,6 +48,9 @@ impl OracleController {
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
 
         #[call(exec)]
-        pub fn set_price(price_identifier: PriceIdentifier, price: pyth::Price);
+        pub fn set_pyth_price(price_identifier: PriceIdentifier, price: Option<pyth::Price>);
+
+        #[call(exec)]
+        pub fn set_redstone_price(feed_id: String, data: Option<FeedData>);
     }
 }

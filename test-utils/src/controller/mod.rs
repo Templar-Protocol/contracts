@@ -9,8 +9,10 @@ use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 pub mod ft;
 pub mod lst_oracle;
 pub mod market;
+pub mod mock_oracle;
 pub mod mt;
-pub mod oracle;
+pub mod proxy_oracle;
+pub mod redstone_adapter;
 pub mod registry;
 pub mod storage_management;
 pub mod token;
@@ -19,6 +21,14 @@ pub mod vault;
 
 pub trait ContractController {
     fn contract(&self) -> &Contract;
+
+    fn account(&self) -> &Account {
+        self.contract().as_account()
+    }
+
+    fn id(&self) -> &near_sdk::AccountId {
+        self.contract().id()
+    }
 
     async fn view<T: DeserializeOwned>(&self, function_name: &str, args: impl Serialize) -> T {
         self.contract()
