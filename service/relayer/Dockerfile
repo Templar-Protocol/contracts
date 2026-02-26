@@ -32,7 +32,7 @@ FROM node:24-slim as production
 ENV NODE_ENV=production
 
 RUN apt-get update && \
-    apt-get install -y ca-certificates libssl3 && \
+    apt-get install -y --no-install-recommends ca-certificates libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app/redstone-bridge/dist

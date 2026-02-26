@@ -1,4 +1,3 @@
-use k256::sha2::Digest;
 use near_sdk::{near, AccountId, BorshStorageKey};
 
 use super::{price_transformer::ProxyPriceTransformer, pyth::PriceIdentifier, OraclePriceId};
@@ -20,6 +19,7 @@ impl Proxy {
     /// # Errors
     ///
     /// - Borsh encoding fails.
+    #[cfg(feature = "redstone")]
     pub fn id(&self) -> Result<PriceIdentifier, std::io::Error> {
         let encoding = near_sdk::borsh::to_vec(self)?;
         let hash;
@@ -29,6 +29,7 @@ impl Proxy {
         }
         #[cfg(not(target_family = "wasm"))]
         {
+            use k256::sha2::Digest;
             hash = k256::sha2::Sha256::digest(encoding).into();
         }
         Ok(PriceIdentifier(hash))
