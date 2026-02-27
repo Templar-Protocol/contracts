@@ -1,5 +1,5 @@
-import { describe, expect, test } from "@jest/globals";
-import { Request, Response } from "./msg";
+import { describe, test } from "@jest/globals";
+import { Request } from "./msg";
 
 describe("message serialization", () => {
   test("can deserialize Rust request", () => {
