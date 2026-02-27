@@ -64,6 +64,7 @@ pub enum Role {
 #[near(serializers = [json, borsh])]
 pub enum Oracle {
     Pyth,
+    #[cfg(feature = "redstone")]
     RedStone,
 }
 
