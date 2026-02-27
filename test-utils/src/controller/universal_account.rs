@@ -37,13 +37,19 @@ impl UniversalAccountController {
         .await
     }
 
-    pub async fn deploy(account: Account, key: KeyId, chain_id: u128) -> Self {
+    pub async fn deploy(
+        account: Account,
+        key: KeyId,
+        chain_id: u128,
+        execute: Option<Vec<Transaction>>,
+    ) -> Self {
         let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
         contract
             .call("new")
             .args_json(InitArgs {
                 key,
                 chain_id: chain_id.into(),
+                execute,
             })
             .transact()
             .await

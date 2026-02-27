@@ -2,10 +2,11 @@
 
 use crate::{
     aum::AUM,
-    governance::Abdicator,
-    governance::Gate,
-    governance::Timelocks,
-    storage_management::{require_attached_at_least, require_attached_for_pending_withdrawal},
+    governance::{Abdicator, Gate, TimelockedAction, Timelocks},
+    impl_callbacks::unwrap_or_return,
+    storage_management::{
+        require_attached_at_least, require_attached_for_pending_withdrawal, yocto_for_ft_account,
+    },
 };
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
@@ -27,7 +28,7 @@ use near_sdk_contract_tools::{
 use near_sdk_contract_tools::{owner::Owner, rbac};
 use near_sdk_contract_tools::{owner::OwnerExternal, rbac::Rbac};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     num::NonZeroU8,
 };
 use templar_common::{
@@ -35,22 +36,34 @@ use templar_common::{
     market::ext_market,
     panic_with_message,
     vault::{
-        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, Error, Event,
-        IdleBalanceDelta, Locker, MarketConfiguration, OpState, PayoutState, PendingWithdrawal,
-        QueueAction, QueueStatus, Reason, TimestampNs, UnbrickPhase, VaultConfiguration,
-        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
-        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, MAX_TIMELOCK_NS,
-        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS,
+        require_at_least,
+        wad::{
+            compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
+            Number, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+        },
+        AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
+        FeeAccrualAnchor, Fees, IdleBalanceDelta, Locker, MarketConfiguration, MarketId, OpState,
+        PayoutState, PendingValue, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport,
+        Reason, RefreshingState, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase,
+        WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS,
+        EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS,
+        MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
+        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
-pub use wad::*;
+
+const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
+const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120_000_000_000; // 120 seconds
 
 pub mod aum;
 pub mod governance;
+
 pub mod impl_callbacks;
 pub mod impl_token_receiver;
+pub(crate) mod op_guard;
 pub mod storage_management;
-pub mod wad;
+
+mod impl_vault_external;
 
 #[cfg(test)]
 mod test_utils;
@@ -73,21 +86,37 @@ pub enum Role {
     /// Safety backstop that can revoke pending governance changes (e.g., timelock/guardian).
     /// Has no authority to change caps or the supply queue on its own.
     Guardian,
+    /// Emergency role distinct from the guardian.
+    /// Can revoke pending governance, perform emergency deallocations, and cancel stuck withdrawals.
+    Sentinel,
     /// Operational role for allocation and withdrawal execution.
     /// May set the supply_queue while the vault is Idle; cannot modify caps/timelocks/guardian.
     Allocator,
 }
 
 #[near(serializers = [borsh])]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MarketRecord {
+    pub account: AccountId,
     pub cfg: MarketConfiguration,
     pub principal: u128,
 }
 
-impl From<MarketConfiguration> for MarketRecord {
-    fn from(cfg: MarketConfiguration) -> Self {
-        Self { cfg, principal: 0 }
+impl MarketRecord {
+    pub fn new(account: AccountId) -> Self {
+        Self {
+            account,
+            cfg: MarketConfiguration::default(),
+            principal: 0,
+        }
+    }
+
+    pub fn with_parts(account: AccountId, cfg: MarketConfiguration, principal: u128) -> Self {
+        Self {
+            account,
+            cfg,
+            principal,
+        }
     }
 }
 
@@ -119,14 +148,12 @@ pub struct Contract {
     underlying_asset: FungibleAsset<BorrowAsset>,
     /// The process in which the vault calculates its assets under management
     aum: AUM,
-    /// Performance fee
-    performance_fee: Wad,
-    /// The recipient of performance fees
-    fee_recipient: AccountId,
+    /// Fees (rate + recipient)
+    fees: Fees<Wad>,
     /// The recipient of any skimmed tokens that are erroneously held by the vault
     skim_recipient: AccountId,
-    /// Last recorded total assets (for fee accrual)
-    last_total_assets: u128,
+    /// Fee accrual anchor (assets + timestamp)
+    fee_anchor: FeeAccrualAnchor,
     /// Vaults liquidity buffer
     idle_balance: u128,
 
@@ -134,19 +161,34 @@ pub struct Contract {
     op_state: OpState,
     /// The next operation id
     next_op_id: u64,
+    /// Last timestamp a refresh_markets call succeeded
+    last_refresh_ns: u64,
+    /// Cooldown between refresh_markets calls (ns)
+    refresh_cooldown_ns: u64,
+
+    idle_resync_last_ns: u64,
+    idle_resync_cooldown_ns: u64,
+    idle_resync_inflight_op_id: u64,
 
     /// Virtual offsets used only in conversions/previews to harden edge cases
     virtual_shares: u128,
     virtual_assets: u128,
 
-    /// Markets controlled by the vault
-    markets: BTreeMap<AccountId, MarketRecord>,
+    /// Markets controlled by the vault, keyed by stable MarketId.
+    markets: BTreeMap<MarketId, MarketRecord>,
+    /// Reverse lookup from market AccountId to MarketId.
+    market_ids: BTreeMap<AccountId, MarketId>,
+    /// Cap groups for correlated risk throttling
+    cap_groups: BTreeMap<CapGroupId, CapGroupRecord>,
+
+    /// Next identifier to assign when creating a market
+    next_market_id: u32,
 
     /// Per‑action governance timelock configuration.
     governance_timelocks: Timelocks,
 
     /// Ordered list of market IDs for deposit allocation
-    supply_queue: BTreeSet<AccountId>,
+    supply_queue: Vec<MarketId>,
 
     /// Pending withdrawals queue
     pending_withdrawals: IterableMap<u64, PendingWithdrawal>,
@@ -156,7 +198,7 @@ pub struct Contract {
     market_execution_lock: Locker,
 
     // Keeper-provided withdraw route for the current Withdrawing op
-    withdraw_route: Vec<AccountId>,
+    withdraw_route: Vec<MarketId>,
 
     abdicator: Abdicator,
     gate: Gate,
@@ -172,14 +214,17 @@ impl Contract {
             owner,
             curator,
             guardian,
+            sentinel,
             underlying_token,
             initial_timelock_ns,
-            fee_recipient,
             skim_recipient,
             name,
             symbol,
             decimals,
             restrictions,
+            fees,
+            refresh_cooldown_ns,
+            idle_resync_cooldown_ns,
         } = configuration;
 
         require!(
@@ -187,26 +232,41 @@ impl Contract {
             "timelock bounds"
         );
 
+        require!(
+            fees.management.fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
+            "management fee too high"
+        );
+        require!(
+            fees.performance.fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
+            "performance fee too high"
+        );
+
         let mut contract = Self {
             underlying_asset: underlying_token,
             aum: AUM::BalanceSheet,
-            performance_fee: Wad::default(),
-            fee_recipient,
+            fees,
             skim_recipient,
+            fee_anchor: FeeAccrualAnchor {
+                total_assets: U128::default(),
+                timestamp_ns: env::block_timestamp().into(),
+            },
             markets: BTreeMap::new(),
-            governance_timelocks: governance::Timelocks::new(
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-                initial_timelock_ns.0,
-            ),
-            supply_queue: BTreeSet::default(),
-            last_total_assets: 0,
+            market_ids: BTreeMap::new(),
+            cap_groups: BTreeMap::new(),
+            governance_timelocks: initial_timelock_ns.0.into(),
+            next_market_id: 0,
+            supply_queue: Vec::new(),
             virtual_shares: 1,
             virtual_assets: 1,
             idle_balance: 0,
             op_state: OpState::Idle,
             next_op_id: 1,
+            last_refresh_ns: 0,
+            refresh_cooldown_ns: refresh_cooldown_ns.map_or(DEFAULT_REFRESH_COOLDOWN_NS, |v| v.0),
+            idle_resync_last_ns: 0,
+            idle_resync_cooldown_ns: idle_resync_cooldown_ns
+                .map_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS, |v| v.0),
+            idle_resync_inflight_op_id: 0,
             pending_withdrawals: IterableMap::new(
                 [
                     b'v'.into_storage_key().as_slice(),
@@ -226,11 +286,13 @@ impl Contract {
         Rbac::add_role(&mut contract, &curator, &Role::Curator);
         Rbac::add_role(&mut contract, &curator, &Role::Allocator);
         Rbac::add_role(&mut contract, &guardian, &Role::Guardian);
+        Rbac::add_role(&mut contract, &sentinel, &Role::Sentinel);
 
         contract.set_storage_balance_bounds(&StorageBalanceBounds {
-            min: NearToken::from_millinear(2),
+            min: NearToken::from_yoctonear(yocto_for_ft_account()),
             max: None,
         });
+
         contract
     }
 
@@ -239,6 +301,9 @@ impl Contract {
     #[payable]
     pub fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()> {
         require_at_least(templar_common::vault::WITHDRAW_GAS);
+        if self.idle_resync_inflight_op_id != 0 {
+            panic_with_message("Cannot withdraw/redeem during idle resync");
+        }
         self.internal_accrue_fee();
         let shares_needed = self.preview_withdraw(amount).0;
         Event::WithdrawPreview {
@@ -254,24 +319,29 @@ impl Contract {
     #[payable]
     pub fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()> {
         let shares = shares.0;
-        let assets = self.convert_to_assets(U128(shares)).0;
         let sender = env::predecessor_account_id();
 
-        // Gate withdraw entrypoint: who is sending and who will receive assets.
         self.gate.enforce_policy(&sender);
         self.gate.enforce_policy(&receiver);
 
         require!(shares > 0, "Invalid shares");
-        require!(assets > 0, "Dust redeem would yield 0 assets");
+
+        if self.idle_resync_inflight_op_id != 0 {
+            panic_with_message("Cannot withdraw/redeem during idle resync");
+        }
 
         let _ = require_attached_for_pending_withdrawal();
+
+        self.internal_accrue_fee();
+
+        // Compute assets after fee accrual for accurate conversion
+        let assets = self.convert_to_assets(U128(shares)).0;
+        require!(assets > 0, "Dust redeem would yield 0 assets");
 
         Gate::bypass_transfer(
             self,
             &Nep141Transfer::new(shares, &sender, env::current_account_id()),
         );
-
-        self.internal_accrue_fee();
 
         Event::RedeemRequested {
             shares: U128(shares),
@@ -283,24 +353,26 @@ impl Contract {
         PromiseOrValue::Value(())
     }
 
-    /// Executes the withdraw route provided by the allocator
-    /// If `route` is empty, try to settle with the idle balance
-    pub fn execute_withdrawal(&mut self, route: Vec<AccountId>) -> PromiseOrValue<()> {
+    /// Executes the withdraw route provided by the allocator.
+    /// If `route` is empty, try to settle with the idle balance.
+    pub fn execute_withdrawal(&mut self, route: Vec<MarketId>) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         self.ensure_idle();
         Self::assert_allocator();
+
         self.internal_accrue_fee();
 
-        if let Some(id) = self.peek_next_pending_withdrawal_id() {
+        while let Some(id) = self.peek_next_pending_withdrawal_id() {
             let pending = self
                 .pending_withdrawals
                 .get(&id)
-                .unwrap_or_else(|| env::panic_str("pending vanished unexpectedly"));
+                .unwrap_or_else(|| panic_with_message("pending vanished unexpectedly"));
+
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::ExecutionStarted,
                 op_id: None,
                 id: Some(id.into()),
-                market_index: None,
+                market: None,
                 owner: Some(pending.owner.clone()),
                 receiver: Some(pending.receiver.clone()),
                 escrow_shares: Some(U128(pending.escrow_shares)),
@@ -309,15 +381,17 @@ impl Contract {
             }
             .emit();
 
+            let expected_assets = pending.expected_assets;
             let owner = pending.owner.clone();
             let receiver = pending.receiver.clone();
 
-            if pending.expected_assets == 0 {
+            // Skip dust request to avoid wedging the queue.
+            if expected_assets == 0 {
                 Event::WithdrawProgress {
                     phase: WithdrawProgressPhase::SkippedDust,
                     op_id: None,
                     id: Some(id.into()),
-                    market_index: None,
+                    market: None,
                     owner: None,
                     receiver: None,
                     escrow_shares: None,
@@ -325,9 +399,8 @@ impl Contract {
                     requested_at: None,
                 }
                 .emit();
-                // Skip dust request to avoid wedging the queue
                 self.pop_head();
-                return self.execute_withdrawal(route);
+                continue;
             }
 
             return self.start_withdraw(
@@ -338,21 +411,17 @@ impl Contract {
                 route,
             );
         }
-        Event::WithdrawQueueStatus {
-            status: QueueStatus::Empty,
-            id: None,
-        }
-        .emit();
 
         PromiseOrValue::Value(())
     }
 
-    /// Allocator-only. Progress the current Withdrawing op by executing the market at `market_index`
-    /// from the `withdraw_route`. Use when offchain signals the vault is next in the market queue.
+    /// Allocator-only. Progress the current Withdrawing op by executing `market`
+    /// from the `withdraw_route`.
+    /// Use when offchain signals the vault is next in the market queue.
     pub fn execute_market_withdrawal(
         &mut self,
         op_id: U64,
-        market_index: u32,
+        market: MarketId,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
@@ -364,18 +433,24 @@ impl Contract {
             Err(_) => panic_with_message("Not withdrawing"),
         };
 
-        if let Err(e) = self.resolve_withdraw_market(market_index) {
-            return self.stop_and_exit(Some(&e));
-        }
+        let Some(route_index) = self
+            .withdraw_route
+            .iter()
+            .position(|m| *m == market)
+            .and_then(|idx| u32::try_from(idx).ok())
+        else {
+            return self.stop_and_exit(Some(&Error::MissingMarket(market)));
+        };
 
-        self.market_execution_lock.lock(market_index);
-
-        if ctx.index != market_index {
+        if ctx.index != route_index {
             self.op_state = OpState::Withdrawing(WithdrawingState {
-                index: market_index,
+                index: route_index,
                 ..ctx
             });
         }
+
+        self.market_execution_lock.lock(market);
+
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
                 .with_static_gas(FT_BALANCE_OF_GAS)
@@ -386,64 +461,66 @@ impl Contract {
                         .with_unused_gas_weight(100)
                         .execute_withdraw_01_execute_withdraw_fetch_position(
                             op_id.into(),
-                            market_index,
+                            market,
                             batch_limit,
                         ),
                 ),
         )
     }
 
-    /// Allocator-only. Executes an existing market-side supply withdrawal request
-    /// for `market` and credits any returned underlying to the vault's
-    /// `idle_balance`, without touching the user withdrawal queue
-    /// (`pending_withdrawals`) or the payout state machine.
+    /// Allocator/Curator/Sentinel/Owner only. Executes an existing market-side supply withdrawal
+    /// request for `market` and credits any returned underlying to the vault's `idle_balance`,
+    /// without touching the user withdrawal queue (`pending_withdrawals`) or the payout state
+    /// machine.
     ///
-    /// This is a pure rebalance operation:
-    /// - `total_assets` and `total_supply` are preserved.
-    /// - Only per-market principal and `idle_balance` are updated.
+    /// This is intended as a pure rebalance operation:
+    /// - (Aside from fee accrual) `total_assets` and `total_supply` are preserved.
+    /// - Only per-market principal and `idle_balance` are updated by the async callbacks.
     /// - No pending user withdrawal is dequeued or paid out.
     ///
     /// Implementation details:
-    /// - Uses `OpState::Allocating` as a generic in-flight guard for this
-    ///   rebalance op.
-    /// - Locks the target market index in `market_execution_lock` to serialize
-    ///   the underlying market call.
+    /// - Uses `OpState::Allocating` as a generic in-flight guard for this rebalance op.
+    /// - Locks the target market index in `market_execution_lock` to serialize the underlying
+    ///   market call.
     ///
-    /// Expects that a supply withdrawal request for this vault already exists
-    /// in the given `market` and is ready to be executed.
+    /// Expects that a supply withdrawal request for this vault already exists in the given
+    /// `market` and is ready to be executed.
     pub fn execute_rebalance_withdrawal(
         &mut self,
-        market: AccountId,
+        market_id: MarketId,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
-        Self::assert_allocator();
+        Self::assert_allocator_or_sentinel();
 
         self.ensure_idle();
-        self.internal_accrue_fee();
 
-        let principal = self.principal_of(&market);
-        require!(principal > 0, "No principal to withdraw");
+        let batch_limit = batch_limit.filter(|n| *n > 0);
 
         let op_id = self.next_op_id;
 
-        let Some(market_index) = self.rebalance_lock_index(&market) else {
+        if self.market_record_by_id(market_id).is_none() {
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
-                market,
-                reason: Some(Reason::Other("Missing market record".to_string())),
+                market: market_id,
+                reason: Some(Reason::Other("Unknown market".to_string())),
             }
             .emit();
             return PromiseOrValue::Value(());
-        };
+        }
 
-        self.market_execution_lock.lock(market_index);
+        self.internal_accrue_fee();
+
+        let principal = self.principal_of(market_id);
+        require!(principal > 0, "No principal to withdraw");
+
+        self.market_execution_lock.lock(market_id);
 
         // Use Allocating as a generic in-flight guard for this rebalancing op.
         self.next_op_id = op_id.saturating_add(1);
         self.op_state = OpState::Allocating(AllocatingState {
             op_id,
-            index: market_index,
+            index: 0,
             remaining: 0,
             plan: Vec::new(),
         });
@@ -458,9 +535,111 @@ impl Contract {
                         .with_unused_gas_weight(100)
                         .rebalance_withdraw_01_execute_withdraw_fetch_position(
                             op_id,
-                            market,
+                            market_id,
                             batch_limit,
                             U128(principal),
+                        ),
+                ),
+        )
+    }
+
+    /// Permissionless and throttled.
+    /// Refresh principals from markets and return a live assets report; updates stored principals.
+    /// Pass an empty `markets` vector to refresh all configured markets.
+    pub fn refresh_markets(&mut self, markets: Vec<MarketId>) -> PromiseOrValue<RealAssetsReport> {
+        let mut idle = crate::op_guard::IdleGuard::new(self);
+
+        let mut plan = idle.refresh_targets(markets);
+        plan.sort_unstable();
+        plan.dedup();
+
+        require!(!plan.is_empty(), "No markets to refresh");
+
+        let now = env::block_timestamp();
+        require!(
+            now.saturating_sub(idle.last_refresh_ns) >= idle.refresh_cooldown_ns,
+            "Refresh throttled"
+        );
+        idle.last_refresh_ns = now;
+
+        let op_id = idle.next_op_id;
+        idle.next_op_id = idle.next_op_id.saturating_add(1);
+
+        Event::RefreshStarted {
+            op_id: op_id.into(),
+            markets: plan.clone(),
+            caller: env::predecessor_account_id(),
+        }
+        .emit();
+
+        let mut refreshing = idle.start_refreshing(RefreshingState {
+            op_id,
+            index: 0,
+            plan,
+        });
+
+        refreshing.refresh_step(op_id)
+    }
+
+    /// Permissionless and throttled.
+    /// Re-syncs idle_balance to the vault's actual underlying FT balance.
+    /// Blocking: sets op_state to Allocating during the async balance read.
+    pub fn resync_idle_balance(
+        &mut self,
+    ) -> PromiseOrValue<templar_common::vault::ResyncIdleReport> {
+        require_at_least(templar_common::vault::RESYNC_IDLE_GAS);
+        self.ensure_idle();
+
+        if self.idle_resync_inflight_op_id != 0 {
+            panic_with_message("Idle resync already in flight")
+        }
+
+        let now = env::block_timestamp();
+        require!(
+            now.saturating_sub(self.idle_resync_last_ns) >= self.idle_resync_cooldown_ns,
+            "Idle resync throttled"
+        );
+
+        self.idle_resync_last_ns = now;
+
+        self.internal_accrue_fee();
+
+        let op_id = self.next_op_id;
+        self.next_op_id = self.next_op_id.saturating_add(1);
+
+        self.idle_resync_inflight_op_id = op_id;
+
+        let before_idle = self.idle_balance;
+        let caller = env::predecessor_account_id();
+
+        self.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: 0,
+            remaining: 0,
+            plan: Vec::new(),
+        });
+
+        Event::IdleResyncStarted {
+            op_id: op_id.into(),
+            caller: caller.clone(),
+            before_idle: U128(before_idle),
+            started_at_ns: now.into(),
+        }
+        .emit();
+
+        PromiseOrValue::Promise(
+            ext_ft_core::ext(self.underlying_asset.contract_id().into())
+                .with_static_gas(FT_BALANCE_OF_GAS)
+                .with_unused_gas_weight(0)
+                .ft_balance_of(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(templar_common::vault::RESYNC_IDLE_CALLBACK_GAS)
+                        .resync_idle_balance_01_settle(
+                            op_id,
+                            caller.clone(),
+                            U128(before_idle),
+                            now,
                         ),
                 ),
         )
@@ -472,7 +651,7 @@ impl Contract {
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
     /// - Clears withdraw state and market execution locks and returns the vault to Idle.
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
-        Self::assert_allocator();
+        Self::assert_allocator_or_sentinel();
 
         match self.op_state.clone() {
             OpState::Withdrawing(s) => {
@@ -484,16 +663,15 @@ impl Contract {
                 }
                 .emit();
 
-                // stop_and_exit_withdrawing refunds escrow, unlocks current index, clears route,
-                // dequeues the inflight request and sets the vault back to Idle.
                 self.stop_and_exit_withdrawing::<&str>(None);
                 PromiseOrValue::Value(())
             }
             OpState::Payout(s) => {
                 let id = self.next_withdraw_to_execute;
+                let op_id = s.op_id;
                 Event::UnbrickInvoked {
                     phase: UnbrickPhase::Payout,
-                    op_id: Some(s.op_id.into()),
+                    op_id: Some(op_id.into()),
                     id: Some(id.into()),
                 }
                 .emit();
@@ -507,9 +685,10 @@ impl Contract {
                         .then(
                             Self::ext(env::current_account_id())
                                 .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                                .stop_and_exit_payout_01_reconcile(Some(Reason::Other(
-                                    "unbrick_payout".to_string(),
-                                ))),
+                                .stop_and_exit_payout_01_reconcile(
+                                    op_id,
+                                    Some(Reason::Other("unbrick_payout".to_string())),
+                                ),
                         ),
                 )
             }
@@ -554,7 +733,10 @@ impl Contract {
     ///
     /// NOTE: When we rewrite this we should use a delta based approach
     pub fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()> {
-        Self::assert_allocator();
+        match &delta {
+            AllocationDelta::Supply(_) => Self::assert_allocator(),
+            AllocationDelta::Withdraw(_) => Self::assert_allocator_or_sentinel(),
+        }
         self.ensure_idle();
         self.internal_accrue_fee();
         delta.as_ref().validate();
@@ -570,7 +752,7 @@ impl Contract {
                     total: U128(total),
                     plan: plan
                         .iter()
-                        .cloned()
+                        .copied()
                         .map(|(market, amount)| (market, amount.into()))
                         .collect(),
                 }
@@ -581,73 +763,33 @@ impl Contract {
             AllocationDelta::Withdraw(delta) => {
                 require_at_least(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS);
 
-                let to_request = self.principal_of(&delta.market).min(delta.amount.0);
+                let to_request = self.principal_of(delta.market).min(delta.amount.0);
                 require!(to_request > 0, "Insufficient principal");
 
+                let market_id = delta.market;
+
                 Event::SupplyWithdrawRequestCreated {
-                    market: delta.market.clone(),
+                    market: market_id,
                     amount: U128(to_request),
                 }
                 .emit();
 
-                let market = delta.market.clone();
                 let amount = U128(to_request);
 
+                let market_account = self.market_account_by_id_or_panic(market_id).clone();
+
                 PromiseOrValue::Promise(
-                    ext_market::ext(market.clone())
+                    ext_market::ext(market_account)
                         .with_static_gas(CREATE_WITHDRAW_REQ_GAS)
                         .create_supply_withdrawal_request(BorrowAssetAmount::from(amount))
                         .then(
                             Self::ext(env::current_account_id())
                                 .with_static_gas(WITHDRAW_CREATE_REQUEST_CALLBACK_GAS)
-                                .rebalance_withdraw_01_after_create_request(market, amount),
+                                .rebalance_withdraw_01_after_create_request(market_id, amount),
                         ),
                 )
             }
         }
-    }
-
-    fn queue_tail(&self) -> u64 {
-        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
-    }
-
-    fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
-        let tail = self.queue_tail();
-        if self.next_withdraw_to_execute < tail {
-            Event::WithdrawQueueStatus {
-                status: QueueStatus::NextFound,
-                id: Some(self.next_withdraw_to_execute.into()),
-            }
-            .emit();
-            Some(self.next_withdraw_to_execute)
-        } else {
-            Event::WithdrawQueueStatus {
-                status: QueueStatus::Empty,
-                id: None,
-            }
-            .emit();
-            None
-        }
-    }
-
-    fn pop_head(&mut self) {
-        let id = self.next_withdraw_to_execute;
-        let removed = self.pending_withdrawals.remove(&id);
-        require!(removed.is_some(), "queue corrupt: head missing");
-        self.next_withdraw_to_execute = id.saturating_add(1);
-        Event::WithdrawQueueUpdate {
-            action: QueueAction::Dequeued,
-            id: id.into(),
-        }
-        .emit();
-    }
-
-    fn park_head_for_retry(&mut self) {
-        Event::WithdrawQueueUpdate {
-            action: QueueAction::Parked,
-            id: self.next_withdraw_to_execute.into(),
-        }
-        .emit();
     }
 }
 
@@ -661,46 +803,53 @@ impl Contract {
     #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
         let meta = self.get_metadata();
+        let role_member = |role: &Role, name: &'static str| {
+            Self::with_members_of(role, |members| {
+                require!(
+                    members.len() == 1,
+                    format!("Invariant violation: Cannot have more than one {name}")
+                );
+                members.iter().next().unwrap_or_else(|| {
+                    panic_with_message(&format!("{name} not set in get_configuration"))
+                })
+            })
+        };
+
         VaultConfiguration {
             owner: self.own_get_owner().unwrap_or_else(|| {
                 templar_common::panic_with_message("Owner not set in get_configuration")
             }),
-            curator: Self::with_members_of(&Role::Curator, |members| {
-                require!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot have more than one Curator"
-                );
-                members
-                    .iter()
-                    .next()
-                    .expect("Curator not set in get_configuration")
-                    .clone()
-            }),
-            guardian: Self::with_members_of(&Role::Guardian, |members| {
-                require!(
-                    members.len() == 1,
-                    "Invariant violation: Cannot have more than one Guardian"
-                );
-                members
-                    .iter()
-                    .next()
-                    .expect("Guardian not set in get_configuration")
-                    .clone()
-            }),
+            curator: role_member(&Role::Curator, "Curator"),
+            guardian: role_member(&Role::Guardian, "Guardian"),
+            sentinel: role_member(&Role::Sentinel, "Sentinel"),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
-            fee_recipient: self.fee_recipient.clone(),
+            fees: self.fees.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
             symbol: meta.symbol,
             decimals: NonZeroU8::new(meta.decimals).expect("Decimals must be non-zero"),
             restrictions: self.gate.restrictions.clone(),
+            refresh_cooldown_ns: Some(self.refresh_cooldown_ns.into()),
+            idle_resync_cooldown_ns: Some(self.idle_resync_cooldown_ns.into()),
         }
+    }
+
+    /// Returns all pending timelocked governance actions.
+    pub fn get_pending_governance_actions(&self) -> Vec<PendingValue<TimelockedAction>> {
+        self.governance_timelocks
+            .pending_actions()
+            .into_iter()
+            .collect()
     }
 
     /// Returns total assets under management = idle balance + sum of market principals.
     pub fn get_total_assets(&self) -> U128 {
         self.aum.get_total_assets(self)
+    }
+
+    pub fn get_last_total_assets(&self) -> U128 {
+        self.fee_anchor.total_assets
     }
 
     pub fn get_idle_balance(&self) -> U128 {
@@ -711,19 +860,68 @@ impl Contract {
         U128(self.total_supply())
     }
 
+    pub fn get_cap_groups(&self) -> Vec<(CapGroupId, CapGroupRecord)> {
+        self.cap_groups
+            .iter()
+            .map(|(id, rec)| (id.clone(), rec.clone()))
+            .collect()
+    }
+
+    pub fn get_fee_anchor(&self) -> FeeAccrualAnchor {
+        self.fee_anchor.clone()
+    }
+
+    pub fn get_fees(&self) -> Fees<U128> {
+        Fees {
+            performance: templar_common::vault::Fee {
+                fee: U128(u128::from(self.fees.performance.fee)),
+                recipient: self.fees.performance.recipient.clone(),
+            },
+            management: templar_common::vault::Fee {
+                fee: U128(u128::from(self.fees.management.fee)),
+                recipient: self.fees.management.recipient.clone(),
+            },
+            max_total_assets_growth_rate: self
+                .fees
+                .max_total_assets_growth_rate
+                .map(|r| U128(u128::from(r))),
+        }
+    }
+
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
-    /// across all markets given current caps and the current `supply_queue`.
+    /// across all markets given current caps (including cap-group relative-to-AUM caps)
+    /// and the current `supply_queue`.
+    ///
+    /// For relative caps, the bound depends on total assets, so this is computed as a
+    /// fixed point: `x <= max_allocatable_room(total_assets + x)`.
     ///
     /// This does not reserve capacity and may become stale immediately after it is read.
     pub fn get_max_deposit(&self) -> U128 {
-        let total = self
-            .supply_queue
+        let base_total_assets = self.total_assets_for_caps();
+        let rounding_slack = self.relative_cap_rounding_slack();
+
+        let markets = self.supply_queue_market_infos();
+
+        let mut low = 0u128;
+        let mut high = markets
             .iter()
-            .fold(0u128, |acc, m| match self.markets.get(m) {
-                Some(rec) if rec.cfg.cap.0 > 0 => acc + rec.cfg.cap.0.saturating_sub(rec.principal),
-                _ => acc,
-            });
-        U128(total)
+            .fold(0u128, |acc, m| acc.saturating_add(m.cap_room));
+
+        while low < high {
+            let diff = high.saturating_sub(low);
+            let mid = low.saturating_add(diff.saturating_add(1) / 2);
+
+            let total_assets = base_total_assets.saturating_add(mid);
+            let room = self.max_allocatable_room_at_precomputed(total_assets, &markets);
+
+            if mid <= room.saturating_add(rounding_slack) {
+                low = mid;
+            } else {
+                high = mid.saturating_sub(1);
+            }
+        }
+
+        U128(low)
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
@@ -736,12 +934,7 @@ impl Contract {
         let max_room = self
             .supply_queue
             .iter()
-            .fold(0u128, |acc, m| match self.markets.get(m) {
-                Some(rec) if rec.cfg.cap.0 > 0 => {
-                    acc.max(rec.cfg.cap.0.saturating_sub(rec.principal))
-                }
-                _ => acc,
-            });
+            .fold(0u128, |acc, m| acc.max(self.room_of(*m)));
         U128(max_room)
     }
 
@@ -824,27 +1017,320 @@ impl Contract {
             _ => None,
         }
     }
+
+    pub fn queue_tail(&self) -> u64 {
+        self.next_withdraw_to_execute + u64::from(self.pending_withdrawals.len())
+    }
+
+    pub fn peek_next_pending_withdrawal_id(&self) -> Option<u64> {
+        let tail = self.queue_tail();
+        if self.next_withdraw_to_execute < tail {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::NextFound,
+                id: Some(self.next_withdraw_to_execute.into()),
+            }
+            .emit();
+            Some(self.next_withdraw_to_execute)
+        } else {
+            Event::WithdrawQueueStatus {
+                status: QueueStatus::Empty,
+                id: None,
+            }
+            .emit();
+            None
+        }
+    }
+
+    pub fn build_real_assets_report(&self) -> RealAssetsReport {
+        let per_market = self
+            .markets
+            .iter()
+            .map(|(id, rec)| (*id, U128(rec.principal)))
+            .collect();
+        RealAssetsReport {
+            total_assets: self.get_total_assets(),
+            per_market,
+            refreshed_at: env::block_timestamp().into(),
+        }
+    }
+
+    pub fn get_market_id_of_account(&self, market: AccountId) -> Option<MarketId> {
+        self.market_id_of(&market)
+    }
+
+    pub fn get_market_account_by_id(&self, market_id: U64) -> Option<AccountId> {
+        let id = u32::try_from(market_id.0).ok()?;
+        self.market_account_by_id(MarketId::from(id)).cloned()
+    }
+
+    pub fn list_markets_with_ids(&self) -> Vec<(U64, AccountId)> {
+        self.markets
+            .iter()
+            .map(|(id, rec)| (U64::from(u64::from(u32::from(*id))), rec.account.clone()))
+            .collect()
+    }
 }
 
 /* ----- Private Helpers ----- */
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleCoverage {
     pub remaining_unmet: u128,
     pub collected_from_idle: u128,
 }
 
+#[derive(Debug, Clone)]
+struct SupplyQueueMarketInfo {
+    cap_room: u128,
+    cap_group_id: Option<CapGroupId>,
+}
+
 impl Contract {
-    fn principal_of(&self, market: &AccountId) -> u128 {
-        self.markets.get(market).map_or(0, |r| r.principal)
+    fn principal_of(&self, market_id: MarketId) -> u128 {
+        self.market_record_by_id(market_id)
+            .map_or(0, |r| r.principal)
     }
 
-    fn cap_of(&self, market: &AccountId) -> u128 {
-        self.markets.get(market).map_or(0, |r| r.cfg.cap.0)
+    fn market_cap_group_id(&self, market_id: MarketId) -> Option<CapGroupId> {
+        self.market_record_by_id(market_id)
+            .and_then(|r| r.cfg.cap_group_id.clone())
     }
 
-    fn room_of(&self, market: &AccountId) -> u128 {
-        self.cap_of(market)
-            .saturating_sub(self.principal_of(market))
+    fn total_assets_for_caps(&self) -> u128 {
+        // For relative caps we want “true” AUM. During allocation we temporarily
+        // decrement `idle_balance` to reserve funds, so include `Allocating.remaining`.
+        let mut total = self.get_total_assets().0;
+        if let OpState::Allocating(s) = &self.op_state {
+            total = total.saturating_add(s.remaining);
+        }
+        total
+    }
+
+    fn supply_queue_market_infos(&self) -> Vec<SupplyQueueMarketInfo> {
+        self.supply_queue
+            .iter()
+            .filter_map(|market_id| {
+                let rec = self.market_record_by_id(*market_id)?;
+                Some(SupplyQueueMarketInfo {
+                    cap_room: rec.cfg.cap.0.saturating_sub(rec.principal),
+                    cap_group_id: rec.cfg.cap_group_id.clone(),
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn market_room_upper_bound(&self) -> u128 {
+        self.supply_queue_market_infos()
+            .iter()
+            .fold(0u128, |acc, market| acc.saturating_add(market.cap_room))
+    }
+
+    fn cap_group_effective_cap(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
+        let Some(rec) = self.cap_groups.get(cap_group) else {
+            return 0;
+        };
+
+        let rel_cap = rec.relative_cap.min(Wad::one());
+        if rel_cap >= Wad::one() {
+            return rec.cap.0;
+        }
+
+        let rel_cap_assets: u128 = rel_cap.apply_floored(total_assets.into()).into();
+
+        rec.cap.0.min(rel_cap_assets)
+    }
+
+    fn cap_group_room_remaining_at(&self, cap_group: &CapGroupId, total_assets: u128) -> u128 {
+        let Some(rec) = self.cap_groups.get(cap_group) else {
+            return 0;
+        };
+
+        self.cap_group_effective_cap(cap_group, total_assets)
+            .saturating_sub(rec.principal)
+    }
+
+    fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
+        self.cap_group_room_remaining_at(cap_group, self.total_assets_for_caps())
+    }
+
+    #[cfg(test)]
+    fn max_allocatable_room_at(&self, total_assets: u128) -> u128 {
+        let markets = self.supply_queue_market_infos();
+        self.max_allocatable_room_at_precomputed(total_assets, &markets)
+    }
+
+    fn max_allocatable_room_at_precomputed(
+        &self,
+        total_assets: u128,
+        markets: &[SupplyQueueMarketInfo],
+    ) -> u128 {
+        let mut total = 0u128;
+        let mut group_remaining: BTreeMap<CapGroupId, u128> = BTreeMap::new();
+
+        for market in markets {
+            let market_room = market.cap_room;
+            if market_room == 0 {
+                continue;
+            }
+
+            if let Some(group_id) = market.cap_group_id.as_ref() {
+                let entry = group_remaining
+                    .entry(group_id.clone())
+                    .or_insert_with(|| self.cap_group_room_remaining_at(group_id, total_assets));
+                if *entry == 0 {
+                    continue;
+                }
+                let room = market_room.min(*entry);
+                total = total.saturating_add(room);
+                *entry = entry.saturating_sub(room);
+            } else {
+                total = total.saturating_add(market_room);
+            }
+        }
+
+        total
+    }
+
+    fn relative_cap_rounding_slack(&self) -> u128 {
+        let mut groups = HashSet::<CapGroupId>::new();
+
+        for market in &self.supply_queue {
+            let Some(group_id) = self.market_cap_group_id(*market) else {
+                continue;
+            };
+            let Some(rec) = self.cap_groups.get(&group_id) else {
+                continue;
+            };
+
+            if rec.cap.0 == 0 {
+                continue;
+            }
+
+            if rec.relative_cap < Wad::one() {
+                groups.insert(group_id);
+            }
+        }
+
+        u128::from(groups.len() as u64)
+    }
+
+    fn room_of(&self, market_id: MarketId) -> u128 {
+        let Some(rec) = self.market_record_by_id(market_id) else {
+            return 0;
+        };
+
+        let market_room = rec.cfg.cap.0.saturating_sub(rec.principal);
+        if market_room == 0 {
+            return 0;
+        }
+
+        if let Some(cap_group) = rec.cfg.cap_group_id.as_ref() {
+            return market_room.min(self.cap_group_room_remaining(cap_group));
+        }
+
+        market_room
+    }
+
+    pub(crate) fn update_cap_group_principal(
+        &mut self,
+        cap_group: &CapGroupId,
+        old: u128,
+        new: u128,
+    ) {
+        if old == new {
+            return;
+        }
+        let entry = self.cap_groups.entry(cap_group.clone()).or_default();
+        if new >= old {
+            entry.principal = entry.principal.saturating_add(new - old);
+        } else {
+            entry.principal = entry.principal.saturating_sub(old - new);
+        }
+        Event::CapGroupPrincipalUpdated {
+            cap_group: cap_group.clone(),
+            principal: U128(entry.principal),
+        }
+        .emit();
+    }
+
+    pub(crate) fn set_market_principal(&mut self, market_id: MarketId, new_principal: u128) {
+        let Some(rec) = self.market_record_by_id_mut(market_id) else {
+            return;
+        };
+
+        let old = rec.principal;
+        if old == new_principal {
+            return;
+        }
+
+        rec.principal = new_principal;
+        if let Some(cap_group) = rec.cfg.cap_group_id.clone() {
+            self.update_cap_group_principal(&cap_group, old, new_principal);
+        }
+    }
+
+    fn market_id_of(&self, market: &AccountId) -> Option<MarketId> {
+        self.market_ids.get(market).copied()
+    }
+
+    fn market_id_of_or_panic(&self, market: &AccountId) -> MarketId {
+        self.market_id_of(market)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market}")))
+    }
+
+    fn market_account_by_id(&self, market_id: MarketId) -> Option<&AccountId> {
+        self.markets.get(&market_id).map(|rec| &rec.account)
+    }
+
+    fn market_account_by_id_or_panic(&self, market_id: MarketId) -> &AccountId {
+        self.market_account_by_id(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
+    }
+
+    fn market_record_by_id(&self, market_id: MarketId) -> Option<&MarketRecord> {
+        self.markets.get(&market_id)
+    }
+
+    fn market_record_by_id_or_panic(&self, market_id: MarketId) -> &MarketRecord {
+        self.market_record_by_id(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
+    }
+
+    fn market_record_by_id_mut(&mut self, market_id: MarketId) -> Option<&mut MarketRecord> {
+        self.markets.get_mut(&market_id)
+    }
+
+    fn market_record_by_id_mut_or_panic(&mut self, market_id: MarketId) -> &mut MarketRecord {
+        self.market_record_by_id_mut(market_id)
+            .unwrap_or_else(|| panic_with_message(&format!("Unknown market: {market_id}")))
+    }
+
+    fn insert_market_record(&mut self, market_id: MarketId, record: MarketRecord) {
+        self.market_ids.insert(record.account.clone(), market_id);
+        self.markets.insert(market_id, record);
+    }
+
+    fn allocate_market_id(&mut self) -> MarketId {
+        let id = MarketId::from(self.next_market_id);
+        self.next_market_id = self
+            .next_market_id
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_message("market id overflow"));
+        id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_market_for_tests(
+        &mut self,
+        market: AccountId,
+        cfg: MarketConfiguration,
+        principal: u128,
+    ) -> MarketId {
+        let id = self.allocate_market_id();
+        let record = MarketRecord::with_parts(market.clone(), cfg, principal);
+        self.insert_market_record(id, record);
+        id
     }
 
     fn enqueue_pending_withdrawal(
@@ -883,16 +1369,33 @@ impl Contract {
     /// - Include fee shares that would be minted if fees accrued now.
     /// - Apply virtual offsets: +`virtual_shares` to supply and +`virtual_assets` to assets.
     fn effective_totals_fee_aware(&self) -> (u128, u128) {
-        let cur = self.get_total_assets().0;
+        let cur_total_assets = self.get_total_assets().0;
+        let now = env::block_timestamp();
         let ts = self.total_supply();
-        let (new_total_supply, new_total_assets) = Self::compute_effective_totals(
-            cur.into(),
-            self.last_total_assets.into(),
-            self.performance_fee,
-            ts.into(),
-            self.virtual_shares.into(),
-            self.virtual_assets.into(),
+        let anchor = &self.fee_anchor;
+
+        let fee_total_assets = self.total_assets_for_fee_accrual(cur_total_assets, anchor, now);
+
+        let mgmt_shares = self.compute_management_fee_shares(
+            fee_total_assets,
+            cur_total_assets,
+            ts,
+            anchor.timestamp_ns.0,
+            now,
         );
+        let ts_after_mgmt = Number::from(ts).saturating_add(mgmt_shares);
+
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets.0);
+        let fee_assets = self.fees.performance.fee.apply_floored(profit.into());
+        let performance_shares =
+            compute_fee_shares_from_assets(fee_assets, cur_total_assets.into(), ts_after_mgmt);
+
+        let new_total_supply = ts_after_mgmt
+            .saturating_add(performance_shares)
+            .saturating_add(self.virtual_shares.into());
+        let new_total_assets =
+            Number::from(cur_total_assets).saturating_add(self.virtual_assets.into());
+
         (new_total_supply.into(), new_total_assets.into())
     }
 
@@ -924,6 +1427,68 @@ impl Contract {
         (new_total_supply, new_total_assets)
     }
 
+    fn total_assets_for_fee_accrual(
+        &self,
+        cur_total_assets: u128,
+        anchor: &FeeAccrualAnchor,
+        now: u64,
+    ) -> u128 {
+        let Some(max_rate) = self.fees.max_total_assets_growth_rate else {
+            return cur_total_assets;
+        };
+
+        let anchor_assets = anchor.total_assets.0;
+
+        // Only clamp *positive* growth; otherwise (loss/no-change), leave as-is.
+        // Also ignore the limiter if the anchor is zero (avoid freezing at 0),
+        // or if time goes backwards.
+        if cur_total_assets <= anchor_assets || anchor_assets == 0 || now < anchor.timestamp_ns.0 {
+            return cur_total_assets;
+        }
+
+        let elapsed_ns = now - anchor.timestamp_ns.0;
+        if elapsed_ns == 0 {
+            return anchor_assets;
+        }
+
+        // Cap growth with an annualized max rate.
+        let annual_max_increase = max_rate.apply_floored(anchor_assets.into());
+        let max_increase = mul_div_floor(
+            annual_max_increase,
+            Number::from(u128::from(elapsed_ns)),
+            Number::from(u128::from(YEAR_NS)),
+        )
+        .as_u128_saturating();
+
+        let max_total_assets = anchor_assets.saturating_add(max_increase);
+        cur_total_assets.min(max_total_assets)
+    }
+
+    fn compute_management_fee_shares(
+        &self,
+        fee_assets_base: u128,
+        cur_total_assets: u128,
+        total_supply: u128,
+        last_timestamp_ns: u64,
+        now: u64,
+    ) -> Number {
+        if self.fees.management.fee.is_zero() || total_supply == 0 || now <= last_timestamp_ns {
+            return Number::zero();
+        }
+        let elapsed_ns = now - last_timestamp_ns;
+        let annual_fee_assets = self
+            .fees
+            .management
+            .fee
+            .apply_floored(fee_assets_base.into());
+        let fee_assets = mul_div_floor(
+            annual_fee_assets,
+            Number::from(u128::from(elapsed_ns)),
+            Number::from(u128::from(YEAR_NS)),
+        );
+        compute_fee_shares_from_assets(fee_assets, cur_total_assets.into(), total_supply.into())
+    }
+
     pub fn clamp_allocation_total(&self, requested: Option<u128>) -> u128 {
         let requested = requested.unwrap_or(self.idle_balance);
         let max_room = self.get_max_deposit().0;
@@ -931,17 +1496,54 @@ impl Contract {
     }
 
     pub fn internal_accrue_fee(&mut self) {
-        // Invariant: Fees are minted only when total_assets() > last_total_assets (no fees on losses/flat).
-        let cur = self.get_total_assets().0;
-        let fee_shares = compute_fee_shares(
-            cur.into(),
-            self.last_total_assets.into(),
-            self.performance_fee,
-            self.total_supply().into(),
+        let now = env::block_timestamp();
+        let cur_total_assets = self.get_total_assets().0;
+        let mut total_supply = self.total_supply();
+        let anchor = self.fee_anchor.clone();
+
+        // Cap the effective total_assets used for fee accrual to mitigate
+        // donation-style AUM spikes within a short time window.
+        let fee_total_assets = self.total_assets_for_fee_accrual(cur_total_assets, &anchor, now);
+
+        let mgmt_shares = self.compute_management_fee_shares(
+            fee_total_assets,
+            cur_total_assets,
+            total_supply,
+            anchor.timestamp_ns.into(),
+            now,
         );
-        if fee_shares > Number::zero() {
-            let minted: u128 = fee_shares.into();
-            let recipient = self.fee_recipient.clone();
+        if mgmt_shares > Number::zero() {
+            let minted: u128 = mgmt_shares.into();
+            let recipient = self.fees.management.recipient.clone();
+            let minted_res = self
+                .mint(&Nep141Mint::new(minted, &recipient))
+                .inspect_err(|e| {
+                    Event::ManagementFeeMintFailed {
+                        error: e.to_string(),
+                    }
+                    .emit();
+                });
+            if minted_res.is_ok() {
+                Event::ManagementFeeAccrued {
+                    recipient,
+                    shares: U128(minted),
+                }
+                .emit();
+            }
+            total_supply = self.total_supply();
+        }
+
+        let profit = fee_total_assets.saturating_sub(anchor.total_assets.into());
+        let fee_assets = self.fees.performance.fee.apply_floored(profit.into());
+        let performance_shares = compute_fee_shares_from_assets(
+            fee_assets,
+            cur_total_assets.into(),
+            total_supply.into(),
+        );
+
+        if performance_shares > Number::zero() {
+            let minted: u128 = performance_shares.into();
+            let recipient = self.fees.performance.recipient.clone();
             let _ = self
                 .mint(&Nep141Mint::new(minted, &recipient))
                 .inspect_err(|e| {
@@ -956,7 +1558,13 @@ impl Contract {
             }
             .emit();
         }
-        self.last_total_assets = cur;
+
+        // Anchor updates to the *actual* AUM snapshot, so the max-rate limiter
+        // only affects what can be charged as fees for the elapsed interval.
+        self.fee_anchor = FeeAccrualAnchor {
+            total_assets: cur_total_assets.into(),
+            timestamp_ns: now.into(),
+        };
     }
 
     /* ----- Auth ----- */
@@ -968,6 +1576,13 @@ impl Contract {
         }
     }
 
+    fn assert_guardian_or_sentinel_or_owner() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Guardian) && !Self::has_role(&p, &Role::Sentinel) {
+            Self::require_owner();
+        }
+    }
+
     fn assert_curator_or_owner() {
         let p = env::predecessor_account_id();
         if !Self::has_role(&p, &Role::Curator) {
@@ -975,9 +1590,26 @@ impl Contract {
         }
     }
 
+    fn assert_curator_or_sentinel_or_owner() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Curator) && !Self::has_role(&p, &Role::Sentinel) {
+            Self::require_owner();
+        }
+    }
+
     fn assert_allocator() {
         let p = env::predecessor_account_id();
         if !Self::has_role(&p, &Role::Allocator) && !Self::has_role(&p, &Role::Curator) {
+            Self::require_owner();
+        }
+    }
+
+    fn assert_allocator_or_sentinel() {
+        let p = env::predecessor_account_id();
+        if !Self::has_role(&p, &Role::Allocator)
+            && !Self::has_role(&p, &Role::Curator)
+            && !Self::has_role(&p, &Role::Sentinel)
+        {
             Self::require_owner();
         }
     }
@@ -997,34 +1629,38 @@ impl Contract {
         if amount == 0 {
             return PromiseOrValue::Value(());
         }
-        self.ensure_idle();
+
+        let mut idle = crate::op_guard::IdleGuard::new(self);
 
         require!(
-            amount <= self.idle_balance,
+            amount <= idle.idle_balance,
             "Policy violation: reserve amount must be <= idle_balance"
         );
-        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+        idle.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
 
-        let op_id = self.next_op_id;
-        self.next_op_id += 1;
-        self.op_state = OpState::Allocating(AllocatingState {
+        let op_id = idle.next_op_id;
+        idle.next_op_id += 1;
+
+        let mut allocating = idle.start_allocation(AllocatingState {
             op_id,
             index: 0,
             remaining: amount,
             plan,
         });
+
         Event::AllocationStarted {
             op_id: op_id.into(),
             remaining: U128(amount),
         }
         .emit();
-        self.step_allocation()
+
+        allocating.step_allocation()
     }
 
     /// build a supply `transfer_call` and chain `after_supply_1_check`
     fn supply_and_then(
         &self,
-        market: &AccountId,
+        market_id: MarketId,
         amount: u128,
         op_id: u64,
         index: u32,
@@ -1033,6 +1669,9 @@ impl Contract {
         self::require_at_least(
             SUPPLY_AFTER_TRANSFER_CHECK_GAS.saturating_add(GAS_FOR_FT_TRANSFER_CALL),
         );
+
+        let market = self.market_account_by_id_or_panic(market_id);
+
         self.underlying_asset
             .transfer_call(
                 market,
@@ -1048,7 +1687,7 @@ impl Contract {
                 Self::ext(env::current_account_id())
                     .with_static_gas(SUPPLY_AFTER_TRANSFER_CHECK_GAS)
                     .supply_01_handle_transfer(
-                        market.clone(),
+                        market_id,
                         op_id,
                         index,
                         U128(amount),
@@ -1074,15 +1713,15 @@ impl Contract {
 
         let idx = index as usize;
         if let Some((market, amount)) = plan.get(idx) {
-            let market_id = market.clone();
+            let market_id = *market;
 
-            let room = self.room_of(&market_id);
+            let room = self.room_of(market_id);
             let to_supply = room.min(*amount);
 
             Event::AllocationStepPlan {
                 op_id: op_id.into(),
                 index,
-                market: market_id.clone(),
+                market: market_id,
                 target: U128(*amount),
                 room: U128(room),
                 to_supply: U128(to_supply),
@@ -1096,7 +1735,7 @@ impl Contract {
                 Event::AllocationStepPlan {
                     op_id: op_id.into(),
                     index,
-                    market: market_id.clone(),
+                    market: market_id,
                     target: U128(*amount),
                     room: U128(room),
                     to_supply: U128(0),
@@ -1120,7 +1759,7 @@ impl Contract {
             }
 
             PromiseOrValue::Promise(
-                self.supply_and_then(&market_id, to_supply, op_id, index, remaining),
+                self.supply_and_then(market_id, to_supply, op_id, index, remaining),
             )
         } else {
             // Plan exhausted; stop and reconcile remaining in stop_and_exit
@@ -1134,20 +1773,22 @@ impl Contract {
         receiver: &AccountId,
         owner: &AccountId,
         escrow_shares: u128,
-        route: Vec<AccountId>,
+        route: Vec<MarketId>,
     ) -> PromiseOrValue<()> {
         if amount == 0 {
             return self.stop_and_exit(Some(&Error::ZeroAmount));
         }
-        self.ensure_idle();
-        let op_id = self.next_op_id;
-        self.next_op_id += 1;
+
+        let mut idle = crate::op_guard::IdleGuard::new(self);
+
+        let op_id = idle.next_op_id;
+        idle.next_op_id += 1;
 
         // Policy: Idle-first reservation does not mutate idle_balance until payout succeeds.
-        let cov = self.compute_idle_coverage(amount);
+        let cov = idle.compute_idle_coverage(amount);
 
-        self.withdraw_route = route;
-        self.op_state = OpState::Withdrawing(WithdrawingState {
+        idle.withdraw_route = route;
+        let mut withdrawing = idle.start_withdrawal(WithdrawingState {
             op_id,
             index: Default::default(),
             remaining: cov.remaining_unmet,
@@ -1156,7 +1797,8 @@ impl Contract {
             owner: owner.clone(),
             escrow_shares,
         });
-        self.pay_or_signal_next_withdraw()
+
+        withdrawing.pay_or_signal_next_withdraw()
     }
 
     fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
@@ -1178,7 +1820,7 @@ impl Contract {
                 phase: WithdrawProgressPhase::CoveredByIdle,
                 op_id: Some(op_id.into()),
                 id: Some(self.next_withdraw_to_execute.into()),
-                market_index: None,
+                market: None,
                 owner: None,
                 receiver: None,
                 escrow_shares: None,
@@ -1195,12 +1837,12 @@ impl Contract {
                 escrow_shares,
             );
         }
-        if self.withdraw_route.get(index as usize).is_some() {
+        if let Some(market) = self.withdraw_route.get(index as usize).copied() {
             Event::WithdrawProgress {
                 phase: WithdrawProgressPhase::ExecutionRequired,
                 op_id: Some(op_id.into()),
                 id: Some(self.next_withdraw_to_execute.into()),
-                market_index: Some(index),
+                market: Some(market),
                 owner: None,
                 receiver: None,
                 escrow_shares: None,
@@ -1221,9 +1863,9 @@ impl Contract {
                 escrow_shares,
                 burn_shares,
                 |self_| {
-                    self_.withdraw_route.clear();
+                    let failed_route = std::mem::take(&mut self_.withdraw_route);
                     self_.op_state = OpState::Idle;
-                    self_.park_head_for_retry();
+                    self_.park_head_for_retry(failed_route);
                     PromiseOrValue::Value(())
                 },
             )
@@ -1258,7 +1900,9 @@ impl Contract {
         escrow_shares: u128,
         burn_shares: u128,
     ) -> PromiseOrValue<()> {
-        self.op_state = OpState::Payout(PayoutState {
+        let withdrawing = unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
+
+        let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
             receiver: receiver.clone(),
             amount,
@@ -1266,11 +1910,13 @@ impl Contract {
             escrow_shares,
             burn_shares,
         });
-        require!(self.idle_balance >= amount, "idle underflow in payout");
-        self.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
+
+        require!(payout.idle_balance >= amount, "idle underflow in payout");
+        payout.update_idle_balance(IdleBalanceDelta::Decrease(amount.into()));
 
         PromiseOrValue::Promise(
-            self.underlying_asset
+            payout
+                .underlying_asset
                 .transfer(receiver.clone(), U128(amount).into())
                 .then(
                     Self::ext(env::current_account_id())
@@ -1278,13 +1924,6 @@ impl Contract {
                         .payment_01_reconcile_idle_or_refund(op_id, receiver.clone(), U128(amount)),
                 ),
         )
-    }
-
-    fn rebalance_lock_index(&self, market: &AccountId) -> Option<u32> {
-        self.markets
-            .keys()
-            .position(|m| m == market)
-            .and_then(|idx| u32::try_from(idx).ok())
     }
 
     /// Computes how much of `amount` can be covered by idle balance without mutating state.
@@ -1295,6 +1934,80 @@ impl Contract {
             remaining_unmet: amount.saturating_sub(used_idle),
             collected_from_idle: used_idle,
         }
+    }
+
+    fn pop_head(&mut self) {
+        let id = self.next_withdraw_to_execute;
+        let removed = self.pending_withdrawals.remove(&id);
+        require!(removed.is_some(), "queue corrupt: head missing");
+        self.next_withdraw_to_execute = id.saturating_add(1);
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Dequeued,
+            id: id.into(),
+        }
+        .emit();
+    }
+
+    fn park_head_for_retry(&mut self, failed_route: Vec<MarketId>) {
+        Event::WithdrawQueueUpdate {
+            action: QueueAction::Parked,
+            id: self.next_withdraw_to_execute.into(),
+        }
+        .emit();
+
+        Event::WithdrawParkedDetail {
+            id: self.next_withdraw_to_execute.into(),
+            failed_route,
+            reason: Reason::RouteExhaustedNoFunds,
+        }
+        .emit();
+    }
+
+    fn refresh_targets(&self, mut markets: Vec<MarketId>) -> Vec<MarketId> {
+        if markets.is_empty() {
+            return self.markets.keys().copied().collect();
+        }
+        markets.retain(|m| self.market_record_by_id(*m).is_some());
+        markets
+    }
+
+    fn refresh_step(&mut self, op_id: u64) -> PromiseOrValue<RealAssetsReport> {
+        let (index, plan) = match &self.op_state {
+            OpState::Refreshing(RefreshingState {
+                op_id: cur,
+                index,
+                plan,
+            }) if *cur == op_id => (*index, plan.clone()),
+            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
+        };
+
+        if index as usize >= plan.len() {
+            let report = self.build_real_assets_report();
+            Event::RefreshCompleted {
+                op_id: op_id.into(),
+                markets: plan,
+                total_assets: report.total_assets,
+                refreshed_at: report.refreshed_at,
+            }
+            .emit();
+            self.op_state = OpState::Idle;
+            return PromiseOrValue::Value(report);
+        }
+
+        let market_id = plan[index as usize];
+        let market_account = self.market_account_by_id_or_panic(market_id).clone();
+
+        PromiseOrValue::Promise(
+            ext_market::ext(market_account)
+                .with_static_gas(GET_SUPPLY_POSITION_GAS)
+                .with_unused_gas_weight(0)
+                .get_supply_position(env::current_account_id())
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(SUPPLY_POSITION_READ_CALLBACK_GAS)
+                        .refresh_01_settle(market_id, op_id, index),
+                ),
+        )
     }
 }
 

@@ -14,6 +14,7 @@ pub fn main() {
     let init = InitArgs {
         key: passkey::VerifyKey(public_key).into(),
         chain_id: NEAR_TESTNET_CHAIN_ID.into(),
+        execute: None,
     };
 
     println!("{}", serde_json::to_string(&init).unwrap());

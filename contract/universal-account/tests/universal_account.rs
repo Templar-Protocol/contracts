@@ -159,8 +159,22 @@ struct Setup {
     third_party: near_workspaces::Account,
 }
 
-async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Setup {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ExecuteOnCreate {
+    None,
+    Empty,
+    Counter,
+}
+
+async fn setup(
+    worker: &Worker<Sandbox>,
+    sk: &TestSigner,
+    migrated: bool,
+    execute_on_create: ExecuteOnCreate,
+) -> Setup {
     test_utils::accounts!(worker, uni_account, ft_account, third_party);
+
+    let ft_account_id = ft_account.id().to_owned();
 
     let make_uac = || async move {
         if migrated {
@@ -201,7 +215,23 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Set
 
             ua
         } else {
-            UniversalAccountController::deploy(uni_account, sk.id(), NEAR_TESTNET_CHAIN_ID).await
+            let execute = match execute_on_create {
+                ExecuteOnCreate::None => None,
+                ExecuteOnCreate::Empty => Some(vec![]),
+                ExecuteOnCreate::Counter => Some(vec![Transaction {
+                    receiver_id: ft_account_id,
+                    actions: vec![FunctionCallAction::new(
+                        "increment",
+                        b"{}",
+                        NearToken::from_near(0),
+                        near_sdk::Gas::from_tgas(3),
+                    )
+                    .into()]
+                    .into(),
+                }]),
+            };
+            UniversalAccountController::deploy(uni_account, sk.id(), NEAR_TESTNET_CHAIN_ID, execute)
+                .await
         }
     };
 
@@ -209,6 +239,13 @@ async fn setup(worker: &Worker<Sandbox>, sk: &TestSigner, migrated: bool) -> Set
         make_uac(),
         FtController::deploy(ft_account, "Fungible Token", "FT"),
     );
+
+    let counter = ft.get_counter(uac.contract.id()).await;
+    if execute_on_create == ExecuteOnCreate::Counter && !migrated {
+        assert_eq!(counter, 1);
+    } else {
+        assert_eq!(counter, 0);
+    }
 
     ft.storage_deposit_for(
         &third_party,
@@ -238,12 +275,18 @@ pub async fn universal_account(
         (TestSigner::random_eip191(), false),
     )]
     (sk, migrated): (TestSigner, bool),
+    #[values(
+        ExecuteOnCreate::None,
+        ExecuteOnCreate::Empty,
+        ExecuteOnCreate::Counter
+    )]
+    execute_on_create: ExecuteOnCreate,
 ) {
     let Setup {
         uac,
         ft,
         third_party,
-    } = setup(&worker, &sk, migrated).await;
+    } = setup(&worker, &sk, migrated, execute_on_create).await;
 
     let key_list = uac.list_keys(None, None).await;
     assert_eq!(
@@ -348,12 +391,18 @@ async fn skip_nonce(
         (TestSigner::random_eip191(), false),
     )]
     (sk, migrated): (TestSigner, bool),
+    #[values(
+        ExecuteOnCreate::None,
+        ExecuteOnCreate::Empty,
+        ExecuteOnCreate::Counter
+    )]
+    execute_on_create: ExecuteOnCreate,
 ) {
     let Setup {
         uac,
         ft,
         third_party,
-    } = setup(&worker, &sk, migrated).await;
+    } = setup(&worker, &sk, migrated, execute_on_create).await;
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;
@@ -425,12 +474,18 @@ async fn reuse_nonce(
         (TestSigner::random_eip191(), false),
     )]
     (sk, migrated): (TestSigner, bool),
+    #[values(
+        ExecuteOnCreate::None,
+        ExecuteOnCreate::Empty,
+        ExecuteOnCreate::Counter
+    )]
+    execute_on_create: ExecuteOnCreate,
 ) {
     let Setup {
         uac,
         ft,
         third_party,
-    } = setup(&worker, &sk, migrated).await;
+    } = setup(&worker, &sk, migrated, execute_on_create).await;
 
     let key_entry = uac.get_key(sk.id()).await.unwrap();
     let block_height = key_entry.block_height;

@@ -12,6 +12,7 @@
 - [Oracles](./oracles.md)
 - [Protocol Governance](./governance.md)
 - [Monitoring and Risk Management](./monitoring.md)
+- [Frontend Security](./frontend-security.md)
 - [Testing](./testing.md)
 - [Glossary](./glossary.md)
 - [Security Reporting](./security.md)

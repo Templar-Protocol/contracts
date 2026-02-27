@@ -4,8 +4,7 @@ use near_sdk::{env, json_types::U128, near, require, AccountId, PromiseOrValue};
 use near_sdk_contract_tools::ft::{Nep141Controller as _, Nep141Mint};
 use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPPLY_GAS};
 
-#[allow(clippy::wildcard_imports)]
-use near_sdk_contract_tools::mt::*;
+use near_sdk_contract_tools::mt::{Nep245Receiver, TokenId};
 
 // Parses JSON-encoded DepositMsg or panics with a consistent message.
 fn parse_deposit_msg(msg: &str) -> DepositMsg {
@@ -119,18 +118,31 @@ impl Contract {
             templar_common::panic_with_message("Cannot deposit during payout");
         }
 
+        if self.idle_resync_inflight_op_id != 0 {
+            templar_common::panic_with_message("Cannot deposit during idle resync");
+        }
+
         self.internal_accrue_fee();
 
         let max = self.get_max_deposit().0;
         let accept = deposit.min(max);
-        let refund = deposit - accept;
+        if accept == 0 {
+            return deposit;
+        }
 
         let shares = self.preview_deposit(U128(accept)).0;
+        if shares == 0 {
+            return deposit;
+        }
+
+        let refund = deposit - accept;
+
         self.mint(&Nep141Mint::new(shares, &sender_id))
             .unwrap_or_else(|_| templar_common::panic_with_message("Failed to mint shares"));
 
         self.update_idle_balance(IdleBalanceDelta::Increase(accept.into()));
-        self.last_total_assets = self.last_total_assets.saturating_add(accept);
+        self.fee_anchor.total_assets = self.fee_anchor.total_assets.0.saturating_add(accept).into();
+        self.fee_anchor.timestamp_ns = env::block_timestamp().into();
 
         refund
     }

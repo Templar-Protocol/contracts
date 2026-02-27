@@ -6,7 +6,10 @@ use near_sdk::borsh::schema::{add_definition, Declaration, Definition};
 use near_sdk::borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use primitive_types::{U256, U512};
-use templar_common::schemars::JsonSchema;
+use schemars::JsonSchema;
+
+use crate::schemars::r#gen::SchemaGenerator;
+use crate::schemars::schema::Schema;
 
 pub type WIDE = U512;
 
@@ -20,21 +23,25 @@ impl Number {
     pub fn zero() -> Self {
         Number(U256::zero())
     }
+
     #[inline]
     #[must_use]
     pub fn one() -> Self {
         Number(U256::one())
     }
+
     #[inline]
     #[must_use]
     pub fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
+
     #[inline]
     #[must_use]
     pub fn is_one(&self) -> bool {
         self.0 == U256::one()
     }
+
     #[inline]
     #[must_use]
     pub fn as_u128_trunc(self) -> u128 {
@@ -44,22 +51,36 @@ impl Number {
         b16.copy_from_slice(&b32[..16]);
         u128::from_le_bytes(b16)
     }
+
+    #[inline]
+    #[must_use]
+    pub fn as_u128_saturating(self) -> u128 {
+        if self.0 .0[2] != 0 || self.0 .0[3] != 0 {
+            u128::MAX
+        } else {
+            self.0.as_u128()
+        }
+    }
+
     #[inline]
     fn as_u256_trunc(q: U512) -> U256 {
         let mut b64 = [0u8; 64];
         q.write_as_little_endian(&mut b64);
         U256::from_little_endian(&b64[..32])
     }
+
     #[inline]
     #[must_use]
     pub fn saturating_add(self, other: Number) -> Number {
         Number(self.0.saturating_add(other.0))
     }
+
     #[inline]
     #[must_use]
     pub fn saturating_sub(self, other: Number) -> Number {
         Number(self.0.saturating_sub(other.0))
     }
+
     #[inline]
     #[must_use]
     pub fn mul_div_floor(x: Number, y: Number, denom: Number) -> Number {
@@ -185,9 +206,7 @@ impl JsonSchema for Number {
         "Number".to_string()
     }
 
-    fn json_schema(
-        generator: &mut templar_common::schemars::r#gen::SchemaGenerator,
-    ) -> templar_common::schemars::schema::Schema {
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let mut g = generator.subschema_for::<[u8; 32]>().into_object();
         g.metadata().description = Some("256-bit Unsigned Integer".to_string());
         g.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
@@ -195,8 +214,14 @@ impl JsonSchema for Number {
     }
 }
 
-/// Represents the maximum performance fee that can be charged. 20% (very high)
-pub const MAX_FEE_WAD: u128 = Wad::SCALE / 10 * 2;
+/// Maximum annualized management fee rate: 5%.
+pub const MAX_MANAGEMENT_FEE_WAD: u128 = Wad::SCALE / 100 * 5;
+
+/// Maximum performance fee rate on profits: 50%.
+pub const MAX_PERFORMANCE_FEE_WAD: u128 = Wad::SCALE / 100 * 50;
+
+/// Backwards-compatible alias for `MAX_PERFORMANCE_FEE_WAD`.
+pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 
 /// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -313,9 +338,7 @@ impl JsonSchema for Wad {
         "Wad".to_string()
     }
 
-    fn json_schema(
-        generator: &mut templar_common::schemars::r#gen::SchemaGenerator,
-    ) -> templar_common::schemars::schema::Schema {
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let mut schema = generator.subschema_for::<Number>().into_object();
         schema.metadata().description =
             Some("Wad fixed faction back by 256-bit unsigned integer".to_string());
@@ -340,16 +363,24 @@ pub fn compute_fee_shares(
     performance_fee: Wad,
     total_supply: Number,
 ) -> Number {
-    if performance_fee.is_zero() || total_supply.is_zero() || cur_total_assets <= last_total_assets
-    {
-        return Number::zero();
-    }
     let profit = cur_total_assets.saturating_sub(last_total_assets);
-    if profit.is_zero() {
-        return Number::zero();
-    }
-    let fee_assets = performance_fee.apply_floored(profit);
-    if fee_assets.is_zero() {
+    compute_fee_shares_from_assets(
+        performance_fee.apply_floored(profit),
+        cur_total_assets,
+        total_supply,
+    )
+}
+
+/// Computes fee shares to mint from a raw `fee_assets` amount, given current total assets and supply.
+/// Returns 0 when fee is zero, supply is zero, or fee consumes all assets.
+#[inline]
+#[must_use]
+pub fn compute_fee_shares_from_assets(
+    fee_assets: Number,
+    cur_total_assets: Number,
+    total_supply: Number,
+) -> Number {
+    if fee_assets.is_zero() || total_supply.is_zero() {
         return Number::zero();
     }
     if fee_assets.0 >= cur_total_assets.0 {

@@ -49,6 +49,12 @@ impl FtController {
         #[view]
         pub fn redemption_rate() -> U128;
 
+        #[view]
+        pub fn get_counter(account_id: &AccountId) -> u32;
+
+        #[call(exec)]
+        pub fn increment();
+
         #[call(exec, yocto(1))]
         pub fn ft_transfer(receiver_id: &AccountId, amount: U128);
 

@@ -68,10 +68,9 @@ async fn interest_rate(
         while timer.elapsed() < Duration::from_secs(12) {
             tokio::join!(
                 c.apply_interest(&borrow_user_2, None, None),
-                // No compounding so we get apples-to-apples comparison.
-                // Technically it should be optimal to harvest (and
-                // compound) occasionally throughout the duration of
-                // the supply.
+                // Technically, it should be optimal to harvest and compound
+                // (withdraw yield and re-deposit) occasionally throughout the
+                // duration of the supply.
                 c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default)),
             );
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -82,23 +81,47 @@ async fn interest_rate(
         let duration_inner = time_inner.elapsed();
         let (
             borrow_position_1,
+            borrow_position_1_pending,
             borrow_position_2,
+            borrow_position_2_pending,
             supply_position_1,
+            supply_position_1_pending,
             supply_position_2,
+            supply_position_2_pending,
             current_snapshot,
         ) = tokio::join!(
             async { c.get_borrow_position(borrow_user.id()).await.unwrap() },
+            async {
+                c.get_borrow_position_pending_interest(borrow_user.id(), None)
+                    .await
+                    .unwrap()
+            },
             async { c.get_borrow_position(borrow_user_2.id()).await.unwrap() },
+            async {
+                c.get_borrow_position_pending_interest(borrow_user_2.id(), None)
+                    .await
+                    .unwrap()
+            },
             async { c.get_supply_position(supply_user.id()).await.unwrap() },
+            async {
+                c.get_supply_position_pending_yield(supply_user.id(), None)
+                    .await
+                    .unwrap()
+            },
             async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
+            async {
+                c.get_supply_position_pending_yield(supply_user_2.id(), None)
+                    .await
+                    .unwrap()
+            },
             c.get_current_snapshot(),
         );
         let duration_outer = time_outer.elapsed();
 
-        let supply_yield_1 = supply_position_1.borrow_asset_yield.get_total()
-            + supply_position_1.borrow_asset_yield.pending_estimate;
-        let supply_yield_2 = supply_position_2.borrow_asset_yield.get_total()
-            + supply_position_2.borrow_asset_yield.pending_estimate;
+        let supply_yield_1 =
+            supply_position_1.borrow_asset_yield.get_total() + supply_position_1_pending;
+        let supply_yield_2 =
+            supply_position_2.borrow_asset_yield.get_total() + supply_position_2_pending;
 
         let yield_rate = c
             .configuration
@@ -124,18 +147,16 @@ async fn interest_rate(
 
         let f = principal * strategy.at(dec!("0.2")) * YEAR_PER_MS;
 
-        let approximation_below = (f * duration_inner.as_millis()).to_u128_ceil().unwrap();
+        let approximation_below = (f * duration_inner.as_millis()).to_u128_floor().unwrap();
         let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
 
-        let actual_1 =
-            borrow_position_1.interest.get_total() + borrow_position_1.interest.pending_estimate;
+        let actual_1 = borrow_position_1.interest.get_total() + borrow_position_1_pending;
         eprintln!("{approximation_below} <= {actual_1} <= {approximation_above}?");
 
         assert!(approximation_below <= actual_1.into());
         assert!(u128::from(actual_1) <= approximation_above);
 
-        let actual_2 =
-            borrow_position_2.interest.get_total() + borrow_position_2.interest.pending_estimate;
+        let actual_2 = borrow_position_2.interest.get_total() + borrow_position_2_pending;
         eprintln!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
 
         assert!(approximation_below <= actual_2.into());
@@ -154,13 +175,17 @@ async fn interest_rate(
     tokio::join!(
         async {
             let borrow_position_before = c.get_borrow_position(borrow_user.id()).await.unwrap();
+            let borrow_position_before_pending = c
+                .get_borrow_position_pending_interest(borrow_user.id(), None)
+                .await
+                .unwrap();
             let r = c
                 .repay(
                     &borrow_user,
                     None,
                     u128::from(
                         borrow_position_before.get_total_borrow_asset_liability()
-                            + borrow_position_before.interest.pending_estimate,
+                            + borrow_position_before_pending,
                     ) * 110
                         / 100, /* overpayment */
                 )
@@ -180,12 +205,16 @@ async fn interest_rate(
         },
         async {
             let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
+            let borrow_position_before_pending = c
+                .get_borrow_position_pending_interest(borrow_user_2.id(), None)
+                .await
+                .unwrap();
             c.repay(
                 &borrow_user_2,
                 None,
                 u128::from(
                     borrow_position_before.get_total_borrow_asset_liability()
-                        + borrow_position_before.interest.pending_estimate,
+                        + borrow_position_before_pending,
                 ) * 110
                     / 100, /* overpayment */
             )
