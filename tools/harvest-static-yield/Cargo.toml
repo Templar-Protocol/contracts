@@ -1,0 +1,23 @@
+[package]
+name = "harvest-static-yield"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version = "0.1.0"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+near-contract-standards.workspace = true
+near-crypto.workspace = true
+near-fetch.workspace = true
+near-primitives.workspace = true
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
+templar-common = { workspace = true, features = ["rpc"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+tracing = { workspace = true, features = ["attributes"] }
+
+[lints]
+workspace = true

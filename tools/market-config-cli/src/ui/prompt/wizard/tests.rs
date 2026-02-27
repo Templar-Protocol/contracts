@@ -126,8 +126,14 @@ fn apply_ranges_to_builder_happy_path_sets_all_minimums() {
     let config = builder.build().expect("config should build");
 
     // Verify all minimums are correctly set
-    assert_eq!(u128::from(config.borrow_range.minimum), selection.borrow_min);
-    assert_eq!(u128::from(config.supply_range.minimum), selection.supply_min);
+    assert_eq!(
+        u128::from(config.borrow_range.minimum),
+        selection.borrow_min
+    );
+    assert_eq!(
+        u128::from(config.supply_range.minimum),
+        selection.supply_min
+    );
     assert_eq!(
         u128::from(config.supply_withdrawal_range.minimum),
         selection.withdrawal_min
@@ -194,11 +200,11 @@ fn yield_weights_multiple_static_recipients() {
 #[test]
 fn full_config_build_happy_path_with_ranges_and_yield_weights() {
     let selection = RangeSelection {
-        borrow_min: 1_000_000,      // 1 USDC (6 decimals)
+        borrow_min: 1_000_000,               // 1 USDC (6 decimals)
         borrow_max: Some(1_000_000_000_000), // 1M USDC
         supply_min: 1_000_000,
-        supply_max: None,           // No max
-        withdrawal_min: 100_000,    // 0.1 USDC
+        supply_max: None,        // No max
+        withdrawal_min: 100_000, // 0.1 USDC
         withdrawal_max: None,
     };
 
@@ -206,8 +212,8 @@ fn full_config_build_happy_path_with_ranges_and_yield_weights() {
     let yield_weights = YieldWeights::new_with_supply_weight(9).with_static(protocol, 1);
 
     let builder = base_builder().yield_weights(yield_weights);
-    let builder = apply_ranges_to_builder(builder, &selection)
-        .expect("range application should succeed");
+    let builder =
+        apply_ranges_to_builder(builder, &selection).expect("range application should succeed");
     let config = builder.build().expect("config should build");
 
     // Verify the complete config is valid

@@ -29,7 +29,10 @@ use templar_common::{
     number::Decimal,
     oracle::pyth::{self, PriceIdentifier},
     registry::DeployMode,
-    vault::VaultConfiguration,
+    vault::{
+        wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
+        Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
+    },
 };
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
@@ -144,6 +147,7 @@ pub fn vault_configuration(
     owner_id: AccountId,
     curator_id: AccountId,
     guardian_id: AccountId,
+    sentinel_id: AccountId,
     borrow_asset_id: AccountId,
     skim_recipient_id: AccountId,
     fee_recipient_id: AccountId,
@@ -152,14 +156,27 @@ pub fn vault_configuration(
         owner: owner_id,
         curator: curator_id,
         guardian: guardian_id,
+        sentinel: sentinel_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
         initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),
-        fee_recipient: fee_recipient_id,
+        fees: VaultFees {
+            performance: VaultFee {
+                fee: Wad::from(MAX_PERFORMANCE_FEE_WAD),
+                recipient: fee_recipient_id.clone(),
+            },
+            management: VaultFee {
+                fee: Wad::from(MAX_MANAGEMENT_FEE_WAD),
+                recipient: fee_recipient_id,
+            },
+            max_total_assets_growth_rate: None,
+        },
         skim_recipient: skim_recipient_id,
         name: "Vault".to_string(),
         symbol: "VAULT".to_string(),
         decimals: NonZero::new(24).unwrap(),
         restrictions: None,
+        refresh_cooldown_ns: None,
+        idle_resync_cooldown_ns: None,
     }
 }
 
@@ -195,6 +212,7 @@ pub struct SetupEverything {
     pub vault_owner: Account,
     pub vault_curator: Account,
     pub vault_guardian: Account,
+    pub vault_sentinel: Account,
     pub skim_recipient: Account,
     pub fee_recipient: Account,
 }
@@ -216,6 +234,7 @@ pub async fn setup_everything(
         vault_owner,
         vault_curator,
         vault_guardian,
+        vault_sentinel,
         skim_recipient,
         fee_recipient
     );
@@ -234,6 +253,7 @@ pub async fn setup_everything(
         vault_owner.id().clone(),
         vault_curator.id().clone(),
         vault_guardian.id().clone(),
+        vault_sentinel.id().clone(),
         borrow_asset.id().clone(),
         skim_recipient.id().clone(),
         fee_recipient.id().clone(),
@@ -305,6 +325,7 @@ pub async fn setup_everything(
         vault_owner,
         vault_curator,
         vault_guardian,
+        vault_sentinel,
         skim_recipient,
         fee_recipient,
     }

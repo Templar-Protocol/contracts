@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::Contract;
 use near_sdk::NearToken;
 pub use near_sdk::{
-    test_utils::{accounts, VMContextBuilder},
-    test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
+    test_utils::VMContextBuilder, test_vm_config, testing_env, AccountId, PromiseResult,
+    RuntimeFeesConfig,
 };
 use near_sdk_contract_tools::ft::Nep145;
 use test_utils::vault_configuration;
@@ -37,17 +37,19 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     setup_env(vault_id, vault_id, vec![]);
 
     // Basic accounts
-    let owner = accounts(1);
-    let curator = accounts(2);
-    let guardian = accounts(3);
-    let fee_recipient = accounts(4);
-    let skim_recipient = accounts(5);
+    let owner = mk(1);
+    let curator = mk(2);
+    let guardian = mk(3);
+    let sentinel = mk(7);
+    let fee_recipient = mk(4);
+    let skim_recipient = mk(5);
     let underlying_token_id = mk(6);
 
     let cfg = vault_configuration(
         owner.clone(),
         curator.clone(),
         guardian.clone(),
+        sentinel.clone(),
         underlying_token_id.clone(),
         skim_recipient.clone(),
         fee_recipient.clone(),
@@ -69,6 +71,7 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     c.storage_deposit(Some(owner), None);
     c.storage_deposit(Some(curator), None);
     c.storage_deposit(Some(guardian), None);
+    c.storage_deposit(Some(sentinel), None);
     c.storage_deposit(Some(fee_recipient), None);
     c.storage_deposit(Some(skim_recipient), None);
     c.storage_deposit(Some(underlying_token_id), None);
@@ -82,6 +85,16 @@ pub fn set_block_ts(vault_id: &AccountId, signer: &AccountId, ts: u64) {
 }
 
 pub fn set_ctx(vault_id: &AccountId, signer: &AccountId, ts: Option<u64>, deposit: Option<u128>) {
+    set_ctx_with_gas(vault_id, signer, ts, deposit, None);
+}
+
+pub fn set_ctx_with_gas(
+    vault_id: &AccountId,
+    signer: &AccountId,
+    ts: Option<u64>,
+    deposit: Option<u128>,
+    prepaid_gas: Option<near_sdk::Gas>,
+) {
     let mut ctx = VMContextBuilder::new();
     ctx.current_account_id(vault_id.clone());
     ctx.signer_account_id(signer.clone());
@@ -91,6 +104,9 @@ pub fn set_ctx(vault_id: &AccountId, signer: &AccountId, ts: Option<u64>, deposi
     }
     if let Some(amount) = deposit {
         ctx.attached_deposit(NearToken::from_yoctonear(amount));
+    }
+    if let Some(gas) = prepaid_gas {
+        ctx.prepaid_gas(gas);
     }
     testing_env!(ctx.build());
 }

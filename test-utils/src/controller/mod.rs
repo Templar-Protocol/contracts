@@ -84,6 +84,7 @@ pub trait ContractController {
             &account.id().as_str()[0..16],
             &self.contract().id().as_str()[0..16],
         );
+
         account
             .call(self.contract().id(), function_name)
             .args_json(args)
