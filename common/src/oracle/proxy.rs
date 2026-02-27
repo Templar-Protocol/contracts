@@ -47,8 +47,9 @@ impl From<Vec<ProxyEntry>> for Proxy {
 #[near(serializers = [json, borsh])]
 pub enum ProxyEntry {
     Transformer(ProxyPriceTransformer),
-    RedStone(super::redstone::FeedId),
     Pyth(super::pyth::PriceIdentifier),
+    #[cfg(feature = "redstone")]
+    RedStone(super::redstone::FeedId),
 }
 
 #[derive(Debug, Clone, BorshStorageKey)]
@@ -64,6 +65,14 @@ pub enum Role {
 pub enum Oracle {
     Pyth,
     RedStone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+pub struct OracleIds {
+    pub pyth_id: AccountId,
+    #[cfg(feature = "redstone")]
+    pub redstone_id: AccountId,
 }
 
 #[near(event_json(standard = "templar-proxy-oracle"))]

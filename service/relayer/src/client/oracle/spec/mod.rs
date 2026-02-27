@@ -13,7 +13,6 @@ pub trait Spec: Send + Sync + 'static {
 
     fn name() -> &'static str;
     fn refresh(&self) -> Duration;
-    fn oracle_id(&self) -> &near_sdk::AccountIdRef;
     fn update_actions(
         &self,
         feed_ids: &[Self::FeedId],

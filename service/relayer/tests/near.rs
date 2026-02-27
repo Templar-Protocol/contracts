@@ -3,6 +3,7 @@ use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
     price_transformer::{self, PriceTransformer},
     pyth::PriceIdentifier,
+    OraclePriceId,
 };
 use templar_relayer::client::near::Near;
 use test_utils::{
@@ -13,6 +14,10 @@ use test_utils::{
 #[rstest::rstest]
 #[tokio::test]
 async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
     setup_test!(worker extract(c) accounts(relayer_user, lst_account));
 
     let lst = LstOracleController::deploy(lst_account, c.price_oracle.contract.id()).await;
@@ -31,14 +36,26 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .unwrap();
 
-    assert_eq!(resolved_normal, DEFAULT_BORROW_PRICE_ID);
+    assert_eq!(
+        resolved_normal,
+        (
+            c.price_oracle.id().to_owned(),
+            OraclePriceId::from(DEFAULT_BORROW_PRICE_ID),
+        ),
+    );
 
     let resolved_passthrough = near
         .try_resolve_price_identifier(lst.contract.id().clone(), DEFAULT_BORROW_PRICE_ID)
         .await
         .unwrap();
 
-    assert_eq!(resolved_passthrough, DEFAULT_BORROW_PRICE_ID);
+    assert_eq!(
+        resolved_passthrough,
+        (
+            c.price_oracle.id().to_owned(),
+            OraclePriceId::from(DEFAULT_BORROW_PRICE_ID),
+        ),
+    );
 
     let proxy_id = PriceIdentifier([0xa6; 32]);
 
@@ -58,5 +75,13 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
         .await
         .unwrap();
 
-    assert_eq!(resolved_proxy, DEFAULT_BORROW_PRICE_ID);
+    assert_eq!(
+        resolved_proxy,
+        (
+            c.price_oracle.id().to_owned(),
+            OraclePriceId::from(DEFAULT_BORROW_PRICE_ID),
+        ),
+    );
+
+    // TODO: Test proxy contract too
 }

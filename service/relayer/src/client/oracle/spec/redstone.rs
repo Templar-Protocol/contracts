@@ -12,6 +12,7 @@ use near_sdk::{
     serde_json::{self, json},
 };
 use sha2::Digest;
+use templar_common::oracle::redstone::FeedId;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     net::UnixListener,
@@ -116,7 +117,7 @@ pub struct IpcRequest {
     content = "params"
 )]
 enum IpcRequestMethod {
-    Fetch(Vec<String>),
+    Fetch(Vec<FeedId>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,7 +278,7 @@ impl RedStoneSpec {
     /// - Communication with the bridge.
     /// - Communication between the bridge and RedStone nodes.
     /// - Deserialization of response from the bridge.
-    pub async fn fetch(&self, feed_ids: Vec<String>) -> Result<Vec<u8>, RequestError> {
+    pub async fn fetch(&self, feed_ids: Vec<FeedId>) -> Result<Vec<u8>, RequestError> {
         let (send, recv) = oneshot::channel();
         self.bridge_send
             .send(Request {
@@ -310,15 +311,11 @@ impl Drop for RedStoneSpec {
 }
 
 impl Spec for RedStoneSpec {
-    type FeedId = String;
+    type FeedId = FeedId;
     type Error = RequestError;
 
     fn name() -> &'static str {
         "RedStone"
-    }
-
-    fn oracle_id(&self) -> &near_sdk::AccountIdRef {
-        &self.config.oracle_id
     }
 
     fn refresh(&self) -> Duration {
@@ -360,7 +357,6 @@ mod tests {
 
         let redstone_args = args::RedStone {
             refresh: Duration::from_secs(25),
-            oracle_id: "does_not_exist.near".parse().unwrap(),
             update_gas: near_sdk::Gas::from_tgas(300),
             update_deposit: NearToken::from_near(0),
             node_path: Path::new("node").to_owned(),
@@ -372,7 +368,7 @@ mod tests {
         let spec = RedStoneSpec::new(redstone_args, kill.clone());
 
         let t = spec
-            .update_actions(&["ETH".to_string(), "BTC".to_string()])
+            .update_actions(&["ETH".into(), "BTC".into()])
             .await
             .unwrap();
 

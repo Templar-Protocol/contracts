@@ -14,3 +14,16 @@ pub enum OraclePriceId {
     #[cfg(feature = "redstone")]
     RedStone(crate::oracle::redstone::FeedId),
 }
+
+impl From<pyth::PriceIdentifier> for OraclePriceId {
+    fn from(value: PriceIdentifier) -> Self {
+        Self::Pyth(value)
+    }
+}
+
+#[cfg(feature = "redstone")]
+impl From<crate::oracle::redstone::FeedId> for OraclePriceId {
+    fn from(value: crate::oracle::redstone::FeedId) -> Self {
+        Self::RedStone(value)
+    }
+}

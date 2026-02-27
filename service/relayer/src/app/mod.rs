@@ -187,8 +187,8 @@ impl App {
             tracing::info!(
                 "Loaded market {} with borrow asset {} and collateral asset {}, querying oracle {}",
                 market_accounts.account_id,
-                market_accounts.borrow_asset,
-                market_accounts.collateral_asset,
+                market_accounts.borrow.price_id,
+                market_accounts.collateral.price_id,
                 market_accounts.oracle_id,
             );
 
@@ -198,16 +198,18 @@ impl App {
                     self.args.relay.allowed_methods.as_slice(),
                 ),
                 (
-                    market_accounts.borrow_asset.contract_id(),
+                    market_accounts.borrow.asset.contract_id(),
                     &[market_accounts
-                        .borrow_asset
+                        .borrow
+                        .asset
                         .transfer_call_method_name()
                         .to_string()],
                 ),
                 (
-                    market_accounts.collateral_asset.contract_id(),
+                    market_accounts.collateral.asset.contract_id(),
                     &[market_accounts
-                        .collateral_asset
+                        .collateral
+                        .asset
                         .transfer_call_method_name()
                         .to_string()],
                 ),
@@ -302,19 +304,19 @@ impl App {
                 };
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
-                if transfer.asset() == market_account_ids.borrow_asset {
+                if transfer.asset() == market_account_ids.borrow.asset {
                     if !msg.expects_borrow_asset() {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: market_account_ids.collateral_asset.to_string(),
+                            expected: market_account_ids.collateral.asset.to_string(),
                             received: transfer.asset::<BorrowAsset>().to_string(),
                         });
                     }
-                } else if transfer.asset() == market_account_ids.collateral_asset {
+                } else if transfer.asset() == market_account_ids.collateral.asset {
                     if msg.expects_borrow_asset() {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: market_account_ids.borrow_asset.to_string(),
+                            expected: market_account_ids.borrow.asset.to_string(),
                             received: transfer.asset::<CollateralAsset>().to_string(),
                         });
                     }

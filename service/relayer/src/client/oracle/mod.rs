@@ -10,9 +10,10 @@ use near_primitives::{
     hash::CryptoHash,
     views::{FinalExecutionStatus, TxExecutionStatus},
 };
+use near_sdk::AccountId;
 use tokio::{
     select,
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch, Mutex},
     time::Instant,
 };
 
@@ -23,11 +24,14 @@ use super::near::Near;
 mod spec;
 pub use spec::*;
 
+type Responder = oneshot::Sender<Result<Option<CryptoHash>, Arc<UpdateError>>>;
+
 #[derive(Debug)]
 pub enum Request<S: Spec> {
     Update {
+        oracle_id: AccountId,
         feed_ids: Box<[S::FeedId]>,
-        send: oneshot::Sender<Result<Option<CryptoHash>, UpdateError>>,
+        send: Responder,
     },
 }
 
@@ -42,11 +46,32 @@ async fn start<S: Spec>(
     let mut client = Client::new(spec, near, cache);
     let mut on_kill = kill.subscribe();
 
+    let mut batch_timer = tokio::time::interval(Duration::from_millis(100));
+
     loop {
         select! {
             _ = on_kill.changed() => {
                 tracing::debug!("Received kill notification.");
                 break;
+            }
+            _ = batch_timer.tick() => {
+                let batches = {
+                    let mut batches = client.pending_batches.lock().await;
+                    std::mem::take(&mut *batches)
+                };
+
+                for (oracle_id, batch) in batches {
+                    let feed_ids = batch.feed_ids.iter().cloned().collect::<Vec<_>>();
+                    let result = client.update(oracle_id.clone(), &feed_ids).await.map_err(Arc::new);
+                    if let Err(ref e) = result {
+                        tracing::error!(?oracle_id, error = ?e, "Failed to update oracle feed");
+                    }
+                    for responder in batch.responders {
+                        if responder.send(result.clone()).is_err() {
+                            tracing::error!("Failed to send update result to requester: sender dropped");
+                        }
+                    }
+                }
             }
             request = recv.recv() => {
                 let Some(request) = request else {
@@ -54,10 +79,8 @@ async fn start<S: Spec>(
                     break;
                 };
                 match request {
-                    Request::Update { feed_ids, send } => {
-                        if send.send(client.update(&feed_ids).await).is_err() {
-                            tracing::error!(?feed_ids, "Failed to send update result to requester: sender dropped");
-                        }
+                    Request::Update { oracle_id, feed_ids, send } => {
+                        client.add_to_batch(oracle_id, &feed_ids, send).await;
                     }
                 }
             }
@@ -80,17 +103,25 @@ pub enum UpdateError {
 }
 
 #[derive(Debug)]
+struct PendingBatch<S: Spec> {
+    feed_ids: HashSet<S::FeedId>,
+    responders: Vec<Responder>,
+}
+
+#[derive(Debug)]
 struct Client<S: Spec> {
-    last_updated: HashMap<S::FeedId, Instant>,
+    last_updated: HashMap<AccountId, HashMap<S::FeedId, Instant>>,
+    pending_batches: Mutex<HashMap<AccountId, PendingBatch<S>>>,
     spec: Arc<S>,
     near: Near,
     cache: Cache,
 }
 
 impl<S: Spec> Client<S> {
-    pub fn new(spec: Arc<S>, near: Near, cache: Cache) -> Self {
+    fn new(spec: Arc<S>, near: Near, cache: Cache) -> Self {
         Self {
             last_updated: HashMap::new(),
+            pending_batches: Mutex::new(HashMap::new()),
             spec,
             near,
             cache,
@@ -98,14 +129,34 @@ impl<S: Spec> Client<S> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn update(
+    async fn add_to_batch(
+        &self,
+        oracle_id: AccountId,
+        price_ids: &[S::FeedId],
+        responder: Responder,
+    ) {
+        let mut batches = self.pending_batches.lock().await;
+        let batch = batches
+            .entry(oracle_id.clone())
+            .or_insert_with(|| PendingBatch {
+                feed_ids: HashSet::new(),
+                responders: vec![],
+            });
+        batch.feed_ids.extend(price_ids.iter().cloned());
+        batch.responders.push(responder);
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn update(
         &mut self,
+        oracle_id: AccountId,
         price_ids: &[S::FeedId],
     ) -> Result<Option<CryptoHash>, UpdateError> {
         let send_updates_for = IntoIterator::into_iter(price_ids)
             .filter(|id| {
                 self.last_updated
-                    .get(*id)
+                    .get(&oracle_id)
+                    .and_then(|h| h.get(*id))
                     .is_none_or(|i| i.elapsed() > self.spec.refresh())
             })
             .collect::<HashSet<_>>();
@@ -128,7 +179,7 @@ impl<S: Spec> Client<S> {
         tracing::debug!(?actions, "Update actions");
         let signed_transaction = self
             .near
-            .sign_transaction(&self.cache, self.spec.oracle_id().to_owned(), actions)
+            .sign_transaction(&self.cache, oracle_id.clone(), actions)
             .await;
         tracing::debug!(?signed_transaction, "Signed oracle update transaction");
 
@@ -155,6 +206,8 @@ impl<S: Spec> Client<S> {
                     tracing::debug!("Oracle update succeeded");
 
                     self.last_updated
+                        .entry(oracle_id)
+                        .or_default()
                         .extend(send_updates_for.into_iter().map(|id| (id, now)));
 
                     Ok(Some(transaction_hash))
@@ -190,11 +243,16 @@ impl<S: Spec> Handle<S> {
     #[tracing::instrument(skip(self))]
     pub async fn update(
         &self,
+        oracle_id: AccountId,
         feed_ids: Box<[S::FeedId]>,
-    ) -> Result<Option<CryptoHash>, UpdateError> {
+    ) -> Result<Option<CryptoHash>, Arc<UpdateError>> {
         let (send, recv) = oneshot::channel();
         self.send
-            .send(Request::Update { feed_ids, send })
+            .send(Request::Update {
+                oracle_id,
+                feed_ids,
+                send,
+            })
             .await
             .unwrap();
         recv.await.unwrap()

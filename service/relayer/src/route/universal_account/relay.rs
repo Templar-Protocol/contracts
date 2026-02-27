@@ -1,4 +1,7 @@
-use std::{collections::HashSet, fmt::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
 
 use axum::{extract::State, Json};
 use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
@@ -6,7 +9,7 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     serde_json, AccountId, NearToken,
 };
-use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::oracle::{pyth::PriceIdentifier, OraclePriceId};
 use templar_universal_account::{
     transaction::{Action, Transaction},
     ExecuteArgs,
@@ -190,8 +193,8 @@ pub async fn relay(
         interacted_contract_ids.extend(additional_interactions.into_iter());
         if let Some(market_data) = accounts.market_data.get(receiver_id) {
             interacted_contract_ids.insert(market_data.oracle_id.clone());
-            interacted_contract_ids.insert(market_data.borrow_asset.contract_id().to_owned());
-            interacted_contract_ids.insert(market_data.collateral_asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.borrow.asset.contract_id().to_owned());
+            interacted_contract_ids.insert(market_data.collateral.asset.contract_id().to_owned());
         }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
@@ -216,29 +219,90 @@ pub async fn relay(
     }
 
     // Send any requested price updates
-    let mut interacted_price_identifiers = HashSet::with_capacity(2);
+    let mut interacted_price_identifiers = HashMap::with_capacity(2);
     for contract_id in &interacted_contract_ids {
         if let Some(market_data) = accounts.market_data.get(contract_id) {
-            interacted_price_identifiers.insert(market_data.collateral_asset_price_id);
-            interacted_price_identifiers.insert(market_data.borrow_asset_price_id);
+            interacted_price_identifiers.insert(
+                market_data.collateral.price_id,
+                (
+                    market_data.collateral.update_oracle_id.clone(),
+                    market_data.collateral.update_price_id.clone(),
+                ),
+            );
+            interacted_price_identifiers.insert(
+                market_data.borrow.price_id,
+                (
+                    market_data.borrow.update_oracle_id.clone(),
+                    market_data.borrow.update_price_id.clone(),
+                ),
+            );
         }
     }
 
-    let request_price_updates = interacted_price_identifiers
-        .intersection(&update_price_feeds)
-        .copied();
+    let (pyth_updates, redstone_updates) = interacted_price_identifiers
+        .into_iter()
+        .filter(|(price_id, _)| update_price_feeds.contains(price_id))
+        .map(|(_, (oracle_id, oracle_price_id))| (oracle_id, oracle_price_id))
+        .fold(
+            (HashMap::new(), HashMap::new()),
+            |(mut pyth, mut redstone), (oracle_id, oracle_price_id)| {
+                match oracle_price_id {
+                    OraclePriceId::Pyth(id) => {
+                        pyth.entry(oracle_id)
+                            .or_insert_with(HashSet::new)
+                            .insert(id);
+                    }
+                    OraclePriceId::RedStone(id) => {
+                        redstone
+                            .entry(oracle_id)
+                            .or_insert_with(HashSet::new)
+                            .insert(id);
+                    }
+                }
+                (pyth, redstone)
+            },
+        );
 
-    if let Err(e) = app
-        .pyth
-        .as_ref()
-        .unwrap()
-        .update(request_price_updates.collect())
-        .await
-    {
-        tracing::error!(error = ?e, "Failed to update requested Pyth prices");
-        return SimpleResponse::Failure {
-            error: e.to_string(),
+    if !pyth_updates.is_empty() {
+        let Some(pyth) = app.pyth.as_ref() else {
+            tracing::error!("Pyth client not configured");
+            return SimpleResponse::Failure {
+                error: "Pyth client not configured".to_string(),
+            };
         };
+
+        for (oracle_id, feed_ids) in pyth_updates {
+            if let Err(e) = pyth
+                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
+                .await
+            {
+                tracing::error!("Pyth update failure: {e}");
+                return SimpleResponse::Failure {
+                    error: format!("Pyth update failure: {e}"),
+                };
+            }
+        }
+    }
+
+    if !redstone_updates.is_empty() {
+        let Some(redstone) = app.redstone.as_ref() else {
+            tracing::error!("Redstone client not configured");
+            return SimpleResponse::Failure {
+                error: "Redstone client not configured".to_string(),
+            };
+        };
+
+        for (oracle_id, feed_ids) in redstone_updates {
+            if let Err(e) = redstone
+                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
+                .await
+            {
+                tracing::error!("Redstone update failure: {e}");
+                return SimpleResponse::Failure {
+                    error: format!("Redstone update failure: {e}"),
+                };
+            }
+        }
     }
 
     // Send the user's transaction

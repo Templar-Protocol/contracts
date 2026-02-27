@@ -4,7 +4,7 @@ use near_sdk::json_types::{I64, U64};
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
     oracle::{
-        proxy::{Oracle, Proxy, ProxyEntry},
+        proxy::{Proxy, ProxyEntry},
         pyth,
         redstone::FeedData,
     },
@@ -38,10 +38,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     let proxy_oracle =
         ProxyOracleController::deploy(proxy_oracle, pyth_oracle.id(), redstone_adapter.id()).await;
 
-    let pyth_id = proxy_oracle.oracle_id(Oracle::Pyth).await;
-    assert_eq!(&pyth_id, pyth_oracle.id());
-    let redstone_id = proxy_oracle.oracle_id(Oracle::RedStone).await;
-    assert_eq!(&redstone_id, redstone_adapter.id());
+    let oracle_ids = proxy_oracle.oracle_ids().await;
+    assert_eq!(&oracle_ids.pyth_id, pyth_oracle.id());
+    assert_eq!(&oracle_ids.redstone_id, redstone_adapter.id());
 
     let list_proxies = proxy_oracle.list_proxies(None, None).await;
     assert_eq!(list_proxies, vec![]);

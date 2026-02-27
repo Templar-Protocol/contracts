@@ -87,10 +87,6 @@ impl Spec for PythSpec {
         "pyth"
     }
 
-    fn oracle_id(&self) -> &near_sdk::AccountIdRef {
-        &self.config.oracle_id
-    }
-
     fn refresh(&self) -> Duration {
         self.config.refresh
     }
@@ -123,7 +119,6 @@ mod tests {
         let pyth_args = args::Pyth {
             hermes_url: "https://hermes-beta.pyth.network".to_string(),
             refresh: Duration::from_secs(25),
-            oracle_id: "pyth-oracle.testnet".parse().unwrap(),
             update_gas: near_sdk::Gas::from_tgas(300),
             update_deposit: NearToken::from_near(1).saturating_div(100),
         };

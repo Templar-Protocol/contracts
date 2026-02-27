@@ -12430,6 +12430,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "hex",
+ "near-contract-standards",
  "near-crypto 0.31.1",
  "near-jsonrpc-client 0.18.0",
  "near-jsonrpc-primitives 0.31.1",

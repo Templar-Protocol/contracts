@@ -70,13 +70,6 @@ pub struct RedStone {
         default_value = "3"
     )]
     pub refresh: Duration,
-    /// Oracle ID to push price updates to.
-    #[arg(
-        id = "redstone-oracle-id",
-        long = "redstone-oracle-id",
-        env = "REDSTONE_ORACLE_ID"
-    )]
-    pub oracle_id: AccountId,
     /// How much gas (in units of Tgas) to attach to oracle price update calls.
     #[arg(
         id = "redstone-update-gas",
@@ -114,14 +107,6 @@ pub struct Pyth {
         default_value = "3"
     )]
     pub refresh: Duration,
-    /// Oracle ID to push price updates to.
-    #[arg(
-        id = "pyth-oracle-id",
-        long = "pyth-oracle-id",
-        env = "PYTH_ORACLE_ID",
-        default_value_t = AccountId::from_str("pyth-oracle.testnet").unwrap()
-    )]
-    pub oracle_id: AccountId,
     /// How much gas (in units of Tgas) to attach to oracle price update calls.
     #[arg(
         id = "pyth-update-gas",

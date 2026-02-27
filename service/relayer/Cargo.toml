@@ -9,6 +9,7 @@ axum = "0.8.4"
 clap.workspace = true
 dotenvy = "0.15.7"
 hex.workspace = true
+near-contract-standards.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
@@ -29,7 +30,7 @@ sqlx = { version = "0.8", features = [
     "rust_decimal",
     "uuid",
 ] }
-templar-common = { workspace = true, features = ["rpc"] }
+templar-common = { workspace = true, features = ["rpc", "redstone"] }
 templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

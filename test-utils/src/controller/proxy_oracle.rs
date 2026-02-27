@@ -1,7 +1,7 @@
 use near_sdk::{serde_json::json, AccountId, AccountIdRef};
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::{
-    proxy::{Oracle, Proxy, Role},
+    proxy::{Oracle, OracleIds, Proxy, Role},
     pyth::{OracleResponse, PriceIdentifier},
 };
 use tokio::sync::OnceCell;
@@ -48,7 +48,7 @@ impl ProxyOracleController {
     }
 
     define! {
-        #[view] pub fn oracle_id(oracle: Oracle) -> AccountId;
+        #[view] pub fn oracle_ids() -> OracleIds;
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy>;
 

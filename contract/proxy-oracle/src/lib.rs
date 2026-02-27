@@ -15,7 +15,7 @@ use templar_common::{
     contract::list,
     number::Decimal,
     oracle::{
-        proxy::{Oracle, Proxy, ProxyEntry, ProxyOracleEvent, Role},
+        proxy::{Oracle, OracleIds, Proxy, ProxyEntry, ProxyOracleEvent, Role},
         pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone, FeedData},
         OraclePriceId,
@@ -33,8 +33,7 @@ enum StorageKey {
 #[near(contract_state)]
 #[rbac(roles = "Role")]
 pub struct Contract {
-    pub pyth_id: AccountId,
-    pub redstone_id: AccountId,
+    pub oracles: OracleIds,
     pub proxies: UnorderedMap<PriceIdentifier, Proxy>,
 }
 
@@ -43,8 +42,10 @@ impl Contract {
     #[init]
     pub fn new(pyth_id: AccountId, redstone_id: AccountId) -> Self {
         let mut self_ = Self {
-            pyth_id,
-            redstone_id,
+            oracles: OracleIds {
+                pyth_id,
+                redstone_id,
+            },
             proxies: UnorderedMap::new(StorageKey::Proxies.into_storage_key()),
         };
 
@@ -117,11 +118,8 @@ impl Contract {
         }
     }
 
-    pub fn oracle_id(&self, oracle: Oracle) -> &AccountId {
-        match oracle {
-            Oracle::Pyth => &self.pyth_id,
-            Oracle::RedStone => &self.redstone_id,
-        }
+    pub fn oracle_ids(&self) -> &OracleIds {
+        &self.oracles
     }
 
     #[payable]
@@ -131,10 +129,10 @@ impl Contract {
 
         match oracle {
             Oracle::Pyth => {
-                self.pyth_id = account_id.clone();
+                self.oracles.pyth_id = account_id.clone();
             }
             Oracle::RedStone => {
-                self.redstone_id = account_id.clone();
+                self.oracles.redstone_id = account_id.clone();
             }
         }
 
@@ -178,7 +176,7 @@ impl Contract {
             PromiseOrValue::Value(true)
         } else {
             PromiseOrValue::Promise(
-                ext_pyth::ext(self.pyth_id.clone())
+                ext_pyth::ext(self.oracles.pyth_id.clone())
                     .with_static_gas(Gas::from_tgas(2))
                     .price_feed_exists(price_identifier)
                     .then(self_ext!(Gas::from_tgas(1)).price_feed_exists_01_consume_result()),
@@ -245,7 +243,7 @@ impl Contract {
         let mut oracles = Vec::with_capacity(2);
 
         let pyth_promise = (!pyth_price_ids.is_empty()).then(|| {
-            ext_pyth::ext(self.pyth_id.clone())
+            ext_pyth::ext(self.oracles.pyth_id.clone())
                 .with_static_gas(Gas::from_tgas(3))
                 .list_ema_prices_no_older_than(Vec::from_iter(pyth_price_ids), age)
         });
@@ -254,7 +252,7 @@ impl Contract {
         }
 
         let redstone_promise = (!redstone_price_ids.is_empty()).then(|| {
-            ext_redstone::ext(self.redstone_id.clone())
+            ext_redstone::ext(self.oracles.redstone_id.clone())
                 .with_static_gas(Gas::from_tgas(3))
                 .read_price_data(Vec::from_iter(redstone_price_ids))
         });
