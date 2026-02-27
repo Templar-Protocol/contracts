@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "harvest-static-yield"
-version = "1.2.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
