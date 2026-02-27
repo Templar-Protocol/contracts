@@ -7,7 +7,7 @@ pub const SIGNER_COUNT: usize = 20;
 pub const MAX_TIMESTAMP_AHEAD_MS: u64 = 60 * 1_000;
 pub const MAX_TIMESTAMP_DELAY_MS: u64 = 3 * 60 * 1_000;
 
-pub const REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS: [SignerAddressBs; SIGNER_COUNT] = [
+pub const ALLOWED_SIGNERS: [SignerAddressBs; SIGNER_COUNT] = [
     hex!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"),
     hex!("70997970C51812dc3A010C7d01b50e0d17dc79C8"),
     hex!("3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"),
@@ -33,7 +33,7 @@ pub const REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS: [SignerAddressBs; SIGNER_COUNT]
 pub fn test() -> Config {
     Config {
         signer_count_threshold: 3,
-        signers: REDSTONE_PRIMARY_PROD_ALLOWED_SIGNERS.to_vec(),
+        signers: ALLOWED_SIGNERS.to_vec(),
         max_timestamp_ahead_ms: MAX_TIMESTAMP_AHEAD_MS,
         max_timestamp_delay_ms: MAX_TIMESTAMP_DELAY_MS,
         min_interval_between_updates_ms: 40_000,
