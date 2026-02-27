@@ -333,9 +333,14 @@ impl Contract {
             }?;
 
             // Filter for staleness
-            let price_age_ms =
-                now_ms.saturating_sub(u64::try_from(price.publish_time).unwrap_or(0));
-
+            let publish_time = match u64::try_from(price.publish_time) {
+                Ok(p) => p,
+                Err(e) => {
+                    near_sdk::log!("Failed to convert publish_time to u64: {e}");
+                    return None;
+                }
+            };
+            let price_age_ms = now_ms.saturating_sub(publish_time);
             if price_age_ms > max_age_ms.0 {
                 return None;
             }
