@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used)]
-
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -122,13 +120,18 @@ pub async fn main() {
 
     for registry in args.registry_id {
         tracing::info!(%registry, "Loading markets from registry");
-        let deployments = near
+        let deployments = match near
             .view(&registry, "list_deployments")
             .args_json(json!({}))
             .await
-            .unwrap()
-            .json::<Vec<AccountId>>()
-            .unwrap();
+            .and_then(|r| r.json::<Vec<AccountId>>())
+        {
+            Ok(d) => d,
+            Err(error) => {
+                tracing::error!(%registry, %error, "Failed to list deployments on registry");
+                continue;
+            }
+        };
 
         markets.extend(deployments);
     }
@@ -171,14 +174,18 @@ pub async fn main() {
             .await
             .and_then(|r| r.json::<StorageBalanceBounds>())
         {
-            let storage_balance = near
+            let storage_balance = match near
                 .view(&asset_contract, "storage_balance_of")
-                .args_json(json!({
-                    "account_id": &args.account_id,
-                }))
+                .args_json(json!({ "account_id": &args.account_id }))
                 .await
                 .and_then(|r| r.json::<Option<StorageBalance>>())
-                .unwrap();
+            {
+                Ok(s) => s,
+                Err(error) => {
+                    tracing::error!(%asset_contract, account_id = %args.account_id, %error, "Failed to fetch storage balance from asset contract that has a balance requirement");
+                    std::process::exit(1);
+                }
+            };
 
             let storage_balance_total =
                 storage_balance.map_or(NearToken::from_near(0), |b| b.total);
