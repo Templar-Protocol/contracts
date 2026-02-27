@@ -55,8 +55,9 @@ async fn start<S: Spec>(
                 };
                 match request {
                     Request::Update { feed_ids, send } => {
-                        #[allow(clippy::unwrap_used, reason = "Sender should not drop")]
-                        send.send(client.update(&feed_ids).await).unwrap();
+                        if send.send(client.update(&feed_ids).await).is_err() {
+                            tracing::error!(?feed_ids, "Failed to send update result to requester: sender dropped");
+                        }
                     }
                 }
             }
