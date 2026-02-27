@@ -1,6 +1,6 @@
-import { createDefaultPreset } from "ts-jest";
+import { createDefaultEsmPreset } from "ts-jest";
 
-const tsJestTransformCfg = createDefaultPreset().transform;
+const tsJestTransformCfg = createDefaultEsmPreset().transform;
 
 /** @type {import("jest").Config} **/
 export default {
@@ -8,5 +8,4 @@ export default {
   transform: {
     ...tsJestTransformCfg,
   },
-  extensionsToTreatAsEsm: [".ts"],
 };
