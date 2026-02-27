@@ -142,8 +142,9 @@ done
 
 [ "$DRY_RUN" = "true" ] && CMD_ARGS+=("--dry-run")
 
-# Add RPC_URL if set
-[ -n "$RPC_URL" ] && CMD_ARGS+=("--rpc-url" "$RPC_URL")
+# Add NEAR_RPC_URL if set
+[ -n "$NEAR_RPC_URL" ] && CMD_ARGS+=("--near-rpc-url" "$NEAR_RPC_URL")
+[ -n "$NEAR_API_KEY" ] && CMD_ARGS+=("--near-api-key" "$NEAR_API_KEY")
 
 # Add liquidation strategy arguments (mutually exclusive)
 [ -n "$PARTIAL_LIQUIDATION_PERCENTAGE" ] && CMD_ARGS+=("--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE")
