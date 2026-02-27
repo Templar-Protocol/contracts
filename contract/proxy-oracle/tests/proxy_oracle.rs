@@ -18,14 +18,14 @@ use test_utils::{
 };
 
 fn norm_price(price: &pyth::Price) -> u64 {
-    u64::try_from(price.price.0).ok().map_or(0, |p| {
-        let f = 10u64.pow(price.expo.unsigned_abs());
-        if price.expo.is_negative() {
-            p / f
-        } else {
-            p * f
-        }
-    })
+    #[allow(clippy::unwrap_used, reason = "test should panic on negative price")]
+    let p = u64::try_from(price.price.0).unwrap();
+    let f = 10u64.pow(price.expo.unsigned_abs());
+    if price.expo.is_negative() {
+        p / f
+    } else {
+        p * f
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
