@@ -323,15 +323,13 @@ pub async fn get_static_yield(
 }
 
 #[derive(near_sdk::serde::Deserialize)]
-#[serde(crate = "near_sdk::serde")]
+#[serde(crate = "near_sdk::serde", untagged)]
 enum GetStaticYield {
-    #[serde(untagged)]
     Split {
         #[allow(unused)]
         collateral_asset: CollateralAssetAmount,
         borrow_asset: BorrowAssetAmount,
     },
-    #[serde(untagged)]
     Accumulator(Accumulator<BorrowAsset>),
 }
 
