@@ -6,15 +6,15 @@ repository.workspace = true
 version = "1.3.0"
 
 [dependencies]
-borsh.workspace = true
-hex-literal = { workspace = true, optional = true }
+borsh = { workspace = true, features = ["rc"] }
+hex-literal.workspace = true
 hex.workspace = true
-k256 = { workspace = true, optional = true }
+k256.workspace = true
 near-contract-standards.workspace = true
-near-sdk-contract-tools = { workspace = true, optional = true }
+near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
 primitive-types.workspace = true
-redstone = { workspace = true, optional = true, default-features = false, features = [] }
+redstone = { workspace = true, default-features = false, features = [] }
 schemars.workspace = true
 thiserror.workspace = true
 
@@ -28,7 +28,6 @@ sha2.workspace = true
 rstest.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 rand = "0.8"
-templar-common = { path = ".", features = ["redstone"] }
 
 [lints]
 workspace = true
@@ -36,5 +35,4 @@ workspace = true
 [features]
 default = []
 non-contract-usage = ["near-sdk/non-contract-usage"]
-redstone = ["dep:redstone", "dep:k256", "dep:hex-literal", "dep:near-sdk-contract-tools", "borsh/rc"]
 rpc = ["dep:clap", "dep:near-jsonrpc-client", "dep:near-primitives"]

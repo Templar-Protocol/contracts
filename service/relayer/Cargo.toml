@@ -19,7 +19,7 @@ near-sdk = { workspace = true, features = [
     "unit-testing",
 ] }
 near-sdk-contract-tools.workspace = true
-sha2 = "0.10.9"
+sha2.workspace = true
 sqlx = { version = "0.8", features = [
     "runtime-tokio",
     "tls-native-tls",
@@ -30,7 +30,7 @@ sqlx = { version = "0.8", features = [
     "rust_decimal",
     "uuid",
 ] }
-templar-common = { workspace = true, features = ["rpc", "redstone"] }
+templar-common = { workspace = true, features = ["rpc"] }
 templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -38,7 +38,7 @@ tower.workspace = true
 tower-http.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing = { workspace = true, features = ["attributes"] }
-reqwest = {version = "0.12.24", features = ["json"]}
+reqwest = { version = "0.12.24", features = ["json"] }
 
 [dev-dependencies]
 near-workspaces = { workspace = true, features = ["experimental"] }

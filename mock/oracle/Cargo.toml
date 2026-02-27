@@ -13,4 +13,4 @@ crate-type = ["cdylib", "rlib"]
 getrandom.workspace = true
 near-sdk.workspace = true
 near-contract-standards.workspace = true
-templar-common = { workspace = true, features = ["redstone"] }
+templar-common.workspace = true

@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
 primitive-types.workspace = true
-templar-common = { workspace = true, features = ["redstone"] }
+templar-common.workspace = true
 
 [dev-dependencies]
 hex-literal.workspace = true

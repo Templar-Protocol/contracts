@@ -48,7 +48,6 @@ impl From<Vec<ProxyEntry>> for Proxy {
 pub enum ProxyEntry {
     Transformer(ProxyPriceTransformer),
     Pyth(super::pyth::PriceIdentifier),
-    #[cfg(feature = "redstone")]
     RedStone(super::redstone::FeedId),
 }
 
@@ -64,7 +63,6 @@ pub enum Role {
 #[near(serializers = [json, borsh])]
 pub enum Oracle {
     Pyth,
-    #[cfg(feature = "redstone")]
     RedStone,
 }
 
@@ -72,7 +70,6 @@ pub enum Oracle {
 #[near(serializers = [json, borsh])]
 pub struct OracleIds {
     pub pyth_id: AccountId,
-    #[cfg(feature = "redstone")]
     pub redstone_id: AccountId,
 }
 
