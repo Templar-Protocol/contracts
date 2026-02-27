@@ -2,7 +2,7 @@ use near_sdk::{json_types::U64, near, store::IterableMap, IntoStorageKey};
 use primitive_types::U256;
 use redstone::{
     contract::verification,
-    core::process_payload,
+    core::{process_payload, processor_result::ValidatedPayload},
     network::{error::Error as RedStoneError, StdEnv},
     ConfigFactory, FeedValue,
 };
@@ -17,7 +17,7 @@ use super::{
 #[near(serializers = [borsh])]
 pub struct RedStoneAdapter {
     pub config: Config,
-    db: IterableMap<String, FeedData>,
+    feeds: IterableMap<FeedId, FeedData>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -28,31 +28,11 @@ pub enum FeedDataError {
     RedStone(#[from] RedStoneError),
 }
 
-struct Payload {
-    timestamp_ms: u64,
-    prices: Vec<FeedPrice>,
-}
-
-// TODO: Remove
-struct FeedPrice {
-    feed_id: FeedId,
-    price: U256,
-}
-
-impl From<FeedValue> for FeedPrice {
-    fn from(FeedValue { feed, value }: FeedValue) -> Self {
-        Self {
-            feed_id: feed.into(),
-            price: U256::from_big_endian(&value.0),
-        }
-    }
-}
-
 impl RedStoneAdapter {
     pub fn new(prefix: impl IntoStorageKey, config: Config) -> Self {
         Self {
             config,
-            db: IterableMap::new(prefix),
+            feeds: IterableMap::new(prefix),
         }
     }
 
@@ -64,10 +44,10 @@ impl RedStoneAdapter {
     /// - [`RedStoneError`] (e.g. data too stale)
     pub fn feed_data<'a>(
         &'a self,
-        feed_id: &str,
+        feed_id: &FeedId,
         timestamp_ms: u64,
     ) -> Result<&'a FeedData, FeedDataError> {
-        let f = self.db.get(feed_id).ok_or(FeedDataError::MissingFeed)?;
+        let f = self.feeds.get(feed_id).ok_or(FeedDataError::MissingFeed)?;
 
         Ok(verification::verify_data_staleness(
             f.write_timestamp.0.into(),
@@ -80,13 +60,13 @@ impl RedStoneAdapter {
     fn update_feed(
         &mut self,
         is_trusted: bool,
-        feed_id: &str,
+        feed_id: &FeedId,
         feed_data: FeedData,
     ) -> Result<FeedData, RedStoneError> {
         let now = feed_data.write_timestamp.0.into();
         let new_pkg = feed_data.package_timestamp.0.into();
 
-        let old = self.db.get(feed_id);
+        let old = self.feeds.get(feed_id);
         let old_write = old.map(|d| d.write_timestamp.0.into());
         let old_pkg = old.map(|d| d.package_timestamp.0.into());
 
@@ -97,7 +77,7 @@ impl RedStoneAdapter {
             verification::verify_untrusted_update(now, old_write, interval, old_pkg, new_pkg)?;
         }
 
-        self.db.insert(feed_id.to_string(), feed_data.clone());
+        self.feeds.insert(feed_id.clone(), feed_data.clone());
 
         Ok(feed_data)
     }
@@ -107,7 +87,7 @@ impl RedStoneAdapter {
         feed_ids: &[FeedId],
         payload: &[u8],
         timestamp_ms: u64,
-    ) -> Result<Payload, RedStoneError> {
+    ) -> Result<ValidatedPayload, RedStoneError> {
         let feed_ids = feed_ids
             .iter()
             .map(|id| id.as_bytes().to_vec().into())
@@ -116,21 +96,7 @@ impl RedStoneAdapter {
         let mut config =
             self.config
                 .redstone_config::<StdEnv>((), feed_ids, timestamp_ms.into())?;
-        let result = process_payload(&mut config, payload.to_vec())?;
-
-        let prices = result
-            .values
-            .into_iter()
-            .map(|FeedValue { value, feed }| FeedPrice {
-                feed_id: feed.into(),
-                price: U256::from_big_endian(&value.0),
-            })
-            .collect();
-
-        Ok(Payload {
-            timestamp_ms: result.timestamp.as_millis(),
-            prices,
-        })
+        process_payload(&mut config, payload.to_vec())
     }
 
     /// Validates prices given a payload. For pull-style usage (payload is
@@ -146,20 +112,21 @@ impl RedStoneAdapter {
         payload: &[u8],
         timestamp_ms: u64,
     ) -> Result<GetPrices, FeedDataError> {
-        let Payload {
-            timestamp_ms: timestamp,
-            prices,
-        } = self.payload(feed_ids, payload, timestamp_ms)?;
+        let ValidatedPayload { timestamp, values } =
+            self.payload(feed_ids, payload, timestamp_ms)?;
 
-        if prices.len() != feed_ids.len() {
+        if values.len() != feed_ids.len() {
             return Err(FeedDataError::MissingFeed);
         }
 
         Ok(GetPrices {
-            timestamp: U64(timestamp),
-            prices: prices
+            timestamp: U64(timestamp.as_millis()),
+            prices: values
                 .into_iter()
-                .map(|f| (f.feed_id, f.price.into()))
+                .map(|f| {
+                    let value = U256::from_big_endian(f.value.as_be_bytes()).into();
+                    (f.feed.into(), value)
+                })
                 .collect(),
         })
     }
@@ -177,17 +144,16 @@ impl RedStoneAdapter {
         payload: &[u8],
         timestamp_ms: u64,
     ) -> Result<WritePrices, FeedDataError> {
-        let Payload {
-            timestamp_ms: timestamp,
-            prices,
-        } = self.payload(feed_ids, payload, timestamp_ms)?;
+        let ValidatedPayload { timestamp, values } =
+            self.payload(feed_ids, payload, timestamp_ms)?;
 
-        let (updated_feeds, failures) = prices.into_iter().fold(
+        let (updated_feeds, failures) = values.into_iter().fold(
             (Vec::new(), Vec::new()),
-            |(mut ok, mut err), FeedPrice { feed_id, price }| {
+            |(mut ok, mut err), FeedValue { feed, value }| {
+                let feed_id: super::FeedId = feed.into();
                 let feed_data = FeedData {
-                    price: price.into(),
-                    package_timestamp: U64(timestamp),
+                    price: U256::from_big_endian(value.as_be_bytes()).into(),
+                    package_timestamp: U64(timestamp.as_millis()),
                     write_timestamp: U64(timestamp_ms),
                 };
 
@@ -241,12 +207,15 @@ mod tests {
     fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
         let mut ra = RedStoneAdapter::new(b"a", config::prod());
 
-        let prices = vec!["ETH".into(), "BTC".into()];
+        let eth = FeedId::from("ETH");
+        let btc = FeedId::from("BTC");
+
+        let prices = vec![eth.clone(), btc.clone()];
 
         ra.write_prices(true, &prices, input, timestamp).unwrap();
 
-        let _eth = ra.feed_data("ETH", timestamp).unwrap();
-        let _btc = ra.feed_data("BTC", timestamp).unwrap();
+        let _eth_data = ra.feed_data(&eth, timestamp).unwrap();
+        let _btc_data = ra.feed_data(&btc, timestamp).unwrap();
     }
 
     #[rstest::rstest]
@@ -256,17 +225,20 @@ mod tests {
 
         let mut ra = RedStoneAdapter::new(b"a", config::prod());
 
-        let prices = vec!["ETH".into(), "BTC".into()];
+        let eth = FeedId::from("ETH");
+        let btc = FeedId::from("BTC");
+
+        let prices = vec![eth.clone(), btc.clone()];
 
         let wp = ra.write_prices(true, &prices, &input, timestamp).unwrap();
 
         assert_eq!(wp.failures, Vec::new());
 
-        let eth = ra.feed_data("ETH", timestamp).unwrap();
-        let btc = ra.feed_data("BTC", timestamp).unwrap();
+        let eth_data = ra.feed_data(&eth, timestamp).unwrap();
+        let btc_data = ra.feed_data(&btc, timestamp).unwrap();
 
         assert_eq!(
-            eth,
+            eth_data,
             &FeedData {
                 price: U256::from(195_692_129_540_u128).into(),
                 package_timestamp: U64(1_770_985_144_000),
@@ -275,7 +247,7 @@ mod tests {
         );
 
         assert_eq!(
-            btc,
+            btc_data,
             &FeedData {
                 price: U256::from(6_698_556_748_915_u128).into(),
                 package_timestamp: U64(1_770_985_144_000),
