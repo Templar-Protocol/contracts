@@ -43,7 +43,7 @@ fn generate_socket_path() -> PathBuf {
 
 #[derive(Debug, Clone)]
 pub struct RedStoneSpec {
-    config: args::RedStone,
+    config: args::RedStoneConfig,
     socket_path: PathBuf,
     #[allow(unused, reason = "Used for Drop implementation")]
     bridge_process: Arc<JoinHandle<()>>,
@@ -243,7 +243,7 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
 }
 
 impl RedStoneSpec {
-    pub fn new(config: args::RedStone, kill: watch::Sender<()>) -> Self {
+    pub fn new(config: args::RedStoneConfig, kill: watch::Sender<()>) -> Self {
         let socket_path = generate_socket_path();
         let bridge_send = start_messenger(socket_path.clone(), kill.clone());
         let bridge_process = Arc::new(start_bridge(
@@ -263,7 +263,7 @@ impl RedStoneSpec {
     }
 
     pub fn handle(
-        config: args::RedStone,
+        config: args::RedStoneConfig,
         near: Near,
         cache: Cache,
         kill: watch::Sender<()>,
@@ -355,7 +355,7 @@ mod tests {
             .with_max_level(tracing::Level::INFO)
             .try_init();
 
-        let redstone_args = args::RedStone {
+        let redstone_args = args::RedStoneConfig {
             refresh: Duration::from_secs(25),
             update_gas: near_sdk::Gas::from_tgas(300),
             update_deposit: NearToken::from_near(0),

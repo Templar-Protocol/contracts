@@ -263,45 +263,29 @@ pub async fn relay(
             },
         );
 
-    if !pyth_updates.is_empty() {
-        let Some(pyth) = app.pyth.as_ref() else {
-            tracing::error!("Pyth client not configured");
+    for (oracle_id, feed_ids) in pyth_updates {
+        if let Err(e) = app
+            .pyth
+            .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
+            .await
+        {
+            tracing::error!("Pyth update failure: {e}");
             return SimpleResponse::Failure {
-                error: "Pyth client not configured".to_string(),
+                error: format!("Pyth update failure: {e}"),
             };
-        };
-
-        for (oracle_id, feed_ids) in pyth_updates {
-            if let Err(e) = pyth
-                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-                .await
-            {
-                tracing::error!("Pyth update failure: {e}");
-                return SimpleResponse::Failure {
-                    error: format!("Pyth update failure: {e}"),
-                };
-            }
         }
     }
 
-    if !redstone_updates.is_empty() {
-        let Some(redstone) = app.redstone.as_ref() else {
-            tracing::error!("Redstone client not configured");
+    for (oracle_id, feed_ids) in redstone_updates {
+        if let Err(e) = app
+            .redstone
+            .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
+            .await
+        {
+            tracing::error!("RedStone update failure: {e}");
             return SimpleResponse::Failure {
-                error: "Redstone client not configured".to_string(),
+                error: format!("RedStone update failure: {e}"),
             };
-        };
-
-        for (oracle_id, feed_ids) in redstone_updates {
-            if let Err(e) = redstone
-                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-                .await
-            {
-                tracing::error!("Redstone update failure: {e}");
-                return SimpleResponse::Failure {
-                    error: format!("Redstone update failure: {e}"),
-                };
-            }
         }
     }
 

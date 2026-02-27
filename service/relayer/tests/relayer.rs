@@ -592,7 +592,7 @@ pub async fn pyth_updates() {
     let account_id: AccountId = std::env::var("ACCOUNT_ID").unwrap().parse().unwrap();
     let secret_key: near_crypto::SecretKey = std::env::var("SECRET_KEY").unwrap().parse().unwrap();
 
-    let pyth_args = args::Pyth {
+    let pyth_args = args::PythConfig {
         hermes_url: "https://hermes-beta.pyth.network".to_string(),
         refresh: Duration::from_secs(25),
         update_gas: near_sdk::Gas::from_tgas(300),

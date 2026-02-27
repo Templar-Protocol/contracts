@@ -25,9 +25,9 @@ pub struct Configuration {
     #[clap(flatten)]
     pub ua: UniversalAccount,
     #[clap(flatten)]
-    pub redstone: Option<RedStone>,
+    pub redstone: RedStoneConfig,
     #[clap(flatten)]
-    pub pyth: Option<Pyth>,
+    pub pyth: PythConfig,
     #[clap(flatten)]
     pub cache: Cache,
     /// Broom batch size.
@@ -43,7 +43,7 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct RedStone {
+pub struct RedStoneConfig {
     /// Path to Node.js interpreter (or equivalent).
     #[arg(
         id = "redstone-node-path",
@@ -89,7 +89,7 @@ pub struct RedStone {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct Pyth {
+pub struct PythConfig {
     /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
     #[arg(
         long = "pyth-hermes-url",

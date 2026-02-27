@@ -16,11 +16,11 @@ use super::Spec;
 #[derive(Debug, Clone)]
 pub struct PythSpec {
     http: reqwest::Client,
-    config: args::Pyth,
+    config: args::PythConfig,
 }
 
 impl PythSpec {
-    pub fn new(config: args::Pyth) -> Self {
+    pub fn new(config: args::PythConfig) -> Self {
         Self {
             http: reqwest::Client::new(),
             config,
@@ -28,7 +28,7 @@ impl PythSpec {
     }
 
     pub fn handle(
-        config: args::Pyth,
+        config: args::PythConfig,
         near: Near,
         cache: Cache,
         kill: watch::Sender<()>,
@@ -116,7 +116,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_actions() {
-        let pyth_args = args::Pyth {
+        let pyth_args = args::PythConfig {
             hermes_url: "https://hermes-beta.pyth.network".to_string(),
             refresh: Duration::from_secs(25),
             update_gas: near_sdk::Gas::from_tgas(300),
