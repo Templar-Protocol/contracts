@@ -1,39 +1,54 @@
+use std::ops::Deref;
+
 use near_sdk::{near, AccountId, BorshStorageKey};
 
-use super::{price_transformer::ProxyPriceTransformer, pyth::PriceIdentifier, OraclePriceId};
+use super::{price_transformer::ProxyPriceTransformer, pyth::PriceIdentifier};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub enum Proxy {
-    Transformer(ProxyPriceTransformer),
-    List(Vec<OraclePriceId>),
-}
+pub struct Proxy(pub Vec<ProxyEntry>);
 
 impl Proxy {
-    pub fn list(list: impl IntoIterator<Item = OraclePriceId>) -> Self {
-        Self::List(list.into_iter().collect())
-    }
-
     /// Calculates a deterministic ID for this proxy.
     ///
     /// # Errors
     ///
     /// - Borsh encoding fails.
-    #[cfg(feature = "redstone")]
     pub fn id(&self) -> Result<PriceIdentifier, std::io::Error> {
         let encoding = near_sdk::borsh::to_vec(self)?;
         let hash;
-        #[cfg(target_family = "wasm")]
+        #[cfg(target_arch = "wasm32")]
         {
             hash = near_sdk::env::sha256_array(&encoding);
         }
-        #[cfg(not(target_family = "wasm"))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            use k256::sha2::Digest;
-            hash = k256::sha2::Sha256::digest(encoding).into();
+            hash = <sha2::Sha256 as sha2::Digest>::digest(encoding).into();
         }
         Ok(PriceIdentifier(hash))
     }
+}
+
+impl Deref for Proxy {
+    type Target = [ProxyEntry];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Vec<ProxyEntry>> for Proxy {
+    fn from(proxies: Vec<ProxyEntry>) -> Self {
+        Self(proxies)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum ProxyEntry {
+    Transformer(ProxyPriceTransformer),
+    RedStone(super::redstone::FeedId),
+    Pyth(super::pyth::PriceIdentifier),
 }
 
 #[derive(Debug, Clone, BorshStorageKey)]
@@ -42,7 +57,6 @@ pub enum Role {
     ModifyRole,
     SetOracleId,
     AddProxy,
-    Upgrade,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

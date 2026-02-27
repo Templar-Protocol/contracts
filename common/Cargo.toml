@@ -22,6 +22,7 @@ thiserror.workspace = true
 clap = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-primitives = { workspace = true, optional = true }
+sha2.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true

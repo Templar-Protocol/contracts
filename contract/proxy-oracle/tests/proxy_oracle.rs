@@ -4,10 +4,9 @@ use near_sdk::json_types::{I64, U64};
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
     oracle::{
-        proxy::{Oracle, Proxy},
+        proxy::{Oracle, Proxy, ProxyEntry},
         pyth,
         redstone::FeedData,
-        OraclePriceId,
     },
     primitive_types,
 };
@@ -79,9 +78,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         };
     }
 
-    let btc_proxy_def = Proxy::list([
-        OraclePriceId::Pyth(CRYPTO_BTC_USD),
-        OraclePriceId::RedStone("BTC".into()),
+    let btc_proxy_def = Proxy(vec![
+        ProxyEntry::Pyth(CRYPTO_BTC_USD),
+        ProxyEntry::RedStone("BTC".into()),
     ]);
 
     let btc_proxy_id = btc_proxy_def.id().unwrap();
@@ -146,6 +145,4 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
             .map(norm_price),
         Some(90_000),
     );
-
-    // set!(redstone.ETH = 1_000).await;
 }

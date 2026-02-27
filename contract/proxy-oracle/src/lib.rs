@@ -15,7 +15,7 @@ use templar_common::{
     contract::list,
     number::Decimal,
     oracle::{
-        proxy::{Oracle, Proxy, ProxyOracleEvent, Role},
+        proxy::{Oracle, Proxy, ProxyEntry, ProxyOracleEvent, Role},
         pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone, FeedData},
         OraclePriceId,
@@ -26,7 +26,7 @@ use templar_common::{
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
-    Proxied,
+    Proxies,
 }
 
 #[derive(Debug, Rbac, PanicOnDefault)]
@@ -45,7 +45,7 @@ impl Contract {
         let mut self_ = Self {
             pyth_id,
             redstone_id,
-            proxies: UnorderedMap::new(StorageKey::Proxied.into_storage_key()),
+            proxies: UnorderedMap::new(StorageKey::Proxies.into_storage_key()),
         };
 
         let deployer = env::predecessor_account_id();
@@ -53,7 +53,6 @@ impl Contract {
         Rbac::add_role(&mut self_, &deployer, &Role::ModifyRole);
         Rbac::add_role(&mut self_, &deployer, &Role::SetOracleId);
         Rbac::add_role(&mut self_, &deployer, &Role::AddProxy);
-        Rbac::add_role(&mut self_, &deployer, &Role::Upgrade);
 
         self_
     }
@@ -220,21 +219,10 @@ impl Contract {
                 continue;
             };
 
-            match proxy {
-                Proxy::Transformer(transformer) => {
-                    match transformer.price_id {
-                        OraclePriceId::Pyth(id) => {
-                            pyth_price_ids.insert(id);
-                        }
-                        OraclePriceId::RedStone(id) => {
-                            redstone_price_ids.insert(id);
-                        }
-                    }
-                    promises.push(transformer.call.promise());
-                }
-                Proxy::List(ids) => {
-                    for id in ids {
-                        match id {
+            for entry in proxy.0 {
+                match entry {
+                    ProxyEntry::Transformer(transformer) => {
+                        match transformer.price_id {
                             OraclePriceId::Pyth(id) => {
                                 pyth_price_ids.insert(id);
                             }
@@ -242,6 +230,13 @@ impl Contract {
                                 redstone_price_ids.insert(id);
                             }
                         }
+                        promises.push(transformer.call.promise());
+                    }
+                    ProxyEntry::Pyth(id) => {
+                        pyth_price_ids.insert(id);
+                    }
+                    ProxyEntry::RedStone(id) => {
+                        redstone_price_ids.insert(id);
                     }
                 }
             }
@@ -342,7 +337,12 @@ impl Contract {
             // Filter for staleness
             let price_age_ms =
                 now_ms.saturating_sub(u64::try_from(price.publish_time).unwrap_or(0));
-            (price_age_ms <= max_age_ms.0).then_some(price)
+
+            if price_age_ms > max_age_ms.0 {
+                return None;
+            }
+
+            Some(price)
         };
 
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
@@ -354,31 +354,31 @@ impl Contract {
                 continue;
             };
 
-            match proxy {
-                Proxy::Transformer(transformer) => {
-                    let price = get_price(transformer.price_id);
-                    let input = callback_result::<Decimal>(i);
-                    i += 1;
+            let mut value = None;
 
-                    result.insert(
-                        price_id,
+            for entry in proxy.0 {
+                let entry_result = match entry {
+                    ProxyEntry::Transformer(transformer) => {
+                        let price = get_price(transformer.price_id);
+                        let input = callback_result::<Decimal>(i);
+                        i += 1;
+
                         price
                             .zip(input)
-                            .and_then(|(price, input)| transformer.action.apply(price, input)),
-                    );
-                }
-                Proxy::List(ids) => {
-                    let price = ids.into_iter().find_map(get_price);
+                            .and_then(|(price, input)| transformer.action.apply(price, input))
+                    }
+                    ProxyEntry::RedStone(id) => get_price(OraclePriceId::RedStone(id)),
+                    ProxyEntry::Pyth(id) => get_price(OraclePriceId::Pyth(id)),
+                };
 
-                    result.insert(price_id, price);
-                }
+                value = value.or(entry_result);
             }
+
+            result.insert(price_id, value);
         }
 
         result
     }
-
-    // TODO: Upgradability
 }
 
 #[cfg(target_arch = "wasm32")]
