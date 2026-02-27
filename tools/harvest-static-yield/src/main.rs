@@ -343,7 +343,7 @@ pub async fn get_market_version(
         anyhow::bail!("No version string in contract source metadata for market {market_id}");
     };
 
-    MarketVersion::from_str(&version)
+    Ok(MarketVersion::from_str(&version)?)
 }
 
 #[tracing::instrument(skip(near))]

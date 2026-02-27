@@ -49,17 +49,27 @@ impl MarketVersion {
     }
 }
 
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    #[error("Missing separator index {0}")]
+    Separator(usize),
+    #[error("Failed to parse segment index {0}")]
+    Segment(usize),
+}
+
 impl std::str::FromStr for MarketVersion {
-    type Err = anyhow::Error;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match &s.split('.').flat_map(u16::from_str).collect::<Vec<_>>()[..] {
-            [major, minor, patch] => Ok(Self {
-                major: *major,
-                minor: *minor,
-                patch: *patch,
-            }),
-            _ => anyhow::bail!("Failed to parse market version string \"{s}\""),
-        }
+        let (major, tail) = s.split_once('.').ok_or(ParseError::Separator(0))?;
+        let major: u16 = major.parse().map_err(|_| ParseError::Segment(0))?;
+        let (minor, patch) = tail.split_once('.').ok_or(ParseError::Separator(1))?;
+        let minor: u16 = minor.parse().map_err(|_| ParseError::Segment(1))?;
+        let patch: u16 = patch.parse().map_err(|_| ParseError::Segment(2))?;
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
     }
 }

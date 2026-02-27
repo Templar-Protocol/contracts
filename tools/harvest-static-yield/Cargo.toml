@@ -17,6 +17,7 @@ near-sdk = { workspace = true, features = [
     "unit-testing",
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
+thiserror.workspace = true
 tokio.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing = { workspace = true, features = ["attributes"] }
