@@ -65,6 +65,21 @@ impl MarketScanner {
         .await
     }
 
+    /// Fetches a single borrow position from the market.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn get_borrow_position(
+        &self,
+        account_id: &AccountId,
+    ) -> Result<Option<BorrowPosition>, RpcError> {
+        view(
+            &self.client,
+            self.market.clone(),
+            "get_borrow_position",
+            &json!({ "account_id": account_id }),
+        )
+        .await
+    }
+
     /// Fetches all borrow positions from the market with pagination.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn get_all_borrows(&self) -> LiquidatorResult<BorrowPositions> {

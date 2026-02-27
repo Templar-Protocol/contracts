@@ -50,7 +50,7 @@ SLIPPAGE_BPS="300"
 REFERRAL="templar-manual"
 API_BASE_URL="https://1click.chaindefuser.com"
 NETWORK="mainnet"
-RPC_URL="https://free.rpc.fastnear.com"
+NEAR_RPC_URL="https://free.rpc.fastnear.com"
 
 # Extract contract ID from FROM_TOKEN
 FROM_CONTRACT=$(echo "$FROM_TOKEN" | cut -d':' -f2)
