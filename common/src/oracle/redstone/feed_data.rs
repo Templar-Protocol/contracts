@@ -63,8 +63,6 @@ fn approximate_u256(input: U256) -> (i64, i32) {
         // 103_873_643 / 345_060_773 ~= log(2)/log(10)
         let e = b * 103_873_643 / 345_060_773;
         let modulus = u256_exp10(e as u32);
-        eprintln!("10^{e} = {modulus}");
-        assert_eq!(modulus, U256::exp10(e));
         n /= modulus;
         exponent += e;
     }
