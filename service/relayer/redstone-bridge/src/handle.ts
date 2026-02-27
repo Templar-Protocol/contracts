@@ -7,16 +7,16 @@ import {
 
 export default async function handle(
   args: Args,
-  message: Request,
+  request: Request,
 ): Promise<Response> {
   try {
-    switch (message.method) {
+    switch (request.method) {
       case "fetch":
-        console.debug("Fetching", message.params);
+        console.debug("Fetching", request.params);
 
         const payloadString = await requestRedstonePayload({
           dataServiceId: args["data-service-id"],
-          dataPackagesIds: message.params,
+          dataPackagesIds: request.params,
           uniqueSignersCount: args["unique-signers-count"],
           waitForAllGatewaysTimeMs: args["wait-for-all-gateways-time-ms"],
           maxTimestampDeviationMS: args["max-timestamp-deviation-ms"],
@@ -26,17 +26,18 @@ export default async function handle(
         });
 
         return {
-          id: message.id,
+          id: request.id,
           status: "success",
           data: payloadString,
         };
     }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     console.error("Unknown error", e);
     return {
-      id: message.id,
+      id: request.id,
       status: "failure",
-      message: e + "",
+      message,
     };
   }
 }
