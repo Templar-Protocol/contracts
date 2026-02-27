@@ -444,7 +444,10 @@ mod tests {
         let config = args.build_config();
         assert_eq!(config.registries.len(), 1);
         assert_eq!(config.network, Network::Testnet);
-        assert_eq!(config.near_rpc_url, Some("https://custom.rpc.url".to_string()));
+        assert_eq!(
+            config.near_rpc_url,
+            Some("https://custom.rpc.url".to_string())
+        );
         assert_eq!(config.transaction_timeout, 90);
         assert_eq!(config.liquidation_scan_interval, 300);
         assert_eq!(config.registry_refresh_interval, 1800);

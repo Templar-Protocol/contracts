@@ -656,11 +656,7 @@ impl Liquidator {
             // Re-fetch position data before next iteration so we have current
             // collateral/debt amounts (the status check at the top of the loop
             // only checks liquidation eligibility, not position amounts).
-            match self
-                .scanner
-                .get_borrow_position(&borrow_account)
-                .await
-            {
+            match self.scanner.get_borrow_position(&borrow_account).await {
                 Ok(Some(updated)) => position = updated,
                 Ok(None) => {
                     tracing::info!(
