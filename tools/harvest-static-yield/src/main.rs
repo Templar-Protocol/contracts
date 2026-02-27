@@ -14,7 +14,7 @@ use near_contract_standards::{
 use near_crypto::{InMemorySigner, SecretKey};
 use near_fetch::signer::{ExposeAccountId, SignerExt};
 use near_primitives::hash::CryptoHash;
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::{serde_json::json, AccountId, NearToken};
 use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
@@ -180,11 +180,12 @@ pub async fn main() {
                 .and_then(|r| r.json::<Option<StorageBalance>>())
                 .unwrap();
 
-            if let Some(storage_balance) = storage_balance {
-                if storage_balance.total < storage_balance_bounds.min {
-                    tracing::error!(%market_id, %asset_contract, %storage_balance_bounds.min, %storage_balance.total, "Insufficient storage deposit on asset contract");
-                    continue;
-                }
+            let storage_balance_total =
+                storage_balance.map_or(NearToken::from_near(0), |b| b.total);
+
+            if storage_balance_total < storage_balance_bounds.min {
+                tracing::error!(%market_id, %asset_contract, %storage_balance_bounds.min, %storage_balance_total, "Insufficient storage deposit on asset contract");
+                continue;
             }
         }
 
