@@ -10,12 +10,9 @@ anyhow.workspace = true
 clap.workspace = true
 near-contract-standards.workspace = true
 near-crypto.workspace = true
-near-fetch = "0.9.0"
+near-fetch.workspace = true
 near-primitives.workspace = true
-near-sdk = { workspace = true, features = [
-    "non-contract-usage",
-    "unit-testing",
-] }
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
 templar-common = { workspace = true, features = ["rpc"] }
 thiserror.workspace = true
 tokio.workspace = true
