@@ -25,6 +25,8 @@ impl FeedData {
     }
 }
 
+/// Use instead of `U256::exp10` to avoid stack overflow for large exponents,
+/// since `U256::exp10` uses linear-time recursion.
 fn u256_exp10(mut exponent: u32) -> U256 {
     if exponent == 0 {
         return U256::one();
