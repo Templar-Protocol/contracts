@@ -4123,6 +4123,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "harvest-static-yield"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "near-contract-standards",
+ "near-crypto 0.31.1",
+ "near-fetch",
+ "near-primitives 0.31.1",
+ "near-sdk",
+ "templar-common",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5714,6 +5732,27 @@ dependencies = [
  "serde_json",
  "subtle",
  "thiserror 2.0.17",
+]
+
+[[package]]
+name = "near-fetch"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb88cdbb79ab1a41fc047f0902fbafdb798d08f7507cc4923838240f2ec31bb1"
+dependencies = [
+ "base64 0.22.1",
+ "near-account-id",
+ "near-crypto 0.31.1",
+ "near-gas",
+ "near-jsonrpc-client 0.18.0",
+ "near-jsonrpc-primitives 0.31.1",
+ "near-primitives 0.31.1",
+ "near-token",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-retry",
 ]
 
 [[package]]
