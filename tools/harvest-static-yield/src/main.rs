@@ -248,6 +248,7 @@ pub async fn main() {
 
     tracing::info!(%receiver_id, "Yield receiver");
 
+    let mut transfer_failures = 0;
     for (asset, amount) in accumulated_assets {
         let action = asset.transfer_action(&receiver_id, amount);
         tracing::info!(%asset, %receiver_id, %amount, "Sending yield");
@@ -264,8 +265,16 @@ pub async fn main() {
             }
             Err(error) => {
                 tracing::error!(%asset, %receiver_id, %amount, %error, "Failed to send tokens to receiver");
+                transfer_failures += 1;
             }
         };
+    }
+
+    if transfer_failures > 0 {
+        tracing::error!(transfer_failures, "Some transfers failed");
+        std::process::exit(1);
+    } else {
+        tracing::info!("All transfers completed successfully.");
     }
 }
 
