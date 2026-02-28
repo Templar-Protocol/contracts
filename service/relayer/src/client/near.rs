@@ -2,7 +2,7 @@ use std::sync::{atomic::AtomicUsize, Arc};
 
 use near_crypto::{PublicKey, Signer};
 use near_jsonrpc_client::{
-    errors::JsonRpcError,
+    errors::{JsonRpcError, JsonRpcServerError},
     methods::{
         self,
         block::RpcBlockError,
@@ -96,6 +96,17 @@ pub enum ViewError {
     Rpc(#[from] JsonRpcError<RpcQueryError>),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+impl ViewError {
+    pub fn is_method_not_found(&self) -> bool {
+        matches!(
+            self,
+            ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+                RpcQueryError::ContractExecutionError { vm_error, .. }
+            ))) if vm_error.contains("MethodResolveError(MethodNotFound)")
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -567,21 +578,28 @@ impl Near {
         })
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
     async fn query_oracle_type(&self, oracle_id: AccountId) -> Result<OracleType, ViewError> {
-        tracing::debug!(%oracle_id, "Querying oracle type");
-
         let test_proxy = self
             .view::<Vec<PriceIdentifier>>(oracle_id.clone(), "list_proxies", json!({ "count": 1 }))
             .await;
 
-        if test_proxy.is_ok() {
-            tracing::debug!(%oracle_id, "Oracle supports proxy interface, treating as proxy oracle");
-            let oracle_ids = self
-                .view::<OracleIds>(oracle_id.clone(), "oracle_ids", json!({}))
-                .await?;
+        match test_proxy {
+            Ok(_) => {
+                tracing::debug!("Oracle supports proxy interface, treating as proxy oracle");
 
-            return Ok(OracleType::Proxy(oracle_ids));
+                let oracle_ids = self
+                    .view::<OracleIds>(oracle_id.clone(), "oracle_ids", json!({}))
+                    .await?;
+
+                return Ok(OracleType::Proxy(oracle_ids));
+            }
+            Err(e) if e.is_method_not_found() => {
+                tracing::debug!("Not a proxy oracle");
+            }
+            Err(error) => {
+                tracing::debug!(%error, "RPC error when querying for proxy interface");
+                return Err(error);
+            }
         }
 
         let test_lst = self
@@ -592,13 +610,23 @@ impl Near {
             )
             .await;
 
-        if test_lst.is_ok() {
-            tracing::debug!(%oracle_id, "Oracle supports transformer interface, treating as LST oracle");
-            let pyth_id = self
-                .view::<AccountId>(oracle_id.clone(), "oracle_id", json!({}))
-                .await?;
+        match test_lst {
+            Ok(_) => {
+                tracing::debug!("Oracle supports transformer interface, treating as LST oracle");
 
-            return Ok(OracleType::PythLst { pyth_id });
+                let pyth_id = self
+                    .view::<AccountId>(oracle_id.clone(), "oracle_id", json!({}))
+                    .await?;
+
+                return Ok(OracleType::PythLst { pyth_id });
+            }
+            Err(e) if e.is_method_not_found() => {
+                tracing::debug!("Not an LST oracle");
+            }
+            Err(error) => {
+                tracing::debug!(%error, "RPC error when querying for LST interface");
+                return Err(error);
+            }
         }
 
         Ok(OracleType::PythDirect)
@@ -606,7 +634,7 @@ impl Near {
 
     /// Returns the oracle and price ID that should be updated in order to
     /// update the given price identifier for the given oracle contract.
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "debug", skip_all, fields(oracle_id = %oracle_id, price_identifier = %price_identifier))]
     pub async fn try_resolve_price_identifier(
         &self,
         oracle_id: AccountId,
@@ -614,7 +642,7 @@ impl Near {
     ) -> Result<(AccountId, OraclePriceId), ViewError> {
         match self.query_oracle_type(oracle_id.clone()).await? {
             OracleType::PythDirect => {
-                tracing::debug!(%price_identifier, "Price ID resolved: direct Pyth oracle contract");
+                tracing::debug!("Price ID resolved: direct Pyth oracle contract");
                 return Ok((oracle_id, price_identifier.into()));
             }
             OracleType::PythLst { pyth_id } => {
@@ -626,15 +654,15 @@ impl Near {
                     )
                     .await?
                 {
-                    tracing::debug!(%price_identifier, "Price ID resolved: LST oracle contract: transformed");
+                    tracing::debug!("Price ID resolved: LST oracle contract: transformed");
                     Ok((pyth_id, transformer.price_id.into()))
                 } else {
-                    tracing::debug!(%price_identifier, "Price ID resolved: LST oracle contract: passthrough");
+                    tracing::debug!("Price ID resolved: LST oracle contract: passthrough");
                     Ok((pyth_id, price_identifier.into()))
                 }
             }
             OracleType::Proxy(oracle_ids) => {
-                tracing::debug!(%price_identifier, ?oracle_ids, "Price ID resolved: Proxy oracle contract");
+                tracing::debug!(?oracle_ids, "Price ID resolved: Proxy oracle contract");
 
                 if let Some(proxy) = self
                     .view::<Option<Proxy>>(
@@ -645,7 +673,7 @@ impl Near {
                     .await?
                 {
                     let Some(first) = proxy.0.first() else {
-                        tracing::error!(%oracle_id, %price_identifier, "Proxy oracle contract returned empty proxy definition");
+                        tracing::error!("Proxy oracle contract returned empty proxy definition");
                         return Ok((oracle_id, price_identifier.into()));
                     };
                     let id = match first {
@@ -659,7 +687,7 @@ impl Near {
                     }
                 } else {
                     // Passthrough
-                    tracing::debug!(%price_identifier, "Price ID resolved: Proxy oracle contract: passthrough");
+                    tracing::debug!("Price ID resolved: Proxy oracle contract: passthrough");
                     Ok((oracle_ids.pyth_id, price_identifier.into()))
                 }
             }
