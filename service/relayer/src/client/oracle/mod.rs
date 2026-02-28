@@ -85,8 +85,6 @@ async fn start<S: Spec>(
                 }
             }
         }
-
-        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
