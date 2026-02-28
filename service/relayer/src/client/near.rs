@@ -548,13 +548,13 @@ impl Near {
         let oracle_id = config.price_oracle_configuration.account_id;
 
         let (borrow_update_oracle, borrow_update_id) = self
-            .try_resolve_price_identifier(
+            .resolve_price_identifier(
                 oracle_id.clone(),
                 config.price_oracle_configuration.borrow_asset_price_id,
             )
             .await?;
         let (collateral_update_oracle, collateral_update_id) = self
-            .try_resolve_price_identifier(
+            .resolve_price_identifier(
                 oracle_id.clone(),
                 config.price_oracle_configuration.collateral_asset_price_id,
             )
@@ -635,7 +635,7 @@ impl Near {
     /// Returns the oracle and price ID that should be updated in order to
     /// update the given price identifier for the given oracle contract.
     #[tracing::instrument(level = "debug", skip_all, fields(oracle_id = %oracle_id, price_identifier = %price_identifier))]
-    pub async fn try_resolve_price_identifier(
+    pub async fn resolve_price_identifier(
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,

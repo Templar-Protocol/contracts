@@ -1,4 +1,4 @@
-use near_sdk::{serde_json::json, AccountId, AccountIdRef};
+use near_sdk::{serde_json::json, AccountId};
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::{
     proxy::{Oracle, OracleIds, Proxy, Role},
@@ -21,11 +21,7 @@ impl ContractController for ProxyOracleController {
 }
 
 impl ProxyOracleController {
-    pub async fn deploy(
-        account: Account,
-        pyth_id: &AccountIdRef,
-        redstone_id: &AccountIdRef,
-    ) -> Self {
+    pub async fn deploy(account: Account, pyth_id: AccountId, redstone_id: AccountId) -> Self {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
         let wasm = WASM

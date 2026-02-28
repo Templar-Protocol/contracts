@@ -35,8 +35,12 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     accounts!(worker, actor, redstone_adapter, proxy_oracle, pyth_oracle);
     let pyth_oracle = MockOracleController::deploy(pyth_oracle).await;
     let redstone_adapter = MockOracleController::deploy(redstone_adapter).await;
-    let proxy_oracle =
-        ProxyOracleController::deploy(proxy_oracle, pyth_oracle.id(), redstone_adapter.id()).await;
+    let proxy_oracle = ProxyOracleController::deploy(
+        proxy_oracle,
+        pyth_oracle.id().clone(),
+        redstone_adapter.id().clone(),
+    )
+    .await;
 
     let oracle_ids = proxy_oracle.oracle_ids().await;
     assert_eq!(&oracle_ids.pyth_id, pyth_oracle.id());
