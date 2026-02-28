@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -ex
 
-export ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 
 cd "$ROOT_DIR/mock/oracle"
 cargo near build non-reproducible-wasm 1>&2

@@ -2,12 +2,23 @@
 set -ex
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
-source "$SCRIPT_DIR/./prebuild-test-contracts.sh"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/prebuild-test-contracts.sh"
 
 # start database for relayer tests
 docker compose \
     --file "${ROOT_DIR}/service/relayer/compose.dev.yaml" up postgres \
     --detach
+
+(
+    # npm install for redstone bridge tests
+    cd "$ROOT_DIR/service/relayer/redstone-bridge"
+    if [ -n "$CI" ]; then
+        npm ci
+    else
+        npm install
+    fi
+)
 
 # Run tests with nextest profile (defaults to 'ci' in CI via NEXTEST_PROFILE env var)
 cargo nextest run "$@"
