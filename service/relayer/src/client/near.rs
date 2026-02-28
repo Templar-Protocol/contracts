@@ -673,7 +673,7 @@ impl Near {
                     .await?
                 {
                     let Some(first) = proxy.0.first() else {
-                        tracing::error!("Proxy oracle contract returned empty proxy definition");
+                        tracing::error!("Proxy oracle contract returned empty proxy definition, assuming passthrough");
                         return Ok((oracle_id, price_identifier.into()));
                     };
                     let id = match first {

@@ -14,11 +14,11 @@ use test_utils::{
 #[rstest::rstest]
 #[tokio::test]
 async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             "templar_relayer=debug,info",
         ))
-        .init();
+        .try_init();
 
     accounts!(
         worker,
