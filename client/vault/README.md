@@ -450,7 +450,6 @@ contracts/client/vault/
 │   └── web/                # TypeScript bindings
 ├── Cargo.toml
 ├── justfile              # Primary task runner
-├── Makefile              # Legacy compatibility wrapper
 ├── uniffi-bindgen.rs       # Binding generator entry
 └── smoke_test.py           # Python integration tests
 ```
