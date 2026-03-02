@@ -310,6 +310,7 @@ impl Liquidator {
         let max_iterations = if dry_run { 1 } else { self.max_loop_iterations };
         let mut total_liquidated_amount = 0u128;
         let mut total_collateral_received = 0u128;
+        let mut position = position;
 
         loop {
             loop_iteration += 1;
@@ -405,7 +406,7 @@ impl Liquidator {
                 .create_price_pair(&oracle_response)?;
             let liquidatable_collateral = position.liquidatable_collateral(
                 &price_pair,
-                self.market_config.borrow_mcr_liquidation,
+                self.market_config.borrow_mcr_maintenance,
                 self.market_config.liquidation_maximum_spread,
             );
 
@@ -652,8 +653,27 @@ impl Liquidator {
                 return Ok(outcome);
             }
 
-            // If we get here and loop is enabled, continue to next iteration
-            // The loop will re-check the position status at the top
+            // Re-fetch position data before next iteration so we have current
+            // collateral/debt amounts (the status check at the top of the loop
+            // only checks liquidation eligibility, not position amounts).
+            match self.scanner.get_borrow_position(&borrow_account).await {
+                Ok(Some(updated)) => position = updated,
+                Ok(None) => {
+                    tracing::info!(
+                        borrower = %borrow_account,
+                        "Position no longer exists after liquidation, stopping loop"
+                    );
+                    return Ok(LiquidationOutcome::Liquidated);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        borrower = %borrow_account,
+                        error = ?e,
+                        "Failed to re-fetch position, stopping loop"
+                    );
+                    return Ok(LiquidationOutcome::Liquidated);
+                }
+            }
         }
     }
 

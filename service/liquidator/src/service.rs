@@ -57,7 +57,9 @@ pub struct ServiceConfig {
     /// Network to operate on
     pub network: Network,
     /// RPC URL
-    pub rpc_url: Option<String>,
+    pub near_rpc_url: Option<String>,
+    /// API key sent via X-API-Key header for RPC authentication
+    pub near_api_key: Option<String>,
     /// Transaction timeout in seconds
     pub transaction_timeout: u64,
     /// Interval between liquidation scans in seconds
@@ -116,19 +118,21 @@ pub struct LiquidatorService {
 impl LiquidatorService {
     /// Create a new liquidator service
     pub fn new(config: ServiceConfig) -> Self {
-        let rpc_url = config
-            .rpc_url
+        let near_rpc_url = config
+            .near_rpc_url
             .as_deref()
             .unwrap_or_else(|| config.network.rpc_url());
 
-        let redacted_url = if let Some(idx) = rpc_url.find('?') {
-            format!("{}?<redacted>", &rpc_url[..idx])
-        } else {
-            rpc_url.to_string()
-        };
-        tracing::info!(rpc_url = %redacted_url, "Connecting to RPC");
+        tracing::info!(near_rpc_url = %near_rpc_url, "Connecting to RPC");
 
-        let client = JsonRpcClient::connect(rpc_url);
+        let mut client = JsonRpcClient::connect(near_rpc_url);
+        if let Some(ref api_key) = config.near_api_key {
+            let header = near_jsonrpc_client::auth::ApiKey::new(api_key).unwrap_or_else(|e| {
+                panic!("Invalid NEAR_API_KEY value: {e}");
+            });
+            client = client.header(header);
+            tracing::info!("RPC API key configured via X-API-Key header");
+        }
         let signer = InMemorySigner::from_secret_key(
             config.signer_account.clone(),
             config.signer_key.clone(),
