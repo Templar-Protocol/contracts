@@ -42,12 +42,16 @@ pub struct Args {
     pub signer_account: AccountId,
 
     /// Network to run liquidations on
-    #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
+    #[arg(short, long, env = "NEAR_NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
 
     /// Custom RPC URL (overrides default network RPC)
-    #[arg(long, env = "RPC_URL")]
-    pub rpc_url: Option<String>,
+    #[arg(long, env = "NEAR_RPC_URL")]
+    pub near_rpc_url: Option<String>,
+
+    /// API key sent via X-API-Key header for RPC authentication
+    #[arg(long, env = "NEAR_API_KEY")]
+    pub near_api_key: Option<String>,
 
     /// Transaction timeout in seconds
     #[arg(long, env = "TRANSACTION_TIMEOUT", default_value_t = 60)]
@@ -270,7 +274,8 @@ impl Args {
             signer_key: self.signer_key.clone(),
             signer_account: self.signer_account.clone(),
             network: self.network,
-            rpc_url: self.rpc_url.clone(),
+            near_rpc_url: self.near_rpc_url.clone(),
+            near_api_key: self.near_api_key.clone(),
             transaction_timeout: self.transaction_timeout,
             liquidation_scan_interval: self.liquidation_scan_interval,
             registry_refresh_interval: self.registry_refresh_interval,
@@ -323,7 +328,8 @@ mod tests {
                 .unwrap(),
             signer_account: "liquidator.testnet".parse().unwrap(),
             network: Network::Testnet,
-            rpc_url: None,
+            near_rpc_url: None,
+            near_api_key: None,
             transaction_timeout: 60,
             liquidation_scan_interval: 600,
             registry_refresh_interval: 3600,
@@ -424,7 +430,7 @@ mod tests {
     #[test]
     fn test_build_config() {
         let mut args = create_test_args();
-        args.rpc_url = Some("https://custom.rpc.url".to_string());
+        args.near_rpc_url = Some("https://custom.rpc.url".to_string());
         args.transaction_timeout = 90;
         args.liquidation_scan_interval = 300;
         args.registry_refresh_interval = 1800;
@@ -438,7 +444,10 @@ mod tests {
         let config = args.build_config();
         assert_eq!(config.registries.len(), 1);
         assert_eq!(config.network, Network::Testnet);
-        assert_eq!(config.rpc_url, Some("https://custom.rpc.url".to_string()));
+        assert_eq!(
+            config.near_rpc_url,
+            Some("https://custom.rpc.url".to_string())
+        );
         assert_eq!(config.transaction_timeout, 90);
         assert_eq!(config.liquidation_scan_interval, 300);
         assert_eq!(config.registry_refresh_interval, 1800);
