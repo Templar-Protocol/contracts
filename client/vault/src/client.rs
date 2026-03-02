@@ -90,7 +90,7 @@ pub struct VaultClient {
 #[uniffi::export(async_runtime = "tokio")]
 impl VaultClient {
     #[uniffi::constructor]
-    #[instrument(skip(credentials), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credentials, rpc_url))]
     pub fn new_key_pool_default(
         rpc_url: String,
         vault: &AccountId,
@@ -100,7 +100,7 @@ impl VaultClient {
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(credential), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credential, rpc_url))]
     pub fn new_single_key_default(
         rpc_url: String,
         vault: &AccountId,
@@ -110,7 +110,7 @@ impl VaultClient {
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(credentials, config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credentials, config, rpc_url))]
     pub fn new_key_pool(
         rpc_url: String,
         vault: &AccountId,
@@ -126,7 +126,7 @@ impl VaultClient {
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(credential, config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credential, config, rpc_url))]
     pub fn new_single_key(
         rpc_url: String,
         vault: &AccountId,
@@ -573,11 +573,21 @@ impl VaultClient {
         gas: Option<Gas>,
         deposit: Option<u128>,
     ) -> Result<(), ErrorWrapper> {
-        self.inner
+        let status = self
+            .inner
             .call(&self.vault, method, args, gas, deposit)
             .await
-            .map(|_| ())
-            .map_err(ErrorWrapper::from)
+            .map_err(ErrorWrapper::from)?;
+
+        match status {
+            FinalExecutionStatus::SuccessValue(_) => Ok(()),
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
+                "{method} failed: {err:?}"
+            ))),
+            status => Err(ErrorWrapper::TransactionFailed(format!(
+                "{method} returned unexpected execution status: {status:?}"
+            ))),
+        }
     }
 
     async fn vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper> {
@@ -597,10 +607,18 @@ impl VaultClient {
             .await
             .map_err(ErrorWrapper::from)?;
 
-        let FinalExecutionStatus::SuccessValue(bytes) = status else {
-            return Err(ErrorWrapper::Wrapped(
-                "Transaction returned no value".to_string(),
-            ));
+        let bytes = match status {
+            FinalExecutionStatus::SuccessValue(bytes) => bytes,
+            FinalExecutionStatus::Failure(err) => {
+                return Err(ErrorWrapper::TransactionFailed(format!(
+                    "{method} failed: {err:?}"
+                )))
+            }
+            status => {
+                return Err(ErrorWrapper::TransactionFailed(format!(
+                    "{method} returned unexpected execution status: {status:?}"
+                )))
+            }
         };
 
         serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)

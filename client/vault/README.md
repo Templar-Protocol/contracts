@@ -10,7 +10,7 @@ We initially explored a WASM-based approach for the any-language SDK. While func
 
 2. **Patching Overhead** - Getting WASM to work required extensive patching of existing Rust circuitry, making maintenance a burden.
 
-3. **Single-Threaded Performance** - WASM runs single-threaded, meaning cryptographic operations (signing, hashing) become a bottleneck.
+3. **Threading and Deployment Constraints** - WASM can use threads in modern runtimes, but browser deployments often require cross-origin isolation headers and host/runtime support. This adds operational complexity for signing-heavy workloads.
 
 There *is* a way to keep WASM and delegate intent plans for signing by the frontend, but this is overengineered for the actual use case. From an SDK perspective, curator/allocator bots perform a focused set of operations:
 
@@ -350,12 +350,14 @@ config = VaultClientConfig(
 **Single Key**:
 
 ```python
+import os
+
 client = VaultClient.new_single_key_default(
     rpc_url="https://rpc.mainnet.near.org",
     vault=AccountId("vault.near"),
     credential=KeyCredential(
         account_id=AccountId("signer.near"),
-        secret_key="ed25519:..."
+        secret_key=os.environ["VAULT_SIGNER_SECRET_KEY"],  # load from env/secret manager
     )
 )
 ```
@@ -363,10 +365,12 @@ client = VaultClient.new_single_key_default(
 **Multi-Key Pool**:
 
 ```python
+import os
+
 credentials = [
-    KeyCredential(AccountId("key1.near"), "ed25519:..."),
-    KeyCredential(AccountId("key2.near"), "ed25519:..."),
-    KeyCredential(AccountId("key3.near"), "ed25519:..."),
+    KeyCredential(AccountId("key1.near"), os.environ["VAULT_SIGNER_KEY_1"]),
+    KeyCredential(AccountId("key2.near"), os.environ["VAULT_SIGNER_KEY_2"]),
+    KeyCredential(AccountId("key3.near"), os.environ["VAULT_SIGNER_KEY_3"]),
 ]
 
 client = VaultClient.new_key_pool(
