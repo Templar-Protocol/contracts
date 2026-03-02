@@ -479,7 +479,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         )
         print(f"  ✓ Allocator client created for: {config.allocator_account}")
     else:
-        print(f"  ⚠ Allocator client NOT created (missing credentials)")
+        print("  ⚠ Allocator client NOT created (missing credentials)")
 
     # === Step 0: Clear any in-progress operations ===
     withdrawing_op = await user_client.get_withdrawing_op_id()
@@ -523,7 +523,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
     initial_idle = await user_client.get_idle_balance()
     max_deposit = await user_client.get_max_deposit()
     markets = await user_client.list_markets_with_ids()
-    print(f"Step 1 - Initial state:")
+    print("Step 1 - Initial state:")
     print(f"  Total assets: {initial_assets}")
     print(f"  Total supply: {initial_supply}")
     print(f"  Idle balance: {initial_idle}")
@@ -619,7 +619,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 print(f"    Markets after setup: {len(markets)}")
             except ErrorWrapper as e:
                 print(f"    ⚠ accept_cap failed: {e}")
-                print(f"      (May need to wait for timelock, or already accepted)")
+                print("      (May need to wait for timelock, or already accepted)")
 
         if not markets:
             print("  ⚠ No markets registered - cannot set supply_queue")
@@ -1058,7 +1058,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
     final_assets = await user_client.get_total_assets()
     final_supply = await user_client.get_total_supply()
     final_idle = await user_client.get_idle_balance()
-    print(f"Step 6 - Final state:")
+    print("Step 6 - Final state:")
     print(f"  Total assets: {final_assets}")
     print(f"  Total supply: {final_supply}")
     print(f"  Idle balance: {final_idle}")
@@ -1095,7 +1095,7 @@ def main():
         print()
 
         config = SmokeTestConfig.from_env()
-        print(f"Configuration:")
+        print("Configuration:")
         print(f"  Vault: {config.vault_account}")
         print(f"  RPC URL: {config.rpc_url}")
         print(f"  RPC API Key: {'set' if config.rpc_api_key else 'not set'}")

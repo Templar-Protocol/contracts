@@ -233,7 +233,7 @@ impl VaultClient {
                 let used = amount_u128.saturating_sub(unused.0);
                 Ok(used.to_string())
             }
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
                 "ft_transfer_call failed: {err:?}"
             ))),
             _ => Err(ErrorWrapper::Wrapped(
@@ -281,7 +281,7 @@ impl VaultClient {
 
         match status {
             FinalExecutionStatus::SuccessValue(_) => Ok(()),
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
                 "ft_transfer failed: {err:?}"
             ))),
             _ => Err(ErrorWrapper::Wrapped(

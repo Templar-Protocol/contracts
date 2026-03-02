@@ -1,6 +1,6 @@
 # Templar Vault Client SDK
 
-gm ser - welcome to the Vault SDK.
+Welcome to the Vault SDK.
 
 ## Why Not WASM?
 
@@ -449,8 +449,8 @@ contracts/client/vault/
 │   ├── python/             # Python bindings + .so
 │   └── web/                # TypeScript bindings
 ├── Cargo.toml
-├── Makefile
-├── justfile
+├── justfile              # Primary task runner
+├── Makefile              # Legacy compatibility wrapper
 ├── uniffi-bindgen.rs       # Binding generator entry
 └── smoke_test.py           # Python integration tests
 ```

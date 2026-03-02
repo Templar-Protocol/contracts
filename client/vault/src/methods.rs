@@ -176,25 +176,65 @@ macro_rules! impl_vault_view_methods {
             pub async fn get_vault_snapshot(
                 &self,
             ) -> Result<$crate::VaultSnapshot, $crate::ErrorWrapper> {
+                let (
+                    configuration,
+                    total_assets,
+                    last_total_assets,
+                    idle_balance,
+                    total_supply,
+                    max_deposit,
+                    max_single_market_deposit,
+                    fee_anchor,
+                    fees,
+                    restrictions,
+                    cap_groups,
+                    pending_governance_actions,
+                    withdrawing_op_id,
+                    has_pending_market_withdrawal,
+                    current_withdraw_request_id,
+                    queue_tail,
+                    next_pending_withdrawal_id,
+                    markets_with_ids,
+                ) = tokio::try_join!(
+                    self.get_configuration(),
+                    self.get_total_assets(),
+                    self.get_last_total_assets(),
+                    self.get_idle_balance(),
+                    self.get_total_supply(),
+                    self.get_max_deposit(),
+                    self.get_max_single_market_deposit(),
+                    self.get_fee_anchor(),
+                    self.get_fees(),
+                    self.get_restrictions(),
+                    self.get_cap_groups(),
+                    self.get_pending_governance_actions(),
+                    self.get_withdrawing_op_id(),
+                    self.has_pending_market_withdrawal(),
+                    self.get_current_withdraw_request_id(),
+                    self.queue_tail(),
+                    self.peek_next_pending_withdrawal_id(),
+                    self.list_markets_with_ids(),
+                )?;
+
                 Ok($crate::VaultSnapshot {
-                    configuration: self.get_configuration().await?,
-                    total_assets: self.get_total_assets().await?,
-                    last_total_assets: self.get_last_total_assets().await?,
-                    idle_balance: self.get_idle_balance().await?,
-                    total_supply: self.get_total_supply().await?,
-                    max_deposit: self.get_max_deposit().await?,
-                    max_single_market_deposit: self.get_max_single_market_deposit().await?,
-                    fee_anchor: self.get_fee_anchor().await?,
-                    fees: self.get_fees().await?,
-                    restrictions: self.get_restrictions().await?,
-                    cap_groups: self.get_cap_groups().await?,
-                    pending_governance_actions: self.get_pending_governance_actions().await?,
-                    withdrawing_op_id: self.get_withdrawing_op_id().await?,
-                    has_pending_market_withdrawal: self.has_pending_market_withdrawal().await?,
-                    current_withdraw_request_id: self.get_current_withdraw_request_id().await?,
-                    queue_tail: self.queue_tail().await?,
-                    next_pending_withdrawal_id: self.peek_next_pending_withdrawal_id().await?,
-                    markets_with_ids: self.list_markets_with_ids().await?,
+                    configuration,
+                    total_assets,
+                    last_total_assets,
+                    idle_balance,
+                    total_supply,
+                    max_deposit,
+                    max_single_market_deposit,
+                    fee_anchor,
+                    fees,
+                    restrictions,
+                    cap_groups,
+                    pending_governance_actions,
+                    withdrawing_op_id,
+                    has_pending_market_withdrawal,
+                    current_withdraw_request_id,
+                    queue_tail,
+                    next_pending_withdrawal_id,
+                    markets_with_ids,
                 })
             }
 
@@ -203,11 +243,12 @@ macro_rules! impl_vault_view_methods {
                 &self,
                 markets: &[$crate::AccountId],
             ) -> Result<Vec<Option<$crate::MarketId>>, $crate::ErrorWrapper> {
-                let mut out = Vec::with_capacity(markets.len());
-                for market in markets {
-                    out.push(self.get_market_id_of_account(market).await?);
-                }
-                Ok(out)
+                futures::future::try_join_all(
+                    markets
+                        .iter()
+                        .map(|market| self.get_market_id_of_account(market)),
+                )
+                .await
             }
 
             #[instrument(skip(self, market_ids))]
@@ -215,11 +256,12 @@ macro_rules! impl_vault_view_methods {
                 &self,
                 market_ids: &[$crate::MarketId],
             ) -> Result<Vec<Option<$crate::AccountId>>, $crate::ErrorWrapper> {
-                let mut out = Vec::with_capacity(market_ids.len());
-                for id in market_ids {
-                    out.push(self.get_market_account_by_id(*id).await?);
-                }
-                Ok(out)
+                futures::future::try_join_all(
+                    market_ids
+                        .iter()
+                        .map(|market_id| self.get_market_account_by_id(*market_id)),
+                )
+                .await
             }
         }
     };

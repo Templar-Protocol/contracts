@@ -153,7 +153,7 @@ impl KeyPoolClient {
     /// # Errors
     /// Returns error if credentials is empty or any credential is invalid.
     #[uniffi::constructor]
-    #[instrument(skip(credentials, config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(rpc_url, credentials, config))]
     pub fn new(
         rpc_url: String,
         vault: &AccountId,

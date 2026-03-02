@@ -1,3 +1,5 @@
+# Legacy compatibility wrapper.
+# Preferred task runner for this directory is `just` (`client/vault/justfile`).
 CRATE := templar-vault-client
 LIB_NAME := templar_vault_client
 DIST_DIR := dist
@@ -26,7 +28,14 @@ else
 	endif
 endif
 
-.PHONY: gen python smoke-test smoke-test-view smoke-test-full
+.PHONY: all clean test gen python smoke-test smoke-test-view smoke-test-full
+
+all: python
+
+test: smoke-test
+
+clean:
+	rm -rf "$(DIST_DIR)"
 
 gen:
 	cargo build -p $(CRATE) $(CARGO_BUILD_FLAGS)

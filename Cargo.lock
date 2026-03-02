@@ -12609,6 +12609,7 @@ name = "templar-vault-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "mini-moka",
  "near-account-id",
  "near-crypto 0.31.1",
