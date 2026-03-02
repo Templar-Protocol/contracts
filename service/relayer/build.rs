@@ -4,7 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=redstone-bridge/tsconfig.json");
 
     #[allow(clippy::expect_used)]
-    if std::env::var("CI").is_ok_and(|s| s == "true") {
+    if std::env::var("CI").is_ok() {
         std::process::Command::new("npm")
             .args(["ci"])
             .current_dir("redstone-bridge")
