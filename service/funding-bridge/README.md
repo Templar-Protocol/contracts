@@ -13,6 +13,7 @@ A NEAR-centric treasury management service with cross-chain deposits and withdra
 - ✅ **Token Resolution** - Automatic OMFT token ID and decimal handling
 - ✅ **Stateless Design** - No database required, horizontally scalable
 - ✅ **REST API** - Simple HTTP/JSON interface
+- ✅ **Bridge Relayer Backend** - Configurable transport abstraction (`none`/`hot`)
 - ✅ **Prometheus Metrics** - Production-grade observability
 - ✅ **Dry-Run Mode** - Test operations without executing transactions
 
@@ -52,6 +53,15 @@ export NETWORK=mainnet
 
 # Optional: Bridge API (default: https://bridge.chaindefuser.com/rpc)
 export BRIDGE_API_URL=https://bridge.chaindefuser.com/rpc
+
+# Optional: Bridge relayer backend (defaults to none)
+export BRIDGE_RELAYER_BACKEND=none
+# export BRIDGE_RELAYER_BACKEND=hot
+# export HOT_MPC_API_URL=https://your-hot-mpc-api
+# export HOT_RELAYER_NEAR_RECEIVER=vault-counterparty.near
+# export HOT_RELAYER_STELLAR_RECEIVER=GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+# Optional (recommended if service is network-exposed):
+# export BRIDGE_RELAYER_AUTH_TOKEN=replace-with-long-random-token
 
 # Run the service
 ./target/release/funding-bridge
@@ -272,6 +282,57 @@ curl "http://localhost:3000/tokens/lookup?asset=USDT&chain=ethereum"
 }
 ```
 
+#### 6. Relay Completion (Optional, backend-dependent)
+
+These endpoints are available only when a bridge relayer backend is configured.
+For HOT, set:
+
+- `BRIDGE_RELAYER_BACKEND=hot`
+- `HOT_MPC_API_URL`
+- `HOT_RELAYER_NEAR_RECEIVER`
+- `HOT_RELAYER_STELLAR_RECEIVER`
+
+If `BRIDGE_RELAYER_AUTH_TOKEN` is configured, include:
+
+- `Authorization: Bearer <token>`
+
+Complete deposit signature payload:
+
+```bash
+curl -X POST http://localhost:3000/relay/deposit/complete \
+  -H "Authorization: Bearer $BRIDGE_RELAYER_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event": {
+      "chain_id": 1100,
+      "nonce": "123",
+      "sender_id": "GVAULT...",
+      "receiver_id": "vault-counterparty.near",
+      "token_id": "1100_C...",
+      "amount": "1000"
+    }
+  }'
+```
+
+Complete withdrawal execution payload:
+
+```bash
+curl -X POST http://localhost:3000/relay/withdrawal/complete \
+  -H "Authorization: Bearer $BRIDGE_RELAYER_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pending": {
+      "nonce": "123",
+      "chain_id": 1100,
+      "withdraw_data": {
+        "receiver_id": "GADAPTER...",
+        "amount": "1000",
+        "token_id": "1100_C..."
+      }
+    }
+  }'
+```
+
 ## Use Cases
 
 ### 1. Liquidation Bot Pre-funding
@@ -369,6 +430,12 @@ All CLI arguments can be set via environment variables:
 PORT=3000
 NETWORK=mainnet
 BRIDGE_API_URL=https://bridge.chaindefuser.com/rpc
+BRIDGE_RELAYER_BACKEND=none
+# BRIDGE_RELAYER_BACKEND=hot
+# HOT_MPC_API_URL=https://your-hot-mpc-api
+# HOT_RELAYER_NEAR_RECEIVER=vault-counterparty.near
+# HOT_RELAYER_STELLAR_RECEIVER=G...
+# BRIDGE_RELAYER_AUTH_TOKEN=replace-with-long-random-token
 DRY_RUN=false
 
 # NEAR treasury

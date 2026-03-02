@@ -264,6 +264,8 @@ async fn test_app_initialization() {
         external_chains: std::sync::Arc::new(
             templar_funding_bridge::external::ExternalChainRegistry::new(),
         ),
+        bridge_relayer: None,
+        bridge_relayer_auth_token: None,
         config: Arc::new(args),
         dry_run: false,
         version: "0.1.0-test",

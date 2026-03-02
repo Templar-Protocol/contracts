@@ -13238,6 +13238,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-vault-counterparty-contract"
+version = "0.1.0"
+dependencies = [
+ "near-sdk",
+]
+
+[[package]]
 name = "templar-vault-kernel"
 version = "0.1.0"
 dependencies = [
