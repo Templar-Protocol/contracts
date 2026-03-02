@@ -1,5 +1,5 @@
-import assert = require("node:assert/strict");
-import z = require("zod");
+import assert from "node:assert/strict";
+import z from "zod";
 
 const DataServiceId = z.literal([
   "redstone-primary-demo",

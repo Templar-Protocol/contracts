@@ -1,4 +1,4 @@
-import z = require("zod");
+import z from "zod";
 
 export const Request = z.discriminatedUnion("method", [
   z.object({
