@@ -177,12 +177,12 @@ impl VaultClient {
     /// * `msg` - Optional message for the vault (defaults to "Supply" for standard deposit)
     ///
     /// # Returns
-    /// The amount of tokens actually used by the vault (computed as `amount - unused`).
+    /// The amount of tokens actually used by the vault.
     ///
     /// # Note
-    /// Per NEP-141, ft_on_transfer returns the *unused* amount to refund. We compute
-    /// `used = amount - unused` here. However, this value should not be fully trusted
-    /// for accounting—verify via balance changes instead.
+    /// Per NEP-141, `ft_transfer_call` resolves via `ft_resolve_transfer`, which returns
+    /// the final *used/spent* amount. However, this value should not be fully trusted for
+    /// accounting—verify via balance changes instead.
     #[instrument(skip(self, token, amount, msg))]
     pub async fn ft_transfer_call(
         &self,
@@ -228,10 +228,9 @@ impl VaultClient {
 
         match status {
             FinalExecutionStatus::SuccessValue(bytes) => {
-                let unused: near_sdk::json_types::U128 =
+                let used: near_sdk::json_types::U128 =
                     serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)?;
-                let used = amount_u128.saturating_sub(unused.0);
-                Ok(used.to_string())
+                Ok(used.0.to_string())
             }
             FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
                 "ft_transfer_call failed: {err:?}"
