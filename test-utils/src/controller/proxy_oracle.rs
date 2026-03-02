@@ -1,7 +1,7 @@
 use near_sdk::{serde_json::json, AccountId};
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::{
-    proxy::{Oracle, OracleIds, Proxy, Role},
+    proxy::{Proxy, Role},
     pyth::{OracleResponse, PriceIdentifier},
 };
 use tokio::sync::OnceCell;
@@ -21,7 +21,7 @@ impl ContractController for ProxyOracleController {
 }
 
 impl ProxyOracleController {
-    pub async fn deploy(account: Account, pyth_id: AccountId, redstone_id: AccountId) -> Self {
+    pub async fn deploy(account: Account, passthrough_pyth_id: AccountId) -> Self {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
         let wasm = WASM
@@ -32,8 +32,7 @@ impl ProxyOracleController {
         contract
             .call("new")
             .args_json(json!({
-                "pyth_id": pyth_id,
-                "redstone_id": redstone_id,
+                "passthrough_pyth_id": passthrough_pyth_id,
             }))
             .transact()
             .await
@@ -44,14 +43,12 @@ impl ProxyOracleController {
     }
 
     define! {
-        #[view] pub fn oracle_ids() -> OracleIds;
+        #[view] pub fn passthrough_pyth_id() -> AccountId;
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy>;
 
         #[call(exec, yocto(1))]
         pub fn set_role(account_ids: Vec<AccountId>, roles: Vec<Role>, set: Option<bool>, allow_removing_final_member: Option<bool>);
-        #[call(exec, yocto(1))]
-        pub fn set_oracle_id(oracle: Oracle, account_id: AccountId);
         #[call(yocto(1))]
         pub fn add_proxy(proxy: Proxy) -> PriceIdentifier;
 

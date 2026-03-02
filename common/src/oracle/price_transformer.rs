@@ -7,7 +7,7 @@ use crate::number::Decimal;
 
 use super::{
     pyth::{self, PriceIdentifier},
-    OraclePriceId,
+    OracleRequest,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,15 +109,15 @@ impl PriceTransformer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct ProxyPriceTransformer {
-    pub price_id: OraclePriceId,
+    pub request: OracleRequest,
     pub call: Call,
     pub action: Action,
 }
 
 impl ProxyPriceTransformer {
-    pub fn lst(price_id: OraclePriceId, decimals: u32, call: Call) -> Self {
+    pub fn lst(price_id: OracleRequest, decimals: u32, call: Call) -> Self {
         Self {
-            price_id,
+            request: price_id,
             call,
             action: Action::NormalizeNativeLstPrice { decimals },
         }

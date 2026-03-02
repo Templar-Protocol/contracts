@@ -9,7 +9,7 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     serde_json, AccountId, NearToken,
 };
-use templar_common::oracle::{pyth::PriceIdentifier, OraclePriceId};
+use templar_common::oracle::{pyth::PriceIdentifier, OracleRequest};
 use templar_universal_account::{
     transaction::{Action, Transaction},
     ExecuteArgs,
@@ -219,44 +219,33 @@ pub async fn relay(
     }
 
     // Send any requested price updates
-    let mut interacted_price_identifiers = HashMap::with_capacity(2);
+    let mut interacted_prices = HashMap::with_capacity(2);
     for contract_id in &interacted_contract_ids {
         if let Some(market_data) = accounts.market_data.get(contract_id) {
-            interacted_price_identifiers.insert(
-                market_data.collateral.price_id,
-                (
-                    market_data.collateral.update_oracle_id.clone(),
-                    market_data.collateral.update_price_id.clone(),
-                ),
-            );
-            interacted_price_identifiers.insert(
-                market_data.borrow.price_id,
-                (
-                    market_data.borrow.update_oracle_id.clone(),
-                    market_data.borrow.update_price_id.clone(),
-                ),
-            );
+            let c = &market_data.collateral;
+            interacted_prices.insert(c.price_id, c.update_oracle.clone());
+            let b = &market_data.borrow;
+            interacted_prices.insert(b.price_id, b.update_oracle.clone());
         }
     }
 
-    let (pyth_updates, redstone_updates) = interacted_price_identifiers
+    let (pyth_updates, redstone_updates) = interacted_prices
         .into_iter()
         .filter(|(price_id, _)| update_price_feeds.contains(price_id))
-        .map(|(_, (oracle_id, oracle_price_id))| (oracle_id, oracle_price_id))
         .fold(
             (HashMap::new(), HashMap::new()),
-            |(mut pyth, mut redstone), (oracle_id, oracle_price_id)| {
-                match oracle_price_id {
-                    OraclePriceId::Pyth(id) => {
-                        pyth.entry(oracle_id)
+            |(mut pyth, mut redstone), (_, request)| {
+                match request {
+                    OracleRequest::Pyth(r) => {
+                        pyth.entry(r.oracle_id)
                             .or_insert_with(HashSet::new)
-                            .insert(id);
+                            .insert(r.price_id);
                     }
-                    OraclePriceId::RedStone(id) => {
+                    OracleRequest::RedStone(r) => {
                         redstone
-                            .entry(oracle_id)
+                            .entry(r.oracle_id)
                             .or_insert_with(HashSet::new)
-                            .insert(id);
+                            .insert(r.price_id);
                     }
                 }
                 (pyth, redstone)

@@ -3,11 +3,7 @@ use std::collections::HashMap;
 use near_sdk::json_types::{I64, U64};
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
-    oracle::{
-        proxy::{Proxy, ProxyEntry},
-        pyth,
-        redstone::FeedData,
-    },
+    oracle::{proxy::Proxy, pyth, redstone::FeedData, OracleRequest},
     primitive_types,
 };
 use test_utils::{
@@ -35,16 +31,10 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     accounts!(worker, actor, redstone_adapter, proxy_oracle, pyth_oracle);
     let pyth_oracle = MockOracleController::deploy(pyth_oracle).await;
     let redstone_adapter = MockOracleController::deploy(redstone_adapter).await;
-    let proxy_oracle = ProxyOracleController::deploy(
-        proxy_oracle,
-        pyth_oracle.id().clone(),
-        redstone_adapter.id().clone(),
-    )
-    .await;
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle, pyth_oracle.id().clone()).await;
 
-    let oracle_ids = proxy_oracle.oracle_ids().await;
-    assert_eq!(&oracle_ids.pyth_id, pyth_oracle.id());
-    assert_eq!(&oracle_ids.redstone_id, redstone_adapter.id());
+    let passthrough_pyth_id = proxy_oracle.passthrough_pyth_id().await;
+    assert_eq!(&passthrough_pyth_id, pyth_oracle.id());
 
     let list_proxies = proxy_oracle.list_proxies(None, None).await;
     assert_eq!(list_proxies, vec![]);
@@ -82,8 +72,8 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     }
 
     let btc_proxy_def = Proxy(vec![
-        ProxyEntry::Pyth(CRYPTO_BTC_USD),
-        ProxyEntry::RedStone("BTC".into()),
+        OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
+        OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
     ]);
 
     let btc_proxy_id = btc_proxy_def.id().unwrap();

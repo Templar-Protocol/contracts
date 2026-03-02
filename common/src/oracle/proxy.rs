@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use near_sdk::{near, AccountId, BorshStorageKey};
 
-use super::{price_transformer::ProxyPriceTransformer, pyth::PriceIdentifier};
+use super::{price_transformer::ProxyPriceTransformer, pyth::PriceIdentifier, OracleRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -46,16 +46,26 @@ impl From<Vec<ProxyEntry>> for Proxy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum ProxyEntry {
+    Request(OracleRequest),
     Transformer(ProxyPriceTransformer),
-    Pyth(super::pyth::PriceIdentifier),
-    RedStone(super::redstone::FeedId),
+}
+
+impl From<ProxyPriceTransformer> for ProxyEntry {
+    fn from(transformer: ProxyPriceTransformer) -> Self {
+        Self::Transformer(transformer)
+    }
+}
+
+impl From<OracleRequest> for ProxyEntry {
+    fn from(oracle_price: OracleRequest) -> Self {
+        Self::Request(oracle_price)
+    }
 }
 
 #[derive(Debug, Clone, BorshStorageKey)]
 #[near(serializers = [json, borsh])]
 pub enum Role {
     ModifyRole,
-    SetOracleId,
     AddProxy,
 }
 
@@ -66,11 +76,11 @@ pub enum Oracle {
     RedStone,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
-pub struct OracleIds {
-    pub pyth_id: AccountId,
-    pub redstone_id: AccountId,
+pub enum OracleType {
+    Pyth(AccountId),
+    RedStone(AccountId),
 }
 
 #[near(event_json(standard = "templar-proxy-oracle"))]
@@ -80,11 +90,6 @@ pub enum ProxyOracleEvent {
         account_id: AccountId,
         role: Role,
         set: bool,
-    },
-    #[event_version("1.0.0")]
-    SetOracleId {
-        oracle: Oracle,
-        oracle_id: AccountId,
     },
     #[event_version("1.0.0")]
     AddProxy { id: PriceIdentifier, proxy: Proxy },

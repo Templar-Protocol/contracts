@@ -4,7 +4,7 @@ use templar_common::oracle::{
     price_transformer::{self, PriceTransformer, ProxyPriceTransformer},
     proxy::{Proxy, ProxyEntry},
     pyth::PriceIdentifier,
-    OraclePriceId,
+    OracleRequest,
 };
 use templar_relayer::client::near::Near;
 use test_utils::{
@@ -34,11 +34,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     let price_oracle_id = price_oracle.id().clone();
 
     let lst = LstOracleController::deploy(lst, price_oracle_id.clone());
-    let proxy_oracle = ProxyOracleController::deploy(
-        proxy_oracle,
-        price_oracle_id.clone(),
-        price_oracle_id.clone(),
-    );
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle, price_oracle_id.clone());
     let price_oracle = MockOracleController::deploy(price_oracle);
     let borrow_asset = FtController::deploy(borrow_asset, "Borrow Asset", "BAT");
 
@@ -58,10 +54,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         resolved_normal,
-        (
-            price_oracle.id().clone(),
-            OraclePriceId::from(DEFAULT_BORROW_PRICE_ID),
-        ),
+        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID),
     );
 
     let resolved_passthrough = near
@@ -71,10 +64,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         resolved_passthrough,
-        (
-            price_oracle.id().to_owned(),
-            OraclePriceId::from(DEFAULT_BORROW_PRICE_ID),
-        ),
+        OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
     );
 
     let proxy_id = PriceIdentifier([0xa6; 32]);
@@ -97,14 +87,15 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         resolved_proxy,
-        (
-            price_oracle.id().to_owned(),
-            OraclePriceId::from(DEFAULT_BORROW_PRICE_ID),
-        ),
+        OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
     );
 
     // Test proxy contract too
-    let proxy_borrow = Proxy(vec![ProxyEntry::Pyth(DEFAULT_BORROW_PRICE_ID)]);
+    let proxy_borrow = Proxy(vec![OracleRequest::pyth(
+        price_oracle.id().to_owned(),
+        DEFAULT_BORROW_PRICE_ID,
+    )
+    .into()]);
 
     let id = proxy_oracle
         .add_proxy(proxy_oracle.account(), proxy_borrow.clone())
@@ -113,7 +104,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(id, proxy_borrow.id().unwrap());
 
     let transform_borrow = Proxy(vec![ProxyEntry::Transformer(ProxyPriceTransformer::lst(
-        OraclePriceId::Pyth(DEFAULT_BORROW_PRICE_ID),
+        OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
         24,
         price_transformer::Call::new_simple(borrow_asset.id(), "redemption_rate"),
     ))]);
@@ -125,28 +116,35 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(id, transform_borrow.id().unwrap());
 
     // Passthrough
-    let (oid, pid) = near
+    let request = near
         .resolve_price_identifier(proxy_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
         .await
         .unwrap();
 
-    assert_eq!(&oid, price_oracle.id());
-    assert_eq!(pid, OraclePriceId::from(DEFAULT_BORROW_PRICE_ID));
+    assert_eq!(
+        request,
+        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
+    );
 
     // Direct Pyth proxy
-    let (oid, pid) = near
+    let request = near
         .resolve_price_identifier(proxy_oracle.id().clone(), proxy_borrow.id().unwrap())
         .await
         .unwrap();
 
-    assert_eq!(&oid, price_oracle.id());
-    assert_eq!(pid, OraclePriceId::from(DEFAULT_BORROW_PRICE_ID));
+    assert_eq!(
+        request,
+        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
+    );
 
-    let (oid, pid) = near
+    // Transformed Pyth price
+    let request = near
         .resolve_price_identifier(proxy_oracle.id().clone(), transform_borrow.id().unwrap())
         .await
         .unwrap();
 
-    assert_eq!(&oid, price_oracle.id());
-    assert_eq!(pid, OraclePriceId::from(DEFAULT_BORROW_PRICE_ID));
+    assert_eq!(
+        request,
+        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
+    );
 }
