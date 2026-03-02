@@ -4,6 +4,7 @@ pub mod deposit;
 pub mod health;
 pub mod metrics;
 pub mod models;
+pub mod relay;
 #[cfg(test)]
 pub mod test_utils;
 pub mod tokens;
@@ -21,6 +22,14 @@ pub fn create_router() -> Router<App> {
         .route("/metrics", routing::get(metrics::metrics))
         .route("/deposit", routing::post(deposit::deposit))
         .route("/withdraw", routing::post(withdraw::withdraw))
+        .route(
+            "/relay/deposit/complete",
+            routing::post(relay::complete_deposit),
+        )
+        .route(
+            "/relay/withdrawal/complete",
+            routing::post(relay::complete_withdrawal),
+        )
         .route("/tokens/lookup", routing::get(tokens::token_lookup))
 }
 
