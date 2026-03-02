@@ -253,6 +253,11 @@ impl<'de> Deserialize<'de> for Wad {
                 "Wad must be a base-10 digit string",
             ));
         }
+        if s.len() > 1 && s.starts_with('0') {
+            return Err(near_sdk::serde::de::Error::custom(
+                "Wad must not have leading zeros",
+            ));
+        }
 
         let mut acc = U256::zero();
         let ten = U256::from(10u8);
@@ -473,6 +478,31 @@ mod tests {
         let err = near_sdk::serde_json::from_str::<Wad>("\"0xa\"").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("base-10 digit"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn wad_json_accepts_zero() {
+        let w: Wad = near_sdk::serde_json::from_str("\"0\"").expect("zero should parse");
+        assert!(w.is_zero());
+    }
+
+    #[test]
+    fn wad_json_rejects_empty_string() {
+        let err = near_sdk::serde_json::from_str::<Wad>("\"\"").unwrap_err();
+        assert!(err.to_string().contains("non-empty"));
+    }
+
+    #[test]
+    fn wad_json_rejects_leading_zeros() {
+        let err = near_sdk::serde_json::from_str::<Wad>("\"007\"").unwrap_err();
+        assert!(err.to_string().contains("leading zeros"));
+    }
+
+    #[test]
+    fn wad_json_rejects_overflow() {
+        let huge = format!("\"{}\"", "9".repeat(79));
+        let err = near_sdk::serde_json::from_str::<Wad>(&huge).unwrap_err();
+        assert!(err.to_string().contains("overflow"));
     }
 
     #[test]

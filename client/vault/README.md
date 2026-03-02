@@ -65,11 +65,10 @@ pub struct CapGroupId(pub String); // Capital group ID
 ### Build Targets
 
 ```bash
-make python              # Build Python bindings (debug)
-make python MODE=release # Build Python bindings (release)
-make gen                 # Generate UniFFI scaffolding only
-make abi                 # Generate contract ABI + TypeScript types
-make smoke-test          # Run Python integration tests
+just python mode=debug    # Build Python bindings (debug)
+just python mode=release  # Build Python bindings (release)
+just gen mode=debug       # Generate UniFFI bindings
+just smoke-test           # Run Python integration tests
 ```
 
 ---
@@ -80,7 +79,7 @@ make smoke-test          # Run Python integration tests
 
 The `VaultClient` manages a pool of NEAR access keys for high-concurrency operations:
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │                  VaultClient                    │
 ├─────────────────────────────────────────────────┤
@@ -135,7 +134,7 @@ ViewCacheKey {
 }
 ```
 
-Default: 2000 entries, 2 second TTL.
+Default: 2000 entries, 2-second TTL.
 
 ### Secret Key Security
 
@@ -161,6 +160,7 @@ The `impl_vault_methods!` macro generates 50+ vault methods from a single invoca
 ### Method Categories
 
 **Simple View Methods** (return `U128`):
+
 ```rust
 get_total_assets()
 get_last_total_assets()
@@ -171,6 +171,7 @@ get_max_single_market_deposit()
 ```
 
 **Parameterized View Methods**:
+
 ```rust
 convert_to_shares(assets)
 convert_to_assets(shares)
@@ -181,6 +182,7 @@ preview_redeem(shares)
 ```
 
 **Typed View Methods** (complex return types):
+
 ```rust
 get_configuration()        -> VaultConfiguration
 get_fees()                 -> Fees
@@ -189,6 +191,7 @@ build_real_assets_report() -> RealAssetsReport
 ```
 
 **Call Methods**:
+
 ```rust
 deposit(amount, receiver, deposit_yocto)
 withdraw(assets, receiver, deposit_yocto)
@@ -299,7 +302,7 @@ The SDK generates TypeScript types from the vault contract ABI.
 ### Generation Flow
 
 ```bash
-make abi
+cargo near abi
 ```
 
 This runs:
@@ -309,7 +312,7 @@ This runs:
 
 ### Output
 
-```
+```text
 web/
 ├── src/
 │   ├── abi/
@@ -345,6 +348,7 @@ config = VaultClientConfig(
 ### Client Construction
 
 **Single Key**:
+
 ```python
 client = VaultClient.new_single_key_default(
     rpc_url="https://rpc.mainnet.near.org",
@@ -357,6 +361,7 @@ client = VaultClient.new_single_key_default(
 ```
 
 **Multi-Key Pool**:
+
 ```python
 credentials = [
     KeyCredential(AccountId("key1.near"), "ed25519:..."),
@@ -419,7 +424,7 @@ except ErrorWrapper.Rpc as e:
 
 ## Project Structure
 
-```
+```text
 contracts/client/vault/
 ├── src/
 │   ├── lib.rs              # FFI exports, type definitions
@@ -445,6 +450,7 @@ contracts/client/vault/
 │   └── web/                # TypeScript bindings
 ├── Cargo.toml
 ├── Makefile
+├── justfile
 ├── uniffi-bindgen.rs       # Binding generator entry
 └── smoke_test.py           # Python integration tests
 ```
@@ -486,16 +492,13 @@ These are the prepared flows for frontend - build transactions with proper gas/d
 
 ```bash
 # Build Python bindings
-make python
+just python
 
 # Run smoke tests
-make smoke-test
-
-# Generate ABI + TypeScript types
-make abi
+just smoke-test
 
 # Full release build
-make python MODE=release
+just python mode=release
 ```
 
 ---

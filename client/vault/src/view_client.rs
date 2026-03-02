@@ -3,17 +3,16 @@ use std::sync::RwLock;
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
 use near_jsonrpc_client::{auth::ApiKey, JsonRpcClient};
-use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::instrument;
 
 use crate::{
-    parse_account_id, view_core, AccountId, AllocationDelta, CapGroupUpdate, CapGroupUpdateKey,
-    ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128, KeyPoolConfig, MarketId, RealAssetsReport,
-    Restrictions, ResyncIdleReport, TimelockKind, VaultConfiguration, ViewCache,
+    parse_account_id, view_core, AccountId, ErrorWrapper, FeeAccrualAnchor, Fees, ForeignU128,
+    KeyPoolConfig, RealAssetsReport, Restrictions, VaultConfiguration, ViewCache,
 };
 
+/// Read-only vault client that only exposes view/cache APIs and never signs transactions.
 #[derive(uniffi::Object)]
 pub struct VaultViewClient {
     vault: NearAccountId,
@@ -100,41 +99,11 @@ impl VaultViewClient {
         )
         .await
     }
-
-    #[allow(clippy::unused_async)]
-    async fn vault_call_with(
-        &self,
-        _method: &str,
-        _args: impl Serialize,
-        _gas: Option<Gas>,
-        _deposit: Option<u128>,
-    ) -> Result<(), ErrorWrapper> {
-        Err(ErrorWrapper::Wrapped(
-            "VaultViewClient is read-only; contract calls are not supported".to_string(),
-        ))
-    }
-
-    async fn vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper> {
-        self.vault_call_with(method, args, None, None).await
-    }
-
-    #[allow(clippy::unused_async)]
-    async fn vault_call_returning<T: DeserializeOwned>(
-        &self,
-        _method: &str,
-        _args: impl Serialize,
-        _gas: Option<Gas>,
-        _deposit: Option<u128>,
-    ) -> Result<T, ErrorWrapper> {
-        Err(ErrorWrapper::Wrapped(
-            "VaultViewClient is read-only; contract calls are not supported".to_string(),
-        ))
-    }
 }
 
 crate::impl_view_cache_methods!(VaultViewClient);
 crate::impl_vault_view_methods!(VaultViewClient);
-crate::impl_vault_methods!(VaultViewClient);
+crate::impl_vault_read_methods!(VaultViewClient);
 
 #[cfg(test)]
 mod tests {
@@ -146,19 +115,5 @@ mod tests {
         let client =
             VaultViewClient::new_default("https://rpc.testnet.near.org".to_string(), &vault);
         assert!(client.is_ok());
-    }
-
-    #[tokio::test]
-    async fn call_methods_fail_with_read_only_error() {
-        let vault = AccountId::from("vault.testnet".to_string());
-        let client =
-            VaultViewClient::new_default("https://rpc.testnet.near.org".to_string(), &vault)
-                .unwrap();
-
-        let err = client.accept_guardian().await.unwrap_err();
-        assert!(matches!(
-            err,
-            ErrorWrapper::Wrapped(msg) if msg.contains("read-only")
-        ));
     }
 }

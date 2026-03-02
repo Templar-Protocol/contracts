@@ -98,6 +98,7 @@ impl VaultController {
         #[call(exec, tgas(30))]
         pub fn resync_idle_balance();
 
+        // Alias for `resync_idle_balance`, kept for SDK naming consistency.
         #[call(exec, tgas(30))]
         pub fn refresh_idle_balance["resync_idle_balance"]();
 

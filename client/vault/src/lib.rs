@@ -2,6 +2,11 @@ use std::{collections::BTreeSet, fmt::Display, str::FromStr, sync::Mutex};
 
 use mini_moka::sync::Cache as MokaCache;
 use near_account_id::AccountId as NearAccountId;
+use near_jsonrpc_client::{
+    errors::JsonRpcError,
+    methods::{query::RpcQueryError, tx::RpcTransactionError},
+};
+use near_primitives::errors::InvalidTxError;
 use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{Deserialize, Serialize};
@@ -959,6 +964,11 @@ pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 pub(crate) struct ViewCacheKey {
     pub account_id: String,
     pub method: String,
+    /// JSON-serialized args bytes.
+    ///
+    /// Cache hit reliability depends on deterministic serialization of `args`.
+    /// Prefer structs/tuples or map types with stable ordering (for example
+    /// `BTreeMap`) when building view call arguments.
     pub args: Vec<u8>,
 }
 
@@ -969,8 +979,11 @@ pub(crate) fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
         return Ok(v);
     }
 
-    let inner: String = serde_json::from_str(s).map_err(ErrorWrapper::from)?;
-    inner.parse::<u128>().map_err(ErrorWrapper::from)
+    let inner: String =
+        serde_json::from_str(s).map_err(|_| ErrorWrapper::InvalidU128(s.to_string()))?;
+    inner
+        .parse::<u128>()
+        .map_err(|_| ErrorWrapper::InvalidU128(inner))
 }
 
 pub(crate) fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
@@ -1021,6 +1034,37 @@ impl<T: Into<anyhow::Error>> From<T> for ErrorWrapper {
             if cause.is::<serde_json::Error>() {
                 return ErrorWrapper::Serde(msg);
             }
+
+            if let Some(rpc_tx_err) = cause.downcast_ref::<JsonRpcError<RpcTransactionError>>() {
+                if matches!(
+                    rpc_tx_err.handler_error(),
+                    Some(RpcTransactionError::InvalidTransaction {
+                        context: InvalidTxError::InvalidNonce { .. }
+                    })
+                ) {
+                    return ErrorWrapper::InvalidNonce;
+                }
+
+                if matches!(
+                    rpc_tx_err.handler_error(),
+                    Some(RpcTransactionError::InvalidTransaction { .. })
+                ) {
+                    return ErrorWrapper::TransactionFailed(msg);
+                }
+
+                return ErrorWrapper::Rpc(msg);
+            }
+
+            if cause
+                .downcast_ref::<JsonRpcError<RpcQueryError>>()
+                .is_some()
+            {
+                return ErrorWrapper::Rpc(msg);
+            }
+        }
+
+        if msg.starts_with("Transaction failed:") || msg.contains("ActionError") {
+            return ErrorWrapper::TransactionFailed(msg);
         }
 
         ErrorWrapper::Wrapped(msg)
@@ -1123,6 +1167,12 @@ mod tests {
     fn parse_u128_accepts_plain_and_json_string() {
         assert_eq!(super::parse_u128("123").unwrap(), 123);
         assert_eq!(super::parse_u128("\"456\"").unwrap(), 456);
+    }
+
+    #[test]
+    fn parse_u128_rejects_invalid_input_with_specific_variant() {
+        let err = super::parse_u128("not-a-number").unwrap_err();
+        assert!(matches!(err, ErrorWrapper::InvalidU128(v) if v == "not-a-number"));
     }
 
     #[test]

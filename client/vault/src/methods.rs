@@ -225,18 +225,15 @@ macro_rules! impl_vault_view_methods {
     };
 }
 
-/// Generate vault view and call methods for a client.
+/// Generate read-only vault methods for a client.
 ///
 /// The client must have these helper methods:
 /// - `vault_view_u128(&self, method: &str, args: impl Serialize) -> Result<ForeignU128, ErrorWrapper>`
-/// - `vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper>`
-/// - `vault_call_with(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<(), ErrorWrapper>`
-/// - `vault_call_returning<T>(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<T, ErrorWrapper>`
 /// - `view<T>(&self, account_id: &NearAccountId, method: &str, args: impl Serialize) -> Result<T>`
 /// - `near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper>`
 /// - `vault` field of type `NearAccountId`
 #[macro_export]
-macro_rules! impl_vault_methods {
+macro_rules! impl_vault_read_methods {
     ($client:ty) => {
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
@@ -435,6 +432,23 @@ macro_rules! impl_vault_methods {
                 Ok(res.into())
             }
         }
+    };
+}
+
+/// Generate full vault methods (read-only + mutating call methods) for a client.
+///
+/// The client must have these helper methods:
+/// - `vault_view_u128(&self, method: &str, args: impl Serialize) -> Result<ForeignU128, ErrorWrapper>`
+/// - `vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper>`
+/// - `vault_call_with(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<(), ErrorWrapper>`
+/// - `vault_call_returning<T>(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<T, ErrorWrapper>`
+/// - `view<T>(&self, account_id: &NearAccountId, method: &str, args: impl Serialize) -> Result<T>`
+/// - `near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper>`
+/// - `vault` field of type `NearAccountId`
+#[macro_export]
+macro_rules! impl_vault_methods {
+    ($client:ty) => {
+        $crate::impl_vault_read_methods!($client);
 
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {

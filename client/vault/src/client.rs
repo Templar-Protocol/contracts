@@ -1,5 +1,4 @@
 //! Canonical vault client for high-concurrency use.
-//! Canonical vault client for high-concurrency use.
 
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
@@ -408,12 +407,12 @@ impl VaultClient {
                     available: balance.available.0.to_string(),
                 })
             }
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "storage_deposit failed: {err:?}"
+            FinalExecutionStatus::Failure(err) => {
+                Err(ErrorWrapper::TransactionFailed(format!("{err:?}")))
+            }
+            status => Err(ErrorWrapper::TransactionFailed(format!(
+                "storage_deposit returned unexpected execution status: {status:?}"
             ))),
-            _ => Err(ErrorWrapper::Wrapped(
-                "Unexpected execution status".to_string(),
-            )),
         }
     }
 
@@ -544,12 +543,12 @@ impl VaultClient {
                     available: balance.available.0.to_string(),
                 })
             }
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "storage_deposit_on failed: {err:?}"
+            FinalExecutionStatus::Failure(err) => {
+                Err(ErrorWrapper::TransactionFailed(format!("{err:?}")))
+            }
+            status => Err(ErrorWrapper::TransactionFailed(format!(
+                "storage_deposit_on returned unexpected execution status: {status:?}"
             ))),
-            _ => Err(ErrorWrapper::Wrapped(
-                "Unexpected execution status".to_string(),
-            )),
         }
     }
 }

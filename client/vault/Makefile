@@ -29,7 +29,8 @@ endif
 .PHONY: gen python smoke-test smoke-test-view smoke-test-full
 
 gen:
-	cargo run --features=uniffi/cli --bin uniffi-bindgen $@
+	cargo build -p $(CRATE) $(CARGO_BUILD_FLAGS)
+	$(UNIFFI_BINDGEN) generate --language python --library "$(DYLIB)" --out-dir "$(PY_OUT)" --no-format
 
 python: $(PY_OUT)
 	cargo build -p $(CRATE) $(CARGO_BUILD_FLAGS)
@@ -58,7 +59,7 @@ smoke-test-view: python
 # Full happy path integration tests (requires funded accounts)
 # Usage: make smoke-test-full VAULT_ACCOUNT=<vault> USER_ACCOUNT=<acc> USER_SECRET_KEY=<key> ...
 smoke-test-full: python
-	@if [ -z "$(VAULT_ACCOUNT)" ] || [ -z "$(USER_SECRET_KEY)" ]; then \
+	@if [ -z "$(VAULT_ACCOUNT)" ] || [ -z "$(USER_ACCOUNT)" ] || [ -z "$(USER_SECRET_KEY)" ]; then \
 		echo "Usage: make smoke-test-full \\"; \
 		echo "  VAULT_ACCOUNT=<vault.testnet> \\"; \
 		echo "  USER_ACCOUNT=<user.testnet> \\"; \
