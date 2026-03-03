@@ -1,5 +1,5 @@
-use near_sdk::{serde_json::json, AccountIdRef, Gas, NearToken};
-use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
+use near_sdk::{serde_json::json, AccountId, AccountIdRef, Gas, NearToken};
+use near_sdk_contract_tools::ft::nep145;
 use near_workspaces::{result::ExecutionSuccess, Account};
 
 use crate::define;
@@ -36,6 +36,8 @@ pub trait StorageManagementController: ContractController {
 
     define! {
         #[view]
-        fn storage_balance_bounds() -> StorageBalanceBounds;
+        fn storage_balance_bounds() -> nep145::StorageBalanceBounds;
+        #[view]
+        fn storage_balance_of(account_id: AccountId) -> Option<nep145::StorageBalance>;
     }
 }

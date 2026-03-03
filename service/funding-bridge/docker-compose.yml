@@ -1,57 +1,32 @@
-version: '3.8'
-
 services:
   funding-bridge:
     build:
-      context: ../../
+      context: ../..
       dockerfile: service/funding-bridge/Dockerfile
-      args:
-        # Build with all features (ethereum, solana)
-        FEATURES: "ethereum,solana"
-
+    image: templar-funding-bridge:latest
     container_name: templar-funding-bridge
+    restart: unless-stopped
 
-    # Environment variables (override with .env file)
-    environment:
-      # Server
-      - PORT=${PORT:-3000}
-      - NETWORK=${NETWORK:-mainnet}
-
-      # NEAR
-      - NEAR_ACCOUNT=${NEAR_ACCOUNT}
-      - NEAR_SIGNER_KEY=${NEAR_SIGNER_KEY}
-      - NEAR_RPC_URL=${NEAR_RPC_URL:-https://rpc.mainnet.near.org}
-
-      # Bridge
-      - BRIDGE_API_URL=${BRIDGE_API_URL:-https://bridge.chaindefuser.com/rpc}
-
-      # Ethereum (optional - for automated deposits/withdrawals)
-      - ETH_PRIVATE_KEY=${ETH_PRIVATE_KEY}
-      - ETH_RPC_URL=${ETH_RPC_URL:-https://eth.llamarpc.com}
-      - ETH_WITHDRAW_ADDRESS=${ETH_WITHDRAW_ADDRESS}
-
-      # Solana (optional - for automated deposits/withdrawals)
-      - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
-      - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
-      - SOLANA_WITHDRAW_ADDRESS=${SOLANA_WITHDRAW_ADDRESS}
-
-      # Testing
-      - DRY_RUN=${DRY_RUN:-false}
-
-      # Logging
-      - RUST_LOG=${RUST_LOG:-info,templar_funding_bridge=debug}
-      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
-
-    # Load environment from file
+    # Environment variables from .env file
     env_file:
       - .env
 
-    # Port mapping
+    # Additional environment variables
+    environment:
+      - RUST_LOG=${RUST_LOG:-info,templar_funding_bridge=debug}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+
+    command: [
+      "--port", "${PORT:-3000}",
+      "--network", "${NETWORK:-mainnet}",
+      "--near-treasury-account", "${NEAR_TREASURY_ACCOUNT}",
+      "--near-treasury-key", "${NEAR_TREASURY_KEY}",
+      "--dry-run"
+    ]
+
+    # Expose HTTP port
     ports:
       - "${PORT:-3000}:3000"
-
-    # Restart policy
-    restart: unless-stopped
 
     # Resource limits
     deploy:
@@ -63,6 +38,13 @@ services:
           cpus: '0.5'
           memory: 256M
 
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -70,32 +52,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-    # Logging
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-    # Command (override default --help)
-    command:
-      - "--port"
-      - "3000"
-      - "--network"
-      - "${NETWORK:-mainnet}"
-      - "--near-account"
-      - "${NEAR_ACCOUNT}"
-      - "--near-signer-key"
-      - "${NEAR_SIGNER_KEY}"
-
-# Networks
-networks:
-  default:
-    name: templar-network
-    driver: bridge
-
-# Volumes (if needed for logs or data)
-volumes:
-  logs:
-    driver: local

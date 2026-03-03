@@ -1,6 +1,6 @@
 # Templar Vault Client SDK
 
-gm ser - welcome to the Vault SDK.
+Welcome to the Vault SDK.
 
 ## Why Not WASM?
 
@@ -10,7 +10,7 @@ We initially explored a WASM-based approach for the any-language SDK. While func
 
 2. **Patching Overhead** - Getting WASM to work required extensive patching of existing Rust circuitry, making maintenance a burden.
 
-3. **Single-Threaded Performance** - WASM runs single-threaded, meaning cryptographic operations (signing, hashing) become a bottleneck.
+3. **Threading and Deployment Constraints** - WASM can use threads in modern runtimes, but browser deployments often require cross-origin isolation headers and host/runtime support. This adds operational complexity for signing-heavy workloads.
 
 There *is* a way to keep WASM and delegate intent plans for signing by the frontend, but this is overengineered for the actual use case. From an SDK perspective, curator/allocator bots perform a focused set of operations:
 
@@ -18,7 +18,7 @@ There *is* a way to keep WASM and delegate intent plans for signing by the front
 - `deposit`
 - `refresh_markets`
 - `withdraw` / `redeem`
-- `allocate`
+- `reallocate`
 
 Rather than exposing the full complexity of the vault contract, we lock-in these flows with proper gas attachment, nonce handling, and retry logic. The approach taken here is:
 
@@ -65,11 +65,16 @@ pub struct CapGroupId(pub String); // Capital group ID
 ### Build Targets
 
 ```bash
-make python              # Build Python bindings (debug)
-make python MODE=release # Build Python bindings (release)
-make gen                 # Generate UniFFI scaffolding only
-make abi                 # Generate contract ABI + TypeScript types
-make smoke-test          # Run Python integration tests
+just python mode=debug    # Build Python bindings (debug)
+just python mode=release  # Build Python bindings (release)
+just gen mode=debug       # Generate UniFFI bindings
+just smoke-test           # Run smoke_test.py (load env first)
+```
+
+`just smoke-test` does not auto-load environment files. Before running `smoke_test.py`, load `client/vault/.env.smoketest.example` values (or your own file), for example:
+
+```bash
+dotenvx run -- just smoke-test
 ```
 
 ---
@@ -80,7 +85,7 @@ make smoke-test          # Run Python integration tests
 
 The `VaultClient` manages a pool of NEAR access keys for high-concurrency operations:
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │                  VaultClient                    │
 ├─────────────────────────────────────────────────┤
@@ -135,7 +140,7 @@ ViewCacheKey {
 }
 ```
 
-Default: 2000 entries, 2 second TTL.
+Default: 2000 entries, 2-second TTL.
 
 ### Secret Key Security
 
@@ -161,6 +166,7 @@ The `impl_vault_methods!` macro generates 50+ vault methods from a single invoca
 ### Method Categories
 
 **Simple View Methods** (return `U128`):
+
 ```rust
 get_total_assets()
 get_last_total_assets()
@@ -171,6 +177,7 @@ get_max_single_market_deposit()
 ```
 
 **Parameterized View Methods**:
+
 ```rust
 convert_to_shares(assets)
 convert_to_assets(shares)
@@ -181,6 +188,7 @@ preview_redeem(shares)
 ```
 
 **Typed View Methods** (complex return types):
+
 ```rust
 get_configuration()        -> VaultConfiguration
 get_fees()                 -> Fees
@@ -189,11 +197,12 @@ build_real_assets_report() -> RealAssetsReport
 ```
 
 **Call Methods**:
+
 ```rust
 deposit(amount, receiver, deposit_yocto)
 withdraw(assets, receiver, deposit_yocto)
 redeem(shares, receiver, deposit_yocto)
-allocate(delta)
+reallocate(delta)
 refresh_markets(markets)
 execute_withdrawal(route)
 set_fees(fees)
@@ -272,19 +281,19 @@ for market in report.per_market:
     print(f"  {market.market_id}: {market.assets}")
 ```
 
-### Allocation (Curator Operations)
+### Reallocation (Curator Operations)
 
 ```python
 from templar_vault_client import AllocationDelta, Delta
 
 # Supply to a market
-await client.allocate(AllocationDelta.Supply(Delta(
+await client.reallocate(AllocationDelta.Supply(Delta(
     market=market_id,
     amount=amount
 )))
 
 # Withdraw from a market
-await client.allocate(AllocationDelta.Withdraw(Delta(
+await client.reallocate(AllocationDelta.Withdraw(Delta(
     market=market_id,
     amount=amount
 )))
@@ -299,7 +308,7 @@ The SDK generates TypeScript types from the vault contract ABI.
 ### Generation Flow
 
 ```bash
-make abi
+cargo near abi
 ```
 
 This runs:
@@ -309,7 +318,7 @@ This runs:
 
 ### Output
 
-```
+```text
 web/
 ├── src/
 │   ├── abi/
@@ -345,23 +354,29 @@ config = VaultClientConfig(
 ### Client Construction
 
 **Single Key**:
+
 ```python
+import os
+
 client = VaultClient.new_single_key_default(
     rpc_url="https://rpc.mainnet.near.org",
     vault=AccountId("vault.near"),
     credential=KeyCredential(
         account_id=AccountId("signer.near"),
-        secret_key="ed25519:..."
+        secret_key=os.environ["VAULT_SIGNER_SECRET_KEY"],  # load from env/secret manager
     )
 )
 ```
 
 **Multi-Key Pool**:
+
 ```python
+import os
+
 credentials = [
-    KeyCredential(AccountId("key1.near"), "ed25519:..."),
-    KeyCredential(AccountId("key2.near"), "ed25519:..."),
-    KeyCredential(AccountId("key3.near"), "ed25519:..."),
+    KeyCredential(AccountId("key1.near"), os.environ["VAULT_SIGNER_KEY_1"]),
+    KeyCredential(AccountId("key2.near"), os.environ["VAULT_SIGNER_KEY_2"]),
+    KeyCredential(AccountId("key3.near"), os.environ["VAULT_SIGNER_KEY_3"]),
 ]
 
 client = VaultClient.new_key_pool(
@@ -419,7 +434,7 @@ except ErrorWrapper.Rpc as e:
 
 ## Project Structure
 
-```
+```text
 contracts/client/vault/
 ├── src/
 │   ├── lib.rs              # FFI exports, type definitions
@@ -444,7 +459,7 @@ contracts/client/vault/
 │   ├── python/             # Python bindings + .so
 │   └── web/                # TypeScript bindings
 ├── Cargo.toml
-├── Makefile
+├── justfile              # Primary task runner
 ├── uniffi-bindgen.rs       # Binding generator entry
 └── smoke_test.py           # Python integration tests
 ```
@@ -486,16 +501,13 @@ These are the prepared flows for frontend - build transactions with proper gas/d
 
 ```bash
 # Build Python bindings
-make python
+just python
 
 # Run smoke tests
-make smoke-test
-
-# Generate ABI + TypeScript types
-make abi
+just smoke-test
 
 # Full release build
-make python MODE=release
+just python mode=release
 ```
 
 ---

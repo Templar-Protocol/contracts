@@ -21,6 +21,10 @@ impl ContractController for UniversalAccountController {
 }
 
 impl UniversalAccountController {
+    pub const fn wasm_0_2_0() -> &'static [u8] {
+        include_bytes!("wasm/uac_0_2_0.wasm")
+    }
+
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
@@ -33,13 +37,19 @@ impl UniversalAccountController {
         .await
     }
 
-    pub async fn deploy(account: Account, key: KeyId, chain_id: u128) -> Self {
+    pub async fn deploy(
+        account: Account,
+        key: KeyId,
+        chain_id: u128,
+        execute: Option<Vec<Transaction>>,
+    ) -> Self {
         let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
         contract
             .call("new")
             .args_json(InitArgs {
                 key,
                 chain_id: chain_id.into(),
+                execute,
             })
             .transact()
             .await

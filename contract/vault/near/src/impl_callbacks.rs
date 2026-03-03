@@ -1,10 +1,9 @@
-#![allow(clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments, clippy::used_underscore_binding)]
 
 use core::cmp::Ordering;
 use std::fmt::Display;
 
 use crate::{
-    convert::to_kernel_op_state,
     governance::Gate,
     near,
     op_guard::{AllocatingSpec, OpGuard, PayoutSpec, RefreshingSpec, WithdrawingSpec},
@@ -23,10 +22,11 @@ use templar_common::{
     panic_with_message,
     supply::SupplyPosition,
     vault::{
-        AllocatingState, AllocationPositionIssueKind, Event, IdleBalanceDelta, MarketId, OpState,
-        PayoutState, PositionReportOutcome, Reason, WithdrawalAccountingKind, WithdrawingState,
-        AFTER_SEND_TO_USER_GAS, EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS,
-        GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
+        AllocatingState, AllocationPlan, AllocationPositionIssueKind, EscrowSettlement, Event,
+        IdleBalanceDelta, MarketId, OpState, PayoutState, PositionReportOutcome, Reason,
+        WithdrawalAccountingKind, WithdrawingState, AFTER_SEND_TO_USER_GAS,
+        EXECUTE_NEXT_SUPPLY_WITHDRAW_REQ_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
+        SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
 
@@ -41,10 +41,10 @@ macro_rules! unwrap_or_return {
 
 pub(crate) use unwrap_or_return;
 
-pub(crate) fn or_stop<'a, S>(
-    contract: &'a mut Contract,
+pub(crate) fn or_stop<S>(
+    contract: &mut Contract,
     op_id: u64,
-) -> Result<OpGuard<'a, S>, PromiseOrValue<()>>
+) -> Result<OpGuard<'_, S>, PromiseOrValue<()>>
 where
     S: GuardSpec<Contract, Error = Error>,
 {
@@ -198,24 +198,27 @@ impl Contract {
         }
         .emit();
 
+        let plan: AllocationPlan = allocating
+            .state()
+            .plan
+            .iter()
+            .filter(|m| m.0 != market_id)
+            .copied()
+            .collect();
+
         allocating.set_market_principal(market_id, new_principal);
-        drop(allocating);
-        let kernel_state = to_kernel_op_state(&self.op_state);
-        let result = templar_vault_kernel::transitions::allocation_step_callback(
-            kernel_state,
-            true,
-            accepted_event,
+
+        let mut allocating = allocating.replace_state(AllocatingState {
             op_id,
-        )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel allocation step failed: {err:?}"))
+            index: market_index.saturating_add(1),
+            remaining: remaining_next,
+            plan,
         });
-        self.apply_kernel_op_state(&result.new_state);
 
         if remaining_next == 0 {
-            return self.stop_and_exit(None::<&String>);
+            return allocating.stop_and_exit(None::<&String>);
         }
-        self.step_allocation()
+        allocating.step_allocation()
     }
 
     #[private]
@@ -436,7 +439,6 @@ impl Contract {
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
-            payout_delta: principal_payout,
             remaining_next,
             collected_next,
             ..
@@ -448,29 +450,8 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-        let (extra_payout, remaining_next, collected_next) =
+        let (_, remaining_next, collected_next) =
             determine_payout_delta(remaining_next, collected_next, extra);
-
-        let payout_delta = principal_payout.saturating_add(extra_payout);
-
-        let desired_index = match principal_delta.cmp(&inflow) {
-            Ordering::Less | Ordering::Equal if principal_delta > 0 => ctx.index.saturating_add(1),
-            _ => ctx.index,
-        };
-
-        let kernel_state = to_kernel_op_state(&self.op_state);
-        let result = templar_vault_kernel::transitions::withdrawal_step_callback(
-            kernel_state,
-            op_id,
-            payout_delta,
-        )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel withdrawal step failed: {err:?}"))
-        });
-        self.apply_kernel_op_state(&result.new_state);
-        if let OpState::Withdrawing(state) = &mut self.op_state {
-            state.index = desired_index;
-        }
 
         if remaining_next == 0 {
             return self.pay_or_else(
@@ -505,7 +486,25 @@ impl Contract {
             );
         }
 
-        self.pay_or_signal_next_withdraw()
+        let next_state = state_on_delta_inflow(
+            principal_delta,
+            inflow,
+            op_id,
+            ctx.index,
+            remaining_next,
+            collected_next,
+            ctx,
+        );
+
+        let OpState::Withdrawing(next_state) = next_state else {
+            return self.stop_and_exit(Some(&Error::NotWithdrawing));
+        };
+
+        let withdrawing = unwrap_or_return!(or_stop::<WithdrawingSpec>(self, op_id));
+
+        let mut withdrawing = withdrawing.replace_state(next_state);
+
+        withdrawing.pay_or_signal_next_withdraw()
     }
 
     #[private]
@@ -685,15 +684,10 @@ impl Contract {
         }
 
         if escrow_shares > 0 {
-            // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 &mut payout,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
-                |e| {
-                    templar_common::panic_with_message(&format!(
-                        "Payout stop escrow refund failed: {e}"
-                    ))
-                },
+                |e| env::log_str(&e.to_string()),
             );
         }
 
@@ -758,48 +752,38 @@ impl Contract {
         };
 
         if result.is_ok() {
-            let refund = escrow_shares.saturating_sub(burn_shares);
+            let EscrowSettlement {
+                to_burn: burn_shares,
+                refund,
+            } = EscrowSettlement::new(escrow_shares, burn_shares);
 
             if burn_shares > 0 {
-                // This must be infallible - panic to prevent orphaned shares in escrow.
-                payout
+                // Serious issue: this should be infallible - if the withdrawal panics here we have an escrow settlement error
+                let _ = payout
                     .burn(&Nep141Burn::new(burn_shares, env::current_account_id()))
-                    .unwrap_or_else(|e| {
-                        templar_common::panic_with_message(&format!(
-                            "Escrow settlement burn failed: {e}"
-                        ))
-                    });
+                    .inspect_err(|e| env::log_str(&format!("Failed to burn {e}")));
             }
 
             if refund > 0 {
-                // This must be infallible - panic to prevent orphaned shares in escrow.
+                // Note: this should be infallible since we are transferring to an existing owner, and they are unable to unregister from storage
                 Gate::bypass_transfer_with(
                     &mut payout,
                     &Nep141Transfer::new(refund, env::current_account_id(), &owner),
-                    |e| {
-                        templar_common::panic_with_message(&format!(
-                            "Escrow settlement refund failed: {e}"
-                        ))
-                    },
+                    // Serious issue: this should be infallible - if the transfer panics here we have an escrow settlement error
+                    |e| env::log_str(&e.to_string()),
                 );
             }
         } else {
             payout.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
-            // On payout failure, refund all escrow shares. Must be infallible.
             Gate::bypass_transfer_with(
                 &mut payout,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
-                |e| {
-                    templar_common::panic_with_message(&format!(
-                        "Escrow settlement failure refund failed: {e}"
-                    ))
-                },
+                |e| env::log_str(&e.to_string()),
             );
         }
 
         payout.pop_head();
         payout.withdraw_route.clear();
-        payout.market_execution_lock.clear();
         let _idle = payout.into_idle();
     }
 
@@ -829,7 +813,6 @@ impl Contract {
         market_id: MarketId,
         op_id: u64,
         index: u32,
-        _before: U128,
     ) -> PromiseOrValue<RealAssetsReport> {
         let Ok(mut refreshing) = OpGuard::<RefreshingSpec>::expect(self, Some(op_id)) else {
             return PromiseOrValue::Value(self.build_real_assets_report());
@@ -845,43 +828,29 @@ impl Contract {
             refreshing.set_market_principal(market_id, total);
         }
 
-        drop(refreshing);
+        let mut next_state = refreshing.state().clone();
+        next_state.index = next_state.index.saturating_add(1);
 
-        let kernel_state = to_kernel_op_state(&self.op_state);
-        let result = templar_vault_kernel::transitions::refresh_step_callback(kernel_state, op_id)
-            .unwrap_or_else(|err| {
-                panic_with_message(&format!("Kernel refresh step failed: {err:?}"))
-            });
-        self.apply_kernel_op_state(&result.new_state);
-
-        let (next_index, next_plan) = match &self.op_state {
-            OpState::Refreshing(state) => (state.index, state.plan.clone()),
-            _ => return PromiseOrValue::Value(self.build_real_assets_report()),
-        };
-
-        if next_index as usize >= next_plan.len() {
-            let report = self.build_real_assets_report();
+        if next_state.index as usize >= next_state.plan.len() {
+            let report = refreshing.build_real_assets_report();
             Event::RefreshCompleted {
                 op_id: op_id.into(),
-                markets: next_plan,
+                markets: next_state.plan,
                 total_assets: report.total_assets,
                 refreshed_at: report.refreshed_at,
             }
             .emit();
-
-            let kernel_state = to_kernel_op_state(&self.op_state);
-            let result = templar_vault_kernel::transitions::complete_refresh(kernel_state, op_id)
-                .unwrap_or_else(|err| {
-                    panic_with_message(&format!("Kernel complete refresh failed: {err:?}"))
-                });
-            self.apply_kernel_op_state(&result.new_state);
+            let _idle = refreshing.into_idle();
             return PromiseOrValue::Value(report);
         }
 
-        self.refresh_step(op_id)
+        let mut refreshing = refreshing.replace_state(next_state);
+
+        refreshing.refresh_step(op_id)
     }
 
     #[private]
+    #[allow(clippy::too_many_lines)]
     pub fn resync_idle_balance_01_settle(
         &mut self,
         #[callback_result] balance: Result<U128, PromiseError>,
@@ -1016,29 +985,25 @@ impl Contract {
             .op_state
             .as_allocating()
             .unwrap_or_else(|| panic_with_message("OpState::Allocating expected"));
+        let op_id = s.op_id;
 
-        msg.map_or(
-            Event::AllocationCompleted {
-                op_id: s.op_id.into(),
-            },
-            |m| Event::AllocationStopped {
+        msg.map_or(Event::AllocationCompleted { op_id: s.op_id }, |m| {
+            Event::AllocationStopped {
                 op_id: s.op_id.into(),
                 index: s.index,
                 remaining: U128(s.remaining),
                 reason: Some(Reason::Other(m.to_string())),
-            },
-        )
+            }
+        })
         .emit();
 
         self.update_idle_balance(IdleBalanceDelta::Increase(s.remaining.into()));
 
         self.market_execution_lock.clear();
 
-        // Clear idle resync flag in case this was a stuck resync_idle_balance operation.
-        // The flag blocks withdraw/redeem, so it must be cleared on any allocation abort.
-        self.idle_resync_inflight_op_id = 0;
-
-        self.op_state = OpState::Idle;
+        let allocating = OpGuard::<AllocatingSpec>::expect(self, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+        let _idle = allocating.into_idle();
     }
 
     pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
@@ -1049,6 +1014,7 @@ impl Contract {
             .op_state
             .as_withdrawing()
             .unwrap_or_else(|| panic_with_message("OpState::Withdrawing expected"));
+        let op_id = s.op_id;
 
         Event::WithdrawalStopped {
             op_id: s.op_id.into(),
@@ -1059,10 +1025,24 @@ impl Contract {
         }
         .emit();
 
-        let owner = s.owner.clone();
-        let escrow_shares = s.escrow_shares;
+        self.market_execution_lock.clear();
 
-        self.refund_escrow_and_go_idle(owner, escrow_shares, "Withdrawing");
+        let owner = s.owner.clone();
+
+        if s.escrow_shares > 0 {
+            Gate::bypass_transfer_with(
+                self,
+                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
+            );
+        }
+
+        self.pop_head();
+        self.withdraw_route.clear();
+
+        let withdrawing = OpGuard::<WithdrawingSpec>::expect(self, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+        let _idle = withdrawing.into_idle();
     }
 
     pub fn stop_and_exit_payout<T: Display + core::fmt::Debug + ?Sized>(
@@ -1073,7 +1053,7 @@ impl Contract {
             .op_state
             .as_payout()
             .unwrap_or_else(|| panic_with_message("OpState::Payout expected"));
-
+        let op_id = s.op_id;
         Event::PayoutStopped {
             op_id: (s.op_id).into(),
             receiver: s.receiver.clone(),
@@ -1083,32 +1063,21 @@ impl Contract {
         .emit();
 
         let owner = s.owner.clone();
-        let escrow_shares = s.escrow_shares;
-
-        self.refund_escrow_and_go_idle(owner, escrow_shares, "Payout");
-    }
-
-    /// Shared cleanup for Withdrawing and Payout stop-and-exit paths:
-    /// refund escrowed shares, clear locks/queue, and transition to Idle.
-    fn refund_escrow_and_go_idle(&mut self, owner: AccountId, escrow_shares: u128, context: &str) {
-        self.market_execution_lock.clear();
-
-        if escrow_shares > 0 {
-            // Must be infallible - panic to prevent orphaned shares in escrow.
+        if s.escrow_shares > 0 {
             Gate::bypass_transfer_with(
                 self,
-                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
-                |e| {
-                    templar_common::panic_with_message(&format!(
-                        "{context} stop escrow refund failed: {e}"
-                    ))
-                },
+                &Nep141Transfer::new(s.escrow_shares, env::current_account_id(), &owner),
+                |e| env::log_str(&e.to_string()),
             );
         }
 
+        self.market_execution_lock.clear();
         self.pop_head();
         self.withdraw_route.clear();
-        self.op_state = OpState::Idle;
+
+        let payout = OpGuard::<PayoutSpec>::expect(self, Some(op_id))
+            .unwrap_or_else(|e| panic_with_message(&e.to_string()));
+        let _idle = payout.into_idle();
     }
 
     pub(crate) fn stop_and_exit<T: Display + core::fmt::Debug + ?Sized>(
@@ -1332,4 +1301,36 @@ pub fn determine_payout_delta(
     let remaining_next = remaining_total.saturating_sub(payout_delta);
     let collected_next = collected_total.saturating_add(payout_delta);
     (payout_delta, remaining_next, collected_next)
+}
+
+pub fn state_on_delta_inflow(
+    principal_delta: u128,
+    inflow: u128,
+    op_id: u64,
+    route_index: u32,
+    remaining_next: u128,
+    collected_next: u128,
+    ctx: WithdrawingState,
+) -> OpState {
+    let state = match principal_delta.cmp(&inflow) {
+        Ordering::Less | Ordering::Equal if principal_delta > 0 => WithdrawingState {
+            op_id,
+            index: route_index.saturating_add(1),
+            remaining: remaining_next,
+            receiver: ctx.receiver,
+            collected: collected_next,
+            owner: ctx.owner,
+            escrow_shares: ctx.escrow_shares,
+        },
+        _ => WithdrawingState {
+            op_id,
+            index: route_index,
+            remaining: remaining_next,
+            receiver: ctx.receiver,
+            collected: collected_next,
+            owner: ctx.owner,
+            escrow_shares: ctx.escrow_shares,
+        },
+    };
+    OpState::Withdrawing(state)
 }

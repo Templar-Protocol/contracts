@@ -17,16 +17,16 @@ WORKDIR /app
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY common ./common
-COPY service ./service
 COPY contract ./contract
+COPY fuzz ./fuzz
 COPY mock ./mock
+COPY service ./service
 COPY test-utils ./test-utils
+COPY tools ./tools
 COPY universal-account ./universal-account
 
-# Build the funding-bridge binary in release mode with all features
-# Note: You can customize features via build args
-ARG FEATURES="ethereum,solana"
-RUN cargo build --release --features "${FEATURES}" -p templar-funding-bridge --bin funding-bridge
+# Build the funding-bridge binary in release mode
+RUN cargo build --release -p templar-funding-bridge --bin funding-bridge
 
 # Strip debug symbols to reduce binary size
 RUN strip target/release/funding-bridge
@@ -53,12 +53,11 @@ WORKDIR /app
 COPY --from=builder /app/target/release/funding-bridge /app/funding-bridge
 
 # Copy configuration templates
+COPY --chown=funding-bridge:funding-bridge service/funding-bridge/scripts ./scripts
 COPY --chown=funding-bridge:funding-bridge service/funding-bridge/.env.example ./.env.example
-COPY --chown=funding-bridge:funding-bridge service/funding-bridge/scripts/run_service.sh ./run_service.sh
 
 # Set ownership
-RUN chown -R funding-bridge:funding-bridge /app && \
-    chmod +x /app/funding-bridge /app/run_service.sh
+RUN chown -R funding-bridge:funding-bridge /app
 
 # Switch to non-root user
 USER funding-bridge

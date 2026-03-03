@@ -19,7 +19,7 @@ use templar_universal_account::{
         passkey::{
             self,
             data::{AuthenticatorData, ClientDataJson},
-            Passkey, PasskeySignatureData,
+            PasskeySignatureData, VerifyKey,
         },
         with_raw_string::WithRawString,
         MessageWithSignature,
@@ -45,7 +45,7 @@ pub struct OldPasskey {
 }
 
 impl OldPasskey {
-    pub fn passkey(&self) -> Passkey {
+    pub fn passkey(&self) -> VerifyKey {
         self.message
             .0
             .parsed
@@ -59,7 +59,7 @@ impl OldPasskey {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct CreatePasskeyAccount {
-    pub key: Passkey,
+    pub key: VerifyKey,
     pub block_hash: CryptoHash,
 }
 
@@ -299,6 +299,7 @@ pub async fn create(
                 &templar_universal_account::InitArgs {
                     key: create.key,
                     chain_id: app.args.ua.chain_id.into(),
+                    execute: None,
                 },
                 None,
             ),
@@ -373,10 +374,7 @@ mod tests {
     use p256::elliptic_curve::rand_core::OsRng;
     use solana_sdk::{signature::Keypair, signer::Signer};
     use templar_universal_account::{
-        authentication::{
-            ed25519_raw::{self, VerifyKey},
-            HashForSigning, Payload,
-        },
+        authentication::{ed25519::raw, HashForSigning, Payload},
         NEAR_TESTNET_CHAIN_ID,
     };
 
@@ -385,10 +383,10 @@ mod tests {
     #[test]
     fn encoding_ed25519_raw() {
         let keypair = Keypair::new();
-        let pubkey = VerifyKey(keypair.pubkey().to_bytes().into());
+        let pubkey = raw::VerifyKey(keypair.pubkey().to_bytes().into());
 
         let message = {
-            let m = ed25519_raw::Message::from_parsed(Payload::new(
+            let m = raw::Message::from_parsed(Payload::new(
                 PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
                     .zero()
                     .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
@@ -404,7 +402,7 @@ mod tests {
                 .unwrap(),
             ));
             let h = m.preimage_for_signing();
-            let signature = keypair.sign_message(&h);
+            let signature = *keypair.sign_message(&h).as_array();
             Box::new(m.with_signature(signature.into()))
         };
 
@@ -441,7 +439,7 @@ mod tests {
     #[test]
     fn encoding_passkey() {
         let keypair = p256::SecretKey::random(&mut OsRng);
-        let pubkey = Passkey(keypair.public_key().into());
+        let pubkey = passkey::VerifyKey(keypair.public_key().into());
 
         let cr = CreateRequest::ExecuteArgs(
             ExecuteArgsMessage {

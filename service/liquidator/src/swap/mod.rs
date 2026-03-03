@@ -38,10 +38,12 @@
 pub mod oneclick;
 pub mod provider;
 pub mod r#ref;
+pub mod retry;
 
 pub use oneclick::OneClickSwap;
 pub use provider::SwapProviderImpl;
 pub use r#ref::RefSwap;
+pub use retry::{SwapError, SwapErrorKind, SwapRetryConfig};
 
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::AccountId;

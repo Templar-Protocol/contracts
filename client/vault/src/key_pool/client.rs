@@ -17,6 +17,7 @@ use near_jsonrpc_client::{
 };
 use near_primitives::{
     action::{Action, FunctionCallAction},
+    errors::InvalidTxError,
     hash::CryptoHash,
     transaction::{SignedTransaction, Transaction, TransactionV0},
     types::Gas,
@@ -47,16 +48,10 @@ pub struct KeyCredential {
 
 impl KeyCredential {
     fn into_signer(mut self) -> Result<InMemorySigner, ErrorWrapper> {
-        // Helper to ensure secret is always zeroed, even on error paths
-        let zeroize_secret = |s: &mut String| {
-            // SAFETY: as_bytes_mut on String is safe; we're just zeroing the bytes
-            unsafe { s.as_bytes_mut().zeroize() };
-        };
-
         let account_id = match parse_account_id(&self.account_id) {
             Ok(id) => id,
             Err(e) => {
-                zeroize_secret(&mut self.secret_key);
+                self.secret_key.zeroize();
                 return Err(e);
             }
         };
@@ -64,13 +59,13 @@ impl KeyCredential {
         let secret_key = match SecretKey::from_str(&self.secret_key) {
             Ok(k) => k,
             Err(e) => {
-                zeroize_secret(&mut self.secret_key);
+                self.secret_key.zeroize();
                 return Err(ErrorWrapper::Wrapped(e.to_string()));
             }
         };
 
         // Zero the source string now that we've parsed it
-        zeroize_secret(&mut self.secret_key);
+        self.secret_key.zeroize();
 
         Ok(InMemorySigner {
             account_id,
@@ -80,7 +75,7 @@ impl KeyCredential {
     }
 }
 
-/// Configuration for KeyPoolClient.
+/// Configuration for `KeyPoolClient`.
 #[derive(uniffi::Record, Clone)]
 pub struct KeyPoolConfig {
     /// Default timeout for RPC calls in seconds.
@@ -89,7 +84,7 @@ pub struct KeyPoolConfig {
     /// Retry configuration for transient errors.
     pub retry: Option<RetryConfig>,
 
-    /// Maximum nonce retry attempts specifically for InvalidNonce errors.
+    /// Maximum nonce retry attempts specifically for `InvalidNonce` errors.
     pub max_nonce_retries: u32,
 
     /// Block hash TTL in seconds (for key slot nonce caching).
@@ -101,7 +96,7 @@ pub struct KeyPoolConfig {
     /// View cache TTL in seconds.
     pub view_cache_ttl_seconds: u64,
 
-    /// Optional RPC API key for authenticated endpoints (e.g., FastNEAR).
+    /// Optional RPC API key for authenticated endpoints (e.g., `FastNEAR`).
     pub rpc_api_key: Option<String>,
 }
 
@@ -158,7 +153,7 @@ impl KeyPoolClient {
     /// # Errors
     /// Returns error if credentials is empty or any credential is invalid.
     #[uniffi::constructor]
-    #[instrument(skip(credentials, config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(rpc_url, credentials, config))]
     pub fn new(
         rpc_url: String,
         vault: &AccountId,
@@ -259,7 +254,7 @@ impl KeyPoolClient {
         let mut nonce_retries = self.config.max_nonce_retries;
 
         loop {
-            let slot = self.pool.select().map_err(|e| anyhow::anyhow!("{}", e))?;
+            let slot = self.pool.select().map_err(|e| anyhow::anyhow!("{e}"))?;
             let guard = slot.acquire().await;
 
             let (nonce, block_hash) = match guard.next_nonce(&self.inner, timeout).await {
@@ -299,7 +294,7 @@ impl KeyPoolClient {
 
                     if let FinalExecutionStatus::Failure(tx_err) = &status {
                         guard.record_failure();
-                        bail!("Transaction failed: {:?}", tx_err);
+                        bail!("Transaction failed: {tx_err:?}");
                     }
 
                     guard.record_success();
@@ -332,8 +327,8 @@ impl KeyPoolClient {
         timeout: Duration,
     ) -> Result<FinalExecutionStatus> {
         let retry = self.config.retry.map(|r| r.normalized());
-        let mut attempts_left = retry.map(|r| r.max_attempts).unwrap_or(1);
-        let mut backoff_ms = retry.map(|r| r.initial_backoff_ms).unwrap_or(0);
+        let mut attempts_left = retry.map_or(1, |r| r.max_attempts);
+        let mut backoff_ms = retry.map_or(0, |r| r.initial_backoff_ms);
 
         let deadline = Instant::now() + timeout;
 
@@ -389,11 +384,18 @@ impl KeyPoolClient {
         };
 
         let Some(outcome) = result.final_execution_outcome else {
-            bail!("No outcome {}", tx_hash);
+            return self
+                .poll_tx_status(sender_account_id, tx_hash, deadline)
+                .await;
         };
 
         let status = outcome.into_outcome().status;
-        Ok(status)
+        if Self::is_terminal_status(&status) {
+            return Ok(status);
+        }
+
+        self.poll_tx_status(sender_account_id, tx_hash, deadline)
+            .await
     }
 
     /// Poll transaction status until deadline.
@@ -407,8 +409,7 @@ impl KeyPoolClient {
         let mut poll_interval = Duration::from_millis(500);
 
         // signer_account_id must match the transaction signer (NEAR uses it for shard routing)
-
-        let result = loop {
+        loop {
             if Instant::now() >= deadline {
                 warn!("Transaction polling deadline exceeded, aborting");
                 bail!("Transaction timed out");
@@ -434,7 +435,18 @@ impl KeyPoolClient {
                 .await;
 
             match status {
-                Ok(res) => break res,
+                Ok(res) => {
+                    let Some(outcome) = res.final_execution_outcome else {
+                        continue;
+                    };
+
+                    let status = outcome.into_outcome().status;
+                    if Self::is_terminal_status(&status) {
+                        return Ok(status);
+                    }
+
+                    debug!(?status, "Transaction not yet terminal");
+                }
                 Err(status_err) => {
                     if matches!(
                         status_err.handler_error(),
@@ -451,34 +463,51 @@ impl KeyPoolClient {
                     return Err(status_err.into());
                 }
             }
-        };
-
-        let Some(outcome) = result.final_execution_outcome else {
-            bail!("No outcome {}", tx_hash);
-        };
-
-        let status = outcome.into_outcome().status;
-        Ok(status)
+        }
     }
 
-    /// Check if an error indicates an InvalidNonce condition.
+    /// Check if an error indicates an `InvalidNonce` condition.
     fn is_invalid_nonce_error(err: &anyhow::Error) -> bool {
+        if let Some(rpc_err) =
+            err.downcast_ref::<near_jsonrpc_client::errors::JsonRpcError<RpcTransactionError>>()
+        {
+            return Self::is_rpc_invalid_nonce(rpc_err);
+        }
+
+        if err.chain().any(|cause| {
+            cause
+                .downcast_ref::<near_jsonrpc_client::errors::JsonRpcError<RpcTransactionError>>()
+                .is_some_and(Self::is_rpc_invalid_nonce)
+        }) {
+            return true;
+        }
+
         let err_str = err.to_string();
         err_str.contains("InvalidNonce") || err_str.contains("invalid nonce")
     }
 
-    /// Check RPC error for InvalidNonce.
+    /// Check RPC error for `InvalidNonce`.
     fn is_rpc_invalid_nonce(
         err: &near_jsonrpc_client::errors::JsonRpcError<RpcTransactionError>,
     ) -> bool {
-        if let Some(handler_err) = err.handler_error() {
-            let err_str = format!("{:?}", handler_err);
-            return err_str.contains("InvalidNonce") || err_str.contains("invalid nonce");
-        }
-        false
+        matches!(
+            err.handler_error(),
+            Some(RpcTransactionError::InvalidTransaction {
+                context: InvalidTxError::InvalidNonce { .. }
+            })
+        )
     }
 
     #[inline]
+    fn is_terminal_status(status: &FinalExecutionStatus) -> bool {
+        matches!(
+            status,
+            FinalExecutionStatus::SuccessValue(_) | FinalExecutionStatus::Failure(_)
+        )
+    }
+
+    #[inline]
+    #[allow(clippy::unused_self)]
     fn near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
         parse_account_id(id)
     }

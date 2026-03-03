@@ -1,17 +1,26 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use near_crypto::{SecretKey, Signer};
-use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_client::{
+    errors::JsonRpcError,
+    methods::{query::RpcQueryError, tx::RpcTransactionError},
+    JsonRpcClient,
+};
 use near_primitives::{
     action::{Action, FunctionCallAction},
     hash::CryptoHash,
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{serde_json::json, AccountId};
+use rpc::{get_contract_version, is_v1_0_0};
 use templar_common::market::MarketConfiguration;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 pub mod rpc;
 
@@ -19,10 +28,41 @@ use crate::rpc::{
     get_access_key_data, send_tx, serialize_and_encode, view, BorrowPositions, Network, DEFAULT_GAS,
 };
 
+pub type AccumulatorResult<T = ()> = Result<T, AccumulatorError>;
+
+/// Errors that can occur during accumulations
+#[derive(Debug, thiserror::Error)]
+pub enum AccumulatorError {
+    /// Failed to query view method
+    #[error("Failed to query view method: {0}")]
+    ViewMethodError(#[from] JsonRpcError<RpcQueryError>),
+    /// Failed to get access key data
+    #[error("Failed to get access key data: {0}")]
+    AccessKeyDataError(JsonRpcError<RpcQueryError>),
+    /// Got wrong response kind from RPC
+    #[error("Got wrong response kind from RPC: {0}")]
+    WrongResponseKind(String),
+    /// Failed to send transaction
+    #[error("Failed to send transaction: {0}")]
+    SendTransactionError(#[from] JsonRpcError<RpcTransactionError>),
+    /// Failed to deserialize response
+    #[error("Failed to deserialize response: {0}")]
+    DeserializeError(#[from] near_sdk::serde_json::Error),
+    /// Timeout exceeded
+    #[error("Timeout exceeded after {0}s (waited {1}s)")]
+    TimeoutError(u64, u64),
+    /// No outcome for transaction
+    #[error("No outcome for transaction: {0}")]
+    NoOutcome(String),
+}
+
+/// How long to keep a cached nonce and block hash before refreshing.
+const NONCE_STATE_TTL: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
     /// Registries to run accumulator for
-    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS")]
+    #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS", value_delimiter = ' ')]
     pub registries: Vec<AccountId>,
     /// Signer key to use for signing transactions
     #[arg(short = 'k', long, env = "SIGNER_KEY")]
@@ -33,6 +73,9 @@ pub struct Args {
     /// Network to run accumulator on
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
+    /// Custom RPC URL (overrides default network RPC)
+    #[arg(long, env = "RPC_URL")]
+    pub rpc_url: Option<String>,
     /// Timeout for transactions
     #[arg(short, long, env = "TIMEOUT", default_value_t = 60)]
     pub timeout: u64,
@@ -43,7 +86,12 @@ pub struct Args {
     #[arg(long, default_value_t = 86_400, env = "STATIC_INTERVAL")]
     pub static_interval: u64,
     /// Registry refresh interval in seconds
-    #[arg(short, long, default_value_t = 3600, env = "REGISTRY_REFRESH_INTERVAL")]
+    #[arg(
+        short = 'R',
+        long,
+        default_value_t = 3600,
+        env = "REGISTRY_REFRESH_INTERVAL"
+    )]
     pub registry_refresh_interval: u64,
     /// Concurrency for accumulation tasks
     #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
@@ -72,6 +120,13 @@ pub struct Accumulator {
     signer: Arc<Signer>,
     pub market: AccountId,
     timeout: u64,
+    nonce_state: tokio::sync::Mutex<Option<NonceState>>,
+}
+
+struct NonceState {
+    next_nonce: u64,
+    block_hash: CryptoHash,
+    fetched_at: Instant,
 }
 
 impl Accumulator {
@@ -87,7 +142,30 @@ impl Accumulator {
             signer,
             market,
             timeout,
+            nonce_state: tokio::sync::Mutex::new(None),
         }
+    }
+
+    async fn next_nonce_and_block_hash(&self) -> AccumulatorResult<(u64, CryptoHash)> {
+        let mut state_guard = self.nonce_state.lock().await;
+        let state = if let Some(s) = state_guard
+            .as_mut()
+            .filter(|state| state.fetched_at.elapsed() <= NONCE_STATE_TTL)
+        {
+            s
+        } else {
+            let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+            state_guard.insert(NonceState {
+                next_nonce: nonce,
+                block_hash,
+                fetched_at: Instant::now(),
+            })
+        };
+
+        let nonce = state.next_nonce;
+        state.next_nonce += 1;
+
+        Ok((nonce, state.block_hash))
     }
 
     fn create_tx(
@@ -115,10 +193,10 @@ impl Accumulator {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub async fn accumulate(&self, borrow: AccountId, method: &str) -> anyhow::Result<()> {
+    pub async fn accumulate(&self, borrow: AccountId, method: &str) -> AccumulatorResult {
         info!("Starting accumulation for market: {}", self.market);
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = self.next_nonce_and_block_hash().await?;
 
         let accumulate_tx = self.create_tx(&borrow, nonce, block_hash, method.to_owned());
 
@@ -135,7 +213,7 @@ impl Accumulator {
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_borrows(&self) -> anyhow::Result<BorrowPositions> {
+    async fn get_borrows(&self) -> AccumulatorResult<BorrowPositions> {
         let mut all_positions: BorrowPositions = HashMap::new();
 
         let page_size = 100;
@@ -167,25 +245,61 @@ impl Accumulator {
     }
 
     #[instrument(skip(self), level = "info")]
-    pub async fn run_borrow_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
-        let borrows = self.get_borrows().await?;
+    pub async fn run_borrow_accumulations(&self, concurrency: usize) -> AccumulatorResult {
+        let borrows = match self.get_borrows().await {
+            Ok(borrows) => borrows,
+            Err(err) => {
+                error!("Failed to fetch borrows for {}: {err}", self.market);
+                return Ok(());
+            }
+        };
 
         if borrows.is_empty() {
             return Ok(());
         }
 
         futures::stream::iter(borrows)
-            .map(|(account_id, _)| async move { self.accumulate(account_id, "apply_interest").await })
+            .map(|(account_id, _)| async move {
+                if let Err(err) = self.accumulate(account_id.clone(), "apply_interest").await {
+                    error!(
+                        "Borrow accumulation failed for market {} account {}: {err}",
+                        self.market, account_id
+                    );
+                }
+            })
             .buffer_unordered(concurrency)
-            .try_for_each(|_result| async { Ok(()) })
-            .await?;
+            .for_each(|()| async {})
+            .await;
 
         Ok(())
     }
 
+    #[instrument(skip(self), level = "debug")]
+    pub async fn supports_static_yield(&self) -> AccumulatorResult<bool> {
+        let Some(version) = get_contract_version(&self.client, &self.market).await else {
+            return Ok(false);
+        };
+
+        Ok(!is_v1_0_0(&version))
+    }
+
     #[instrument(skip(self), level = "info")]
-    pub async fn run_static_accumulations(&self, concurrency: usize) -> anyhow::Result<()> {
-        let static_accounts = self.get_static_accounts().await?;
+    pub async fn run_static_accumulations(&self, concurrency: usize) -> AccumulatorResult {
+        if !self.supports_static_yield().await? {
+            debug!(
+                "{} market does not support static yield accumulation",
+                self.market
+            );
+            return Ok(());
+        }
+
+        let static_accounts = match self.get_static_accounts().await {
+            Ok(accounts) => accounts,
+            Err(err) => {
+                error!("Failed to fetch static accounts for {}: {err}", self.market);
+                return Ok(());
+            }
+        };
 
         if static_accounts.is_empty() {
             return Ok(());
@@ -193,17 +307,25 @@ impl Accumulator {
 
         futures::stream::iter(static_accounts)
             .map(|account_id| async move {
-                self.accumulate(account_id, "accumulate_static_yield").await
+                if let Err(err) = self
+                    .accumulate(account_id.clone(), "accumulate_static_yield")
+                    .await
+                {
+                    error!(
+                        "Static accumulation failed for market {} account {}: {err}",
+                        self.market, account_id
+                    );
+                }
             })
             .buffer_unordered(concurrency)
-            .try_for_each(|_result| async { Ok(()) })
-            .await?;
+            .for_each(|()| async {})
+            .await;
 
         Ok(())
     }
 
     #[instrument(skip(self), level = "debug")]
-    async fn get_static_accounts(&self) -> anyhow::Result<Vec<AccountId>> {
+    async fn get_static_accounts(&self) -> AccumulatorResult<Vec<AccountId>> {
         let configuration: MarketConfiguration = view(
             &self.client,
             self.market.clone(),
@@ -224,8 +346,10 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::ContractSourceMetadata;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
+    use futures::future;
     use near_crypto::{InMemorySigner, KeyType};
     use near_jsonrpc_client::methods::tx::RpcTransactionResponse;
     use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryResponse};
@@ -379,6 +503,41 @@ mod tests {
             protocol_account_id: "protocol.testnet".parse().unwrap(),
             liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn nonce_is_reused_across_concurrent_requests() {
+        let server = MockServer::start().await;
+        let accumulator = build_accumulator(&server, "market.testnet");
+        let call_counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&call_counter);
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &Request| {
+                let (params, id) = parse_query_request(req);
+                assert_eq!(
+                    params.get("request_type").and_then(JsonValue::as_str),
+                    Some("view_access_key")
+                );
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_body_json(rpc_success_response(&json!(access_key_response(10)), &id))
+            })
+            .mount(&server)
+            .await;
+
+        let results =
+            future::join_all((0..3).map(|_| accumulator.next_nonce_and_block_hash())).await;
+
+        let mut nonces = results
+            .into_iter()
+            .map(|result| result.expect("nonce result").0)
+            .collect::<Vec<_>>();
+        nonces.sort_unstable();
+
+        assert_eq!(nonces, vec![11, 12, 13]);
+        assert_eq!(call_counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -575,7 +734,48 @@ mod tests {
             sent,
             vec!["alice.testnet".to_string(), "bob.testnet".to_string()]
         );
-        assert_eq!(access_key_calls.load(Ordering::SeqCst), 2);
+        // We expect only one access key call for nonce fetching given two concurrent accumulations, we generate nonces locally after that.
+        assert_eq!(access_key_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn run_static_accumulations_skip_for_v1_0_0_market() {
+        let server = MockServer::start().await;
+        let accumulator = build_accumulator(&server, "market.testnet");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = Arc::clone(&calls);
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &Request| match parse_method(req).as_str() {
+                "query" => {
+                    let (params, id) = parse_query_request(req);
+                    assert_eq!(
+                        params.get("method_name").and_then(JsonValue::as_str),
+                        Some("contract_source_metadata")
+                    );
+                    calls_clone.fetch_add(1, Ordering::SeqCst);
+
+                    let metadata = ContractSourceMetadata {
+                        version: "1.0.0".to_string(),
+                        link: None,
+                        standards: None,
+                    };
+                    let payload = call_result_response(serialize_and_encode(&metadata));
+                    ResponseTemplate::new(200)
+                        .set_body_json(rpc_success_response(&json!(payload), &id))
+                }
+                other => panic!("Unexpected rpc method {other}"),
+            })
+            .mount(&server)
+            .await;
+
+        accumulator
+            .run_static_accumulations(/*concurrency=*/ 2)
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

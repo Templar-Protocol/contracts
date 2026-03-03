@@ -2,6 +2,11 @@ use std::{collections::BTreeSet, fmt::Display, str::FromStr, sync::Mutex};
 
 use mini_moka::sync::Cache as MokaCache;
 use near_account_id::AccountId as NearAccountId;
+use near_jsonrpc_client::{
+    errors::JsonRpcError,
+    methods::{query::RpcQueryError, tx::RpcTransactionError},
+};
+use near_primitives::errors::InvalidTxError;
 use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{Deserialize, Serialize};
@@ -408,19 +413,19 @@ impl FeesBuilder {
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     Paused,
-    Blacklist(Vec<AccountId>),
-    Whitelist(Vec<AccountId>),
+    BlackList(Vec<AccountId>),
+    WhiteList(Vec<AccountId>),
 }
 
 impl From<templar_common::vault::Restrictions> for Restrictions {
     fn from(value: templar_common::vault::Restrictions) -> Self {
         match value {
             templar_common::vault::Restrictions::Paused => Restrictions::Paused,
-            templar_common::vault::Restrictions::Blacklist(set) => {
-                Restrictions::Blacklist(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::BlackList(set) => {
+                Restrictions::BlackList(set.iter().map(|a| a.to_string().into()).collect())
             }
-            templar_common::vault::Restrictions::Whitelist(set) => {
-                Restrictions::Whitelist(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::WhiteList(set) => {
+                Restrictions::WhiteList(set.iter().map(|a| a.to_string().into()).collect())
             }
         }
     }
@@ -432,19 +437,19 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
     fn try_from(value: Restrictions) -> Result<Self, Self::Error> {
         Ok(match value {
             Restrictions::Paused => templar_common::vault::Restrictions::Paused,
-            Restrictions::Blacklist(accounts) => {
+            Restrictions::BlackList(accounts) => {
                 let set: BTreeSet<NearAccountId> = accounts
                     .into_iter()
                     .map(|a| parse_account_id(&a))
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::Blacklist(set)
+                templar_common::vault::Restrictions::BlackList(set)
             }
-            Restrictions::Whitelist(accounts) => {
+            Restrictions::WhiteList(accounts) => {
                 let set: BTreeSet<NearAccountId> = accounts
                     .into_iter()
                     .map(|a| parse_account_id(&a))
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::Whitelist(set)
+                templar_common::vault::Restrictions::WhiteList(set)
             }
         })
     }
@@ -959,6 +964,11 @@ pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 pub(crate) struct ViewCacheKey {
     pub account_id: String,
     pub method: String,
+    /// JSON-serialized args bytes.
+    ///
+    /// Cache hit reliability depends on deterministic serialization of `args`.
+    /// Prefer structs/tuples or map types with stable ordering (for example
+    /// `BTreeMap`) when building view call arguments.
     pub args: Vec<u8>,
 }
 
@@ -969,8 +979,11 @@ pub(crate) fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
         return Ok(v);
     }
 
-    let inner: String = serde_json::from_str(s).map_err(ErrorWrapper::from)?;
-    inner.parse::<u128>().map_err(ErrorWrapper::from)
+    let inner: String =
+        serde_json::from_str(s).map_err(|_| ErrorWrapper::InvalidU128(s.to_string()))?;
+    inner
+        .parse::<u128>()
+        .map_err(|_| ErrorWrapper::InvalidU128(inner))
 }
 
 pub(crate) fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
@@ -1021,6 +1034,37 @@ impl<T: Into<anyhow::Error>> From<T> for ErrorWrapper {
             if cause.is::<serde_json::Error>() {
                 return ErrorWrapper::Serde(msg);
             }
+
+            if let Some(rpc_tx_err) = cause.downcast_ref::<JsonRpcError<RpcTransactionError>>() {
+                if matches!(
+                    rpc_tx_err.handler_error(),
+                    Some(RpcTransactionError::InvalidTransaction {
+                        context: InvalidTxError::InvalidNonce { .. }
+                    })
+                ) {
+                    return ErrorWrapper::InvalidNonce;
+                }
+
+                if matches!(
+                    rpc_tx_err.handler_error(),
+                    Some(RpcTransactionError::InvalidTransaction { .. })
+                ) {
+                    return ErrorWrapper::TransactionFailed(msg);
+                }
+
+                return ErrorWrapper::Rpc(msg);
+            }
+
+            if cause
+                .downcast_ref::<JsonRpcError<RpcQueryError>>()
+                .is_some()
+            {
+                return ErrorWrapper::Rpc(msg);
+            }
+        }
+
+        if msg.starts_with("Transaction failed:") || msg.contains("ActionError") {
+            return ErrorWrapper::TransactionFailed(msg);
         }
 
         ErrorWrapper::Wrapped(msg)
@@ -1032,12 +1076,12 @@ impl Display for ErrorWrapper {
         match self {
             ErrorWrapper::Timeout(msg) => write!(f, "Timeout: {msg}"),
             ErrorWrapper::InvalidNonce => write!(f, "InvalidNonce"),
-            ErrorWrapper::InvalidAccountId(msg) => write!(f, "{msg}"),
-            ErrorWrapper::InvalidU128(msg) => write!(f, "{msg}"),
+            ErrorWrapper::InvalidAccountId(msg)
+            | ErrorWrapper::InvalidU128(msg)
+            | ErrorWrapper::Wrapped(msg) => write!(f, "{msg}"),
             ErrorWrapper::Rpc(msg) => write!(f, "RPC error: {msg}"),
             ErrorWrapper::Serde(msg) => write!(f, "Serde error: {msg}"),
             ErrorWrapper::TransactionFailed(msg) => write!(f, "Transaction failed: {msg}"),
-            ErrorWrapper::Wrapped(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -1095,13 +1139,13 @@ mod tests {
     #[test]
     fn error_wrapper_display_happy_path() {
         let err = ErrorWrapper::from(anyhow::anyhow!("boom"));
-        let s = format!("{}", err);
+        let s = format!("{err}");
         assert!(s.contains("boom"));
     }
 
     #[test]
     fn default_gas_is_nonzero() {
-        assert!(super::DEFAULT_GAS > 0);
+        assert_ne!(super::DEFAULT_GAS, 0);
     }
 
     #[rstest]
@@ -1123,6 +1167,12 @@ mod tests {
     fn parse_u128_accepts_plain_and_json_string() {
         assert_eq!(super::parse_u128("123").unwrap(), 123);
         assert_eq!(super::parse_u128("\"456\"").unwrap(), 456);
+    }
+
+    #[test]
+    fn parse_u128_rejects_invalid_input_with_specific_variant() {
+        let err = super::parse_u128("not-a-number").unwrap_err();
+        assert!(matches!(err, ErrorWrapper::InvalidU128(v) if v == "not-a-number"));
     }
 
     #[test]
@@ -1326,8 +1376,11 @@ mod tests {
 
                 if is_self && !in_guard && l.contains("fn no_json_string_api_regressions") {
                     in_guard = true;
-                    brace_depth = l.chars().filter(|&c| c == '{').count() as i32
-                        - l.chars().filter(|&c| c == '}').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let open = l.chars().filter(|&c| c == '{').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let close = l.chars().filter(|&c| c == '}').count() as i32;
+                    brace_depth = open - close;
                     if brace_depth <= 0 {
                         brace_depth = 1;
                     }
@@ -1335,21 +1388,29 @@ mod tests {
                 }
 
                 if in_guard {
-                    brace_depth += l.chars().filter(|&c| c == '{').count() as i32;
-                    brace_depth -= l.chars().filter(|&c| c == '}').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let open = l.chars().filter(|&c| c == '{').count() as i32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    let close = l.chars().filter(|&c| c == '}').count() as i32;
+                    brace_depth += open;
+                    brace_depth -= close;
                     if brace_depth == 0 {
                         in_guard = false;
                     }
                     continue;
                 }
 
-                if l.contains("ForeignJson") {
-                    panic!("ForeignJson not allowed: {}: {}", file.display(), l);
-                }
+                assert!(
+                    !l.contains("ForeignJson"),
+                    "ForeignJson not allowed: {}: {l}",
+                    file.display()
+                );
 
-                if l.starts_with("pub ") && l.contains("fn ") && l.contains("_json") {
-                    panic!("*_json API not allowed: {}: {}", file.display(), l);
-                }
+                assert!(
+                    !(l.starts_with("pub ") && l.contains("fn ") && l.contains("_json")),
+                    "*_json API not allowed: {}: {l}",
+                    file.display()
+                );
             }
         }
     }

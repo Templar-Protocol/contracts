@@ -1,0 +1,57 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+crate := "templar-vault-client"
+lib_name := "templar_vault_client"
+py_out := "dist/python"
+
+default:
+  @just --list
+
+gen mode="debug":
+  mkdir -p "{{py_out}}"
+  if [[ "{{mode}}" == "release" ]]; then flags="--release"; profile="release"; else flags=""; profile="debug"; fi
+  if [[ "${OS:-}" == "Windows_NT" ]]; then dylib="../../target/${profile}/{{lib_name}}.dll"; elif [[ "$(uname -s)" == "Darwin" ]]; then dylib="../../target/${profile}/lib{{lib_name}}.dylib"; else dylib="../../target/${profile}/lib{{lib_name}}.so"; fi
+  cargo build -p "{{crate}}" ${flags}
+  cargo run -p "{{crate}}" --bin uniffi-bindgen -- generate --language python --library "${dylib}" --out-dir "{{py_out}}" --no-format
+
+python mode="debug": (gen mode)
+  if [[ "{{mode}}" == "release" ]]; then profile="release"; else profile="debug"; fi
+  if [[ "${OS:-}" == "Windows_NT" ]]; then dylib="../../target/${profile}/{{lib_name}}.dll"; elif [[ "$(uname -s)" == "Darwin" ]]; then dylib="../../target/${profile}/lib{{lib_name}}.dylib"; else dylib="../../target/${profile}/lib{{lib_name}}.so"; fi
+  cp "${dylib}" "{{py_out}}/"
+
+smoke-test mode="debug": (python mode)
+  PYTHONPATH="{{py_out}}" python3 smoke_test.py
+
+smoke-test-view mode="debug" vault_account="":
+  if [[ -z "{{vault_account}}" ]]; then \
+    echo "Usage: just smoke-test-view vault_account=<vault.testnet> [mode=debug|release]"; \
+    echo "Optional env vars: UNDERLYING_TOKEN, RPC_URL, RPC_API_KEY"; \
+    exit 1; \
+  fi
+  just python mode="{{mode}}"
+  PYTHONPATH="{{py_out}}" \
+  VAULT_ACCOUNT="{{vault_account}}" \
+  UNDERLYING_TOKEN="${UNDERLYING_TOKEN:-}" \
+  RPC_URL="${RPC_URL:-https://rpc.testnet.fastnear.com}" \
+  RPC_API_KEY="${RPC_API_KEY:-}" \
+  python3 smoke_test.py
+
+smoke-test-full mode="debug" vault_account="" user_account="":
+  if [[ -z "{{vault_account}}" || -z "{{user_account}}" || -z "${USER_SECRET_KEY:-}" ]]; then \
+    echo "Usage: USER_SECRET_KEY='ed25519:...' just smoke-test-full vault_account=<vault.testnet> user_account=<user.testnet>"; \
+    echo "Optional env vars: ALLOCATOR_ACCOUNT, ALLOCATOR_SECRET_KEY, UNDERLYING_TOKEN, MARKET_ACCOUNT, RPC_URL, RPC_API_KEY"; \
+    exit 1; \
+  fi
+  just python mode="{{mode}}"
+  PYTHONPATH="{{py_out}}" \
+  VAULT_ACCOUNT="{{vault_account}}" \
+  UNDERLYING_TOKEN="${UNDERLYING_TOKEN:-}" \
+  MARKET_ACCOUNT="${MARKET_ACCOUNT:-}" \
+  USER_ACCOUNT="{{user_account}}" \
+  USER_SECRET_KEY="${USER_SECRET_KEY}" \
+  ALLOCATOR_ACCOUNT="${ALLOCATOR_ACCOUNT:-}" \
+  ALLOCATOR_SECRET_KEY="${ALLOCATOR_SECRET_KEY:-}" \
+  RPC_URL="${RPC_URL:-https://rpc.testnet.fastnear.com}" \
+  RPC_API_KEY="${RPC_API_KEY:-}" \
+  RUN_FULL_TESTS=1 \
+  python3 smoke_test.py --full

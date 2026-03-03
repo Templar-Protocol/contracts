@@ -1,36 +1,42 @@
-# Rust build artifacts
-target/
-**/*.rs.bk
+# Git
+.git
+.gitignore
+.github
 
-# Environment files
-.env
-.env.local
+# Documentation
+*.md
+!README.md
+docs/
 
 # IDE
-.vscode/
-.idea/
+.vscode
+.idea
 *.swp
 *.swo
 *~
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# Environment and secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Logs
+*.log
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Git
-.git/
-.gitignore
-
-# Documentation
-*.md
-!README.md
-
 # Test artifacts
+coverage/
 *.profraw
 *.profdata
-
-# Logs
-*.log
 
 # Temporary files
 tmp/

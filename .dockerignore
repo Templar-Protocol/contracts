@@ -1,7 +1,10 @@
 # .gitignore contents
 
 # Rust
-/target/
+/target/*
+!/target/release/
+/target/release/*
+!/target/release/market-monitor
 
 # IDEs and Editors
 .helix/

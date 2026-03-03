@@ -3,7 +3,7 @@ name = "templar-universal-account"
 license.workspace = true
 repository.workspace = true
 edition.workspace = true
-version.workspace = true
+version = "1.2.1"
 
 [dependencies]
 alloy = { workspace = true, default-features = false, features = ["eip712", "signers", "sol-types"] }
@@ -14,13 +14,15 @@ near-account-id.workspace = true
 near-sdk = { workspace = true, features = ["global-contracts"] }
 p256.workspace = true
 schemars.workspace = true
-solana-sdk.workspace = true
+stellar-strkey = { version = "0.0.14", default-features = false, features = ["serde"] }
 thiserror.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, default-features = false, features = ["signer-local"] }
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 rstest.workspace = true
+solana-sdk.workspace = true
+soroban-client = "0.5.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 near-chain-configs.workspace = true

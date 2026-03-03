@@ -3,22 +3,24 @@ use std::collections::HashMap;
 use near_sdk::json_types::{U128, U64};
 use near_workspaces::{network::Sandbox, Worker};
 use templar_universal_account::{
-    authentication::passkey::Passkey, contract_state::Migration, NEAR_TESTNET_CHAIN_ID,
+    authentication::passkey, contract_state::Migration, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::{worker, ContractController, UniversalAccountController};
 
 type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
 
-static WASM_0_2_0: &[u8] = include_bytes!("./migration/0_2_0.wasm");
 static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_patch.borsh");
 
 #[rstest::rstest]
 #[tokio::test]
 pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
     let sk = p256::SecretKey::from_bytes(&[0x55u8; 32].into()).unwrap();
-    let passkey = Passkey(sk.public_key().into());
+    let passkey = passkey::VerifyKey(sk.public_key().into());
 
-    let ua = worker.dev_deploy(WASM_0_2_0).await.unwrap();
+    let ua = worker
+        .dev_deploy(UniversalAccountController::wasm_0_2_0())
+        .await
+        .unwrap();
     let state_patch: StatePatch = near_sdk::borsh::from_slice(WASM_0_2_0_STATE_PATCH).unwrap();
     for (key, value) in state_patch {
         worker.patch_state(ua.id(), &key, &value).await.unwrap();
@@ -68,7 +70,10 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Stored state version 1 != args `from_version` 0"]
 pub async fn from_0_2_0_fail_migrate_twice(#[future(awt)] worker: Worker<Sandbox>) {
-    let ua = worker.dev_deploy(WASM_0_2_0).await.unwrap();
+    let ua = worker
+        .dev_deploy(UniversalAccountController::wasm_0_2_0())
+        .await
+        .unwrap();
     let state_patch: StatePatch = near_sdk::borsh::from_slice(WASM_0_2_0_STATE_PATCH).unwrap();
     for (key, value) in state_patch {
         worker.patch_state(ua.id(), &key, &value).await.unwrap();

@@ -187,7 +187,6 @@ impl SolanaSdkHandler {
         amount: u64,
         decimals: u8,
     ) -> Result<String, ExternalChainError> {
-        // Parse addresses
         let mint_pubkey: Pubkey = mint_address.parse().map_err(|e| {
             ExternalChainError::InvalidAddress(format!("Invalid mint address: {e}"))
         })?;
@@ -198,7 +197,6 @@ impl SolanaSdkHandler {
 
         let source_pubkey = *self.keypair.pubkey();
 
-        // Get associated token accounts
         let source_ata = get_associated_token_address(&source_pubkey, &mint_pubkey);
         let dest_ata = get_associated_token_address(&recipient_pubkey, &mint_pubkey);
 
@@ -211,12 +209,10 @@ impl SolanaSdkHandler {
         // Convert Pubkey to Address for RPC client
         let dest_ata_address: solana_sdk::pubkey::Pubkey = dest_ata.to_string().parse().unwrap();
 
-        // Check if destination ATA exists
         let dest_account = self.client.get_account(&dest_ata_address);
 
         let mut instructions: Vec<Instruction> = vec![];
 
-        // Create destination ATA if it doesn't exist
         if dest_account.is_err() {
             info!("Creating destination associated token account");
             instructions.push(create_associated_token_account(
@@ -227,7 +223,6 @@ impl SolanaSdkHandler {
             ));
         }
 
-        // Create transfer instruction
         let transfer_ix = token_instruction::transfer_checked(
             &spl_token::id(),
             &source_ata,
@@ -244,7 +239,6 @@ impl SolanaSdkHandler {
 
         instructions.push(transfer_ix);
 
-        // Get recent blockhash
         let blockhash_response = self.client.get_latest_blockhash().map_err(|e| {
             ExternalChainError::RpcConnectionFailed(format!("Failed to get blockhash: {e}"))
         })?;
@@ -252,13 +246,10 @@ impl SolanaSdkHandler {
         // Convert to solana-program Hash type
         let blockhash = Hash::new_from_array(blockhash_response.to_bytes());
 
-        // Create message
         let message = Message::new_with_blockhash(&instructions, Some(&source_pubkey), &blockhash);
 
-        // Serialize message for signing
         let message_data = message.serialize();
 
-        // Sign the message
         let signature = self.keypair.sign(&message_data);
 
         // Build transaction bytes manually
@@ -268,17 +259,13 @@ impl SolanaSdkHandler {
         // Compact-u16 for number of signatures (1)
         tx_bytes.push(1u8);
 
-        // Add signature
         tx_bytes.extend_from_slice(&signature);
 
-        // Add serialized message
         tx_bytes.extend_from_slice(&message_data);
 
         // Send raw transaction via JSON-RPC
-        // Encode transaction as base58
         let tx_base58 = bs58::encode(&tx_bytes).into_string();
 
-        // Make JSON-RPC request
         let rpc_request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -307,7 +294,6 @@ impl SolanaSdkHandler {
             ExternalChainError::RpcConnectionFailed(format!("Failed to parse response: {e}"))
         })?;
 
-        // Check for error
         if let Some(error) = json_response.get("error") {
             let error_msg = error
                 .get("message")
@@ -319,7 +305,6 @@ impl SolanaSdkHandler {
             )));
         }
 
-        // Extract signature
         let signature = json_response
             .get("result")
             .and_then(|r| r.as_str())
@@ -337,6 +322,10 @@ impl SolanaSdkHandler {
 impl ExternalChainHandler for SolanaSdkHandler {
     fn chain_id(&self) -> &str {
         &self.config.chain_id
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
     fn supports_token(&self, asset: &str) -> bool {
@@ -409,15 +398,9 @@ impl ExternalChainHandler for SolanaSdkHandler {
 /// - `SOLANA_PRIVATE_KEY`: Base58-encoded keypair
 ///
 /// Optional:
-/// - `SOLANA_NETWORK`: "mainnet" (default) or "devnet"
 /// - `SOLANA_RPC_URL`: Custom RPC URL (overrides default)
 pub fn solana_sdk_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
-    let network = std::env::var("SOLANA_NETWORK").unwrap_or_else(|_| "mainnet".to_string());
-
-    let mut config = match network.as_str() {
-        "devnet" => SolanaSdkConfig::devnet(),
-        _ => SolanaSdkConfig::mainnet(),
-    };
+    let mut config = SolanaSdkConfig::mainnet();
 
     // Allow RPC URL override
     if let Ok(rpc_url) = std::env::var("SOLANA_RPC_URL") {

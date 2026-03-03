@@ -25,12 +25,12 @@ pub enum FunctionCallRejectionReason {
     #[error("Msg deserialization failure at index {index}: {msg}")]
     MsgDeserializationFailure { index: usize, msg: String },
     #[error(
-        "Invalid message for asset at index {index}: expected: {expected}, actual: \"{actual}\""
+        "Invalid asset for message at index {index}: expected: {expected}, received: {received}"
     )]
-    InvalidMsgForAsset {
+    InvalidAssetForMsg {
         index: usize,
         expected: String,
-        actual: String,
+        received: String,
     },
 }
 

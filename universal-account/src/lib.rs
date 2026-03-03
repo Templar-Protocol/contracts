@@ -7,6 +7,7 @@ use near_sdk::{
 pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
 pub const NEAR_TESTNET_CHAIN_ID: u128 = 398;
 
+// #[macro_use]
 pub mod authentication;
 pub mod contract_state;
 pub mod encoding;
@@ -320,14 +321,14 @@ mod tests {
     use p256::elliptic_curve::rand_core::OsRng;
     use solana_sdk::{signature::Keypair, signer::Signer};
 
-    use crate::authentication::{ed25519_raw, passkey::Passkey};
+    use crate::authentication::{ed25519::raw, passkey};
 
     use super::*;
 
     #[test]
     fn keyid_serialization() {
         let sk_p256 = p256::SecretKey::random(&mut OsRng);
-        let passkey = Passkey(sk_p256.public_key().into());
+        let passkey = passkey::VerifyKey(sk_p256.public_key().into());
         let passkey_id: KeyId = passkey.into();
         let passkey_id_str = passkey_id.to_string();
 
@@ -339,7 +340,7 @@ mod tests {
         assert_eq!(b.len(), 65);
 
         let sk_ed25519 = Keypair::new();
-        let ed25519_raw = ed25519_raw::VerifyKey(sk_ed25519.pubkey().to_bytes().into());
+        let ed25519_raw = raw::VerifyKey(sk_ed25519.pubkey().to_bytes().into());
         let ed25519_raw_id: KeyId = ed25519_raw.into();
         let ed25519_raw_id_str = ed25519_raw_id.to_string();
 

@@ -1,5 +1,4 @@
 //! Canonical vault client for high-concurrency use.
-//! Canonical vault client for high-concurrency use.
 
 use anyhow::Result;
 use near_account_id::AccountId as NearAccountId;
@@ -34,7 +33,7 @@ pub struct VaultClientConfig {
     /// Retry configuration for transient errors.
     pub retry: Option<RetryConfig>,
 
-    /// Maximum nonce retry attempts specifically for InvalidNonce errors.
+    /// Maximum nonce retry attempts specifically for `InvalidNonce` errors.
     pub max_nonce_retries: u32,
 
     /// Block hash TTL in seconds (for key slot nonce caching).
@@ -46,7 +45,7 @@ pub struct VaultClientConfig {
     /// View cache TTL in seconds.
     pub view_cache_ttl_seconds: u64,
 
-    /// Optional RPC API key for authenticated endpoints (e.g., FastNEAR).
+    /// Optional RPC API key for authenticated endpoints (e.g., `FastNEAR`).
     pub rpc_api_key: Option<String>,
 }
 
@@ -91,7 +90,7 @@ pub struct VaultClient {
 #[uniffi::export(async_runtime = "tokio")]
 impl VaultClient {
     #[uniffi::constructor]
-    #[instrument(skip(credentials), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credentials, rpc_url))]
     pub fn new_key_pool_default(
         rpc_url: String,
         vault: &AccountId,
@@ -101,7 +100,7 @@ impl VaultClient {
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(credential), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credential, rpc_url))]
     pub fn new_single_key_default(
         rpc_url: String,
         vault: &AccountId,
@@ -111,7 +110,7 @@ impl VaultClient {
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(credentials, config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credentials, config, rpc_url))]
     pub fn new_key_pool(
         rpc_url: String,
         vault: &AccountId,
@@ -127,7 +126,7 @@ impl VaultClient {
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(credential, config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(credential, config, rpc_url))]
     pub fn new_single_key(
         rpc_url: String,
         vault: &AccountId,
@@ -148,12 +147,12 @@ impl VaultClient {
     }
 
     /// Enable view cache.
-    pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
+    pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) -> Result<(), ErrorWrapper> {
         self.inner.enable_view_cache(capacity, ttl_seconds)
     }
 
     /// Disable view cache.
-    pub fn disable_view_cache(&self) {
+    pub fn disable_view_cache(&self) -> Result<(), ErrorWrapper> {
         self.inner.disable_view_cache()
     }
 
@@ -178,12 +177,12 @@ impl VaultClient {
     /// * `msg` - Optional message for the vault (defaults to "Supply" for standard deposit)
     ///
     /// # Returns
-    /// The amount of tokens actually used by the vault (computed as `amount - unused`).
+    /// The amount of tokens actually used by the vault.
     ///
     /// # Note
-    /// Per NEP-141, ft_on_transfer returns the *unused* amount to refund. We compute
-    /// `used = amount - unused` here. However, this value should not be fully trusted
-    /// for accounting—verify via balance changes instead.
+    /// Per NEP-141, `ft_transfer_call` resolves via `ft_resolve_transfer`, which returns
+    /// the final *used/spent* amount. However, this value should not be fully trusted for
+    /// accounting—verify via balance changes instead.
     #[instrument(skip(self, token, amount, msg))]
     pub async fn ft_transfer_call(
         &self,
@@ -191,9 +190,6 @@ impl VaultClient {
         amount: &ForeignU128,
         msg: Option<String>,
     ) -> Result<ForeignU128, ErrorWrapper> {
-        let token_id = parse_account_id(token)?;
-        let amount_u128 = crate::parse_u128(amount)?;
-
         #[derive(serde::Serialize)]
         struct FtTransferCallArgs {
             receiver_id: near_account_id::AccountId,
@@ -202,6 +198,10 @@ impl VaultClient {
             msg: String,
         }
 
+        let token_id = parse_account_id(token)?;
+        let amount_u128 = crate::parse_u128(amount)?;
+
+        #[allow(clippy::expect_used)] // DepositMsg serialization is infallible
         let msg = msg.unwrap_or_else(|| {
             serde_json::to_string(&templar_common::vault::DepositMsg::Supply)
                 .expect("DepositMsg serialization cannot fail")
@@ -228,14 +228,12 @@ impl VaultClient {
 
         match status {
             FinalExecutionStatus::SuccessValue(bytes) => {
-                let unused: near_sdk::json_types::U128 =
+                let used: near_sdk::json_types::U128 =
                     serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)?;
-                let used = amount_u128.saturating_sub(unused.0);
-                Ok(used.to_string())
+                Ok(used.0.to_string())
             }
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "ft_transfer_call failed: {:?}",
-                err
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
+                "ft_transfer_call failed: {err:?}"
             ))),
             _ => Err(ErrorWrapper::Wrapped(
                 "Unexpected execution status".to_string(),
@@ -254,15 +252,15 @@ impl VaultClient {
         amount: &ForeignU128,
         memo: Option<String>,
     ) -> Result<(), ErrorWrapper> {
-        let token_id = parse_account_id(token)?;
-        let amount_u128 = crate::parse_u128(amount)?;
-
         #[derive(serde::Serialize)]
         struct Args {
             receiver_id: near_account_id::AccountId,
             amount: near_sdk::json_types::U128,
             memo: Option<String>,
         }
+
+        let token_id = parse_account_id(token)?;
+        let amount_u128 = crate::parse_u128(amount)?;
 
         let status = self
             .inner
@@ -282,9 +280,8 @@ impl VaultClient {
 
         match status {
             FinalExecutionStatus::SuccessValue(_) => Ok(()),
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "ft_transfer failed: {:?}",
-                err
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
+                "ft_transfer failed: {err:?}"
             ))),
             _ => Err(ErrorWrapper::Wrapped(
                 "Unexpected execution status".to_string(),
@@ -299,13 +296,13 @@ impl VaultClient {
         token: &AccountId,
         account_id: &AccountId,
     ) -> Result<ForeignU128, ErrorWrapper> {
-        let token_id = parse_account_id(token)?;
-        let account_id = parse_account_id(account_id)?;
-
         #[derive(serde::Serialize)]
         struct Args {
             account_id: near_account_id::AccountId,
         }
+
+        let token_id = parse_account_id(token)?;
+        let account_id = parse_account_id(account_id)?;
 
         let balance: U128 = self
             .inner
@@ -409,13 +406,12 @@ impl VaultClient {
                     available: balance.available.0.to_string(),
                 })
             }
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "storage_deposit failed: {:?}",
-                err
+            FinalExecutionStatus::Failure(err) => {
+                Err(ErrorWrapper::TransactionFailed(format!("{err:?}")))
+            }
+            status => Err(ErrorWrapper::TransactionFailed(format!(
+                "storage_deposit returned unexpected execution status: {status:?}"
             ))),
-            _ => Err(ErrorWrapper::Wrapped(
-                "Unexpected execution status".to_string(),
-            )),
         }
     }
 
@@ -546,13 +542,12 @@ impl VaultClient {
                     available: balance.available.0.to_string(),
                 })
             }
-            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::Wrapped(format!(
-                "storage_deposit_on failed: {:?}",
-                err
+            FinalExecutionStatus::Failure(err) => {
+                Err(ErrorWrapper::TransactionFailed(format!("{err:?}")))
+            }
+            status => Err(ErrorWrapper::TransactionFailed(format!(
+                "storage_deposit_on returned unexpected execution status: {status:?}"
             ))),
-            _ => Err(ErrorWrapper::Wrapped(
-                "Unexpected execution status".to_string(),
-            )),
         }
     }
 }
@@ -578,11 +573,21 @@ impl VaultClient {
         gas: Option<Gas>,
         deposit: Option<u128>,
     ) -> Result<(), ErrorWrapper> {
-        self.inner
+        let status = self
+            .inner
             .call(&self.vault, method, args, gas, deposit)
             .await
-            .map(|_| ())
-            .map_err(ErrorWrapper::from)
+            .map_err(ErrorWrapper::from)?;
+
+        match status {
+            FinalExecutionStatus::SuccessValue(_) => Ok(()),
+            FinalExecutionStatus::Failure(err) => Err(ErrorWrapper::TransactionFailed(format!(
+                "{method} failed: {err:?}"
+            ))),
+            status => Err(ErrorWrapper::TransactionFailed(format!(
+                "{method} returned unexpected execution status: {status:?}"
+            ))),
+        }
     }
 
     async fn vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper> {
@@ -602,10 +607,18 @@ impl VaultClient {
             .await
             .map_err(ErrorWrapper::from)?;
 
-        let FinalExecutionStatus::SuccessValue(bytes) = status else {
-            return Err(ErrorWrapper::Wrapped(
-                "Transaction returned no value".to_string(),
-            ));
+        let bytes = match status {
+            FinalExecutionStatus::SuccessValue(bytes) => bytes,
+            FinalExecutionStatus::Failure(err) => {
+                return Err(ErrorWrapper::TransactionFailed(format!(
+                    "{method} failed: {err:?}"
+                )))
+            }
+            status => {
+                return Err(ErrorWrapper::TransactionFailed(format!(
+                    "{method} returned unexpected execution status: {status:?}"
+                )))
+            }
         };
 
         serde_json::from_slice(&bytes).map_err(ErrorWrapper::from)
@@ -622,6 +635,7 @@ impl VaultClient {
     }
 
     #[inline]
+    #[allow(clippy::unused_self)]
     fn near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
         parse_account_id(id)
     }

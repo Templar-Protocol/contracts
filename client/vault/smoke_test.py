@@ -13,6 +13,7 @@ from templar_vault_client import (
     KeyPoolConfig,
     KeyCredential,
     VaultClient,
+    VaultViewClient,
     VaultClientConfig,
     AccountId,
     ErrorWrapper,
@@ -21,6 +22,10 @@ from templar_vault_client import (
     StorageBalance,
     StorageBalanceBounds,
 )
+
+DEFAULT_RPC_URL = "https://rpc.testnet.fastnear.com"
+LOOP_TIMEOUT_SECONDS = int(os.environ.get("SMOKE_LOOP_TIMEOUT_SECONDS", "120"))
+DUMMY_SECRET_KEY = os.environ.get("DUMMY_SECRET_KEY")
 
 
 # =============================================================================
@@ -47,10 +52,21 @@ class SmokeTestConfig:
 
     @classmethod
     def from_env(cls) -> "SmokeTestConfig":
-        """Load configuration from environment variables."""
+        """Load configuration from environment variables.
+
+        Raises:
+            ValueError: If VAULT_ACCOUNT is missing.
+        """
+        vault_account = os.environ.get("VAULT_ACCOUNT")
+        if not vault_account:
+            raise ValueError(
+                "VAULT_ACCOUNT environment variable is required for "
+                "SmokeTestConfig.from_env"
+            )
+
         return cls(
-            rpc_url=os.environ.get("RPC_URL", "https://rpc.testnet.fastnear.com"),
-            vault_account=os.environ["VAULT_ACCOUNT"],
+            rpc_url=os.environ.get("RPC_URL", DEFAULT_RPC_URL),
+            vault_account=vault_account,
             rpc_api_key=os.environ.get("RPC_API_KEY"),
             underlying_token=os.environ.get("UNDERLYING_TOKEN"),
             market_account=os.environ.get("MARKET_ACCOUNT"),
@@ -63,6 +79,16 @@ class SmokeTestConfig:
         )
 
 
+def dummy_credential(account_id: str = "dummy.testnet") -> Optional[KeyCredential]:
+    """Build a dummy credential if DUMMY_SECRET_KEY is configured."""
+    if not DUMMY_SECRET_KEY:
+        return None
+    return KeyCredential(
+        account_id=AccountId(account_id),
+        secret_key=DUMMY_SECRET_KEY,
+    )
+
+
 def test_imports():
     """Test that all expected classes are importable."""
     print("✓ All imports successful")
@@ -72,7 +98,7 @@ def test_key_credential_creation():
     """Test KeyCredential dataclass creation."""
     cred = KeyCredential(
         account_id=AccountId("test.near"),
-        secret_key="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af3e7MvFrog1CMNn67PCi6eC8x9TgDxCV9ySeGir",
+        secret_key="not-a-real-key",
     )
     assert cred.account_id == "test.near"
     print("✓ KeyCredential creation works")
@@ -128,7 +154,7 @@ def test_invalid_credential_rejected():
     )
 
     try:
-        client = KeyPoolClient(
+        KeyPoolClient(
             rpc_url="https://rpc.testnet.fastnear.com",
             vault=AccountId("vault.testnet"),
             credentials=[cred],
@@ -153,7 +179,7 @@ def test_empty_credentials_rejected():
     )
 
     try:
-        client = KeyPoolClient(
+        KeyPoolClient(
             rpc_url="https://rpc.testnet.fastnear.com",
             vault=AccountId("vault.testnet"),
             credentials=[],
@@ -167,6 +193,11 @@ def test_empty_credentials_rejected():
 
 async def test_client_creation_with_valid_key():
     """Test client creation with a valid (but non-funded) key."""
+    cred = dummy_credential("test.testnet")
+    if cred is None:
+        print("⚠ Skipping valid-key creation test (set DUMMY_SECRET_KEY)")
+        return
+
     config = KeyPoolConfig(
         timeout_seconds=10,
         retry=None,
@@ -175,13 +206,6 @@ async def test_client_creation_with_valid_key():
         view_cache_capacity=100,
         view_cache_ttl_seconds=5,
         rpc_api_key=None,
-    )
-
-    # Generate a valid ed25519 key (won't work on-chain but should pass validation)
-    # This is a randomly generated key for testing only
-    cred = KeyCredential(
-        account_id=AccountId("test.testnet"),
-        secret_key="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af3e7MvFrog1CMNn67PCi6eC8x9TgDxCV9ySeGir",
     )
 
     client = KeyPoolClient(
@@ -207,6 +231,11 @@ async def test_client_creation_with_valid_key():
 
 async def test_vault_client_creation():
     """Test VaultClient (the new unified client) creation."""
+    cred = dummy_credential("test.testnet")
+    if cred is None:
+        print("⚠ Skipping VaultClient creation test (set DUMMY_SECRET_KEY)")
+        return
+
     config = VaultClientConfig(
         timeout_seconds=10,
         retry=None,
@@ -215,11 +244,6 @@ async def test_vault_client_creation():
         view_cache_capacity=100,
         view_cache_ttl_seconds=5,
         rpc_api_key=None,
-    )
-
-    cred = KeyCredential(
-        account_id=AccountId("test.testnet"),
-        secret_key="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af3e7MvFrog1CMNn67PCi6eC8x9TgDxCV9ySeGir",
     )
 
     client = VaultClient.new_key_pool(
@@ -238,10 +262,10 @@ async def test_vault_client_creation():
 
 async def test_vault_client_single_key_default():
     """Test VaultClient.new_single_key_default() - the simple single-key API."""
-    cred = KeyCredential(
-        account_id=AccountId("test.testnet"),
-        secret_key="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af3e7MvFrog1CMNn67PCi6eC8x9TgDxCV9ySeGir",
-    )
+    cred = dummy_credential("test.testnet")
+    if cred is None:
+        print("⚠ Skipping single-key default test (set DUMMY_SECRET_KEY)")
+        return
 
     client = VaultClient.new_single_key_default(
         rpc_url="https://rpc.testnet.fastnear.com",
@@ -268,18 +292,10 @@ async def test_view_methods(config: SmokeTestConfig):
     """Test all view methods return valid data against a live vault.
 
     This is a read-only test that doesn't require funded accounts or signing.
-    It uses a dummy credential since VaultClient requires one, but only makes
-    view calls.
+    It uses `VaultViewClient`, which does not require key material.
     """
-    # Create a client with a dummy credential (we only make view calls)
-    # Note: We need a credential to create VaultClient, but view calls don't use it
-    dummy_cred = KeyCredential(
-        account_id=AccountId("dummy.testnet"),
-        secret_key="ed25519:3D4YudUQRE39Lc4JHghuB5WM8kbgDDa34mnrEP5DdTApVH81af3e7MvFrog1CMNn67PCi6eC8x9TgDxCV9ySeGir",
-    )
-
-    # Use custom config if API key is provided
-    client_config = VaultClientConfig(
+    # Use custom config if API key is provided.
+    client_config = KeyPoolConfig(
         timeout_seconds=60,
         retry=None,
         max_nonce_retries=3,
@@ -289,10 +305,9 @@ async def test_view_methods(config: SmokeTestConfig):
         rpc_api_key=config.rpc_api_key,
     )
 
-    client = VaultClient.new_single_key(
+    client = VaultViewClient.new(
         rpc_url=config.rpc_url,
         vault=AccountId(config.vault_account),
-        credential=dummy_cred,
         config=client_config,
     )
 
@@ -411,7 +426,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
 
     Requires: USER_ACCOUNT, USER_SECRET_KEY
     Optional: UNDERLYING_TOKEN (for deposit test)
-    Optional: ALLOCATOR_ACCOUNT, ALLOCATOR_SECRET_KEY (for allocate/execute)
+    Optional: ALLOCATOR_ACCOUNT, ALLOCATOR_SECRET_KEY (for reallocate/execute)
     """
     # Skip if no user credentials
     if not config.user_account or not config.user_secret_key:
@@ -464,7 +479,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         )
         print(f"  ✓ Allocator client created for: {config.allocator_account}")
     else:
-        print(f"  ⚠ Allocator client NOT created (missing credentials)")
+        print("  ⚠ Allocator client NOT created (missing credentials)")
 
     # === Step 0: Clear any in-progress operations ===
     withdrawing_op = await user_client.get_withdrawing_op_id()
@@ -473,7 +488,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         markets_for_clear = await user_client.list_markets_with_ids()
         try:
             max_iterations = 10
-            for i in range(max_iterations):
+            for _i in range(max_iterations):
                 op_id = await user_client.get_withdrawing_op_id()
                 if op_id is None:
                     print("  ✓ Vault now idle")
@@ -487,13 +502,15 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                             None,
                         )
                         print(f"  Executed withdrawal from market {market.market_id}")
-                    except:
-                        pass
+                    except ErrorWrapper as e:
+                        print(
+                            f"  ⚠ execute_market_withdrawal failed for market {market.market_id}: {e}"
+                        )
             else:
                 print(
                     f"  ⚠ Could not clear withdrawal after {max_iterations} iterations"
                 )
-        except Exception as e:
+        except ErrorWrapper as e:
             print(f"  ⚠ Error clearing withdrawal: {e}")
     elif withdrawing_op is not None:
         print(
@@ -506,7 +523,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
     initial_idle = await user_client.get_idle_balance()
     max_deposit = await user_client.get_max_deposit()
     markets = await user_client.list_markets_with_ids()
-    print(f"Step 1 - Initial state:")
+    print("Step 1 - Initial state:")
     print(f"  Total assets: {initial_assets}")
     print(f"  Total supply: {initial_supply}")
     print(f"  Idle balance: {initial_idle}")
@@ -523,22 +540,22 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         )
 
         vault_account = AccountId(config.vault_account)
-        token_storage_deposit_amount = (
+        storage_deposit_min_yocto = (
             "1250000000000000000000"  # 0.00125 NEAR for tokens
         )
-        market_storage_deposit_amount = (
+        market_storage_min_yocto = (
             "10000000000000000000000"  # 0.01 NEAR for markets
         )
 
         # Register vault with itself (NEP-145)
         # This is needed for the vault to hold its own shares (fee accrual)
-        print(f"  Checking vault self-registration...")
+        print("  Checking vault self-registration...")
         try:
             vault_self_balance = await allocator_client.storage_balance_of(
                 vault_account
             )
             if vault_self_balance is None:
-                print(f"    Registering vault with itself...")
+                print("    Registering vault with itself...")
                 bounds = await allocator_client.storage_balance_bounds()
                 storage = await allocator_client.storage_deposit(
                     vault_account,
@@ -547,7 +564,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 print(f"    ✓ Vault registered with itself: total={storage.total}")
             else:
                 print(f"    ✓ Already registered: total={vault_self_balance.total}")
-        except Exception as e:
+        except ErrorWrapper as e:
             print(f"    ⚠ Vault self-registration: {e}")
 
         # Register vault with underlying token contract (NEP-145)
@@ -562,16 +579,16 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                     vault_account,
                 )
                 if token_balance is None:
-                    print(f"    Registering vault with token...")
+                    print("    Registering vault with token...")
                     storage = await allocator_client.token_storage_deposit(
                         AccountId(config.underlying_token),
                         vault_account,
-                        token_storage_deposit_amount,
+                        storage_deposit_min_yocto,
                     )
                     print(f"    ✓ Vault registered with token: total={storage.total}")
                 else:
                     print(f"    ✓ Already registered: total={token_balance.total}")
-            except Exception as e:
+            except ErrorWrapper as e:
                 print(f"    ⚠ Token storage registration: {e}")
 
         if not markets and config.market_account:
@@ -579,30 +596,30 @@ async def test_happy_path_flow(config: SmokeTestConfig):
             market_cap = "1000000000000000000000000"  # 1M tokens (assuming 18 decimals)
 
             # Submit cap for the market
-            print(f"    Submitting cap for market...")
+            print("    Submitting cap for market...")
             try:
                 await allocator_client.submit_cap(
                     AccountId(config.market_account),
                     market_cap,
                 )
-                print(f"    ✓ submit_cap succeeded")
-            except Exception as e:
+                print("    ✓ submit_cap succeeded")
+            except ErrorWrapper as e:
                 print(f"    ⚠ submit_cap failed: {e}")
 
             # Accept cap (may fail if timelock > 0)
-            print(f"    Accepting cap for market...")
+            print("    Accepting cap for market...")
             try:
                 await allocator_client.accept_cap(
                     AccountId(config.market_account),
                 )
-                print(f"    ✓ accept_cap succeeded")
+                print("    ✓ accept_cap succeeded")
 
                 # Refresh markets list
                 markets = await user_client.list_markets_with_ids()
                 print(f"    Markets after setup: {len(markets)}")
-            except Exception as e:
+            except ErrorWrapper as e:
                 print(f"    ⚠ accept_cap failed: {e}")
-                print(f"      (May need to wait for timelock, or already accepted)")
+                print("      (May need to wait for timelock, or already accepted)")
 
         if not markets:
             print("  ⚠ No markets registered - cannot set supply_queue")
@@ -619,18 +636,18 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                         vault_account,
                     )
                     if market_balance is None:
-                        print(f"    Registering vault with market...")
+                        print("    Registering vault with market...")
                         storage = await allocator_client.token_storage_deposit(
                             AccountId(market.account),
                             vault_account,
-                            market_storage_deposit_amount,
+                            market_storage_min_yocto,
                         )
                         print(
                             f"    ✓ Vault registered with market: total={storage.total}"
                         )
                     else:
                         print(f"    ✓ Already registered: total={market_balance.total}")
-                except Exception as e:
+                except ErrorWrapper as e:
                     print(f"    ⚠ Market storage registration: {e}")
 
             # Set supply queue with all markets (if max_deposit is 0)
@@ -650,7 +667,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                     # Re-check max_deposit
                     max_deposit = await user_client.get_max_deposit()
                     print(f"  Max deposit after setup: {max_deposit}")
-                except Exception as e:
+                except ErrorWrapper as e:
                     print(f"  ⚠ set_supply_queue failed: {e}")
             else:
                 print(f"  Supply queue already configured (max_deposit={max_deposit})")
@@ -685,7 +702,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 print(
                     "  ⚠ Token balance > idle_balance. If this vault was redeployed, you likely need refresh_idle_balance before deposits."
                 )
-        except Exception as e:
+        except ErrorWrapper as e:
             print(f"  ⚠ Pre-deposit token balance check failed: {e}")
 
         # Register user with vault (NEP-145) if not already registered
@@ -705,7 +722,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 print(f"  ✓ Vault storage registered: total={vault_storage.total}")
             else:
                 print(f"  ✓ Already registered with vault: total={vault_storage.total}")
-        except Exception as e:
+        except ErrorWrapper as e:
             print(f"  ⚠ Vault storage registration failed: {e}")
 
         # Register user with token contract (NEP-145) if not already registered
@@ -713,14 +730,14 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         try:
             # Note: We register ourselves with the token so we can send tokens
             # Typical minimum storage deposit for NEP-141 tokens is 0.00125 NEAR
-            token_storage_deposit = "1250000000000000000000"  # 0.00125 NEAR
+            storage_deposit_yocto = "1250000000000000000000"  # 0.00125 NEAR
             token_storage = await user_client.token_storage_deposit(
                 token=AccountId(config.underlying_token),
                 account_id=None,  # sender
-                deposit_yocto=token_storage_deposit,
+                deposit_yocto=storage_deposit_yocto,
             )
             print(f"  ✓ Token storage registered: total={token_storage.total}")
-        except Exception as e:
+        except ErrorWrapper as e:
             # This might fail if already registered, which is fine
             print(f"  ⚠ Token storage registration: {e}")
             print("    (May already be registered, continuing...)")
@@ -731,7 +748,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 amount=deposit_amount,
                 msg=None,
             )
-            print(f"✓ Deposit transaction submitted (unused/refunded: {used})")
+            print(f"✓ Deposit transaction submitted (used by vault: {used})")
 
             await user_client.clear_view_cache()
             if allocator_client:
@@ -791,6 +808,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
 
                     print(f"  token balance before: {before_token}")
                     print(f"  token balance after:  {after_token}")
+                    print(f"  idle before donation: {before_idle}")
                     print(f"  idle before refresh:  {after_idle_before_refresh}")
 
                     print("  Calling refresh_idle_balance...")
@@ -803,9 +821,9 @@ async def test_happy_path_flow(config: SmokeTestConfig):
 
                     print(f"  refresh_idle_balance outcome: {report.outcome}")
                     print(f"  idle after refresh:  {after_idle}")
-                except Exception as e:
+                except ErrorWrapper as e:
                     print(f"  ⚠ donation/refresh smoke step failed: {e}")
-        except Exception as e:
+        except ErrorWrapper as e:
             print(f"⚠ Deposit failed: {e}")
             print("  (User may not have sufficient token balance or allowance)")
             after_deposit_idle = initial_idle
@@ -814,46 +832,46 @@ async def test_happy_path_flow(config: SmokeTestConfig):
         print("  Set UNDERLYING_TOKEN env var to test deposits")
         after_deposit_idle = initial_idle
 
-    # === Step 3: Allocate to market (if allocator available and idle > 0) ===
+    # === Step 3: Reallocate to market (if allocator available and idle > 0) ===
     if allocator_client and markets and int(after_deposit_idle) > 0:
         market = markets[0]
-        # Allocate a small amount from idle to market
-        allocate_amount = str(min(int(after_deposit_idle), 1000000))  # Up to 1 token
+        # Reallocate a small amount from idle to market
+        reallocate_amount = str(min(int(after_deposit_idle), 1000000))  # Up to 1 token
         print(
-            f"Step 3 - Allocating {allocate_amount} to market {market.market_id} ({market.account})..."
+            f"Step 3 - Reallocating {reallocate_amount} to market {market.market_id} ({market.account})..."
         )
 
         delta = AllocationDelta.SUPPLY(
-            Delta(market=market.market_id, amount=allocate_amount)
+            Delta(market=market.market_id, amount=reallocate_amount)
         )
         try:
-            await allocator_client.allocate(delta)
-            print("✓ Allocate transaction submitted")
+            await allocator_client.reallocate(delta)
+            print("✓ Reallocate transaction submitted")
 
             # Verify idle decreased
             new_idle = await user_client.get_idle_balance()
             print(f"  New idle balance: {new_idle}")
 
             if int(new_idle) < int(after_deposit_idle):
-                print("✓ Allocate verified: idle balance decreased")
+                print("✓ Reallocate verified: idle balance decreased")
             else:
-                print("⚠ Allocate: idle balance did not decrease (may need harvest)")
-        except Exception as e:
-            print(f"⚠ Allocate failed: {e}")
+                print("⚠ Reallocate: idle balance did not decrease (may need harvest)")
+        except ErrorWrapper as e:
+            print(f"⚠ Reallocate failed: {e}")
     else:
         if not allocator_client:
-            print("Step 3 - Skipping allocate: no allocator credentials")
+            print("Step 3 - Skipping reallocate: no allocator credentials")
         elif not markets:
-            print("Step 3 - Skipping allocate: no markets registered")
+            print("Step 3 - Skipping reallocate: no markets registered")
         else:
-            print("Step 3 - Skipping allocate: no idle balance to allocate")
+            print("Step 3 - Skipping reallocate: no idle balance to reallocate")
 
     # === Step 4: Request withdrawal (redeem shares) ===
     # Only attempt redeem if shares exist.
     try:
         await user_client.clear_view_cache()
-    except Exception:
-        pass
+    except ErrorWrapper as e:
+        print(f"  ⚠ clear_view_cache failed before redeem: {e}")
 
     total_supply_after = await user_client.get_total_supply()
     if int(total_supply_after) == 0:
@@ -873,7 +891,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
             # Check withdrawal queue state
             pending_id = await user_client.peek_next_pending_withdrawal_id()
             print(f"  Queue head after redeem: {pending_id}")
-        except Exception as e:
+        except ErrorWrapper as e:
             print(f"⚠ Redeem failed: {e}")
 
     # === Step 5: Execute withdrawals (flush queue) ===
@@ -888,8 +906,8 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                 # Best-effort cache clearing to avoid reading stale head/op state.
                 try:
                     await user_client.clear_view_cache()
-                except Exception:
-                    pass
+                except ErrorWrapper as e:
+                    print(f"  ⚠ clear_view_cache failed in flush loop: {e}")
 
                 head = await user_client.peek_next_pending_withdrawal_id()
                 if head is None:
@@ -902,7 +920,15 @@ async def test_happy_path_flow(config: SmokeTestConfig):
 
                 # If we're in payout, withdrawing_op_id() may be None but current request id is Some.
                 # Wait until the vault is truly idle before starting a new withdrawal.
+                cycle_deadline = asyncio.get_running_loop().time() + LOOP_TIMEOUT_SECONDS
+                timed_out = False
                 while True:
+                    if asyncio.get_running_loop().time() >= cycle_deadline:
+                        print(
+                            f"  ⚠ Timed out waiting for idle state before execute_withdrawal (>{LOOP_TIMEOUT_SECONDS}s)"
+                        )
+                        timed_out = True
+                        break
                     withdrawing_op = await user_client.get_withdrawing_op_id()
                     current_req = await user_client.get_current_withdraw_request_id()
 
@@ -932,15 +958,23 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                                 print(
                                     f"    Executed withdrawal from market {market.market_id}"
                                 )
-                            except Exception:
+                            except ErrorWrapper as e:
                                 # May fail if market has nothing ready to withdraw.
-                                pass
+                                print(
+                                    f"    ⚠ execute_market_withdrawal failed for market {market.market_id}: {e}"
+                                )
 
                         # Let the chain progress between iterations.
                         await asyncio.sleep(1)
 
                     # After driving, wait for payout to finish (if it started).
                     while True:
+                        if asyncio.get_running_loop().time() >= cycle_deadline:
+                            print(
+                                f"  ⚠ Timed out waiting for payout callbacks (>{LOOP_TIMEOUT_SECONDS}s)"
+                            )
+                            timed_out = True
+                            break
                         op_id = await user_client.get_withdrawing_op_id()
                         current_req = (
                             await user_client.get_current_withdraw_request_id()
@@ -949,15 +983,24 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                             break
                         await asyncio.sleep(1)
 
+                if timed_out:
+                    break
+
                 # Start the next queued withdrawal (processes the current head).
                 try:
                     await allocator_client.execute_withdrawal(market_ids)
                     print("  ✓ Execute withdrawal route submitted")
-                except Exception as e:
+                except ErrorWrapper as e:
                     print(f"  ⚠ execute_withdrawal failed: {e}")
 
                 # Now wait/drive until the vault becomes idle again.
                 while True:
+                    if asyncio.get_running_loop().time() >= cycle_deadline:
+                        print(
+                            f"  ⚠ Timed out waiting for vault to return idle after execute_withdrawal (>{LOOP_TIMEOUT_SECONDS}s)"
+                        )
+                        timed_out = True
+                        break
                     withdrawing_op = await user_client.get_withdrawing_op_id()
                     current_req = await user_client.get_current_withdraw_request_id()
 
@@ -985,10 +1028,15 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                                 print(
                                     f"    Executed withdrawal from market {market.market_id}"
                                 )
-                            except Exception:
-                                pass
+                            except ErrorWrapper as e:
+                                print(
+                                    f"    ⚠ execute_market_withdrawal failed for market {market.market_id}: {e}"
+                                )
 
                         await asyncio.sleep(1)
+
+                if timed_out:
+                    break
 
                 # Detect lack of progress to avoid looping forever.
                 new_head = await user_client.peek_next_pending_withdrawal_id()
@@ -998,7 +1046,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
                     )
                     break
 
-            except Exception as e:
+            except ErrorWrapper as e:
                 print(f"⚠ Step 5 flush failed: {e}")
                 break
         else:
@@ -1010,7 +1058,7 @@ async def test_happy_path_flow(config: SmokeTestConfig):
     final_assets = await user_client.get_total_assets()
     final_supply = await user_client.get_total_supply()
     final_idle = await user_client.get_idle_balance()
-    print(f"Step 6 - Final state:")
+    print("Step 6 - Final state:")
     print(f"  Total assets: {final_assets}")
     print(f"  Total supply: {final_supply}")
     print(f"  Idle balance: {final_idle}")
@@ -1047,7 +1095,7 @@ def main():
         print()
 
         config = SmokeTestConfig.from_env()
-        print(f"Configuration:")
+        print("Configuration:")
         print(f"  Vault: {config.vault_account}")
         print(f"  RPC URL: {config.rpc_url}")
         print(f"  RPC API Key: {'set' if config.rpc_api_key else 'not set'}")

@@ -3,7 +3,7 @@ edition.workspace = true
 license.workspace = true
 name = "templar-common"
 repository.workspace = true
-version.workspace = true
+version = "1.3.0"
 
 [dependencies]
 borsh.workspace = true
@@ -17,6 +17,8 @@ primitive-types.workspace = true
 schemars.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap = { workspace = true, optional = true }
+near-jsonrpc-client = { workspace = true, optional = true }
 near-primitives = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -29,5 +31,5 @@ workspace = true
 
 [features]
 default = []
-rpc = ["dep:near-primitives"]
+rpc = ["dep:clap", "dep:near-jsonrpc-client", "dep:near-primitives"]
 non-contract-usage = ["near-sdk/non-contract-usage"]

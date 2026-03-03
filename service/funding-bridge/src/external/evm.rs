@@ -56,6 +56,10 @@ impl ExternalChainHandler for EvmChainHandler {
         &self.config.chain_id
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn supports_token(&self, asset: &str) -> bool {
         self.config.get_token_address(asset).is_some()
     }
@@ -152,10 +156,8 @@ impl ExternalChainHandler for EvmChainHandler {
         amount_u256.to_big_endian(&mut amount_bytes);
         call_data.extend_from_slice(&amount_bytes);
 
-        // Create transaction
         let tx = TransactionRequest::new().to(token_address).data(call_data);
 
-        // Send transaction
         let client_clone = client.clone();
         drop(client);
         let pending_tx = client_clone.send_transaction(tx, None).await.map_err(|e| {
@@ -166,7 +168,6 @@ impl ExternalChainHandler for EvmChainHandler {
         let tx_hash = format!("{:?}", pending_tx.tx_hash());
         info!(tx_hash = %tx_hash, "Transaction sent, waiting for confirmation");
 
-        // Wait for confirmation
         match pending_tx.confirmations(1).await {
             Ok(Some(receipt)) => {
                 let final_hash = format!("{:?}", receipt.transaction_hash);

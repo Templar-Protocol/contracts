@@ -40,12 +40,11 @@ fi
 # Configuration with testnet defaults
 NETWORK="testnet"
 REGISTRIES="${REGISTRY_ACCOUNT_IDS:-templar-registry.testnet}"
-LIQUIDATION_STRATEGY="${LIQUIDATION_STRATEGY:-partial}"
 LIQUIDATION_SCAN_INTERVAL="${LIQUIDATION_SCAN_INTERVAL:-600}"
 REGISTRY_REFRESH_INTERVAL="${REGISTRY_REFRESH_INTERVAL:-3600}"
 CONCURRENCY="${CONCURRENCY:-10}"
-PARTIAL_LIQUIDATION_PERCENTAGE="${PARTIAL_LIQUIDATION_PERCENTAGE:-50}"
-FIXED_LIQUIDATION_AMOUNT="${FIXED_LIQUIDATION_AMOUNT}"
+PARTIAL_LIQUIDATION_PERCENTAGE="${PARTIAL_LIQUIDATION_PERCENTAGE}"
+FIXED_LIQUIDATION_AMOUNT_USD="${FIXED_LIQUIDATION_AMOUNT_USD}"
 LOOP_LIQUIDATION="${LOOP_LIQUIDATION:-false}"
 MAX_LOOP_ITERATIONS="${MAX_LOOP_ITERATIONS:-10}"
 TRANSACTION_TIMEOUT="${TRANSACTION_TIMEOUT:-60}"
@@ -63,18 +62,20 @@ REF_CONTRACT="${REF_CONTRACT:-v2.ref-dev.testnet}"  # Testnet default
 ALLOWED_COLLATERAL_ASSETS="${ALLOWED_COLLATERAL_ASSETS}"
 IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
 
-# Build binary if needed
+# Oracle price update configuration
+PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes-beta.pyth.network}"
+AUTO_UPDATE_PRICES="${AUTO_UPDATE_PRICES:-false}"
+
+# Build binary
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
 BINARY_PATH="$PROJECT_ROOT/target/debug/liquidator"
 
+info "Building liquidator..."
+cd "$PROJECT_ROOT"
+cargo build -p templar-liquidator --bin liquidator
 if [ ! -f "$BINARY_PATH" ]; then
-    warn "Building liquidator binary..."
-    cd "$PROJECT_ROOT"
-    cargo build -p templar-liquidator --bin liquidator
-    if [ ! -f "$BINARY_PATH" ]; then
-        error "Build failed"
-        exit 1
-    fi
+    error "Build failed"
+    exit 1
 fi
 
 # Print configuration
@@ -84,7 +85,16 @@ echo ""
 echo "  Network:              $NETWORK"
 echo "  Account:              $SIGNER_ACCOUNT_ID"
 echo "  Registries:           $REGISTRIES"
-echo "  Liquidation Strategy: $LIQUIDATION_STRATEGY"
+
+# Show liquidation strategy
+if [ -n "$FIXED_LIQUIDATION_AMOUNT_USD" ]; then
+    echo "  Liquidation Strategy: Fixed Amount ($FIXED_LIQUIDATION_AMOUNT_USD USD)"
+elif [ -n "$PARTIAL_LIQUIDATION_PERCENTAGE" ]; then
+    echo "  Liquidation Strategy: Percentage ($PARTIAL_LIQUIDATION_PERCENTAGE%)"
+else
+    echo "  Liquidation Strategy: Percentage (100% - default)"
+fi
+
 echo "  Min Profit:           ${MIN_PROFIT_BPS} bps"
 echo "  Dry Run:              $DRY_RUN"
 
@@ -119,11 +129,9 @@ CMD_ARGS=(
     "--network" "$NETWORK"
     "--signer-account" "$SIGNER_ACCOUNT_ID"
     "--signer-key" "$SIGNER_KEY"
-    "--liquidation-strategy" "$LIQUIDATION_STRATEGY"
     "--liquidation-scan-interval" "$LIQUIDATION_SCAN_INTERVAL"
     "--registry-refresh-interval" "$REGISTRY_REFRESH_INTERVAL"
     "--concurrency" "$CONCURRENCY"
-    "--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE"
     "--min-profit-bps" "$MIN_PROFIT_BPS"
     "--transaction-timeout" "$TRANSACTION_TIMEOUT"
 )
@@ -134,13 +142,17 @@ done
 
 [ "$DRY_RUN" = "true" ] && CMD_ARGS+=("--dry-run")
 
-# Add RPC_URL if set
-[ -n "$RPC_URL" ] && CMD_ARGS+=("--rpc-url" "$RPC_URL")
+# Add NEAR_RPC_URL if set
+[ -n "$NEAR_RPC_URL" ] && CMD_ARGS+=("--near-rpc-url" "$NEAR_RPC_URL")
+[ -n "$NEAR_API_KEY" ] && CMD_ARGS+=("--near-api-key" "$NEAR_API_KEY")
+
+# Add liquidation strategy arguments (mutually exclusive)
+[ -n "$PARTIAL_LIQUIDATION_PERCENTAGE" ] && CMD_ARGS+=("--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE")
+[ -n "$FIXED_LIQUIDATION_AMOUNT_USD" ] && CMD_ARGS+=("--fixed-liquidation-amount-usd" "$FIXED_LIQUIDATION_AMOUNT_USD")
 
 # Add loop liquidation arguments
 [ "$LOOP_LIQUIDATION" = "true" ] && CMD_ARGS+=("--loop-liquidation")
 [ -n "$MAX_LOOP_ITERATIONS" ] && CMD_ARGS+=("--max-loop-iterations" "$MAX_LOOP_ITERATIONS")
-[ -n "$FIXED_LIQUIDATION_AMOUNT" ] && CMD_ARGS+=("--fixed-liquidation-amount" "$FIXED_LIQUIDATION_AMOUNT")
 
 # Add collateral strategy arguments
 CMD_ARGS+=("--collateral-strategy" "$COLLATERAL_STRATEGY")
@@ -161,6 +173,10 @@ if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
         CMD_ARGS+=("--ignored-collateral-assets" "$asset")
     done
 fi
+
+# Add oracle price update arguments
+CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
+[ "$AUTO_UPDATE_PRICES" = "true" ] && CMD_ARGS+=("--auto-update-prices")
 
 info "Starting liquidator..."
 echo ""

@@ -521,21 +521,6 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_intent_serialization() {
-        let mut tokens = HashMap::new();
-        tokens.insert("nep141:usdc.near".to_string(), "1000000".to_string());
-
-        let intent = Intent::Transfer {
-            receiver_id: "user.near".to_string(),
-            tokens,
-        };
-
-        let json = serde_json::to_string(&intent).expect("Should serialize");
-        assert!(json.contains("\"intent\":\"transfer\""));
-        assert!(json.contains("\"receiver_id\":\"user.near\""));
-    }
-
-    #[test]
     fn test_token_diff_intent_serialization() {
         let mut diff = HashMap::new();
         diff.insert("nep141:usdc.near".to_string(), "-1000000".to_string());

@@ -22,6 +22,7 @@ COPY fuzz ./fuzz
 COPY mock ./mock
 COPY service ./service
 COPY test-utils ./test-utils
+COPY tools ./tools
 COPY universal-account ./universal-account
 
 # Build the liquidator binary in release mode
@@ -77,6 +78,3 @@ LABEL org.opencontainers.image.source="https://github.com/templar-protocol/contr
 
 # Default command
 ENTRYPOINT ["/app/liquidator"]
-
-# Default args (can be overridden)
-CMD ["--help"]

@@ -11,31 +11,37 @@
 macro_rules! impl_view_cache_methods {
     ($client:ty) => {
         impl $client {
-            pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
+            pub fn enable_view_cache(
+                &self,
+                capacity: u32,
+                ttl_seconds: u64,
+            ) -> Result<(), $crate::ErrorWrapper> {
                 use std::time::Duration;
                 use $crate::lock_ext::RwLockExt;
 
                 if capacity == 0 {
-                    *self.view_cache.write_recover() = None;
-                    return;
+                    *self.view_cache.write_or_poison()? = None;
+                    return Ok(());
                 }
 
                 let cache = $crate::ViewCache::builder()
-                    .max_capacity(capacity as u64)
+                    .max_capacity(u64::from(capacity))
                     .time_to_live(Duration::from_secs(ttl_seconds))
                     .build();
 
-                *self.view_cache.write_recover() = Some(cache);
+                *self.view_cache.write_or_poison()? = Some(cache);
+                Ok(())
             }
 
-            pub fn disable_view_cache(&self) {
+            pub fn disable_view_cache(&self) -> Result<(), $crate::ErrorWrapper> {
                 use $crate::lock_ext::RwLockExt;
-                *self.view_cache.write_recover() = None;
+                *self.view_cache.write_or_poison()? = None;
+                Ok(())
             }
 
             pub async fn clear_view_cache(&self) -> Result<(), $crate::ErrorWrapper> {
                 use $crate::lock_ext::RwLockExt;
-                let cache = { self.view_cache.read_recover().clone() };
+                let cache = { self.view_cache.read_or_poison()?.clone() };
                 if let Some(cache) = cache {
                     cache.invalidate_all();
                 }
@@ -137,7 +143,7 @@ macro_rules! impl_vault_view_methods {
                     .view::<Option<NearAccountId>>(
                         &self.vault,
                         "get_market_account_by_id",
-                        (U64::from(market_id.0 as u64),),
+                        (U64::from(u64::from(market_id.0)),),
                     )
                     .await
                     .map_err($crate::ErrorWrapper::from)?;
@@ -176,25 +182,65 @@ macro_rules! impl_vault_view_methods {
             pub async fn get_vault_snapshot(
                 &self,
             ) -> Result<$crate::VaultSnapshot, $crate::ErrorWrapper> {
+                let (
+                    configuration,
+                    total_assets,
+                    last_total_assets,
+                    idle_balance,
+                    total_supply,
+                    max_deposit,
+                    max_single_market_deposit,
+                    fee_anchor,
+                    fees,
+                    restrictions,
+                    cap_groups,
+                    pending_governance_actions,
+                    withdrawing_op_id,
+                    has_pending_market_withdrawal,
+                    current_withdraw_request_id,
+                    queue_tail,
+                    next_pending_withdrawal_id,
+                    markets_with_ids,
+                ) = tokio::try_join!(
+                    self.get_configuration(),
+                    self.get_total_assets(),
+                    self.get_last_total_assets(),
+                    self.get_idle_balance(),
+                    self.get_total_supply(),
+                    self.get_max_deposit(),
+                    self.get_max_single_market_deposit(),
+                    self.get_fee_anchor(),
+                    self.get_fees(),
+                    self.get_restrictions(),
+                    self.get_cap_groups(),
+                    self.get_pending_governance_actions(),
+                    self.get_withdrawing_op_id(),
+                    self.has_pending_market_withdrawal(),
+                    self.get_current_withdraw_request_id(),
+                    self.queue_tail(),
+                    self.peek_next_pending_withdrawal_id(),
+                    self.list_markets_with_ids(),
+                )?;
+
                 Ok($crate::VaultSnapshot {
-                    configuration: self.get_configuration().await?,
-                    total_assets: self.get_total_assets().await?,
-                    last_total_assets: self.get_last_total_assets().await?,
-                    idle_balance: self.get_idle_balance().await?,
-                    total_supply: self.get_total_supply().await?,
-                    max_deposit: self.get_max_deposit().await?,
-                    max_single_market_deposit: self.get_max_single_market_deposit().await?,
-                    fee_anchor: self.get_fee_anchor().await?,
-                    fees: self.get_fees().await?,
-                    restrictions: self.get_restrictions().await?,
-                    cap_groups: self.get_cap_groups().await?,
-                    pending_governance_actions: self.get_pending_governance_actions().await?,
-                    withdrawing_op_id: self.get_withdrawing_op_id().await?,
-                    has_pending_market_withdrawal: self.has_pending_market_withdrawal().await?,
-                    current_withdraw_request_id: self.get_current_withdraw_request_id().await?,
-                    queue_tail: self.queue_tail().await?,
-                    next_pending_withdrawal_id: self.peek_next_pending_withdrawal_id().await?,
-                    markets_with_ids: self.list_markets_with_ids().await?,
+                    configuration,
+                    total_assets,
+                    last_total_assets,
+                    idle_balance,
+                    total_supply,
+                    max_deposit,
+                    max_single_market_deposit,
+                    fee_anchor,
+                    fees,
+                    restrictions,
+                    cap_groups,
+                    pending_governance_actions,
+                    withdrawing_op_id,
+                    has_pending_market_withdrawal,
+                    current_withdraw_request_id,
+                    queue_tail,
+                    next_pending_withdrawal_id,
+                    markets_with_ids,
                 })
             }
 
@@ -203,11 +249,12 @@ macro_rules! impl_vault_view_methods {
                 &self,
                 markets: &[$crate::AccountId],
             ) -> Result<Vec<Option<$crate::MarketId>>, $crate::ErrorWrapper> {
-                let mut out = Vec::with_capacity(markets.len());
-                for market in markets {
-                    out.push(self.get_market_id_of_account(market).await?);
-                }
-                Ok(out)
+                futures::future::try_join_all(
+                    markets
+                        .iter()
+                        .map(|market| self.get_market_id_of_account(market)),
+                )
+                .await
             }
 
             #[instrument(skip(self, market_ids))]
@@ -215,28 +262,26 @@ macro_rules! impl_vault_view_methods {
                 &self,
                 market_ids: &[$crate::MarketId],
             ) -> Result<Vec<Option<$crate::AccountId>>, $crate::ErrorWrapper> {
-                let mut out = Vec::with_capacity(market_ids.len());
-                for id in market_ids {
-                    out.push(self.get_market_account_by_id(*id).await?);
-                }
-                Ok(out)
+                futures::future::try_join_all(
+                    market_ids
+                        .iter()
+                        .map(|market_id| self.get_market_account_by_id(*market_id)),
+                )
+                .await
             }
         }
     };
 }
 
-/// Generate vault view and call methods for a client.
+/// Generate read-only vault methods for a client.
 ///
 /// The client must have these helper methods:
 /// - `vault_view_u128(&self, method: &str, args: impl Serialize) -> Result<ForeignU128, ErrorWrapper>`
-/// - `vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper>`
-/// - `vault_call_with(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<(), ErrorWrapper>`
-/// - `vault_call_returning<T>(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<T, ErrorWrapper>`
 /// - `view<T>(&self, account_id: &NearAccountId, method: &str, args: impl Serialize) -> Result<T>`
 /// - `near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper>`
 /// - `vault` field of type `NearAccountId`
 #[macro_export]
-macro_rules! impl_vault_methods {
+macro_rules! impl_vault_read_methods {
     ($client:ty) => {
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
@@ -435,6 +480,23 @@ macro_rules! impl_vault_methods {
                 Ok(res.into())
             }
         }
+    };
+}
+
+/// Generate full vault methods (read-only + mutating call methods) for a client.
+///
+/// The client must have these helper methods:
+/// - `vault_view_u128(&self, method: &str, args: impl Serialize) -> Result<ForeignU128, ErrorWrapper>`
+/// - `vault_call(&self, method: &str, args: impl Serialize) -> Result<(), ErrorWrapper>`
+/// - `vault_call_with(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<(), ErrorWrapper>`
+/// - `vault_call_returning<T>(&self, method: &str, args: impl Serialize, gas: Option<Gas>, deposit: Option<u128>) -> Result<T, ErrorWrapper>`
+/// - `view<T>(&self, account_id: &NearAccountId, method: &str, args: impl Serialize) -> Result<T>`
+/// - `near_id(&self, id: &AccountId) -> Result<NearAccountId, ErrorWrapper>`
+/// - `vault` field of type `NearAccountId`
+#[macro_export]
+macro_rules! impl_vault_methods {
+    ($client:ty) => {
+        $crate::impl_vault_read_methods!($client);
 
         #[uniffi::export(async_runtime = "tokio")]
         impl $client {
@@ -533,9 +595,9 @@ macro_rules! impl_vault_methods {
             }
 
             #[instrument(skip(self, delta))]
-            pub async fn allocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+            pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
                 let delta = templar_common::vault::AllocationDelta::try_from(delta.clone())?;
-                self.vault_call("allocate", (delta,)).await
+                self.vault_call("reallocate", (delta,)).await
             }
 
             #[instrument(skip(self, route))]

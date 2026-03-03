@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use crate::{
     bridge::BridgeClient,
-    chain::NearHandler,
     config::Args,
     external::{config::EvmChainConfig, evm::EvmChainHandler, ExternalChainRegistry},
     tokens::TokenRegistry,
+    treasury::NearHandler,
     VERSION,
 };
 
@@ -41,23 +41,26 @@ impl App {
     pub fn new(args: &Args) -> Self {
         let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));
 
-        // NEAR handler is required
+        // NEAR treasury handler is required
         let near_handler = {
-            let account = args.near_account.as_ref().expect("NEAR account required");
-            let key = args
-                .near_signer_key
+            let account = args
+                .near_treasury_account
                 .as_ref()
-                .expect("NEAR signer key required");
+                .expect("NEAR treasury account required");
+            let key = args
+                .near_treasury_key
+                .as_ref()
+                .expect("NEAR treasury key required");
 
             tracing::info!(
                 account = %account,
-                "Initializing NEAR handler"
+                "Initializing NEAR treasury handler"
             );
 
             Arc::new(NearHandler::new(
                 account.clone(),
                 key.clone(),
-                args.get_near_rpc_url(),
+                args.get_near_treasury_rpc_url(),
                 args.dry_run,
             ))
         };
@@ -136,6 +139,18 @@ impl App {
             registry.register(stellar_handler);
         } else {
             tracing::info!("No Stellar keypair configured - Stellar deposits disabled");
+        }
+
+        // Check for NEAR external configuration from environment
+        if let Some(near_handler) = crate::external::near::near_handler_from_env() {
+            let chain_id = near_handler.chain_id().to_string();
+            tracing::info!(
+                chain_id = %chain_id,
+                "Registered NEAR external chain handler"
+            );
+            registry.register(near_handler);
+        } else {
+            tracing::info!("No NEAR external keypair configured - NEAR deposits disabled");
         }
 
         Arc::new(registry)

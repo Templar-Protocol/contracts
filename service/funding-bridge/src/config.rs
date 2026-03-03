@@ -21,8 +21,8 @@ pub struct Args {
     #[arg(long, env = "PORT", default_value_t = 3000)]
     pub port: u16,
 
-    /// NEAR network (mainnet or testnet)
-    #[arg(long, env = "NETWORK", default_value = "testnet")]
+    /// NEAR network
+    #[arg(long, env = "NETWORK", default_value = "mainnet")]
     pub network: Network,
 
     /// NEAR Intents Bridge API endpoint
@@ -39,12 +39,12 @@ pub struct Args {
 
     // === NEAR Treasury (required) ===
     /// NEAR treasury account ID
-    #[arg(long, env = "NEAR_ACCOUNT")]
-    pub near_account: Option<AccountId>,
+    #[arg(long, env = "NEAR_TREASURY_ACCOUNT")]
+    pub near_treasury_account: Option<AccountId>,
 
-    /// NEAR signer key
-    #[arg(long, env = "NEAR_SIGNER_KEY")]
-    pub near_signer_key: Option<SecretKey>,
+    /// NEAR treasury signer key
+    #[arg(long, env = "NEAR_TREASURY_KEY")]
+    pub near_treasury_key: Option<SecretKey>,
 
     /// NEAR RPC URL (optional, uses network default if not specified)
     #[arg(long, env = "NEAR_RPC_URL")]
@@ -85,10 +85,6 @@ pub struct Args {
     )]
     pub stellar_horizon_url: String,
 
-    /// Stellar network (mainnet or testnet)
-    #[arg(long, env = "STELLAR_NETWORK", default_value = "mainnet")]
-    pub stellar_network: String,
-
     // === Withdrawal Destinations (required for withdrawals) ===
     /// Ethereum withdrawal destination address
     #[arg(long, env = "ETH_WITHDRAW_ADDRESS")]
@@ -122,15 +118,15 @@ pub struct Args {
 impl Args {
     /// Validate configuration
     pub fn validate(&self) -> FundingResult<()> {
-        // Validate NEAR config
-        if self.near_account.is_none() {
+        // Validate NEAR treasury config
+        if self.near_treasury_account.is_none() {
             return Err(FundingError::ConfigError(
-                "NEAR_ACCOUNT is required".to_string(),
+                "NEAR_TREASURY_ACCOUNT is required".to_string(),
             ));
         }
-        if self.near_signer_key.is_none() {
+        if self.near_treasury_key.is_none() {
             return Err(FundingError::ConfigError(
-                "NEAR_SIGNER_KEY is required".to_string(),
+                "NEAR_TREASURY_KEY is required".to_string(),
             ));
         }
 
@@ -149,12 +145,16 @@ impl Args {
             "stellar" | "stellar:mainnet" | "stellar:testnet" => {
                 self.stellar_withdraw_address.clone()
             }
+            "near" | "near:mainnet" | "near:testnet" => {
+                // For NEAR, use NEAR_ACCOUNT (same account for deposits/withdrawals)
+                std::env::var("NEAR_ACCOUNT").ok()
+            }
             _ => None,
         }
     }
 
     /// Get NEAR RPC URL based on network
-    pub fn get_near_rpc_url(&self) -> String {
+    pub fn get_near_treasury_rpc_url(&self) -> String {
         self.near_rpc_url
             .clone()
             .unwrap_or_else(|| self.network.rpc_url().to_string())
@@ -172,8 +172,8 @@ mod tests {
             network: Network::Testnet,
             bridge_api_url: "https://bridge.chaindefuser.com/rpc".to_string(),
             dry_run: false,
-            near_account: Some(AccountId::from_str("treasury.near").unwrap()),
-            near_signer_key: Some(SecretKey::from_random(near_crypto::KeyType::ED25519)),
+            near_treasury_account: Some(AccountId::from_str("treasury.near").unwrap()),
+            near_treasury_key: Some(SecretKey::from_random(near_crypto::KeyType::ED25519)),
             near_rpc_url: None,
             eth_private_key: None,
             eth_rpc_url: "https://eth.llamarpc.com".to_string(),
@@ -187,7 +187,6 @@ mod tests {
             solana_withdraw_address: None,
             stellar_secret_key: None,
             stellar_horizon_url: "https://horizon.stellar.org".to_string(),
-            stellar_network: "mainnet".to_string(),
             stellar_withdraw_address: None,
         }
     }
@@ -201,13 +200,13 @@ mod tests {
     #[test]
     fn test_near_missing_account() {
         let mut config = create_valid_config();
-        config.near_account = None;
+        config.near_treasury_account = None;
 
         let result = config.validate();
         assert!(result.is_err());
         match result {
             Err(FundingError::ConfigError(msg)) => {
-                assert!(msg.contains("NEAR_ACCOUNT"));
+                assert!(msg.contains("NEAR_TREASURY_ACCOUNT"));
             }
             _ => panic!("Expected ConfigError"),
         }
@@ -216,42 +215,51 @@ mod tests {
     #[test]
     fn test_near_missing_signer_key() {
         let mut config = create_valid_config();
-        config.near_signer_key = None;
+        config.near_treasury_key = None;
 
         let result = config.validate();
         assert!(result.is_err());
         match result {
             Err(FundingError::ConfigError(msg)) => {
-                assert!(msg.contains("NEAR_SIGNER_KEY"));
+                assert!(msg.contains("NEAR_TREASURY_KEY"));
             }
             _ => panic!("Expected ConfigError"),
         }
     }
 
     #[test]
-    fn test_get_near_rpc_url_mainnet() {
+    fn test_get_near_treasury_rpc_url_mainnet() {
         let mut config = create_valid_config();
         config.network = Network::Mainnet;
         config.near_rpc_url = None;
 
-        assert_eq!(config.get_near_rpc_url(), "https://rpc.mainnet.near.org");
+        assert_eq!(
+            config.get_near_treasury_rpc_url(),
+            "https://free.rpc.fastnear.com"
+        );
     }
 
     #[test]
-    fn test_get_near_rpc_url_testnet() {
+    fn test_get_near_treasury_rpc_url_testnet() {
         let mut config = create_valid_config();
         config.network = Network::Testnet;
         config.near_rpc_url = None;
 
-        assert_eq!(config.get_near_rpc_url(), "https://rpc.testnet.near.org");
+        assert_eq!(
+            config.get_near_treasury_rpc_url(),
+            "https://rpc.testnet.near.org"
+        );
     }
 
     #[test]
-    fn test_get_near_rpc_url_custom() {
+    fn test_get_near_treasury_rpc_url_custom() {
         let mut config = create_valid_config();
         config.near_rpc_url = Some("https://custom.rpc.near.org".to_string());
 
-        assert_eq!(config.get_near_rpc_url(), "https://custom.rpc.near.org");
+        assert_eq!(
+            config.get_near_treasury_rpc_url(),
+            "https://custom.rpc.near.org"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ use near_jsonrpc_client::{
         send_tx::RpcSendTransactionRequest,
         tx::{RpcTransactionError, RpcTransactionStatusRequest, TransactionInfo},
     },
-    JsonRpcClient, NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL,
+    JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
@@ -32,7 +32,6 @@ use near_primitives::{
     views::{FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest, TxExecutionStatus},
 };
 use near_sdk::{
-    near,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     Gas,
 };
@@ -93,41 +92,6 @@ const VIEW_CALL_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum interval between transaction status polls
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Network configuration for NEAR
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-#[near(serializers = [near_sdk::serde_json::json])]
-pub enum Network {
-    /// NEAR mainnet
-    Mainnet,
-    /// NEAR testnet (default)
-    #[default]
-    Testnet,
-}
-
-impl std::fmt::Display for Network {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Network::Mainnet => "mainnet",
-                Network::Testnet => "testnet",
-            }
-        )
-    }
-}
-
-impl Network {
-    /// Get the RPC URL for this network
-    #[must_use]
-    pub fn rpc_url(&self) -> &str {
-        match self {
-            Network::Mainnet => NEAR_MAINNET_RPC_URL,
-            Network::Testnet => NEAR_TESTNET_RPC_URL,
-        }
-    }
-}
 
 /// Contract source metadata as defined by NEP-330
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -301,44 +265,45 @@ pub async fn send_tx(
     {
         Ok(res) => res,
         Err(e) => {
+            // Check if the error is a timeout that we should retry
+            if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
+                return Err(e.into());
+            }
+
+            // Poll with exponential backoff until we get a final result
+            let mut poll_interval = Duration::from_millis(500);
+
             loop {
-                if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                    return Err(e.into());
+                if Instant::now() >= deadline {
+                    return Err(RpcError::TimeoutError(
+                        timeout,
+                        called_at.elapsed().as_secs(),
+                    ));
                 }
 
-                // Poll with exponential backoff
-                let mut poll_interval = Duration::from_millis(500);
+                tokio::time::sleep(poll_interval).await;
 
-                loop {
-                    if Instant::now() >= deadline {
-                        return Err(RpcError::TimeoutError(
-                            timeout,
-                            called_at.elapsed().as_secs(),
-                        ));
+                // Exponential backoff up to MAX_POLL_INTERVAL
+                poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
+
+                let status = client
+                    .call(RpcTransactionStatusRequest {
+                        transaction_info: TransactionInfo::TransactionId {
+                            sender_account_id: signer.get_account_id(),
+                            tx_hash,
+                        },
+                        wait_until: TxExecutionStatus::Final,
+                    })
+                    .await;
+
+                match status {
+                    Ok(result) => break result,
+                    Err(e)
+                        if matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) =>
+                    {
+                        // Continue polling on timeout
                     }
-
-                    tokio::time::sleep(poll_interval).await;
-
-                    // Exponential backoff up to MAX_POLL_INTERVAL
-                    poll_interval = std::cmp::min(poll_interval * 2, MAX_POLL_INTERVAL);
-
-                    let status = client
-                        .call(RpcTransactionStatusRequest {
-                            transaction_info: TransactionInfo::TransactionId {
-                                sender_account_id: signer.get_account_id(),
-                                tx_hash,
-                            },
-                            wait_until: TxExecutionStatus::Final,
-                        })
-                        .await;
-
-                    let Err(e) = status else {
-                        break;
-                    };
-
-                    if !matches!(e.handler_error(), Some(RpcTransactionError::TimeoutError)) {
-                        return Err(e.into());
-                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
         }
@@ -509,7 +474,9 @@ pub async fn list_all_deployments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use near_jsonrpc_client::{NEAR_MAINNET_RPC_URL, NEAR_TESTNET_RPC_URL};
     use near_sdk::serde_json::json;
+    use templar_common::utils::Network;
 
     #[test]
     fn test_serialize_and_encode() {

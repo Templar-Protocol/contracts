@@ -14,7 +14,10 @@ use near_primitives::{
     views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
 use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
-use templar_common::market::DepositMsg;
+use templar_common::{
+    asset::{BorrowAsset, CollateralAsset},
+    market::DepositMsg,
+};
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
@@ -28,7 +31,7 @@ use crate::{
             error::{RecordTransactionError, SetPendingTransactionError},
             Database,
         },
-        near::Near,
+        near::{Near, ViewError, STORAGE_DEPOSIT_GAS},
         pyth::Pyth,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
@@ -297,19 +300,19 @@ impl App {
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
-                    if !matches!(msg, DepositMsg::Supply | DepositMsg::Repay) {
-                        errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
+                    if !msg.expects_borrow_asset() {
+                        errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: "\"Supply\" or \"Repay\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
+                            expected: market_account_ids.collateral_asset.to_string(),
+                            received: transfer.asset::<BorrowAsset>().to_string(),
                         });
                     }
                 } else if transfer.asset() == market_account_ids.collateral_asset {
-                    if !matches!(msg, DepositMsg::Collateralize) {
-                        errors.push(FunctionCallRejectionReason::InvalidMsgForAsset {
+                    if msg.expects_borrow_asset() {
+                        errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: "\"Collateralize\"".to_string(),
-                            actual: serde_json::to_string(&msg).unwrap(),
+                            expected: market_account_ids.borrow_asset.to_string(),
+                            received: transfer.asset::<CollateralAsset>().to_string(),
                         });
                     }
                 } else {
@@ -454,6 +457,95 @@ impl App {
             Ok(status)
         })
     }
+
+    /// Perform a storage deposit top-up, charging the associated account
+    /// accordingly with the amount of storage balance consumed.
+    ///
+    /// # Errors
+    ///
+    /// - If loading storage balance bounds from the contract fails.
+    /// - If gas calculation fails.
+    /// - If sending the transaction fails.
+    /// - If resolving the final transaction status with the database fails.
+    pub async fn storage_deposit_top_up(
+        &self,
+        contract_data: &ContractData,
+        contract_id: AccountId,
+        account_id: AccountId,
+    ) -> Result<(), StorageDepositError> {
+        let Some(storage_balance_bounds) = contract_data
+            .storage_balance_bounds
+            .as_ref()
+            .filter(|b| !b.min.is_zero())
+        else {
+            return Ok(());
+        };
+
+        let storage_balance = self
+            .relay_near
+            .load_storage_balance_of(contract_id.clone(), &account_id)
+            .await?;
+
+        let available = storage_balance.map_or(NearToken::from_near(0), |s| s.available);
+
+        let should_have_available = self
+            .args
+            .relay
+            .storage_deposit_guarantee_minimum_available
+            .max(storage_balance_bounds.min);
+
+        let storage_deposit_amount = should_have_available.saturating_sub(available);
+
+        if storage_deposit_amount.is_zero() {
+            // No deposit necessary
+            return Ok(());
+        }
+
+        let Some(cost_of_gas) = self
+            .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
+            .await
+            .map(|amount| amount.saturating_add(storage_deposit_amount))
+        else {
+            return Err(StorageDepositError::GasEstimationFailure);
+        };
+
+        let signed_transaction = self
+            .relay_near
+            .construct_storage_deposit_transaction(
+                &self.cache,
+                account_id.clone(),
+                contract_id.clone(),
+                storage_deposit_amount,
+            )
+            .await;
+
+        let resolve_transaction = self
+            .send_and_resolve_transaction(
+                account_id,
+                cost_of_gas,
+                storage_deposit_amount,
+                signed_transaction,
+                TxExecutionStatus::Final,
+            )
+            .await?;
+
+        // Resolve synchronously.
+        resolve_transaction.await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StorageDepositError {
+    #[error("RPC view error: {0}")]
+    View(#[from] ViewError),
+    #[error("Failed to estimate gas")]
+    GasEstimationFailure,
+    #[error("Error sending storage deposit: {0}")]
+    Send(#[from] SendTransactionError),
+    #[error("Error resolving storage deposit: {0}")]
+    Resolve(#[from] ResolveTransactionError),
 }
 
 #[derive(Debug, thiserror::Error)]

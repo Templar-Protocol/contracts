@@ -7,13 +7,16 @@ use axum::{
     routing, Json, Router,
 };
 use near_sdk::{
-    json_types::U64,
+    json_types::{U128, U64},
     serde::{Deserialize, Serialize},
     AccountId,
 };
 use sha2::{Digest, Sha256};
 use templar_universal_account::{
-    authentication::{ed25519_raw, eip712, passkey::Passkey},
+    authentication::{
+        ed25519::{eip191, raw, sep53},
+        eip712, passkey,
+    },
     KeyId,
 };
 
@@ -37,6 +40,8 @@ pub fn router() -> Router<App> {
         .route("/relay", routing::post(relay::relay))
 }
 
+// pub fn
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Index {
@@ -48,6 +53,10 @@ pub struct Index {
     pub pow_difficulty: usize,
     /// The block hash that is included in the creation request must not be older than this many seconds.
     pub blockref_max_age_secs: U64,
+    /// The chain ID that the UA must be deployed on and configured to.
+    pub chain_id: U128,
+    /// The version key of the UA contract that the relayer will deploy from the registry.
+    pub version_key: String,
 }
 
 pub async fn index(State(app): State<App>) -> impl IntoResponse {
@@ -56,6 +65,8 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
         registry_id: app.args.ua.registry_id,
         pow_difficulty: app.args.ua.pow_difficulty,
         blockref_max_age_secs: app.args.ua.blockref_max_age.as_secs().into(),
+        chain_id: app.args.ua.chain_id.into(),
+        version_key: app.args.ua.version_key.clone(),
     })
 }
 
@@ -64,9 +75,11 @@ pub async fn index(State(app): State<App>) -> impl IntoResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde", tag = "type")]
 pub enum KeyQuery {
-    Passkey { key: Passkey },
-    Ed25519Raw { key: ed25519_raw::VerifyKey },
+    Passkey { key: passkey::VerifyKey },
+    Ed25519Raw { key: raw::VerifyKey },
     Eip712 { key: eip712::VerifyKey },
+    Sep53 { key: sep53::VerifyKey },
+    Eip191 { key: eip191::VerifyKey },
 }
 
 impl From<KeyQuery> for KeyId {
@@ -75,6 +88,22 @@ impl From<KeyQuery> for KeyId {
             KeyQuery::Passkey { key } => key.into(),
             KeyQuery::Ed25519Raw { key } => key.into(),
             KeyQuery::Eip712 { key } => key.into(),
+            KeyQuery::Sep53 { key } => key.into(),
+            KeyQuery::Eip191 { key } => key.into(),
+        }
+    }
+}
+
+// This implementation mainly exists just to ensure that the compiler reminds
+// us to update this datatype as we add new key variants.
+impl From<KeyId> for KeyQuery {
+    fn from(value: KeyId) -> Self {
+        match value {
+            KeyId::Passkey(key) => Self::Passkey { key },
+            KeyId::Ed25519Raw(key) => Self::Ed25519Raw { key },
+            KeyId::Eip712(key) => Self::Eip712 { key },
+            KeyId::Sep53(key) => Self::Sep53 { key },
+            KeyId::Eip191(key) => Self::Eip191 { key },
         }
     }
 }
@@ -94,21 +123,30 @@ pub async fn account_id(
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use templar_universal_account::authentication::ed25519::eip191;
 
     use super::*;
 
     #[rstest]
-    #[case(
-        Passkey("p256:NKzTCoSPccskQudsdyjoKyMLXTC6GQ9WYwsV9SJebAdb1gzbZEQcfwo4nikCWMHGBAXCFGCD5EZcPnqDFxdjzdDJ".parse().unwrap()).into(),
+    #[case::passkey(
+        passkey::VerifyKey("p256:NKzTCoSPccskQudsdyjoKyMLXTC6GQ9WYwsV9SJebAdb1gzbZEQcfwo4nikCWMHGBAXCFGCD5EZcPnqDFxdjzdDJ".parse().unwrap()).into(),
         "549bca2d5a64",
     )]
-    #[case(
-        ed25519_raw::VerifyKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
+    #[case::ed25519_raw(
+        raw::VerifyKey("ed25519:DWYRtzDDtbX63hcXziJEXgXZamSPQT61YPFGM1oFTqVp".parse().unwrap()).into(),
         "e2cac2be8cef",
     )]
-    #[case(
+    #[case::sep53(
+        sep53::VerifyKey("GBPNJTA5DARWSGLGPAGUHZBE44IOCFSKCL525WK7VZK6BEX4DPLIJXZ7".parse().unwrap()).into(),
+        "3ccc6b968690",
+    )]
+    #[case::eip712(
         eip712::VerifyKey("0xa2E641CcbEB84c6Ed1e1E43e18B720F6D5C5173E".parse().unwrap()).into(),
         "8a98745b4d35",
+    )]
+    #[case::eip191(
+        eip191::VerifyKey("0x03a607faedb00b3f9c747a9cb303255ef86a4da8".parse().unwrap()).into(),
+        "6616024d8ced",
     )]
     #[test]
     fn account_slug_regression(#[case] key: KeyId, #[case] expected_slug: &str) {

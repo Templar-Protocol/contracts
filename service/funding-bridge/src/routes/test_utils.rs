@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use {
-    crate::{app::App, bridge::BridgeClient, chain::NearHandler, config::Args, rpc::Network},
+    crate::{app::App, bridge::BridgeClient, config::Args, rpc::Network, treasury::NearHandler},
     near_crypto::{KeyType, SecretKey},
     near_primitives::types::AccountId,
     std::{str::FromStr, sync::Arc},
@@ -12,11 +12,11 @@ use {
 pub fn create_test_app() -> App {
     let args = Args {
         port: 3000,
-        network: Network::Testnet,
+        network: Network::Mainnet,
         bridge_api_url: "https://test.api".to_string(),
         dry_run: false,
-        near_account: Some(AccountId::from_str("test.near").unwrap()),
-        near_signer_key: Some(SecretKey::from_random(KeyType::ED25519)),
+        near_treasury_account: Some(AccountId::from_str("test.near").unwrap()),
+        near_treasury_key: Some(SecretKey::from_random(KeyType::ED25519)),
         near_rpc_url: None,
         eth_private_key: None,
         eth_rpc_url: "https://eth.llamarpc.com".to_string(),
@@ -30,7 +30,6 @@ pub fn create_test_app() -> App {
         solana_withdraw_address: Some("B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string()),
         stellar_secret_key: None,
         stellar_horizon_url: "https://horizon.stellar.org".to_string(),
-        stellar_network: "mainnet".to_string(),
         stellar_withdraw_address: None,
     };
 
@@ -38,9 +37,9 @@ pub fn create_test_app() -> App {
     let token_registry = crate::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
 
     let near_handler = Arc::new(NearHandler::new(
-        args.near_account.clone().unwrap(),
-        args.near_signer_key.clone().unwrap(),
-        args.get_near_rpc_url(),
+        args.near_treasury_account.clone().unwrap(),
+        args.near_treasury_key.clone().unwrap(),
+        args.get_near_treasury_rpc_url(),
         true,
     ));
 

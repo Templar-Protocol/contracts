@@ -6,6 +6,8 @@ pub trait GuardSpec<T> {
     type Error;
     type Idle: GuardSpec<T, Error = Self::Error>;
 
+    /// # Errors
+    /// Returns `Self::Error` if the target is not in the expected state.
     fn validate(target: &T, op_id: Option<u64>) -> Result<&Self::State, Self::Error>;
     fn set_state(target: &mut T, state: Self::State);
     fn into_idle(target: &mut T);
@@ -17,6 +19,8 @@ pub struct Guard<'a, T, S: GuardSpec<T>> {
 }
 
 impl<'a, T, S: GuardSpec<T>> Guard<'a, T, S> {
+    /// # Errors
+    /// Returns `S::Error` if the target is not in the expected state.
     pub fn expect(target: &'a mut T, op_id: Option<u64>) -> Result<Self, S::Error> {
         let _ = S::validate(target, op_id)?;
         Ok(Self {
@@ -30,6 +34,7 @@ impl<'a, T, S: GuardSpec<T>> Guard<'a, T, S> {
             .unwrap_or_else(|_| crate::panic_with_message("validated state"))
     }
 
+    #[must_use]
     pub fn replace_state(self, state: S::State) -> Self {
         S::set_state(self.target, state);
         Self {
@@ -55,7 +60,7 @@ impl<'a, T, S: GuardSpec<T>> Guard<'a, T, S> {
     }
 }
 
-impl<'a, T, S: GuardSpec<T>> Deref for Guard<'a, T, S> {
+impl<T, S: GuardSpec<T>> Deref for Guard<'_, T, S> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -63,7 +68,7 @@ impl<'a, T, S: GuardSpec<T>> Deref for Guard<'a, T, S> {
     }
 }
 
-impl<'a, T, S: GuardSpec<T>> DerefMut for Guard<'a, T, S> {
+impl<T, S: GuardSpec<T>> DerefMut for Guard<'_, T, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.target
     }
@@ -75,10 +80,12 @@ pub struct OnDrop<F: FnOnce()> {
 }
 
 impl<F: FnOnce()> OnDrop<F> {
+    #[inline]
     pub fn new(f: F) -> Self {
         Self { f: Some(f) }
     }
 
+    #[inline]
     pub fn disarm(mut self) {
         self.f = None;
     }
@@ -87,7 +94,7 @@ impl<F: FnOnce()> OnDrop<F> {
 impl<F: FnOnce()> Drop for OnDrop<F> {
     fn drop(&mut self) {
         if let Some(f) = self.f.take() {
-            f();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         }
     }
 }

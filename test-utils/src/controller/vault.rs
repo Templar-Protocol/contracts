@@ -88,7 +88,7 @@ impl VaultController {
 
         // Allocator/curator/owner-gated: begins allocation across markets.
         #[call(exec, tgas(300))]
-        pub fn allocate(delta: AllocationDelta);
+        pub fn reallocate(delta: AllocationDelta);
 
         // Allocator-only: executes an existing market-side supply withdrawal
         // request and credits any returned funds to the vault's idle balance.
@@ -98,6 +98,7 @@ impl VaultController {
         #[call(exec, tgas(30))]
         pub fn resync_idle_balance();
 
+        // Alias for `resync_idle_balance`, kept for SDK naming consistency.
         #[call(exec, tgas(30))]
         pub fn refresh_idle_balance["resync_idle_balance"]();
 
@@ -141,7 +142,7 @@ impl VaultController {
         pub fn set_is_allocator(account: AccountId, allowed: bool);
 
         #[call(exec, tgas(50))]
-        pub fn submit_guardian(account: AccountId);
+        pub fn submit_guardian(new_g: AccountId);
 
         #[call(exec, tgas(50))]
         pub fn accept_guardian();
@@ -150,7 +151,7 @@ impl VaultController {
         pub fn revoke_pending_guardian();
 
         #[call(exec, tgas(50))]
-        pub fn submit_sentinel(account: AccountId);
+        pub fn submit_sentinel(new_s: AccountId);
 
         #[call(exec, tgas(50))]
         pub fn accept_sentinel();
@@ -212,7 +213,7 @@ impl VaultController {
 static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
 pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault/near"))
+    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault"))
         .await
 }
 
@@ -283,12 +284,10 @@ impl UnifiedVaultController {
     }
 
     pub async fn market_id_of(&self, market: &AccountId) -> MarketId {
-        let id = self
-            .vault
+        self.vault
             .get_market_id_of_account(market.clone())
             .await
-            .unwrap_or_else(|| panic!("Unknown market: {market}"));
-        MarketId::from(id)
+            .unwrap_or_else(|| panic!("Unknown market: {market}"))
     }
 
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
@@ -322,7 +321,7 @@ impl UnifiedVaultController {
     }
 
     pub async fn allocate(&self, allocator: &Account, delta: AllocationDelta) -> ExecutionSuccess {
-        let e = self.vault.allocate(allocator, delta).await;
+        let e = self.vault.reallocate(allocator, delta).await;
         if self.debug {
             print_execution(&e);
         }

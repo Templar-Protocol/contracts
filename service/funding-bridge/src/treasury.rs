@@ -201,21 +201,19 @@ impl NearHandler {
     }
 
     /// Get token contract ID for asset
-    ///
-    /// For now, assumes asset name matches contract pattern
-    /// In production, this would use a registry or configuration
     fn get_token_contract(&self, asset: &str) -> ChainResult<AccountId> {
-        // If asset is already a valid account ID (contains '.' or starts with 'dev-'),
-        // use it as-is. Otherwise, construct the contract ID from the asset name.
-        let contract_str = if asset.contains('.') || asset.starts_with("dev-") {
+        let contract_str = if asset.contains('.') || asset.starts_with("dev-") || asset.len() == 64
+        {
+            // Full contract ID provided (account ID with dots, dev account, or 64-char hash)
+            // Use as-is - already in correct format
             asset.to_string()
         } else {
-            // For testnet: usdc.fakes.testnet, usdt.fakes.testnet, etc.
-            // For mainnet: usdc.near, usdt.near, etc.
+            // Asset symbol - convert to contract ID (lowercase required)
+            let asset_lower = asset.to_lowercase();
             if self.rpc_client.server_addr().contains("testnet") {
-                format!("{}.fakes.testnet", asset)
+                format!("{}.fakes.testnet", asset_lower)
             } else {
-                format!("{}.near", asset)
+                format!("{}.near", asset_lower)
             }
         };
 
@@ -553,10 +551,40 @@ mod tests {
     }
 
     #[test]
+    fn test_get_token_contract_uppercase() {
+        let handler = create_test_handler();
+        let contract = handler.get_token_contract("USDC").unwrap();
+        assert_eq!(contract.to_string(), "usdc.fakes.testnet");
+    }
+
+    #[test]
+    fn test_get_token_contract_mixed_case() {
+        let handler = create_test_handler();
+        let contract = handler.get_token_contract("UsDc").unwrap();
+        assert_eq!(contract.to_string(), "usdc.fakes.testnet");
+    }
+
+    #[test]
     fn test_get_token_contract_invalid_asset() {
         let handler = create_test_handler();
         let result = handler.get_token_contract("");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_token_contract_mainnet() {
+        let treasury_account = AccountId::from_str("treasury.near").unwrap();
+        let signer_key = SecretKey::from_random(near_crypto::KeyType::ED25519);
+
+        let handler = NearHandler::new(
+            treasury_account,
+            signer_key,
+            "https://free.rpc.fastnear.com".to_string(),
+            true,
+        );
+
+        let contract = handler.get_token_contract("USDC").unwrap();
+        assert_eq!(contract.to_string(), "usdc.near");
     }
 
     #[tokio::test]
@@ -564,6 +592,17 @@ mod tests {
         let handler = create_test_handler();
 
         let result = handler.send_tokens("receiver.near", "usdc", 1000000).await;
+
+        assert!(result.is_ok());
+        let tx_hash = result.unwrap();
+        assert!(tx_hash.starts_with("dry-run-tx-"));
+    }
+
+    #[tokio::test]
+    async fn test_send_tokens_uppercase_asset() {
+        let handler = create_test_handler();
+
+        let result = handler.send_tokens("receiver.near", "USDC", 1000000).await;
 
         assert!(result.is_ok());
         let tx_hash = result.unwrap();

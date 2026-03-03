@@ -92,21 +92,27 @@ impl KeyPool {
     ///
     /// Returns `PoolError::AllKeysUnhealthy` if no healthy keys are available.
     pub fn select(&self) -> Result<Arc<KeySlot>, PoolError> {
-        let healthy: Vec<_> = self.slots.iter().filter(|s| s.is_healthy()).collect();
+        let healthy: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|s| s.is_healthy())
+            .map(|s| (Arc::clone(s), s.in_flight_count()))
+            .collect();
 
         if healthy.is_empty() {
             return Err(PoolError::AllKeysUnhealthy);
         }
 
-        let min_in_flight = healthy.iter().map(|s| s.in_flight_count()).min().unwrap();
+        #[allow(clippy::unwrap_used)] // healthy is guaranteed non-empty by the check above
+        let min_in_flight = healthy.iter().map(|(_, count)| *count).min().unwrap();
 
         let candidates: Vec<_> = healthy
             .into_iter()
-            .filter(|s| s.in_flight_count() == min_in_flight)
+            .filter(|(_, count)| *count == min_in_flight)
             .collect();
 
         let idx = self.next_index.fetch_add(1, Ordering::Relaxed) % candidates.len();
-        Ok(candidates[idx].clone())
+        Ok(candidates[idx].0.clone())
     }
 
     /// Get the total number of keys in the pool.
@@ -141,8 +147,7 @@ mod tests {
     use near_crypto::{KeyType, SecretKey};
 
     fn test_signer(suffix: &str) -> InMemorySigner {
-        let account_id: near_account_id::AccountId =
-            format!("test{}.near", suffix).parse().unwrap();
+        let account_id: near_account_id::AccountId = format!("test{suffix}.near").parse().unwrap();
         let secret_key = SecretKey::from_random(KeyType::ED25519);
         InMemorySigner {
             account_id,
