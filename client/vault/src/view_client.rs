@@ -24,13 +24,13 @@ pub struct VaultViewClient {
 #[uniffi::export]
 impl VaultViewClient {
     #[uniffi::constructor]
-    #[instrument(fields(rpc_url = %rpc_url))]
+    #[instrument(skip(rpc_url))]
     pub fn new_default(rpc_url: String, vault: &AccountId) -> Result<Self, ErrorWrapper> {
         Self::new(rpc_url, vault, KeyPoolConfig::default())
     }
 
     #[uniffi::constructor]
-    #[instrument(skip(config), fields(rpc_url = %rpc_url))]
+    #[instrument(skip(rpc_url, config))]
     pub fn new(
         rpc_url: String,
         vault: &AccountId,

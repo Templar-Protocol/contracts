@@ -2,19 +2,24 @@
 
 use std::time::Duration;
 
+use near_jsonrpc_client::errors::JsonRpcError;
+use near_jsonrpc_primitives::types::{query::RpcQueryError, transactions::RpcTransactionError};
+
 use crate::RetryConfig;
 
 /// Determines if an error is retryable (timeout or I/O error).
 pub fn should_retry(err: &anyhow::Error) -> bool {
-    for cause in err.chain() {
-        if cause.is::<tokio::time::error::Elapsed>() {
-            return true;
-        }
-        if cause.is::<std::io::Error>() {
-            return true;
-        }
-    }
-    false
+    err.chain().any(|cause| {
+        cause.is::<tokio::time::error::Elapsed>()
+            || cause.is::<std::io::Error>()
+            || cause.is::<serde_json::Error>()
+            || cause
+                .downcast_ref::<JsonRpcError<RpcQueryError>>()
+                .is_some()
+            || cause
+                .downcast_ref::<JsonRpcError<RpcTransactionError>>()
+                .is_some()
+    })
 }
 
 /// Manages retry state with exponential backoff.
@@ -98,5 +103,12 @@ mod tests {
     fn should_retry_other_error() {
         let err = anyhow::anyhow!("some other error");
         assert!(!should_retry(&err));
+    }
+
+    #[test]
+    fn should_retry_serde_error() {
+        let serde_err = serde_json::from_str::<serde_json::Value>("not-json").unwrap_err();
+        let err = anyhow::Error::new(serde_err);
+        assert!(should_retry(&err));
     }
 }

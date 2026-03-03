@@ -1,6 +1,6 @@
 use std::{sync::RwLock, time::Duration};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use near_account_id::AccountId as NearAccountId;
 use near_jsonrpc_client::{methods::query::RpcQueryRequest, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -29,7 +29,12 @@ pub(crate) async fn view_with_cache<T: DeserializeOwned>(
         args: args_bytes.clone(),
     };
 
-    let cache_snapshot = { cache.read_recover().clone() };
+    let cache_snapshot = {
+        cache
+            .read_or_poison()
+            .map_err(|e| anyhow!("view cache lock failed: {e}"))?
+            .clone()
+    };
     if let Some(ref c) = cache_snapshot {
         if let Some(bytes) = c.get(&key) {
             let value = serde_json::from_slice(&bytes)?;

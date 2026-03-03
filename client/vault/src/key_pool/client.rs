@@ -390,7 +390,12 @@ impl KeyPoolClient {
         };
 
         let status = outcome.into_outcome().status;
-        Ok(status)
+        if Self::is_terminal_status(&status) {
+            return Ok(status);
+        }
+
+        self.poll_tx_status(sender_account_id, tx_hash, deadline)
+            .await
     }
 
     /// Poll transaction status until deadline.
@@ -404,8 +409,7 @@ impl KeyPoolClient {
         let mut poll_interval = Duration::from_millis(500);
 
         // signer_account_id must match the transaction signer (NEAR uses it for shard routing)
-
-        let result = loop {
+        loop {
             if Instant::now() >= deadline {
                 warn!("Transaction polling deadline exceeded, aborting");
                 bail!("Transaction timed out");
@@ -431,7 +435,18 @@ impl KeyPoolClient {
                 .await;
 
             match status {
-                Ok(res) => break res,
+                Ok(res) => {
+                    let Some(outcome) = res.final_execution_outcome else {
+                        continue;
+                    };
+
+                    let status = outcome.into_outcome().status;
+                    if Self::is_terminal_status(&status) {
+                        return Ok(status);
+                    }
+
+                    debug!(?status, "Transaction not yet terminal");
+                }
                 Err(status_err) => {
                     if matches!(
                         status_err.handler_error(),
@@ -448,14 +463,7 @@ impl KeyPoolClient {
                     return Err(status_err.into());
                 }
             }
-        };
-
-        let Some(outcome) = result.final_execution_outcome else {
-            bail!("No outcome {tx_hash}");
-        };
-
-        let status = outcome.into_outcome().status;
-        Ok(status)
+        }
     }
 
     /// Check if an error indicates an `InvalidNonce` condition.
@@ -487,6 +495,14 @@ impl KeyPoolClient {
             Some(RpcTransactionError::InvalidTransaction {
                 context: InvalidTxError::InvalidNonce { .. }
             })
+        )
+    }
+
+    #[inline]
+    fn is_terminal_status(status: &FinalExecutionStatus) -> bool {
+        matches!(
+            status,
+            FinalExecutionStatus::SuccessValue(_) | FinalExecutionStatus::Failure(_)
         )
     }
 

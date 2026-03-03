@@ -147,13 +147,13 @@ impl VaultClient {
     }
 
     /// Enable view cache.
-    pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
-        self.inner.enable_view_cache(capacity, ttl_seconds);
+    pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) -> Result<(), ErrorWrapper> {
+        self.inner.enable_view_cache(capacity, ttl_seconds)
     }
 
     /// Disable view cache.
-    pub fn disable_view_cache(&self) {
-        self.inner.disable_view_cache();
+    pub fn disable_view_cache(&self) -> Result<(), ErrorWrapper> {
+        self.inner.disable_view_cache()
     }
 
     /// Clear view cache.

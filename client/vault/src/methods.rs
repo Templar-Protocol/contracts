@@ -11,13 +11,17 @@
 macro_rules! impl_view_cache_methods {
     ($client:ty) => {
         impl $client {
-            pub fn enable_view_cache(&self, capacity: u32, ttl_seconds: u64) {
+            pub fn enable_view_cache(
+                &self,
+                capacity: u32,
+                ttl_seconds: u64,
+            ) -> Result<(), $crate::ErrorWrapper> {
                 use std::time::Duration;
                 use $crate::lock_ext::RwLockExt;
 
                 if capacity == 0 {
-                    *self.view_cache.write_recover() = None;
-                    return;
+                    *self.view_cache.write_or_poison()? = None;
+                    return Ok(());
                 }
 
                 let cache = $crate::ViewCache::builder()
@@ -25,17 +29,19 @@ macro_rules! impl_view_cache_methods {
                     .time_to_live(Duration::from_secs(ttl_seconds))
                     .build();
 
-                *self.view_cache.write_recover() = Some(cache);
+                *self.view_cache.write_or_poison()? = Some(cache);
+                Ok(())
             }
 
-            pub fn disable_view_cache(&self) {
+            pub fn disable_view_cache(&self) -> Result<(), $crate::ErrorWrapper> {
                 use $crate::lock_ext::RwLockExt;
-                *self.view_cache.write_recover() = None;
+                *self.view_cache.write_or_poison()? = None;
+                Ok(())
             }
 
             pub async fn clear_view_cache(&self) -> Result<(), $crate::ErrorWrapper> {
                 use $crate::lock_ext::RwLockExt;
-                let cache = { self.view_cache.read_recover().clone() };
+                let cache = { self.view_cache.read_or_poison()?.clone() };
                 if let Some(cache) = cache {
                     cache.invalidate_all();
                 }

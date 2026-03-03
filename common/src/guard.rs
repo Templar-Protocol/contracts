@@ -80,10 +80,12 @@ pub struct OnDrop<F: FnOnce()> {
 }
 
 impl<F: FnOnce()> OnDrop<F> {
+    #[inline]
     pub fn new(f: F) -> Self {
         Self { f: Some(f) }
     }
 
+    #[inline]
     pub fn disarm(mut self) {
         self.f = None;
     }
@@ -92,7 +94,7 @@ impl<F: FnOnce()> OnDrop<F> {
 impl<F: FnOnce()> Drop for OnDrop<F> {
     fn drop(&mut self) {
         if let Some(f) = self.f.take() {
-            f();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         }
     }
 }

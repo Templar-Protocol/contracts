@@ -195,7 +195,11 @@ impl KeySlotGuard<'_> {
     pub async fn advance_nonce(&self) {
         let mut state = self.slot.nonce_state.lock().await;
         if let Some(n) = &mut state.local_nonce {
-            *n += 1;
+            if let Some(next) = n.checked_add(1) {
+                *n = next;
+            } else {
+                state.invalidate();
+            }
         }
     }
 
@@ -223,8 +227,12 @@ impl KeySlotGuard<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use super::*;
     use near_crypto::{KeyType, SecretKey};
+    use tokio::sync::oneshot::error::TryRecvError;
 
     fn test_signer() -> InMemorySigner {
         let account_id: NearAccountId = "test.near".parse().unwrap();
@@ -269,17 +277,29 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_acquires_serialize() {
-        let slot = KeySlot::new(test_signer());
+        let slot = Arc::new(KeySlot::new(test_signer()));
 
         let guard1 = slot.acquire().await;
         assert_eq!(slot.in_flight_count(), 1);
 
-        let handle = tokio::spawn(async move {});
+        let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
+        let slot_for_task = Arc::clone(&slot);
+        let handle = tokio::spawn(async move {
+            let guard2 = slot_for_task.acquire().await;
+            let _ = acquired_tx.send(());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            drop(guard2);
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(slot.in_flight_count(), 2);
+        assert!(matches!(acquired_rx.try_recv(), Err(TryRecvError::Empty)));
 
         drop(guard1);
-        handle.await.unwrap();
-
-        let _guard2 = slot.acquire().await;
+        acquired_rx.await.unwrap();
         assert_eq!(slot.in_flight_count(), 1);
+
+        handle.await.unwrap();
+        assert_eq!(slot.in_flight_count(), 0);
     }
 }

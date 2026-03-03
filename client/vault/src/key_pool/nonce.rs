@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use near_account_id::AccountId as NearAccountId;
 use near_crypto::PublicKey;
 use near_jsonrpc_client::{methods::query::RpcQueryRequest, JsonRpcClient};
@@ -32,7 +32,10 @@ pub async fn fetch_access_key_data(
     .await??;
 
     let nonce = match response.kind {
-        QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
+        QueryResponseKind::AccessKey(access_key) => access_key
+            .nonce
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("access key nonce overflow"))?,
         other => {
             bail!("Expected AccessKey response, got {other:?}");
         }

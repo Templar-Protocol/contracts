@@ -68,7 +68,13 @@ pub struct CapGroupId(pub String); // Capital group ID
 just python mode=debug    # Build Python bindings (debug)
 just python mode=release  # Build Python bindings (release)
 just gen mode=debug       # Generate UniFFI bindings
-just smoke-test           # Run Python integration tests
+just smoke-test           # Run smoke_test.py (load env first)
+```
+
+`just smoke-test` does not auto-load environment files. Before running `smoke_test.py`, load `client/vault/.env.smoketest.example` values (or your own file), for example:
+
+```bash
+dotenvx run -- just smoke-test
 ```
 
 ---
