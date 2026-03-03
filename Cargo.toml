@@ -5,6 +5,7 @@ members = [
   "contract/*",
   "fuzz",
   "tools/*",
+  "client/*",
   "mock/*",
   "service/*",
   "test-utils",
@@ -12,6 +13,7 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 license = "MIT"
 repository = "https://github.com/Templar-Protocol/contracts"
 edition = "2021"
@@ -59,7 +61,12 @@ tower = "0.4.13"
 tower-http = { version = "0.6.6", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+uniffi = "0.31.0"
 wiremock = "0.5.22"
+zeroize = "1.8.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -67,10 +74,11 @@ must_use_candidate = "allow"
 large_futures = "allow"
 redundant_closure_for_method_calls = "allow"
 module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 unwrap_used = "warn"
 expect_used = "warn"
 large_digit_groups = "warn"
-missing_panics_doc = "allow"
 wildcard_imports = "warn"
 
 [profile.dev]
