@@ -20,7 +20,7 @@ use templar_common::{
         redstone::{self, ext_redstone, FeedData},
         OracleRequest, PythRequest, RedStoneRequest,
     },
-    self_ext,
+    self_ext, UnwrapReject,
 };
 
 #[derive(BorshSerialize, BorshStorageKey)]
@@ -186,7 +186,7 @@ impl Contract {
             HashMap::<AccountId, HashSet<PriceIdentifier>>::with_capacity(price_ids.len());
         let mut redstone_requests =
             HashMap::<AccountId, HashSet<redstone::FeedId>>::with_capacity(price_ids.len());
-        let mut promises = Vec::with_capacity(price_ids.len());
+        let mut transformer_promises = Vec::with_capacity(price_ids.len());
 
         for price_id in &price_ids {
             let Some(proxy) = self.proxies.get(price_id) else {
@@ -198,15 +198,15 @@ impl Contract {
             };
 
             for entry in proxy.0 {
-                let oracle_price = match entry {
-                    ProxyEntry::Request(o) => o,
+                let request = match entry {
+                    ProxyEntry::Request(request) => request,
                     ProxyEntry::Transformer(transformer) => {
-                        promises.push(transformer.call.promise());
+                        transformer_promises.push(transformer.call.promise());
                         transformer.request
                     }
                 };
 
-                match oracle_price {
+                match request {
                     OracleRequest::Pyth(p) => {
                         pyth_requests
                             .entry(p.oracle_id)
@@ -244,15 +244,11 @@ impl Contract {
             );
         }
 
-        let mut it = oracle_promises.into_iter().chain(promises);
-
-        let mut promise = it
-            .next()
-            .unwrap_or_else(|| templar_common::panic_with_message("No oracle invoked"));
-
-        for p in it {
-            promise = promise.and(p);
-        }
+        let promise = oracle_promises
+            .into_iter()
+            .chain(transformer_promises)
+            .reduce(near_sdk::Promise::and)
+            .expect_or_reject("No oracle invoked");
 
         PromiseOrValue::Promise(promise.then(
             self_ext!(Gas::from_tgas(3)).list_ema_prices_no_older_than_01_consume_results(
@@ -270,72 +266,7 @@ impl Contract {
         original_price_ids: Vec<PriceIdentifier>,
         max_age_ms: U64,
     ) -> OracleResponse {
-        fn callback_result<T: DeserializeOwned>(index: u64) -> Option<T> {
-            match env::promise_result(index) {
-                PromiseResult::Successful(vec) => serde_json::from_slice(&vec).ok(),
-                PromiseResult::Failed => None,
-            }
-        }
-
-        let oracle_ix = |oracle: OracleType| -> u64 {
-            oracle_order
-                .iter()
-                .position(|o| o == &oracle)
-                .unwrap_or_else(|| {
-                    templar_common::panic_with_message("Invariant violation: oracle not invoked")
-                }) as u64
-        };
-
-        let pyth_result = |oracle_price: &PythRequest| -> Option<pyth::Price> {
-            static RESPONSE: OnceLock<Option<OracleResponse>> = OnceLock::new();
-            RESPONSE
-                .get_or_init(|| {
-                    callback_result(oracle_ix(OracleType::Pyth(oracle_price.oracle_id.clone())))
-                })
-                .as_ref()?
-                .get(&oracle_price.price_id)?
-                .clone()
-        };
-
-        #[allow(clippy::cast_possible_truncation)]
-        let redstone_result = |oracle_price: &RedStoneRequest| -> Option<pyth::Price> {
-            static RESPONSE: OnceLock<Option<HashMap<redstone::FeedId, FeedData>>> =
-                OnceLock::new();
-            RESPONSE
-                .get_or_init(|| {
-                    callback_result(oracle_ix(OracleType::RedStone(
-                        oracle_price.oracle_id.clone(),
-                    )))
-                })
-                .as_ref()?
-                .get(&oracle_price.price_id)
-                .cloned()
-                .and_then(|p| p.to_pyth_price())
-        };
-
-        let now_ms = env::block_timestamp_ms();
-        let get_price = |price_id: OracleRequest| {
-            let price = match price_id {
-                OracleRequest::Pyth(p) => pyth_result(&p),
-                OracleRequest::RedStone(p) => redstone_result(&p),
-            }?;
-
-            // Filter for staleness
-            let publish_time = match u64::try_from(price.publish_time) {
-                Ok(p) => p,
-                Err(e) => {
-                    near_sdk::log!("Failed to convert publish_time to u64: {e}");
-                    return None;
-                }
-            };
-            let price_age_ms = now_ms.saturating_sub(publish_time);
-            if price_age_ms > max_age_ms.0 {
-                return None;
-            }
-
-            Some(price)
-        };
-
+        let callback = CallbackHandler::new(&oracle_order, max_age_ms.0);
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
 
         let mut i = oracle_order.len() as u64;
@@ -343,7 +274,7 @@ impl Contract {
             let Some(proxy) = self.proxies.get(&price_id) else {
                 result.insert(
                     price_id,
-                    pyth_result(&PythRequest {
+                    callback.pyth(&PythRequest {
                         oracle_id: self.passthrough_pyth_id.clone(),
                         price_id,
                     }),
@@ -356,7 +287,7 @@ impl Contract {
             for entry in proxy.0 {
                 let entry_result = match entry {
                     ProxyEntry::Transformer(transformer) => {
-                        let price = get_price(transformer.request);
+                        let price = callback.get(transformer.request);
                         let input = callback_result::<Decimal>(i);
                         i += 1;
 
@@ -364,7 +295,7 @@ impl Contract {
                             .zip(input)
                             .and_then(|(price, input)| transformer.action.apply(price, input))
                     }
-                    ProxyEntry::Request(p) => get_price(p),
+                    ProxyEntry::Request(p) => callback.get(p),
                 };
 
                 value = value.or(entry_result);
@@ -374,6 +305,105 @@ impl Contract {
         }
 
         result
+    }
+}
+
+static ERR_ORACLE_NOT_INVOKED: &str = "Invariant violation: oracle not invoked";
+
+struct CallbackHandler<'a> {
+    oracle_order: &'a [OracleType],
+    pyth_results: HashMap<AccountId, OnceLock<Option<OracleResponse>>>,
+    redstone_results: HashMap<AccountId, OnceLock<Option<HashMap<redstone::FeedId, FeedData>>>>,
+    now_ms: u64,
+    max_age_ms: u64,
+}
+
+impl<'a> CallbackHandler<'a> {
+    fn new(oracle_order: &'a [OracleType], max_age_ms: u64) -> Self {
+        let (pyth_results, redstone_results) = oracle_order.iter().fold(
+            (HashMap::new(), HashMap::new()),
+            |(mut pyth_ids, mut redstone_ids), oracle| {
+                match oracle {
+                    OracleType::Pyth(id) => {
+                        pyth_ids.insert(id.clone(), OnceLock::new());
+                    }
+                    OracleType::RedStone(id) => {
+                        redstone_ids.insert(id.clone(), OnceLock::new());
+                    }
+                }
+                (pyth_ids, redstone_ids)
+            },
+        );
+        Self {
+            oracle_order,
+            pyth_results,
+            redstone_results,
+            now_ms: env::block_timestamp_ms(),
+            max_age_ms,
+        }
+    }
+
+    fn oracle_index(&self, oracle: OracleType) -> u64 {
+        self.oracle_order
+            .iter()
+            .position(|o| o == &oracle)
+            .expect_or_reject(ERR_ORACLE_NOT_INVOKED) as u64
+    }
+
+    fn pyth(&self, request: &PythRequest) -> Option<pyth::Price> {
+        self.pyth_results
+            .get(&request.oracle_id)
+            .expect_or_reject(ERR_ORACLE_NOT_INVOKED)
+            .get_or_init(|| {
+                let i = self.oracle_index(OracleType::Pyth(request.oracle_id.clone()));
+                callback_result(i)
+            })
+            .as_ref()?
+            .get(&request.price_id)?
+            .clone()
+    }
+
+    fn redstone(&self, request: &RedStoneRequest) -> Option<pyth::Price> {
+        self.redstone_results
+            .get(&request.oracle_id)
+            .expect_or_reject(ERR_ORACLE_NOT_INVOKED)
+            .get_or_init(|| {
+                let i = self.oracle_index(OracleType::RedStone(request.oracle_id.clone()));
+                callback_result(i)
+            })
+            .as_ref()?
+            .get(&request.price_id)
+            .cloned()
+            .and_then(|p| p.to_pyth_price())
+    }
+
+    fn get(&self, request: OracleRequest) -> Option<pyth::Price> {
+        let price = match request {
+            OracleRequest::Pyth(p) => self.pyth(&p),
+            OracleRequest::RedStone(p) => self.redstone(&p),
+        }?;
+
+        // Filter for staleness
+        let publish_time = match u64::try_from(price.publish_time) {
+            Ok(p) => p,
+            Err(e) => {
+                near_sdk::log!("Failed to convert publish_time to u64: {e}");
+                return None;
+            }
+        };
+        let price_age_ms = self.now_ms.saturating_sub(publish_time);
+        if price_age_ms > self.max_age_ms {
+            return None;
+        }
+
+        Some(price)
+    }
+}
+
+fn callback_result<T: DeserializeOwned>(index: u64) -> Option<T> {
+    match env::promise_result(index) {
+        PromiseResult::Successful(vec) => serde_json::from_slice(&vec).ok(),
+        PromiseResult::Failed => None,
     }
 }
 
