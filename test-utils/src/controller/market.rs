@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use near_sdk::{
     json_types::U128,
     serde_json::{self, json},
-    AccountId, NearToken,
+    AccountId, AccountIdRef, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
@@ -12,7 +12,7 @@ use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration},
+    market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
     number::Decimal,
     oracle::pyth::{self, OracleResponse},
     price::Convert,
@@ -75,8 +75,10 @@ impl MarketController {
         #[view] pub fn get_current_snapshot() -> Snapshot;
         #[view] pub fn list_supply_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, SupplyPosition>;
         #[view] pub fn get_supply_position(account_id: &AccountId) -> Option<SupplyPosition>;
+        #[view] pub fn get_supply_position_pending_yield(account_id: &AccountId, snapshot_limit: Option<u32>) -> Option<BorrowAssetAmount>;
         #[view] pub fn list_borrow_positions(offset: Option<u32>, count: Option<u32>) -> HashMap<AccountId, BorrowPosition>;
         #[view] pub fn get_borrow_position(account_id: &AccountId) -> Option<BorrowPosition>;
+        #[view] pub fn get_borrow_position_pending_interest(account_id: &AccountId, snapshot_limit: Option<u32>) -> Option<BorrowAssetAmount>;
         #[view] pub fn get_borrow_status(account_id: &AccountId, oracle_response: OracleResponse) -> Option<BorrowStatus>;
         #[view] pub fn get_static_yield(account_id: &AccountId) -> Option<Accumulator<BorrowAsset>>;
         #[view] pub fn get_supply_withdrawal_request_status(account_id: &AccountId) -> Option<WithdrawalRequestStatus>;
@@ -358,14 +360,24 @@ impl UnifiedMarketController {
             .await
     }
 
-    pub async fn repay(&self, borrow_user: &Account, amount: u128) -> ExecutionSuccess {
+    pub async fn repay(
+        &self,
+        borrow_user: &Account,
+        account_id: Option<&AccountIdRef>,
+        amount: u128,
+    ) -> ExecutionSuccess {
         eprintln!("{} repaying {amount} tokens...", borrow_user.id());
+        let msg = account_id.map_or(DepositMsg::Repay, |account_id| {
+            DepositMsg::RepayAccount(RepayAccountMsg {
+                account_id: account_id.to_owned(),
+            })
+        });
         self.borrow_asset
             .transfer_call(
                 borrow_user,
                 self.market.contract().id(),
                 amount,
-                serde_json::to_string(&DepositMsg::Repay).unwrap(),
+                serde_json::to_string(&msg).unwrap(),
             )
             .await
     }

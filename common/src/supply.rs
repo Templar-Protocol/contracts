@@ -1,6 +1,5 @@
 use std::ops::{Deref, DerefMut};
 
-use derive_more::{From, Into};
 use near_sdk::{json_types::U64, near, require, AccountId};
 
 use crate::{
@@ -16,7 +15,6 @@ use crate::{
 /// This struct can only be constructed after accumulating yield on a
 /// supply position. This serves as proof that the yield has accrued, so it
 /// is safe to perform certain other operations.
-#[derive(From, Into)]
 pub struct YieldAccumulationProof(());
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -29,11 +27,10 @@ pub struct Deposit {
 
 impl Deposit {
     pub fn total(&self) -> BorrowAssetAmount {
-        let mut total = self.active;
+        let mut total = self.active + self.outgoing;
         for incoming in &self.incoming {
             total += incoming.amount;
         }
-        total += self.outgoing;
         total
     }
 }
@@ -120,11 +117,6 @@ impl<M: Deref<Target = Market>> SupplyPositionRef<M> {
             .configuration
             .supply_range
             .contains(self.position.borrow_asset_deposit.total())
-    }
-
-    pub fn with_pending_yield_estimate(&mut self) {
-        self.position.borrow_asset_yield.pending_estimate =
-            self.calculate_yield(u32::MAX).get_amount();
     }
 
     pub fn calculate_yield(&self, snapshot_limit: u32) -> AccumulationRecord<BorrowAsset> {
@@ -340,6 +332,9 @@ impl<'a> SupplyPositionGuard<'a> {
         YieldAccumulationProof(())
     }
 
+    /// Removes the requested amount from the supply record. The amount is
+    /// removed from the yield record, the incoming deposit record, and the
+    /// active supply record, in that order.
     pub fn record_withdrawal_initial(
         &mut self,
         _proof: YieldAccumulationProof,
@@ -350,20 +345,24 @@ impl<'a> SupplyPositionGuard<'a> {
         // Check liquidity & eligibility
         //
 
-        let incoming = self.position.total_incoming();
-        let active = self.position.get_deposit().active;
-        let entitled_to_withdraw = incoming + active;
+        let my_incoming = self.position.total_incoming();
+        let my_active = self.position.get_deposit().active;
+        let my_yield = self
+            .position
+            .borrow_asset_yield
+            .get_total()
+            .min(self.market.borrow_asset_paid_to_fees);
+        let entitled_to_withdraw = my_incoming + my_active + my_yield;
 
         if entitled_to_withdraw.is_zero() {
             return WithdrawalAttempt::EmptyPosition;
         }
 
         let requested_amount = requested_amount.min(entitled_to_withdraw);
-        let generally_available = self
-            .market
-            .borrow_asset_deposited_active
-            .saturating_sub(self.market.borrowed());
-        let available_to_me = generally_available + incoming;
+        let available_to_me = self.market.borrow_asset_deposited_active
+            + self.market.borrow_asset_paid_to_fees
+            - self.market.borrow_asset_borrowed
+            + my_incoming;
         let can_withdraw_now = entitled_to_withdraw.min(available_to_me);
 
         if can_withdraw_now.is_zero() {
@@ -376,14 +375,18 @@ impl<'a> SupplyPositionGuard<'a> {
         // Execute removal
         //
 
-        let mut amount_to_remove = withdrawal_amount;
-
         self.position.borrow_asset_deposit.outgoing += withdrawal_amount;
 
-        amount_to_remove = amount_to_remove.unwrap_sub(
-            self.remove_incoming(withdrawal_amount),
-            "Invariant violation: remove_incoming(amount) > amount",
-        );
+        let mut amount_to_remove = withdrawal_amount;
+
+        let amount_from_yield = my_yield.min(amount_to_remove);
+        self.position.borrow_asset_yield.remove(amount_from_yield);
+        self.market.borrow_asset_paid_to_fees -= amount_from_yield;
+        amount_to_remove -= amount_from_yield;
+
+        let amount_from_incoming = my_incoming.min(amount_to_remove);
+        self.remove_incoming(amount_from_incoming);
+        amount_to_remove -= amount_from_incoming;
 
         if !amount_to_remove.is_zero() {
             self.remove_active(amount_to_remove);
@@ -410,6 +413,7 @@ impl<'a> SupplyPositionGuard<'a> {
 
         let amount_to_account = withdrawal_amount.saturating_sub(amount_to_fees);
 
+        self.market.borrow_asset_balance -= amount_to_account;
         self.market.borrow_asset_withdrawal_in_flight += amount_to_account;
 
         let withdrawal = Withdrawal {
@@ -445,6 +449,7 @@ impl<'a> SupplyPositionGuard<'a> {
             }
             .emit();
         } else {
+            self.market.borrow_asset_balance += withdrawal.amount_to_account;
             self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
         }
     }
@@ -461,6 +466,7 @@ impl<'a> SupplyPositionGuard<'a> {
             self.position.started_at_block_timestamp_ms = Some(block_timestamp_ms.into());
         }
 
+        self.market.borrow_asset_balance += amount;
         self.add_incoming(amount, self.market.finalized_snapshots.len() + 1);
 
         if !amount.is_zero() {
@@ -477,6 +483,7 @@ impl<'a> SupplyPositionGuard<'a> {
     }
 }
 
+#[derive(Debug)]
 pub enum WithdrawalAttempt {
     Full(Withdrawal),
     Partial {

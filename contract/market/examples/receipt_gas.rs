@@ -22,7 +22,7 @@ async fn main() {
 
     c.borrow(&borrow_user, 10_000).await;
 
-    // c.repay(&borrow_user, 10_000).await;
+    // c.repay(&borrow_user, None, 10_000).await;
 
     // c.set_collateral_asset_price(0.85).await;
     c.liquidate(

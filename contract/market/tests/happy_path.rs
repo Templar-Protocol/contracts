@@ -169,7 +169,7 @@ async fn test_happy(
 
     // Step 4: Repay borrow
 
-    c.repay(&borrow_user, 1100).await;
+    c.repay(&borrow_user, None, 1100).await;
 
     // Ensure borrow is paid off.
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
@@ -191,15 +191,6 @@ async fn test_happy(
                 assert_eq!(
                     u128::from(supply_position.borrow_asset_yield.get_total()),
                     80,
-                );
-                // Move the yield to the principal so that it can be withdrawn
-                let amount_moved_to_principal = c
-                    .harvest_yield(&supply_user, None, Some(HarvestYieldMode::Compounding))
-                    .await;
-
-                assert_eq!(
-                    amount_moved_to_principal,
-                    supply_position.borrow_asset_yield.get_total(),
                 );
 
                 let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;

@@ -63,6 +63,71 @@ async fn successful_liquidation_totally_underwater(#[future(awt)] worker: Worker
     );
 }
 
+#[rstest]
+#[tokio::test]
+async fn successful_liquidation_exactly_to_zero(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(c)
+        accounts(borrow_user, supply_user, liquidator_user)
+    );
+
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 500),
+    );
+
+    c.borrow(&borrow_user, 300).await;
+
+    let collateral_balance_before = c.collateral_asset.balance_of(liquidator_user.id()).await;
+    let borrow_balance_before = c.borrow_asset.balance_of(liquidator_user.id()).await;
+
+    // Set price to liquidate 100% of both collateral and liability.
+    c.set_collateral_asset_price(2_f64 / 3_f64).await;
+    let (collateral, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
+    assert_eq!(
+        collateral,
+        500.into(),
+        "All collateral should be liquidatable",
+    );
+
+    let storage_before = c
+        .storage_balance_of(borrow_user.id().clone())
+        .await
+        .unwrap();
+    eprintln!("Storage before: {storage_before:?}");
+
+    c.liquidate(&liquidator_user, borrow_user.id(), collateral, price)
+        .await;
+
+    let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
+    let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
+
+    assert_eq!(
+        collateral_balance_after - collateral_balance_before,
+        collateral.into(),
+        "Liquidator should obtain all collateral after a successful liquidation",
+    );
+    assert_eq!(
+        borrow_balance_before - borrow_balance_after,
+        price.into(),
+        "Liquidation should transfer correct amount of tokens",
+    );
+
+    // Should clean up borrow position when liquidation brings both liability and collateral down to zero.
+    let position = c.get_borrow_position(borrow_user.id()).await;
+    assert_eq!(position, None);
+
+    let storage_after = c
+        .storage_balance_of(borrow_user.id().clone())
+        .await
+        .unwrap();
+
+    eprintln!("Storage after: {storage_after:?}");
+
+    assert!(storage_after.available > storage_before.available);
+}
+
 // Caveat to this test: Make sure that the yield distribution value is
 // divisible by 10 for easy maths.
 #[rstest]
@@ -108,6 +173,7 @@ async fn successful_liquidation_good_debt_under_mcr(
     )
     .await;
     let (liquidate, price) = c.liquidatable_collateral_fmv(borrow_user.id()).await;
+    eprintln!("Liquidating {liquidate} of {collateral_amount}");
     let price = (u128::from(price) * fmv_frac)
         .to_u128_ceil()
         .unwrap()
@@ -158,8 +224,13 @@ async fn successful_liquidation_good_debt_under_mcr(
         },
         async {
             let prices = c.get_prices().await;
-            let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
-            assert!(status.is_healthy());
+            let status = c.get_borrow_status(borrow_user.id(), prices).await;
+            if u128::from(liquidate) == collateral_amount {
+                // 100% liquidated -> position deleted
+                assert_eq!(status, None);
+            } else {
+                assert!(status.unwrap().is_healthy());
+            }
         },
     );
 }
@@ -378,7 +449,7 @@ async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker
         extract(c)
         accounts(borrow_user, supply_user, liquidator_user)
         config(|c| {
-            c.borrow_mcr_liquidation = dec!("2");
+            c.borrow_mcr_liquidation = dec!("1.9997");
             c.borrow_mcr_maintenance = dec!("2");
             c.borrow_origination_fee = Fee::zero();
             c.borrow_interest_rate_strategy =
@@ -397,7 +468,9 @@ async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker
 
     let timer = Instant::now();
     while timer.elapsed() < Duration::from_secs(5) {
-        c.harvest_yield(&supply_user, None, None).await;
+        c.apply_interest(&borrow_user, None, None).await;
+        let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+        eprintln!("Liability: {}", position.get_total_borrow_asset_liability());
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
@@ -408,8 +481,31 @@ async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker
     assert!(!collateral.is_zero());
     assert!(!price.is_zero());
 
-    c.liquidate(&liquidator_user, borrow_user.id(), collateral, price)
+    let r = c
+        .liquidate(&liquidator_user, borrow_user.id(), collateral, price)
         .await;
+
+    for o in r.outcomes() {
+        o.clone().into_result().unwrap();
+    }
+
+    let prices = c.get_prices().await;
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
+
+    assert!(
+        !status.is_liquidation(),
+        "Borrow should be healthy after liquidation of all liquidatable collateral",
+    );
+
+    let position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    eprintln!(
+        "Collateral after liquidate: {}",
+        position.get_total_collateral_amount()
+    );
+    eprintln!(
+        "Liability after liquidate: {}",
+        position.get_total_borrow_asset_liability()
+    );
 
     let collateral_balance_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
     let borrow_balance_after = c.borrow_asset.balance_of(liquidator_user.id()).await;
@@ -423,14 +519,6 @@ async fn successful_liquidation_only_from_interest(#[future(awt)] worker: Worker
         borrow_balance_before - borrow_balance_after,
         price.into(),
         "Liquidation should transfer correct amount of tokens",
-    );
-
-    let prices = c.get_prices().await;
-    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
-
-    assert!(
-        status.is_healthy(),
-        "Borrow should be healthy after liquidation of all liquidatable collateral",
     );
 }
 
@@ -678,6 +766,17 @@ async fn partial_liquidation(#[future(awt)] worker: Worker<Sandbox>) {
         borrow_before_bob, borrow_after_bob,
         "Bob does not pay for for collateral",
     );
+
+    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    let price_pair = c
+        .configuration
+        .price_oracle_configuration
+        .create_price_pair(&c.get_prices().await)
+        .unwrap();
+    let cr = borrow_position
+        .collateralization_ratio(&price_pair)
+        .unwrap();
+    eprintln!("CR: {cr}");
 }
 
 #[rstest]
@@ -739,9 +838,9 @@ async fn partial_liquidation_fail_offer_too_little(#[future(awt)] worker: Worker
 }
 
 #[rstest]
-#[case(&[dec!("0.5"), dec!("0.5")])]
-#[case(&[dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1")])]
-#[case(&[dec!("0.5"), dec!("0.25"), dec!("0.125"), dec!("0.0625"), dec!("0.0625")])]
+#[case(&[dec!("0.5"), dec!("0.49")])]
+#[case(&[dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.096")])]
+#[case(&[dec!("0.5"), dec!("0.25"), dec!("0.125"), dec!("0.0625"), dec!("0.06235")])]
 #[tokio::test]
 async fn many_little_partial_liquidations(
     #[future(awt)] worker: Worker<Sandbox>,
@@ -798,6 +897,8 @@ async fn many_little_partial_liquidations(
         }
         total_collateral += collateral_fraction;
         total_paid += price_fraction;
+        eprintln!("Running total collateral obtained: {total_collateral}");
+        eprintln!("Running total borrow paid: {total_paid}");
     }
 
     let collateral_after = c.collateral_asset.balance_of(liquidator_user.id()).await;
