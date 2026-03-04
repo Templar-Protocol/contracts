@@ -43,6 +43,37 @@ pub fn panic_with_message(msg: &str) -> ! {
     panic!("{}", msg);
 }
 
+pub trait UnwrapReject<T> {
+    fn unwrap_or_reject(self) -> T;
+    fn expect_or_reject(self, msg: &str) -> T;
+}
+
+impl<T> UnwrapReject<T> for Option<T> {
+    fn unwrap_or_reject(self) -> T {
+        self.expect_or_reject("called `Option::unwrap_or_reject()` on a `None` value")
+    }
+
+    fn expect_or_reject(self, msg: &str) -> T {
+        match self {
+            Some(value) => value,
+            None => panic_with_message(msg),
+        }
+    }
+}
+
+impl<T, E: std::fmt::Display> UnwrapReject<T> for Result<T, E> {
+    fn unwrap_or_reject(self) -> T {
+        self.expect_or_reject("called `Result::unwrap_or_reject()` on an `Err` value")
+    }
+
+    fn expect_or_reject(self, msg: &str) -> T {
+        match self {
+            Ok(value) => value,
+            Err(err) => panic_with_message(&format!("{msg}: {err}")),
+        }
+    }
+}
+
 /// Approximation of `1 / (1000 * 60 * 60 * 24 * 365.2425)`.
 ///
 /// exact = 0.00000000003168873850681143096456210346297...

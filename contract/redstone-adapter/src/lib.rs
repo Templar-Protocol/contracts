@@ -8,9 +8,12 @@ use near_sdk::{
     near, BorshStorageKey, PanicOnDefault,
 };
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
-use templar_common::oracle::redstone::{
-    Config, FeedData, FeedDataError, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-    RedStoneEvent, SerializableU256, WritePrices,
+use templar_common::{
+    oracle::redstone::{
+        Config, FeedData, FeedDataError, FeedId, GetPrices, RedStoneAdapter,
+        RedStoneContractInterface, RedStoneEvent, SerializableU256,
+    },
+    UnwrapReject,
 };
 
 #[derive(BorshStorageKey)]
@@ -49,7 +52,7 @@ impl RedStoneContractInterface for Contract {
     fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices {
         self.adapter
             .get_prices(&feed_ids, &payload.0, env::block_timestamp_ms())
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+            .unwrap_or_reject()
     }
 
     fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
@@ -61,20 +64,20 @@ impl RedStoneContractInterface for Contract {
                 Ok((feed_id, price))
             })
             .collect::<Result<HashMap<_, _>, FeedDataError>>()
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+            .unwrap_or_reject()
     }
 
     fn read_timestamp(&self, feed_id: FeedId) -> U64 {
         self.adapter
             .feed_data(&feed_id, env::block_timestamp_ms())
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+            .unwrap_or_reject()
             .package_timestamp
     }
 
     fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData {
         self.adapter
             .feed_data(&feed_id, env::block_timestamp_ms())
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+            .unwrap_or_reject()
             .clone()
     }
 
@@ -87,7 +90,7 @@ impl RedStoneContractInterface for Contract {
                 Ok((feed_id, data.clone()))
             })
             .collect::<Result<HashMap<_, _>, FeedDataError>>()
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+            .unwrap_or_reject()
     }
 
     fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8) {
@@ -97,17 +100,27 @@ impl RedStoneContractInterface for Contract {
 
         let now = env::block_timestamp_ms();
 
-        let WritePrices {
-            updated_feeds,
-            failures,
-        } = self
+        let payload = self
             .adapter
-            .write_prices(is_trusted, &feed_ids, &payload.0, now)
-            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+            .validate_payload(&feed_ids, &payload.0, now)
+            .unwrap_or_reject();
 
-        for (feed_id, e) in failures {
-            near_sdk::log!("Failed to update feed ID {feed_id}: {e}");
-        }
+        let writes = self.adapter.write_prices(is_trusted, payload, now);
+
+        let updated_feeds = writes
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, result)| match result {
+                Ok(feed_data) => Some(feed_data),
+                Err(e) => {
+                    let feed = feed_ids
+                        .get(i)
+                        .map_or_else(|| format!("index {i}"), |id| id.to_string());
+                    near_sdk::log!("Failed to update feed {feed}: {e}");
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
 
         RedStoneEvent::WritePrices {
             updater,

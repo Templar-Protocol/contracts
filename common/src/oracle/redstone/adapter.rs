@@ -82,7 +82,12 @@ impl RedStoneAdapter {
         Ok(feed_data)
     }
 
-    fn payload(
+    /// Validates a payload and extracts feed values.
+    ///
+    /// # Errors
+    ///
+    /// - [`RedStoneError`]
+    pub fn validate_payload(
         &self,
         feed_ids: &[FeedId],
         payload: &[u8],
@@ -113,7 +118,7 @@ impl RedStoneAdapter {
         timestamp_ms: u64,
     ) -> Result<GetPrices, FeedDataError> {
         let ValidatedPayload { timestamp, values } =
-            self.payload(feed_ids, payload, timestamp_ms)?;
+            self.validate_payload(feed_ids, payload, timestamp_ms)?;
 
         if values.len() != feed_ids.len() {
             return Err(FeedDataError::MissingFeed);
@@ -135,51 +140,28 @@ impl RedStoneAdapter {
     ///
     /// # Errors
     ///
-    /// - Feed ID missing.
     /// - [`RedStoneError`]
     pub fn write_prices(
         &mut self,
         is_trusted: bool,
-        feed_ids: &[FeedId],
-        payload: &[u8],
+        payload: ValidatedPayload,
         timestamp_ms: u64,
-    ) -> Result<WritePrices, FeedDataError> {
-        let ValidatedPayload { timestamp, values } =
-            self.payload(feed_ids, payload, timestamp_ms)?;
-
-        let (updated_feeds, failures) = values.into_iter().fold(
-            (Vec::new(), Vec::new()),
-            |(mut ok, mut err), FeedValue { feed, value }| {
+    ) -> Vec<Result<FeedData, RedStoneError>> {
+        payload
+            .values
+            .into_iter()
+            .map(|FeedValue { feed, value }| {
                 let feed_id: super::FeedId = feed.into();
                 let feed_data = FeedData {
                     price: U256::from_big_endian(value.as_be_bytes()).into(),
-                    package_timestamp: U64(timestamp.as_millis()),
+                    package_timestamp: U64(payload.timestamp.as_millis()),
                     write_timestamp: U64(timestamp_ms),
                 };
 
-                match self.update_feed(is_trusted, &feed_id, feed_data) {
-                    Ok(feed_data) => {
-                        ok.push(feed_data);
-                    }
-                    Err(e) => {
-                        err.push((feed_id, e));
-                    }
-                }
-
-                (ok, err)
-            },
-        );
-
-        Ok(WritePrices {
-            updated_feeds,
-            failures,
-        })
+                self.update_feed(is_trusted, &feed_id, feed_data)
+            })
+            .collect()
     }
-}
-
-pub struct WritePrices {
-    pub updated_feeds: Vec<FeedData>,
-    pub failures: Vec<(FeedId, RedStoneError)>,
 }
 
 #[allow(clippy::cast_sign_loss)]
@@ -212,7 +194,13 @@ mod tests {
 
         let prices = vec![eth.clone(), btc.clone()];
 
-        ra.write_prices(true, &prices, input, timestamp).unwrap();
+        let p = ra.validate_payload(&prices, input, timestamp).unwrap();
+        let written = ra
+            .write_prices(true, p, timestamp)
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), 2);
 
         let _eth_data = ra.feed_data(&eth, timestamp).unwrap();
         let _btc_data = ra.feed_data(&btc, timestamp).unwrap();
@@ -230,9 +218,13 @@ mod tests {
 
         let prices = vec![eth.clone(), btc.clone()];
 
-        let wp = ra.write_prices(true, &prices, &input, timestamp).unwrap();
-
-        assert_eq!(wp.failures, Vec::new());
+        let p = ra.validate_payload(&prices, &input, timestamp).unwrap();
+        let written = ra
+            .write_prices(true, p, timestamp)
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), 2);
 
         let eth_data = ra.feed_data(&eth, timestamp).unwrap();
         let btc_data = ra.feed_data(&btc, timestamp).unwrap();
