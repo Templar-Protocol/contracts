@@ -45,14 +45,15 @@ impl Display for FeedId {
 }
 
 impl From<redstone::FeedId> for FeedId {
-    fn from(redstone_feed_id: redstone::FeedId) -> Self {
-        let bytes = redstone_feed_id.to_array();
+    fn from(id: redstone::FeedId) -> Self {
+        let bytes = id.to_array();
 
-        let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
-        let start = bytes[..end].iter().position(|&b| b != 0).unwrap_or(0);
-        let trimmed = &bytes[start..end];
+        let mut end = bytes.len();
+        while end > 0 && bytes[end - 1] == 0 {
+            end -= 1;
+        }
 
-        Self(Arc::from(String::from_utf8_lossy(trimmed)))
+        Self(Arc::from(String::from_utf8_lossy(&bytes[..end])))
     }
 }
 
