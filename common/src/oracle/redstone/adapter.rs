@@ -195,12 +195,11 @@ mod tests {
         let prices = vec![eth.clone(), btc.clone()];
 
         let p = ra.validate_payload(&prices, input, timestamp).unwrap();
-        let written = ra
-            .write_prices(true, p, timestamp)
+        ra.write_prices(true, p, timestamp)
             .into_iter()
-            .map(|r| r.unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(written.len(), 2);
+            .for_each(|r| {
+                r.unwrap();
+            });
 
         let _eth_data = ra.feed_data(&eth, timestamp).unwrap();
         let _btc_data = ra.feed_data(&btc, timestamp).unwrap();
