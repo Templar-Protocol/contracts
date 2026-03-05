@@ -644,8 +644,8 @@ impl From<templar_common::vault::RealAssetsReport> for RealAssetsReport {
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct CapGroup {
     pub id: CapGroupId,
-    pub cap: ForeignU128,
-    pub relative_cap: ForeignU128,
+    pub cap: Option<ForeignU128>,
+    pub relative_cap: Option<ForeignU128>,
     pub principal: ForeignU128,
 }
 
@@ -664,8 +664,8 @@ impl
         let (id, rec) = value;
         CapGroup {
             id: id.into(),
-            cap: rec.cap.0.to_string(),
-            relative_cap: u128::from(rec.relative_cap).to_string(),
+            cap: rec.cap.absolute_cap.map(|cap| cap.get().to_string()),
+            relative_cap: rec.cap.relative_cap.map(|cap| u128::from(cap).to_string()),
             principal: rec.principal.to_string(),
         }
     }

@@ -12,6 +12,7 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
+pub use templar_curator_primitives::{CapGroupId, CapGroupRecord};
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
 use templar_vault_kernel::Wad;
 
@@ -112,40 +113,8 @@ pub struct ResyncIdleReport {
     pub resynced_at_ns: U64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
-#[near(serializers = [borsh, json])]
-#[display("{_0}")]
-pub struct CapGroupId(pub String);
-
-impl From<&str> for CapGroupId {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-/// Configuration and accounting state for a cap group. Cap groups throttle correlated market exposure by enforcing both absolute and relative caps across member markets.
-#[derive(Clone)]
-#[near(serializers = [borsh, json])]
-pub struct CapGroupRecord {
-    /// Absolute cap in underlying units.
-    pub cap: U128,
-    /// Relative cap as a fraction of total vault assets (WAD, 1e24 = 100%).
-    pub relative_cap: Wad,
-    /// Sum of principals for all markets assigned to this cap group.
-    pub principal: u128,
-}
-
-impl Default for CapGroupRecord {
-    fn default() -> Self {
-        Self {
-            cap: U128(0),
-            relative_cap: Wad::one(),
-            principal: 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub enum CapGroupUpdate {
     /// Update the absolute cap (in underlying units).
@@ -166,7 +135,8 @@ pub enum CapGroupUpdate {
 }
 
 /// Identifies a pending cap-group timelock action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub enum CapGroupUpdateKey {
     SetCap { cap_group: CapGroupId },
@@ -190,7 +160,8 @@ pub enum DepositMsg {
 }
 
 /// Concrete configuration for a market.
-#[derive(Clone, Default, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 #[near]
 pub struct MarketConfiguration {
     /// Supply cap for this market (in underlying asset units)

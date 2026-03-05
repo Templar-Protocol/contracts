@@ -12,6 +12,7 @@ hex.workspace = true
 near-contract-standards.workspace = true
 near-sdk.workspace = true
 templar-vault-kernel.workspace = true
+templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["borsh", "serde", "std"] }
 thiserror.workspace = true
 primitive-types.workspace = true
 schemars.workspace = true

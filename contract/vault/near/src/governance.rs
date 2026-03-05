@@ -961,7 +961,10 @@ impl Contract {
                     "Cap group change already pending"
                 );
 
-                let current = self.cap_groups.get(cap_group).map(|record| record.cap.0);
+                let current = self
+                    .cap_groups
+                    .get(cap_group)
+                    .map(Self::cap_group_absolute_cap);
                 shared_gov::submission_requires_timelock(shared_gov::cap_change_decision(
                     current, new_cap.0,
                 ))
@@ -994,7 +997,7 @@ impl Contract {
                 let current = self
                     .cap_groups
                     .get(cap_group)
-                    .map(|record| record.relative_cap);
+                    .map(Self::cap_group_relative_cap);
                 shared_gov::submission_requires_timelock(shared_gov::relative_cap_change_decision(
                     current, new_wad,
                 ))
@@ -1289,8 +1292,8 @@ impl Contract {
                 let record = self
                     .cap_groups
                     .entry(cap_group.clone())
-                    .or_insert_with(CapGroupRecord::default);
-                record.cap = *new_cap;
+                    .or_insert_with(Self::default_cap_group_record);
+                Self::set_cap_group_absolute_cap(record, new_cap.0);
                 Event::CapGroupSet {
                     cap_group: cap_group.clone(),
                     new_cap: *new_cap,
@@ -1307,8 +1310,8 @@ impl Contract {
                 let record = self
                     .cap_groups
                     .entry(cap_group.clone())
-                    .or_insert_with(CapGroupRecord::default);
-                record.relative_cap = new_wad;
+                    .or_insert_with(Self::default_cap_group_record);
+                Self::set_cap_group_relative_cap(record, new_wad);
 
                 Event::CapGroupRelativeCapSet {
                     cap_group: cap_group.clone(),

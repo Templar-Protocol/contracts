@@ -78,8 +78,8 @@ macro_rules! impl_vault_view_methods {
                     .into_iter()
                     .map(|(id, rec)| $crate::CapGroup {
                         id: id.into(),
-                        cap: rec.cap.0.to_string(),
-                        relative_cap: u128::from(rec.relative_cap).to_string(),
+                        cap: rec.cap.absolute_cap.map(|cap| cap.get().to_string()),
+                        relative_cap: rec.cap.relative_cap.map(|cap| u128::from(cap).to_string()),
                         principal: rec.principal.to_string(),
                     })
                     .collect())

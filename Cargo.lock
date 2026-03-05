@@ -13025,6 +13025,7 @@ dependencies = [
  "rand 0.8.5",
  "rstest",
  "schemars",
+ "templar-curator-primitives",
  "templar-vault-kernel",
  "thiserror 2.0.17",
 ]
