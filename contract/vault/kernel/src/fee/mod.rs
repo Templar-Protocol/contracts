@@ -59,7 +59,7 @@ pub struct Fees<T> {
     pub management: Fee<T>,
     /// Optional cap on how fast `total_assets` is allowed to grow for fee accrual.
     ///
-    /// Interpreted as an annualized WAD rate (1e24 = 100% per year). When set,
+    /// Interpreted as an annualized WAD rate (1e18 = 100% per year). When set,
     /// fee accrual uses `min(cur_total_assets, last_total_assets * (1 + max_rate * dt / YEAR))`
     /// as the effective `cur_total_assets`.
     pub max_total_assets_growth_rate: Option<T>,
@@ -70,7 +70,7 @@ pub struct Fees<T> {
 /// A fee slot with a WAD-scaled rate and 32-byte address recipient.
 ///
 /// This type matches the kernel spec exactly:
-/// - `fee_wad`: WAD-scaled fee rate (1e24 = 100%)
+/// - `fee_wad`: WAD-scaled fee rate (1e18 = 100%)
 /// - `recipient`: 32-byte canonical address
 ///
 /// The executor is responsible for mapping chain-native addresses to/from
@@ -84,7 +84,7 @@ pub struct Fees<T> {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeSlot {
-    /// The fee rate as a WAD value (1e24 = 100%).
+    /// The fee rate as a WAD value (1e18 = 100%).
     pub fee_wad: Wad,
     /// The recipient as a 32-byte canonical address.
     pub recipient: Address,
@@ -143,7 +143,7 @@ pub struct FeesSpec {
     pub management: FeeSlot,
     /// Optional cap on total assets growth rate for fee accrual.
     ///
-    /// Interpreted as an annualized WAD rate (1e24 = 100% per year).
+    /// Interpreted as an annualized WAD rate (1e18 = 100% per year).
     pub max_total_assets_growth_rate: Option<Wad>,
 }
 

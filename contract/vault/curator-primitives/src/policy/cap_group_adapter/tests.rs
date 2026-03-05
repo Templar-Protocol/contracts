@@ -1,6 +1,6 @@
 use super::*;
 
-const WAD: u128 = 1_000_000_000_000_000_000_000_000;
+const WAD: u128 = Wad::SCALE;
 
 #[test]
 fn builds_cap_group_and_record_from_fields() {

@@ -265,7 +265,7 @@ pub fn compute_settlement(
 ///
 /// # Arguments
 /// * `escrow_shares` - Total shares held in escrow.
-/// * `share_price_wad` - Current share price as a WAD (1e24 = 1.0).
+/// * `share_price_wad` - Current share price as a WAD (1e18 = 1.0).
 /// * `original_share_price_wad` - Share price at time of request.
 ///
 /// # Returns

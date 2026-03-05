@@ -1,6 +1,6 @@
 //! Chain-agnostic WAD math primitives for vault share calculations.
 //!
-//! Provides `Wad` (24-decimal fixed-point) type for precise fee and share calculations.
+//! Provides `Wad` (18-decimal fixed-point) type for precise fee and share calculations.
 
 use core::ops::Div;
 
@@ -18,7 +18,7 @@ pub const MAX_PERFORMANCE_FEE_WAD: u128 = Wad::SCALE / 100 * 50;
 /// Backwards-compatible alias for `MAX_PERFORMANCE_FEE_WAD`.
 pub const MAX_FEE_WAD: u128 = MAX_PERFORMANCE_FEE_WAD;
 
-/// A 24-decimal fixed-point value (1e24 = 100%), backed by U256.
+/// An 18-decimal fixed-point value (1e18 = 100%), backed by U256.
 ///
 /// When the `serde` feature is enabled, serializes transparently as Number
 /// (which serializes to a decimal string for JSON compatibility).
@@ -136,8 +136,8 @@ mod schemars_impl {
 }
 
 impl Wad {
-    /// Scaling factor (1e24).
-    pub const SCALE: u128 = 1_000_000_000_000_000_000_000_000u128;
+    /// Scaling factor (1e18).
+    pub const SCALE: u128 = 1_000_000_000_000_000_000u128;
 
     pub const ZERO: Self = Wad(Number::ZERO);
 
@@ -214,7 +214,7 @@ impl Div<Number> for Wad {
 /// Computes fee shares to mint given:
 /// - `cur_total_assets`: current total assets under management
 /// - `last_total_assets`: previous total assets snapshot
-/// - `performance_fee`: WAD fraction (1e24 = 100%)
+/// - `performance_fee`: WAD fraction (1e18 = 100%)
 /// - `total_supply`: current total share supply
 ///
 /// Floors intermediate divisions; returns 0 when no profit, zero fee, zero supply,
@@ -254,8 +254,8 @@ pub fn compute_fee_shares_from_assets(
     Number::mul_div_floor(fee_assets, total_supply, denom)
 }
 
-/// Multiplies x by `y/Wad::SCALE` and floors: floor(x * y / 1e24).
-/// y is a WAD-scaled fraction (1e24 = 100%), and x is an unscaled amount.
+/// Multiplies x by `y/Wad::SCALE` and floors: floor(x * y / 1e18).
+/// y is a WAD-scaled fraction (1e18 = 100%), and x is an unscaled amount.
 #[inline]
 #[must_use]
 pub fn mul_wad_floor(x: Number, y: Wad) -> Number {

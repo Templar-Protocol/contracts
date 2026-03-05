@@ -9,7 +9,7 @@ fn mul_wad_floor_rounds_down() {
     let third = Wad::one() / 3;
     let res = mul_wad_floor(third_raw, third);
     let res_u128: u128 = res.into();
-    // floor(1/9 * 1e24)
+    // floor(1/9 * 1e18)
     assert!(res_u128 <= u128::from(Wad::one()) / 9);
     assert_eq!(res_u128, (u128::from(Wad::one()) / 9) - 1); // typical floor loss
 }
@@ -404,7 +404,7 @@ proptest! {
     fn fee_shares_bounded_with_fee_cap(
         cur in 1u128..=u64::MAX as u128,
         last in 1u128..=u64::MAX as u128,
-        // Use realistic fee cap (30% = 0.3 * 1e24)
+        // Use realistic fee cap (30% = 0.3 * 1e18)
         fee_wad in 1u128..=MAX_PERFORMANCE_FEE_WAD,
         total_supply in 1u128..=u64::MAX as u128,
     ) {

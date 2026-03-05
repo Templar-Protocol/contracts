@@ -27,7 +27,7 @@ use templar_vault_kernel::{
 };
 
 // WAD constant matching templar-vault-kernel
-const WAD: u128 = 1_000_000_000_000_000_000_000_000;
+const WAD: u128 = Wad::SCALE;
 
 /// Snapshot representing a typical NEAR curator vault state.
 /// This represents a vault with:

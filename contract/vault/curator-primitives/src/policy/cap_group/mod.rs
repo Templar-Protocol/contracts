@@ -56,7 +56,7 @@ pub struct CapGroup {
     /// `None` means no absolute cap.
     #[builder(default, setter(transform = |cap: u128| NonZeroU128::new(cap)))]
     pub absolute_cap: Option<NonZeroU128>,
-    /// Relative cap as a WAD fraction of total vault assets (1e24 = 100%).
+    /// Relative cap as a WAD fraction of total vault assets (1e18 = 100%).
     /// `None` means no relative cap.
     #[builder(default, setter(transform = |cap: Wad| if cap.is_zero() { None } else { Some(cap) }))]
     pub relative_cap: Option<Wad>,
