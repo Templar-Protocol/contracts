@@ -34,7 +34,9 @@ pub use auth::{
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
 pub use policy::{
-    cap_group::{CapGroup, CapGroupError, CapGroupId, CapGroupRecord, CapGroupUpdate},
+    cap_group::{
+        CapGroup, CapGroupError, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+    },
     cap_group_adapter::{
         available_capacity_from_fields, can_allocate_from_fields, cap_group_from_fields,
         cap_group_record_absolute_cap, cap_group_record_from_fields, cap_group_record_relative_cap,

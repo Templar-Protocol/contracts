@@ -330,6 +330,23 @@ pub enum CapGroupUpdate {
     },
 }
 
+/// Identifies a cap-group governance update for accept/revoke operations.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Clone, PartialEq, Eq)]
+pub enum CapGroupUpdateKey {
+    SetCap {
+        cap_group_id: CapGroupId,
+    },
+    SetRelativeCap {
+        cap_group_id: CapGroupId,
+    },
+    SetMembership {
+        market_id: templar_vault_kernel::TargetId,
+    },
+}
+
 /// Validate a list of allocations against their cap groups.
 ///
 /// # Arguments

@@ -194,6 +194,44 @@ pub enum CapGroupUpdateKey {
     SetMarketCapGroup { market: MarketId },
 }
 
+impl From<CapGroupUpdateKey> for templar_curator_primitives::CapGroupUpdateKey {
+    fn from(value: CapGroupUpdateKey) -> Self {
+        match value {
+            CapGroupUpdateKey::SetCap { cap_group } => Self::SetCap {
+                cap_group_id: cap_group,
+            },
+            CapGroupUpdateKey::SetRelativeCap { cap_group } => Self::SetRelativeCap {
+                cap_group_id: cap_group,
+            },
+            CapGroupUpdateKey::SetMarketCapGroup { market } => Self::SetMembership {
+                market_id: u32::from(market),
+            },
+        }
+    }
+}
+
+impl From<templar_curator_primitives::CapGroupUpdateKey> for CapGroupUpdateKey {
+    fn from(value: templar_curator_primitives::CapGroupUpdateKey) -> Self {
+        match value {
+            templar_curator_primitives::CapGroupUpdateKey::SetCap { cap_group_id } => {
+                Self::SetCap {
+                    cap_group: cap_group_id,
+                }
+            }
+            templar_curator_primitives::CapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
+                Self::SetRelativeCap {
+                    cap_group: cap_group_id,
+                }
+            }
+            templar_curator_primitives::CapGroupUpdateKey::SetMembership { market_id } => {
+                Self::SetMarketCapGroup {
+                    market: MarketId::from(market_id),
+                }
+            }
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, From, Into, Display,
 )]
@@ -557,6 +595,29 @@ mod tests {
             CapGroupUpdate::SetMarketCapGroup {
                 market: MarketId(77),
                 cap_group: Some(CapGroupId::from("group-c")),
+            }
+        );
+    }
+
+    #[test]
+    fn cap_group_update_key_roundtrips_through_curator_primitive() {
+        let key = super::CapGroupUpdateKey::SetRelativeCap {
+            cap_group: CapGroupId::from("group-key"),
+        };
+
+        let primitive: templar_curator_primitives::CapGroupUpdateKey = key.clone().into();
+        assert_eq!(
+            primitive,
+            templar_curator_primitives::CapGroupUpdateKey::SetRelativeCap {
+                cap_group_id: CapGroupId::from("group-key"),
+            }
+        );
+
+        let roundtrip: super::CapGroupUpdateKey = primitive.into();
+        assert_eq!(
+            roundtrip,
+            super::CapGroupUpdateKey::SetRelativeCap {
+                cap_group: CapGroupId::from("group-key"),
             }
         );
     }

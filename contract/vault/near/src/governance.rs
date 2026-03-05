@@ -17,6 +17,7 @@ use templar_common::{
 use templar_curator_primitives::governance as shared_gov;
 use templar_curator_primitives::governance::PendingValue;
 use templar_curator_primitives::CapGroupUpdate as PrimitiveCapGroupUpdate;
+use templar_curator_primitives::CapGroupUpdateKey as PrimitiveCapGroupUpdateKey;
 use templar_vault_kernel::Address;
 
 const ERR_TIMELOCK_NO_CHANGE: &str = "Already set to this value";
@@ -537,37 +538,37 @@ impl Contract {
         AuthPattern::CuratorOrOwner.require();
         self.ensure_idle();
 
-        let action = match update {
-            CapGroupUpdateKey::SetCap { cap_group } => self
+        let action = match PrimitiveCapGroupUpdateKey::from(update) {
+            PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => self
                 .take_timelock(|a| {
                     matches!(
                         a,
                         TimelockedAction::CapGroupChange {
                             cap_group: pending,
                             ..
-                        } if pending == &cap_group
+                        } if pending == &cap_group_id
                     )
                 })
                 .unwrap_or_else(|| panic_with_message("No pending cap group change for this id")),
-            CapGroupUpdateKey::SetRelativeCap { cap_group } => self
+            PrimitiveCapGroupUpdateKey::SetRelativeCap { cap_group_id } => self
                 .take_timelock(|a| {
                     matches!(
                         a,
                         TimelockedAction::CapGroupRelativeCapChange {
                             cap_group: pending,
                             ..
-                        } if pending == &cap_group
+                        } if pending == &cap_group_id
                     )
                 })
                 .unwrap_or_else(|| {
                     panic_with_message("No pending cap group relative cap change for this id")
                 }),
-            CapGroupUpdateKey::SetMarketCapGroup { market } => self
+            PrimitiveCapGroupUpdateKey::SetMembership { market_id } => self
                 .take_timelock(|a| {
                     matches!(
                         a,
                         TimelockedAction::CapGroupMembership { market: pending, .. }
-                            if pending == &market
+                            if pending == &MarketId::from(market_id)
                     )
                 })
                 .unwrap_or_else(|| {
@@ -582,42 +583,51 @@ impl Contract {
     pub fn revoke_pending_cap_group_update(&mut self, update: CapGroupUpdateKey) {
         AuthPattern::CuratorOrOwner.require();
 
-        match update {
-            CapGroupUpdateKey::SetCap { cap_group } => {
+        match PrimitiveCapGroupUpdateKey::from(update) {
+            PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => {
                 if self.revoke_timelocks(|a| {
                     matches!(
                         a,
                         TimelockedAction::CapGroupChange {
                             cap_group: pending,
                             ..
-                        } if pending == &cap_group
+                        } if pending == &cap_group_id
                     )
                 }) {
-                    Event::CapGroupRaiseRevoked { cap_group }.emit();
+                    Event::CapGroupRaiseRevoked {
+                        cap_group: cap_group_id,
+                    }
+                    .emit();
                 }
             }
-            CapGroupUpdateKey::SetRelativeCap { cap_group } => {
+            PrimitiveCapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
                 if self.revoke_timelocks(|a| {
                     matches!(
                         a,
                         TimelockedAction::CapGroupRelativeCapChange {
                             cap_group: pending,
                             ..
-                        } if pending == &cap_group
+                        } if pending == &cap_group_id
                     )
                 }) {
-                    Event::CapGroupRelativeCapRaiseRevoked { cap_group }.emit();
+                    Event::CapGroupRelativeCapRaiseRevoked {
+                        cap_group: cap_group_id,
+                    }
+                    .emit();
                 }
             }
-            CapGroupUpdateKey::SetMarketCapGroup { market } => {
+            PrimitiveCapGroupUpdateKey::SetMembership { market_id } => {
                 if self.revoke_timelocks(|a| {
                     matches!(
                         a,
                         TimelockedAction::CapGroupMembership { market: pending, .. }
-                            if pending == &market
+                            if pending == &MarketId::from(market_id)
                     )
                 }) {
-                    Event::CapGroupMembershipRevoked { market }.emit();
+                    Event::CapGroupMembershipRevoked {
+                        market: MarketId::from(market_id),
+                    }
+                    .emit();
                 }
             }
         }
