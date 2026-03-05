@@ -157,11 +157,21 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
     };
 
     tokio::spawn(async move {
-        let (socket, _address) = match listener.accept().await {
+        // Race acceptance with shutdown so we don't block forever on accept().
+        let (socket, _address) = match select! {
+            connection = listener.accept() => connection,
+            _ = on_kill.changed() => {
+                tracing::debug!("Received kill notification before accepting connection.");
+                // Clean up socket file and exit early since we never accepted a connection.
+                let _ = std::fs::remove_file(&socket_path);
+                return;
+            }
+        } {
             Ok(a) => a,
             Err(e) => {
                 tracing::error!(error = ?e, "Failed to accept socket connection");
                 let _ = kill.send(());
+                let _ = std::fs::remove_file(&socket_path);
                 return;
             }
         };
