@@ -10,12 +10,15 @@ use near_sdk::{
     require, serde::de::DeserializeOwned, serde_json, AccountId, BorshStorageKey, Gas,
     IntoStorageKey, PanicOnDefault, PromiseError, PromiseOrValue, PromiseResult,
 };
-use near_sdk_contract_tools::{rbac::Rbac, Rbac};
+use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
     number::Decimal,
     oracle::{
-        proxy::{OracleType, Proxy, ProxyEntry, ProxyOracleEvent, Role},
+        proxy::{
+            governance::{Operation, Proposal, ProxyOracleEvent},
+            OracleType, Proxy, ProxyEntry,
+        },
         pyth::{self, ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone, FeedData},
         OracleRequest, PythRequest, RedStoneRequest,
@@ -26,14 +29,16 @@ use templar_common::{
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 enum StorageKey {
+    Proposals,
     Proxies,
 }
 
-#[derive(Debug, Rbac, PanicOnDefault)]
+#[derive(Debug, Owner, PanicOnDefault)]
 #[near(contract_state)]
-#[rbac(roles = "Role")]
 pub struct Contract {
-    pub passthrough_pyth_id: AccountId,
+    pub next_op_id: u32,
+    pub proposal_ttl_ms: u64,
+    pub proposals: UnorderedMap<u32, Proposal>,
     pub proxies: UnorderedMap<PriceIdentifier, Proxy>,
 }
 
@@ -43,82 +48,19 @@ impl Contract {
     pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
 
     #[init]
-    pub fn new(passthrough_pyth_id: AccountId) -> Self {
+    pub fn new() -> Self {
         let mut self_ = Self {
-            passthrough_pyth_id,
+            next_op_id: 0,
+            proposal_ttl_ms: 0,
+            proposals: UnorderedMap::new(StorageKey::Proposals.into_storage_key()),
             proxies: UnorderedMap::new(StorageKey::Proxies.into_storage_key()),
         };
 
         let deployer = env::predecessor_account_id();
 
-        Rbac::add_role(&mut self_, &deployer, &Role::ModifyRole);
-        Rbac::add_role(&mut self_, &deployer, &Role::AddProxy);
+        Owner::init(&mut self_, &deployer);
 
         self_
-    }
-
-    #[allow(clippy::unused_self)]
-    fn assert_role_or_self(&self, role: Role) {
-        let predecessor = env::predecessor_account_id();
-        let current = env::current_account_id();
-        if !(predecessor == current || <Self as Rbac>::has_role(&predecessor, &role)) {
-            templar_common::panic_with_message(&format!("Missing role: {role:?}"));
-        }
-    }
-
-    #[payable]
-    pub fn set_role(
-        &mut self,
-        account_ids: Vec<AccountId>,
-        roles: Vec<Role>,
-        set: Option<bool>,
-        allow_removing_final_member: Option<bool>,
-    ) {
-        assert_one_yocto();
-        self.assert_role_or_self(Role::ModifyRole);
-
-        let set = set.unwrap_or(true);
-        let allow_removing_final_member = allow_removing_final_member.unwrap_or(false);
-
-        if set {
-            for role in roles {
-                <Self as Rbac>::with_members_of_mut(&role, |r| {
-                    for account_id in &account_ids {
-                        if r.insert(account_id) {
-                            ProxyOracleEvent::ModifyRole {
-                                account_id: account_id.clone(),
-                                role: role.clone(),
-                                set: true,
-                            }
-                            .emit();
-                        }
-                    }
-                });
-            }
-        } else {
-            for role in roles {
-                <Self as Rbac>::with_members_of_mut(&role, |r| {
-                    for account_id in &account_ids {
-                        if r.remove(account_id) {
-                            ProxyOracleEvent::ModifyRole {
-                                account_id: account_id.clone(),
-                                role: role.clone(),
-                                set: false,
-                            }
-                            .emit();
-                        }
-                    }
-
-                    if !allow_removing_final_member {
-                        require!(!r.is_empty(), "Deny removing final member");
-                    }
-                });
-            }
-        }
-    }
-
-    pub fn passthrough_pyth_id(&self) -> AccountId {
-        self.passthrough_pyth_id.clone()
     }
 
     pub fn list_proxies(&self, offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier> {
@@ -129,37 +71,98 @@ impl Contract {
         self.proxies.get(&id)
     }
 
-    #[payable]
-    pub fn add_proxy(&mut self, proxy: Proxy) -> PriceIdentifier {
-        assert_one_yocto();
-        self.assert_role_or_self(Role::AddProxy);
+    pub fn get_proposal_ttl_ms(&self) -> U64 {
+        U64(self.proposal_ttl_ms)
+    }
 
-        let id = proxy.id().unwrap_or_else(|e| {
-            templar_common::panic_with_message(&format!("Failed to calculate proxy ID: {e}"))
-        });
-
-        if self.proxies.insert(&id, &proxy).is_some() {
-            templar_common::panic_with_message(&format!("Proxy identifier collision: {id}"));
+    fn internal_execute(&mut self, op_id: u32, operation: Operation) {
+        match &operation {
+            Operation::SetProxy { id, proxy } => {
+                if let Some(proxy) = proxy {
+                    self.proxies.insert(id, proxy);
+                } else {
+                    self.proxies.remove(id);
+                }
+            }
+            Operation::SetActionTtl { new_ttl_ms } => {
+                self.proposal_ttl_ms = new_ttl_ms.0;
+            }
         }
 
-        ProxyOracleEvent::AddProxy { id, proxy }.emit();
+        ProxyOracleEvent::Execution { op_id, operation }.emit();
+    }
 
-        id
+    pub fn get_proposal(&self, op_id: u32) -> Option<Proposal> {
+        self.proposals.get(&op_id)
+    }
+
+    #[payable]
+    pub fn execute(&mut self, op_id: u32) {
+        assert_one_yocto();
+        self.assert_owner();
+
+        let proposal = self
+            .proposals
+            .remove(&op_id)
+            .expect_or_reject("No proposal with the given ID");
+
+        require!(
+            proposal.can_execute(env::block_timestamp_ms(), self.proposal_ttl_ms),
+            "Cannot execute proposal before TTL has passed"
+        );
+
+        self.internal_execute(op_id, proposal.operation);
+    }
+
+    #[payable]
+    pub fn cancel(&mut self, op_id: u32) {
+        assert_one_yocto();
+        self.assert_owner();
+
+        let proposal = self
+            .proposals
+            .remove(&op_id)
+            .expect_or_reject("No proposal with the given ID");
+
+        ProxyOracleEvent::Cancellation { op_id, proposal }.emit();
+    }
+
+    #[payable]
+    pub fn propose(&mut self, operation: Operation) -> u32 {
+        assert_one_yocto();
+        self.assert_owner();
+
+        let op_id = self.next_op_id;
+        self.next_op_id = self
+            .next_op_id
+            .checked_add(1)
+            .expect_or_reject("Governance action ID overflow");
+
+        let proposal = Proposal {
+            operation,
+            created_at_ms: U64(env::block_timestamp_ms()),
+        };
+
+        ProxyOracleEvent::Proposal {
+            op_id,
+            proposal: proposal.clone(),
+        }
+        .emit();
+
+        if self.proposal_ttl_ms == 0 {
+            // If TTL is 0, execute immediately
+            self.internal_execute(op_id, proposal.operation);
+        } else {
+            self.proposals.insert(&op_id, &proposal);
+        }
+
+        op_id
     }
 
     // impl Pyth:
 
-    pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> PromiseOrValue<bool> {
-        if self.proxies.get(&price_identifier).is_some() {
-            PromiseOrValue::Value(true)
-        } else {
-            PromiseOrValue::Promise(
-                ext_pyth::ext(self.passthrough_pyth_id.clone())
-                    .with_static_gas(Gas::from_tgas(2))
-                    .price_feed_exists(price_identifier)
-                    .then(self_ext!(Gas::from_tgas(1)).price_feed_exists_01_consume_result()),
-            )
-        }
+    pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
+        self.proxies.get(&price_identifier).is_some()
     }
 
     pub fn price_feed_exists_01_consume_result(
@@ -189,10 +192,7 @@ impl Contract {
 
         for price_id in &price_ids {
             let Some(proxy) = self.proxies.get(price_id) else {
-                pyth_requests
-                    .entry(self.passthrough_pyth_id.clone())
-                    .or_default()
-                    .insert(*price_id);
+                // Skip unknown.
                 continue;
             };
 
@@ -275,13 +275,7 @@ impl Contract {
         let mut i = oracle_order.len() as u64;
         for price_id in original_price_ids {
             let Some(proxy) = self.proxies.get(&price_id) else {
-                result.insert(
-                    price_id,
-                    callback.pyth(&PythRequest {
-                        oracle_id: self.passthrough_pyth_id.clone(),
-                        price_id,
-                    }),
-                );
+                // Skip unknown.
                 continue;
             };
 

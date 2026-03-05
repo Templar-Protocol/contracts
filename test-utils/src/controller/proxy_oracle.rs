@@ -1,7 +1,7 @@
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::{json_types::U64, serde_json::json};
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::{
-    proxy::{Proxy, Role},
+    proxy::{governance::Operation, Proxy},
     pyth::{OracleResponse, PriceIdentifier},
 };
 use tokio::sync::OnceCell;
@@ -21,7 +21,7 @@ impl ContractController for ProxyOracleController {
 }
 
 impl ProxyOracleController {
-    pub async fn deploy(account: Account, passthrough_pyth_id: AccountId) -> Self {
+    pub async fn deploy(account: Account) -> Self {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
         let wasm = WASM
@@ -31,9 +31,7 @@ impl ProxyOracleController {
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract
             .call("new")
-            .args_json(json!({
-                "passthrough_pyth_id": passthrough_pyth_id,
-            }))
+            .args_json(json!({}))
             .transact()
             .await
             .unwrap()
@@ -42,15 +40,28 @@ impl ProxyOracleController {
         Self { contract }
     }
 
+    pub async fn set_proxy(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        proxy: Option<Proxy>,
+    ) -> u32 {
+        self.propose(executor, Operation::SetProxy { id, proxy })
+            .await
+    }
+
     define! {
-        #[view] pub fn passthrough_pyth_id() -> AccountId;
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy>;
+        #[view] pub fn get_proposal_ttl_ms() -> U64;
 
+        // Governance functions
         #[call(exec, yocto(1))]
-        pub fn set_role(account_ids: Vec<AccountId>, roles: Vec<Role>, set: Option<bool>, allow_removing_final_member: Option<bool>);
+        pub fn execute(op_id: u32);
+        #[call(exec, yocto(1))]
+        pub fn cancel(op_id: u32);
         #[call(yocto(1))]
-        pub fn add_proxy(proxy: Proxy) -> PriceIdentifier;
+        pub fn propose(operation: Operation) -> u32;
 
         #[call]
         pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;

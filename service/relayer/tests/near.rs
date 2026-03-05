@@ -34,7 +34,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     let price_oracle_id = price_oracle.id().clone();
 
     let lst = LstOracleController::deploy(lst, price_oracle_id.clone());
-    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle, price_oracle_id.clone());
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
     let price_oracle = MockOracleController::deploy(price_oracle);
     let borrow_asset = FtController::deploy(borrow_asset, "Borrow Asset", "BAT");
 
@@ -96,24 +96,26 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
         DEFAULT_BORROW_PRICE_ID,
     )
     .into()]);
+    let proxy_borrow_id = PriceIdentifier([0x01_u8; 32]);
 
-    let id = proxy_oracle
-        .add_proxy(proxy_oracle.account(), proxy_borrow.clone())
+    proxy_oracle
+        .set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
         .await;
-
-    assert_eq!(id, proxy_borrow.id().unwrap());
 
     let transform_borrow = Proxy(vec![ProxyEntry::Transformer(ProxyPriceTransformer::lst(
         OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
         24,
         price_transformer::Call::new_simple(borrow_asset.id(), "redemption_rate"),
     ))]);
+    let transform_borrow_id = PriceIdentifier([0x02_u8; 32]);
 
-    let id = proxy_oracle
-        .add_proxy(proxy_oracle.account(), transform_borrow.clone())
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            transform_borrow_id,
+            Some(transform_borrow.clone()),
+        )
         .await;
-
-    assert_eq!(id, transform_borrow.id().unwrap());
 
     // Passthrough
     let request = near
@@ -128,7 +130,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Direct Pyth proxy
     let request = near
-        .resolve_price_identifier(proxy_oracle.id().clone(), proxy_borrow.id().unwrap())
+        .resolve_price_identifier(proxy_oracle.id().clone(), proxy_borrow_id)
         .await
         .unwrap();
 
@@ -139,7 +141,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Transformed Pyth price
     let request = near
-        .resolve_price_identifier(proxy_oracle.id().clone(), transform_borrow.id().unwrap())
+        .resolve_price_identifier(proxy_oracle.id().clone(), transform_borrow_id)
         .await
         .unwrap();
 

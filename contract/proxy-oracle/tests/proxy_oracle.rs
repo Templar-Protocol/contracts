@@ -10,7 +10,7 @@ use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
     oracle::{
         price_transformer::{self, ProxyPriceTransformer},
-        proxy::{Proxy, ProxyEntry},
+        proxy::{governance::Operation, Proxy, ProxyEntry},
         pyth::{self, PriceIdentifier},
         redstone::FeedData,
         OracleRequest,
@@ -45,7 +45,7 @@ fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
 
     for price_id in price_ids {
         let Some(proxy) = c.proxies.get(price_id) else {
-            pyth.insert(c.passthrough_pyth_id.clone());
+            // Skip unknown.
             continue;
         };
 
@@ -77,6 +77,46 @@ fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
     total
 }
 
+#[rstest::rstest]
+#[case::success(10 * 1000)]
+#[should_panic = "Cannot execute proposal before TTL has passed"]
+#[case::fail(0)]
+#[should_panic = "Cannot execute proposal before TTL has passed"]
+#[case::fail(10 * 1000 - 1)]
+pub fn governance_ttl(#[case] delay_ms: u64) {
+    let mut context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(1_000_000)
+        .build();
+    testing_env!(context.clone());
+
+    let mut c = Contract::new();
+
+    // Should execute instantly.
+    let op_id = c.propose(Operation::SetActionTtl {
+        new_ttl_ms: U64(10 * 1000),
+    });
+
+    assert_eq!(c.get_proposal(op_id), None);
+
+    let proxy_id = PriceIdentifier([0x01_u8; 32]);
+    let proxy_def = Proxy(vec![OracleRequest::pyth(
+        "pyth-oracle.near".parse().unwrap(),
+        CRYPTO_BTC_USD,
+    )
+    .into()]);
+
+    let op_id = c.propose(Operation::SetProxy {
+        id: proxy_id,
+        proxy: Some(proxy_def),
+    });
+
+    context.block_timestamp += delay_ms * 1_000_000;
+    testing_env!(context.clone());
+
+    c.execute(op_id);
+}
+
 #[allow(clippy::unwrap_used)]
 #[test]
 pub fn gas() {
@@ -85,12 +125,13 @@ pub fn gas() {
         .build();
     testing_env!(context.clone());
 
-    let mut c = Contract::new("pyth-oracle.near".parse().unwrap());
+    let mut c = Contract::new();
 
     let proxy_btc = Proxy(vec![
         OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into(),
         OracleRequest::redstone("redstone-adapter.near".parse().unwrap(), "BTC").into(),
     ]);
+    let proxy_btc_id = PriceIdentifier([0x01_u8; 32]);
 
     let proxy_usdc = Proxy(vec![
         OracleRequest::pyth(
@@ -100,6 +141,7 @@ pub fn gas() {
         .into(),
         OracleRequest::redstone("redstone-adapter.near".parse().unwrap(), "USDC").into(),
     ]);
+    let proxy_usdc_id = PriceIdentifier([0x02_u8; 32]);
 
     let proxy_wnear = Proxy(vec![ProxyPriceTransformer::lst(
         OracleRequest::pyth(
@@ -113,16 +155,22 @@ pub fn gas() {
         ),
     )
     .into()]);
+    let proxy_wnear_id = PriceIdentifier([0x03_u8; 32]);
 
-    let price_ids = vec![
-        proxy_btc.id().unwrap(),
-        proxy_usdc.id().unwrap(),
-        proxy_wnear.id().unwrap(),
-    ];
+    let price_ids = vec![proxy_btc_id, proxy_usdc_id, proxy_wnear_id];
 
-    c.add_proxy(proxy_btc);
-    c.add_proxy(proxy_usdc);
-    c.add_proxy(proxy_wnear);
+    c.propose(Operation::SetProxy {
+        id: proxy_btc_id,
+        proxy: Some(proxy_btc.clone()),
+    });
+    c.propose(Operation::SetProxy {
+        id: proxy_usdc_id,
+        proxy: Some(proxy_usdc.clone()),
+    });
+    c.propose(Operation::SetProxy {
+        id: proxy_wnear_id,
+        proxy: Some(proxy_wnear.clone()),
+    });
     let gas = estimate_gas(&c, &price_ids);
     eprintln!("Gas used: {gas}");
     assert!(gas <= Gas::from_tgas(15));
@@ -178,16 +226,12 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         pyth_oracle,
         pyth_oracle2
     );
-    let pyth_oracle_id = pyth_oracle.id().clone();
     let pyth_oracle = MockOracleController::deploy(pyth_oracle);
     let pyth_oracle2 = MockOracleController::deploy(pyth_oracle2);
     let redstone_adapter = MockOracleController::deploy(redstone_adapter);
-    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle, pyth_oracle_id);
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
     let (pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle) =
         tokio::join!(pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle);
-
-    let passthrough_pyth_id = proxy_oracle.passthrough_pyth_id().await;
-    assert_eq!(&passthrough_pyth_id, pyth_oracle.id());
 
     let list_proxies = proxy_oracle.list_proxies(None, None).await;
     assert_eq!(list_proxies, vec![]);
@@ -242,18 +286,45 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
         OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
     ]);
+    let btc_proxy_id = PriceIdentifier([0x01_u8; 32]);
+    let just_pyth_btc = Proxy(vec![OracleRequest::pyth(
+        pyth_oracle.id().clone(),
+        CRYPTO_BTC_USD,
+    )
+    .into()]);
+    let just_pyth_btc_id = PriceIdentifier([0x02_u8; 32]);
+    let just_redstone_eth = Proxy(vec![OracleRequest::redstone(
+        redstone_adapter.id().clone(),
+        "ETH",
+    )
+    .into()]);
+    let just_redstone_eth_id = PriceIdentifier([0x03_u8; 32]);
 
-    let btc_proxy_id = btc_proxy_def.id().unwrap();
-
-    let result = proxy_oracle
-        .add_proxy(proxy_oracle.account(), btc_proxy_def.clone())
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            btc_proxy_id,
+            Some(btc_proxy_def.clone()),
+        )
         .await;
-
-    assert_eq!(result, btc_proxy_id, "should return correct ID");
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            just_pyth_btc_id,
+            Some(just_pyth_btc.clone()),
+        )
+        .await;
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            just_redstone_eth_id,
+            Some(just_redstone_eth.clone()),
+        )
+        .await;
 
     assert_eq!(
         proxy_oracle.list_proxies(None, None).await,
-        vec![btc_proxy_id],
+        vec![btc_proxy_id, just_pyth_btc_id, just_redstone_eth_id],
     );
     assert_eq!(
         proxy_oracle.get_proxy(btc_proxy_id).await.unwrap(),
@@ -268,23 +339,21 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
-    assert_eq!(
-        result,
-        HashMap::from_iter([(btc_proxy_id, None), (CRYPTO_BTC_USD, None)])
-    );
+    assert_eq!(result, HashMap::from_iter([(btc_proxy_id, None)]));
 
     set!(redstone.BTC = 100_000).await;
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
+    assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(100_000),
     );
-    assert!(result.get(&CRYPTO_BTC_USD).unwrap().is_none());
 
     // Pyth appears first on the list
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
+    set!(redstone.ETH = 1_800).await;
     let result = proxy_oracle
         .list_ema_prices_no_older_than(
             &actor,
@@ -294,21 +363,32 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
                 btc_proxy_id,
                 CRYPTO_BTC_USD,
                 CRYPTO_BTC_USD,
+                just_pyth_btc_id,
+                just_redstone_eth_id,
             ],
             60_u32,
         )
         .await;
+    assert_eq!(result.len(), 3);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(90_000),
     );
     assert_eq!(
         result
-            .get(&CRYPTO_BTC_USD)
+            .get(&just_pyth_btc_id)
             .unwrap()
             .as_ref()
             .map(norm_price),
         Some(90_000),
+    );
+    assert_eq!(
+        result
+            .get(&just_redstone_eth_id)
+            .unwrap()
+            .as_ref()
+            .map(norm_price),
+        Some(1_800),
     );
 
     // Set second Pyth oracle
@@ -320,16 +400,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
+    assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
-        Some(90_000),
-    );
-    assert_eq!(
-        result
-            .get(&CRYPTO_BTC_USD)
-            .unwrap()
-            .as_ref()
-            .map(norm_price),
         Some(90_000),
     );
 
@@ -338,16 +411,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
+    assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(80_000),
-    );
-    assert_eq!(
-        result
-            .get(&CRYPTO_BTC_USD)
-            .unwrap()
-            .as_ref()
-            .map(norm_price),
-        None,
     );
 }
