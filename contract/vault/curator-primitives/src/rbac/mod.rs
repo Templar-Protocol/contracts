@@ -227,11 +227,20 @@ impl AuthAdapter for RbacAuth {
             }
         }
 
-        // Check role requirements
-        if let Some(required_role) = required_role(action) {
-            if !self.has_required_role(&caller, required_role) {
-                return Err(AuthError::MissingRole);
+        // Check role requirements from policy class, including emergency paths.
+        let allowed = match action_policy_class(action, AuthPolicyProfile::Canonical) {
+            AuthPolicyClass::Public => true,
+            AuthPolicyClass::Guardian => self.has_required_role(&caller, Role::Guardian),
+            AuthPolicyClass::Allocator => self.has_required_role(&caller, Role::Allocator),
+            AuthPolicyClass::AllocatorEmergency => {
+                self.has_required_role(&caller, Role::Allocator)
+                    || self.has_required_role(&caller, Role::Sentinel)
             }
+            AuthPolicyClass::Curator => self.has_required_role(&caller, Role::Curator),
+        };
+
+        if !allowed {
+            return Err(AuthError::MissingRole);
         }
 
         Ok(())

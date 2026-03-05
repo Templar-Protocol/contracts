@@ -24,6 +24,7 @@ fn test_rbac() -> RbacAuth {
     let mut config = RbacConfig::with_curator(curator_addr());
     config.add_role(guardian_addr(), Role::Guardian);
     config.add_role(allocator_addr(), Role::Allocator);
+    config.add_role(sentinel_addr(), Role::Sentinel);
     RbacAuth::new(config)
 }
 
@@ -95,9 +96,36 @@ fn test_user_actions_allowed() {
     assert!(auth
         .authorize(ActionKind::RequestWithdraw, user_addr(), None)
         .is_ok());
+}
+
+#[test]
+fn test_execute_withdraw_allocator_only() {
+    let auth = test_rbac();
+
     assert!(auth
-        .authorize(ActionKind::ExecuteWithdraw, user_addr(), None)
+        .authorize(ActionKind::ExecuteWithdraw, allocator_addr(), None)
         .is_ok());
+    assert!(auth
+        .authorize(ActionKind::ExecuteWithdraw, curator_addr(), None)
+        .is_ok());
+
+    let result = auth.authorize(ActionKind::ExecuteWithdraw, user_addr(), None);
+    assert!(matches!(result, Err(AuthError::MissingRole)));
+}
+
+#[test]
+fn test_abort_actions_allow_allocator_or_sentinel() {
+    let auth = test_rbac();
+
+    assert!(auth
+        .authorize(ActionKind::AbortAllocating, allocator_addr(), None)
+        .is_ok());
+    assert!(auth
+        .authorize(ActionKind::AbortAllocating, sentinel_addr(), None)
+        .is_ok());
+
+    let result = auth.authorize(ActionKind::AbortAllocating, user_addr(), None);
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]

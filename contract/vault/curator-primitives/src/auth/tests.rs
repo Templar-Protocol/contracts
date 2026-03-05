@@ -4,7 +4,7 @@ use super::*;
 fn test_action_kind_is_privileged_by_profile() {
     assert!(!ActionKind::Deposit.is_privileged(AuthPolicyProfile::Canonical));
     assert!(!ActionKind::RequestWithdraw.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(!ActionKind::ExecuteWithdraw.is_privileged(AuthPolicyProfile::Canonical));
+    assert!(ActionKind::ExecuteWithdraw.is_privileged(AuthPolicyProfile::Canonical));
 
     assert!(ActionKind::Pause.is_privileged(AuthPolicyProfile::Canonical));
     assert!(ActionKind::SetRestrictions.is_privileged(AuthPolicyProfile::Canonical));
@@ -20,7 +20,7 @@ fn test_action_kind_is_privileged_by_profile() {
 fn test_policy_class_canonical() {
     assert_eq!(
         action_policy_class(ActionKind::ExecuteWithdraw, AuthPolicyProfile::Canonical),
-        AuthPolicyClass::Public
+        AuthPolicyClass::Allocator
     );
     assert_eq!(
         action_policy_class(ActionKind::Pause, AuthPolicyProfile::Canonical),
@@ -28,7 +28,7 @@ fn test_policy_class_canonical() {
     );
     assert_eq!(
         action_policy_class(ActionKind::AbortRefreshing, AuthPolicyProfile::Canonical),
-        AuthPolicyClass::Allocator
+        AuthPolicyClass::AllocatorEmergency
     );
     assert_eq!(
         action_policy_class(ActionKind::ManualReconcile, AuthPolicyProfile::Canonical),
@@ -74,9 +74,8 @@ fn test_strict_auth_allows_user_actions() {
     assert!(auth
         .authorize(ActionKind::RequestWithdraw, caller, None)
         .is_ok());
-    assert!(auth
-        .authorize(ActionKind::ExecuteWithdraw, caller, None)
-        .is_ok());
+    let result = auth.authorize(ActionKind::ExecuteWithdraw, caller, None);
+    assert!(matches!(result, Err(AuthError::NotAuthorized { .. })));
 }
 
 #[test]

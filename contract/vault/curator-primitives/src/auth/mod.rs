@@ -62,20 +62,19 @@ pub const fn action_policy_class(
 #[must_use]
 pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
     match action {
-        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::ExecuteWithdraw => {
-            AuthPolicyClass::Public
-        }
-        ActionKind::Pause => AuthPolicyClass::Guardian,
-        ActionKind::BeginAllocating
+        ActionKind::Deposit | ActionKind::RequestWithdraw => AuthPolicyClass::Public,
+        ActionKind::ExecuteWithdraw
+        | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
         | ActionKind::SyncExternalAssets
         | ActionKind::BeginRefreshing
         | ActionKind::FinishRefreshing
-        | ActionKind::AbortAllocating
-        | ActionKind::AbortWithdrawing
-        | ActionKind::AbortRefreshing
         | ActionKind::SettlePayout
         | ActionKind::RefreshFees => AuthPolicyClass::Allocator,
+        ActionKind::Pause => AuthPolicyClass::Guardian,
+        ActionKind::AbortAllocating
+        | ActionKind::AbortWithdrawing
+        | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
         ActionKind::ManualReconcile | ActionKind::SetRestrictions | ActionKind::EmergencyReset => {
             AuthPolicyClass::Curator
         }

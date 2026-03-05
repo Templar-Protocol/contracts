@@ -69,7 +69,9 @@ fn test_soroban_auth_check_role_user_actions() {
     // User actions allowed for anyone
     assert!(auth.check_role(ActionKind::Deposit, &user).is_ok());
     assert!(auth.check_role(ActionKind::RequestWithdraw, &user).is_ok());
-    assert!(auth.check_role(ActionKind::ExecuteWithdraw, &user).is_ok());
+
+    let result = auth.check_role(ActionKind::ExecuteWithdraw, &user);
+    assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 
 #[test]
@@ -112,6 +114,9 @@ fn test_soroban_auth_check_role_allocator_actions() {
     assert!(auth
         .check_role(ActionKind::SyncExternalAssets, &allocator)
         .is_ok());
+    assert!(auth
+        .check_role(ActionKind::ExecuteWithdraw, &allocator)
+        .is_ok());
 
     // Curator can too
     assert!(auth
@@ -120,6 +125,37 @@ fn test_soroban_auth_check_role_allocator_actions() {
 
     // User cannot
     let result = auth.check_role(ActionKind::BeginAllocating, &user);
+    assert!(matches!(result, Err(AuthError::MissingRole)));
+}
+
+#[test]
+fn test_soroban_auth_check_role_allocator_emergency_actions() {
+    let env = Env::default();
+    let curator = SdkAddress::generate(&env);
+    let guardian = SdkAddress::generate(&env);
+    let sentinel = SdkAddress::generate(&env);
+    let allocator = SdkAddress::generate(&env);
+    let user = SdkAddress::generate(&env);
+
+    let auth = SorobanAuth::with_roles_and_sentinel(
+        &env,
+        curator.clone(),
+        Some(guardian),
+        Some(sentinel.clone()),
+        Some(allocator.clone()),
+    );
+
+    assert!(auth
+        .check_role(ActionKind::AbortWithdrawing, &allocator)
+        .is_ok());
+    assert!(auth
+        .check_role(ActionKind::AbortWithdrawing, &sentinel)
+        .is_ok());
+    assert!(auth
+        .check_role(ActionKind::AbortWithdrawing, &curator)
+        .is_ok());
+
+    let result = auth.check_role(ActionKind::AbortWithdrawing, &user);
     assert!(matches!(result, Err(AuthError::MissingRole)));
 }
 

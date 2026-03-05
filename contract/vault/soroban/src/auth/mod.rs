@@ -7,9 +7,10 @@
 use soroban_sdk::{Address as SdkAddress, Env};
 
 pub use templar_curator_primitives::auth::{
-    ActionKind, AuthAdapter, AuthError, AuthResult, PermissiveAuth, StrictAuth,
+    action_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthPolicyProfile,
+    AuthResult, PermissiveAuth, StrictAuth,
 };
-pub use templar_curator_primitives::rbac::{required_role, Role};
+pub use templar_curator_primitives::rbac::Role;
 
 /// Soroban native authentication adapter.
 ///
@@ -148,15 +149,18 @@ impl<'a> SorobanAuth<'a> {
 
     /// Check role-based permissions without calling require_auth.
     ///
-    /// Delegates to the canonical `required_role()` mapping from
-    /// curator-primitives, then checks the Soroban-specific role holders.
+    /// Uses the canonical action policy class from curator-primitives, then
+    /// checks Soroban-specific role holders.
     pub fn check_role(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
-        let role = match required_role(action) {
-            None => return Ok(()),
-            Some(r) => r,
+        let has_role = match action_policy_class(action, AuthPolicyProfile::Canonical) {
+            AuthPolicyClass::Public => true,
+            AuthPolicyClass::Guardian => self.has_role(Role::Guardian, caller),
+            AuthPolicyClass::Allocator => self.has_role(Role::Allocator, caller),
+            AuthPolicyClass::AllocatorEmergency => {
+                self.has_role(Role::Allocator, caller) || self.has_role(Role::Sentinel, caller)
+            }
+            AuthPolicyClass::Curator => self.has_role(Role::Curator, caller),
         };
-
-        let has_role = self.has_role(role, caller);
 
         if has_role {
             Ok(())

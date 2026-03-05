@@ -65,7 +65,6 @@ impl AuthPattern {
 /// Map an operational `ActionKind` to the NEAR-specific `AuthPattern`.
 ///
 /// NEAR's mapping differs from the curator-primitives defaults:
-/// - `ExecuteWithdraw` is allocator-operated (not user-facing)
 /// - Abort actions allow Sentinel in addition to Allocator
 /// - `Pause`/`SetRestrictions` are guardian-level (handled via governance)
 #[must_use]
