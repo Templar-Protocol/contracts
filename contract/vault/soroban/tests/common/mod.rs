@@ -1,7 +1,10 @@
 use std::vec::Vec;
 
 use soroban_sdk::Address;
-use templar_soroban_runtime::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
+use templar_soroban_runtime::{
+    auth::AuthResult, ActionKind, AddressRegistrar, AuthAdapter, EffectContext, EffectInterpreter,
+    EffectResult,
+};
 use templar_vault_kernel::effects::KernelEffect;
 
 #[derive(Clone, Debug, Default)]
@@ -36,5 +39,23 @@ impl AddressRegistrar for MockInterpreter {
 
     fn has_address(&self, _kernel_addr: &[u8; 32]) -> bool {
         true
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct TestPermissiveAuth;
+
+impl AuthAdapter for TestPermissiveAuth {
+    fn authorize(
+        &self,
+        _action: ActionKind,
+        _caller: [u8; 32],
+        _proof: Option<&[u8]>,
+    ) -> AuthResult<()> {
+        Ok(())
+    }
+
+    fn is_paused(&self) -> bool {
+        false
     }
 }

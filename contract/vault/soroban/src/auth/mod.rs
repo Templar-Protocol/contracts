@@ -8,7 +8,6 @@ use soroban_sdk::{Address as SdkAddress, Env};
 
 pub use templar_curator_primitives::auth::{
     canonical_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult,
-    PermissiveAuth, StrictAuth,
 };
 pub use templar_curator_primitives::rbac::Role;
 

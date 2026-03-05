@@ -37,6 +37,9 @@ pub mod fungible_vault;
 pub mod market;
 pub mod storage;
 
+#[cfg(any(test, feature = "testutils"))]
+pub use storage::MemoryStorage;
+
 pub mod rbac {
     pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 }
@@ -52,13 +55,13 @@ pub use {
     },
     error::{ContractError, RuntimeError},
     market::{
-        invoke_progress_withdrawal, invoke_supply, invoke_total_assets, invoke_withdraw, AttemptId,
-        MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter, SorobanMarketMethod,
+        invoke_progress_withdrawal, invoke_supply, AttemptId, MarketRef, SettlementReceipt,
+        SorobanCrossChainMarketAdapter, SorobanMarketMethod,
     },
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
     storage::{
-        MemoryStorage, SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
+        SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
     },
     templar_curator_primitives::policy::lock_filter::{
         build_allocation_plan_with_locks, build_refresh_plan_with_locks,

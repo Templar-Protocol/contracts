@@ -11,7 +11,9 @@ use templar_curator_primitives::policy::market_lock::MarketLockSet;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::{Address, AddressBook, Restrictions, TargetId, VaultState};
+#[cfg(any(test, feature = "testutils"))]
+use templar_vault_kernel::AddressBook;
+use templar_vault_kernel::{Address, Restrictions, TargetId, VaultState};
 
 use crate::error::RuntimeError;
 
@@ -630,6 +632,7 @@ pub trait Storage {
 }
 
 /// In-memory storage implementation for testing.
+#[cfg(any(test, feature = "testutils"))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct MemoryStorage {
@@ -645,6 +648,7 @@ pub struct MemoryStorage {
     address_book: AddressBook<SdkAddress>,
 }
 
+#[cfg(any(test, feature = "testutils"))]
 impl MemoryStorage {
     /// Create a new empty memory storage.
     #[inline]
@@ -693,6 +697,7 @@ impl MemoryStorage {
     }
 }
 
+#[cfg(any(test, feature = "testutils"))]
 impl Storage for MemoryStorage {
     fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
         Ok(self.state.clone())

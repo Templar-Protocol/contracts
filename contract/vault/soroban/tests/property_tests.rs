@@ -24,7 +24,6 @@
 use proptest::prelude::*;
 
 use templar_soroban_runtime::{
-    auth::PermissiveAuth,
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
     storage::MemoryStorage,
 };
@@ -38,7 +37,7 @@ use templar_vault_kernel::{
 };
 
 mod common;
-use common::MockInterpreter;
+use common::{MockInterpreter, TestPermissiveAuth};
 
 // Test Infrastructure
 
@@ -53,13 +52,13 @@ fn prop_test_config() -> ContractConfig {
     )
 }
 
-type PropTestVault = CuratorVault<MemoryStorage, PermissiveAuth, MockInterpreter>;
+type PropTestVault = CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>;
 
 fn create_prop_test_vault() -> PropTestVault {
     let mut vault = CuratorVault::new(
         prop_test_config(),
         MemoryStorage::new(),
-        PermissiveAuth,
+        TestPermissiveAuth,
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();

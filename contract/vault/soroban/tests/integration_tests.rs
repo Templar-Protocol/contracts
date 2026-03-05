@@ -5,7 +5,6 @@
 use rstest::{fixture, rstest};
 use soroban_sdk::{testutils::Address as _, Env};
 use templar_soroban_runtime::{
-    auth::PermissiveAuth,
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
     storage::{MemoryStorage, SorobanStorage, VersionedState},
@@ -28,7 +27,7 @@ use templar_vault_kernel::{
 };
 
 mod common;
-use common::MockInterpreter;
+use common::{MockInterpreter, TestPermissiveAuth};
 
 // Test Helpers
 
@@ -241,13 +240,13 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     });
 }
 
-type TestVault = CuratorVault<MemoryStorage, PermissiveAuth, MockInterpreter>;
+type TestVault = CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>;
 
 fn create_test_vault() -> TestVault {
     let mut vault = CuratorVault::new(
         test_config(),
         MemoryStorage::new(),
-        PermissiveAuth,
+        TestPermissiveAuth,
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();

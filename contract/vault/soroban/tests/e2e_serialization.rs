@@ -1,6 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Env};
 use templar_soroban_runtime::{
-    auth::PermissiveAuth,
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
     storage::{SorobanStorage, VersionedState},
     Storage,
@@ -8,9 +7,9 @@ use templar_soroban_runtime::{
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 
 mod common;
-use common::MockInterpreter;
+use common::{MockInterpreter, TestPermissiveAuth};
 
-type SorobanTestVault<'a> = CuratorVault<SorobanStorage<'a>, PermissiveAuth, MockInterpreter>;
+type SorobanTestVault<'a> = CuratorVault<SorobanStorage<'a>, TestPermissiveAuth, MockInterpreter>;
 
 fn test_config() -> ContractConfig {
     ContractConfig::new(
@@ -35,7 +34,7 @@ fn fresh_loaded_vault<'a>(env: &'a Env) -> SorobanTestVault<'a> {
     let mut vault = CuratorVault::new(
         test_config(),
         SorobanStorage::new(env),
-        PermissiveAuth,
+        TestPermissiveAuth,
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();

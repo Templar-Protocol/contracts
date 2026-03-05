@@ -198,7 +198,7 @@ mod auth_tests {
 }
 
 mod contract_tests {
-    use crate::auth::PermissiveAuth;
+    use crate::auth::{ActionKind, AuthAdapter, AuthResult};
     use crate::contract::*;
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
@@ -213,6 +213,24 @@ mod contract_tests {
     use templar_vault_kernel::{
         FeeAccrualAnchor, FeesSpec, Restrictions, VaultState, MIN_WITHDRAWAL_ASSETS,
     };
+
+    #[derive(Clone, Copy, Default)]
+    struct TestPermissiveAuth;
+
+    impl AuthAdapter for TestPermissiveAuth {
+        fn authorize(
+            &self,
+            _action: ActionKind,
+            _caller: [u8; 32],
+            _proof: Option<&[u8]>,
+        ) -> AuthResult<()> {
+            Ok(())
+        }
+
+        fn is_paused(&self) -> bool {
+            false
+        }
+    }
 
     #[derive(Clone, Debug, Default)]
     struct MockInterpreter {
@@ -298,11 +316,11 @@ mod contract_tests {
         )
     }
 
-    fn create_test_vault() -> CuratorVault<MemoryStorage, PermissiveAuth, MockInterpreter> {
+    fn create_test_vault() -> CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter> {
         let mut vault = CuratorVault::new(
             test_config(),
             MemoryStorage::new(),
-            PermissiveAuth,
+            TestPermissiveAuth,
             MockInterpreter::new(),
         );
         vault.load_state().unwrap();
@@ -596,7 +614,7 @@ mod contract_tests {
             let mut vault = CuratorVault::new(
                 config,
                 MemoryStorage::new(),
-                PermissiveAuth,
+                TestPermissiveAuth,
                 TrackingInterpreter::new(),
             );
             vault.load_state().unwrap();
@@ -626,7 +644,7 @@ mod contract_tests {
                     share_kernel,
                 ),
                 storage,
-                PermissiveAuth,
+                TestPermissiveAuth,
                 TrackingInterpreter::new(),
             );
             next_vault.load_state().unwrap();
@@ -990,7 +1008,7 @@ mod contract_tests {
             let mut vault = CuratorVault::new(
                 test_config(),
                 storage,
-                PermissiveAuth,
+                TestPermissiveAuth,
                 MockInterpreter::new(),
             );
             vault.load_state().unwrap();
