@@ -146,7 +146,7 @@ impl RedStoneAdapter {
         is_trusted: bool,
         payload: ValidatedPayload,
         timestamp_ms: u64,
-    ) -> Vec<Result<FeedData, RedStoneError>> {
+    ) -> Vec<(FeedId, Result<FeedData, RedStoneError>)> {
         payload
             .values
             .into_iter()
@@ -157,8 +157,9 @@ impl RedStoneAdapter {
                     package_timestamp: U64(payload.timestamp.as_millis()),
                     write_timestamp: U64(timestamp_ms),
                 };
+                let update = self.update_feed(is_trusted, &feed_id, feed_data);
 
-                self.update_feed(is_trusted, &feed_id, feed_data)
+                (feed_id, update)
             })
             .collect()
     }
@@ -197,7 +198,7 @@ mod tests {
         let p = ra.validate_payload(&prices, input, timestamp).unwrap();
         ra.write_prices(true, p, timestamp)
             .into_iter()
-            .for_each(|r| {
+            .for_each(|(_, r)| {
                 r.unwrap();
             });
 
@@ -221,7 +222,7 @@ mod tests {
         let written = ra
             .write_prices(true, p, timestamp)
             .into_iter()
-            .map(|r| r.unwrap())
+            .map(|(_, r)| r.unwrap())
             .collect::<Vec<_>>();
         assert_eq!(written.len(), 2);
 

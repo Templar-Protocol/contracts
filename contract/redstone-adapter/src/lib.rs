@@ -109,14 +109,10 @@ impl RedStoneContractInterface for Contract {
 
         let updated_feeds = writes
             .into_iter()
-            .enumerate()
-            .filter_map(|(i, result)| match result {
+            .filter_map(|(feed_id, result)| match result {
                 Ok(feed_data) => Some(feed_data),
                 Err(e) => {
-                    let feed = feed_ids
-                        .get(i)
-                        .map_or_else(|| format!("index {i}"), |id| id.to_string());
-                    near_sdk::log!("Failed to update feed {feed}: {e}");
+                    near_sdk::log!("Failed to update feed {feed_id}: {e}");
                     None
                 }
             })
