@@ -1,7 +1,6 @@
 use near_sdk::{env, AccountId};
 use std::vec::Vec;
-use templar_common::vault::{MarketId, Restrictions};
-use templar_vault_kernel::Restrictions as KernelRestrictions;
+use templar_common::vault::MarketId;
 use templar_vault_kernel::{Address, TargetId};
 
 /// Convert executor-facing identifiers into kernel TargetId.
@@ -59,8 +58,4 @@ pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
     hash.as_slice()
         .try_into()
         .unwrap_or_else(|_| panic!("expected 32-byte sha256 hash"))
-}
-
-pub(crate) fn to_kernel_restrictions(restrictions: &Restrictions) -> KernelRestrictions {
-    restrictions.clone()
 }

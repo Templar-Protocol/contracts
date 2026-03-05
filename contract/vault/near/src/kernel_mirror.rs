@@ -9,7 +9,6 @@ use templar_vault_kernel::state::vault::{
 };
 use templar_vault_kernel::Restrictions as KernelRestrictions;
 
-use crate::convert::to_kernel_restrictions;
 use crate::Contract;
 
 impl Contract {
@@ -69,7 +68,7 @@ impl Contract {
 
     #[must_use]
     pub(crate) fn kernel_restrictions_mirror(&self) -> Option<KernelRestrictions> {
-        self.gate.restrictions.as_ref().map(to_kernel_restrictions)
+        self.gate.restrictions.clone()
     }
 }
 

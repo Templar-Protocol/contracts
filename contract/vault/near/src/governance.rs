@@ -5,7 +5,7 @@ use templar_common::vault::{
 
 use super::*;
 use crate::auth::AuthPattern;
-use crate::convert::{account_id_to_address, to_kernel_restrictions};
+use crate::convert::account_id_to_address;
 use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
 use near_sdk_contract_tools::ft::Nep141Transfer;
@@ -193,7 +193,7 @@ impl Gate {
         if let Some(restrictions) = &self.restrictions {
             let actor = account_id_to_address(&account.to_owned());
             let self_id = account_id_to_address(&env::current_account_id());
-            let kernel_restrictions = to_kernel_restrictions(restrictions);
+            let kernel_restrictions = restrictions.clone();
 
             if let Some(reason) = kernel_restrictions.is_restricted(&actor, &self_id) {
                 let reason = match reason {
@@ -982,7 +982,7 @@ impl Contract {
                     .cap_groups
                     .get(cap_group)
                     .map(Self::cap_group_absolute_cap);
-                shared_gov::submission_requires_timelock(shared_gov::cap_change_decision(
+                shared_gov::submission_requires_timelock(shared_gov::cap_group_cap_change_decision(
                     current, new_cap.0,
                 ))
                 .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
