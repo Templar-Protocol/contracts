@@ -1,4 +1,4 @@
-use std::{num::NonZero, path::Path, process::Command, str::FromStr};
+use std::{num::NonZero, path::Path, str::FromStr};
 
 use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
@@ -45,6 +45,12 @@ pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal
 pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("test-utils manifest should be in workspace root child dir")
+}
 
 #[rstest::fixture]
 pub async fn worker() -> Worker<Sandbox> {
@@ -182,33 +188,14 @@ pub fn vault_configuration(
 }
 
 async fn compile_contract(p: &str) -> Vec<u8> {
-    // nearcore currently requires contracts to be compiled with Rust 1.86.
-    // Allow overriding for CI/debug, but default to the compatible toolchain.
-    let toolchain =
-        std::env::var("TEST_NEAR_RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "1.86.0".to_string());
-    std::env::set_var("RUSTUP_TOOLCHAIN", &toolchain);
-    if let Ok(output) = Command::new("rustup")
-        .args(["which", "--toolchain", &toolchain, "cargo"])
-        .output()
-    {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    std::env::set_var("CARGO", path);
-                }
-            }
-        }
-    }
-
-    let path = Path::new(env!("CARGO_WORKSPACE_DIR")).join(p);
+    let path = workspace_root().join(p);
     near_workspaces::compile_project(path.to_str().unwrap())
         .await
         .unwrap()
 }
 
 async fn read_contract(name: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_WORKSPACE_DIR"))
+    let path = workspace_root()
         .join("target/near/")
         .join(name)
         .join(name.to_owned() + ".wasm");

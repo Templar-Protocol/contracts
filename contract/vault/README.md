@@ -129,18 +129,10 @@ cargo kani --tests -p templar-vault-kernel
 cargo test -p templar-vault-kernel --test kani_proofs
 ```
 
-## NEAR Gas Delta Check
-
-Monitor gas usage changes against a baseline:
+## NEAR Gas Reporting
 
 ```bash
-# Run gas delta check (compares against baseline)
-./scripts/gas_delta_check.sh
-
-# With custom threshold (default: 10%)
-./scripts/gas_delta_check.sh --threshold 15
-
-# Generate new baseline (updates gas_baseline.json)
+# Generate gas report (updates gas_baseline.json)
 cargo run --example gas_report -p templar-vault-contract
 ```
 
@@ -204,13 +196,6 @@ The property tests run in CI via:
 - `cargo test -p templar-vault-kernel --features all-actions` (kernel + properties)
 - `cargo test -p templar-vault-contract` (NEAR integration)
 - `cargo test --manifest-path contract/vault/soroban/Cargo.toml` (Soroban)
-
-Gas delta checks are manual but can be added to CI with:
-
-```yaml
-- name: Gas delta check
-  run: ./scripts/gas_delta_check.sh --threshold 10
-```
 
 ## Security Docs
 
