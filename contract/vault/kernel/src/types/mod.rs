@@ -76,6 +76,15 @@ pub struct EscrowSettlement {
 }
 
 impl EscrowSettlement {
+    /// Create a settlement from escrowed shares and intended burned shares.
+    ///
+    /// Burned shares are clamped to `escrow_shares`, and the remainder is refunded.
+    pub fn from_escrow_and_burn(escrow_shares: u128, burn_shares: u128) -> Self {
+        let to_burn = burn_shares.min(escrow_shares);
+        let refund = escrow_shares.saturating_sub(to_burn);
+        Self { to_burn, refund }
+    }
+
     /// Create a settlement that burns all shares.
     pub fn burn_all(shares: u128) -> Self {
         Self {

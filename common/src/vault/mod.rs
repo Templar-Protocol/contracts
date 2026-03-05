@@ -277,10 +277,14 @@ pub struct EscrowSettlement {
 
 impl EscrowSettlement {
     pub fn new(escrow_shares: u128, burn_shares: u128) -> Self {
-        let to_burn = burn_shares.min(escrow_shares);
-        let refund = escrow_shares.saturating_sub(to_burn);
-
-        Self { to_burn, refund }
+        let settlement = templar_vault_kernel::types::EscrowSettlement::from_escrow_and_burn(
+            escrow_shares,
+            burn_shares,
+        );
+        Self {
+            to_burn: settlement.to_burn,
+            refund: settlement.refund,
+        }
     }
 }
 
