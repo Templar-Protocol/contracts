@@ -709,20 +709,14 @@ impl WithdrawQueue {
         let id = self.next_pending_withdrawal_id;
 
         // Compute cache totals first so we can fail without mutating queue state.
-        let new_escrow = match self
+        let new_escrow = self
             .cached_total_escrow
             .checked_add(withdrawal.escrow_shares)
-        {
-            Some(total) => total,
-            None => return Err(QueueError::CacheOverflow),
-        };
-        let new_expected = match self
+            .ok_or(QueueError::CacheOverflow)?;
+        let new_expected = self
             .cached_total_expected
             .checked_add(withdrawal.expected_assets)
-        {
-            Some(total) => total,
-            None => return Err(QueueError::CacheOverflow),
-        };
+            .ok_or(QueueError::CacheOverflow)?;
 
         self.pending_withdrawals.insert(id, withdrawal);
         self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);

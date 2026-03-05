@@ -224,10 +224,10 @@ where
 
     fn reserve_op_id(state: &mut VaultState) -> Result<u64, RuntimeError> {
         let op_id = state.next_op_id;
-        state.next_op_id = match state.next_op_id.checked_add(1) {
-            Some(next) => next,
-            None => return Err(invalid_state_error("op_id overflow")),
-        };
+        state.next_op_id = state
+            .next_op_id
+            .checked_add(1)
+            .ok_or_else(|| invalid_state_error("op_id overflow"))?;
         Ok(op_id)
     }
 
@@ -612,14 +612,14 @@ where
         summary.merge(transfer_summary);
 
         let state = self.state_mut()?;
-        state.idle_assets = match state.idle_assets.checked_sub(assets_out) {
-            Some(idle_assets) => idle_assets,
-            None => return Err(invalid_state_error("idle_assets underflow on withdrawal")),
-        };
-        state.total_assets = match state.idle_assets.checked_add(state.external_assets) {
-            Some(total_assets) => total_assets,
-            None => return Err(invalid_state_error("total_assets overflow on withdrawal")),
-        };
+        state.idle_assets = state
+            .idle_assets
+            .checked_sub(assets_out)
+            .ok_or_else(|| invalid_state_error("idle_assets underflow on withdrawal"))?;
+        state.total_assets = state
+            .idle_assets
+            .checked_add(state.external_assets)
+            .ok_or_else(|| invalid_state_error("total_assets overflow on withdrawal"))?;
 
         let settle_summary = self.apply_kernel_action(
             KernelAction::SettlePayout {
