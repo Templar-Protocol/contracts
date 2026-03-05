@@ -312,6 +312,15 @@ pub enum CapGroupError {
 
 /// A cap-group governance update (shared across chains).
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Eq)]
@@ -332,6 +341,15 @@ pub enum CapGroupUpdate {
 
 /// Identifies a cap-group governance update for accept/revoke operations.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Eq)]

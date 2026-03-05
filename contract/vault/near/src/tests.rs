@@ -3405,18 +3405,18 @@ fn cap_group_membership_moves_principal() {
     let group_b = CapGroupId("gb".to_string());
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
-        cap_group: group_a.clone(),
-        new_cap: U128(200),
+        cap_group_id: group_a.clone(),
+        new_cap: 200,
     });
     c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
-        cap_group: group_a.clone(),
+        cap_group_id: group_a.clone(),
     });
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
-        cap_group: group_b.clone(),
-        new_cap: U128(300),
+        cap_group_id: group_b.clone(),
+        new_cap: 300,
     });
     c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
-        cap_group: group_b.clone(),
+        cap_group_id: group_b.clone(),
     });
 
     let market = mk(9400);
@@ -3428,11 +3428,13 @@ fn cap_group_membership_moves_principal() {
     };
     let market_id = c.insert_market_for_tests(market.clone(), cfg, 80);
 
-    c.submit_cap_group_update(CapGroupUpdate::SetMarketCapGroup {
-        market: market_id,
-        cap_group: Some(group_b.clone()),
+    c.submit_cap_group_update(CapGroupUpdate::SetMembership {
+        market_id: market_id.0,
+        cap_group_id: Some(group_b.clone()),
     });
-    c.accept_cap_group_update(CapGroupUpdateKey::SetMarketCapGroup { market: market_id });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetMembership {
+        market_id: market_id.0,
+    });
 
     let rec = c.markets.get(&market_id).expect("market must exist");
     assert_eq!(rec.cfg.cap_group_id, Some(group_b.clone()));
@@ -3465,11 +3467,11 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     let group = CapGroupId("gr".to_string());
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
-        cap_group: group.clone(),
-        new_cap: U128(1_000),
+        cap_group_id: group.clone(),
+        new_cap: 1_000,
     });
     c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
-        cap_group: group.clone(),
+        cap_group_id: group.clone(),
     });
 
     assert_eq!(
@@ -3479,8 +3481,8 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
 
     let half = Wad::one() / 2;
     c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
-        cap_group: group.clone(),
-        new_relative_cap: U128(u128::from(half)),
+        cap_group_id: group.clone(),
+        new_relative_cap_wad: u128::from(half),
     });
 
     assert_eq!(
@@ -3493,8 +3495,8 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     );
 
     c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
-        cap_group: group.clone(),
-        new_relative_cap: U128(u128::from(Wad::one())),
+        cap_group_id: group.clone(),
+        new_relative_cap_wad: u128::from(Wad::one()),
     });
 
     assert!(
@@ -3508,7 +3510,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     );
 
     c.accept_cap_group_update(CapGroupUpdateKey::SetRelativeCap {
-        cap_group: group.clone(),
+        cap_group_id: group.clone(),
     });
 
     assert_eq!(

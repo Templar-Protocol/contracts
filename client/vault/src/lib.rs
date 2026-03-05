@@ -495,41 +495,43 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum CapGroupUpdate {
     SetCap {
-        cap_group: CapGroupId,
+        cap_group_id: CapGroupId,
         new_cap: ForeignU128,
     },
     SetRelativeCap {
-        cap_group: CapGroupId,
-        new_relative_cap: ForeignU128,
+        cap_group_id: CapGroupId,
+        new_relative_cap_wad: ForeignU128,
     },
-    SetMarketCapGroup {
-        market: MarketId,
-        cap_group: Option<CapGroupId>,
+    SetMembership {
+        market_id: MarketId,
+        cap_group_id: Option<CapGroupId>,
     },
 }
 
 impl CapGroupUpdate {
     fn try_into_common(self) -> Result<templar_common::vault::CapGroupUpdate, ErrorWrapper> {
         Ok(match self {
-            CapGroupUpdate::SetCap { cap_group, new_cap } => {
-                templar_common::vault::CapGroupUpdate::SetCap {
-                    cap_group: cap_group.into(),
-                    new_cap: U128(parse_u128(&new_cap)?),
-                }
-            }
-            CapGroupUpdate::SetRelativeCap {
-                cap_group,
-                new_relative_cap,
-            } => templar_common::vault::CapGroupUpdate::SetRelativeCap {
-                cap_group: cap_group.into(),
-                new_relative_cap: U128(parse_u128(&new_relative_cap)?),
+            CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => templar_common::vault::CapGroupUpdate::SetCap {
+                cap_group_id: cap_group_id.into(),
+                new_cap: parse_u128(&new_cap)?,
             },
-            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
-                templar_common::vault::CapGroupUpdate::SetMarketCapGroup {
-                    market: market.into(),
-                    cap_group: cap_group.map(Into::into),
-                }
-            }
+            CapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap_wad,
+            } => templar_common::vault::CapGroupUpdate::SetRelativeCap {
+                cap_group_id: cap_group_id.into(),
+                new_relative_cap_wad: parse_u128(&new_relative_cap_wad)?,
+            },
+            CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => templar_common::vault::CapGroupUpdate::SetMembership {
+                market_id: market_id.0,
+                cap_group_id: cap_group_id.map(Into::into),
+            },
         })
     }
 }
@@ -545,50 +547,54 @@ impl TryFrom<CapGroupUpdate> for templar_common::vault::CapGroupUpdate {
 impl From<templar_common::vault::CapGroupUpdate> for CapGroupUpdate {
     fn from(value: templar_common::vault::CapGroupUpdate) -> Self {
         match value {
-            templar_common::vault::CapGroupUpdate::SetCap { cap_group, new_cap } => Self::SetCap {
-                cap_group: cap_group.into(),
-                new_cap: new_cap.0.to_string(),
+            templar_common::vault::CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => Self::SetCap {
+                cap_group_id: cap_group_id.into(),
+                new_cap: new_cap.to_string(),
             },
             templar_common::vault::CapGroupUpdate::SetRelativeCap {
-                cap_group,
-                new_relative_cap,
+                cap_group_id,
+                new_relative_cap_wad,
             } => Self::SetRelativeCap {
-                cap_group: cap_group.into(),
-                new_relative_cap: new_relative_cap.0.to_string(),
+                cap_group_id: cap_group_id.into(),
+                new_relative_cap_wad: new_relative_cap_wad.to_string(),
             },
-            templar_common::vault::CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
-                Self::SetMarketCapGroup {
-                    market: market.into(),
-                    cap_group: cap_group.map(Into::into),
-                }
-            }
+            templar_common::vault::CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => Self::SetMembership {
+                market_id: MarketId(market_id),
+                cap_group_id: cap_group_id.map(Into::into),
+            },
         }
     }
 }
 
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum CapGroupUpdateKey {
-    SetCap { cap_group: CapGroupId },
-    SetRelativeCap { cap_group: CapGroupId },
-    SetMarketCapGroup { market: MarketId },
+    SetCap { cap_group_id: CapGroupId },
+    SetRelativeCap { cap_group_id: CapGroupId },
+    SetMembership { market_id: MarketId },
 }
 
 impl CapGroupUpdateKey {
     fn into_common(self) -> templar_common::vault::CapGroupUpdateKey {
         match self {
-            CapGroupUpdateKey::SetCap { cap_group } => {
+            CapGroupUpdateKey::SetCap { cap_group_id } => {
                 templar_common::vault::CapGroupUpdateKey::SetCap {
-                    cap_group: cap_group.into(),
+                    cap_group_id: cap_group_id.into(),
                 }
             }
-            CapGroupUpdateKey::SetRelativeCap { cap_group } => {
+            CapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
                 templar_common::vault::CapGroupUpdateKey::SetRelativeCap {
-                    cap_group: cap_group.into(),
+                    cap_group_id: cap_group_id.into(),
                 }
             }
-            CapGroupUpdateKey::SetMarketCapGroup { market } => {
-                templar_common::vault::CapGroupUpdateKey::SetMarketCapGroup {
-                    market: market.into(),
+            CapGroupUpdateKey::SetMembership { market_id } => {
+                templar_common::vault::CapGroupUpdateKey::SetMembership {
+                    market_id: market_id.0,
                 }
             }
         }
@@ -604,19 +610,19 @@ impl From<CapGroupUpdateKey> for templar_common::vault::CapGroupUpdateKey {
 impl From<templar_common::vault::CapGroupUpdateKey> for CapGroupUpdateKey {
     fn from(value: templar_common::vault::CapGroupUpdateKey) -> Self {
         match value {
-            templar_common::vault::CapGroupUpdateKey::SetCap { cap_group } => {
+            templar_common::vault::CapGroupUpdateKey::SetCap { cap_group_id } => {
                 CapGroupUpdateKey::SetCap {
-                    cap_group: cap_group.into(),
+                    cap_group_id: cap_group_id.into(),
                 }
             }
-            templar_common::vault::CapGroupUpdateKey::SetRelativeCap { cap_group } => {
+            templar_common::vault::CapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
                 CapGroupUpdateKey::SetRelativeCap {
-                    cap_group: cap_group.into(),
+                    cap_group_id: cap_group_id.into(),
                 }
             }
-            templar_common::vault::CapGroupUpdateKey::SetMarketCapGroup { market } => {
-                CapGroupUpdateKey::SetMarketCapGroup {
-                    market: market.into(),
+            templar_common::vault::CapGroupUpdateKey::SetMembership { market_id } => {
+                CapGroupUpdateKey::SetMembership {
+                    market_id: MarketId(market_id),
                 }
             }
         }
@@ -813,19 +819,27 @@ fn timelocked_action_from_common_cap_group_update(
     update: templar_common::vault::CapGroupUpdate,
 ) -> TimelockedAction {
     match CapGroupUpdate::from(update) {
-        CapGroupUpdate::SetCap { cap_group, new_cap } => {
-            TimelockedAction::CapGroupChange { cap_group, new_cap }
-        }
-        CapGroupUpdate::SetRelativeCap {
-            cap_group,
-            new_relative_cap,
-        } => TimelockedAction::CapGroupRelativeCapChange {
-            cap_group,
-            new_relative_cap,
+        CapGroupUpdate::SetCap {
+            cap_group_id,
+            new_cap,
+        } => TimelockedAction::CapGroupChange {
+            cap_group: cap_group_id,
+            new_cap,
         },
-        CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
-            TimelockedAction::CapGroupMembership { market, cap_group }
-        }
+        CapGroupUpdate::SetRelativeCap {
+            cap_group_id,
+            new_relative_cap_wad,
+        } => TimelockedAction::CapGroupRelativeCapChange {
+            cap_group: cap_group_id,
+            new_relative_cap: new_relative_cap_wad,
+        },
+        CapGroupUpdate::SetMembership {
+            market_id,
+            cap_group_id,
+        } => TimelockedAction::CapGroupMembership {
+            market: market_id,
+            cap_group: cap_group_id,
+        },
     }
 }
 
@@ -905,7 +919,10 @@ impl From<TimelockedActionSerde> for TimelockedAction {
             },
             TimelockedActionSerde::CapGroupChange { cap_group, new_cap } => {
                 timelocked_action_from_common_cap_group_update(
-                    templar_common::vault::CapGroupUpdate::SetCap { cap_group, new_cap },
+                    templar_common::vault::CapGroupUpdate::SetCap {
+                        cap_group_id: cap_group,
+                        new_cap: new_cap.0,
+                    },
                 )
             }
             TimelockedActionSerde::CapGroupRelativeCapChange {
@@ -913,13 +930,16 @@ impl From<TimelockedActionSerde> for TimelockedAction {
                 new_relative_cap,
             } => timelocked_action_from_common_cap_group_update(
                 templar_common::vault::CapGroupUpdate::SetRelativeCap {
-                    cap_group,
-                    new_relative_cap,
+                    cap_group_id: cap_group,
+                    new_relative_cap_wad: new_relative_cap.0,
                 },
             ),
             TimelockedActionSerde::CapGroupMembership { market, cap_group } => {
                 timelocked_action_from_common_cap_group_update(
-                    templar_common::vault::CapGroupUpdate::SetMarketCapGroup { market, cap_group },
+                    templar_common::vault::CapGroupUpdate::SetMembership {
+                        market_id: market.0,
+                        cap_group_id: cap_group,
+                    },
                 )
             }
             TimelockedActionSerde::MarketRemoval { market } => TimelockedAction::MarketRemoval {
@@ -1314,44 +1334,44 @@ mod tests {
     #[test]
     fn cap_group_update_try_into_common_maps_variants() {
         let set_cap = CapGroupUpdate::SetCap {
-            cap_group: CapGroupId("group-a".to_string()),
+            cap_group_id: CapGroupId("group-a".to_string()),
             new_cap: "10".to_string(),
         };
         let common: templar_common::vault::CapGroupUpdate = set_cap.try_into().unwrap();
         assert!(matches!(
             common,
-            templar_common::vault::CapGroupUpdate::SetCap { cap_group, new_cap }
-                if cap_group.0 == "group-a" && new_cap.0 == 10
+            templar_common::vault::CapGroupUpdate::SetCap { cap_group_id, new_cap }
+                if cap_group_id.0 == "group-a" && new_cap == 10
         ));
 
         let set_relative = CapGroupUpdate::SetRelativeCap {
-            cap_group: CapGroupId("group-b".to_string()),
-            new_relative_cap: "20".to_string(),
+            cap_group_id: CapGroupId("group-b".to_string()),
+            new_relative_cap_wad: "20".to_string(),
         };
         let common: templar_common::vault::CapGroupUpdate = set_relative.try_into().unwrap();
         assert!(matches!(
             common,
-            templar_common::vault::CapGroupUpdate::SetRelativeCap { cap_group, new_relative_cap }
-                if cap_group.0 == "group-b" && new_relative_cap.0 == 20
+            templar_common::vault::CapGroupUpdate::SetRelativeCap { cap_group_id, new_relative_cap_wad }
+                if cap_group_id.0 == "group-b" && new_relative_cap_wad == 20
         ));
 
-        let set_membership = CapGroupUpdate::SetMarketCapGroup {
-            market: MarketId(7),
-            cap_group: Some(CapGroupId("group-c".to_string())),
+        let set_membership = CapGroupUpdate::SetMembership {
+            market_id: MarketId(7),
+            cap_group_id: Some(CapGroupId("group-c".to_string())),
         };
         let common: templar_common::vault::CapGroupUpdate = set_membership.try_into().unwrap();
         assert!(matches!(
             common,
-            templar_common::vault::CapGroupUpdate::SetMarketCapGroup { market, cap_group }
-                if market.0 == 7
-                    && cap_group.as_ref().map(|id| id.0.as_str()) == Some("group-c")
+            templar_common::vault::CapGroupUpdate::SetMembership { market_id, cap_group_id }
+                if market_id == 7
+                    && cap_group_id.as_ref().map(|id| id.0.as_str()) == Some("group-c")
         ));
     }
 
     #[test]
     fn cap_group_update_try_into_common_rejects_invalid_u128() {
         let update = CapGroupUpdate::SetCap {
-            cap_group: CapGroupId("group-a".to_string()),
+            cap_group_id: CapGroupId("group-a".to_string()),
             new_cap: "not-a-number".to_string(),
         };
         let err = templar_common::vault::CapGroupUpdate::try_from(update).unwrap_err();
@@ -1360,8 +1380,8 @@ mod tests {
 
     #[test]
     fn cap_group_update_key_roundtrips_with_common() {
-        let key = CapGroupUpdateKey::SetMarketCapGroup {
-            market: MarketId(11),
+        let key = CapGroupUpdateKey::SetMembership {
+            market_id: MarketId(11),
         };
         let common: templar_common::vault::CapGroupUpdateKey = key.clone().into();
         let back: CapGroupUpdateKey = common.into();

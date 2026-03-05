@@ -12,7 +12,9 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
-pub use templar_curator_primitives::{CapGroupId, CapGroupRecord};
+pub use templar_curator_primitives::{
+    CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+};
 pub use templar_vault_kernel::state::op_state::{
     AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
@@ -111,125 +113,6 @@ pub struct ResyncIdleReport {
     pub fee_anchor_bump: U128,
     /// Completion timestamp in nanoseconds.
     pub resynced_at_ns: U64,
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq)]
-#[near(serializers = [json])]
-pub enum CapGroupUpdate {
-    /// Update the absolute cap (in underlying units).
-    SetCap {
-        cap_group: CapGroupId,
-        new_cap: U128,
-    },
-    /// Update the relative cap (WAD, 1e24 = 100% of total assets).
-    SetRelativeCap {
-        cap_group: CapGroupId,
-        new_relative_cap: U128,
-    },
-    /// Assign (or remove) a market to/from a cap group.
-    SetMarketCapGroup {
-        market: MarketId,
-        cap_group: Option<CapGroupId>,
-    },
-}
-
-impl From<CapGroupUpdate> for templar_curator_primitives::CapGroupUpdate {
-    fn from(value: CapGroupUpdate) -> Self {
-        match value {
-            CapGroupUpdate::SetCap { cap_group, new_cap } => Self::SetCap {
-                cap_group_id: cap_group,
-                new_cap: new_cap.0,
-            },
-            CapGroupUpdate::SetRelativeCap {
-                cap_group,
-                new_relative_cap,
-            } => Self::SetRelativeCap {
-                cap_group_id: cap_group,
-                new_relative_cap_wad: new_relative_cap.0,
-            },
-            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => Self::SetMembership {
-                market_id: u32::from(market),
-                cap_group_id: cap_group,
-            },
-        }
-    }
-}
-
-impl From<templar_curator_primitives::CapGroupUpdate> for CapGroupUpdate {
-    fn from(value: templar_curator_primitives::CapGroupUpdate) -> Self {
-        match value {
-            templar_curator_primitives::CapGroupUpdate::SetCap {
-                cap_group_id,
-                new_cap,
-            } => Self::SetCap {
-                cap_group: cap_group_id,
-                new_cap: U128(new_cap),
-            },
-            templar_curator_primitives::CapGroupUpdate::SetRelativeCap {
-                cap_group_id,
-                new_relative_cap_wad,
-            } => Self::SetRelativeCap {
-                cap_group: cap_group_id,
-                new_relative_cap: U128(new_relative_cap_wad),
-            },
-            templar_curator_primitives::CapGroupUpdate::SetMembership {
-                market_id,
-                cap_group_id,
-            } => Self::SetMarketCapGroup {
-                market: MarketId::from(market_id),
-                cap_group: cap_group_id,
-            },
-        }
-    }
-}
-
-/// Identifies a pending cap-group timelock action.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq)]
-#[near(serializers = [json])]
-pub enum CapGroupUpdateKey {
-    SetCap { cap_group: CapGroupId },
-    SetRelativeCap { cap_group: CapGroupId },
-    SetMarketCapGroup { market: MarketId },
-}
-
-impl From<CapGroupUpdateKey> for templar_curator_primitives::CapGroupUpdateKey {
-    fn from(value: CapGroupUpdateKey) -> Self {
-        match value {
-            CapGroupUpdateKey::SetCap { cap_group } => Self::SetCap {
-                cap_group_id: cap_group,
-            },
-            CapGroupUpdateKey::SetRelativeCap { cap_group } => Self::SetRelativeCap {
-                cap_group_id: cap_group,
-            },
-            CapGroupUpdateKey::SetMarketCapGroup { market } => Self::SetMembership {
-                market_id: u32::from(market),
-            },
-        }
-    }
-}
-
-impl From<templar_curator_primitives::CapGroupUpdateKey> for CapGroupUpdateKey {
-    fn from(value: templar_curator_primitives::CapGroupUpdateKey) -> Self {
-        match value {
-            templar_curator_primitives::CapGroupUpdateKey::SetCap { cap_group_id } => {
-                Self::SetCap {
-                    cap_group: cap_group_id,
-                }
-            }
-            templar_curator_primitives::CapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
-                Self::SetRelativeCap {
-                    cap_group: cap_group_id,
-                }
-            }
-            templar_curator_primitives::CapGroupUpdateKey::SetMembership { market_id } => {
-                Self::SetMarketCapGroup {
-                    market: MarketId::from(market_id),
-                }
-            }
-        }
-    }
 }
 
 #[derive(
@@ -516,108 +399,68 @@ pub struct FeeAccrualAnchor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CapGroupId, CapGroupUpdate, Fee, Fees, MarketId};
+    use super::{CapGroupId, CapGroupUpdate, CapGroupUpdateKey, Fee, Fees};
     use near_sdk::json_types::U128;
     use near_sdk::AccountId;
     use templar_vault_kernel::Wad;
 
     #[test]
-    fn cap_group_update_roundtrips_through_curator_primitive_set_cap() {
+    fn cap_group_update_uses_canonical_set_cap_shape() {
         let common = CapGroupUpdate::SetCap {
-            cap_group: CapGroupId::from("group-a"),
-            new_cap: U128(123),
+            cap_group_id: CapGroupId::from("group-a"),
+            new_cap: 123,
         };
 
-        let primitive: templar_curator_primitives::CapGroupUpdate = common.clone().into();
         assert_eq!(
-            primitive,
-            templar_curator_primitives::CapGroupUpdate::SetCap {
+            common,
+            CapGroupUpdate::SetCap {
                 cap_group_id: CapGroupId::from("group-a"),
                 new_cap: 123,
             }
         );
-
-        let roundtrip: CapGroupUpdate = primitive.into();
-        assert_eq!(
-            roundtrip,
-            CapGroupUpdate::SetCap {
-                cap_group: CapGroupId::from("group-a"),
-                new_cap: U128(123),
-            }
-        );
     }
 
     #[test]
-    fn cap_group_update_roundtrips_through_curator_primitive_set_relative_cap() {
+    fn cap_group_update_uses_canonical_set_relative_cap_shape() {
         let common = CapGroupUpdate::SetRelativeCap {
-            cap_group: CapGroupId::from("group-b"),
-            new_relative_cap: U128(999),
+            cap_group_id: CapGroupId::from("group-b"),
+            new_relative_cap_wad: 999,
         };
 
-        let primitive: templar_curator_primitives::CapGroupUpdate = common.clone().into();
         assert_eq!(
-            primitive,
-            templar_curator_primitives::CapGroupUpdate::SetRelativeCap {
+            common,
+            CapGroupUpdate::SetRelativeCap {
                 cap_group_id: CapGroupId::from("group-b"),
                 new_relative_cap_wad: 999,
             }
         );
-
-        let roundtrip: CapGroupUpdate = primitive.into();
-        assert_eq!(
-            roundtrip,
-            CapGroupUpdate::SetRelativeCap {
-                cap_group: CapGroupId::from("group-b"),
-                new_relative_cap: U128(999),
-            }
-        );
     }
 
     #[test]
-    fn cap_group_update_roundtrips_through_curator_primitive_membership() {
-        let common = CapGroupUpdate::SetMarketCapGroup {
-            market: MarketId(77),
-            cap_group: Some(CapGroupId::from("group-c")),
+    fn cap_group_update_uses_canonical_membership_shape() {
+        let common = CapGroupUpdate::SetMembership {
+            market_id: 77,
+            cap_group_id: Some(CapGroupId::from("group-c")),
         };
 
-        let primitive: templar_curator_primitives::CapGroupUpdate = common.clone().into();
         assert_eq!(
-            primitive,
-            templar_curator_primitives::CapGroupUpdate::SetMembership {
+            common,
+            CapGroupUpdate::SetMembership {
                 market_id: 77,
                 cap_group_id: Some(CapGroupId::from("group-c")),
             }
         );
-
-        let roundtrip: CapGroupUpdate = primitive.into();
-        assert_eq!(
-            roundtrip,
-            CapGroupUpdate::SetMarketCapGroup {
-                market: MarketId(77),
-                cap_group: Some(CapGroupId::from("group-c")),
-            }
-        );
     }
 
     #[test]
-    fn cap_group_update_key_roundtrips_through_curator_primitive() {
-        let key = super::CapGroupUpdateKey::SetRelativeCap {
-            cap_group: CapGroupId::from("group-key"),
+    fn cap_group_update_key_uses_canonical_shape() {
+        let key = CapGroupUpdateKey::SetRelativeCap {
+            cap_group_id: CapGroupId::from("group-key"),
         };
-
-        let primitive: templar_curator_primitives::CapGroupUpdateKey = key.clone().into();
         assert_eq!(
-            primitive,
-            templar_curator_primitives::CapGroupUpdateKey::SetRelativeCap {
+            key,
+            CapGroupUpdateKey::SetRelativeCap {
                 cap_group_id: CapGroupId::from("group-key"),
-            }
-        );
-
-        let roundtrip: super::CapGroupUpdateKey = primitive.into();
-        assert_eq!(
-            roundtrip,
-            super::CapGroupUpdateKey::SetRelativeCap {
-                cap_group: CapGroupId::from("group-key"),
             }
         );
     }
