@@ -4,7 +4,7 @@ use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_workspaces::{network::Sandbox, operations::Function, types::Gas, Worker};
 use rstest::rstest;
-use templar_common::vault::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
+use templar_common::vault::prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,

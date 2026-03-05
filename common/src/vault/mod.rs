@@ -5,7 +5,6 @@ use derive_more::{Display, From, Into};
 use crate::{
     asset::{BorrowAsset, FungibleAsset},
     supply::SupplyPosition,
-    vault::wad::Wad,
 };
 pub use external::*;
 use near_sdk::{
@@ -14,7 +13,7 @@ use near_sdk::{
     near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
-use templar_vault_kernel::TimeGate;
+use templar_vault_kernel::{TimeGate, Wad};
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -30,13 +29,40 @@ pub mod lock;
 pub mod params;
 pub mod restrictions;
 pub mod state;
-pub mod wad;
 
 pub use errors::Error;
 pub use gas::*;
 pub use lock::Locker;
 pub use restrictions::*;
 pub use state::*;
+
+/// Broad import surface for vault consumers.
+///
+/// Prefer `use templar_common::vault::prelude::*;` at call sites that need
+/// most vault types, constants, and wad/math helpers.
+pub mod prelude {
+    pub use super::event::{
+        AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus,
+        Reason, UnbrickPhase, WithdrawProgressPhase, WithdrawalAccountingKind,
+    };
+    pub use super::external::*;
+    pub use super::gas::*;
+    pub use super::params::*;
+    pub use super::restrictions::*;
+    pub use super::state::*;
+    pub use super::{
+        require_at_least, storage_bytes_for_account_id, ActualIdx, AllocationDelta, AllocationPlan,
+        AllocationWeights, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Delta,
+        DepositMsg, Error, EscrowSettlement, ExpectedIdx, Fee, FeeAccrualAnchor, Fees,
+        IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId, PendingValue,
+        PendingWithdrawal, RealAssetsReport, ResyncIdleReport, TimestampNs, VaultConfiguration,
+    };
+    pub use templar_vault_kernel::math::number::{Number, WIDE};
+    pub use templar_vault_kernel::{
+        compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
+        mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+    };
+}
 
 pub type AllocationWeights = Vec<(MarketId, U128)>;
 pub type AllocationPlan = Vec<(MarketId, u128)>;

@@ -29,7 +29,7 @@ use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
 // Import NEAR-specific math types for share math
 use templar_common::supply::SupplyPosition;
-use templar_common::vault::wad::{
+use templar_common::vault::prelude::{
     compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
     MAX_PERFORMANCE_FEE_WAD,
 };

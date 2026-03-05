@@ -1,4 +1,4 @@
-use std::{num::NonZero, path::Path, str::FromStr};
+use std::{num::NonZero, path::Path, process::Command, str::FromStr};
 
 use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
@@ -30,7 +30,7 @@ use templar_common::{
     oracle::pyth::{self, PriceIdentifier},
     registry::DeployMode,
     vault::{
-        wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
+        prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
         Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
     },
 };
@@ -177,10 +177,30 @@ pub fn vault_configuration(
         restrictions: None,
         refresh_cooldown_ns: None,
         idle_resync_cooldown_ns: None,
+        withdrawal_cooldown_ns: None,
     }
 }
 
 async fn compile_contract(p: &str) -> Vec<u8> {
+    // nearcore currently requires contracts to be compiled with Rust 1.86.
+    // Allow overriding for CI/debug, but default to the compatible toolchain.
+    let toolchain =
+        std::env::var("TEST_NEAR_RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "1.86.0".to_string());
+    std::env::set_var("RUSTUP_TOOLCHAIN", &toolchain);
+    if let Ok(output) = Command::new("rustup")
+        .args(["which", "--toolchain", &toolchain, "cargo"])
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(path) = String::from_utf8(output.stdout) {
+                let path = path.trim();
+                if !path.is_empty() {
+                    std::env::set_var("CARGO", path);
+                }
+            }
+        }
+    }
+
     let path = Path::new(env!("CARGO_WORKSPACE_DIR")).join(p);
     near_workspaces::compile_project(path.to_str().unwrap())
         .await

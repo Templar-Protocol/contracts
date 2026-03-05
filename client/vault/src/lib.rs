@@ -840,8 +840,8 @@ pub struct FeeWad {
     pub recipient: AccountId,
 }
 
-impl From<templar_common::vault::Fee<templar_common::vault::wad::Wad>> for FeeWad {
-    fn from(value: templar_common::vault::Fee<templar_common::vault::wad::Wad>) -> Self {
+impl From<templar_common::vault::Fee<templar_common::vault::prelude::Wad>> for FeeWad {
+    fn from(value: templar_common::vault::Fee<templar_common::vault::prelude::Wad>) -> Self {
         FeeWad {
             fee_wad: u128::from(value.fee).to_string(),
             recipient: value.recipient.to_string().into(),
@@ -856,8 +856,8 @@ pub struct FeesWad {
     pub max_total_assets_growth_rate_wad: Option<ForeignU128>,
 }
 
-impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for FeesWad {
-    fn from(value: templar_common::vault::Fees<templar_common::vault::wad::Wad>) -> Self {
+impl From<templar_common::vault::Fees<templar_common::vault::prelude::Wad>> for FeesWad {
+    fn from(value: templar_common::vault::Fees<templar_common::vault::prelude::Wad>) -> Self {
         FeesWad {
             performance: value.performance.into(),
             management: value.management.into(),

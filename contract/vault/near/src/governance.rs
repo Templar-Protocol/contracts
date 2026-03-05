@@ -1,5 +1,5 @@
 use templar_common::vault::{
-    wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
+    prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
     CapGroupUpdate, CapGroupUpdateKey, TimelockKind, TimestampNs, MAX_QUEUE_LEN,
 };
 

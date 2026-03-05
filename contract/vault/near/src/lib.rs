@@ -38,19 +38,18 @@ use templar_common::{
     market::ext_market,
     panic_with_message,
     vault::{
-        require_at_least,
-        wad::{
+        prelude::{
             compute_fee_shares, compute_fee_shares_from_assets, MAX_MANAGEMENT_FEE_WAD,
             MAX_PERFORMANCE_FEE_WAD,
         },
-        AllocatingState, AllocationDelta, AllocationPlan, CapGroupId, CapGroupRecord, Error, Event,
-        FeeAccrualAnchor, Fees, IdleBalanceDelta, MarketConfiguration, MarketId, OpState,
-        PayoutState, PendingWithdrawal, QueueAction, QueueStatus, RealAssetsReport, Reason,
-        RefreshingState, UnbrickPhase, VaultConfiguration, WithdrawProgressPhase, WithdrawingState,
-        AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS, CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS,
-        FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS,
-        SUPPLY_AFTER_TRANSFER_CHECK_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS,
-        WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
+        require_at_least, AllocatingState, AllocationDelta, AllocationPlan, CapGroupId,
+        CapGroupRecord, Error, Event, FeeAccrualAnchor, Fees, IdleBalanceDelta,
+        MarketConfiguration, MarketId, OpState, PayoutState, PendingWithdrawal, QueueAction,
+        QueueStatus, RealAssetsReport, Reason, RefreshingState, UnbrickPhase, VaultConfiguration,
+        WithdrawProgressPhase, WithdrawingState, AFTER_SEND_TO_USER_GAS, ALLOCATE_GAS,
+        CREATE_WITHDRAW_REQ_GAS, EXECUTE_WITHDRAW_GAS, FT_BALANCE_OF_GAS, GET_SUPPLY_POSITION_GAS,
+        MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, SUPPLY_AFTER_TRANSFER_CHECK_GAS,
+        SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_CREATE_REQUEST_CALLBACK_GAS, YEAR_NS,
     },
 };
 pub use templar_curator_primitives::rbac::Role;
@@ -65,7 +64,7 @@ const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
 const ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS: &str = "Missing address mapping for withdrawal queue";
 
-pub use templar_common::vault::wad::{mul_div_ceil, mul_div_floor, Number, Wad};
+pub use templar_common::vault::prelude::{mul_div_ceil, mul_div_floor, Number, Wad};
 
 pub mod aum;
 pub(crate) mod convert;
