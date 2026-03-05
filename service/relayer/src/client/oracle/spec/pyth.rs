@@ -22,7 +22,14 @@ pub struct PythSpec {
 impl PythSpec {
     pub fn new(config: args::PythConfig) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Only panics if TLS backend fails to initialize, which is both unlikely and unrecoverable."
+            )]
+            http: reqwest::Client::builder()
+                .timeout(config.timeout)
+                .build()
+                .unwrap(),
             config,
         }
     }
@@ -121,6 +128,7 @@ mod tests {
             refresh: Duration::from_secs(25),
             update_gas: near_sdk::Gas::from_tgas(300),
             update_deposit: NearToken::from_near(1).saturating_div(100),
+            timeout: Duration::from_secs(10),
         };
 
         let handle = PythSpec::new(pyth_args.clone());

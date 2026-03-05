@@ -597,6 +597,7 @@ pub async fn pyth_updates() {
         refresh: Duration::from_secs(25),
         update_gas: near_sdk::Gas::from_tgas(300),
         update_deposit: NearToken::from_near(1).saturating_div(100),
+        timeout: Duration::from_secs(10),
     };
 
     let near = Near::new(

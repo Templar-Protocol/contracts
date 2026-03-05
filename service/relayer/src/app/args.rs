@@ -107,6 +107,15 @@ pub struct PythConfig {
         default_value = "3"
     )]
     pub refresh: Duration,
+    /// HTTP timeout for Hermes requests (in seconds).
+    #[arg(
+        id = "pyth-timeout-secs",
+        long = "pyth-timeout-secs",
+        env = "PYTH_TIMEOUT_SECS",
+        value_parser = duration_from_secs,
+        default_value = "10"
+    )]
+    pub timeout: Duration,
     /// How much gas (in units of Tgas) to attach to oracle price update calls.
     #[arg(
         id = "pyth-update-gas",
