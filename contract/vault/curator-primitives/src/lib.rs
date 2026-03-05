@@ -23,6 +23,7 @@ pub mod policy;
 pub mod rbac;
 #[cfg(feature = "recovery")]
 pub mod recovery;
+pub mod utils;
 
 #[cfg(test)]
 mod tests;
@@ -75,6 +76,7 @@ pub use governance::{
     FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError, PendingValue,
     Restrictions, TimelockConfigError, TimelockDecision,
 };
+pub use utils::seconds_to_nanoseconds;
 
 #[cfg(feature = "boundary")]
 pub use boundary::{boundary_auth_pattern_for, BoundaryAuthPattern, VaultStorageKey};

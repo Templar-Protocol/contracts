@@ -1,4 +1,5 @@
 use crate::error::{ContractError, RuntimeError};
+use templar_curator_primitives::seconds_to_nanoseconds;
 
 #[inline]
 fn u128_to_i128_with(
@@ -19,10 +20,7 @@ pub(crate) fn u128_to_i128_effect(value: u128, msg: &'static str) -> Result<i128
 
 /// Shared ledger timestamp → nanoseconds conversion.
 pub(crate) fn ledger_timestamp_ns(env: &soroban_sdk::Env) -> Result<u64, ContractError> {
-    match env.ledger().timestamp().checked_mul(1_000_000_000) {
-        Some(ns) => Ok(ns),
-        None => Err(ContractError::ConversionOverflow),
-    }
+    seconds_to_nanoseconds(env.ledger().timestamp()).ok_or(ContractError::ConversionOverflow)
 }
 
 /// Convert RuntimeError to ContractError.

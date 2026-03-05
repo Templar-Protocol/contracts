@@ -19,6 +19,7 @@ use templar_curator_primitives::governance::{
     PendingQueueError, PendingValue, RelativeCapChangeError, Restrictions as SharedRestrictions,
     TimelockConfigError, TimelockDecision,
 };
+use templar_curator_primitives::seconds_to_nanoseconds;
 use templar_vault_kernel::math::wad::Wad;
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
@@ -1111,10 +1112,7 @@ fn require_not_abdicated(env: &Env, action: &GovernanceAction) -> Result<(), Gov
 }
 
 fn ledger_timestamp_ns(env: &Env) -> Result<u64, GovernanceError> {
-    env.ledger()
-        .timestamp()
-        .checked_mul(1_000_000_000)
-        .ok_or(GovernanceError::ArithmeticOverflow)
+    seconds_to_nanoseconds(env.ledger().timestamp()).ok_or(GovernanceError::ArithmeticOverflow)
 }
 
 fn is_contract_address(addr: &Address) -> bool {
