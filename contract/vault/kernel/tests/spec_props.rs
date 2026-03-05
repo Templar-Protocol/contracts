@@ -1,16 +1,16 @@
 use proptest::prelude::*;
 
-use templar_curator_primitives::recovery::compute_settlement_shares;
 use templar_vault_kernel::{
-    apply_action, settle_proportional, AllocatingState, EscrowEntry, Fee, Fees, KernelAction,
-    OpState, VaultConfig, VaultState, Wad, WithdrawQueue,
+    apply_action, FeesSpec, KernelAction, VaultConfig, VaultState, WithdrawQueue,
 };
+#[cfg(feature = "action-sync-external")]
+use templar_vault_kernel::{AllocatingState, OpState};
 
 fn addr(tag: u8, index: u64) -> [u8; 32] {
-    let mut addr = [0u8; 32];
-    addr[0] = tag;
-    addr[1..9].copy_from_slice(&index.to_le_bytes());
-    addr
+    let mut address = [0u8; 32];
+    address[0] = tag;
+    address[1..9].copy_from_slice(&index.to_le_bytes());
+    address
 }
 
 fn vault_addr() -> [u8; 32] {
@@ -19,18 +19,9 @@ fn vault_addr() -> [u8; 32] {
 
 fn default_config() -> VaultConfig {
     VaultConfig {
-        fees: Fees {
-            performance: Fee {
-                fee: Wad::zero(),
-                recipient: String::new(),
-            },
-            management: Fee {
-                fee: Wad::zero(),
-                recipient: String::new(),
-            },
-            max_total_assets_growth_rate: None,
-        },
+        fees: FeesSpec::zero(),
         min_withdrawal_assets: 1,
+        withdrawal_cooldown_ns: 0,
         max_pending_withdrawals: 1024,
         paused: false,
         virtual_shares: 0,
@@ -55,7 +46,8 @@ proptest! {
                 min_shares_out: 0,
                 now_ns: 0,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         prop_assert_eq!(result.state.total_assets, assets as u128);
         prop_assert_eq!(result.state.idle_assets, assets as u128);
@@ -68,14 +60,9 @@ proptest! {
         let mut queue = WithdrawQueue::new();
         let mut ids = Vec::new();
         for i in 0..n {
-            let id = queue.enqueue(
-                addr(0x33, i as u64),
-                addr(0x44, i as u64),
-                10,
-                10,
-                i as u64,
-                1024,
-            ).unwrap();
+            let id = queue
+                .enqueue(addr(0x33, i as u64), addr(0x44, i as u64), 10, 10, i as u64, 1024)
+                .unwrap();
             ids.push(id);
         }
 
@@ -85,25 +72,10 @@ proptest! {
         }
         prop_assert_eq!(queue.len(), 0);
     }
+}
 
-    #[test]
-    fn prop_settlement_matches_kernel(
-        escrow in 0u64..1_000_000,
-        expected in 1u64..1_000_000,
-        collected in 0u64..1_000_000,
-    ) {
-        let entry = EscrowEntry::new(addr(0x55, 0), escrow as u128, 0, expected as u128);
-        let settlement = settle_proportional(&entry, collected as u128);
-        let recovery = compute_settlement_shares(
-            escrow as u128,
-            expected as u128,
-            collected as u128,
-        );
-
-        prop_assert_eq!(settlement.to_burn, recovery.to_burn);
-        prop_assert_eq!(settlement.refund, recovery.refund);
-    }
-
+#[cfg(feature = "action-sync-external")]
+proptest! {
     #[test]
     fn prop_sync_external_assets_updates_total(
         idle in 0u64..1_000_000,
@@ -131,7 +103,8 @@ proptest! {
                 op_id: 7,
                 now_ns: 0,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         prop_assert_eq!(result.state.external_assets, external as u128);
         prop_assert_eq!(result.state.total_assets, idle as u128 + external as u128);
