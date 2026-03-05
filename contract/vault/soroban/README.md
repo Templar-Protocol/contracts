@@ -59,6 +59,17 @@ All recipes are in the `justfile`.  Run `just --list` for the full catalogue.
 The build step compiles the WASM and runs `stellar contract optimize` to shrink
 it from ~430KB to ~250KB (required to stay under Soroban's transaction limits).
 
+## Blend Adapter
+
+Blend integration lives in the dedicated crate `contract/vault/soroban-blend-adapter`.
+Use Soroban justfile recipes to build and deploy it:
+
+- `just build-blend-adapter`
+- `just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
+- `just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+
+After deployment, register the adapter as a vault market before allocation.
+
 ## Deployment Artifact
 
 The Soroban justfile deploys only the optimized runtime artifact:
