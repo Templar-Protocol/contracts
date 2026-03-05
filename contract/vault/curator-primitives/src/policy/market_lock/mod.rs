@@ -231,6 +231,3 @@ impl From<Vec<MarketLock>> for MarketLockSet {
         Self { locks }
     }
 }
-
-#[cfg(test)]
-mod tests;

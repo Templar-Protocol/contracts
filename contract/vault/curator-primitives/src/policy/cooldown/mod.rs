@@ -125,6 +125,3 @@ pub enum CooldownError {
         current_ns: u64,
     },
 }
-
-#[cfg(test)]
-mod tests;

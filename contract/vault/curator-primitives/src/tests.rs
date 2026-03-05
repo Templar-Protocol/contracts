@@ -82,6 +82,11 @@ impl Default for NearVaultSnapshot {
     }
 }
 
+#[rstest::fixture]
+fn near_snapshot() -> NearVaultSnapshot {
+    NearVaultSnapshot::default()
+}
+
 mod auth_unit_tests {
     use crate::auth::{
         boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
@@ -254,9 +259,9 @@ mod auth_unit_tests {
 
 // Golden Test: Cap Group Enforcement
 
-#[test]
-fn golden_cap_group_effective_caps() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_cap_group_effective_caps(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
 
     // Expected effective caps based on the snapshot
     // "stable": min(5M, 60% of 10M = 6M) = 5M
@@ -289,9 +294,9 @@ fn golden_cap_group_effective_caps() {
     }
 }
 
-#[test]
-fn golden_cap_group_available_capacity() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_cap_group_available_capacity(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
 
     // Expected available capacity = effective_cap - current_principal
     // "stable": 5M - 3M = 2M
@@ -324,9 +329,9 @@ fn golden_cap_group_available_capacity() {
     }
 }
 
-#[test]
-fn golden_cap_group_allocation_validation() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_cap_group_allocation_validation(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
 
     // Test allocations against the "volatile" group (3M cap, 2.5M used)
     // Available: 500_000_000_000 (0.5M)
@@ -418,9 +423,9 @@ fn golden_supply_queue_priority_ordering() {
 
 // Golden Test: Withdraw Route Building
 
-#[test]
-fn golden_withdraw_route_from_principals() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_withdraw_route_from_principals(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
 
     // Build a withdraw route for 2M USDC
     let target_amount = 2_000_000_000_000u128;
@@ -462,9 +467,9 @@ fn golden_withdraw_route_validation() {
 
 // Golden Test: Refresh Plan
 
-#[test]
-fn golden_refresh_plan_building() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_refresh_plan_building(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
     let enabled_targets: Vec<u32> = snapshot
         .market_principals
         .iter()
@@ -581,32 +586,38 @@ fn golden_recovery_payout_state() {
 }
 
 #[cfg(feature = "recovery")]
-#[test]
-fn golden_settlement_shares_full() {
-    // Full withdrawal: collected == expected
-    let settlement = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 500_000_000_000);
-    assert_eq!(settlement.to_burn, 1_000_000_000_000); // All shares burned
-    assert_eq!(settlement.refund, 0); // Nothing refunded
-}
-
-#[cfg(feature = "recovery")]
-#[test]
-fn golden_settlement_shares_partial() {
-    // Partial withdrawal: collected 60% of expected
-    let settlement = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 300_000_000_000);
-
-    // burn = 1_000_000_000_000 * 300 / 500 = 600_000_000_000
-    assert_eq!(settlement.to_burn, 600_000_000_000);
-    assert_eq!(settlement.refund, 400_000_000_000);
-}
-
-#[cfg(feature = "recovery")]
-#[test]
-fn golden_settlement_shares_over_collection() {
-    // Over-collection: collected > expected (edge case)
-    let settlement = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 600_000_000_000);
-    assert_eq!(settlement.to_burn, 1_000_000_000_000); // All shares burned
-    assert_eq!(settlement.refund, 0); // Nothing refunded
+#[rstest::rstest]
+#[case(
+    1_000_000_000_000,
+    500_000_000_000,
+    500_000_000_000,
+    1_000_000_000_000,
+    0
+)] // full
+#[case(
+    1_000_000_000_000,
+    500_000_000_000,
+    300_000_000_000,
+    600_000_000_000,
+    400_000_000_000
+)] // partial
+#[case(
+    1_000_000_000_000,
+    500_000_000_000,
+    600_000_000_000,
+    1_000_000_000_000,
+    0
+)] // over
+fn golden_settlement_shares_cases(
+    #[case] escrow: u128,
+    #[case] expected: u128,
+    #[case] collected: u128,
+    #[case] expected_burn: u128,
+    #[case] expected_refund: u128,
+) {
+    let settlement = compute_settlement_shares(escrow, expected, collected);
+    assert_eq!(settlement.to_burn, expected_burn);
+    assert_eq!(settlement.refund, expected_refund);
 }
 
 #[cfg(feature = "recovery")]
@@ -627,9 +638,9 @@ fn golden_settlement_shares_large_values() {
 
 // Golden Test: Integration Scenario
 
-#[test]
-fn golden_full_allocation_cycle() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_full_allocation_cycle(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
 
     // Step 1: Create supply queue with batched deposits (1M total)
     let mut queue = SupplyQueue::new();
@@ -680,9 +691,9 @@ fn golden_full_allocation_cycle() {
 }
 
 #[cfg(feature = "recovery")]
-#[test]
-fn golden_refresh_after_allocation() {
-    let snapshot = NearVaultSnapshot::default();
+#[rstest::rstest]
+fn golden_refresh_after_allocation(near_snapshot: NearVaultSnapshot) {
+    let snapshot = near_snapshot;
 
     // Build refresh plan for all markets
     let enabled_targets: Vec<u32> = snapshot
@@ -1066,27 +1077,22 @@ mod recovery_unit_tests {
         }
     }
 
-    #[test]
-    fn test_compute_settlement_shares_full_collection() {
-        let settlement = compute_settlement_shares(1000, 500, 500);
-        assert_eq!(settlement.to_burn, 1000);
-        assert_eq!(settlement.refund, 0);
-    }
-
-    #[test]
-    fn test_compute_settlement_shares_partial_collection() {
-        let settlement = compute_settlement_shares(1000, 500, 250);
-        // burn = 1000 * 250 / 500 = 500
-        assert_eq!(settlement.to_burn, 500);
-        assert_eq!(settlement.refund, 500);
-    }
-
-    #[test]
-    fn test_compute_settlement_shares_over_collection() {
-        // Collected more than expected (edge case)
-        let settlement = compute_settlement_shares(1000, 500, 600);
-        assert_eq!(settlement.to_burn, 1000);
-        assert_eq!(settlement.refund, 0);
+    #[rstest::rstest]
+    #[case(1000, 500, 500, 1000, 0)] // full collection
+    #[case(1000, 500, 250, 500, 500)] // partial collection
+    #[case(1000, 500, 600, 1000, 0)] // over collection
+    #[case(1000, 0, 0, 0, 1000)] // zero expected
+    #[case(0, 500, 250, 0, 0)] // zero escrow
+    fn test_compute_settlement_shares_cases(
+        #[case] escrow: u128,
+        #[case] expected: u128,
+        #[case] collected: u128,
+        #[case] expected_burn: u128,
+        #[case] expected_refund: u128,
+    ) {
+        let settlement = compute_settlement_shares(escrow, expected, collected);
+        assert_eq!(settlement.to_burn, expected_burn);
+        assert_eq!(settlement.refund, expected_refund);
     }
 
     #[test]
@@ -1117,20 +1123,6 @@ mod recovery_unit_tests {
             }
             _ => panic!("Expected failure outcome"),
         }
-    }
-
-    #[test]
-    fn test_compute_settlement_shares_zero_expected() {
-        let settlement = compute_settlement_shares(1000, 0, 0);
-        assert_eq!(settlement.to_burn, 0);
-        assert_eq!(settlement.refund, 1000);
-    }
-
-    #[test]
-    fn test_compute_settlement_shares_zero_escrow() {
-        let settlement = compute_settlement_shares(0, 500, 250);
-        assert_eq!(settlement.to_burn, 0);
-        assert_eq!(settlement.refund, 0);
     }
 
     #[test]
@@ -1406,228 +1398,261 @@ mod rbac_module_tests {
     pub use crate::rbac::*;
     use templar_vault_kernel::Address;
 
+    #[rstest::fixture]
     fn curator_addr() -> Address {
         [1u8; 32]
     }
 
+    #[rstest::fixture]
     fn guardian_addr() -> Address {
         [2u8; 32]
     }
 
+    #[rstest::fixture]
     fn allocator_addr() -> Address {
         [3u8; 32]
     }
 
+    #[rstest::fixture]
     fn user_addr() -> Address {
         [4u8; 32]
     }
 
+    #[rstest::fixture]
     fn sentinel_addr() -> Address {
         [5u8; 32]
     }
 
-    fn test_rbac() -> RbacAuth {
-        let mut config = RbacConfig::with_curator(curator_addr());
-        config.add_role(guardian_addr(), Role::Guardian);
-        config.add_role(allocator_addr(), Role::Allocator);
-        config.add_role(sentinel_addr(), Role::Sentinel);
+    #[rstest::fixture]
+    fn rbac_auth(
+        curator_addr: Address,
+        guardian_addr: Address,
+        allocator_addr: Address,
+        sentinel_addr: Address,
+    ) -> RbacAuth {
+        let mut config = RbacConfig::with_curator(curator_addr);
+        config.add_role(guardian_addr, Role::Guardian);
+        config.add_role(allocator_addr, Role::Allocator);
+        config.add_role(sentinel_addr, Role::Sentinel);
         RbacAuth::new(config)
     }
 
-    #[test]
-    fn test_role_assignment() {
-        let config = RbacConfig::with_curator(curator_addr());
+    #[rstest::rstest]
+    fn test_role_assignment(curator_addr: Address, user_addr: Address) {
+        let config = RbacConfig::with_curator(curator_addr);
 
-        assert!(config.has_role(&curator_addr(), Role::Curator));
-        assert!(!config.has_role(&user_addr(), Role::Curator));
+        assert!(config.has_role(&curator_addr, Role::Curator));
+        assert!(!config.has_role(&user_addr, Role::Curator));
     }
 
-    #[test]
-    fn test_add_remove_role() {
+    #[rstest::rstest]
+    fn test_add_remove_role(guardian_addr: Address) {
         let mut config = RbacConfig::new();
 
-        config.add_role(guardian_addr(), Role::Guardian);
-        assert!(config.has_role(&guardian_addr(), Role::Guardian));
+        config.add_role(guardian_addr, Role::Guardian);
+        assert!(config.has_role(&guardian_addr, Role::Guardian));
 
-        config.remove_role(&guardian_addr(), Role::Guardian);
-        assert!(!config.has_role(&guardian_addr(), Role::Guardian));
+        config.remove_role(&guardian_addr, Role::Guardian);
+        assert!(!config.has_role(&guardian_addr, Role::Guardian));
     }
 
-    #[test]
-    fn test_get_roles() {
-        let mut config = RbacConfig::with_curator(curator_addr());
-        config.add_role(curator_addr(), Role::Guardian); // Curator also guardian
+    #[rstest::rstest]
+    fn test_get_roles(curator_addr: Address) {
+        let mut config = RbacConfig::with_curator(curator_addr);
+        config.add_role(curator_addr, Role::Guardian); // Curator also guardian
 
-        let roles = config.get_roles(&curator_addr());
+        let roles = config.get_roles(&curator_addr);
         assert_eq!(roles.len(), 2);
         assert!(roles.contains(&Role::Curator));
         assert!(roles.contains(&Role::Guardian));
     }
 
-    #[test]
-    fn test_sentinel_role() {
-        let mut config = RbacConfig::with_curator(curator_addr());
-        config.add_role(sentinel_addr(), Role::Sentinel);
+    #[rstest::rstest]
+    fn test_sentinel_role(
+        curator_addr: Address,
+        sentinel_addr: Address,
+        user_addr: Address,
+        guardian_addr: Address,
+    ) {
+        let mut config = RbacConfig::with_curator(curator_addr);
+        config.add_role(sentinel_addr, Role::Sentinel);
 
-        assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
-        assert!(!config.has_role(&user_addr(), Role::Sentinel));
-        assert!(!config.has_role(&guardian_addr(), Role::Sentinel));
+        assert!(config.has_role(&sentinel_addr, Role::Sentinel));
+        assert!(!config.has_role(&user_addr, Role::Sentinel));
+        assert!(!config.has_role(&guardian_addr, Role::Sentinel));
 
         assert_eq!(Role::Sentinel.as_str(), "sentinel");
 
-        let roles = config.get_roles(&sentinel_addr());
+        let roles = config.get_roles(&sentinel_addr);
         assert_eq!(roles.len(), 1);
         assert!(roles.contains(&Role::Sentinel));
     }
 
-    #[test]
-    fn test_sentinel_add_remove() {
+    #[rstest::rstest]
+    fn test_sentinel_add_remove(sentinel_addr: Address) {
         let mut config = RbacConfig::new();
 
-        config.add_role(sentinel_addr(), Role::Sentinel);
-        assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
+        config.add_role(sentinel_addr, Role::Sentinel);
+        assert!(config.has_role(&sentinel_addr, Role::Sentinel));
 
-        config.remove_role(&sentinel_addr(), Role::Sentinel);
-        assert!(!config.has_role(&sentinel_addr(), Role::Sentinel));
+        config.remove_role(&sentinel_addr, Role::Sentinel);
+        assert!(!config.has_role(&sentinel_addr, Role::Sentinel));
     }
 
-    #[test]
-    fn test_user_actions_allowed() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_user_actions_allowed(rbac_auth: RbacAuth, user_addr: Address) {
+        let auth = rbac_auth;
 
+        assert!(auth.authorize(ActionKind::Deposit, user_addr, None).is_ok());
         assert!(auth
-            .authorize(ActionKind::Deposit, user_addr(), None)
-            .is_ok());
-        assert!(auth
-            .authorize(ActionKind::RequestWithdraw, user_addr(), None)
+            .authorize(ActionKind::RequestWithdraw, user_addr, None)
             .is_ok());
     }
 
-    #[test]
-    fn test_execute_withdraw_allocator_only() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_execute_withdraw_allocator_only(
+        rbac_auth: RbacAuth,
+        allocator_addr: Address,
+        curator_addr: Address,
+        user_addr: Address,
+    ) {
+        let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::ExecuteWithdraw, allocator_addr(), None)
+            .authorize(ActionKind::ExecuteWithdraw, allocator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::ExecuteWithdraw, curator_addr(), None)
+            .authorize(ActionKind::ExecuteWithdraw, curator_addr, None)
             .is_ok());
 
-        let result = auth.authorize(ActionKind::ExecuteWithdraw, user_addr(), None);
+        let result = auth.authorize(ActionKind::ExecuteWithdraw, user_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
-    #[test]
-    fn test_abort_actions_allow_allocator_or_sentinel() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_abort_actions_allow_allocator_or_sentinel(
+        rbac_auth: RbacAuth,
+        allocator_addr: Address,
+        sentinel_addr: Address,
+        user_addr: Address,
+    ) {
+        let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::AbortAllocating, allocator_addr(), None)
+            .authorize(ActionKind::AbortAllocating, allocator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::AbortAllocating, sentinel_addr(), None)
+            .authorize(ActionKind::AbortAllocating, sentinel_addr, None)
             .is_ok());
 
-        let result = auth.authorize(ActionKind::AbortAllocating, user_addr(), None);
+        let result = auth.authorize(ActionKind::AbortAllocating, user_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
-    #[test]
-    fn test_guardian_can_pause() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_guardian_can_pause(rbac_auth: RbacAuth, guardian_addr: Address, user_addr: Address) {
+        let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::Pause, guardian_addr(), None)
+            .authorize(ActionKind::Pause, guardian_addr, None)
             .is_ok());
 
-        let result = auth.authorize(ActionKind::Pause, user_addr(), None);
+        let result = auth.authorize(ActionKind::Pause, user_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
-    #[test]
-    fn test_allocator_actions() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_allocator_actions(rbac_auth: RbacAuth, allocator_addr: Address, user_addr: Address) {
+        let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::BeginAllocating, allocator_addr(), None)
+            .authorize(ActionKind::BeginAllocating, allocator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::FinishAllocating, allocator_addr(), None)
+            .authorize(ActionKind::FinishAllocating, allocator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::SyncExternalAssets, allocator_addr(), None)
+            .authorize(ActionKind::SyncExternalAssets, allocator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::BeginRefreshing, allocator_addr(), None)
+            .authorize(ActionKind::BeginRefreshing, allocator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::FinishRefreshing, allocator_addr(), None)
+            .authorize(ActionKind::FinishRefreshing, allocator_addr, None)
             .is_ok());
 
-        let result = auth.authorize(ActionKind::BeginAllocating, user_addr(), None);
+        let result = auth.authorize(ActionKind::BeginAllocating, user_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
-    #[test]
-    fn test_curator_can_do_everything() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_curator_can_do_everything(rbac_auth: RbacAuth, curator_addr: Address) {
+        let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::Pause, curator_addr(), None)
+            .authorize(ActionKind::Pause, curator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::BeginAllocating, curator_addr(), None)
+            .authorize(ActionKind::BeginAllocating, curator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::ManualReconcile, curator_addr(), None)
+            .authorize(ActionKind::ManualReconcile, curator_addr, None)
             .is_ok());
         assert!(auth
-            .authorize(ActionKind::Deposit, curator_addr(), None)
+            .authorize(ActionKind::Deposit, curator_addr, None)
             .is_ok());
     }
 
-    #[test]
-    fn test_manual_reconcile_curator_only() {
-        let auth = test_rbac();
+    #[rstest::rstest]
+    fn test_manual_reconcile_curator_only(
+        rbac_auth: RbacAuth,
+        curator_addr: Address,
+        allocator_addr: Address,
+        guardian_addr: Address,
+    ) {
+        let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::ManualReconcile, curator_addr(), None)
+            .authorize(ActionKind::ManualReconcile, curator_addr, None)
             .is_ok());
 
-        let result = auth.authorize(ActionKind::ManualReconcile, allocator_addr(), None);
+        let result = auth.authorize(ActionKind::ManualReconcile, allocator_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
 
-        let result = auth.authorize(ActionKind::ManualReconcile, guardian_addr(), None);
+        let result = auth.authorize(ActionKind::ManualReconcile, guardian_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
-    #[test]
-    fn test_paused_blocks_user_actions() {
-        let mut auth = test_rbac();
+    #[rstest::rstest]
+    fn test_paused_blocks_user_actions(
+        rbac_auth: RbacAuth,
+        user_addr: Address,
+        curator_addr: Address,
+    ) {
+        let mut auth = rbac_auth;
         auth.config.set_paused(true);
 
-        let result = auth.authorize(ActionKind::Deposit, user_addr(), None);
+        let result = auth.authorize(ActionKind::Deposit, user_addr, None);
         assert!(matches!(result, Err(AuthError::VaultPaused)));
 
         assert!(auth
-            .authorize(ActionKind::BeginAllocating, curator_addr(), None)
+            .authorize(ActionKind::BeginAllocating, curator_addr, None)
             .is_ok());
     }
 
-    #[test]
-    fn test_paused_allows_pause_action() {
-        let mut auth = test_rbac();
+    #[rstest::rstest]
+    fn test_paused_allows_pause_action(rbac_auth: RbacAuth, guardian_addr: Address) {
+        let mut auth = rbac_auth;
         auth.config.set_paused(true);
 
         assert!(auth
-            .authorize(ActionKind::Pause, guardian_addr(), None)
+            .authorize(ActionKind::Pause, guardian_addr, None)
             .is_ok());
     }
 
-    #[test]
-    fn test_is_paused() {
-        let mut auth = test_rbac();
+    #[rstest::rstest]
+    fn test_is_paused(rbac_auth: RbacAuth) {
+        let mut auth = rbac_auth;
 
         assert!(!auth.is_paused());
 
@@ -1899,9 +1924,19 @@ mod policy_lock_filter_tests {
             .expect("lock should be acquirable")
     }
 
-    #[test]
-    fn filters_unlocked_targets() {
-        let lock_set = lock_set_with_target(2);
+    #[rstest::fixture]
+    fn lock_set_target_1() -> MarketLockSet {
+        lock_set_with_target(1)
+    }
+
+    #[rstest::fixture]
+    fn lock_set_target_2() -> MarketLockSet {
+        lock_set_with_target(2)
+    }
+
+    #[rstest::rstest]
+    fn filters_unlocked_targets(lock_set_target_2: MarketLockSet) {
+        let lock_set = lock_set_target_2;
         let targets = vec![1, 2, 3];
         assert_eq!(
             lock_set.filter_unlocked_targets(&targets, 1_500),
@@ -1909,9 +1944,9 @@ mod policy_lock_filter_tests {
         );
     }
 
-    #[test]
-    fn filters_allocation_plan() {
-        let lock_set = lock_set_with_target(2);
+    #[rstest::rstest]
+    fn filters_allocation_plan(lock_set_target_2: MarketLockSet) {
+        let lock_set = lock_set_target_2;
         let plan = vec![(1, 10), (2, 20), (3, 30)];
 
         assert_eq!(
@@ -1920,9 +1955,9 @@ mod policy_lock_filter_tests {
         );
     }
 
-    #[test]
-    fn filters_supply_queue_and_preserves_max_length() {
-        let lock_set = lock_set_with_target(2);
+    #[rstest::rstest]
+    fn filters_supply_queue_and_preserves_max_length(lock_set_target_2: MarketLockSet) {
+        let lock_set = lock_set_target_2;
         let queue = SupplyQueue {
             entries: vec![
                 SupplyQueueEntry::new(1, 10),
@@ -1940,9 +1975,9 @@ mod policy_lock_filter_tests {
         assert_eq!(filtered.entries[1].target_id, 3);
     }
 
-    #[test]
-    fn filters_withdraw_route_and_preserves_target_amount() {
-        let lock_set = lock_set_with_target(1);
+    #[rstest::rstest]
+    fn filters_withdraw_route_and_preserves_target_amount(lock_set_target_1: MarketLockSet) {
+        let lock_set = lock_set_target_1;
         let route = WithdrawRoute::from_entries(
             vec![
                 WithdrawRouteEntry::new(1, 100),
@@ -1958,9 +1993,9 @@ mod policy_lock_filter_tests {
         assert_eq!(filtered.entries[0].target_id, 2);
     }
 
-    #[test]
-    fn builds_allocation_plan_with_locks() {
-        let lock_set = lock_set_with_target(2);
+    #[rstest::rstest]
+    fn builds_allocation_plan_with_locks(lock_set_target_2: MarketLockSet) {
+        let lock_set = lock_set_target_2;
         let queue = SupplyQueue {
             entries: vec![
                 SupplyQueueEntry::new(1, 10),
@@ -1976,9 +2011,9 @@ mod policy_lock_filter_tests {
         );
     }
 
-    #[test]
-    fn builds_withdrawal_plan_with_locks() {
-        let lock_set = lock_set_with_target(1);
+    #[rstest::rstest]
+    fn builds_withdrawal_plan_with_locks(lock_set_target_1: MarketLockSet) {
+        let lock_set = lock_set_target_1;
         let route = WithdrawRoute::from_entries(
             vec![
                 WithdrawRouteEntry::new(1, 100),
@@ -1994,9 +2029,9 @@ mod policy_lock_filter_tests {
         );
     }
 
-    #[test]
-    fn builds_refresh_plan_with_locks() {
-        let lock_set = lock_set_with_target(2);
+    #[rstest::rstest]
+    fn builds_refresh_plan_with_locks(lock_set_target_2: MarketLockSet) {
+        let lock_set = lock_set_target_2;
         let targets = vec![1, 2, 3, 4];
 
         assert_eq!(
@@ -2011,17 +2046,22 @@ mod policy_market_lock_tests {
 
     use alloc::vec;
 
-    #[test]
-    fn test_new_lock_set_is_empty() {
-        let set = MarketLockSet::new();
+    #[rstest::fixture]
+    fn empty_lock_set() -> MarketLockSet {
+        MarketLockSet::new()
+    }
+
+    #[rstest::rstest]
+    fn test_new_lock_set_is_empty(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         assert!(set.is_empty());
         assert_eq!(set.len(), 0);
         assert_eq!(set.active_count(0), 0);
     }
 
-    #[test]
-    fn test_acquire_lock() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_acquire_lock(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock = MarketLock::new(1, 1000);
 
         let result = set.acquire(lock, 1000).unwrap();
@@ -2030,9 +2070,9 @@ mod policy_market_lock_tests {
         assert!(result.is_locked(1, 1000));
     }
 
-    #[test]
-    fn test_acquire_lock_already_locked() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_acquire_lock_already_locked(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000);
         let lock2 = MarketLock::new(1, 2000);
 
@@ -2042,9 +2082,9 @@ mod policy_market_lock_tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_acquire_lock_different_target() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_acquire_lock_different_target(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000);
         let lock2 = MarketLock::new(2, 2000);
 
@@ -2056,9 +2096,9 @@ mod policy_market_lock_tests {
         assert!(set.is_locked(2, 2000));
     }
 
-    #[test]
-    fn test_acquire_lock_after_expiry() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_acquire_lock_after_expiry(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
         let lock2 = MarketLock::new(1, 3000);
 
@@ -2074,9 +2114,9 @@ mod policy_market_lock_tests {
         assert!(set.is_locked(1, 3000));
     }
 
-    #[test]
-    fn test_release_lock() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_release_lock(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock = MarketLock::new(1, 1000);
 
         let set = set.acquire(lock, 1000).unwrap();
@@ -2086,9 +2126,9 @@ mod policy_market_lock_tests {
         assert!(!set.is_locked(1, 2000));
     }
 
-    #[test]
-    fn test_release_lock_by_op() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_release_lock_by_op(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000).with_op_id(100);
         let lock2 = MarketLock::new(2, 1000).with_op_id(200);
 
@@ -2103,9 +2143,9 @@ mod policy_market_lock_tests {
         assert!(set.is_locked(2, 2000));
     }
 
-    #[test]
-    fn test_release_all_by_op() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_release_all_by_op(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000).with_op_id(100);
         let lock2 = MarketLock::new(2, 1000).with_op_id(100);
         let lock3 = MarketLock::new(3, 1000).with_op_id(200);
@@ -2122,9 +2162,9 @@ mod policy_market_lock_tests {
         assert!(set.is_locked(3, 2000));
     }
 
-    #[test]
-    fn test_is_locked_by_op() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_is_locked_by_op(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock = MarketLock::new(1, 1000).with_op_id(100);
 
         let set = set.acquire(lock, 1000).unwrap();
@@ -2170,9 +2210,9 @@ mod policy_market_lock_tests {
         assert_eq!(no_expiry.remaining(5000), None);
     }
 
-    #[test]
-    fn test_cleanup_expired_locks() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_cleanup_expired_locks(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
         let lock2 = MarketLock::new(2, 1000).with_expiry(3000);
         let lock3 = MarketLock::new(3, 1000); // no expiry
@@ -2189,9 +2229,9 @@ mod policy_market_lock_tests {
         assert!(cleaned.is_locked(3, 2500)); // no expiry
     }
 
-    #[test]
-    fn test_get_locked_targets() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_get_locked_targets(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000);
         let lock2 = MarketLock::new(2, 1000).with_expiry(1500);
         let lock3 = MarketLock::new(3, 1000);
@@ -2208,9 +2248,9 @@ mod policy_market_lock_tests {
         assert!(locked.contains(&3));
     }
 
-    #[test]
-    fn test_find_locked_targets() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_find_locked_targets(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock = MarketLock::new(2, 1000);
 
         let set = set.acquire(lock, 1000).unwrap();
@@ -2221,9 +2261,9 @@ mod policy_market_lock_tests {
         assert_eq!(locked, vec![2]);
     }
 
-    #[test]
-    fn test_clear_all_locks() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_clear_all_locks(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000);
         let lock2 = MarketLock::new(2, 1000);
 
@@ -2235,9 +2275,9 @@ mod policy_market_lock_tests {
         assert!(cleared.is_empty());
     }
 
-    #[test]
-    fn test_active_count() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_active_count(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
         let lock2 = MarketLock::new(2, 1000).with_expiry(3000);
         let lock3 = MarketLock::new(3, 1000);
@@ -2252,9 +2292,9 @@ mod policy_market_lock_tests {
         assert_eq!(set.active_count(3500), 1); // lock1 and lock2 expired
     }
 
-    #[test]
-    fn test_get_lock() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_get_lock(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock = MarketLock::new(1, 1000).with_op_id(42);
 
         let set = set.acquire(lock, 1000).unwrap();
@@ -2267,9 +2307,9 @@ mod policy_market_lock_tests {
         assert!(not_found.is_none());
     }
 
-    #[test]
-    fn test_is_all_expired() {
-        let set = MarketLockSet::new();
+    #[rstest::rstest]
+    fn test_is_all_expired(empty_lock_set: MarketLockSet) {
+        let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
         let lock2 = MarketLock::new(2, 1000).with_expiry(2000);
 
@@ -2524,17 +2564,42 @@ mod policy_state_tests {
 mod policy_supply_queue_tests {
     pub use crate::policy::supply_queue::*;
 
-    #[test]
-    fn test_new_queue_is_empty() {
-        let queue = SupplyQueue::new();
+    #[rstest::fixture]
+    fn empty_queue() -> SupplyQueue {
+        SupplyQueue::new()
+    }
+
+    #[rstest::fixture]
+    fn queue_two_entries(empty_queue: SupplyQueue) -> SupplyQueue {
+        empty_queue
+            .enqueue(SupplyQueueEntry::new(1, 100))
+            .unwrap()
+            .enqueue(SupplyQueueEntry::new(2, 200))
+            .unwrap()
+    }
+
+    #[rstest::fixture]
+    fn queue_with_repeated_target(empty_queue: SupplyQueue) -> SupplyQueue {
+        empty_queue
+            .enqueue(SupplyQueueEntry::new(1, 100))
+            .unwrap()
+            .enqueue(SupplyQueueEntry::new(2, 200))
+            .unwrap()
+            .enqueue(SupplyQueueEntry::new(1, 50))
+            .unwrap()
+    }
+
+    #[rstest::rstest]
+    fn test_new_queue_is_empty(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         assert!(queue.is_empty());
         assert_eq!(queue.len(), 0);
         assert!(!queue.is_full());
     }
 
-    #[test]
-    fn test_enqueue_supply() {
-        let queue = SupplyQueue::new();
+    #[rstest::rstest]
+    fn test_enqueue_supply(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         let entry = SupplyQueueEntry::new(1, 100);
 
         let result = queue.enqueue(entry.clone()).unwrap();
@@ -2543,9 +2608,9 @@ mod policy_supply_queue_tests {
         assert_eq!(result.entries[0], entry);
     }
 
-    #[test]
-    fn test_enqueue_zero_amount_error() {
-        let queue = SupplyQueue::new();
+    #[rstest::rstest]
+    fn test_enqueue_zero_amount_error(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         let entry = SupplyQueueEntry::new(1, 0);
 
         let result = queue.enqueue(entry);
@@ -2570,9 +2635,9 @@ mod policy_supply_queue_tests {
         ));
     }
 
-    #[test]
-    fn test_enqueue_with_priority() {
-        let queue = SupplyQueue::new();
+    #[rstest::rstest]
+    fn test_enqueue_with_priority(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         let low = SupplyQueueEntry::new(1, 100).with_priority(0);
         let high = SupplyQueueEntry::new(2, 200).with_priority(10);
         let medium = SupplyQueueEntry::new(3, 300).with_priority(5);
@@ -2587,32 +2652,27 @@ mod policy_supply_queue_tests {
         assert_eq!(queue.entries[2].target_id, 1);
     }
 
-    #[test]
-    fn test_dequeue_supply() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-
-        let queue = queue.enqueue(entry1.clone()).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-
+    #[rstest::rstest]
+    fn test_dequeue_supply(queue_two_entries: SupplyQueue) {
+        let queue = queue_two_entries;
         let (queue, dequeued) = queue.dequeue().unwrap();
 
-        assert_eq!(dequeued, entry1);
+        assert_eq!(dequeued.target_id, 1);
+        assert_eq!(dequeued.amount, 100);
         assert_eq!(queue.len(), 1);
     }
 
-    #[test]
-    fn test_dequeue_empty_error() {
-        let queue = SupplyQueue::new();
+    #[rstest::rstest]
+    fn test_dequeue_empty_error(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         let result = queue.dequeue();
 
         assert!(matches!(result, Err(SupplyQueueError::QueueEmpty)));
     }
 
-    #[test]
-    fn test_peek() {
-        let queue = SupplyQueue::new();
+    #[rstest::rstest]
+    fn test_peek(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         assert!(queue.peek().is_none());
 
         let entry = SupplyQueueEntry::new(1, 100);
@@ -2622,31 +2682,15 @@ mod policy_supply_queue_tests {
         assert_eq!(queue.len(), 1); // Still in queue
     }
 
-    #[test]
-    fn test_compute_queue_total() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-        let entry3 = SupplyQueueEntry::new(1, 50);
-
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-        let queue = queue.enqueue(entry3).unwrap();
-
+    #[rstest::rstest]
+    fn test_compute_queue_total(queue_with_repeated_target: SupplyQueue) {
+        let queue = queue_with_repeated_target;
         assert_eq!(queue.total(), 350);
     }
 
-    #[test]
-    fn test_compute_queue_totals_by_target() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-        let entry3 = SupplyQueueEntry::new(1, 50);
-
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-        let queue = queue.enqueue(entry3).unwrap();
-
+    #[rstest::rstest]
+    fn test_compute_queue_totals_by_target(queue_with_repeated_target: SupplyQueue) {
+        let queue = queue_with_repeated_target;
         let totals = queue.totals_by_target();
 
         assert_eq!(totals.len(), 2);
@@ -2654,49 +2698,27 @@ mod policy_supply_queue_tests {
         assert!(totals.contains(&(2, 200)));
     }
 
-    #[test]
-    fn test_remove_target_entries() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-        let entry3 = SupplyQueueEntry::new(1, 50);
-
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-        let queue = queue.enqueue(entry3).unwrap();
-
+    #[rstest::rstest]
+    fn test_remove_target_entries(queue_with_repeated_target: SupplyQueue) {
+        let queue = queue_with_repeated_target;
         let filtered = queue.remove_target(1);
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.entries[0].target_id, 2);
     }
 
-    #[test]
-    fn test_drain_queue() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-
+    #[rstest::rstest]
+    fn test_drain_queue(queue_two_entries: SupplyQueue) {
+        let queue = queue_two_entries;
         let (empty, entries) = queue.drain();
 
         assert!(empty.is_empty());
         assert_eq!(entries.len(), 2);
     }
 
-    #[test]
-    fn test_to_allocation_plan() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-        let entry3 = SupplyQueueEntry::new(1, 50);
-
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-        let queue = queue.enqueue(entry3).unwrap();
-
+    #[rstest::rstest]
+    fn test_to_allocation_plan(queue_with_repeated_target: SupplyQueue) {
+        let queue = queue_with_repeated_target;
         let plan = queue.to_allocation_plan();
 
         // Should be aggregated by target
@@ -2705,25 +2727,17 @@ mod policy_supply_queue_tests {
         assert!(plan.contains(&(2, 200)));
     }
 
-    #[test]
-    fn test_total_for_target() {
-        let queue = SupplyQueue::new();
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-        let entry3 = SupplyQueueEntry::new(1, 50);
-
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
-        let queue = queue.enqueue(entry3).unwrap();
-
+    #[rstest::rstest]
+    fn test_total_for_target(queue_with_repeated_target: SupplyQueue) {
+        let queue = queue_with_repeated_target;
         assert_eq!(queue.total_for_target(1), 150);
         assert_eq!(queue.total_for_target(2), 200);
         assert_eq!(queue.total_for_target(3), 0);
     }
 
-    #[test]
-    fn test_has_target() {
-        let queue = SupplyQueue::new();
+    #[rstest::rstest]
+    fn test_has_target(empty_queue: SupplyQueue) {
+        let queue = empty_queue;
         let entry = SupplyQueueEntry::new(1, 100);
         let queue = queue.enqueue(entry).unwrap();
 
@@ -2805,9 +2819,64 @@ mod policy_withdraw_route_tests {
 
     use alloc::vec;
 
-    #[test]
-    fn test_new_route() {
-        let route = WithdrawRoute::new(1000);
+    #[rstest::fixture]
+    fn empty_route() -> WithdrawRoute {
+        WithdrawRoute::new(1000)
+    }
+
+    #[rstest::fixture]
+    fn valid_route() -> WithdrawRoute {
+        WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 500),
+                WithdrawRouteEntry::new(2, 300),
+                WithdrawRouteEntry::new(3, 200),
+            ],
+            1000,
+        )
+    }
+
+    #[rstest::fixture]
+    fn two_entry_route() -> WithdrawRoute {
+        WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 500),
+                WithdrawRouteEntry::new(2, 300),
+            ],
+            800,
+        )
+    }
+
+    #[rstest::fixture]
+    fn duplicate_target_route() -> WithdrawRoute {
+        WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 500),
+                WithdrawRouteEntry::new(1, 600),
+            ],
+            1000,
+        )
+    }
+
+    #[rstest::fixture]
+    fn zero_max_route() -> WithdrawRoute {
+        WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 500),
+                WithdrawRouteEntry::new(2, 0),
+            ],
+            500,
+        )
+    }
+
+    #[rstest::fixture]
+    fn insufficient_route() -> WithdrawRoute {
+        WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000)
+    }
+
+    #[rstest::rstest]
+    fn test_new_route(empty_route: WithdrawRoute) {
+        let route = empty_route;
         assert!(route.is_empty());
         assert_eq!(route.target_amount, 1000);
     }
@@ -2831,17 +2900,9 @@ mod policy_withdraw_route_tests {
         assert_eq!(entry.available_liquidity, Some(400));
     }
 
-    #[test]
-    fn test_compute_route_total() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 300),
-                WithdrawRouteEntry::new(3, 200),
-            ],
-            1000,
-        );
-
+    #[rstest::rstest]
+    fn test_compute_route_total(valid_route: WithdrawRoute) {
+        let route = valid_route;
         assert_eq!(route.total(), 1000);
     }
 
@@ -2854,7 +2915,6 @@ mod policy_withdraw_route_tests {
             ],
             1000,
         );
-
         assert!(route.validate().is_ok());
     }
 
@@ -2868,55 +2928,36 @@ mod policy_withdraw_route_tests {
         ));
     }
 
-    #[test]
-    fn test_validate_withdraw_route_empty() {
-        let route = WithdrawRoute::new(1000);
-
+    #[rstest::rstest]
+    fn test_validate_withdraw_route_empty(empty_route: WithdrawRoute) {
+        let route = empty_route;
         assert!(matches!(
             route.validate(),
             Err(WithdrawRouteError::EmptyRoute)
         ));
     }
 
-    #[test]
-    fn test_validate_withdraw_route_insufficient() {
-        let route = WithdrawRoute::from_entries(
-            vec![WithdrawRouteEntry::new(1, 500)],
-            1000, // target > route total
-        );
-
+    #[rstest::rstest]
+    fn test_validate_withdraw_route_insufficient(insufficient_route: WithdrawRoute) {
+        let route = insufficient_route;
         assert!(matches!(
             route.validate(),
             Err(WithdrawRouteError::InsufficientRouteTotal { .. })
         ));
     }
 
-    #[test]
-    fn test_validate_withdraw_route_duplicate() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(1, 600), // duplicate target
-            ],
-            1000,
-        );
-
+    #[rstest::rstest]
+    fn test_validate_withdraw_route_duplicate(duplicate_target_route: WithdrawRoute) {
+        let route = duplicate_target_route;
         assert!(matches!(
             route.validate(),
             Err(WithdrawRouteError::DuplicateTarget { target_id: 1 })
         ));
     }
 
-    #[test]
-    fn test_validate_withdraw_route_zero_max() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 0), // zero max
-            ],
-            500,
-        );
-
+    #[rstest::rstest]
+    fn test_validate_withdraw_route_zero_max(zero_max_route: WithdrawRoute) {
+        let route = zero_max_route;
         assert!(matches!(
             route.validate(),
             Err(WithdrawRouteError::ZeroMaxAmount { target_id: 2 })
@@ -2988,53 +3029,45 @@ mod policy_withdraw_route_tests {
         assert_eq!(route.entries[2].target_id, 3);
     }
 
-    #[test]
-    fn test_compute_available_liquidity() {
+    #[rstest::rstest]
+    fn test_compute_available_liquidity(valid_route: WithdrawRoute) {
         let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500).with_liquidity(400),
-                WithdrawRouteEntry::new(2, 300), // no liquidity info
-                WithdrawRouteEntry::new(3, 200).with_liquidity(200),
-            ],
+            valid_route
+                .entries
+                .into_iter()
+                .map(|entry| {
+                    if entry.target_id == 1 {
+                        entry.with_liquidity(400)
+                    } else if entry.target_id == 3 {
+                        entry.with_liquidity(200)
+                    } else {
+                        entry
+                    }
+                })
+                .collect(),
             1000,
         );
-
         assert_eq!(route.available_liquidity(), 600);
     }
 
-    #[test]
-    fn test_to_withdrawal_plan() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 300),
-            ],
-            800,
-        );
-
+    #[rstest::rstest]
+    fn test_to_withdrawal_plan(two_entry_route: WithdrawRoute) {
+        let route = two_entry_route;
         let plan = route.to_withdrawal_plan();
 
         assert_eq!(plan, vec![(1, 500), (2, 300)]);
     }
 
-    #[test]
-    fn test_can_satisfy() {
-        let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000);
-        assert!(!route.can_satisfy());
-
-        let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 1000)], 1000);
-        assert!(route.can_satisfy());
+    #[rstest::rstest]
+    #[case(WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000), false)]
+    #[case(WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 1000)], 1000), true)]
+    fn test_can_satisfy(#[case] route: WithdrawRoute, #[case] expected: bool) {
+        assert_eq!(route.can_satisfy(), expected);
     }
 
-    #[test]
-    fn test_get_entry_and_has_target() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 300),
-            ],
-            800,
-        );
+    #[rstest::rstest]
+    fn test_get_entry_and_has_target(two_entry_route: WithdrawRoute) {
+        let route = two_entry_route;
 
         assert!(route.has_target(1));
         assert!(route.has_target(2));

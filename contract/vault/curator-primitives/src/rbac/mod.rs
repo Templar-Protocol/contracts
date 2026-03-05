@@ -249,6 +249,3 @@ impl AuthAdapter for RbacAuth {
         self.config.paused
     }
 }
-
-#[cfg(test)]
-mod tests;

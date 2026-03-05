@@ -105,6 +105,3 @@ pub fn available_capacity_from_fields(
     cap_group_from_fields(absolute_cap, relative_cap)
         .available_capacity(current_principal, total_assets)
 }
-
-#[cfg(test)]
-mod tests;

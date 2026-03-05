@@ -87,6 +87,3 @@ pub fn build_refresh_plan_from_targets(
     plan.validate()?;
     Ok(plan)
 }
-
-#[cfg(test)]
-mod tests;

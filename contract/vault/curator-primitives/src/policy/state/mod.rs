@@ -253,6 +253,3 @@ impl PolicyState {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -232,6 +232,3 @@ pub fn filter_stale_targets(
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests;

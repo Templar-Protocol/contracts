@@ -15,6 +15,3 @@ pub fn u128_to_i128_checked(value: u128) -> Option<i128> {
 pub fn nonnegative_i128_to_u128(value: i128) -> Option<u128> {
     u128::try_from(value).ok()
 }
-
-#[cfg(test)]
-mod tests;

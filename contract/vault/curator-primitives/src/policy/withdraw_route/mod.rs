@@ -316,6 +316,3 @@ pub fn build_withdraw_route_with_liquidity(
 
     Ok(route)
 }
-
-#[cfg(test)]
-mod tests;

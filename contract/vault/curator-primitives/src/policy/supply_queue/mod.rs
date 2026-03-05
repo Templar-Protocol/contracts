@@ -245,6 +245,3 @@ pub enum SupplyQueueError {
     /// Target not found in queue.
     TargetNotFound { target_id: TargetId },
 }
-
-#[cfg(test)]
-mod tests;
