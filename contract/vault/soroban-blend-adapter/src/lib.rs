@@ -72,10 +72,8 @@ impl BlendAdapterContract {
         require_contract_address(&pool, AdapterError::InvalidInput)?;
         let old_pool = get_pool(&env)?;
         env.storage().instance().set(&DataKey::Pool, &pool);
-        env.events().publish(
-            (symbol_short!("pool_upd"), old_pool),
-            pool,
-        );
+        env.events()
+            .publish((symbol_short!("pool_upd"), old_pool), pool);
         Ok(())
     }
 
@@ -87,10 +85,8 @@ impl BlendAdapterContract {
         require_contract_address(&vault, AdapterError::InvalidInput)?;
         let old_vault = get_vault(&env)?;
         env.storage().instance().set(&DataKey::Vault, &vault);
-        env.events().publish(
-            (symbol_short!("vlt_upd"), old_vault),
-            vault,
-        );
+        env.events()
+            .publish((symbol_short!("vlt_upd"), old_vault), vault);
         Ok(())
     }
 
@@ -134,10 +130,8 @@ impl BlendAdapterContract {
             ));
 
             client.submit(&adapter, &adapter, &adapter, &requests);
-            env.events().publish(
-                (symbol_short!("supply"), asset),
-                amount,
-            );
+            env.events()
+                .publish((symbol_short!("supply"), asset), amount);
             Ok(())
         })
     }
@@ -180,10 +174,8 @@ impl BlendAdapterContract {
                 return Err(AdapterError::ZeroWithdrawal);
             }
             token.transfer(&adapter, &vault, &actual_withdrawn);
-            env.events().publish(
-                (symbol_short!("withdraw"), asset),
-                actual_withdrawn,
-            );
+            env.events()
+                .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
             Ok(())
         })
     }
@@ -211,10 +203,8 @@ impl BlendAdapterContract {
             let adapter = env.current_contract_address();
             let token = soroban_sdk::token::Client::new(&env, &asset);
             token.transfer(&adapter, &receiver, &amount);
-            env.events().publish(
-                (symbol_short!("rescue"), asset, receiver),
-                amount,
-            );
+            env.events()
+                .publish((symbol_short!("rescue"), asset, receiver), amount);
             Ok(())
         })
     }
@@ -299,10 +289,8 @@ impl BlendAdapterContract {
             ));
 
             client.submit(&adapter, &adapter, &adapter, &requests);
-            env.events().publish(
-                (symbol_short!("supply"), asset),
-                amount,
-            );
+            env.events()
+                .publish((symbol_short!("supply"), asset), amount);
             Ok(())
         })
     }
@@ -347,10 +335,8 @@ impl BlendAdapterContract {
                 return Err(AdapterError::ZeroWithdrawal);
             }
             token.transfer(&adapter, &vault, &actual_withdrawn);
-            env.events().publish(
-                (symbol_short!("withdraw"), asset),
-                actual_withdrawn,
-            );
+            env.events()
+                .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
             Ok(actual_withdrawn)
         })
     }
@@ -405,10 +391,7 @@ fn is_contract_address(addr: &Address) -> bool {
     matches!(bytes.get(0), Some(b'C'))
 }
 
-fn require_contract_address(
-    addr: &Address,
-    err: AdapterError,
-) -> Result<(), AdapterError> {
+fn require_contract_address(addr: &Address, err: AdapterError) -> Result<(), AdapterError> {
     if is_contract_address(addr) {
         Ok(())
     } else {
@@ -466,9 +449,10 @@ mod tests {
 
     use super::*;
     use soroban_sdk::{
+        symbol_short,
         testutils::{Address as _, Events as _},
         token::StellarAssetClient,
-        vec, IntoVal, TryFromVal, Val, symbol_short,
+        vec, IntoVal, TryFromVal, Val,
     };
 
     #[contract]
@@ -500,7 +484,11 @@ mod tests {
     }
 
     fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
-        env.events().all().filter_by_contract(adapter).events().len()
+        env.events()
+            .all()
+            .filter_by_contract(adapter)
+            .events()
+            .len()
     }
 
     #[test]
@@ -510,10 +498,7 @@ mod tests {
         let vault = Address::generate(&env);
         let pool = Address::generate(&env);
 
-        let contract_id = env.register(
-            BlendAdapterContract,
-            (&admin, &vault, &pool),
-        );
+        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
         env.as_contract(&contract_id, || {
             assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
             assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), vault);
@@ -526,9 +511,7 @@ mod tests {
         let env = Env::default();
         let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
         env.as_contract(&contract_id, || {
-            let result = with_reentrancy_guard(&env, || {
-                with_reentrancy_guard(&env, || Ok(()))
-            });
+            let result = with_reentrancy_guard(&env, || with_reentrancy_guard(&env, || Ok(())));
             assert_eq!(result, Err(AdapterError::Reentrancy));
         });
     }
@@ -538,10 +521,7 @@ mod tests {
         let admin = Address::generate(env);
         let vault = Address::generate(env);
         let pool = Address::generate(env);
-        let contract_id = env.register(
-            BlendAdapterContract,
-            (&admin, &vault, &pool),
-        );
+        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
         (contract_id, admin, vault, pool)
     }
 
@@ -763,9 +743,7 @@ mod tests {
         let token = env.register_stellar_asset_contract_v2(admin.clone());
         let asset = token.address();
         let token_client = StellarAssetClient::new(&env, &asset);
-        token_client
-            .mock_all_auths()
-            .mint(&contract_id, &1_000);
+        token_client.mock_all_auths().mint(&contract_id, &1_000);
 
         let balance_before = token_client.balance(&contract_id);
         env.as_contract(&contract_id, || {
@@ -788,9 +766,7 @@ mod tests {
         let token = env.register_stellar_asset_contract_v2(admin.clone());
         let asset = token.address();
         let token_client = StellarAssetClient::new(&env, &asset);
-        token_client
-            .mock_all_auths()
-            .mint(&pool, &5_000);
+        token_client.mock_all_auths().mint(&pool, &5_000);
 
         let vault_before = token_client.balance(&vault);
         env.as_contract(&contract_id, || {
@@ -813,9 +789,7 @@ mod tests {
         let token = env.register_stellar_asset_contract_v2(admin.clone());
         let asset = token.address();
         let token_client = StellarAssetClient::new(&env, &asset);
-        token_client
-            .mock_all_auths()
-            .mint(&pool, &300);
+        token_client.mock_all_auths().mint(&pool, &300);
 
         let vault_before = token_client.balance(&vault);
         env.as_contract(&contract_id, || {
@@ -838,9 +812,7 @@ mod tests {
         let token = env.register_stellar_asset_contract_v2(admin.clone());
         let asset = token.address();
         let token_client = StellarAssetClient::new(&env, &asset);
-        token_client
-            .mock_all_auths()
-            .mint(&contract_id, &2_000);
+        token_client.mock_all_auths().mint(&contract_id, &2_000);
         let receiver = Address::generate(&env);
 
         let receiver_before = token_client.balance(&receiver);

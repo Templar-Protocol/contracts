@@ -9,8 +9,7 @@ use alloc::collections::{BTreeSet, VecDeque};
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, Address, BytesN, Env,
-    IntoVal, String as SdkString, Symbol, Val, Vec,
+    contract, contractimpl, Address, BytesN, Env, IntoVal, String as SdkString, Symbol, Val, Vec,
 };
 use templar_curator_primitives::governance::{
     cap_change_decision, determine_relaxed, evaluate_fee_change, guardian_change_decision,

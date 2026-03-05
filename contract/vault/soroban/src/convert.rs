@@ -27,9 +27,7 @@ pub(crate) fn ledger_timestamp_ns(env: &soroban_sdk::Env) -> Result<u64, Contrac
 
 /// Convert RuntimeError to ContractError.
 #[inline]
-pub(crate) fn runtime_to_contract<T>(
-    result: Result<T, RuntimeError>,
-) -> Result<T, ContractError> {
+pub(crate) fn runtime_to_contract<T>(result: Result<T, RuntimeError>) -> Result<T, ContractError> {
     match result {
         Ok(value) => Ok(value),
         Err(err) => Err(ContractError::from(err)),

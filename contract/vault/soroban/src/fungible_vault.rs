@@ -29,7 +29,6 @@ use crate::effects::publish_kernel_event;
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage};
 
-
 /// Load kernel state and a default config for read-only conversion math.
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
@@ -174,7 +173,6 @@ pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
     };
     token::Client::new(env, &share_token).balance(owner)
 }
-
 
 /// Perform an atomic withdrawal by directly updating kernel state
 /// and transferring tokens.

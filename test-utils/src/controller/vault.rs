@@ -213,7 +213,7 @@ impl VaultController {
 static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
 pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault"))
+    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault/near"))
         .await
 }
 

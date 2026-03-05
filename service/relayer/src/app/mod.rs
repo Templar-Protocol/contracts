@@ -297,10 +297,11 @@ impl App {
                     });
                     continue;
                 };
+                let expects_borrow_asset = matches!(msg, DepositMsg::Supply | DepositMsg::Repay);
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
-                    if !msg.expects_borrow_asset() {
+                    if !expects_borrow_asset {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
                             expected: market_account_ids.collateral_asset.to_string(),
@@ -308,7 +309,7 @@ impl App {
                         });
                     }
                 } else if transfer.asset() == market_account_ids.collateral_asset {
-                    if msg.expects_borrow_asset() {
+                    if expects_borrow_asset {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
                             expected: market_account_ids.borrow_asset.to_string(),

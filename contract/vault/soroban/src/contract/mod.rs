@@ -554,7 +554,10 @@ where
         // Extract fields from pending and withdraw state to avoid cloning structs.
         // All fields are Copy types (Address=[u8;32], u128, u64).
         let (pending_owner, pending_receiver, pending_escrow, pending_expected) = {
-            let (_, p) = self.state()?.withdraw_queue.head()
+            let (_, p) = self
+                .state()?
+                .withdraw_queue
+                .head()
                 .ok_or_else(|| contract_error("withdraw queue empty"))?;
             (p.owner, p.receiver, p.escrow_shares, p.expected_assets)
         };
@@ -1764,7 +1767,8 @@ impl SorobanVaultContract {
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let caller_kernel = kernel_address_from_sdk(&env, &caller);
-            let op_id = vault.begin_refreshing(caller_kernel, markets_vec.take().unwrap(), now_ns)?;
+            let op_id =
+                vault.begin_refreshing(caller_kernel, markets_vec.take().unwrap(), now_ns)?;
             let result = vault.finish_refreshing(caller_kernel, op_id)?;
             new_external = result.new_external_assets;
             Ok(())

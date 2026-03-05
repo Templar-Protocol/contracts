@@ -22,10 +22,8 @@ fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
 #[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
 pub fn publish_kernel_event(env: &Env, event: &KernelEvent) {
     let payload = postcard::to_allocvec(event).expect("kernel event serialize");
-    env.events().publish(
-        (symbol_short!("kernel"),),
-        Bytes::from_slice(env, &payload),
-    );
+    env.events()
+        .publish((symbol_short!("kernel"),), Bytes::from_slice(env, &payload));
 }
 
 /// Result type for effect operations.
@@ -432,7 +430,6 @@ where
             None => Err(RuntimeError::effect_failed("unknown address")),
         }
     }
-
 }
 
 impl<S, A> AddressRegistrar for SorobanEffectInterpreter<'_, S, A>
