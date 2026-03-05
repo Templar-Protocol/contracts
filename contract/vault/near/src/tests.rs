@@ -115,7 +115,7 @@ fn cap_group_record(cap: u128, relative_cap: Wad, principal: u128) -> CapGroupRe
 }
 
 fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
-    record.cap.relative_cap.unwrap_or(Wad::one())
+    templar_curator_primitives::cap_group_record_relative_cap(record)
 }
 
 #[fixture]

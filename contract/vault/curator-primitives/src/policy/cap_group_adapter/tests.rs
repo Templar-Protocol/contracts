@@ -36,3 +36,23 @@ fn computes_effective_and_available_from_fields() {
         200
     );
 }
+
+#[test]
+fn record_field_helpers_preserve_unlimited_defaults_and_principal() {
+    let mut record = cap_group_record_from_fields(0, Wad::one(), 123);
+
+    assert_eq!(cap_group_record_absolute_cap(&record), 0);
+    assert_eq!(cap_group_record_relative_cap(&record), Wad::one());
+    assert_eq!(record.principal, 123);
+
+    set_cap_group_record_absolute_cap(&mut record, 7_500);
+    assert_eq!(cap_group_record_absolute_cap(&record), 7_500);
+    assert_eq!(cap_group_record_relative_cap(&record), Wad::one());
+    assert_eq!(record.principal, 123);
+
+    let three_quarters = Wad::from(WAD * 3 / 4);
+    set_cap_group_record_relative_cap(&mut record, three_quarters);
+    assert_eq!(cap_group_record_absolute_cap(&record), 7_500);
+    assert_eq!(cap_group_record_relative_cap(&record), three_quarters);
+    assert_eq!(record.principal, 123);
+}

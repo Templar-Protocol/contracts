@@ -1255,21 +1255,19 @@ impl Contract {
     }
 
     fn cap_group_absolute_cap(record: &CapGroupRecord) -> u128 {
-        record.cap.absolute_cap.map(|cap| cap.get()).unwrap_or(0)
+        templar_curator_primitives::cap_group_record_absolute_cap(record)
     }
 
     fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
-        record.cap.relative_cap.clone().unwrap_or(Wad::one())
+        templar_curator_primitives::cap_group_record_relative_cap(record)
     }
 
     fn set_cap_group_absolute_cap(record: &mut CapGroupRecord, cap: u128) {
-        let relative_cap = Self::cap_group_relative_cap(record);
-        record.cap = templar_curator_primitives::cap_group_from_fields(cap, relative_cap);
+        templar_curator_primitives::set_cap_group_record_absolute_cap(record, cap);
     }
 
     fn set_cap_group_relative_cap(record: &mut CapGroupRecord, relative_cap: Wad) {
-        let absolute_cap = Self::cap_group_absolute_cap(record);
-        record.cap = templar_curator_primitives::cap_group_from_fields(absolute_cap, relative_cap);
+        templar_curator_primitives::set_cap_group_record_relative_cap(record, relative_cap);
     }
 
     fn principal_of(&self, market_id: MarketId) -> u128 {
