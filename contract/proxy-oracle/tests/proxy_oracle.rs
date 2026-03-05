@@ -10,7 +10,10 @@ use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
     oracle::{
         price_transformer::{self, ProxyPriceTransformer},
-        proxy::{governance::Operation, Proxy, ProxyEntry},
+        proxy::{
+            governance::{GovernanceInterface, Operation, Proposal},
+            Proxy, ProxyEntry,
+        },
         pyth::{self, PriceIdentifier},
         redstone::FeedData,
         OracleRequest,
@@ -79,25 +82,56 @@ fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
 
 #[rstest::rstest]
 #[case::success(10 * 1000)]
-#[should_panic = "Cannot execute proposal before TTL has passed"]
+#[should_panic = "TTL not yet elapsed for proposal"]
 #[case::fail(0)]
-#[should_panic = "Cannot execute proposal before TTL has passed"]
+#[should_panic = "TTL not yet elapsed for proposal"]
 #[case::fail(10 * 1000 - 1)]
 pub fn governance_ttl(#[case] delay_ms: u64) {
     let mut context = VMContextBuilder::new()
         .attached_deposit(NearToken::from_yoctonear(1))
         .block_timestamp(1_000_000)
+        .predecessor_account_id("owner.near".parse().unwrap())
         .build();
     testing_env!(context.clone());
 
     let mut c = Contract::new();
 
-    // Should execute instantly.
-    let op_id = c.propose(Operation::SetActionTtl {
-        new_ttl_ms: U64(10 * 1000),
-    });
+    assert_eq!(c.gov_count(), 0);
+    assert_eq!(c.gov_next_id(), 0);
+    assert_eq!(c.gov_get(0), None);
+    assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
+    assert_eq!(c.gov_ttl_ms(), U64(0));
 
-    assert_eq!(c.get_proposal(op_id), None);
+    let proposal = c.gov_create(
+        0,
+        Operation::SetActionTtl {
+            new_ttl_ms: U64(10 * 1000),
+        },
+    );
+
+    let expected = Proposal {
+        operation: Operation::SetActionTtl {
+            new_ttl_ms: U64(10 * 1000),
+        },
+        created_at_ms: U64(1),
+        created_by: "owner.near".parse().unwrap(),
+    };
+
+    assert_eq!(proposal, expected);
+    assert_eq!(c.gov_get(0).unwrap(), expected);
+    assert_eq!(c.gov_list(Some(0), Some(1)), vec![0]);
+    assert_eq!(c.gov_list(None, None), vec![0]);
+    assert_eq!(c.gov_count(), 1);
+    assert_eq!(c.gov_next_id(), 1);
+    assert_eq!(c.gov_ttl_ms(), U64(0));
+
+    c.gov_execute(0);
+    assert_eq!(c.gov_get(0), None);
+    assert_eq!(c.gov_list(Some(0), Some(1)), Vec::<u32>::new());
+    assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
+    assert_eq!(c.gov_count(), 0);
+    assert_eq!(c.gov_next_id(), 1);
+    assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
 
     let proxy_id = PriceIdentifier([0x01_u8; 32]);
     let proxy_def = Proxy(vec![OracleRequest::pyth(
@@ -106,15 +140,33 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     )
     .into()]);
 
-    let op_id = c.propose(Operation::SetProxy {
-        id: proxy_id,
-        proxy: Some(proxy_def),
-    });
+    let proposal = c.gov_create(
+        1,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy_def.clone()),
+        },
+    );
+    let expected = Proposal {
+        operation: Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy_def),
+        },
+        created_at_ms: U64(1),
+        created_by: "owner.near".parse().unwrap(),
+    };
+    assert_eq!(proposal, expected);
+    assert_eq!(c.gov_get(1).unwrap(), expected);
+    assert_eq!(c.gov_list(Some(0), Some(2)), vec![1]);
+    assert_eq!(c.gov_list(None, None), vec![1]);
+    assert_eq!(c.gov_count(), 1);
+    assert_eq!(c.gov_next_id(), 2);
+    assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
 
     context.block_timestamp += delay_ms * 1_000_000;
     testing_env!(context.clone());
 
-    c.execute(op_id);
+    c.gov_execute(1);
 }
 
 #[allow(clippy::unwrap_used)]
@@ -159,18 +211,30 @@ pub fn gas() {
 
     let price_ids = vec![proxy_btc_id, proxy_usdc_id, proxy_wnear_id];
 
-    c.propose(Operation::SetProxy {
-        id: proxy_btc_id,
-        proxy: Some(proxy_btc.clone()),
-    });
-    c.propose(Operation::SetProxy {
-        id: proxy_usdc_id,
-        proxy: Some(proxy_usdc.clone()),
-    });
-    c.propose(Operation::SetProxy {
-        id: proxy_wnear_id,
-        proxy: Some(proxy_wnear.clone()),
-    });
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: proxy_btc_id,
+            proxy: Some(proxy_btc.clone()),
+        },
+    );
+    c.gov_create(
+        1,
+        Operation::SetProxy {
+            id: proxy_usdc_id,
+            proxy: Some(proxy_usdc.clone()),
+        },
+    );
+    c.gov_create(
+        2,
+        Operation::SetProxy {
+            id: proxy_wnear_id,
+            proxy: Some(proxy_wnear.clone()),
+        },
+    );
+    c.gov_execute(0);
+    c.gov_execute(1);
+    c.gov_execute(2);
     let gas = estimate_gas(&c, &price_ids);
     eprintln!("Gas used: {gas}");
     assert!(gas <= Gas::from_tgas(15));
