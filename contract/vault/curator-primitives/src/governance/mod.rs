@@ -6,6 +6,7 @@
 //! each executor, but the decision math is shared here.
 
 use alloc::collections::{BTreeSet, VecDeque};
+use core::cmp::Ordering;
 
 use templar_vault_kernel::math::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_vault_kernel::types::TimestampNs;
@@ -128,6 +129,29 @@ impl TimelockDecision {
     #[must_use]
     pub fn requires_timelock(self) -> bool {
         matches!(self, TimelockDecision::Timelocked)
+    }
+
+    #[must_use]
+    pub fn from_requires_timelock(requires_timelock: bool) -> Self {
+        if requires_timelock {
+            TimelockDecision::Timelocked
+        } else {
+            TimelockDecision::Immediate
+        }
+    }
+
+    #[must_use]
+    pub fn is_immediate(self) -> bool {
+        matches!(self, TimelockDecision::Immediate)
+    }
+}
+
+#[must_use]
+fn timelock_decision_from_cmp(ordering: Ordering) -> Option<TimelockDecision> {
+    match ordering {
+        Ordering::Equal => None,
+        Ordering::Greater => Some(TimelockDecision::Timelocked),
+        Ordering::Less => Some(TimelockDecision::Immediate),
     }
 }
 
@@ -313,18 +337,43 @@ pub enum CapChangeError {
     NoChange,
 }
 
+/// Decide timelock behavior for market caps.
+///
+/// `None` means the market has no existing cap record yet, so setting a cap is
+/// treated as timelocked.
 #[must_use]
 pub fn cap_change_decision(
     current: Option<u128>,
     proposed: u128,
 ) -> Result<TimelockDecision, CapChangeError> {
     match current {
-        Some(existing) => match proposed.cmp(&existing) {
-            core::cmp::Ordering::Equal => Err(CapChangeError::NoChange),
-            core::cmp::Ordering::Greater => Ok(TimelockDecision::Timelocked),
-            core::cmp::Ordering::Less => Ok(TimelockDecision::Immediate),
-        },
+        Some(existing) => {
+            timelock_decision_from_cmp(proposed.cmp(&existing)).ok_or(CapChangeError::NoChange)
+        }
         None => Ok(TimelockDecision::Timelocked),
+    }
+}
+
+/// Decide timelock behavior for optional caps where `0` (or `None`) means unlimited.
+///
+/// This is intended for cap-group absolute caps, where moving from unlimited to a finite
+/// cap tightens policy and should be immediate, while moving from finite to unlimited
+/// relaxes policy and should be timelocked.
+#[must_use]
+pub fn cap_group_cap_change_decision(
+    current: Option<u128>,
+    proposed: u128,
+) -> Result<TimelockDecision, CapChangeError> {
+    let normalize = |cap: Option<u128>| cap.and_then(core::num::NonZeroU128::new);
+    let current_cap = normalize(current);
+    let proposed_cap = core::num::NonZeroU128::new(proposed);
+
+    match (current_cap, proposed_cap) {
+        (None, None) => Err(CapChangeError::NoChange),
+        (None, Some(_)) => Ok(TimelockDecision::Immediate),
+        (Some(_), None) => Ok(TimelockDecision::Timelocked),
+        (Some(existing), Some(next)) => timelock_decision_from_cmp(next.get().cmp(&existing.get()))
+            .ok_or(CapChangeError::NoChange),
     }
 }
 
@@ -350,11 +399,8 @@ pub fn relative_cap_change_decision(
     }
 
     match current {
-        Some(existing) => match proposed.cmp(&existing) {
-            core::cmp::Ordering::Equal => Err(RelativeCapChangeError::NoChange),
-            core::cmp::Ordering::Greater => Ok(TimelockDecision::Timelocked),
-            core::cmp::Ordering::Less => Ok(TimelockDecision::Immediate),
-        },
+        Some(existing) => timelock_decision_from_cmp(proposed.cmp(&existing))
+            .ok_or(RelativeCapChangeError::NoChange),
         None => Ok(TimelockDecision::Timelocked),
     }
 }
@@ -383,29 +429,17 @@ pub fn membership_change_decision(
 
 #[must_use]
 pub fn market_removal_decision(principal: u128) -> TimelockDecision {
-    if principal > 0 {
-        TimelockDecision::Timelocked
-    } else {
-        TimelockDecision::Immediate
-    }
+    TimelockDecision::from_requires_timelock(principal > 0)
 }
 
 #[must_use]
 pub fn guardian_change_decision(has_guardian: bool) -> TimelockDecision {
-    if has_guardian {
-        TimelockDecision::Timelocked
-    } else {
-        TimelockDecision::Immediate
-    }
+    TimelockDecision::from_requires_timelock(has_guardian)
 }
 
 #[must_use]
 pub fn sentinel_change_decision(has_sentinel: bool) -> TimelockDecision {
-    if has_sentinel {
-        TimelockDecision::Timelocked
-    } else {
-        TimelockDecision::Immediate
-    }
+    TimelockDecision::from_requires_timelock(has_sentinel)
 }
 
 #[cfg(test)]
