@@ -13,6 +13,9 @@ use near_sdk::{
     near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
 pub use templar_curator_primitives::{CapGroupId, CapGroupRecord};
+pub use templar_vault_kernel::state::op_state::{
+    AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
+};
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
 use templar_vault_kernel::Wad;
 
@@ -29,13 +32,11 @@ pub mod gas;
 pub mod lock;
 pub mod params;
 pub mod restrictions;
-pub mod state;
 
 pub use errors::Error;
 pub use gas::*;
 pub use lock::Locker;
 pub use restrictions::*;
-pub use state::*;
 
 /// Broad import surface for vault consumers.
 ///
@@ -50,7 +51,6 @@ pub mod prelude {
     pub use super::gas::*;
     pub use super::params::*;
     pub use super::restrictions::*;
-    pub use super::state::*;
     pub use super::{
         require_at_least, storage_bytes_for_account_id, ActualIdx, AllocationDelta, AllocationPlan,
         AllocationWeights, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Delta,
