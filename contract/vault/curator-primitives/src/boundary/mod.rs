@@ -1,4 +1,4 @@
-use crate::auth::{ActionKind, AuthPolicyClass, AuthPolicyProfile};
+use crate::auth::{boundary_policy_class, ActionKind, AuthPolicyClass};
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub enum BoundaryAuthPattern {
 
 #[must_use]
 pub const fn boundary_auth_pattern_for(action: ActionKind) -> BoundaryAuthPattern {
-    match action.policy_class(AuthPolicyProfile::Boundary) {
+    match boundary_policy_class(action) {
         AuthPolicyClass::Guardian => BoundaryAuthPattern::GuardianOrOwner,
         AuthPolicyClass::Allocator => BoundaryAuthPattern::Allocator,
         AuthPolicyClass::AllocatorEmergency => BoundaryAuthPattern::AllocatorOrSentinel,

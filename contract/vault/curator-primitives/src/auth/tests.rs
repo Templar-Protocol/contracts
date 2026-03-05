@@ -1,53 +1,51 @@
 use super::*;
 
 #[test]
-fn test_action_kind_is_privileged_by_profile() {
-    assert!(!ActionKind::Deposit.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(!ActionKind::RequestWithdraw.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(ActionKind::ExecuteWithdraw.is_privileged(AuthPolicyProfile::Canonical));
+fn test_action_kind_is_privileged() {
+    assert!(!ActionKind::Deposit.is_privileged());
+    assert!(!ActionKind::RequestWithdraw.is_privileged());
+    assert!(ActionKind::ExecuteWithdraw.is_privileged());
 
-    assert!(ActionKind::Pause.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(ActionKind::SetRestrictions.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(ActionKind::FinishAllocating.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(ActionKind::BeginAllocating.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(ActionKind::AbortAllocating.is_privileged(AuthPolicyProfile::Canonical));
-    assert!(ActionKind::ManualReconcile.is_privileged(AuthPolicyProfile::Canonical));
-
-    assert!(ActionKind::ExecuteWithdraw.is_privileged(AuthPolicyProfile::Boundary));
+    assert!(ActionKind::Pause.is_privileged());
+    assert!(ActionKind::SetRestrictions.is_privileged());
+    assert!(ActionKind::FinishAllocating.is_privileged());
+    assert!(ActionKind::BeginAllocating.is_privileged());
+    assert!(ActionKind::AbortAllocating.is_privileged());
+    assert!(ActionKind::ManualReconcile.is_privileged());
 }
 
 #[test]
 fn test_policy_class_canonical() {
     assert_eq!(
-        action_policy_class(ActionKind::ExecuteWithdraw, AuthPolicyProfile::Canonical),
+        canonical_policy_class(ActionKind::ExecuteWithdraw),
         AuthPolicyClass::Allocator
     );
     assert_eq!(
-        action_policy_class(ActionKind::Pause, AuthPolicyProfile::Canonical),
+        canonical_policy_class(ActionKind::Pause),
         AuthPolicyClass::Guardian
     );
     assert_eq!(
-        action_policy_class(ActionKind::AbortRefreshing, AuthPolicyProfile::Canonical),
+        canonical_policy_class(ActionKind::AbortRefreshing),
         AuthPolicyClass::AllocatorEmergency
     );
     assert_eq!(
-        action_policy_class(ActionKind::ManualReconcile, AuthPolicyProfile::Canonical),
+        canonical_policy_class(ActionKind::ManualReconcile),
         AuthPolicyClass::Curator
     );
 }
 
 #[test]
-fn test_policy_class_boundary_profile() {
+fn test_policy_class_boundary() {
     assert_eq!(
-        action_policy_class(ActionKind::ExecuteWithdraw, AuthPolicyProfile::Boundary),
+        boundary_policy_class(ActionKind::ExecuteWithdraw),
         AuthPolicyClass::Allocator
     );
     assert_eq!(
-        action_policy_class(ActionKind::AbortRefreshing, AuthPolicyProfile::Boundary),
+        boundary_policy_class(ActionKind::AbortRefreshing),
         AuthPolicyClass::AllocatorEmergency
     );
     assert_eq!(
-        action_policy_class(ActionKind::SetRestrictions, AuthPolicyProfile::Boundary),
+        boundary_policy_class(ActionKind::SetRestrictions),
         AuthPolicyClass::Guardian
     );
 }

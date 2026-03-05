@@ -16,8 +16,7 @@ use alloc::vec::Vec;
 use templar_vault_kernel::Address;
 
 use crate::auth::{
-    action_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthPolicyProfile,
-    AuthResult,
+    canonical_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult,
 };
 
 /// Role types for RBAC.
@@ -156,7 +155,7 @@ impl RbacConfig {
 #[inline]
 #[must_use]
 pub fn required_role(action: ActionKind) -> Option<Role> {
-    match action_policy_class(action, AuthPolicyProfile::Canonical) {
+    match canonical_policy_class(action) {
         AuthPolicyClass::Public => None,
         AuthPolicyClass::Guardian => Some(Role::Guardian),
         AuthPolicyClass::Allocator | AuthPolicyClass::AllocatorEmergency => Some(Role::Allocator),
@@ -218,7 +217,7 @@ impl AuthAdapter for RbacAuth {
         // Check if paused (allow pause action even when paused)
         if self.config.paused && action != ActionKind::Pause {
             // Only allow user to read/check state when paused, but not deposit/withdraw
-            if !action.is_privileged(AuthPolicyProfile::Canonical) {
+            if !action.is_privileged() {
                 return Err(AuthError::VaultPaused);
             }
             // Allow curator to unpause and perform privileged recovery actions
@@ -228,7 +227,7 @@ impl AuthAdapter for RbacAuth {
         }
 
         // Check role requirements from policy class, including emergency paths.
-        let allowed = match action_policy_class(action, AuthPolicyProfile::Canonical) {
+        let allowed = match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
             AuthPolicyClass::Guardian => self.has_required_role(&caller, Role::Guardian),
             AuthPolicyClass::Allocator => self.has_required_role(&caller, Role::Allocator),

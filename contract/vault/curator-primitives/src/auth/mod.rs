@@ -8,21 +8,6 @@
 
 use templar_vault_kernel::{Address, KernelAction};
 
-/// Shared auth policy profile used to classify action authorization behavior.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub enum AuthPolicyProfile {
-    /// Canonical policy used by shared RBAC adapters.
-    Canonical,
-    /// Boundary executor policy (allocator-driven execute-withdraw and sentinel emergency paths).
-    Boundary,
-}
-
 /// Shared authorization class for an action.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,19 +27,6 @@ pub enum AuthPolicyClass {
     AllocatorEmergency,
     /// Curator/owner-only privileged action.
     Curator,
-}
-
-/// Classify an action under a specific auth policy profile.
-#[inline]
-#[must_use]
-pub const fn action_policy_class(
-    action: ActionKind,
-    profile: AuthPolicyProfile,
-) -> AuthPolicyClass {
-    match profile {
-        AuthPolicyProfile::Canonical => canonical_policy_class(action),
-        AuthPolicyProfile::Boundary => boundary_policy_class(action),
-    }
 }
 
 /// Canonical shared policy class for an action.
@@ -149,18 +121,11 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// Returns this action's auth policy class under the provided profile.
+    /// Returns true if this action requires privileged access under the canonical policy.
     #[inline]
     #[must_use]
-    pub const fn policy_class(&self, profile: AuthPolicyProfile) -> AuthPolicyClass {
-        action_policy_class(*self, profile)
-    }
-
-    /// Returns true if this action requires privileged access under the provided profile.
-    #[inline]
-    #[must_use]
-    pub const fn is_privileged(&self, profile: AuthPolicyProfile) -> bool {
-        !matches!(self.policy_class(profile), AuthPolicyClass::Public)
+    pub const fn is_privileged(&self) -> bool {
+        !matches!(canonical_policy_class(*self), AuthPolicyClass::Public)
     }
 }
 
@@ -302,7 +267,7 @@ impl AuthAdapter for StrictAuth {
             return Err(AuthError::VaultPaused);
         }
 
-        if action.is_privileged(AuthPolicyProfile::Canonical) {
+        if action.is_privileged() {
             return Err(AuthError::NotAuthorized {
                 caller: caller.into(),
                 action,

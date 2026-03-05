@@ -7,8 +7,8 @@
 use soroban_sdk::{Address as SdkAddress, Env};
 
 pub use templar_curator_primitives::auth::{
-    action_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthPolicyProfile,
-    AuthResult, PermissiveAuth, StrictAuth,
+    canonical_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult,
+    PermissiveAuth, StrictAuth,
 };
 pub use templar_curator_primitives::rbac::Role;
 
@@ -152,7 +152,7 @@ impl<'a> SorobanAuth<'a> {
     /// Uses the canonical action policy class from curator-primitives, then
     /// checks Soroban-specific role holders.
     pub fn check_role(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
-        let has_role = match action_policy_class(action, AuthPolicyProfile::Canonical) {
+        let has_role = match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
             AuthPolicyClass::Guardian => self.has_role(Role::Guardian, caller),
             AuthPolicyClass::Allocator => self.has_role(Role::Allocator, caller),
