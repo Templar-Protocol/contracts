@@ -46,6 +46,7 @@ pub struct KernelResult {
 }
 
 impl KernelResult {
+    #[must_use]
     pub fn new(state: VaultState, effects: Vec<KernelEffect>) -> Self {
         Self { state, effects }
     }
@@ -176,6 +177,213 @@ pub enum KernelAction {
     ///
     /// Authorization (Owner-only, timelock-gated) must be enforced by the executor.
     EmergencyReset,
+}
+
+/// Discriminant-like view for [`KernelAction`] variants.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum KernelActionKind {
+    BeginAllocating,
+    Deposit,
+    RequestWithdraw,
+    ExecuteWithdraw,
+    BeginRefreshing,
+    FinishAllocating,
+    SyncExternalAssets,
+    FinishRefreshing,
+    AbortRefreshing,
+    SettlePayout,
+    AbortAllocating,
+    AbortWithdrawing,
+    RefreshFees,
+    Pause,
+    EmergencyReset,
+}
+
+impl KernelAction {
+    #[must_use]
+    pub fn begin_allocating(op_id: u64, plan: Vec<(TargetId, u128)>, now_ns: TimestampNs) -> Self {
+        Self::BeginAllocating {
+            op_id,
+            plan,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn deposit(
+        owner: Address,
+        receiver: Address,
+        assets_in: u128,
+        min_shares_out: u128,
+        now_ns: TimestampNs,
+    ) -> Self {
+        Self::Deposit {
+            owner,
+            receiver,
+            assets_in,
+            min_shares_out,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn request_withdraw(
+        owner: Address,
+        receiver: Address,
+        shares: u128,
+        min_assets_out: u128,
+        now_ns: TimestampNs,
+    ) -> Self {
+        Self::RequestWithdraw {
+            owner,
+            receiver,
+            shares,
+            min_assets_out,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn execute_withdraw(now_ns: TimestampNs) -> Self {
+        Self::ExecuteWithdraw { now_ns }
+    }
+
+    #[must_use]
+    pub fn begin_refreshing(op_id: u64, plan: Vec<TargetId>, now_ns: TimestampNs) -> Self {
+        Self::BeginRefreshing {
+            op_id,
+            plan,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn finish_allocating(op_id: u64, now_ns: TimestampNs) -> Self {
+        Self::FinishAllocating { op_id, now_ns }
+    }
+
+    #[must_use]
+    pub fn sync_external_assets(
+        new_external_assets: u128,
+        op_id: u64,
+        now_ns: TimestampNs,
+    ) -> Self {
+        Self::SyncExternalAssets {
+            new_external_assets,
+            op_id,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn finish_refreshing(op_id: u64, now_ns: TimestampNs) -> Self {
+        Self::FinishRefreshing { op_id, now_ns }
+    }
+
+    #[must_use]
+    pub fn abort_refreshing(op_id: u64) -> Self {
+        Self::AbortRefreshing { op_id }
+    }
+
+    #[must_use]
+    pub fn settle_payout(op_id: u64, outcome: PayoutOutcome) -> Self {
+        Self::SettlePayout { op_id, outcome }
+    }
+
+    #[must_use]
+    pub fn abort_allocating(op_id: u64, restore_idle: u128) -> Self {
+        Self::AbortAllocating {
+            op_id,
+            restore_idle,
+        }
+    }
+
+    #[must_use]
+    pub fn abort_withdrawing(op_id: u64, refund_shares: u128) -> Self {
+        Self::AbortWithdrawing {
+            op_id,
+            refund_shares,
+        }
+    }
+
+    #[must_use]
+    pub fn refresh_fees(now_ns: TimestampNs) -> Self {
+        Self::RefreshFees { now_ns }
+    }
+
+    #[must_use]
+    pub fn pause(paused: bool) -> Self {
+        Self::Pause { paused }
+    }
+
+    #[must_use]
+    pub const fn emergency_reset() -> Self {
+        Self::EmergencyReset
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> KernelActionKind {
+        match self {
+            Self::BeginAllocating { .. } => KernelActionKind::BeginAllocating,
+            Self::Deposit { .. } => KernelActionKind::Deposit,
+            Self::RequestWithdraw { .. } => KernelActionKind::RequestWithdraw,
+            Self::ExecuteWithdraw { .. } => KernelActionKind::ExecuteWithdraw,
+            Self::BeginRefreshing { .. } => KernelActionKind::BeginRefreshing,
+            Self::FinishAllocating { .. } => KernelActionKind::FinishAllocating,
+            Self::SyncExternalAssets { .. } => KernelActionKind::SyncExternalAssets,
+            Self::FinishRefreshing { .. } => KernelActionKind::FinishRefreshing,
+            Self::AbortRefreshing { .. } => KernelActionKind::AbortRefreshing,
+            Self::SettlePayout { .. } => KernelActionKind::SettlePayout,
+            Self::AbortAllocating { .. } => KernelActionKind::AbortAllocating,
+            Self::AbortWithdrawing { .. } => KernelActionKind::AbortWithdrawing,
+            Self::RefreshFees { .. } => KernelActionKind::RefreshFees,
+            Self::Pause { .. } => KernelActionKind::Pause,
+            Self::EmergencyReset => KernelActionKind::EmergencyReset,
+        }
+    }
+
+    #[must_use]
+    pub const fn op_id(&self) -> Option<u64> {
+        match self {
+            Self::BeginAllocating { op_id, .. }
+            | Self::BeginRefreshing { op_id, .. }
+            | Self::FinishAllocating { op_id, .. }
+            | Self::SyncExternalAssets { op_id, .. }
+            | Self::FinishRefreshing { op_id, .. }
+            | Self::AbortRefreshing { op_id }
+            | Self::SettlePayout { op_id, .. }
+            | Self::AbortAllocating { op_id, .. }
+            | Self::AbortWithdrawing { op_id, .. } => Some(*op_id),
+            Self::Deposit { .. }
+            | Self::RequestWithdraw { .. }
+            | Self::ExecuteWithdraw { .. }
+            | Self::RefreshFees { .. }
+            | Self::Pause { .. }
+            | Self::EmergencyReset => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn timestamp_ns(&self) -> Option<TimestampNs> {
+        match self {
+            Self::BeginAllocating { now_ns, .. }
+            | Self::Deposit { now_ns, .. }
+            | Self::RequestWithdraw { now_ns, .. }
+            | Self::ExecuteWithdraw { now_ns }
+            | Self::BeginRefreshing { now_ns, .. }
+            | Self::FinishAllocating { now_ns, .. }
+            | Self::SyncExternalAssets { now_ns, .. }
+            | Self::FinishRefreshing { now_ns, .. }
+            | Self::RefreshFees { now_ns } => Some(*now_ns),
+            Self::AbortRefreshing { .. }
+            | Self::SettlePayout { .. }
+            | Self::AbortAllocating { .. }
+            | Self::AbortWithdrawing { .. }
+            | Self::Pause { .. }
+            | Self::EmergencyReset => None,
+        }
+    }
 }
 
 /// Effective totals after applying virtual share/asset offsets.

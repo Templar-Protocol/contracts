@@ -24,6 +24,37 @@ fn test_config() -> VaultConfig {
 }
 
 #[test]
+fn action_builder_and_metadata_helpers() {
+    let action = KernelAction::finish_allocating(42, 1_000);
+    assert_eq!(action.kind(), KernelActionKind::FinishAllocating);
+    assert_eq!(action.op_id(), Some(42));
+    assert_eq!(action.timestamp_ns(), Some(1_000));
+    assert_eq!(
+        action,
+        KernelAction::FinishAllocating {
+            op_id: 42,
+            now_ns: 1_000
+        }
+    );
+
+    let pause = KernelAction::pause(true);
+    assert_eq!(pause.kind(), KernelActionKind::Pause);
+    assert_eq!(pause.op_id(), None);
+    assert_eq!(pause.timestamp_ns(), None);
+
+    let settle = KernelAction::settle_payout(
+        7,
+        PayoutOutcome::Failure {
+            restore_idle: 10,
+            refund_shares: 20,
+        },
+    );
+    assert_eq!(settle.kind(), KernelActionKind::SettlePayout);
+    assert_eq!(settle.op_id(), Some(7));
+    assert_eq!(settle.timestamp_ns(), None);
+}
+
+#[test]
 fn invalid_max_pending_rejected() {
     let state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
     let mut config = test_config();
