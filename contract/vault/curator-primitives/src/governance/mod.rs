@@ -47,10 +47,9 @@ pub fn queue_schedule<T>(
     now_ns: TimestampNs,
     timelock_ns: TimestampNs,
 ) {
-    let valid_at_ns = match TimeGate::schedule_from(now_ns, timelock_ns).ready_at_ns() {
-        Some(timestamp_ns) => timestamp_ns,
-        None => now_ns,
-    };
+    let valid_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
+        .ready_at_ns()
+        .unwrap_or(now_ns);
     queue.push_back(PendingValue::new(value, valid_at_ns));
 }
 
@@ -61,20 +60,23 @@ pub enum PendingQueueError {
 }
 
 #[must_use]
-pub fn queue_has_pending<T>(queue: &VecDeque<PendingValue<T>>, pred: impl Fn(&T) -> bool) -> bool {
+pub fn queue_has_pending<T>(
+    queue: &VecDeque<PendingValue<T>>,
+    mut pred: impl FnMut(&T) -> bool,
+) -> bool {
     queue.iter().any(|entry| pred(&entry.value))
 }
 
 pub fn queue_take_mature<T>(
     queue: &mut VecDeque<PendingValue<T>>,
     now_ns: TimestampNs,
-    pred: impl Fn(&T) -> bool,
+    mut pred: impl FnMut(&T) -> bool,
 ) -> Result<Option<T>, PendingQueueError> {
-    let Some((index, entry)) = queue
-        .iter()
-        .enumerate()
-        .find(|(_, entry)| pred(&entry.value))
-    else {
+    let Some(index) = queue.iter().position(|entry| pred(&entry.value)) else {
+        return Ok(None);
+    };
+
+    let Some(entry) = queue.get(index) else {
         return Ok(None);
     };
 
@@ -82,8 +84,10 @@ pub fn queue_take_mature<T>(
         return Err(PendingQueueError::NotMature);
     }
 
-    let value = queue.remove(index).unwrap_or_else(|| panic!()).value;
-    Ok(Some(value))
+    let Some(pending) = queue.remove(index) else {
+        return Ok(None);
+    };
+    Ok(Some(pending.value))
 }
 
 #[must_use]
@@ -102,6 +106,7 @@ pub fn queue_revoke_pending<T>(
     removed_any
 }
 
+#[must_use]
 pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) -> Result<bool, E> {
     decision.map(TimelockDecision::requires_timelock)
 }
@@ -217,6 +222,7 @@ pub enum FeeChangeError {
     ManagementFeeTooHigh,
 }
 
+#[must_use]
 pub fn evaluate_fee_change<R: PartialEq>(
     current: &FeeConfig<R>,
     proposed: &FeeConfig<R>,
@@ -276,6 +282,7 @@ pub enum TimelockConfigError {
     OutOfBounds,
 }
 
+#[must_use]
 pub fn timelock_config_decision(
     current: TimestampNs,
     proposed: TimestampNs,
@@ -306,6 +313,7 @@ pub enum CapChangeError {
     NoChange,
 }
 
+#[must_use]
 pub fn cap_change_decision(
     current: Option<u128>,
     proposed: u128,
@@ -332,6 +340,7 @@ pub enum RelativeCapChangeError {
     RelativeCapTooHigh,
 }
 
+#[must_use]
 pub fn relative_cap_change_decision(
     current: Option<Wad>,
     proposed: Wad,
@@ -361,6 +370,7 @@ pub enum MembershipChangeError {
     NoChange,
 }
 
+#[must_use]
 pub fn membership_change_decision(
     changed: bool,
 ) -> Result<TimelockDecision, MembershipChangeError> {
