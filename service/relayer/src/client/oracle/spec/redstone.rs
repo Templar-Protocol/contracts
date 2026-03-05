@@ -324,6 +324,10 @@ impl Spec for RedStoneSpec {
 
     #[tracing::instrument(skip(self))]
     async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
+        if feed_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
         let payload_vec = self.fetch(feed_ids.to_vec()).await?;
 
         Ok(vec![FunctionCallAction {

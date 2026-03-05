@@ -174,6 +174,10 @@ impl<S: Spec> Client<S> {
             .update_actions(&send_updates_for)
             .await
             .map_err(|e| UpdateError::UpdateActions(Box::new(e)))?;
+        if actions.is_empty() {
+            tracing::debug!("No actions to send for this update");
+            return Ok(None);
+        }
         tracing::debug!(?actions, "Update actions");
         let signed_transaction = self
             .near

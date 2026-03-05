@@ -100,6 +100,10 @@ impl Spec for PythSpec {
 
     #[tracing::instrument(skip(self))]
     async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
+        if feed_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
         let vaa = self.latest_vaa(feed_ids).await?;
         let args = format!(r#"{{"data":"{}"}}"#, hex::encode(vaa)).into_bytes();
         Ok(vec![FunctionCallAction {
