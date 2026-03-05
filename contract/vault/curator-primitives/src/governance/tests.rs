@@ -1,8 +1,8 @@
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeSet, VecDeque};
 
 use super::{
-    cap_change_decision, cap_group_cap_change_decision, queue_take_mature, PendingQueueError,
-    PendingValue, TimelockDecision,
+    cap_change_decision, cap_group_cap_change_decision, determine_relaxed, queue_take_mature,
+    PendingQueueError, PendingValue, Restrictions, TimelockDecision,
 };
 
 #[test]
@@ -46,4 +46,20 @@ fn cap_group_cap_change_decision_unlimited_to_finite_is_immediate() {
 fn cap_group_cap_change_decision_finite_to_unlimited_is_timelocked() {
     let decision = cap_group_cap_change_decision(Some(100), 0);
     assert_eq!(decision, Ok(TimelockDecision::Timelocked));
+}
+
+#[test]
+fn determine_relaxed_paused_to_empty_whitelist_is_not_relaxing() {
+    let current = Some(Restrictions::<&str>::Paused);
+    let next = Some(Restrictions::Whitelist(BTreeSet::new()));
+
+    assert!(!determine_relaxed(&current, &next));
+}
+
+#[test]
+fn determine_relaxed_paused_to_nonempty_whitelist_is_relaxing() {
+    let current = Some(Restrictions::<&str>::Paused);
+    let next = Some(Restrictions::Whitelist(BTreeSet::from(["alice"])));
+
+    assert!(determine_relaxed(&current, &next));
 }

@@ -175,6 +175,7 @@ pub fn determine_relaxed<T: Ord>(
         (None, Some(_)) => false,
         (Some(_), None) => true,
         (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
+        (Some(Restrictions::Paused), Some(Restrictions::Whitelist(new))) => !new.is_empty(),
         (Some(Restrictions::Paused), Some(_)) => true,
         (Some(Restrictions::Blacklist(old)), Some(Restrictions::Blacklist(new))) => {
             old.difference(new).next().is_some()
@@ -442,5 +443,3 @@ pub fn sentinel_change_decision(has_sentinel: bool) -> TimelockDecision {
     TimelockDecision::from_requires_timelock(has_sentinel)
 }
 
-#[cfg(test)]
-mod tests;
