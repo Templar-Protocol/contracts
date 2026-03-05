@@ -1513,8 +1513,8 @@ mod rbac_module_tests {
     fn test_execute_withdraw_allocator_only(
         rbac_auth: RbacAuth,
         allocator_addr: Address,
-        curator_addr: Address,
         user_addr: Address,
+        curator_addr: Address,
     ) {
         let auth = rbac_auth;
 
@@ -1550,12 +1550,20 @@ mod rbac_module_tests {
     }
 
     #[rstest::rstest]
-    fn test_guardian_can_pause(rbac_auth: RbacAuth, guardian_addr: Address, user_addr: Address) {
+    fn test_sentinel_can_pause(
+        rbac_auth: RbacAuth,
+        sentinel_addr: Address,
+        guardian_addr: Address,
+        user_addr: Address,
+    ) {
         let auth = rbac_auth;
 
         assert!(auth
-            .authorize(ActionKind::Pause, guardian_addr, None)
+            .authorize(ActionKind::Pause, sentinel_addr, None)
             .is_ok());
+
+        let result = auth.authorize(ActionKind::Pause, guardian_addr, None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
 
         let result = auth.authorize(ActionKind::Pause, user_addr, None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
@@ -1586,20 +1594,29 @@ mod rbac_module_tests {
     }
 
     #[rstest::rstest]
-    fn test_curator_can_do_everything(rbac_auth: RbacAuth, curator_addr: Address) {
+    fn test_curator_scoped_actions_with_allocator_bypass(
+        rbac_auth: RbacAuth,
+        curator_addr: Address,
+        sentinel_addr: Address,
+    ) {
         let auth = rbac_auth;
 
-        assert!(auth
-            .authorize(ActionKind::Pause, curator_addr, None)
-            .is_ok());
-        assert!(auth
-            .authorize(ActionKind::BeginAllocating, curator_addr, None)
-            .is_ok());
         assert!(auth
             .authorize(ActionKind::ManualReconcile, curator_addr, None)
             .is_ok());
         assert!(auth
             .authorize(ActionKind::Deposit, curator_addr, None)
+            .is_ok());
+
+        let result = auth.authorize(ActionKind::Pause, curator_addr, None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+
+        assert!(auth
+            .authorize(ActionKind::BeginAllocating, curator_addr, None)
+            .is_ok());
+
+        assert!(auth
+            .authorize(ActionKind::Pause, sentinel_addr, None)
             .is_ok());
     }
 
@@ -1627,7 +1644,7 @@ mod rbac_module_tests {
     fn test_paused_blocks_user_actions(
         rbac_auth: RbacAuth,
         user_addr: Address,
-        curator_addr: Address,
+        allocator_addr: Address,
     ) {
         let mut auth = rbac_auth;
         auth.config.set_paused(true);
@@ -1636,17 +1653,17 @@ mod rbac_module_tests {
         assert!(matches!(result, Err(AuthError::VaultPaused)));
 
         assert!(auth
-            .authorize(ActionKind::BeginAllocating, curator_addr, None)
+            .authorize(ActionKind::BeginAllocating, allocator_addr, None)
             .is_ok());
     }
 
     #[rstest::rstest]
-    fn test_paused_allows_pause_action(rbac_auth: RbacAuth, guardian_addr: Address) {
+    fn test_paused_allows_pause_action(rbac_auth: RbacAuth, sentinel_addr: Address) {
         let mut auth = rbac_auth;
         auth.config.set_paused(true);
 
         assert!(auth
-            .authorize(ActionKind::Pause, guardian_addr, None)
+            .authorize(ActionKind::Pause, sentinel_addr, None)
             .is_ok());
     }
 

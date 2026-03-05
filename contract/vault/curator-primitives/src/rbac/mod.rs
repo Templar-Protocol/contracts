@@ -6,7 +6,7 @@
 //!
 //! # Roles
 //!
-//! - **Curator**: Curator-scoped actions (does not implicitly inherit other roles)
+//! - **Curator**: Curator-scoped actions, plus allocator-class operations
 //! - **Guardian**: Reserved governance role (runtime action auth uses sentinel for pause)
 //! - **Sentinel**: Emergency backstop, distinct from guardian (used by NEAR)
 //! - **Allocator**: Can manage allocations and refreshes
@@ -30,7 +30,7 @@ use crate::auth::{
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "boundary", derive(near_sdk::BorshStorageKey))]
 pub enum Role {
-    /// Curator-scoped privileged actions.
+    /// Curator-scoped privileged actions (and allocator-class operations).
     Curator,
     /// Reserved governance role.
     Guardian,
@@ -200,10 +200,13 @@ impl RbacAuth {
         match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
             AuthPolicyClass::Guardian => self.config.has_role(caller, Role::Sentinel),
-            AuthPolicyClass::Allocator => self.config.has_role(caller, Role::Allocator),
+            AuthPolicyClass::Allocator => {
+                self.config.has_role(caller, Role::Allocator) || self.config.is_curator(caller)
+            }
             AuthPolicyClass::AllocatorEmergency => {
                 self.config.has_role(caller, Role::Allocator)
                     || self.config.has_role(caller, Role::Sentinel)
+                    || self.config.is_curator(caller)
             }
             AuthPolicyClass::Curator => self.config.is_curator(caller),
         }
