@@ -110,6 +110,14 @@ fn build_fees(
     }
 }
 
+fn cap_group_record(cap: u128, relative_cap: Wad, principal: u128) -> CapGroupRecord {
+    templar_curator_primitives::cap_group_record_from_fields(cap, relative_cap, principal)
+}
+
+fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
+    record.cap.relative_cap.unwrap_or(Wad::one())
+}
+
 #[fixture]
 fn owner_env(#[default(vault_id())] vault_id: AccountId) -> OwnerEnv {
     build_owner_env(vault_id)
@@ -344,11 +352,7 @@ fn prop_get_max_deposit_matches_bruteforce() {
                     let relative_cap = Wad::from(Wad::SCALE / 10 * u128::from(group_rel_tenths[i]));
                     c.cap_groups.insert(
                         group_ids[i].clone(),
-                        CapGroupRecord {
-                            cap: U128(group_caps[i]),
-                            relative_cap,
-                            principal: group_principal[i],
-                        },
+                        cap_group_record(group_caps[i], relative_cap, group_principal[i]),
                     );
                 }
 
@@ -471,9 +475,9 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     let op_id = 1;
     c.op_state = OpState::Payout(PayoutState {
         op_id,
-        receiver: receiver.clone(),
+        receiver: account_id_to_address(&receiver),
         amount,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: 100,
         burn_shares: 40,
     });
@@ -918,9 +922,9 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         op_id: 1,
         index: 0,
         remaining: need,
-        receiver: mk(9),
+        receiver: account_id_to_address(&mk(9)),
         collected: collected_start,
-        owner: mk(1),
+        owner: account_id_to_address(&mk(1)),
         escrow_shares: 100,
     });
 
@@ -1001,9 +1005,9 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         op_id: 2,
         index: 0,
         remaining: need,
-        receiver: mk(10),
+        receiver: account_id_to_address(&mk(10)),
         collected: 0,
-        owner: mk(2),
+        owner: account_id_to_address(&mk(2)),
         escrow_shares: 100,
     });
 
@@ -1061,9 +1065,9 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
         op_id: 42,
         index: 0,
         remaining: 300,
-        receiver: mk(11),
+        receiver: account_id_to_address(&mk(11)),
         collected: 0,
-        owner: mk(3),
+        owner: account_id_to_address(&mk(3)),
         escrow_shares: 200,
     });
 
@@ -1122,9 +1126,9 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         op_id: 43,
         index: 0,
         remaining: need,
-        receiver: mk(12),
+        receiver: account_id_to_address(&mk(12)),
         collected: 0,
-        owner: mk(4),
+        owner: account_id_to_address(&mk(4)),
         escrow_shares: 150,
     });
 
@@ -1208,9 +1212,9 @@ fn withdraw_balance_read_failure_stops_operation() {
         op_id,
         index: 0,
         remaining: 200,
-        receiver,
+        receiver: account_id_to_address(&receiver),
         collected: 0,
-        owner,
+        owner: account_id_to_address(&owner),
         escrow_shares: 100,
     });
 
@@ -2731,14 +2735,8 @@ fn cap_group_limits_total_room() {
     let mut c = new_test_contract(&vault_id);
 
     let group = CapGroupId("group-a".to_string());
-    c.cap_groups.insert(
-        group.clone(),
-        CapGroupRecord {
-            cap: U128(150),
-            relative_cap: Wad::one(),
-            principal: 0,
-        },
-    );
+    c.cap_groups
+        .insert(group.clone(), cap_group_record(150, Wad::one(), 0));
 
     for offset in 0..2 {
         let cfg = MarketConfiguration {
@@ -2767,22 +2765,10 @@ fn cap_group_relative_caps_scale_with_aum() {
     let group_a = CapGroupId("group-ra".to_string());
     let group_b = CapGroupId("group-rb".to_string());
 
-    c.cap_groups.insert(
-        group_a.clone(),
-        CapGroupRecord {
-            cap: U128(10_000),
-            relative_cap: half,
-            principal: 0,
-        },
-    );
-    c.cap_groups.insert(
-        group_b.clone(),
-        CapGroupRecord {
-            cap: U128(10_000),
-            relative_cap: half,
-            principal: 0,
-        },
-    );
+    c.cap_groups
+        .insert(group_a.clone(), cap_group_record(10_000, half, 0));
+    c.cap_groups
+        .insert(group_b.clone(), cap_group_record(10_000, half, 0));
 
     let m1_id = c.insert_market_for_tests(
         mk(9310),
@@ -2828,14 +2814,8 @@ fn cap_group_refunds_when_saturated() {
     setup_env(&vault_id, &asset, vec![]);
 
     let group = CapGroupId("group-b".to_string());
-    c.cap_groups.insert(
-        group.clone(),
-        CapGroupRecord {
-            cap: U128(50),
-            relative_cap: Wad::one(),
-            principal: 0,
-        },
-    );
+    c.cap_groups
+        .insert(group.clone(), cap_group_record(50, Wad::one(), 0));
 
     let market_account = mk(9300);
     let cfg = MarketConfiguration {
@@ -3493,10 +3473,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     });
 
     assert_eq!(
-        c.cap_groups
-            .get(&group)
-            .expect("group must exist")
-            .relative_cap,
+        cap_group_relative_cap(c.cap_groups.get(&group).expect("group must exist")),
         Wad::one()
     );
 
@@ -3507,10 +3484,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     });
 
     assert_eq!(
-        c.cap_groups
-            .get(&group)
-            .expect("group must exist")
-            .relative_cap,
+        cap_group_relative_cap(c.cap_groups.get(&group).expect("group must exist")),
         half
     );
     assert!(
@@ -3528,10 +3502,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         "increasing relative cap should be timelocked"
     );
     assert_eq!(
-        c.cap_groups
-            .get(&group)
-            .expect("group must exist")
-            .relative_cap,
+        cap_group_relative_cap(c.cap_groups.get(&group).expect("group must exist")),
         half,
         "relative cap should not update until accepted"
     );
@@ -3541,10 +3512,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     });
 
     assert_eq!(
-        c.cap_groups
-            .get(&group)
-            .expect("group must exist")
-            .relative_cap,
+        cap_group_relative_cap(c.cap_groups.get(&group).expect("group must exist")),
         Wad::one(),
     );
 }
@@ -3841,9 +3809,9 @@ fn after_exec_withdraw_read_none_to_payout(
         op_id,
         index,
         remaining: 60,
-        receiver: mk(9),
+        receiver: account_id_to_address(&mk(9)),
         collected: 10,
-        owner: mk(1),
+        owner: account_id_to_address(&mk(1)),
         escrow_shares: 50,
     });
 
@@ -3950,9 +3918,9 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         op_id: 99,
         index: 0,
         remaining: need,
-        receiver: mk(9),
+        receiver: account_id_to_address(&mk(9)),
         collected,
-        owner: mk(1),
+        owner: account_id_to_address(&mk(1)),
         escrow_shares: 0,
     });
 
@@ -4016,9 +3984,9 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         op_id: real_op,
         index: real_idx,
         remaining: 1,
-        receiver: mk(9),
+        receiver: account_id_to_address(&mk(9)),
         collected: 1,
-        owner: mk(1),
+        owner: account_id_to_address(&mk(1)),
         escrow_shares: 0,
     });
 
@@ -4074,9 +4042,9 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
         op_id,
         index,
         remaining: 0,
-        receiver: mk(9),
+        receiver: account_id_to_address(&mk(9)),
         collected: 0,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: 10,
     });
     c.insert_pending_withdrawal_for_tests(
@@ -4180,9 +4148,9 @@ fn ctx_withdrawing_ok_and_err() {
         op_id: 7,
         index: 1,
         remaining: 50,
-        receiver: recv.clone(),
+        receiver: account_id_to_address(&recv),
         collected: 5,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: 10,
     });
 
@@ -4191,9 +4159,9 @@ fn ctx_withdrawing_ok_and_err() {
         .expect("ctx_withdrawing should succeed");
     assert_eq!(ctx.index, 1);
     assert_eq!(ctx.remaining, 50);
-    assert_eq!(ctx.receiver, recv);
+    assert_eq!(ctx.receiver, account_id_to_address(&recv));
     assert_eq!(ctx.collected, 5);
-    assert_eq!(ctx.owner, owner);
+    assert_eq!(ctx.owner, account_id_to_address(&owner));
     assert_eq!(ctx.escrow_shares, 10);
 
     // Wrong op_id => error
@@ -4293,9 +4261,9 @@ fn after_create_withdraw_req_success_returns_promise(
         op_id: 21,
         index: 0,
         remaining: 60,
-        receiver: receiver.clone(),
+        receiver: account_id_to_address(&receiver),
         collected: 10,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: 5,
     });
 
@@ -4353,9 +4321,9 @@ fn after_exec_withdraw_req_returns_promise(
         op_id,
         index: 0,
         remaining: 5,
-        receiver: mk(9),
+        receiver: account_id_to_address(&mk(9)),
         collected: 0,
-        owner: mk(1),
+        owner: account_id_to_address(&mk(1)),
         escrow_shares: 0,
     });
 
@@ -4393,9 +4361,9 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
         op_id,
         index,
         remaining: 10,
-        receiver: receiver.clone(),
+        receiver: account_id_to_address(&receiver),
         collected: 0,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: 0,
     });
 
@@ -4437,8 +4405,8 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
             assert_eq!(*amount, before_balance + record_principal);
             assert_eq!(*escrow_shares, 0);
             assert_eq!(*burn_shares, 0);
-            assert_eq!(*r, receiver);
-            assert_eq!(*o, owner);
+            assert_eq!(*r, account_id_to_address(&receiver));
+            assert_eq!(*o, account_id_to_address(&owner));
         }
         other => panic!("Unexpected state after advancing: {other:?}"),
     }
@@ -4537,9 +4505,9 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
     // Enter Payout with non-zero escrow
     c.op_state = OpState::Payout(PayoutState {
         op_id: 123,
-        receiver: receiver.clone(),
+        receiver: account_id_to_address(&receiver),
         amount,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: escrow,
         burn_shares: escrow,
     });
@@ -4613,9 +4581,9 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
     c.idle_balance = 123;
     c.op_state = OpState::Payout(PayoutState {
         op_id: 2,
-        receiver: receiver.clone(),
+        receiver: account_id_to_address(&receiver),
         amount,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: escrow,
         burn_shares: 0,
     });
@@ -4682,9 +4650,9 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
     let amount = 1;
     c.op_state = OpState::Payout(PayoutState {
         op_id: 7,
-        receiver: receiver.clone(),
+        receiver: account_id_to_address(&receiver),
         amount,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: 0,
         burn_shares: 0,
     });
@@ -4752,9 +4720,9 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
         op_id: 42,
         index: 0,
         remaining: 1,
-        receiver,
+        receiver: account_id_to_address(&receiver),
         collected: 0,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: escrow,
     });
 
@@ -4911,9 +4879,9 @@ fn sentinel_can_unbrick_withdrawing_state() {
         op_id: 77,
         index: 0,
         remaining: 1,
-        receiver,
+        receiver: account_id_to_address(&receiver),
         collected: 0,
-        owner: owner.clone(),
+        owner: account_id_to_address(&owner),
         escrow_shares: escrow,
     });
 
@@ -5448,8 +5416,8 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
                 "no idle used so remaining equals expected"
             );
             assert_eq!(s.collected, 0, "no idle collected");
-            assert_eq!(s.owner, owner_id);
-            assert_eq!(s.receiver, receiver);
+            assert_eq!(s.owner, account_id_to_address(&owner_id));
+            assert_eq!(s.receiver, account_id_to_address(&receiver));
             assert_eq!(s.escrow_shares, escrow);
         }
         other => panic!("Expected Withdrawing state, got {:?}", other),

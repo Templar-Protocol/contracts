@@ -2,7 +2,7 @@
 
 use crate::{
     aum::AUM,
-    convert::{account_id_to_address, to_kernel_op_state, IntoTargetId},
+    convert::{account_id_to_address, IntoTargetId},
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
     kernel_effects::{apply_kernel_effects, KernelEffectContext},
@@ -58,7 +58,7 @@ use templar_curator_primitives::{
 };
 use templar_vault_kernel::actions::apply_action;
 use templar_vault_kernel::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
-use templar_vault_kernel::{Address, KernelAction, OpState as KernelOpState, PayoutOutcome};
+use templar_vault_kernel::{Address, KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
@@ -746,7 +746,7 @@ impl Contract {
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
         crate::auth::require_action(crate::auth::ActionKind::AbortWithdrawing);
 
-        let kernel_state = to_kernel_op_state(&self.op_state);
+        let kernel_state = self.op_state.clone();
         let now = env::block_timestamp();
         let context = RecoveryContext::forced(now);
         let progress = RecoveryProgress::new(now);
@@ -801,13 +801,13 @@ impl Contract {
                 match outcome {
                     PayoutOutcome::Success { .. } => {
                         let (receiver, amount) = match &self.op_state {
-                            OpState::Payout(s) => (s.receiver.clone(), s.amount),
+                            OpState::Payout(s) => (s.receiver, s.amount),
                             _ => return PromiseOrValue::Value(()),
                         };
                         self.payment_01_reconcile_idle_or_refund(
                             Ok(()),
                             op_id,
-                            receiver,
+                            self.resolve_account(&receiver),
                             U128(amount),
                         );
                         PromiseOrValue::Value(())
@@ -1201,81 +1201,8 @@ impl Contract {
             .unwrap_or_else(|| panic_with_message(ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS))
     }
 
-    fn resolve_account_fallback(&mut self, address: &Address) -> AccountId {
-        if let Some(account) = self.address_book.get(address) {
-            return account.clone();
-        }
-
-        let fallback = match &self.op_state {
-            OpState::Withdrawing(state) => {
-                if account_id_to_address(&state.owner) == *address {
-                    Some(state.owner.clone())
-                } else if account_id_to_address(&state.receiver) == *address {
-                    Some(state.receiver.clone())
-                } else {
-                    None
-                }
-            }
-            OpState::Payout(state) => {
-                if account_id_to_address(&state.owner) == *address {
-                    Some(state.owner.clone())
-                } else if account_id_to_address(&state.receiver) == *address {
-                    Some(state.receiver.clone())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-
-        if let Some(account) = fallback {
-            self.address_book.insert(*address, account.clone());
-            return account;
-        }
-
-        panic_with_message(ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS);
-    }
-
-    fn apply_kernel_op_state(&mut self, state: &KernelOpState) {
-        self.op_state = match state {
-            KernelOpState::Idle => OpState::Idle,
-            KernelOpState::Allocating(s) => OpState::Allocating(AllocatingState {
-                op_id: s.op_id,
-                index: s.index,
-                remaining: s.remaining,
-                plan: s
-                    .plan
-                    .iter()
-                    .map(|(target, amount)| (MarketId::from(*target), *amount))
-                    .collect(),
-            }),
-            KernelOpState::Withdrawing(s) => OpState::Withdrawing(WithdrawingState {
-                op_id: s.op_id,
-                index: s.index,
-                remaining: s.remaining,
-                collected: s.collected,
-                receiver: self.resolve_account_fallback(&s.receiver),
-                owner: self.resolve_account_fallback(&s.owner),
-                escrow_shares: s.escrow_shares,
-            }),
-            KernelOpState::Refreshing(s) => OpState::Refreshing(RefreshingState {
-                op_id: s.op_id,
-                index: s.index,
-                plan: s
-                    .plan
-                    .iter()
-                    .map(|target| MarketId::from(*target))
-                    .collect(),
-            }),
-            KernelOpState::Payout(s) => OpState::Payout(PayoutState {
-                op_id: s.op_id,
-                receiver: self.resolve_account_fallback(&s.receiver),
-                amount: s.amount,
-                owner: self.resolve_account_fallback(&s.owner),
-                escrow_shares: s.escrow_shares,
-                burn_shares: s.burn_shares,
-            }),
-        };
+    fn apply_kernel_op_state(&mut self, state: &OpState) {
+        self.op_state = state.clone();
     }
 
     pub fn build_real_assets_report(&self) -> RealAssetsReport {
@@ -1323,6 +1250,28 @@ struct SupplyQueueMarketInfo {
 }
 
 impl Contract {
+    fn default_cap_group_record() -> CapGroupRecord {
+        templar_curator_primitives::cap_group_record_from_fields(0, Wad::one(), 0)
+    }
+
+    fn cap_group_absolute_cap(record: &CapGroupRecord) -> u128 {
+        record.cap.absolute_cap.map(|cap| cap.get()).unwrap_or(0)
+    }
+
+    fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
+        record.cap.relative_cap.clone().unwrap_or(Wad::one())
+    }
+
+    fn set_cap_group_absolute_cap(record: &mut CapGroupRecord, cap: u128) {
+        let relative_cap = Self::cap_group_relative_cap(record);
+        record.cap = templar_curator_primitives::cap_group_from_fields(cap, relative_cap);
+    }
+
+    fn set_cap_group_relative_cap(record: &mut CapGroupRecord, relative_cap: Wad) {
+        let absolute_cap = Self::cap_group_absolute_cap(record);
+        record.cap = templar_curator_primitives::cap_group_from_fields(absolute_cap, relative_cap);
+    }
+
     fn principal_of(&self, market_id: MarketId) -> u128 {
         self.market_record_by_id(market_id)
             .map_or(0, |r| r.principal)
@@ -1361,12 +1310,7 @@ impl Contract {
             return 0;
         };
 
-        templar_curator_primitives::available_capacity_from_fields(
-            rec.cap.0,
-            rec.relative_cap,
-            rec.principal,
-            total_assets,
-        )
+        rec.available_capacity(total_assets)
     }
 
     fn cap_group_room_remaining(&self, cap_group: &CapGroupId) -> u128 {
@@ -1443,11 +1387,11 @@ impl Contract {
                 continue;
             };
 
-            if rec.cap.0 == 0 {
+            if Self::cap_group_absolute_cap(rec) == 0 {
                 continue;
             }
 
-            if rec.relative_cap < Wad::one() {
+            if Self::cap_group_relative_cap(rec) < Wad::one() {
                 groups.insert(group_id);
             }
         }
@@ -1484,7 +1428,7 @@ impl Contract {
         let entry = self
             .cap_groups
             .entry(cap_group.clone())
-            .or_insert_with(CapGroupRecord::default);
+            .or_insert_with(Self::default_cap_group_record);
         if new >= old {
             entry.principal = entry.principal.saturating_add(new - old);
         } else {
@@ -1971,8 +1915,8 @@ impl Contract {
         }
 
         let idx = index as usize;
-        if let Some((market, amount)) = plan.get(idx) {
-            let market_id = *market;
+        if let Some((target, amount)) = plan.get(idx) {
+            let market_id = MarketId::from(*target);
 
             let room = self.room_of(market_id);
             let to_supply = room.min(*amount);
@@ -2008,7 +1952,7 @@ impl Contract {
                 }
                 .emit();
 
-                let kernel_state = to_kernel_op_state(&self.op_state);
+                let kernel_state = self.op_state.clone();
                 let result = templar_vault_kernel::transitions::allocation_step_callback(
                     kernel_state,
                     true,
@@ -2071,7 +2015,7 @@ impl Contract {
             owner: account_id_to_address(owner),
             escrow_shares,
         };
-        let kernel_state = to_kernel_op_state(&self.op_state);
+        let kernel_state = self.op_state.clone();
         let mut result = templar_vault_kernel::transitions::start_withdrawal(kernel_state, request)
             .unwrap_or_else(|_| panic_with_message("Kernel start withdrawal failed"));
 
@@ -2164,9 +2108,9 @@ impl Contract {
     fn pay_or_else(
         &mut self,
         op_id: u64,
-        receiver: &AccountId,
+        receiver: &Address,
         amount: u128,
-        owner: &AccountId,
+        owner: &Address,
         escrow_shares: u128,
         burn_shares: u128,
         or_else: impl FnOnce(&mut Self) -> PromiseOrValue<()>,
@@ -2181,19 +2125,20 @@ impl Contract {
     fn pay(
         &mut self,
         op_id: u64,
-        receiver: &AccountId,
+        receiver: &Address,
         amount: u128,
-        owner: &AccountId,
+        owner: &Address,
         escrow_shares: u128,
         burn_shares: u128,
     ) -> PromiseOrValue<()> {
+        let receiver_account = self.resolve_account(receiver);
         let withdrawing = unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
 
         let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
-            receiver: receiver.clone(),
+            receiver: *receiver,
             amount,
-            owner: owner.clone(),
+            owner: *owner,
             escrow_shares,
             burn_shares,
         });
@@ -2204,11 +2149,11 @@ impl Contract {
         PromiseOrValue::Promise(
             payout
                 .underlying_asset
-                .transfer(receiver.clone(), U128(amount).into())
+                .transfer(receiver_account.clone(), U128(amount).into())
                 .then(
                     Self::ext(env::current_account_id())
                         .with_static_gas(AFTER_SEND_TO_USER_GAS)
-                        .payment_01_reconcile_idle_or_refund(op_id, receiver.clone(), U128(amount)),
+                        .payment_01_reconcile_idle_or_refund(op_id, receiver_account, U128(amount)),
                 ),
         )
     }
@@ -2273,7 +2218,7 @@ impl Contract {
             let report = self.build_real_assets_report();
             Event::RefreshCompleted {
                 op_id: op_id.into(),
-                markets: plan,
+                markets: plan.into_iter().map(MarketId::from).collect(),
                 total_assets: report.total_assets,
                 refreshed_at: report.refreshed_at,
             }
@@ -2282,7 +2227,7 @@ impl Contract {
             return PromiseOrValue::Value(report);
         }
 
-        let market_id = plan[index as usize];
+        let market_id = MarketId::from(plan[index as usize]);
         let before = self.principal_of(market_id);
 
         let market_account = self.market_account_by_id_or_panic(market_id).clone();

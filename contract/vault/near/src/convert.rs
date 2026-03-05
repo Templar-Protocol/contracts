@@ -1,16 +1,8 @@
 use near_sdk::{env, AccountId};
 use std::vec::Vec;
-use templar_common::vault::{
-    AllocatingState as CommonAllocatingState, MarketId, OpState as CommonOpState,
-    PayoutState as CommonPayoutState, RefreshingState as CommonRefreshingState, Restrictions,
-    WithdrawingState as CommonWithdrawingState,
-};
+use templar_common::vault::{MarketId, Restrictions};
 use templar_vault_kernel::Restrictions as KernelRestrictions;
-use templar_vault_kernel::{
-    Address, AllocatingState as KernelAllocatingState, OpState as KernelOpState,
-    PayoutState as KernelPayoutState, RefreshingState as KernelRefreshingState, TargetId,
-    WithdrawingState as KernelWithdrawingState,
-};
+use templar_vault_kernel::{Address, TargetId};
 
 /// Convert executor-facing identifiers into kernel TargetId.
 pub trait IntoTargetId {
@@ -71,64 +63,4 @@ pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
 
 pub(crate) fn to_kernel_restrictions(restrictions: &Restrictions) -> KernelRestrictions {
     restrictions.clone()
-}
-
-/// Convert common OpState into kernel OpState for recovery/action dispatch.
-pub fn to_kernel_op_state(state: &CommonOpState) -> KernelOpState {
-    match state {
-        CommonOpState::Idle => KernelOpState::Idle,
-        CommonOpState::Allocating(CommonAllocatingState {
-            op_id,
-            index,
-            remaining,
-            plan,
-        }) => KernelOpState::Allocating(KernelAllocatingState {
-            op_id: *op_id,
-            index: *index,
-            remaining: *remaining,
-            plan: plan
-                .iter()
-                .map(|(market, amount)| (market.into_target_id(), *amount))
-                .collect(),
-        }),
-        CommonOpState::Withdrawing(CommonWithdrawingState {
-            op_id,
-            index,
-            remaining,
-            collected,
-            receiver,
-            owner,
-            escrow_shares,
-        }) => KernelOpState::Withdrawing(KernelWithdrawingState {
-            op_id: *op_id,
-            index: *index,
-            remaining: *remaining,
-            collected: *collected,
-            receiver: account_id_to_address(receiver),
-            owner: account_id_to_address(owner),
-            escrow_shares: *escrow_shares,
-        }),
-        CommonOpState::Refreshing(CommonRefreshingState { op_id, index, plan }) => {
-            KernelOpState::Refreshing(KernelRefreshingState {
-                op_id: *op_id,
-                index: *index,
-                plan: plan.iter().map(IntoTargetId::into_target_id).collect(),
-            })
-        }
-        CommonOpState::Payout(CommonPayoutState {
-            op_id,
-            receiver,
-            amount,
-            owner,
-            escrow_shares,
-            burn_shares,
-        }) => KernelOpState::Payout(KernelPayoutState {
-            op_id: *op_id,
-            receiver: account_id_to_address(receiver),
-            amount: *amount,
-            owner: account_id_to_address(owner),
-            escrow_shares: *escrow_shares,
-            burn_shares: *burn_shares,
-        }),
-    }
 }

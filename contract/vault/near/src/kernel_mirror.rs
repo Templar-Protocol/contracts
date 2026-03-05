@@ -9,7 +9,7 @@ use templar_vault_kernel::state::vault::{
 };
 use templar_vault_kernel::Restrictions as KernelRestrictions;
 
-use crate::convert::{to_kernel_op_state, to_kernel_restrictions};
+use crate::convert::to_kernel_restrictions;
 use crate::Contract;
 
 impl Contract {
@@ -26,7 +26,7 @@ impl Contract {
             self.fee_anchor.timestamp_ns.0,
         );
 
-        let op_state = to_kernel_op_state(&self.op_state);
+        let op_state = self.op_state.clone();
         let withdraw_queue = self.withdraw_queue.clone();
 
         VaultState {

@@ -4,7 +4,6 @@ use core::cmp::Ordering;
 use std::fmt::Display;
 
 use crate::{
-    convert::to_kernel_op_state,
     governance::Gate,
     near,
     op_guard::{AllocatingSpec, OpGuard, PayoutSpec, RefreshingSpec, WithdrawingSpec},
@@ -200,7 +199,7 @@ impl Contract {
 
         allocating.set_market_principal(market_id, new_principal);
         drop(allocating);
-        let kernel_state = to_kernel_op_state(&self.op_state);
+        let kernel_state = self.op_state.clone();
         let result = templar_vault_kernel::transitions::allocation_step_callback(
             kernel_state,
             true,
@@ -456,7 +455,7 @@ impl Contract {
             _ => ctx.index,
         };
 
-        let kernel_state = to_kernel_op_state(&self.op_state);
+        let kernel_state = self.op_state.clone();
         let result = templar_vault_kernel::transitions::withdrawal_step_callback(
             kernel_state,
             op_id,
@@ -482,12 +481,9 @@ impl Contract {
 
                     // On early completion we still finalise
                     let self_id = env::current_account_id();
+                    let owner = withdrawing.resolve_account(&ctx.owner);
                     withdrawing
-                        .transfer(&Nep141Transfer::new(
-                            ctx.escrow_shares,
-                            &self_id,
-                            &ctx.owner,
-                        ))
+                        .transfer(&Nep141Transfer::new(ctx.escrow_shares, &self_id, &owner))
                         .unwrap_or_else(|e| {
                             templar_common::panic_with_message(&format!(
                                 "Failed to refund escrowed shares {e}"
@@ -656,6 +652,8 @@ impl Contract {
             escrow_shares,
             burn_shares: _,
         } = payout.state().clone();
+        let receiver_account = payout.resolve_account(&receiver);
+        let owner_account = payout.resolve_account(&owner);
 
         let (actual_idle, stop_reason) = match balance {
             Ok(U128(v)) => (Some(v), reason),
@@ -670,7 +668,7 @@ impl Contract {
 
         Event::PayoutStopped {
             op_id: op_id.into(),
-            receiver: receiver.clone(),
+            receiver: receiver_account,
             amount: U128(amount),
             reason: stop_reason,
         }
@@ -684,7 +682,7 @@ impl Contract {
             // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 &mut payout,
-                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
+                &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner_account),
                 |e| {
                     templar_common::panic_with_message(&format!(
                         "Payout stop escrow refund failed: {e}"
@@ -735,7 +733,8 @@ impl Contract {
 
         let (owner, escrow_shares, expected_amount, burn_shares) = {
             let state = payout.state();
-            if state.receiver != receiver {
+            let expected_receiver = payout.resolve_account(&state.receiver);
+            if expected_receiver != receiver {
                 Event::PayoutUnexpectedState {
                     op_id: op_id.into(),
                     receiver: receiver.clone(),
@@ -746,7 +745,7 @@ impl Contract {
             }
 
             (
-                state.owner.clone(),
+                payout.resolve_account(&state.owner),
                 state.escrow_shares,
                 state.amount,
                 state.burn_shares,
@@ -843,7 +842,7 @@ impl Contract {
 
         drop(refreshing);
 
-        let kernel_state = to_kernel_op_state(&self.op_state);
+        let kernel_state = self.op_state.clone();
         let result = templar_vault_kernel::transitions::refresh_step_callback(kernel_state, op_id)
             .unwrap_or_else(|_| panic_with_message("Kernel refresh step failed"));
         self.apply_kernel_op_state(&result.new_state);
@@ -857,13 +856,13 @@ impl Contract {
             let report = self.build_real_assets_report();
             Event::RefreshCompleted {
                 op_id: op_id.into(),
-                markets: next_plan,
+                markets: next_plan.into_iter().map(MarketId::from).collect(),
                 total_assets: report.total_assets,
                 refreshed_at: report.refreshed_at,
             }
             .emit();
 
-            let kernel_state = to_kernel_op_state(&self.op_state);
+            let kernel_state = self.op_state.clone();
             let result = templar_vault_kernel::transitions::complete_refresh(kernel_state, op_id)
                 .unwrap_or_else(|_| panic_with_message("Kernel complete refresh failed"));
             self.apply_kernel_op_state(&result.new_state);
@@ -1051,7 +1050,7 @@ impl Contract {
         }
         .emit();
 
-        let owner = s.owner.clone();
+        let owner = self.resolve_account(&s.owner);
         let escrow_shares = s.escrow_shares;
 
         self.refund_escrow_and_go_idle(owner, escrow_shares, "Withdrawing");
@@ -1068,13 +1067,13 @@ impl Contract {
 
         Event::PayoutStopped {
             op_id: (s.op_id).into(),
-            receiver: s.receiver.clone(),
+            receiver: self.resolve_account(&s.receiver),
             amount: U128(s.amount),
             reason: msg.map(|m| Reason::Other(m.to_string())),
         }
         .emit();
 
-        let owner = s.owner.clone();
+        let owner = self.resolve_account(&s.owner);
         let escrow_shares = s.escrow_shares;
 
         self.refund_escrow_and_go_idle(owner, escrow_shares, "Payout");
