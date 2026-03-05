@@ -44,7 +44,7 @@ impl Role {
     #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     #[must_use]
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Role::Curator => "curator",
             Role::Guardian => "guardian",
@@ -119,7 +119,7 @@ impl RbacConfig {
     #[inline]
     pub fn remove_role(&mut self, address: &Address, role: Role) {
         self.assignments
-            .retain(|a| !(&a.address == address && a.role == role));
+            .retain(|assignment| !(assignment.address == *address && assignment.role == role));
     }
 
     /// Check if an address has a specific role.
@@ -128,7 +128,13 @@ impl RbacConfig {
     pub fn has_role(&self, address: &Address, role: Role) -> bool {
         self.assignments
             .iter()
-            .any(|a| &a.address == address && a.role == role)
+            .any(|assignment| assignment.address == *address && assignment.role == role)
+    }
+
+    #[inline]
+    #[must_use]
+    fn is_curator(&self, address: &Address) -> bool {
+        self.has_role(address, Role::Curator)
     }
 
     /// Get all roles for an address.
@@ -168,7 +174,7 @@ pub fn required_role(action: ActionKind) -> Option<Role> {
 /// This adapter enforces role-based access control for curator vault actions.
 /// It checks that the caller has the required role for each action type.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct RbacAuth {
     /// RBAC configuration.
     pub config: RbacConfig,
@@ -189,21 +195,24 @@ impl RbacAuth {
         Self::new(RbacConfig::with_curator(curator))
     }
 
-    /// Check if the caller has the required role or is a curator.
-    fn has_required_role(&self, caller: &Address, required: Role) -> bool {
-        // Curator can do anything
-        if self.config.has_role(caller, Role::Curator) {
-            return true;
-        }
-
-        // Check for the specific role
-        self.config.has_role(caller, required)
+    /// Check if the caller has the given role, or curator override.
+    #[inline]
+    fn has_role_or_curator(&self, caller: &Address, role: Role) -> bool {
+        self.config.is_curator(caller) || self.config.has_role(caller, role)
     }
-}
 
-impl Default for RbacAuth {
-    fn default() -> Self {
-        Self::new(RbacConfig::new())
+    #[inline]
+    fn is_allowed(&self, action: ActionKind, caller: &Address) -> bool {
+        match canonical_policy_class(action) {
+            AuthPolicyClass::Public => true,
+            AuthPolicyClass::Guardian => self.has_role_or_curator(caller, Role::Guardian),
+            AuthPolicyClass::Allocator => self.has_role_or_curator(caller, Role::Allocator),
+            AuthPolicyClass::AllocatorEmergency => {
+                self.has_role_or_curator(caller, Role::Allocator)
+                    || self.has_role_or_curator(caller, Role::Sentinel)
+            }
+            AuthPolicyClass::Curator => self.config.is_curator(caller),
+        }
     }
 }
 
@@ -221,24 +230,12 @@ impl AuthAdapter for RbacAuth {
                 return Err(AuthError::VaultPaused);
             }
             // Allow curator to unpause and perform privileged recovery actions
-            if !self.config.has_role(&caller, Role::Curator) {
+            if !self.config.is_curator(&caller) {
                 return Err(AuthError::VaultPaused);
             }
         }
 
-        // Check role requirements from policy class, including emergency paths.
-        let allowed = match canonical_policy_class(action) {
-            AuthPolicyClass::Public => true,
-            AuthPolicyClass::Guardian => self.has_required_role(&caller, Role::Guardian),
-            AuthPolicyClass::Allocator => self.has_required_role(&caller, Role::Allocator),
-            AuthPolicyClass::AllocatorEmergency => {
-                self.has_required_role(&caller, Role::Allocator)
-                    || self.has_required_role(&caller, Role::Sentinel)
-            }
-            AuthPolicyClass::Curator => self.has_required_role(&caller, Role::Curator),
-        };
-
-        if !allowed {
+        if !self.is_allowed(action, &caller) {
             return Err(AuthError::MissingRole);
         }
 
