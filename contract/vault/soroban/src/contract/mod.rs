@@ -42,9 +42,8 @@ use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, convert_to_assets, convert_to_assets_ceil,
     convert_to_shares, convert_to_shares_ceil, start_allocation, start_refresh,
     withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor, FeeSlot, FeesSpec,
-    KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
-    VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
-    MIN_WITHDRAWAL_ASSETS,
+    KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig, VaultState, Wad,
+    MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -313,7 +312,7 @@ where
             .state
             .take()
             .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))?;
-        let result = match kernel_to_runtime(apply_action(
+        let result = match transition_to_runtime(apply_action(
             state.clone(),
             &config,
             restrictions,
@@ -1487,15 +1486,7 @@ pub(crate) fn with_contract_vault(
 }
 
 #[inline]
-fn kernel_to_runtime<T>(result: Result<T, KernelError>) -> Result<T, RuntimeError> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(_) => Err(RuntimeError::transition_error()),
-    }
-}
-
-#[inline]
-fn transition_to_runtime<T>(result: Result<T, TransitionError>) -> Result<T, RuntimeError> {
+fn transition_to_runtime<T, E>(result: Result<T, E>) -> Result<T, RuntimeError> {
     match result {
         Ok(value) => Ok(value),
         Err(_) => Err(RuntimeError::transition_error()),

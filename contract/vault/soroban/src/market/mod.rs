@@ -104,9 +104,7 @@ impl From<MarketRef> for (TargetId, AssetId) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SorobanMarketMethod {
     Supply,
-    Withdraw,
     ProgressWithdrawal,
-    TotalAssets,
 }
 
 impl SorobanMarketMethod {
@@ -115,9 +113,7 @@ impl SorobanMarketMethod {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Supply => "supply",
-            Self::Withdraw => "withdraw",
             Self::ProgressWithdrawal => "progress_withdrawal",
-            Self::TotalAssets => "total_assets",
         }
     }
 }
@@ -142,12 +138,6 @@ pub fn invoke_supply(env: &Env, adapter: &Address, asset: &Address, amount: i128
     invoke_market_void(env, adapter, SorobanMarketMethod::Supply, asset, amount);
 }
 
-/// Invoke adapter `withdraw(vault, asset, amount)`.
-#[inline]
-pub fn invoke_withdraw(env: &Env, adapter: &Address, asset: &Address, amount: i128) {
-    invoke_market_void(env, adapter, SorobanMarketMethod::Withdraw, asset, amount);
-}
-
 /// Invoke adapter `progress_withdrawal(vault, asset, amount)` and return realized assets.
 #[inline]
 pub fn invoke_progress_withdrawal(
@@ -159,13 +149,5 @@ pub fn invoke_progress_withdrawal(
     let vault = env.current_contract_address();
     let name = Symbol::new(env, SorobanMarketMethod::ProgressWithdrawal.as_str());
     let args: soroban_sdk::Vec<Val> = (vault, asset.clone(), amount).into_val(env);
-    env.invoke_contract::<i128>(adapter, &name, args)
-}
-
-/// Invoke adapter `total_assets(asset)`.
-#[inline]
-pub fn invoke_total_assets(env: &Env, adapter: &Address, asset: &Address) -> i128 {
-    let name = Symbol::new(env, SorobanMarketMethod::TotalAssets.as_str());
-    let args: soroban_sdk::Vec<Val> = (asset.clone(),).into_val(env);
     env.invoke_contract::<i128>(adapter, &name, args)
 }
