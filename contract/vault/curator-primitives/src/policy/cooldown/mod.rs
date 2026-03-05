@@ -4,6 +4,8 @@
 //! rate limits. It's used by both [`RefreshPlan`](super::refresh_plan::RefreshPlan)
 //! and [`MarketLock`](super::market_lock::MarketLock) for expiry semantics.
 
+use templar_vault_kernel::TimeGate;
+
 /// Tracks cooldown state for rate-limited operations.
 ///
 /// A cooldown enforces a minimum interval between operations. It tracks
@@ -13,7 +15,10 @@
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -26,6 +31,17 @@ pub struct Cooldown {
 }
 
 impl Cooldown {
+    fn gate(&self) -> TimeGate {
+        if self.is_unlimited() {
+            return TimeGate::ready_now();
+        }
+
+        match self.last_event_ns {
+            Some(last) => TimeGate::schedule_from(last, self.interval_ns),
+            None => TimeGate::ready_now(),
+        }
+    }
+
     #[must_use]
     pub fn new(interval_ns: u64) -> Self {
         Self {
@@ -63,17 +79,7 @@ impl Cooldown {
     /// - Sufficient time has elapsed since the last operation
     #[must_use]
     pub fn is_ready(&self, current_ns: u64) -> bool {
-        if self.is_unlimited() {
-            return true;
-        }
-
-        match self.last_event_ns {
-            None => true,
-            Some(last) => {
-                let elapsed = current_ns.saturating_sub(last);
-                elapsed >= self.interval_ns
-            }
-        }
+        self.gate().is_ready(current_ns)
     }
 
     /// Check cooldown and return an error if not ready.
@@ -99,24 +105,12 @@ impl Cooldown {
 
     #[must_use]
     pub fn ready_at(&self) -> Option<u64> {
-        if self.is_unlimited() {
-            return None;
-        }
-
-        self.last_event_ns
-            .map(|last| last.saturating_add(self.interval_ns))
+        self.gate().ready_at_ns()
     }
 
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> u64 {
-        if self.is_ready(current_ns) {
-            return 0;
-        }
-
-        match self.ready_at() {
-            Some(ready) => ready.saturating_sub(current_ns),
-            None => 0,
-        }
+        self.gate().remaining(current_ns)
     }
 }
 

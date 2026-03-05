@@ -9,6 +9,7 @@ use alloc::collections::{BTreeSet, VecDeque};
 
 use templar_vault_kernel::math::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_vault_kernel::types::TimestampNs;
+use templar_vault_kernel::TimeGate;
 
 /// A pending governance value gated by a timelock.
 #[cfg_attr(
@@ -47,7 +48,7 @@ impl<T> PendingValue<T> {
     /// Returns true if the timelock has elapsed.
     #[must_use]
     pub fn is_mature(&self, now_ns: TimestampNs) -> bool {
-        now_ns >= self.valid_at_ns
+        TimeGate::from_ready_at(self.valid_at_ns).is_ready(now_ns)
     }
 }
 
@@ -58,7 +59,10 @@ pub fn queue_schedule<T>(
     now_ns: TimestampNs,
     timelock_ns: TimestampNs,
 ) {
-    let valid_at_ns = now_ns.saturating_add(timelock_ns);
+    let valid_at_ns = match TimeGate::schedule_from(now_ns, timelock_ns).ready_at_ns() {
+        Some(timestamp_ns) => timestamp_ns,
+        None => now_ns,
+    };
     queue.push_back(PendingValue::new(value, valid_at_ns));
 }
 

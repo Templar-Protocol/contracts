@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, num::NonZeroU8};
+use std::num::NonZeroU8;
 
 use derive_more::{Display, From, Into};
 
@@ -11,8 +11,9 @@ pub use external::*;
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
+    near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
+use templar_vault_kernel::TimeGate;
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -100,7 +101,7 @@ impl From<&str> for CapGroupId {
 }
 
 /// Configuration and accounting state for a cap group. Cap groups throttle correlated market exposure by enforcing both absolute and relative caps across member markets.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[near(serializers = [borsh, json])]
 pub struct CapGroupRecord {
     /// Absolute cap in underlying units.
@@ -249,9 +250,42 @@ pub struct PendingValue<T: core::fmt::Debug> {
 impl<T: core::fmt::Debug> PendingValue<T> {
     pub fn verify(&self) {
         require!(
-            near_sdk::env::block_timestamp() >= self.valid_at_ns,
+            TimeGate::from_ready_at(self.valid_at_ns).is_ready(env::block_timestamp()),
             "Timelock not elapsed yet"
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_value_tests {
+    use super::PendingValue;
+    use near_sdk::{test_utils::VMContextBuilder, testing_env};
+
+    #[test]
+    fn verify_succeeds_after_timelock_maturity() {
+        let mut context = VMContextBuilder::new();
+        context.block_timestamp(1_000);
+        testing_env!(context.build());
+
+        let pending = PendingValue {
+            value: "ok",
+            valid_at_ns: 1_000,
+        };
+        pending.verify();
+    }
+
+    #[test]
+    #[should_panic(expected = "Timelock not elapsed yet")]
+    fn verify_panics_before_timelock_maturity() {
+        let mut context = VMContextBuilder::new();
+        context.block_timestamp(999);
+        testing_env!(context.build());
+
+        let pending = PendingValue {
+            value: "blocked",
+            valid_at_ns: 1_000,
+        };
+        pending.verify();
     }
 }
 

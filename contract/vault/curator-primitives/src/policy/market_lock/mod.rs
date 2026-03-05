@@ -2,10 +2,14 @@
 
 use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
+use templar_vault_kernel::TimeGate;
 use typed_builder::TypedBuilder;
 
 pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u64) -> bool {
-    expiry_ns > current_ns && expiry_ns - current_ns <= max_duration_ns
+    let max_expiry_ns = TimeGate::schedule_from(current_ns, max_duration_ns)
+        .ready_at_ns()
+        .unwrap_or(current_ns);
+    expiry_ns > current_ns && expiry_ns <= max_expiry_ns
 }
 
 /// A lock on a specific market/target.
@@ -13,7 +17,10 @@ pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u6
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -31,6 +38,10 @@ pub struct MarketLock {
 }
 
 impl MarketLock {
+    fn expiry_gate(&self) -> Option<TimeGate> {
+        self.expires_at_ns.map(TimeGate::from_ready_at)
+    }
+
     #[must_use]
     pub fn new(target_id: TargetId, locked_at_ns: u64) -> Self {
         Self {
@@ -57,22 +68,19 @@ impl MarketLock {
     /// This computes `expires_at_ns = locked_at_ns + ttl_ns`.
     #[must_use]
     pub fn with_ttl(mut self, ttl_ns: u64) -> Self {
-        self.expires_at_ns = Some(self.locked_at_ns.saturating_add(ttl_ns));
+        self.expires_at_ns = TimeGate::schedule_from(self.locked_at_ns, ttl_ns).ready_at_ns();
         self
     }
 
     #[must_use]
     pub fn is_expired(&self, current_ns: u64) -> bool {
-        match self.expires_at_ns {
-            Some(expiry) => current_ns >= expiry,
-            None => false,
-        }
+        self.expiry_gate()
+            .map_or(false, |gate| gate.is_ready(current_ns))
     }
 
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> Option<u64> {
-        self.expires_at_ns
-            .map(|expiry| expiry.saturating_sub(current_ns))
+        self.expiry_gate().map(|gate| gate.remaining(current_ns))
     }
 }
 
@@ -81,7 +89,10 @@ impl MarketLock {
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

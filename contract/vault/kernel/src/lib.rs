@@ -1,6 +1,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(any(feature = "schemars", feature = "borsh-schema"))]
+extern crate std;
 #[cfg(test)]
 extern crate std;
 
@@ -17,6 +19,7 @@ pub mod state;
 pub mod test_utils;
 pub mod transitions;
 pub mod types;
+pub mod utils;
 
 pub use actions::{
     apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
@@ -56,3 +59,4 @@ pub use transitions::{
     TransitionResult, WithdrawalRequest,
 };
 pub use types::{ActualIdx, Address, AssetId, ExpectedIdx, KernelVersion, TimestampNs};
+pub use utils::TimeGate;
