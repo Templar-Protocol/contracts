@@ -13,6 +13,7 @@ use near_sdk::{
     json_types::{U128, U64},
     near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
+pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
 use templar_vault_kernel::TimeGate;
 
 pub use event::{
@@ -37,10 +38,6 @@ pub use lock::Locker;
 pub use restrictions::*;
 pub use state::*;
 
-pub type TimestampNs = u64;
-
-pub type ExpectedIdx = u32;
-pub type ActualIdx = u32;
 pub type AllocationWeights = Vec<(MarketId, U128)>;
 pub type AllocationPlan = Vec<(MarketId, u128)>;
 
@@ -256,39 +253,6 @@ impl<T: core::fmt::Debug> PendingValue<T> {
     }
 }
 
-#[cfg(test)]
-mod pending_value_tests {
-    use super::PendingValue;
-    use near_sdk::{test_utils::VMContextBuilder, testing_env};
-
-    #[test]
-    fn verify_succeeds_after_timelock_maturity() {
-        let mut context = VMContextBuilder::new();
-        context.block_timestamp(1_000);
-        testing_env!(context.build());
-
-        let pending = PendingValue {
-            value: "ok",
-            valid_at_ns: 1_000,
-        };
-        pending.verify();
-    }
-
-    #[test]
-    #[should_panic(expected = "Timelock not elapsed yet")]
-    fn verify_panics_before_timelock_maturity() {
-        let mut context = VMContextBuilder::new();
-        context.block_timestamp(999);
-        testing_env!(context.build());
-
-        let pending = PendingValue {
-            value: "blocked",
-            valid_at_ns: 1_000,
-        };
-        pending.verify();
-    }
-}
-
 /// A single market allocation delta specifying a market and an amount in underlying asset units.
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
@@ -406,3 +370,6 @@ pub struct FeeAccrualAnchor {
     pub total_assets: U128,
     pub timestamp_ns: U64,
 }
+
+#[cfg(test)]
+mod tests;
