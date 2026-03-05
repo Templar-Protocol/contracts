@@ -60,7 +60,7 @@ impl<'a> SorobanAuth<'a> {
 
     #[inline]
     #[must_use]
-    fn has_role(&self, role: Role, caller: &SdkAddress) -> bool {
+    pub(crate) fn has_role(&self, role: Role, caller: &SdkAddress) -> bool {
         match role {
             Role::Curator => caller == &self.curator,
             Role::Sentinel => Self::is_curator_or(caller, &self.sentinel, &self.curator),
@@ -190,6 +190,3 @@ impl<'a> SorobanAuth<'a> {
         self.env
     }
 }
-
-#[cfg(test)]
-mod tests;

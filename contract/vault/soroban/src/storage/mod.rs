@@ -167,11 +167,11 @@ impl<'a> SorobanStorage<'a> {
         self.extend_default_ttl();
     }
 
-    fn load_state_blob(&self) -> Option<Vec<u8>> {
+    pub(crate) fn load_state_blob(&self) -> Option<Vec<u8>> {
         self.load_blob(&SorobanStorageKey::StateBlob)
     }
 
-    fn save_state_blob(&self, state: &[u8]) {
+    pub(crate) fn save_state_blob(&self, state: &[u8]) {
         self.save_blob(&SorobanStorageKey::StateBlob, state);
     }
 
@@ -768,6 +768,3 @@ impl Storage for MemoryStorage {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

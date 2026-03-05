@@ -109,6 +109,3 @@ impl From<crate::auth::AuthError> for RuntimeError {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

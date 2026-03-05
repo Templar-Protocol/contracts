@@ -9,7 +9,7 @@ use crate::error::RuntimeError;
 
 /// Short helper to convert u128 to i128 for event / effect amounts.
 #[inline]
-fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
+pub(crate) fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
     u128_to_i128_effect(value, "event amount overflow")
 }
 
@@ -500,6 +500,3 @@ where
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -28,6 +28,3 @@ pub(crate) fn to_i128(v: u128) -> Result<i128, ContractError> {
 pub(crate) fn to_u128(v: i128) -> Result<u128, ContractError> {
     nonnegative_i128_to_u128(v).ok_or(ContractError::InvalidInput)
 }
-
-#[cfg(test)]
-mod tests;

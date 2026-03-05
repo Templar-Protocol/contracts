@@ -23,15 +23,18 @@ use alloc::vec::Vec;
 use core::mem;
 use core::num::NonZeroU128;
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env, IntoVal,
-    Symbol, Val,
+    contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
 };
 use templar_curator_primitives::governance::{
     cap_change_decision, market_removal_decision, membership_change_decision,
     relative_cap_change_decision, TimelockDecision,
 };
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, CapGroupUpdate};
+use templar_curator_primitives::policy::lock_filter::{
+    build_refresh_plan_with_locks, filter_allocation_plan,
+};
 use templar_curator_primitives::policy::state::MarketConfig;
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::error::KernelError;
@@ -51,18 +54,18 @@ use crate::effects::{
     ShareTokenAdapter, SorobanEffectInterpreter,
 };
 use crate::error::{ContractError, RuntimeError};
-use crate::policy::{build_refresh_plan_with_locks, SupplyQueue, SupplyQueueEntry};
+use crate::market::{invoke_supply, invoke_withdraw};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
-const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
+pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 use crate::storage::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 
 /// Deterministic one-way mapping from Soroban address to kernel Address.
 ///
 /// Uses a domain prefix so hashes do not collide with other chains' mappings.
-fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
+pub(crate) fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     let strkey = addr.to_string();
     let strkey_bytes = strkey.to_bytes();
     let mut strkey_vec = vec![0u8; strkey_bytes.len() as usize];
@@ -787,8 +790,6 @@ where
         plan: Vec<(TargetId, u128)>,
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        use crate::policy::filter_allocation_plan;
-
         // Filter plan to exclude locked markets
         let filtered_plan = filter_allocation_plan(&plan, &self.policy_state.locks, current_ns);
 
@@ -1175,7 +1176,7 @@ where
 #[contract]
 pub struct SorobanVaultContract;
 
-type ContractVault<'a> = CuratorVault<
+pub(crate) type ContractVault<'a> = CuratorVault<
     SorobanStorage<'a>,
     RbacAuth,
     SorobanEffectInterpreter<'a, ShareTokenAdapter<'a>, SdkTokenAdapter<'a>>,
@@ -1463,11 +1464,14 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
     })
 }
 
-type ContractVaultCallback<'a> =
+pub(crate) type ContractVaultCallback<'a> =
     dyn for<'b> FnMut(&mut ContractVault<'b>) -> Result<(), RuntimeError> + 'a;
 
 #[inline(never)]
-fn with_contract_vault(env: &Env, f: &mut ContractVaultCallback<'_>) -> Result<(), RuntimeError> {
+pub(crate) fn with_contract_vault(
+    env: &Env,
+    f: &mut ContractVaultCallback<'_>,
+) -> Result<(), RuntimeError> {
     let bootstrap = load_vault_bootstrap(env)?;
     let share_adapter = ShareTokenAdapter::new(env, &bootstrap.share_token);
     let asset_adapter = SdkTokenAdapter::new(env, &bootstrap.asset_token);
@@ -1507,7 +1511,7 @@ fn with_contract_vault_contract_error(
     runtime_to_contract(with_contract_vault(env, f))
 }
 
-fn with_reentrancy_guard(
+pub(crate) fn with_reentrancy_guard(
     env: &Env,
     f: &mut dyn FnMut() -> Result<(), ContractError>,
 ) -> Result<(), ContractError> {
@@ -1711,7 +1715,7 @@ impl SorobanVaultContract {
             &adapter,
             &amount,
         );
-        call_adapter(&env, &adapter, "supply", &asset_token, amount);
+        invoke_supply(&env, &adapter, &asset_token, amount);
 
         to_i128(new_external)
     }
@@ -1732,7 +1736,7 @@ impl SorobanVaultContract {
 
         // invoke adapter.withdraw() first — sends tokens to vault
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
-        call_adapter(&env, &adapter, "withdraw", &asset_token, amount);
+        invoke_withdraw(&env, &adapter, &asset_token, amount);
 
         // then update accounting (external → idle)
         let mut new_external: u128 = 0;
@@ -2548,20 +2552,9 @@ fn atomic_withdraw_impl(
     to_i128(result)
 }
 
-/// Invoke adapter.{fn_name}(vault, asset, amount).
-fn call_adapter(env: &Env, adapter: &SdkAddress, fn_name: &str, asset: &SdkAddress, amount: i128) {
-    let vault = env.current_contract_address();
-    let name = Symbol::new(env, fn_name);
-    let args: soroban_sdk::Vec<Val> = (vault, asset.clone(), amount).into_val(env);
-    env.invoke_contract::<Val>(adapter, &name, args);
-}
-
 /// Shared preamble for governance entrypoints: auth check + curator kernel address.
 #[inline(never)]
 fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
     require_governance(env, caller)?;
     Ok(kernel_address_from_sdk(env, caller))
 }
-
-#[cfg(test)]
-mod tests;

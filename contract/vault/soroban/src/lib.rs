@@ -35,7 +35,6 @@ pub mod effects;
 pub mod error;
 pub mod fungible_vault;
 pub mod market;
-pub mod policy;
 pub mod storage;
 
 pub mod rbac {
@@ -53,17 +52,21 @@ pub use {
     },
     error::{ContractError, RuntimeError},
     market::{
-        AttemptId, MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter,
-        SorobanMarketAdapter, TestCrossChainAdapter, TestMarketAdapter,
-    },
-    policy::{
-        build_allocation_plan_with_locks, build_refresh_plan_with_locks,
-        build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets,
-        MarketLock, MarketLockSet,
+        invoke_progress_withdrawal, invoke_supply, invoke_total_assets, invoke_withdraw, AttemptId,
+        MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter, SorobanMarketAdapter,
+        SorobanMarketMethod, TestCrossChainAdapter, TestMarketAdapter,
     },
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
     storage::{
         MemoryStorage, SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
     },
+    templar_curator_primitives::policy::lock_filter::{
+        build_allocation_plan_with_locks, build_refresh_plan_with_locks,
+        build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets,
+    },
+    templar_curator_primitives::policy::market_lock::{MarketLock, MarketLockSet},
 };
+
+#[cfg(test)]
+mod tests;
