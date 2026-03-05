@@ -1,19 +1,29 @@
 [workspace]
 resolver = "3"
 members = [
-  "common",
-  "contract/*",
-  "fuzz",
-  "tools/*",
-  "client/*",
-  "mock/*",
-  "service/*",
-  "test-utils",
-  "universal-account",
+    "common",
+    "contract/lst-oracle",
+    "contract/market",
+    "contract/registry",
+    "contract/universal-account",
+    "contract/vault/curator-primitives",
+    "contract/vault/kernel",
+    "contract/vault/near",
+    "contract/vault/soroban",
+    "contract/vault/soroban-blend-adapter",
+    "contract/vault/soroban-governance",
+    "contract/vault/soroban-share-token",
+    "fuzz",
+    "tools/*",
+    "client/*",
+    "mock/*",
+    "service/*",
+    "test-utils",
+    "universal-account",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.2.1"
 license = "MIT"
 repository = "https://github.com/Templar-Protocol/contracts"
 edition = "2021"
@@ -29,6 +39,7 @@ borsh = { version = "1.5", features = ["unstable__schema"] }
 clap = { version = "4.5.23", features = ["derive", "env"] }
 ed25519-dalek = "2.2.0"
 futures = "0.3.31"
+derive_more = { version = "1", default-features = false, features = ["from", "into", "display", "is_variant"] }
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
@@ -53,7 +64,8 @@ schemars = { version = "0.8" }
 solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
-templar-vault-contract = { path = "./contract/vault" }
+templar-vault-contract = { path = "./contract/vault/near" }
+templar-vault-kernel = { path = "./contract/vault/kernel", features = ["near", "borsh-schema", "serde", "schemars", "all-actions"] }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }
@@ -67,6 +79,10 @@ zeroize = "1.8.1"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
+
+[patch.crates-io]
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -88,10 +104,25 @@ incremental = true
 codegen-units = 1
 # Tell `rustc` to optimize for small code size.
 opt-level = "z"
-lto = true
+lto = "fat"
 debug = false
 panic = "abort"
+strip = "symbols"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
+overflow-checks = true
+
+# Dependencies don't need overflow-check panic strings in WASM — saves ~2.5 KiB.
+# Our code uses explicit checked_* arithmetic everywhere.
+[profile.release.package."*"]
+overflow-checks = false
+
+[profile.release.package.templar-soroban-runtime]
+overflow-checks = true
+
+[profile.release.package.templar-vault-kernel]
+overflow-checks = true
+
+[profile.release.package.templar-curator-primitives]
 overflow-checks = true
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification
