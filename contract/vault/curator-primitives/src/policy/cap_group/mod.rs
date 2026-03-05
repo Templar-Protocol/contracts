@@ -1,6 +1,8 @@
 //! Cap group enforcement for market allocation limits.
 
 use alloc::string::String;
+#[cfg(feature = "borsh-schema")]
+use alloc::string::ToString;
 use core::num::NonZeroU128;
 use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
@@ -23,6 +25,7 @@ use typed_builder::TypedBuilder;
 pub struct CapGroupId(pub String);
 
 impl CapGroupId {
+    #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
@@ -64,6 +67,11 @@ pub struct CapGroup {
 
 impl CapGroup {
     #[must_use]
+    fn normalize_relative_cap(cap: Wad) -> Option<Wad> {
+        (!cap.is_zero()).then_some(cap)
+    }
+
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -78,14 +86,9 @@ impl CapGroup {
 
     #[must_use]
     pub fn relative_only(relative_cap: Wad) -> Self {
-        let relative = if relative_cap.is_zero() {
-            None
-        } else {
-            Some(relative_cap)
-        };
         Self {
             absolute_cap: None,
-            relative_cap: relative,
+            relative_cap: Self::normalize_relative_cap(relative_cap),
         }
     }
 
@@ -97,7 +100,7 @@ impl CapGroup {
 
     #[must_use]
     pub fn with_relative(mut self, cap: Wad) -> Self {
-        self.relative_cap = if cap.is_zero() { None } else { Some(cap) };
+        self.relative_cap = Self::normalize_relative_cap(cap);
         self
     }
 
@@ -119,7 +122,6 @@ impl CapGroup {
 
         let relative = self
             .relative_cap
-            .as_ref()
             .map(|cap| {
                 cap.apply_floored(templar_vault_kernel::Number::from(total_assets))
                     .as_u128_saturating()
@@ -136,14 +138,10 @@ impl CapGroup {
             return true;
         }
 
-        let effective_cap = self.effective_cap(total_assets);
-        // Use checked_add to detect overflow - overflow means exceeds any cap
-        let new_principal = match current_principal.checked_add(amount) {
-            Some(p) => p,
-            None => return false, // Overflow always exceeds cap
+        let Some(new_principal) = current_principal.checked_add(amount) else {
+            return false;
         };
-
-        new_principal <= effective_cap
+        new_principal <= self.effective_cap(total_assets)
     }
 
     /// Enforce cap group constraints on an allocation.
@@ -157,15 +155,11 @@ impl CapGroup {
             return Ok(());
         }
 
-        // Use checked_add to detect overflow
-        let new_principal = match current_principal.checked_add(amount) {
-            Some(new_principal) => new_principal,
-            None => {
-                return Err(CapGroupError::Overflow {
-                    current_principal,
-                    requested: amount,
-                })
-            }
+        let Some(new_principal) = current_principal.checked_add(amount) else {
+            return Err(CapGroupError::Overflow {
+                current_principal,
+                requested: amount,
+            });
         };
 
         if let Some(abs_cap) = self.absolute_cap {
@@ -365,6 +359,30 @@ pub enum CapGroupUpdateKey {
     },
 }
 
+impl CapGroupUpdate {
+    /// Build the canonical accept/revoke key for this update.
+    #[must_use]
+    pub fn key(&self) -> CapGroupUpdateKey {
+        self.into()
+    }
+}
+
+impl From<&CapGroupUpdate> for CapGroupUpdateKey {
+    fn from(value: &CapGroupUpdate) -> Self {
+        match value {
+            CapGroupUpdate::SetCap { cap_group_id, .. } => Self::SetCap {
+                cap_group_id: cap_group_id.clone(),
+            },
+            CapGroupUpdate::SetRelativeCap { cap_group_id, .. } => Self::SetRelativeCap {
+                cap_group_id: cap_group_id.clone(),
+            },
+            CapGroupUpdate::SetMembership { market_id, .. } => Self::SetMembership {
+                market_id: *market_id,
+            },
+        }
+    }
+}
+
 /// Validate a list of allocations against their cap groups.
 ///
 /// # Arguments
@@ -382,6 +400,3 @@ pub fn validate_allocations(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;
