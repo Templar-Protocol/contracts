@@ -888,10 +888,16 @@ fn handle_settle_payout(
             burn_shares: burn_amount,
             refund_shares: refund_amount,
         } => {
-            // Saturating add avoids panics; overflow is impossible when callers
-            // follow the escrow-based settlement invariant, and any overflow
-            // would still fail the equality check below.
-            if burn_amount.saturating_add(refund_amount) != payout.escrow_shares {
+            let settled_shares = match burn_amount.checked_add(refund_amount) {
+                Some(settled_shares) => settled_shares,
+                None => {
+                    return Err(KernelError::invalid_state(
+                        "payout success settlement mismatch",
+                    ))
+                }
+            };
+
+            if settled_shares != payout.escrow_shares {
                 return Err(KernelError::invalid_state(
                     "payout success settlement mismatch",
                 ));

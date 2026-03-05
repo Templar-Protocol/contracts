@@ -1939,6 +1939,58 @@ fn settle_payout_success_settlement_mismatch_fails() {
 }
 
 #[test]
+fn settle_payout_success_settlement_overflow_fails() {
+    use crate::state::op_state::PayoutState;
+
+    let mut state = VaultState::with_initial(1, u128::MAX, 1, 0, 0);
+    let config = test_config();
+    let owner = addr(1);
+    let receiver = addr(2);
+
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            u128::MAX,
+            1,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    state.op_state = OpState::Payout(PayoutState {
+        op_id: 22,
+        owner,
+        receiver,
+        amount: 1,
+        escrow_shares: u128::MAX,
+        burn_shares: u128::MAX,
+    });
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::SettlePayout {
+            op_id: 22,
+            outcome: PayoutOutcome::Success {
+                burn_shares: u128::MAX,
+                refund_shares: u128::MAX,
+            },
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            "payout success settlement mismatch"
+        ))
+    ));
+}
+
+#[test]
 fn settle_payout_failure_settlement_mismatch_fails() {
     use crate::state::op_state::PayoutState;
 
