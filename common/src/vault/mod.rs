@@ -134,6 +134,56 @@ pub enum CapGroupUpdate {
     },
 }
 
+impl From<CapGroupUpdate> for templar_curator_primitives::CapGroupUpdate {
+    fn from(value: CapGroupUpdate) -> Self {
+        match value {
+            CapGroupUpdate::SetCap { cap_group, new_cap } => Self::SetCap {
+                cap_group_id: cap_group,
+                new_cap: new_cap.0,
+            },
+            CapGroupUpdate::SetRelativeCap {
+                cap_group,
+                new_relative_cap,
+            } => Self::SetRelativeCap {
+                cap_group_id: cap_group,
+                new_relative_cap_wad: new_relative_cap.0,
+            },
+            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => Self::SetMembership {
+                market_id: u32::from(market),
+                cap_group_id: cap_group,
+            },
+        }
+    }
+}
+
+impl From<templar_curator_primitives::CapGroupUpdate> for CapGroupUpdate {
+    fn from(value: templar_curator_primitives::CapGroupUpdate) -> Self {
+        match value {
+            templar_curator_primitives::CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => Self::SetCap {
+                cap_group: cap_group_id,
+                new_cap: U128(new_cap),
+            },
+            templar_curator_primitives::CapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap_wad,
+            } => Self::SetRelativeCap {
+                cap_group: cap_group_id,
+                new_relative_cap: U128(new_relative_cap_wad),
+            },
+            templar_curator_primitives::CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => Self::SetMarketCapGroup {
+                market: MarketId::from(market_id),
+                cap_group: cap_group_id,
+            },
+        }
+    }
+}
+
 /// Identifies a pending cap-group timelock action.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -150,6 +200,36 @@ pub enum CapGroupUpdateKey {
 #[near(serializers = [borsh, json])]
 #[display("{_0}")]
 pub struct MarketId(pub u32);
+
+impl MarketId {
+    #[must_use]
+    pub fn as_u64(self) -> u64 {
+        u64::from(self.0)
+    }
+
+    #[must_use]
+    pub fn try_from_u64(value: u64) -> Option<Self> {
+        u32::try_from(value).ok().map(Self)
+    }
+}
+
+#[cfg(test)]
+mod market_id_tests {
+    use super::MarketId;
+
+    #[test]
+    fn try_from_u64_accepts_u32_range() {
+        assert_eq!(
+            MarketId::try_from_u64(u32::MAX as u64),
+            Some(MarketId(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn try_from_u64_rejects_out_of_range() {
+        assert_eq!(MarketId::try_from_u64(u64::from(u32::MAX) + 1), None);
+    }
+}
 
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
