@@ -76,7 +76,7 @@ pub use governance::{
     FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError, PendingValue,
     Restrictions, TimelockConfigError, TimelockDecision,
 };
-pub use utils::seconds_to_nanoseconds;
+pub use utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked};
 
 #[cfg(feature = "boundary")]
 pub use boundary::{boundary_auth_pattern_for, BoundaryAuthPattern, VaultStorageKey};

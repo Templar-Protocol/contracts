@@ -1,5 +1,7 @@
 use crate::error::{ContractError, RuntimeError};
-use templar_curator_primitives::seconds_to_nanoseconds;
+use templar_curator_primitives::{
+    nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked,
+};
 
 #[inline]
 fn u128_to_i128_with(
@@ -7,10 +9,7 @@ fn u128_to_i128_with(
     msg: &'static str,
     err: fn(&'static str) -> RuntimeError,
 ) -> Result<i128, RuntimeError> {
-    match i128::try_from(value) {
-        Ok(value) => Ok(value),
-        Err(_) => Err(err(msg)),
-    }
+    u128_to_i128_checked(value).ok_or_else(|| err(msg))
 }
 
 #[inline]
@@ -34,16 +33,10 @@ pub(crate) fn runtime_to_contract<T>(result: Result<T, RuntimeError>) -> Result<
 
 /// Safe u128 → i128 conversion.
 pub(crate) fn to_i128(v: u128) -> Result<i128, ContractError> {
-    match i128::try_from(v) {
-        Ok(value) => Ok(value),
-        Err(_) => Err(ContractError::ConversionOverflow),
-    }
+    u128_to_i128_checked(v).ok_or(ContractError::ConversionOverflow)
 }
 
 /// Safe i128 → u128 conversion (rejects negative).
 pub(crate) fn to_u128(v: i128) -> Result<u128, ContractError> {
-    if v < 0 {
-        return Err(ContractError::InvalidInput);
-    }
-    Ok(v as u128)
+    nonnegative_i128_to_u128(v).ok_or(ContractError::InvalidInput)
 }

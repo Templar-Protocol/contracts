@@ -19,7 +19,7 @@ use templar_curator_primitives::governance::{
     PendingQueueError, PendingValue, RelativeCapChangeError, Restrictions as SharedRestrictions,
     TimelockConfigError, TimelockDecision,
 };
-use templar_curator_primitives::seconds_to_nanoseconds;
+use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_vault_kernel::math::wad::Wad;
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
@@ -749,10 +749,9 @@ fn accounts_to_set(accounts: &Vec<Address>) -> BTreeSet<Address> {
 }
 
 fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
-    if value < 0 {
-        return Err(GovernanceError::InvalidInput);
-    }
-    Ok(Wad::from(value as u128))
+    nonnegative_i128_to_u128(value)
+        .map(Wad::from)
+        .ok_or(GovernanceError::InvalidInput)
 }
 
 fn to_optional_wad(value: Option<i128>) -> Result<Option<Wad>, GovernanceError> {
