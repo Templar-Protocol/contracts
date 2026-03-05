@@ -268,8 +268,16 @@ pub fn complete_allocation(
         });
     }
 
-    match pending_withdrawal {
+    // Only chain into withdrawal when the pending request is actionable.
+    // Zero-amount requests are handled by the caller's queue-skip path once Idle.
+    let actionable_withdrawal = pending_withdrawal.filter(|req| req.amount > 0);
+
+    match actionable_withdrawal {
         Some(req) => {
+            if req.escrow_shares == 0 {
+                return Err(TransitionError::ZeroEscrowShares);
+            }
+
             // Transition to Withdrawing to process the pending request
             let new_state = OpState::Withdrawing(WithdrawingState {
                 op_id: req.op_id,
