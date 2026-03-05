@@ -121,6 +121,3 @@ impl MarketExecutionLock {
         &self.inner
     }
 }
-
-#[cfg(test)]
-mod tests;

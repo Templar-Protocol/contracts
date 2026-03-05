@@ -5597,3 +5597,19 @@ fn address_mapping_never_produces_escrow_address() {
         );
     }
 }
+
+#[test]
+fn policy_supply_queue_roundtrips_vec_layout() {
+    let source = vec![MarketId(1), MarketId(2)];
+    let queue = crate::policy::SupplyQueue::from(source.clone());
+    let roundtrip: Vec<MarketId> = queue.into();
+    assert_eq!(roundtrip, source);
+}
+
+#[test]
+fn policy_withdraw_route_roundtrips_vec_layout() {
+    let source = vec![MarketId(3), MarketId(4)];
+    let route = crate::policy::WithdrawRoute::from(source.clone());
+    let roundtrip: Vec<MarketId> = route.into();
+    assert_eq!(roundtrip, source);
+}
