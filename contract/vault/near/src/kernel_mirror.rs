@@ -7,8 +7,9 @@ use templar_vault_kernel::fee::FeesSpec;
 use templar_vault_kernel::state::vault::{
     FeeAccrualAnchor as KernelFeeAccrualAnchor, VaultConfig, VaultState, MAX_PENDING,
 };
+use templar_vault_kernel::Restrictions as KernelRestrictions;
 
-use crate::convert::to_kernel_op_state;
+use crate::convert::{to_kernel_op_state, to_kernel_restrictions};
 use crate::Contract;
 
 impl Contract {
@@ -64,6 +65,11 @@ impl Contract {
             virtual_shares,
             virtual_assets,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn kernel_restrictions_mirror(&self) -> Option<KernelRestrictions> {
+        self.gate.restrictions.as_ref().map(to_kernel_restrictions)
     }
 }
 

@@ -2,9 +2,10 @@ use near_sdk::{env, AccountId};
 use std::vec::Vec;
 use templar_common::vault::{
     AllocatingState as CommonAllocatingState, MarketId, OpState as CommonOpState,
-    PayoutState as CommonPayoutState, RefreshingState as CommonRefreshingState,
+    PayoutState as CommonPayoutState, RefreshingState as CommonRefreshingState, Restrictions,
     WithdrawingState as CommonWithdrawingState,
 };
+use templar_vault_kernel::Restrictions as KernelRestrictions;
 use templar_vault_kernel::{
     Address, AllocatingState as KernelAllocatingState, OpState as KernelOpState,
     PayoutState as KernelPayoutState, RefreshingState as KernelRefreshingState, TargetId,
@@ -66,6 +67,10 @@ pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
     hash.as_slice()
         .try_into()
         .unwrap_or_else(|_| panic!("expected 32-byte sha256 hash"))
+}
+
+pub(crate) fn to_kernel_restrictions(restrictions: &Restrictions) -> KernelRestrictions {
+    restrictions.clone()
 }
 
 /// Convert common OpState into kernel OpState for recovery/action dispatch.

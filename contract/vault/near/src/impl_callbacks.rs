@@ -207,9 +207,7 @@ impl Contract {
             accepted_event,
             op_id,
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel allocation step failed: {err:?}"))
-        });
+        .unwrap_or_else(|_| panic_with_message("Kernel allocation step failed"));
         self.apply_kernel_op_state(&result.new_state);
 
         if remaining_next == 0 {
@@ -464,9 +462,7 @@ impl Contract {
             op_id,
             payout_delta,
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel withdrawal step failed: {err:?}"))
-        });
+        .unwrap_or_else(|_| panic_with_message("Kernel withdrawal step failed"));
         self.apply_kernel_op_state(&result.new_state);
         if let OpState::Withdrawing(state) = &mut self.op_state {
             state.index = desired_index;
@@ -849,9 +845,7 @@ impl Contract {
 
         let kernel_state = to_kernel_op_state(&self.op_state);
         let result = templar_vault_kernel::transitions::refresh_step_callback(kernel_state, op_id)
-            .unwrap_or_else(|err| {
-                panic_with_message(&format!("Kernel refresh step failed: {err:?}"))
-            });
+            .unwrap_or_else(|_| panic_with_message("Kernel refresh step failed"));
         self.apply_kernel_op_state(&result.new_state);
 
         let (next_index, next_plan) = match &self.op_state {
@@ -871,9 +865,7 @@ impl Contract {
 
             let kernel_state = to_kernel_op_state(&self.op_state);
             let result = templar_vault_kernel::transitions::complete_refresh(kernel_state, op_id)
-                .unwrap_or_else(|err| {
-                    panic_with_message(&format!("Kernel complete refresh failed: {err:?}"))
-                });
+                .unwrap_or_else(|_| panic_with_message("Kernel complete refresh failed"));
             self.apply_kernel_op_state(&result.new_state);
             return PromiseOrValue::Value(report);
         }

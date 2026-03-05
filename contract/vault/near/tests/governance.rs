@@ -6,17 +6,26 @@
 //! lifecycle with timelocks, cap increase timelocks, allocator role
 //! management, and fee decrease semantics.
 
+use near_sdk::env::sha256_array;
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_workspaces::{network::Sandbox, types::Gas, Worker};
 use rstest::rstest;
-use std::collections::BTreeSet;
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     number::Decimal,
     vault::{AllocationDelta, Delta, Restrictions},
 };
 use test_utils::{setup_test, worker, ContractController};
+
+const ADDRESS_DOMAIN: &[u8] = b"templar:near:account-id";
+
+fn account_to_kernel_address(account: &near_workspaces::AccountId) -> [u8; 32] {
+    let mut bytes = Vec::with_capacity(ADDRESS_DOMAIN.len() + account.as_bytes().len());
+    bytes.extend_from_slice(ADDRESS_DOMAIN);
+    bytes.extend_from_slice(account.as_bytes());
+    sha256_array(&bytes)
+}
 
 /// Guardian can pause the vault. While paused, deposits are rejected.
 #[rstest]
@@ -113,8 +122,7 @@ async fn blacklist_blocks_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     vault.init_account(&supply_user).await;
 
     // Blacklist supply_user
-    let mut blacklist = BTreeSet::new();
-    blacklist.insert(supply_user.id().clone());
+    let blacklist = vec![account_to_kernel_address(supply_user.id())];
     vault
         .set_restrictions(&vault_guardian, Some(Restrictions::Blacklist(blacklist)))
         .await;

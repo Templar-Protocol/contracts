@@ -136,13 +136,14 @@ impl Contract {
 
         let kernel_state = self.kernel_state_mirror();
         let kernel_config = self.kernel_config_mirror();
+        let kernel_restrictions = self.kernel_restrictions_mirror();
         let sender_address = account_id_to_address(&sender_id);
         let self_address = account_id_to_address(&env::current_account_id());
 
         let result = apply_action(
             kernel_state,
             &kernel_config,
-            None,
+            kernel_restrictions.as_ref(),
             &self_address,
             KernelAction::Deposit {
                 owner: sender_address,
@@ -152,9 +153,7 @@ impl Contract {
                 now_ns: env::block_timestamp(),
             },
         )
-        .unwrap_or_else(|err| {
-            templar_common::panic_with_message(&format!("Kernel deposit failed: {err:?}"))
-        });
+        .unwrap_or_else(|_| templar_common::panic_with_message("Kernel deposit failed"));
 
         let shares_out = result
             .effects

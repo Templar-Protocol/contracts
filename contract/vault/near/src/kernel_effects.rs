@@ -121,7 +121,7 @@ pub enum KernelEventLog {
 }
 
 /// Address resolution context for kernel effects.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct KernelEffectContext {
     accounts: AddressBook<AccountId>,
 }

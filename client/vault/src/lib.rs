@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt::Display, str::FromStr, sync::Mutex};
+use std::{fmt::Display, str::FromStr, sync::Mutex};
 
 use mini_moka::sync::Cache as MokaCache;
 use near_account_id::AccountId as NearAccountId;
@@ -413,19 +413,19 @@ impl FeesBuilder {
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     Paused,
-    BlackList(Vec<AccountId>),
-    WhiteList(Vec<AccountId>),
+    Blacklist(Vec<String>),
+    Whitelist(Vec<String>),
 }
 
 impl From<templar_common::vault::Restrictions> for Restrictions {
     fn from(value: templar_common::vault::Restrictions) -> Self {
         match value {
             templar_common::vault::Restrictions::Paused => Restrictions::Paused,
-            templar_common::vault::Restrictions::BlackList(set) => {
-                Restrictions::BlackList(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::Blacklist(list) => {
+                Restrictions::Blacklist(list.iter().map(address_to_hex).collect())
             }
-            templar_common::vault::Restrictions::WhiteList(set) => {
-                Restrictions::WhiteList(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::Whitelist(list) => {
+                Restrictions::Whitelist(list.iter().map(address_to_hex).collect())
             }
         }
     }
@@ -437,19 +437,21 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
     fn try_from(value: Restrictions) -> Result<Self, Self::Error> {
         Ok(match value {
             Restrictions::Paused => templar_common::vault::Restrictions::Paused,
-            Restrictions::BlackList(accounts) => {
-                let set: BTreeSet<NearAccountId> = accounts
-                    .into_iter()
-                    .map(|a| parse_account_id(&a))
+            Restrictions::Blacklist(addresses) => {
+                let list: Vec<[u8; 32]> = addresses
+                    .iter()
+                    .map(String::as_str)
+                    .map(parse_hex_address)
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::BlackList(set)
+                templar_common::vault::Restrictions::Blacklist(list)
             }
-            Restrictions::WhiteList(accounts) => {
-                let set: BTreeSet<NearAccountId> = accounts
-                    .into_iter()
-                    .map(|a| parse_account_id(&a))
+            Restrictions::Whitelist(addresses) => {
+                let list: Vec<[u8; 32]> = addresses
+                    .iter()
+                    .map(String::as_str)
+                    .map(parse_hex_address)
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::WhiteList(set)
+                templar_common::vault::Restrictions::Whitelist(list)
             }
         })
     }
@@ -988,6 +990,27 @@ pub(crate) fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
 
 pub(crate) fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
     NearAccountId::try_from(account_id.clone())
+}
+
+fn address_to_hex(addr: &[u8; 32]) -> String {
+    format!("0x{}", hex::encode(addr))
+}
+
+fn parse_hex_address(input: &str) -> Result<[u8; 32], ErrorWrapper> {
+    let trimmed = input.trim();
+    let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    let bytes = hex::decode(hex_str).map_err(|e| {
+        ErrorWrapper::Wrapped(format!("invalid restriction address '{input}': {e}"))
+    })?;
+    if bytes.len() != 32 {
+        return Err(ErrorWrapper::Wrapped(format!(
+            "invalid restriction address '{input}': expected 32 bytes, got {}",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }
 
 #[derive(uniffi::Error, Debug)]

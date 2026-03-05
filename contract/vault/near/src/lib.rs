@@ -368,6 +368,7 @@ impl Contract {
 
         let kernel_state = self.kernel_state_mirror();
         let kernel_config = self.kernel_config_mirror();
+        let kernel_restrictions = self.kernel_restrictions_mirror();
         let owner_addr = account_id_to_address(&sender);
         let receiver_addr = account_id_to_address(&receiver);
         let self_addr = account_id_to_address(&env::current_account_id());
@@ -376,7 +377,7 @@ impl Contract {
         let result = apply_action(
             kernel_state,
             &kernel_config,
-            None,
+            kernel_restrictions.as_ref(),
             &self_addr,
             KernelAction::RequestWithdraw {
                 owner: owner_addr,
@@ -386,9 +387,7 @@ impl Contract {
                 now_ns: now,
             },
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel request_withdraw failed: {err:?}"))
-        });
+        .unwrap_or_else(|_| panic_with_message("Kernel request_withdraw failed"));
 
         self.address_book
             .entry(owner_addr)
@@ -634,11 +633,11 @@ impl Contract {
                 idle.refresh_cooldown_ns,
                 idle.last_refresh_ns,
             )
-            .unwrap_or_else(|err| panic_with_message(&format!("Invalid refresh plan: {err:?}")))
+            .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
         refresh_plan
             .check_cooldown(now)
-            .unwrap_or_else(|err| panic_with_message(&format!("Refresh throttled: {err:?}")));
+            .unwrap_or_else(|_| panic_with_message("Refresh throttled"));
         idle.last_refresh_ns = now;
 
         let op_id = idle.next_op_id;
@@ -654,12 +653,13 @@ impl Contract {
         let kernel_plan = refresh_plan.to_target_list();
         let kernel_state = idle.kernel_state_mirror();
         let kernel_config = idle.kernel_config_mirror();
+        let kernel_restrictions = idle.kernel_restrictions_mirror();
         let self_addr = account_id_to_address(&env::current_account_id());
 
         let result = apply_action(
             kernel_state,
             &kernel_config,
-            None,
+            kernel_restrictions.as_ref(),
             &self_addr,
             KernelAction::BeginRefreshing {
                 op_id,
@@ -667,7 +667,7 @@ impl Contract {
                 now_ns: now,
             },
         )
-        .unwrap_or_else(|err| panic_with_message(&format!("Kernel begin refresh failed: {err:?}")));
+        .unwrap_or_else(|_| panic_with_message("Kernel begin refresh failed"));
 
         idle.apply_kernel_op_state(&result.state.op_state);
         idle.next_op_id = result.state.next_op_id;
@@ -1824,16 +1824,17 @@ impl Contract {
     fn apply_kernel_refresh_fees(&mut self, now: u64, cur_total_assets: u128) {
         let kernel_state = self.kernel_state_mirror();
         let kernel_config = self.kernel_config_mirror();
+        let kernel_restrictions = self.kernel_restrictions_mirror();
         let self_address = account_id_to_address(&env::current_account_id());
 
         let result = apply_action(
             kernel_state,
             &kernel_config,
-            None,
+            kernel_restrictions.as_ref(),
             &self_address,
             KernelAction::RefreshFees { now_ns: now },
         )
-        .unwrap_or_else(|err| panic_with_message(&format!("Kernel refresh fees failed: {err:?}")));
+        .unwrap_or_else(|_| panic_with_message("Kernel refresh fees failed"));
 
         // Anchor updates to the *actual* AUM snapshot, so the max-rate limiter
         // only affects what can be charged as fees for the elapsed interval.
@@ -1846,16 +1847,17 @@ impl Contract {
     fn apply_kernel_pause(&self, paused: bool) {
         let kernel_state = self.kernel_state_mirror();
         let kernel_config = self.kernel_config_mirror();
+        let kernel_restrictions = self.kernel_restrictions_mirror();
         let self_address = account_id_to_address(&env::current_account_id());
 
         let _ = apply_action(
             kernel_state,
             &kernel_config,
-            None,
+            kernel_restrictions.as_ref(),
             &self_address,
             KernelAction::Pause { paused },
         )
-        .unwrap_or_else(|err| panic_with_message(&format!("Kernel pause failed: {err:?}")));
+        .unwrap_or_else(|_| panic_with_message("Kernel pause failed"));
     }
 
     /* ----- Internal: op orchestration ----- */
@@ -1885,13 +1887,14 @@ impl Contract {
             .collect();
         let kernel_state = self.kernel_state_mirror();
         let kernel_config = self.kernel_config_mirror();
+        let kernel_restrictions = self.kernel_restrictions_mirror();
         let self_addr = account_id_to_address(&env::current_account_id());
 
         // Kernel handles idle_assets validation and decrement in BeginAllocating.
         let result = apply_action(
             kernel_state,
             &kernel_config,
-            None,
+            kernel_restrictions.as_ref(),
             &self_addr,
             KernelAction::BeginAllocating {
                 op_id,
@@ -1899,9 +1902,7 @@ impl Contract {
                 now_ns: env::block_timestamp(),
             },
         )
-        .unwrap_or_else(|err| {
-            panic_with_message(&format!("Kernel begin allocation failed: {err:?}"))
-        });
+        .unwrap_or_else(|_| panic_with_message("Kernel begin allocation failed"));
 
         self.idle_balance = result.state.idle_assets;
         self.apply_kernel_op_state(&result.state.op_state);
@@ -2015,9 +2016,7 @@ impl Contract {
                     0,
                     op_id,
                 )
-                .unwrap_or_else(|err| {
-                    panic_with_message(&format!("Kernel allocation step failed: {err:?}"))
-                });
+                .unwrap_or_else(|_| panic_with_message("Kernel allocation step failed"));
                 self.apply_kernel_op_state(&result.new_state);
                 return self.step_allocation();
             }
@@ -2075,9 +2074,7 @@ impl Contract {
         };
         let kernel_state = to_kernel_op_state(&self.op_state);
         let mut result = templar_vault_kernel::transitions::start_withdrawal(kernel_state, request)
-            .unwrap_or_else(|err| {
-                panic_with_message(&format!("Kernel start withdrawal failed: {err:?}"))
-            });
+            .unwrap_or_else(|_| panic_with_message("Kernel start withdrawal failed"));
 
         if cov.collected_from_idle > 0 {
             result = templar_vault_kernel::transitions::withdrawal_step_callback(
@@ -2085,9 +2082,7 @@ impl Contract {
                 op_id,
                 cov.collected_from_idle,
             )
-            .unwrap_or_else(|err| {
-                panic_with_message(&format!("Kernel idle withdraw step failed: {err:?}"))
-            });
+            .unwrap_or_else(|_| panic_with_message("Kernel idle withdraw step failed"));
         }
 
         self.apply_kernel_op_state(&result.new_state);

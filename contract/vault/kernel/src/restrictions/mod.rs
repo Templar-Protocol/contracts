@@ -2,11 +2,19 @@
 //!
 //! Portable across NEAR and Soroban.
 
+#[cfg(feature = "borsh-schema")]
+use alloc::string::ToString;
 use alloc::vec::Vec;
+#[cfg(feature = "schemars")]
+use alloc::{borrow::ToOwned, boxed::Box, vec};
 
+#[cfg(feature = "borsh-schema")]
+use borsh::BorshSchema;
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use derive_more::IsVariant;
+#[cfg(feature = "schemars")]
+use schemars::JsonSchema;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +22,8 @@ use crate::types::Address;
 
 /// Lightweight tag indicating why an actor was restricted.
 ///
+#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RestrictionKind {
@@ -29,8 +39,13 @@ pub enum RestrictionKind {
 ///
 /// Supports Pausing, Whitelist, and Blacklist functionality.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(all(feature = "postcard", not(feature = "serde")), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum Restrictions {

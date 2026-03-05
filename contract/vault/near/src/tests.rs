@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::convert::account_id_to_address;
 use crate::governance::Timelocks;
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
@@ -205,7 +206,9 @@ proptest! {
     #[test]
     fn paused_restricts_all_accounts(account in any::<u32>().prop_map(mk)) {
         let r = Restrictions::Paused;
-        let out = r.is_restricted(account.as_ref());
+        let actor = account_id_to_address(&account);
+        let self_id = account_id_to_address(&mk(0));
+        let out = r.is_restricted(&actor, &self_id);
         prop_assert_eq!(out, Some(RestrictionReason::Paused));
     }
 
@@ -215,8 +218,11 @@ proptest! {
         account in any::<u32>().prop_map(mk)
     ) {
         let set: BTreeSet<AccountId> = blacklist.into_iter().collect();
-        let r = Restrictions::Blacklist(set.clone());
-        let out = r.is_restricted(account.as_ref());
+        let kernel_list = set.iter().map(account_id_to_address).collect();
+        let r = Restrictions::Blacklist(kernel_list);
+        let actor = account_id_to_address(&account);
+        let self_id = account_id_to_address(&mk(0));
+        let out = r.is_restricted(&actor, &self_id);
 
         if set.contains(&account) {
             prop_assert_eq!(out, Some(RestrictionReason::Blacklisted));
@@ -231,8 +237,11 @@ proptest! {
         account in any::<u32>().prop_map(mk)
     ) {
         let set: BTreeSet<AccountId> = whitelist.into_iter().collect();
-        let r = Restrictions::Whitelist(set.clone());
-        let out = r.is_restricted(account.as_ref());
+        let kernel_list = set.iter().map(account_id_to_address).collect();
+        let r = Restrictions::Whitelist(kernel_list);
+        let actor = account_id_to_address(&account);
+        let self_id = account_id_to_address(&mk(0));
+        let out = r.is_restricted(&actor, &self_id);
 
         if set.contains(&account) {
             prop_assert_eq!(out, None);

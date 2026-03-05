@@ -87,7 +87,7 @@ impl From<WithdrawRoute> for Vec<MarketId> {
 
 /// NEAR wrapper for market execution locks (backed by curator MarketLockSet).
 #[near(serializers = [borsh, serde])]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct MarketExecutionLock {
     inner: MarketLockSet,
 }
