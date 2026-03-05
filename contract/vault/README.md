@@ -36,107 +36,28 @@ The vault system follows a kernel + executor split:
 
 Parity tests verify behavioral equivalence across the kernel and executors.
 
-## Running Property Tests
+## Test and Verification Recipes
 
-### Kernel Property Tests (Source of Truth)
+Use the vault recipe index in [contract/vault/justfile](./justfile).
 
-The kernel contains 70+ property-based tests that verify core invariants:
+If you run from repo root, call recipes as:
+- `just -f contract/vault/justfile <recipe>`
 
-```bash
-# Run all kernel property tests
-cargo test -p templar-vault-kernel --features all-actions --test property_tests
+Core recipes:
+- Kernel test suite: `kernel-test`
+- Kernel property tests: `kernel-prop`
+- Curator primitives tests: `curator-test`
+- Curator primitives property tests: `curator-prop`
+- NEAR integration tests: `near-test`
+- Soroban unit/integration recipes: `soroban-test`, `soroban-prop`, `soroban-integration`, `soroban-flows`
+- Cross-surface parity run: `parity`
+- Full vault test sweep: `vault-test`
+- Formal verification: `kani-kernel`, `kani-curator`
+- Gas reporting: `gas-report`
 
-# Run specific property categories
-cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_accounting
-cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_queue
-cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_fee
-cargo test -p templar-vault-kernel --features all-actions --test property_tests prop_conversion
-```
+Soroban runtime/deployment workflows are in [contract/vault/soroban/justfile](./soroban/justfile).
 
-Key invariants tested:
-- Accounting: `total_assets = idle_assets + external_assets`
-- Queue: FIFO ordering, length bounds, head monotonicity
-- Fees: Non-negative accrual, zero fee -> zero shares
-- Conversions: Roundtrip bounds, monotonicity, ERC4626 consistency
-
-### Soroban Parity Tests
-
-The Soroban executor includes property tests that verify parity with the kernel:
-
-```bash
-# Run Soroban property tests (parity verification)
-cargo test --manifest-path contract/vault/soroban/Cargo.toml --test property_tests
-
-# Run Soroban integration tests
-cargo test --manifest-path contract/vault/soroban/Cargo.toml --test integration_tests
-
-# Run Soroban flow tests
-cargo test --manifest-path contract/vault/soroban/Cargo.toml --test flows
-```
-
-The Soroban parity tests verify:
-- Accounting invariant holds after operations
-- State machine transitions match kernel behavior
-- Effect generation is consistent
-
-### NEAR Integration Tests
-
-NEAR uses integration tests with `near-workspaces`:
-
-```bash
-# Run NEAR integration tests
-cargo test -p templar-vault-contract
-
-# Run specific test
-cargo test -p templar-vault-contract --test happy_path
-```
-
-## Running All Parity Tests
-
-To verify parity across all implementations:
-
-```bash
-#!/usr/bin/env bash
-set -e
-
-echo "=== Running Kernel Property Tests ==="
-cargo test -p templar-vault-kernel --features all-actions --test property_tests
-
-echo "=== Running Kernel Kani Proofs (test equivalents) ==="
-cargo test -p templar-vault-kernel --test kani_proofs
-
-echo "=== Running Soroban Parity Tests ==="
-cargo test --manifest-path contract/vault/soroban/Cargo.toml --test property_tests
-
-echo "=== Running Soroban Integration Tests ==="
-cargo test --manifest-path contract/vault/soroban/Cargo.toml --test integration_tests
-
-echo "=== Running NEAR Integration Tests ==="
-cargo test -p templar-vault-contract
-
-echo "=== All parity tests passed ==="
-```
-
-## Formal Verification (Kani)
-
-The kernel includes Kani proof harnesses for critical invariants:
-
-```bash
-# Run Kani proofs (requires Kani installation)
-cargo kani --tests -p templar-vault-kernel
-
-# Run test equivalents when Kani is not available
-cargo test -p templar-vault-kernel --test kani_proofs
-```
-
-## NEAR Gas Reporting
-
-```bash
-# Generate gas report (updates gas_baseline.json)
-cargo run --example gas_report -p templar-vault-contract
-```
-
-The baseline is stored in `contract/vault/near/gas_baseline.json`.
+Gas baselines are stored in `contract/vault/near/gas_baseline.json`.
 
 ### Interpreting Gas Results
 
@@ -174,28 +95,11 @@ The baseline is stored in `contract/vault/near/gas_baseline.json`.
 
 1. Add property to kernel (`property_tests.rs`)
 2. Add equivalent test to Soroban (`property_tests.rs`)
-3. Verify NEAR behavior through integration tests
-
-Example kernel property:
-
-```rust
-proptest! {
-    #[test]
-    fn prop_new_invariant(
-        assets in 1u128..=1_000_000_000u128,
-        shares in 1u128..=1_000_000_000u128,
-    ) {
-        // Property assertion
-    }
-}
-```
+3. Validate with justfile recipes: `kernel-prop`, `soroban-prop`, `near-test`
 
 ## CI Integration
 
-The property tests run in CI via:
-- `cargo test -p templar-vault-kernel --features all-actions` (kernel + properties)
-- `cargo test -p templar-vault-contract` (NEAR integration)
-- `cargo test --manifest-path contract/vault/soroban/Cargo.toml` (Soroban)
+CI should invoke the same justfile recipes used locally (`kernel-prop`, `near-test`, `soroban-prop`).
 
 ## Security Docs
 

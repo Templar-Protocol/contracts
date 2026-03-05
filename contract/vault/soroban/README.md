@@ -45,16 +45,14 @@ reports `libdbus-1.so.3: cannot open`, ensure `dbus` is in the devenv
 
 ## Quick start (testnet)
 
-```
-cd contract/vault/soroban
+Use recipes from [contract/vault/soroban/justfile](./justfile):
 
-just setup              # build WASM, configure network, create & fund identity
-just deploy-all         # deploy vault + test token, initialize
-just demo-deposit       # deposit test tokens
-just demo-withdraw      # request and execute withdrawal
-```
+- `setup`
+- `deploy-all`
+- `demo-deposit`
+- `demo-withdraw`
 
-All recipes are in the `justfile`.  Run `just --list` for the full catalogue.
+From repo root: `just -f contract/vault/soroban/justfile <recipe>`.
 
 The build step compiles the WASM and runs `stellar contract optimize` to shrink
 it from ~430KB to ~250KB (required to stay under Soroban's transaction limits).
@@ -62,7 +60,7 @@ it from ~430KB to ~250KB (required to stay under Soroban's transaction limits).
 ## Blend Adapter
 
 Blend integration lives in the dedicated crate `contract/vault/soroban-blend-adapter`.
-Use Soroban justfile recipes to build and deploy it:
+Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-blend-adapter`
 - `just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
@@ -78,8 +76,8 @@ The Soroban justfile deploys only the optimized runtime artifact:
 
 Useful commands:
 
-- `just wasm-path` -> optimized deploy artifact
-- `just optimized-wasm-path` -> explicit optimized artifact path
+- `wasm-path` -> optimized deploy artifact
+- `optimized-wasm-path` -> explicit optimized artifact path
 
 ## State Size and Operational Limits
 
