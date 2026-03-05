@@ -13,7 +13,7 @@ use near_sdk::{
     near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
-use templar_vault_kernel::{TimeGate, Wad};
+use templar_vault_kernel::Wad;
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -54,7 +54,7 @@ pub mod prelude {
         require_at_least, storage_bytes_for_account_id, ActualIdx, AllocationDelta, AllocationPlan,
         AllocationWeights, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Delta,
         DepositMsg, Error, EscrowSettlement, ExpectedIdx, Fee, FeeAccrualAnchor, Fees,
-        IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId, PendingValue,
+        IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId,
         PendingWithdrawal, RealAssetsReport, ResyncIdleReport, TimestampNs, VaultConfiguration,
     };
     pub use templar_vault_kernel::math::number::{Number, WIDE};
@@ -261,24 +261,6 @@ pub struct VaultConfiguration {
     pub withdrawal_cooldown_ns: Option<U64>,
 }
 
-/// A governance value pending timelock expiry. Stores the proposed value and the nanosecond timestamp after which it can be finalized.
-#[derive(Clone, Debug)]
-#[near(serializers = [borsh, json])]
-pub struct PendingValue<T: core::fmt::Debug> {
-    pub value: T,
-    /// Timestamp when this pending value can be finalized.
-    pub valid_at_ns: TimestampNs,
-}
-
-impl<T: core::fmt::Debug> PendingValue<T> {
-    pub fn verify(&self) {
-        require!(
-            TimeGate::from_ready_at(self.valid_at_ns).is_ready(env::block_timestamp()),
-            "Timelock not elapsed yet"
-        );
-    }
-}
-
 /// A single market allocation delta specifying a market and an amount in underlying asset units.
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
@@ -396,6 +378,3 @@ pub struct FeeAccrualAnchor {
     pub total_assets: U128,
     pub timestamp_ns: U64,
 }
-
-#[cfg(test)]
-mod tests;
