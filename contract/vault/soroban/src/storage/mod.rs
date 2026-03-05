@@ -44,20 +44,49 @@ fn pc_serialize<T: serde::Serialize>(
     value: &T,
     msg: &'static str,
 ) -> Result<Vec<u8>, RuntimeError> {
-    match postcard::to_allocvec(value) {
-        Ok(bytes) => Ok(bytes),
-        Err(_) => Err(RuntimeError::storage_error(msg)),
-    }
+    postcard::to_allocvec(value).map_err(|_| RuntimeError::storage_error(msg))
 }
 
 fn pc_deserialize<'a, T: serde::Deserialize<'a>>(
     bytes: &'a [u8],
     msg: &'static str,
 ) -> Result<T, RuntimeError> {
-    match postcard::from_bytes(bytes) {
-        Ok(value) => Ok(value),
-        Err(_) => Err(RuntimeError::storage_error(msg)),
+    postcard::from_bytes(bytes).map_err(|_| RuntimeError::storage_error(msg))
+}
+
+fn compose_policy_state(
+    markets: Option<OrderedMap<TargetId, MarketConfig>>,
+    principals: Option<OrderedMap<TargetId, u128>>,
+    cap_groups: Option<OrderedMap<CapGroupId, CapGroupRecord>>,
+    locks: Option<MarketLockSet>,
+    supply_queue: Option<SupplyQueue>,
+) -> Option<PolicyState> {
+    if markets.is_none()
+        && principals.is_none()
+        && cap_groups.is_none()
+        && locks.is_none()
+        && supply_queue.is_none()
+    {
+        return None;
     }
+
+    let mut state = PolicyState::new();
+    if let Some(markets) = markets {
+        state.markets = markets;
+    }
+    if let Some(principals) = principals {
+        state.principals = principals;
+    }
+    if let Some(cap_groups) = cap_groups {
+        state.cap_groups = cap_groups;
+    }
+    if let Some(locks) = locks {
+        state.locks = locks;
+    }
+    if let Some(supply_queue) = supply_queue {
+        state.supply_queue = supply_queue;
+    }
+    Some(state)
 }
 
 /// Soroban ledger storage implementation.
@@ -82,6 +111,44 @@ impl<'a> SorobanStorage<'a> {
         (Self::SK_ADDRBOOK, BytesN::from_array(self.env, kernel_addr))
     }
 
+    fn load_blob(&self, key: &Symbol) -> Option<Vec<u8>> {
+        self.env
+            .storage()
+            .persistent()
+            .get::<_, Bytes>(key)
+            .map(|bytes| bytes.to_alloc_vec())
+    }
+
+    fn save_blob(&self, key: &Symbol, bytes: &[u8]) {
+        self.env
+            .storage()
+            .persistent()
+            .set(key, &Bytes::from_slice(self.env, bytes));
+    }
+
+    fn load_decoded<T>(&self, key: &Symbol, msg: &'static str) -> Result<Option<T>, RuntimeError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        self.load_blob(key)
+            .map(|stored| pc_deserialize(&stored, msg))
+            .transpose()
+    }
+
+    fn save_encoded<T>(
+        &self,
+        key: &Symbol,
+        value: &T,
+        msg: &'static str,
+    ) -> Result<(), RuntimeError>
+    where
+        T: serde::Serialize,
+    {
+        let bytes = pc_serialize(value, msg)?;
+        self.save_blob(key, &bytes);
+        Ok(())
+    }
+
     /// Load a kernel-to-Soroban address mapping from persistent storage.
     pub fn load_address(&self, kernel_addr: &Address) -> Option<SdkAddress> {
         let key = self.address_key(kernel_addr);
@@ -101,118 +168,61 @@ impl<'a> SorobanStorage<'a> {
     }
 
     fn load_state_blob(&self) -> Option<Vec<u8>> {
-        if !self
-            .env
-            .storage()
-            .persistent()
-            .has(&SorobanStorageKey::StateBlob)
-        {
-            return None;
-        }
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::StateBlob)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::StateBlob)
     }
 
-    fn save_state_blob(&self, state: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::StateBlob,
-            &Bytes::from_slice(self.env, state),
-        );
+    fn save_state_blob(&self, state: &[u8]) {
+        self.save_blob(&SorobanStorageKey::StateBlob, state);
     }
 
     pub fn load_policy_locks(&self) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::PolicyLocks)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::PolicyLocks)
     }
 
-    pub fn save_policy_locks(&self, state: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::PolicyLocks,
-            &Bytes::from_slice(self.env, state),
-        );
+    pub fn save_policy_locks(&self, state: &[u8]) {
+        self.save_blob(&SorobanStorageKey::PolicyLocks, state);
     }
 
     pub fn load_policy_supply_queue(&self) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::PolicySupplyQueue)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::PolicySupplyQueue)
     }
 
-    pub fn save_policy_supply_queue(&self, state: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::PolicySupplyQueue,
-            &Bytes::from_slice(self.env, state),
-        );
+    pub fn save_policy_supply_queue(&self, state: &[u8]) {
+        self.save_blob(&SorobanStorageKey::PolicySupplyQueue, state);
     }
 
     pub fn load_policy_markets(&self) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::PolicyMarkets)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::PolicyMarkets)
     }
 
-    pub fn save_policy_markets(&self, state: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::PolicyMarkets,
-            &Bytes::from_slice(self.env, state),
-        );
+    pub fn save_policy_markets(&self, state: &[u8]) {
+        self.save_blob(&SorobanStorageKey::PolicyMarkets, state);
     }
 
     pub fn load_policy_principals(&self) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::PolicyPrincipals)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::PolicyPrincipals)
     }
 
-    pub fn save_policy_principals(&self, state: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::PolicyPrincipals,
-            &Bytes::from_slice(self.env, state),
-        );
+    pub fn save_policy_principals(&self, state: &[u8]) {
+        self.save_blob(&SorobanStorageKey::PolicyPrincipals, state);
     }
 
     pub fn load_policy_cap_groups(&self) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::PolicyCapGroups)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::PolicyCapGroups)
     }
 
-    pub fn save_policy_cap_groups(&self, state: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::PolicyCapGroups,
-            &Bytes::from_slice(self.env, state),
-        );
+    pub fn save_policy_cap_groups(&self, state: &[u8]) {
+        self.save_blob(&SorobanStorageKey::PolicyCapGroups, state);
     }
 
     /// Load restrictions from persistent storage.
     pub fn load_restrictions(&self) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(&SorobanStorageKey::Restrictions)
-            .map(|b| b.to_alloc_vec())
+        self.load_blob(&SorobanStorageKey::Restrictions)
     }
 
     /// Save restrictions to persistent storage.
-    pub fn save_restrictions(&self, restrictions: &Vec<u8>) {
-        self.env.storage().persistent().set(
-            &SorobanStorageKey::Restrictions,
-            &Bytes::from_slice(self.env, restrictions),
-        );
+    pub fn save_restrictions(&self, restrictions: &[u8]) {
+        self.save_blob(&SorobanStorageKey::Restrictions, restrictions);
     }
 
     /// Clear restrictions from persistent storage.
@@ -375,96 +385,71 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        let locks = match SorobanStorage::load_policy_locks(self) {
-            Some(stored) => Some(pc_deserialize::<MarketLockSet>(
-                &stored,
-                "policy_locks deserialize failed",
-            )?),
-            None => None,
-        };
-        let supply_queue = match SorobanStorage::load_policy_supply_queue(self) {
-            Some(stored) => Some(pc_deserialize::<SupplyQueue>(
-                &stored,
-                "policy_supply_queue deserialize failed",
-            )?),
-            None => None,
-        };
-        let markets = match SorobanStorage::load_policy_markets(self) {
-            Some(stored) => Some(pc_deserialize::<OrderedMap<TargetId, MarketConfig>>(
-                &stored,
-                "policy_markets deserialize failed",
-            )?),
-            None => None,
-        };
-        let principals = match SorobanStorage::load_policy_principals(self) {
-            Some(stored) => Some(pc_deserialize::<OrderedMap<TargetId, u128>>(
-                &stored,
-                "policy_principals deserialize failed",
-            )?),
-            None => None,
-        };
-        let cap_groups = match SorobanStorage::load_policy_cap_groups(self) {
-            Some(stored) => Some(pc_deserialize::<OrderedMap<CapGroupId, CapGroupRecord>>(
-                &stored,
-                "policy_cap_groups deserialize failed",
-            )?),
-            None => None,
-        };
+        let locks = self.load_decoded(
+            &SorobanStorageKey::PolicyLocks,
+            "policy_locks deserialize failed",
+        )?;
+        let supply_queue = self.load_decoded(
+            &SorobanStorageKey::PolicySupplyQueue,
+            "policy_supply_queue deserialize failed",
+        )?;
+        let markets = self.load_decoded(
+            &SorobanStorageKey::PolicyMarkets,
+            "policy_markets deserialize failed",
+        )?;
+        let principals = self.load_decoded(
+            &SorobanStorageKey::PolicyPrincipals,
+            "policy_principals deserialize failed",
+        )?;
+        let cap_groups = self.load_decoded(
+            &SorobanStorageKey::PolicyCapGroups,
+            "policy_cap_groups deserialize failed",
+        )?;
 
-        if locks.is_none()
-            && supply_queue.is_none()
-            && markets.is_none()
-            && principals.is_none()
-            && cap_groups.is_none()
-        {
-            return Ok(None);
-        }
-
-        let mut state = PolicyState::new();
-        if let Some(markets) = markets {
-            state.markets = markets;
-        }
-        if let Some(principals) = principals {
-            state.principals = principals;
-        }
-        if let Some(cap_groups) = cap_groups {
-            state.cap_groups = cap_groups;
-        }
-        if let Some(locks) = locks {
-            state.locks = locks;
-        }
-        if let Some(supply_queue) = supply_queue {
-            state.supply_queue = supply_queue;
-        }
-        Ok(Some(state))
+        Ok(compose_policy_state(
+            markets,
+            principals,
+            cap_groups,
+            locks,
+            supply_queue,
+        ))
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        let lock_bytes = pc_serialize(&state.locks, "policy_locks serialize failed")?;
-        SorobanStorage::save_policy_locks(self, &lock_bytes);
-        let queue_bytes =
-            pc_serialize(&state.supply_queue, "policy_supply_queue serialize failed")?;
-        SorobanStorage::save_policy_supply_queue(self, &queue_bytes);
-        let market_bytes = pc_serialize(&state.markets, "policy_markets serialize failed")?;
-        SorobanStorage::save_policy_markets(self, &market_bytes);
-        let principal_bytes =
-            pc_serialize(&state.principals, "policy_principals serialize failed")?;
-        SorobanStorage::save_policy_principals(self, &principal_bytes);
-        let cap_group_bytes =
-            pc_serialize(&state.cap_groups, "policy_cap_groups serialize failed")?;
-        SorobanStorage::save_policy_cap_groups(self, &cap_group_bytes);
+        self.save_encoded(
+            &SorobanStorageKey::PolicyLocks,
+            &state.locks,
+            "policy_locks serialize failed",
+        )?;
+        self.save_encoded(
+            &SorobanStorageKey::PolicySupplyQueue,
+            &state.supply_queue,
+            "policy_supply_queue serialize failed",
+        )?;
+        self.save_encoded(
+            &SorobanStorageKey::PolicyMarkets,
+            &state.markets,
+            "policy_markets serialize failed",
+        )?;
+        self.save_encoded(
+            &SorobanStorageKey::PolicyPrincipals,
+            &state.principals,
+            "policy_principals serialize failed",
+        )?;
+        self.save_encoded(
+            &SorobanStorageKey::PolicyCapGroups,
+            &state.cap_groups,
+            "policy_cap_groups serialize failed",
+        )?;
         self.extend_default_ttl();
         Ok(())
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        match SorobanStorage::load_restrictions(self) {
-            Some(stored) => Ok(Some(pc_deserialize::<Restrictions>(
-                &stored,
-                "restrictions deserialize failed",
-            )?)),
-            None => Ok(None),
-        }
+        self.load_decoded(
+            &SorobanStorageKey::Restrictions,
+            "restrictions deserialize failed",
+        )
     }
 
     fn save_restrictions(
@@ -472,8 +457,11 @@ impl Storage for SorobanStorage<'_> {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         if let Some(restrictions) = restrictions {
-            let bytes = pc_serialize(restrictions, "restrictions serialize failed")?;
-            SorobanStorage::save_restrictions(self, &bytes);
+            self.save_encoded(
+                &SorobanStorageKey::Restrictions,
+                restrictions,
+                "restrictions serialize failed",
+            )?;
         } else {
             SorobanStorage::clear_restrictions(self);
         }
@@ -648,8 +636,8 @@ pub struct MemoryStorage {
     state: Option<VersionedState>,
     initialized: bool,
     paused: bool,
-    policy_locks: Option<templar_curator_primitives::policy::market_lock::MarketLockSet>,
-    policy_supply_queue: Option<templar_curator_primitives::policy::supply_queue::SupplyQueue>,
+    policy_locks: Option<MarketLockSet>,
+    policy_supply_queue: Option<SupplyQueue>,
     policy_markets: Option<OrderedMap<TargetId, MarketConfig>>,
     policy_principals: Option<OrderedMap<TargetId, u128>>,
     policy_cap_groups: Option<OrderedMap<CapGroupId, CapGroupRecord>>,
@@ -737,32 +725,13 @@ impl Storage for MemoryStorage {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        if self.policy_locks.is_none()
-            && self.policy_supply_queue.is_none()
-            && self.policy_markets.is_none()
-            && self.policy_principals.is_none()
-            && self.policy_cap_groups.is_none()
-        {
-            return Ok(None);
-        }
-
-        let mut state = PolicyState::new();
-        if let Some(markets) = self.policy_markets.clone() {
-            state.markets = markets;
-        }
-        if let Some(principals) = self.policy_principals.clone() {
-            state.principals = principals;
-        }
-        if let Some(cap_groups) = self.policy_cap_groups.clone() {
-            state.cap_groups = cap_groups;
-        }
-        if let Some(locks) = self.policy_locks.clone() {
-            state.locks = locks;
-        }
-        if let Some(supply_queue) = self.policy_supply_queue.clone() {
-            state.supply_queue = supply_queue;
-        }
-        Ok(Some(state))
+        Ok(compose_policy_state(
+            self.policy_markets.clone(),
+            self.policy_principals.clone(),
+            self.policy_cap_groups.clone(),
+            self.policy_locks.clone(),
+            self.policy_supply_queue.clone(),
+        ))
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
