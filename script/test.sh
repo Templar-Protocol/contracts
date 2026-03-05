@@ -15,7 +15,7 @@ docker compose \
     cd "$ROOT_DIR/service/relayer/redstone-bridge"
     if [ -n "$CI" ]; then
         npm ci
-        npm test -- --profile=ci
+        npm test -- --ci
         rm -rf node_modules
     else
         npm install
