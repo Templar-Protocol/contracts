@@ -297,7 +297,7 @@ impl App {
                     });
                     continue;
                 };
-                let expects_borrow_asset = matches!(msg, DepositMsg::Supply | DepositMsg::Repay);
+                let expects_borrow_asset = msg.expects_borrow_asset();
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
                 if transfer.asset() == market_account_ids.borrow_asset {
