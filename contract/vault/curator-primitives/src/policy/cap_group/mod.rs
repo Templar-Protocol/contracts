@@ -15,6 +15,8 @@ use typed_builder::TypedBuilder;
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
 #[display("{_0}")]
@@ -45,6 +47,8 @@ impl From<&str> for CapGroupId {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
@@ -214,6 +218,8 @@ impl CapGroup {
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct CapGroupRecord {
@@ -306,6 +312,8 @@ pub enum CapGroupError {
 
 /// A cap-group governance update (shared across chains).
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum CapGroupUpdate {
     SetCap {
