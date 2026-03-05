@@ -433,3 +433,87 @@ pub struct FeeAccrualAnchor {
     pub total_assets: U128,
     pub timestamp_ns: U64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CapGroupId, CapGroupUpdate, MarketId};
+    use near_sdk::json_types::U128;
+
+    #[test]
+    fn cap_group_update_roundtrips_through_curator_primitive_set_cap() {
+        let common = CapGroupUpdate::SetCap {
+            cap_group: CapGroupId::from("group-a"),
+            new_cap: U128(123),
+        };
+
+        let primitive: templar_curator_primitives::CapGroupUpdate = common.clone().into();
+        assert_eq!(
+            primitive,
+            templar_curator_primitives::CapGroupUpdate::SetCap {
+                cap_group_id: CapGroupId::from("group-a"),
+                new_cap: 123,
+            }
+        );
+
+        let roundtrip: CapGroupUpdate = primitive.into();
+        assert_eq!(
+            roundtrip,
+            CapGroupUpdate::SetCap {
+                cap_group: CapGroupId::from("group-a"),
+                new_cap: U128(123),
+            }
+        );
+    }
+
+    #[test]
+    fn cap_group_update_roundtrips_through_curator_primitive_set_relative_cap() {
+        let common = CapGroupUpdate::SetRelativeCap {
+            cap_group: CapGroupId::from("group-b"),
+            new_relative_cap: U128(999),
+        };
+
+        let primitive: templar_curator_primitives::CapGroupUpdate = common.clone().into();
+        assert_eq!(
+            primitive,
+            templar_curator_primitives::CapGroupUpdate::SetRelativeCap {
+                cap_group_id: CapGroupId::from("group-b"),
+                new_relative_cap_wad: 999,
+            }
+        );
+
+        let roundtrip: CapGroupUpdate = primitive.into();
+        assert_eq!(
+            roundtrip,
+            CapGroupUpdate::SetRelativeCap {
+                cap_group: CapGroupId::from("group-b"),
+                new_relative_cap: U128(999),
+            }
+        );
+    }
+
+    #[test]
+    fn cap_group_update_roundtrips_through_curator_primitive_membership() {
+        let common = CapGroupUpdate::SetMarketCapGroup {
+            market: MarketId(77),
+            cap_group: Some(CapGroupId::from("group-c")),
+        };
+
+        let primitive: templar_curator_primitives::CapGroupUpdate = common.clone().into();
+        assert_eq!(
+            primitive,
+            templar_curator_primitives::CapGroupUpdate::SetMembership {
+                market_id: 77,
+                cap_group_id: Some(CapGroupId::from("group-c")),
+            }
+        );
+
+        let roundtrip: CapGroupUpdate = primitive.into();
+        assert_eq!(
+            roundtrip,
+            CapGroupUpdate::SetMarketCapGroup {
+                market: MarketId(77),
+                cap_group: Some(CapGroupId::from("group-c")),
+            }
+        );
+    }
+}

@@ -16,6 +16,7 @@ use templar_common::{
 };
 use templar_curator_primitives::governance as shared_gov;
 use templar_curator_primitives::governance::PendingValue;
+use templar_curator_primitives::CapGroupUpdate as PrimitiveCapGroupUpdate;
 use templar_vault_kernel::Address;
 
 const ERR_TIMELOCK_NO_CHANGE: &str = "Already set to this value";
@@ -501,20 +502,28 @@ impl Contract {
     /// - relative cap
     /// - market ↔ group membership
     pub fn submit_cap_group_update(&mut self, update: CapGroupUpdate) {
-        let action = match update {
-            CapGroupUpdate::SetCap { cap_group, new_cap } => {
-                TimelockedAction::CapGroupChange { cap_group, new_cap }
-            }
-            CapGroupUpdate::SetRelativeCap {
-                cap_group,
-                new_relative_cap,
-            } => TimelockedAction::CapGroupRelativeCapChange {
-                cap_group,
-                new_relative_cap,
+        let action = match PrimitiveCapGroupUpdate::from(update) {
+            PrimitiveCapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => TimelockedAction::CapGroupChange {
+                cap_group: cap_group_id,
+                new_cap: U128(new_cap),
             },
-            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
-                TimelockedAction::CapGroupMembership { market, cap_group }
-            }
+            PrimitiveCapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap_wad,
+            } => TimelockedAction::CapGroupRelativeCapChange {
+                cap_group: cap_group_id,
+                new_relative_cap: U128(new_relative_cap_wad),
+            },
+            PrimitiveCapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => TimelockedAction::CapGroupMembership {
+                market: MarketId::from(market_id),
+                cap_group: cap_group_id,
+            },
         };
 
         self.submit_change(action);
