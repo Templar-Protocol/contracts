@@ -1333,3 +1333,1727 @@ mod recovery_unit_tests {
         assert_eq!(failure.message, Some(String::from("Something went wrong")));
     }
 }
+
+mod governance_module_tests {
+    pub use crate::governance::*;
+    use alloc::collections::{BTreeSet, VecDeque};
+
+    #[test]
+    fn pending_value_maturity_is_time_based() {
+        let pending = PendingValue::new("ok", 1_000);
+
+        assert!(!pending.is_mature(999));
+        assert!(pending.is_mature(1_000));
+        assert!(pending.is_mature(1_001));
+    }
+
+    #[test]
+    fn queue_take_mature_enforces_timelock() {
+        let mut queue = VecDeque::from([PendingValue::new("change", 1_000)]);
+
+        let not_ready = queue_take_mature(&mut queue, 999, |value| *value == "change");
+        assert_eq!(not_ready, Err(PendingQueueError::NotMature));
+        assert_eq!(queue.len(), 1);
+
+        let ready = queue_take_mature(&mut queue, 1_000, |value| *value == "change");
+        assert_eq!(ready, Ok(Some("change")));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn cap_change_decision_market_new_cap_is_timelocked() {
+        let decision = cap_change_decision(None, 100);
+        assert_eq!(decision, Ok(TimelockDecision::Timelocked));
+    }
+
+    #[test]
+    fn cap_group_cap_change_decision_unlimited_to_finite_is_immediate() {
+        let from_none = cap_group_cap_change_decision(None, 100);
+        assert_eq!(from_none, Ok(TimelockDecision::Immediate));
+
+        let from_zero = cap_group_cap_change_decision(Some(0), 100);
+        assert_eq!(from_zero, Ok(TimelockDecision::Immediate));
+    }
+
+    #[test]
+    fn cap_group_cap_change_decision_finite_to_unlimited_is_timelocked() {
+        let decision = cap_group_cap_change_decision(Some(100), 0);
+        assert_eq!(decision, Ok(TimelockDecision::Timelocked));
+    }
+
+    #[test]
+    fn determine_relaxed_paused_to_empty_whitelist_is_not_relaxing() {
+        let current = Some(Restrictions::<&str>::Paused);
+        let next = Some(Restrictions::Whitelist(BTreeSet::new()));
+
+        assert!(!determine_relaxed(&current, &next));
+    }
+
+    #[test]
+    fn determine_relaxed_paused_to_nonempty_whitelist_is_relaxing() {
+        let current = Some(Restrictions::<&str>::Paused);
+        let next = Some(Restrictions::Whitelist(BTreeSet::from(["alice"])));
+
+        assert!(determine_relaxed(&current, &next));
+    }
+}
+
+mod rbac_module_tests {
+    pub use crate::rbac::*;
+    use crate::auth::{ActionKind, AuthAdapter, AuthError};
+    use templar_vault_kernel::Address;
+
+    fn curator_addr() -> Address {
+        [1u8; 32]
+    }
+
+    fn guardian_addr() -> Address {
+        [2u8; 32]
+    }
+
+    fn allocator_addr() -> Address {
+        [3u8; 32]
+    }
+
+    fn user_addr() -> Address {
+        [4u8; 32]
+    }
+
+    fn sentinel_addr() -> Address {
+        [5u8; 32]
+    }
+
+    fn test_rbac() -> RbacAuth {
+        let mut config = RbacConfig::with_curator(curator_addr());
+        config.add_role(guardian_addr(), Role::Guardian);
+        config.add_role(allocator_addr(), Role::Allocator);
+        config.add_role(sentinel_addr(), Role::Sentinel);
+        RbacAuth::new(config)
+    }
+
+    #[test]
+    fn test_role_assignment() {
+        let config = RbacConfig::with_curator(curator_addr());
+
+        assert!(config.has_role(&curator_addr(), Role::Curator));
+        assert!(!config.has_role(&user_addr(), Role::Curator));
+    }
+
+    #[test]
+    fn test_add_remove_role() {
+        let mut config = RbacConfig::new();
+
+        config.add_role(guardian_addr(), Role::Guardian);
+        assert!(config.has_role(&guardian_addr(), Role::Guardian));
+
+        config.remove_role(&guardian_addr(), Role::Guardian);
+        assert!(!config.has_role(&guardian_addr(), Role::Guardian));
+    }
+
+    #[test]
+    fn test_get_roles() {
+        let mut config = RbacConfig::with_curator(curator_addr());
+        config.add_role(curator_addr(), Role::Guardian); // Curator also guardian
+
+        let roles = config.get_roles(&curator_addr());
+        assert_eq!(roles.len(), 2);
+        assert!(roles.contains(&Role::Curator));
+        assert!(roles.contains(&Role::Guardian));
+    }
+
+    #[test]
+    fn test_sentinel_role() {
+        let mut config = RbacConfig::with_curator(curator_addr());
+        config.add_role(sentinel_addr(), Role::Sentinel);
+
+        assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
+        assert!(!config.has_role(&user_addr(), Role::Sentinel));
+        assert!(!config.has_role(&guardian_addr(), Role::Sentinel));
+
+        assert_eq!(Role::Sentinel.as_str(), "sentinel");
+
+        let roles = config.get_roles(&sentinel_addr());
+        assert_eq!(roles.len(), 1);
+        assert!(roles.contains(&Role::Sentinel));
+    }
+
+    #[test]
+    fn test_sentinel_add_remove() {
+        let mut config = RbacConfig::new();
+
+        config.add_role(sentinel_addr(), Role::Sentinel);
+        assert!(config.has_role(&sentinel_addr(), Role::Sentinel));
+
+        config.remove_role(&sentinel_addr(), Role::Sentinel);
+        assert!(!config.has_role(&sentinel_addr(), Role::Sentinel));
+    }
+
+    #[test]
+    fn test_user_actions_allowed() {
+        let auth = test_rbac();
+
+        assert!(auth
+            .authorize(ActionKind::Deposit, user_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::RequestWithdraw, user_addr(), None)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_execute_withdraw_allocator_only() {
+        let auth = test_rbac();
+
+        assert!(auth
+            .authorize(ActionKind::ExecuteWithdraw, allocator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::ExecuteWithdraw, curator_addr(), None)
+            .is_ok());
+
+        let result = auth.authorize(ActionKind::ExecuteWithdraw, user_addr(), None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+    }
+
+    #[test]
+    fn test_abort_actions_allow_allocator_or_sentinel() {
+        let auth = test_rbac();
+
+        assert!(auth
+            .authorize(ActionKind::AbortAllocating, allocator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::AbortAllocating, sentinel_addr(), None)
+            .is_ok());
+
+        let result = auth.authorize(ActionKind::AbortAllocating, user_addr(), None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+    }
+
+    #[test]
+    fn test_guardian_can_pause() {
+        let auth = test_rbac();
+
+        assert!(auth.authorize(ActionKind::Pause, guardian_addr(), None).is_ok());
+
+        let result = auth.authorize(ActionKind::Pause, user_addr(), None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+    }
+
+    #[test]
+    fn test_allocator_actions() {
+        let auth = test_rbac();
+
+        assert!(auth
+            .authorize(ActionKind::BeginAllocating, allocator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::FinishAllocating, allocator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::SyncExternalAssets, allocator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::BeginRefreshing, allocator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::FinishRefreshing, allocator_addr(), None)
+            .is_ok());
+
+        let result = auth.authorize(ActionKind::BeginAllocating, user_addr(), None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+    }
+
+    #[test]
+    fn test_curator_can_do_everything() {
+        let auth = test_rbac();
+
+        assert!(auth.authorize(ActionKind::Pause, curator_addr(), None).is_ok());
+        assert!(auth
+            .authorize(ActionKind::BeginAllocating, curator_addr(), None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::ManualReconcile, curator_addr(), None)
+            .is_ok());
+        assert!(auth.authorize(ActionKind::Deposit, curator_addr(), None).is_ok());
+    }
+
+    #[test]
+    fn test_manual_reconcile_curator_only() {
+        let auth = test_rbac();
+
+        assert!(auth
+            .authorize(ActionKind::ManualReconcile, curator_addr(), None)
+            .is_ok());
+
+        let result = auth.authorize(ActionKind::ManualReconcile, allocator_addr(), None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+
+        let result = auth.authorize(ActionKind::ManualReconcile, guardian_addr(), None);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+    }
+
+    #[test]
+    fn test_paused_blocks_user_actions() {
+        let mut auth = test_rbac();
+        auth.config.set_paused(true);
+
+        let result = auth.authorize(ActionKind::Deposit, user_addr(), None);
+        assert!(matches!(result, Err(AuthError::VaultPaused)));
+
+        assert!(auth
+            .authorize(ActionKind::BeginAllocating, curator_addr(), None)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_paused_allows_pause_action() {
+        let mut auth = test_rbac();
+        auth.config.set_paused(true);
+
+        assert!(auth.authorize(ActionKind::Pause, guardian_addr(), None).is_ok());
+    }
+
+    #[test]
+    fn test_is_paused() {
+        let mut auth = test_rbac();
+
+        assert!(!auth.is_paused());
+
+        auth.config.set_paused(true);
+        assert!(auth.is_paused());
+    }
+
+    #[test]
+    fn test_role_as_str() {
+        assert_eq!(Role::Curator.as_str(), "curator");
+        assert_eq!(Role::Guardian.as_str(), "guardian");
+        assert_eq!(Role::Sentinel.as_str(), "sentinel");
+        assert_eq!(Role::Allocator.as_str(), "allocator");
+    }
+}
+
+mod utils_module_tests {
+    use crate::utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked};
+
+    #[test]
+    fn converts_seconds_to_nanoseconds() {
+        assert_eq!(seconds_to_nanoseconds(1), Some(1_000_000_000));
+        assert_eq!(seconds_to_nanoseconds(42), Some(42_000_000_000));
+    }
+
+    #[test]
+    fn returns_none_on_overflow() {
+        assert_eq!(seconds_to_nanoseconds(u64::MAX), None);
+    }
+
+    #[test]
+    fn converts_u128_to_i128_when_in_range() {
+        assert_eq!(u128_to_i128_checked(0), Some(0));
+        assert_eq!(u128_to_i128_checked(i128::MAX as u128), Some(i128::MAX));
+    }
+
+    #[test]
+    fn rejects_u128_to_i128_when_out_of_range() {
+        assert_eq!(u128_to_i128_checked((i128::MAX as u128) + 1), None);
+    }
+
+    #[test]
+    fn converts_nonnegative_i128_to_u128() {
+        assert_eq!(nonnegative_i128_to_u128(0), Some(0));
+        assert_eq!(nonnegative_i128_to_u128(42), Some(42));
+    }
+
+    #[test]
+    fn rejects_negative_i128_to_u128() {
+        assert_eq!(nonnegative_i128_to_u128(-1), None);
+    }
+}
+
+mod policy_cap_group_update_tests {
+    use crate::policy::cap_group::{CapGroupId, CapGroupUpdate, CapGroupUpdateKey};
+
+    #[test]
+    fn cap_group_update_uses_canonical_set_cap_shape() {
+        let update = CapGroupUpdate::SetCap {
+            cap_group_id: CapGroupId::from("group-a"),
+            new_cap: 123,
+        };
+
+        assert_eq!(
+            update,
+            CapGroupUpdate::SetCap {
+                cap_group_id: CapGroupId::from("group-a"),
+                new_cap: 123,
+            }
+        );
+    }
+
+    #[test]
+    fn cap_group_update_uses_canonical_set_relative_cap_shape() {
+        let update = CapGroupUpdate::SetRelativeCap {
+            cap_group_id: CapGroupId::from("group-b"),
+            new_relative_cap_wad: 999,
+        };
+
+        assert_eq!(
+            update,
+            CapGroupUpdate::SetRelativeCap {
+                cap_group_id: CapGroupId::from("group-b"),
+                new_relative_cap_wad: 999,
+            }
+        );
+    }
+
+    #[test]
+    fn cap_group_update_uses_canonical_membership_shape() {
+        let update = CapGroupUpdate::SetMembership {
+            market_id: 77,
+            cap_group_id: Some(CapGroupId::from("group-c")),
+        };
+
+        assert_eq!(
+            update,
+            CapGroupUpdate::SetMembership {
+                market_id: 77,
+                cap_group_id: Some(CapGroupId::from("group-c")),
+            }
+        );
+    }
+
+    #[test]
+    fn cap_group_update_key_uses_canonical_shape() {
+        let key = CapGroupUpdateKey::SetRelativeCap {
+            cap_group_id: CapGroupId::from("group-key"),
+        };
+        assert_eq!(
+            key,
+            CapGroupUpdateKey::SetRelativeCap {
+                cap_group_id: CapGroupId::from("group-key"),
+            }
+        );
+    }
+}
+
+mod policy_cap_group_adapter_tests {
+    pub use crate::policy::cap_group_adapter::*;
+    pub use templar_vault_kernel::Wad;
+
+    const WAD: u128 = Wad::SCALE;
+
+    #[test]
+    fn builds_cap_group_and_record_from_fields() {
+        let cap = cap_group_from_fields(1_000, Wad::from(WAD / 2));
+        assert_eq!(cap.absolute_cap.map(|v| v.get()), Some(1_000));
+        assert_eq!(cap.relative_cap, Some(Wad::from(WAD / 2)));
+
+        let record = cap_group_record_from_fields(1_000, Wad::from(WAD / 2), 300);
+        assert_eq!(record.principal, 300);
+        assert_eq!(record.cap.absolute_cap.map(|v| v.get()), Some(1_000));
+    }
+
+    #[test]
+    fn alloc_helpers_match_cap_group_behavior() {
+        assert!(can_allocate_from_fields(1_000, Wad::one(), 300, 500, 2_000));
+        assert!(!can_allocate_from_fields(
+            1_000,
+            Wad::one(),
+            300,
+            800,
+            2_000
+        ));
+
+        assert!(enforce_from_fields(1_000, Wad::one(), 300, 500, 2_000).is_ok());
+        assert!(enforce_from_fields(1_000, Wad::one(), 300, 800, 2_000).is_err());
+    }
+
+    #[test]
+    fn computes_effective_and_available_from_fields() {
+        assert_eq!(effective_cap_from_fields(1_000, Wad::one(), 500), 500);
+        assert_eq!(
+            available_capacity_from_fields(1_000, Wad::one(), 300, 500),
+            200
+        );
+    }
+
+    #[test]
+    fn record_field_helpers_preserve_unlimited_defaults_and_principal() {
+        let mut record = cap_group_record_from_fields(0, Wad::one(), 123);
+
+        assert_eq!(cap_group_record_absolute_cap(&record), 0);
+        assert_eq!(cap_group_record_relative_cap(&record), Wad::one());
+        assert_eq!(record.principal, 123);
+
+        set_cap_group_record_absolute_cap(&mut record, 7_500);
+        assert_eq!(cap_group_record_absolute_cap(&record), 7_500);
+        assert_eq!(cap_group_record_relative_cap(&record), Wad::one());
+        assert_eq!(record.principal, 123);
+
+        let three_quarters = Wad::from(WAD * 3 / 4);
+        set_cap_group_record_relative_cap(&mut record, three_quarters);
+        assert_eq!(cap_group_record_absolute_cap(&record), 7_500);
+        assert_eq!(cap_group_record_relative_cap(&record), three_quarters);
+        assert_eq!(record.principal, 123);
+    }
+}
+
+mod policy_cooldown_tests {
+    pub use crate::policy::cooldown::*;
+
+    #[test]
+    fn test_unlimited_cooldown() {
+        let cooldown = Cooldown::unlimited();
+        assert!(cooldown.is_unlimited());
+        assert!(cooldown.is_ready(0));
+        assert!(cooldown.is_ready(u64::MAX));
+    }
+
+    #[test]
+    fn test_first_operation_always_ready() {
+        let cooldown = Cooldown::new(1000);
+        assert!(cooldown.is_ready(0));
+        assert!(cooldown.is_ready(500));
+    }
+
+    #[test]
+    fn test_cooldown_enforced() {
+        let cooldown = Cooldown::new(1000);
+        let cooldown = cooldown.record(100);
+
+        assert!(!cooldown.is_ready(100));
+        assert!(!cooldown.is_ready(500));
+        assert!(!cooldown.is_ready(1099));
+
+        assert!(cooldown.is_ready(1100));
+        assert!(cooldown.is_ready(2000));
+    }
+
+    #[test]
+    fn test_check_returns_error() {
+        let cooldown = Cooldown::with_last_event(1000, 100);
+
+        let result = cooldown.check(500);
+        assert!(matches!(result, Err(CooldownError::OnCooldown { .. })));
+
+        let result = cooldown.check(1100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ready_at() {
+        let cooldown = Cooldown::new(1000);
+        assert_eq!(cooldown.ready_at(), None);
+
+        let cooldown = cooldown.record(100);
+        assert_eq!(cooldown.ready_at(), Some(1100));
+
+        let unlimited = Cooldown::unlimited();
+        assert_eq!(unlimited.ready_at(), None);
+    }
+
+    #[test]
+    fn test_remaining() {
+        let cooldown = Cooldown::with_last_event(1000, 100);
+
+        assert_eq!(cooldown.remaining(100), 1000);
+        assert_eq!(cooldown.remaining(500), 600);
+        assert_eq!(cooldown.remaining(1100), 0);
+        assert_eq!(cooldown.remaining(2000), 0);
+    }
+
+    #[test]
+    fn test_record_updates_last_event() {
+        let cooldown = Cooldown::new(1000);
+        assert_eq!(cooldown.last_event_ns, None);
+
+        let cooldown = cooldown.record(500);
+        assert_eq!(cooldown.last_event_ns, Some(500));
+
+        let cooldown = cooldown.record(1500);
+        assert_eq!(cooldown.last_event_ns, Some(1500));
+    }
+}
+
+mod policy_lock_filter_tests {
+    mod tests {
+        use alloc::vec;
+
+        use crate::policy::market_lock::{MarketLock, MarketLockSet};
+        use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
+        use crate::policy::withdraw_route::{WithdrawRoute, WithdrawRouteEntry};
+        use templar_vault_kernel::TargetId;
+
+        fn lock_set_with_target(target_id: TargetId) -> MarketLockSet {
+            MarketLockSet::new()
+                .acquire(MarketLock::new(target_id, 1_000), 1_000)
+                .expect("lock should be acquirable")
+        }
+
+        #[test]
+        fn filters_unlocked_targets() {
+            let lock_set = lock_set_with_target(2);
+            let targets = vec![1, 2, 3];
+            assert_eq!(
+                lock_set.filter_unlocked_targets(&targets, 1_500),
+                vec![1, 3]
+            );
+        }
+
+        #[test]
+        fn filters_allocation_plan() {
+            let lock_set = lock_set_with_target(2);
+            let plan = vec![(1, 10), (2, 20), (3, 30)];
+
+            assert_eq!(
+                lock_set.filter_allocation_plan(&plan, 1_500),
+                vec![(1, 10), (3, 30)]
+            );
+        }
+
+        #[test]
+        fn filters_supply_queue_and_preserves_max_length() {
+            let lock_set = lock_set_with_target(2);
+            let queue = SupplyQueue {
+                entries: vec![
+                    SupplyQueueEntry::new(1, 10),
+                    SupplyQueueEntry::new(2, 20),
+                    SupplyQueueEntry::new(3, 30),
+                ],
+                max_length: 16,
+            };
+
+            let filtered = lock_set.filter_supply_queue(&queue, 1_500);
+
+            assert_eq!(filtered.max_length, 16);
+            assert_eq!(filtered.entries.len(), 2);
+            assert_eq!(filtered.entries[0].target_id, 1);
+            assert_eq!(filtered.entries[1].target_id, 3);
+        }
+
+        #[test]
+        fn filters_withdraw_route_and_preserves_target_amount() {
+            let lock_set = lock_set_with_target(1);
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 100),
+                    WithdrawRouteEntry::new(2, 200),
+                ],
+                250,
+            );
+
+            let filtered = lock_set.filter_withdraw_route(&route, 1_500);
+
+            assert_eq!(filtered.target_amount, 250);
+            assert_eq!(filtered.entries.len(), 1);
+            assert_eq!(filtered.entries[0].target_id, 2);
+        }
+
+        #[test]
+        fn builds_allocation_plan_with_locks() {
+            let lock_set = lock_set_with_target(2);
+            let queue = SupplyQueue {
+                entries: vec![
+                    SupplyQueueEntry::new(1, 10),
+                    SupplyQueueEntry::new(2, 20),
+                    SupplyQueueEntry::new(3, 30),
+                ],
+                max_length: 16,
+            };
+
+            assert_eq!(
+                lock_set.build_allocation_plan_with_locks(&queue, 1_500),
+                vec![(1, 10), (3, 30)]
+            );
+        }
+
+        #[test]
+        fn builds_withdrawal_plan_with_locks() {
+            let lock_set = lock_set_with_target(1);
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 100),
+                    WithdrawRouteEntry::new(2, 200),
+                    WithdrawRouteEntry::new(3, 300),
+                ],
+                450,
+            );
+
+            assert_eq!(
+                lock_set.build_withdrawal_plan_with_locks(&route, 1_500),
+                vec![(2, 200), (3, 300)]
+            );
+        }
+
+        #[test]
+        fn builds_refresh_plan_with_locks() {
+            let lock_set = lock_set_with_target(2);
+            let targets = vec![1, 2, 3, 4];
+
+            assert_eq!(
+                lock_set.build_refresh_plan_with_locks(&targets, 1_500),
+                vec![1, 3, 4]
+            );
+        }
+    }
+}
+
+mod policy_market_lock_tests {
+    pub use crate::policy::market_lock::*;
+
+    mod tests {
+        use super::*;
+        use alloc::vec;
+
+        #[test]
+        fn test_new_lock_set_is_empty() {
+            let set = MarketLockSet::new();
+            assert!(set.is_empty());
+            assert_eq!(set.len(), 0);
+            assert_eq!(set.active_count(0), 0);
+        }
+
+        #[test]
+        fn test_acquire_lock() {
+            let set = MarketLockSet::new();
+            let lock = MarketLock::new(1, 1000);
+
+            let result = set.acquire(lock, 1000).unwrap();
+
+            assert_eq!(result.len(), 1);
+            assert!(result.is_locked(1, 1000));
+        }
+
+        #[test]
+        fn test_acquire_lock_already_locked() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000);
+            let lock2 = MarketLock::new(1, 2000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let result = set.acquire(lock2, 2000);
+
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_acquire_lock_different_target() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000);
+            let lock2 = MarketLock::new(2, 2000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 2000).unwrap();
+
+            assert_eq!(set.len(), 2);
+            assert!(set.is_locked(1, 2000));
+            assert!(set.is_locked(2, 2000));
+        }
+
+        #[test]
+        fn test_acquire_lock_after_expiry() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
+            let lock2 = MarketLock::new(1, 3000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+
+            // Should fail before expiry
+            let result = set.acquire(lock2.clone(), 1500);
+            assert!(result.is_err());
+
+            // Should succeed after expiry
+            let set = set.acquire(lock2, 3000).unwrap();
+            assert_eq!(set.len(), 1); // Old expired lock removed
+            assert!(set.is_locked(1, 3000));
+        }
+
+        #[test]
+        fn test_release_lock() {
+            let set = MarketLockSet::new();
+            let lock = MarketLock::new(1, 1000);
+
+            let set = set.acquire(lock, 1000).unwrap();
+            let set = set.release(1);
+
+            assert!(set.is_empty());
+            assert!(!set.is_locked(1, 2000));
+        }
+
+        #[test]
+        fn test_release_lock_by_op() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000).with_op_id(100);
+            let lock2 = MarketLock::new(2, 1000).with_op_id(200);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+
+            // Release only the lock held by op 100
+            let set = set.release_by_op(1, 100);
+
+            assert_eq!(set.len(), 1);
+            assert!(!set.is_locked(1, 2000));
+            assert!(set.is_locked(2, 2000));
+        }
+
+        #[test]
+        fn test_release_all_by_op() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000).with_op_id(100);
+            let lock2 = MarketLock::new(2, 1000).with_op_id(100);
+            let lock3 = MarketLock::new(3, 1000).with_op_id(200);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+            let set = set.acquire(lock3, 1000).unwrap();
+
+            let set = set.release_all_by_op(100);
+
+            assert_eq!(set.len(), 1);
+            assert!(!set.is_locked(1, 2000));
+            assert!(!set.is_locked(2, 2000));
+            assert!(set.is_locked(3, 2000));
+        }
+
+        #[test]
+        fn test_is_locked_by_op() {
+            let set = MarketLockSet::new();
+            let lock = MarketLock::new(1, 1000).with_op_id(100);
+
+            let set = set.acquire(lock, 1000).unwrap();
+
+            assert!(set.is_locked_by_op(1, 100));
+            assert!(!set.is_locked_by_op(1, 200));
+            assert!(!set.is_locked_by_op(2, 100));
+        }
+
+        #[test]
+        fn test_lock_expiry() {
+            let lock = MarketLock::new(1, 1000).with_expiry(2000);
+
+            assert!(!lock.is_expired(1000));
+            assert!(!lock.is_expired(1999));
+            assert!(lock.is_expired(2000));
+            assert!(lock.is_expired(3000));
+        }
+
+        #[test]
+        fn test_lock_no_expiry() {
+            let lock = MarketLock::new(1, 1000);
+
+            // No expiry means never expires
+            assert!(!lock.is_expired(u64::MAX));
+            assert!(lock.expires_at_ns.is_none());
+        }
+
+        #[test]
+        fn test_lock_with_ttl() {
+            let lock = MarketLock::new(1, 1000).with_ttl(500);
+            assert_eq!(lock.expires_at_ns, Some(1500));
+        }
+
+        #[test]
+        fn test_lock_remaining() {
+            let lock = MarketLock::new(1, 1000).with_expiry(2000);
+            assert_eq!(lock.remaining(1000), Some(1000));
+            assert_eq!(lock.remaining(1500), Some(500));
+            assert_eq!(lock.remaining(2000), Some(0));
+
+            let no_expiry = MarketLock::new(1, 1000);
+            assert_eq!(no_expiry.remaining(5000), None);
+        }
+
+        #[test]
+        fn test_cleanup_expired_locks() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
+            let lock2 = MarketLock::new(2, 1000).with_expiry(3000);
+            let lock3 = MarketLock::new(3, 1000); // no expiry
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+            let set = set.acquire(lock3, 1000).unwrap();
+
+            let cleaned = set.cleanup_expired(2500);
+
+            assert_eq!(cleaned.len(), 2);
+            assert!(!cleaned.is_locked(1, 2500)); // expired
+            assert!(cleaned.is_locked(2, 2500)); // not yet expired
+            assert!(cleaned.is_locked(3, 2500)); // no expiry
+        }
+
+        #[test]
+        fn test_get_locked_targets() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000);
+            let lock2 = MarketLock::new(2, 1000).with_expiry(1500);
+            let lock3 = MarketLock::new(3, 1000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+            let set = set.acquire(lock3, 1000).unwrap();
+
+            let locked = set.locked_targets(2000);
+
+            assert_eq!(locked.len(), 2);
+            assert!(locked.contains(&1));
+            assert!(!locked.contains(&2)); // expired
+            assert!(locked.contains(&3));
+        }
+
+        #[test]
+        fn test_find_locked_targets() {
+            let set = MarketLockSet::new();
+            let lock = MarketLock::new(2, 1000);
+
+            let set = set.acquire(lock, 1000).unwrap();
+
+            let to_check = vec![1, 2, 3, 4];
+            let locked = set.find_locked_targets(&to_check, 2000);
+
+            assert_eq!(locked, vec![2]);
+        }
+
+        #[test]
+        fn test_clear_all_locks() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000);
+            let lock2 = MarketLock::new(2, 1000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+
+            let cleared = set.clear();
+
+            assert!(cleared.is_empty());
+        }
+
+        #[test]
+        fn test_active_count() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
+            let lock2 = MarketLock::new(2, 1000).with_expiry(3000);
+            let lock3 = MarketLock::new(3, 1000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+            let set = set.acquire(lock3, 1000).unwrap();
+
+            assert_eq!(set.len(), 3); // Total locks
+            assert_eq!(set.active_count(1500), 3); // All active
+            assert_eq!(set.active_count(2500), 2); // lock1 expired
+            assert_eq!(set.active_count(3500), 1); // lock1 and lock2 expired
+        }
+
+        #[test]
+        fn test_get_lock() {
+            let set = MarketLockSet::new();
+            let lock = MarketLock::new(1, 1000).with_op_id(42);
+
+            let set = set.acquire(lock, 1000).unwrap();
+
+            let found = set.get_lock(1, 1500);
+            assert!(found.is_some());
+            assert_eq!(found.unwrap().op_id, Some(42));
+
+            let not_found = set.get_lock(2, 1500);
+            assert!(not_found.is_none());
+        }
+
+        #[test]
+        fn test_is_all_expired() {
+            let set = MarketLockSet::new();
+            let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
+            let lock2 = MarketLock::new(2, 1000).with_expiry(2000);
+
+            let set = set.acquire(lock1, 1000).unwrap();
+            let set = set.acquire(lock2, 1000).unwrap();
+
+            assert!(!set.is_all_expired(1500));
+            assert!(set.is_all_expired(2500));
+        }
+    }
+}
+
+mod policy_refresh_plan_tests {
+    pub use crate::policy::refresh_plan::*;
+
+    mod tests {
+        use super::*;
+        use alloc::vec;
+        use alloc::vec::Vec;
+        use crate::policy::target_set::find_first_duplicate;
+        use templar_vault_kernel::TargetId;
+
+        #[test]
+        fn test_new_plan() {
+            let plan = RefreshPlan::new(vec![1, 2, 3]);
+            assert!(!plan.is_empty());
+            assert_eq!(plan.len(), 3);
+            assert!(plan.cooldown.is_unlimited());
+        }
+
+        #[test]
+        fn test_empty_plan() {
+            let plan = RefreshPlan::empty();
+            assert!(plan.is_empty());
+            assert_eq!(plan.len(), 0);
+        }
+
+        #[test]
+        fn test_validate_refresh_plan_success() {
+            let plan = RefreshPlan::new(vec![1, 2, 3]);
+            assert!(plan.validate().is_ok());
+        }
+
+        #[test]
+        fn test_validate_refresh_plan_empty() {
+            let plan = RefreshPlan::empty();
+            assert!(matches!(plan.validate(), Err(RefreshPlanError::EmptyPlan)));
+        }
+
+        #[test]
+        fn test_validate_refresh_plan_duplicate() {
+            let plan = RefreshPlan::new(vec![1, 2, 1]);
+            assert!(matches!(
+                plan.validate(),
+                Err(RefreshPlanError::DuplicateTarget { target_id: 1 })
+            ));
+        }
+
+        #[test]
+        fn test_check_refresh_cooldown_no_cooldown() {
+            let plan = RefreshPlan::new(vec![1, 2]);
+            assert!(plan.check_cooldown(1000).is_ok());
+            assert!(plan.is_ready(1000));
+        }
+
+        #[test]
+        fn test_check_refresh_cooldown_first_refresh() {
+            let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
+            // No last_refresh_ns, so first refresh should be allowed
+            assert!(plan.check_cooldown(100).is_ok());
+            assert!(plan.is_ready(100));
+        }
+
+        #[test]
+        fn test_check_refresh_cooldown_on_cooldown() {
+            let plan = RefreshPlan::new(vec![1, 2])
+                .with_cooldown(1000)
+                .with_last_refresh(100);
+
+            // Only 500ns elapsed, cooldown is 1000ns
+            let result = plan.check_cooldown(600);
+            assert!(matches!(result, Err(RefreshPlanError::OnCooldown { .. })));
+            assert!(!plan.is_ready(600));
+        }
+
+        #[test]
+        fn test_check_refresh_cooldown_after_cooldown() {
+            let plan = RefreshPlan::new(vec![1, 2])
+                .with_cooldown(1000)
+                .with_last_refresh(100);
+
+            // 1100ns elapsed, cooldown is 1000ns
+            assert!(plan.check_cooldown(1200).is_ok());
+            assert!(plan.is_ready(1200));
+        }
+
+        #[test]
+        fn test_build_refresh_plan() {
+            let enabled = vec![1, 2, 3];
+            let plan = build_refresh_plan(&enabled, Some(5000)).unwrap();
+
+            assert_eq!(plan.targets, vec![1, 2, 3]);
+            assert_eq!(plan.cooldown_ns(), 5000);
+        }
+
+        #[test]
+        fn test_build_refresh_plan_empty() {
+            let enabled: Vec<TargetId> = vec![];
+            let result = build_refresh_plan(&enabled, None);
+
+            assert!(matches!(result, Err(RefreshPlanError::EmptyPlan)));
+        }
+
+        #[test]
+        fn test_build_targeted_refresh_plan() {
+            let enabled = vec![1, 2, 3, 4];
+            let targets = vec![2, 4];
+
+            let plan = build_targeted_refresh_plan(&targets, &enabled).unwrap();
+
+            assert_eq!(plan.targets, vec![2, 4]);
+        }
+
+        #[test]
+        fn test_build_targeted_refresh_plan_invalid_target() {
+            let enabled = vec![1, 2, 3];
+            let targets = vec![2, 5]; // 5 is not enabled
+
+            let result = build_targeted_refresh_plan(&targets, &enabled);
+
+            assert!(matches!(
+                result,
+                Err(RefreshPlanError::TargetNotFound { target_id: 5 })
+            ));
+        }
+
+        #[test]
+        fn test_build_targeted_refresh_plan_duplicate() {
+            let enabled = vec![1, 2, 3];
+            let targets = vec![1, 2, 1]; // duplicate 1
+
+            let result = build_targeted_refresh_plan(&targets, &enabled);
+
+            assert!(matches!(
+                result,
+                Err(RefreshPlanError::DuplicateTarget { target_id: 1 })
+            ));
+        }
+
+        #[test]
+        fn test_record_refresh_completion() {
+            let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
+            let updated = plan.record_completion(5000);
+
+            assert_eq!(updated.last_refresh_ns(), Some(5000));
+            assert_eq!(updated.cooldown_ns(), 1000);
+            assert_eq!(updated.targets, vec![1, 2]);
+        }
+
+        #[test]
+        fn test_filter_stale_targets() {
+            let targets = vec![
+                (1, 1000), // refreshed at 1000
+                (2, 500),  // refreshed at 500
+                (3, 2000), // refreshed at 2000
+            ];
+
+            // Current time is 3000, max age is 1500
+            // Target 2 (age 2500) is stale
+            // Target 1 (age 2000) is stale
+            // Target 3 (age 1000) is fresh
+            let stale = filter_stale_targets(&targets, 1500, 3000);
+
+            assert_eq!(stale.len(), 2);
+            assert!(stale.contains(&1));
+            assert!(stale.contains(&2));
+            assert!(!stale.contains(&3));
+        }
+
+        #[test]
+        fn test_to_target_list() {
+            let plan = RefreshPlan::new(vec![5, 3, 1]);
+            let list = plan.to_target_list();
+            assert_eq!(list, vec![5, 3, 1]);
+        }
+
+        #[test]
+        fn test_find_first_duplicate_shared_helper() {
+            assert_eq!(find_first_duplicate(&[1, 2, 3]), None);
+            assert_eq!(find_first_duplicate(&[1, 2, 1]), Some(1));
+            assert_eq!(find_first_duplicate(&[1, 2, 2, 3]), Some(2));
+            assert_eq!(find_first_duplicate::<i32>(&[]), None);
+        }
+    }
+}
+
+mod policy_state_tests {
+    pub use crate::policy::state::*;
+
+    mod tests {
+        use super::*;
+        use alloc::string::String;
+        use crate::policy::cap_group::{CapGroupId, CapGroupRecord};
+
+        #[test]
+        fn external_assets_sums_principals() {
+            let mut state = PolicyState::new();
+            state.set_principal(1, 100);
+            state.set_principal(2, 250);
+            state.set_principal(3, 50);
+
+            assert_eq!(state.external_assets(), 400);
+        }
+
+        #[test]
+        fn cap_group_totals_aggregate_by_group() {
+            let mut state = PolicyState::new();
+            let group_a = CapGroupId::new("group-a");
+            let group_b = CapGroupId::new("group-b");
+
+            state.set_market_config(1, MarketConfig::new(true, Some(group_a.clone())));
+            state.set_market_config(2, MarketConfig::new(true, Some(group_a.clone())));
+            state.set_market_config(3, MarketConfig::new(true, Some(group_b.clone())));
+
+            state.set_principal(1, 10);
+            state.set_principal(2, 20);
+            state.set_principal(3, 40);
+
+            let totals = state.compute_cap_group_totals();
+            let total_for = |group_id: &CapGroupId| {
+                totals
+                    .iter()
+                    .find(|(candidate, _)| candidate == group_id)
+                    .map(|(_, total)| *total)
+                    .unwrap_or(0)
+            };
+            assert_eq!(total_for(&group_a), 30);
+            assert_eq!(total_for(&group_b), 40);
+        }
+
+        #[test]
+        fn refresh_cap_group_principals_updates_records() {
+            let mut state = PolicyState::new();
+            let group = CapGroupId::new(String::from("group"));
+            state
+                .cap_groups
+                .insert(group.clone(), CapGroupRecord::default());
+            state.set_market_config(1, MarketConfig::new(true, Some(group.clone())));
+            state.set_principal(1, 123);
+
+            state.refresh_cap_group_principals();
+
+            let record = state.cap_groups.get(&group).expect("cap group");
+            assert_eq!(record.principal, 123);
+        }
+    }
+}
+
+mod policy_supply_queue_tests {
+    pub use crate::policy::supply_queue::*;
+
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_new_queue_is_empty() {
+            let queue = SupplyQueue::new();
+            assert!(queue.is_empty());
+            assert_eq!(queue.len(), 0);
+            assert!(!queue.is_full());
+        }
+
+        #[test]
+        fn test_enqueue_supply() {
+            let queue = SupplyQueue::new();
+            let entry = SupplyQueueEntry::new(1, 100);
+
+            let result = queue.enqueue(entry.clone()).unwrap();
+
+            assert_eq!(result.len(), 1);
+            assert_eq!(result.entries[0], entry);
+        }
+
+        #[test]
+        fn test_enqueue_zero_amount_error() {
+            let queue = SupplyQueue::new();
+            let entry = SupplyQueueEntry::new(1, 0);
+
+            let result = queue.enqueue(entry);
+
+            assert!(matches!(result, Err(SupplyQueueError::ZeroAmount)));
+        }
+
+        #[test]
+        fn test_enqueue_full_queue_error() {
+            let queue = SupplyQueue::with_max_length(2);
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+            let entry3 = SupplyQueueEntry::new(3, 300);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+            let result = queue.enqueue(entry3);
+
+            assert!(matches!(
+                result,
+                Err(SupplyQueueError::QueueFull { max_length: 2 })
+            ));
+        }
+
+        #[test]
+        fn test_enqueue_with_priority() {
+            let queue = SupplyQueue::new();
+            let low = SupplyQueueEntry::new(1, 100).with_priority(0);
+            let high = SupplyQueueEntry::new(2, 200).with_priority(10);
+            let medium = SupplyQueueEntry::new(3, 300).with_priority(5);
+
+            let queue = queue.enqueue(low).unwrap();
+            let queue = queue.enqueue(high).unwrap();
+            let queue = queue.enqueue(medium).unwrap();
+
+            // High priority should be first
+            assert_eq!(queue.entries[0].target_id, 2);
+            assert_eq!(queue.entries[1].target_id, 3);
+            assert_eq!(queue.entries[2].target_id, 1);
+        }
+
+        #[test]
+        fn test_dequeue_supply() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+
+            let queue = queue.enqueue(entry1.clone()).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+
+            let (queue, dequeued) = queue.dequeue().unwrap();
+
+            assert_eq!(dequeued, entry1);
+            assert_eq!(queue.len(), 1);
+        }
+
+        #[test]
+        fn test_dequeue_empty_error() {
+            let queue = SupplyQueue::new();
+            let result = queue.dequeue();
+
+            assert!(matches!(result, Err(SupplyQueueError::QueueEmpty)));
+        }
+
+        #[test]
+        fn test_peek() {
+            let queue = SupplyQueue::new();
+            assert!(queue.peek().is_none());
+
+            let entry = SupplyQueueEntry::new(1, 100);
+            let queue = queue.enqueue(entry.clone()).unwrap();
+
+            assert_eq!(queue.peek(), Some(&entry));
+            assert_eq!(queue.len(), 1); // Still in queue
+        }
+
+        #[test]
+        fn test_compute_queue_total() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+            let entry3 = SupplyQueueEntry::new(1, 50);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+            let queue = queue.enqueue(entry3).unwrap();
+
+            assert_eq!(queue.total(), 350);
+        }
+
+        #[test]
+        fn test_compute_queue_totals_by_target() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+            let entry3 = SupplyQueueEntry::new(1, 50);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+            let queue = queue.enqueue(entry3).unwrap();
+
+            let totals = queue.totals_by_target();
+
+            assert_eq!(totals.len(), 2);
+            assert!(totals.contains(&(1, 150)));
+            assert!(totals.contains(&(2, 200)));
+        }
+
+        #[test]
+        fn test_remove_target_entries() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+            let entry3 = SupplyQueueEntry::new(1, 50);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+            let queue = queue.enqueue(entry3).unwrap();
+
+            let filtered = queue.remove_target(1);
+
+            assert_eq!(filtered.len(), 1);
+            assert_eq!(filtered.entries[0].target_id, 2);
+        }
+
+        #[test]
+        fn test_drain_queue() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+
+            let (empty, entries) = queue.drain();
+
+            assert!(empty.is_empty());
+            assert_eq!(entries.len(), 2);
+        }
+
+        #[test]
+        fn test_to_allocation_plan() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+            let entry3 = SupplyQueueEntry::new(1, 50);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+            let queue = queue.enqueue(entry3).unwrap();
+
+            let plan = queue.to_allocation_plan();
+
+            // Should be aggregated by target
+            assert_eq!(plan.len(), 2);
+            assert!(plan.contains(&(1, 150)));
+            assert!(plan.contains(&(2, 200)));
+        }
+
+        #[test]
+        fn test_total_for_target() {
+            let queue = SupplyQueue::new();
+            let entry1 = SupplyQueueEntry::new(1, 100);
+            let entry2 = SupplyQueueEntry::new(2, 200);
+            let entry3 = SupplyQueueEntry::new(1, 50);
+
+            let queue = queue.enqueue(entry1).unwrap();
+            let queue = queue.enqueue(entry2).unwrap();
+            let queue = queue.enqueue(entry3).unwrap();
+
+            assert_eq!(queue.total_for_target(1), 150);
+            assert_eq!(queue.total_for_target(2), 200);
+            assert_eq!(queue.total_for_target(3), 0);
+        }
+
+        #[test]
+        fn test_has_target() {
+            let queue = SupplyQueue::new();
+            let entry = SupplyQueueEntry::new(1, 100);
+            let queue = queue.enqueue(entry).unwrap();
+
+            assert!(queue.has_target(1));
+            assert!(!queue.has_target(2));
+        }
+
+        #[test]
+        fn test_builder_pattern() {
+            let entry = SupplyQueueEntry::new(1, 100)
+                .with_priority(5)
+                .with_timestamp(1000);
+
+            assert_eq!(entry.target_id, 1);
+            assert_eq!(entry.amount, 100);
+            assert_eq!(entry.priority, 5);
+            assert_eq!(entry.queued_at_ns, 1000);
+        }
+    }
+}
+
+mod policy_target_set_tests {
+    pub use crate::policy::target_set::*;
+
+    mod tests {
+        use alloc::vec;
+
+        use super::*;
+        use crate::policy::market_lock::{MarketLock, MarketLockSet};
+
+        #[test]
+        fn finds_first_duplicate() {
+            assert_eq!(find_first_duplicate(&[1u32, 2, 3]), None);
+            assert_eq!(find_first_duplicate(&[1u32, 2, 1]), Some(1));
+            assert_eq!(find_first_duplicate(&[1u32, 2, 2, 3]), Some(2));
+        }
+
+        #[test]
+        fn validates_uniqueness() {
+            assert!(has_unique_items(&[1u32, 2, 3]));
+            assert!(!has_unique_items(&[1u32, 2, 1]));
+        }
+
+        #[test]
+        fn validates_no_duplicate_targets() {
+            assert!(validate_no_duplicate_targets(&[1, 2, 3]));
+            assert!(!validate_no_duplicate_targets(&[1, 2, 1]));
+            assert_eq!(find_duplicate_target_id(&[1, 2, 1]), Some(1));
+        }
+
+        #[test]
+        fn builds_withdraw_plan_from_target_principals() {
+            let principals = vec![(1, 100), (2, 200), (3, 300)];
+            let plan = build_withdraw_plan_from_target_principals(&principals, 250).unwrap();
+
+            assert_eq!(plan, vec![(3, 300), (2, 200), (1, 100)]);
+        }
+
+        #[test]
+        fn target_lock_helpers_delegate_to_lock_set() {
+            let mut set = MarketLockSet::new();
+            set = set.acquire(MarketLock::new(2, 1_000), 1_000).unwrap();
+
+            let targets = vec![1, 2, 3];
+            assert_eq!(find_locked_targets(&set, &targets, 1_500), vec![2]);
+            assert!(is_target_locked(&set, 2, 1_500));
+            assert!(!is_target_locked(&set, 1, 1_500));
+            assert_eq!(get_locked_targets(&set, 1_500), vec![2]);
+        }
+
+        #[test]
+        fn builds_refresh_plan_from_targets() {
+            let plan = build_refresh_plan_from_targets(&[1, 2, 3], 100, 50).unwrap();
+            assert_eq!(plan.targets, vec![1, 2, 3]);
+            assert_eq!(plan.cooldown_ns(), 100);
+            assert_eq!(plan.last_refresh_ns(), Some(50));
+        }
+    }
+}
+
+mod policy_withdraw_route_tests {
+    pub use crate::policy::withdraw_route::*;
+
+    mod tests {
+        use super::*;
+        use alloc::vec;
+
+        #[test]
+        fn test_new_route() {
+            let route = WithdrawRoute::new(1000);
+            assert!(route.is_empty());
+            assert_eq!(route.target_amount, 1000);
+        }
+
+        #[test]
+        fn test_builder_pattern() {
+            let route = WithdrawRoute::new(1000)
+                .with_entry(WithdrawRouteEntry::new(1, 500))
+                .with_entry(WithdrawRouteEntry::new(2, 600));
+
+            assert_eq!(route.len(), 2);
+            assert_eq!(route.total(), 1100);
+        }
+
+        #[test]
+        fn test_entry_builder() {
+            let entry = WithdrawRouteEntry::new(1, 500).with_liquidity(400);
+
+            assert_eq!(entry.target_id, 1);
+            assert_eq!(entry.max_amount, 500);
+            assert_eq!(entry.available_liquidity, Some(400));
+        }
+
+        #[test]
+        fn test_compute_route_total() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500),
+                    WithdrawRouteEntry::new(2, 300),
+                    WithdrawRouteEntry::new(3, 200),
+                ],
+                1000,
+            );
+
+            assert_eq!(route.total(), 1000);
+        }
+
+        #[test]
+        fn test_validate_withdraw_route_success() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500),
+                    WithdrawRouteEntry::new(2, 600),
+                ],
+                1000,
+            );
+
+            assert!(route.validate().is_ok());
+        }
+
+        #[test]
+        fn test_validate_withdraw_route_zero_target() {
+            let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 0);
+
+            assert!(matches!(
+                route.validate(),
+                Err(WithdrawRouteError::ZeroTargetAmount)
+            ));
+        }
+
+        #[test]
+        fn test_validate_withdraw_route_empty() {
+            let route = WithdrawRoute::new(1000);
+
+            assert!(matches!(
+                route.validate(),
+                Err(WithdrawRouteError::EmptyRoute)
+            ));
+        }
+
+        #[test]
+        fn test_validate_withdraw_route_insufficient() {
+            let route = WithdrawRoute::from_entries(
+                vec![WithdrawRouteEntry::new(1, 500)],
+                1000, // target > route total
+            );
+
+            assert!(matches!(
+                route.validate(),
+                Err(WithdrawRouteError::InsufficientRouteTotal { .. })
+            ));
+        }
+
+        #[test]
+        fn test_validate_withdraw_route_duplicate() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500),
+                    WithdrawRouteEntry::new(1, 600), // duplicate target
+                ],
+                1000,
+            );
+
+            assert!(matches!(
+                route.validate(),
+                Err(WithdrawRouteError::DuplicateTarget { target_id: 1 })
+            ));
+        }
+
+        #[test]
+        fn test_validate_withdraw_route_zero_max() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500),
+                    WithdrawRouteEntry::new(2, 0), // zero max
+                ],
+                500,
+            );
+
+            assert!(matches!(
+                route.validate(),
+                Err(WithdrawRouteError::ZeroMaxAmount { target_id: 2 })
+            ));
+        }
+
+        #[test]
+        fn test_build_withdraw_route() {
+            let principals = vec![(1, 1000), (2, 500), (3, 300)];
+
+            let route = build_withdraw_route(&principals, 800).unwrap();
+
+            // Should be sorted by principal (largest first)
+            assert_eq!(route.entries[0].target_id, 1);
+            assert_eq!(route.entries[1].target_id, 2);
+            assert_eq!(route.entries[2].target_id, 3);
+            assert_eq!(route.target_amount, 800);
+        }
+
+        #[test]
+        fn test_build_withdraw_route_tie_breaker() {
+            let principals = vec![(2, 1000), (1, 1000), (3, 500)];
+
+            let route = build_withdraw_route(&principals, 100).unwrap();
+
+            // Equal principals should be ordered by target_id asc
+            assert_eq!(route.entries[0].target_id, 1);
+            assert_eq!(route.entries[1].target_id, 2);
+            assert_eq!(route.entries[2].target_id, 3);
+        }
+
+        #[test]
+        fn test_build_withdraw_route_insufficient() {
+            let principals = vec![(1, 100), (2, 50)];
+
+            let result = build_withdraw_route(&principals, 200);
+
+            assert!(matches!(
+                result,
+                Err(WithdrawRouteError::InsufficientRouteTotal { .. })
+            ));
+        }
+
+        #[test]
+        fn test_build_withdraw_route_with_liquidity() {
+            let market_data = vec![
+                (1, 1000, 800), // principal 1000, liquidity 800
+                (2, 500, 500),  // principal 500, liquidity 500
+                (3, 300, 100),  // principal 300, liquidity 100
+            ];
+
+            let route = build_withdraw_route_with_liquidity(&market_data, 500).unwrap();
+
+            // Should be sorted by liquidity (highest first)
+            assert_eq!(route.entries[0].target_id, 1);
+            assert_eq!(route.entries[0].max_amount, 800); // min(1000, 800)
+            assert_eq!(route.entries[0].available_liquidity, Some(800));
+        }
+
+        #[test]
+        fn test_build_withdraw_route_with_liquidity_tie_breaker() {
+            let market_data = vec![(2, 1000, 500), (1, 200, 500), (3, 300, 400)];
+
+            let route = build_withdraw_route_with_liquidity(&market_data, 100).unwrap();
+
+            // Equal liquidity should be ordered by target_id asc
+            assert_eq!(route.entries[0].target_id, 1);
+            assert_eq!(route.entries[1].target_id, 2);
+            assert_eq!(route.entries[2].target_id, 3);
+        }
+
+        #[test]
+        fn test_compute_available_liquidity() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500).with_liquidity(400),
+                    WithdrawRouteEntry::new(2, 300), // no liquidity info
+                    WithdrawRouteEntry::new(3, 200).with_liquidity(200),
+                ],
+                1000,
+            );
+
+            assert_eq!(route.available_liquidity(), 600);
+        }
+
+        #[test]
+        fn test_to_withdrawal_plan() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500),
+                    WithdrawRouteEntry::new(2, 300),
+                ],
+                800,
+            );
+
+            let plan = route.to_withdrawal_plan();
+
+            assert_eq!(plan, vec![(1, 500), (2, 300)]);
+        }
+
+        #[test]
+        fn test_can_satisfy() {
+            let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000);
+            assert!(!route.can_satisfy());
+
+            let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 1000)], 1000);
+            assert!(route.can_satisfy());
+        }
+
+        #[test]
+        fn test_get_entry_and_has_target() {
+            let route = WithdrawRoute::from_entries(
+                vec![
+                    WithdrawRouteEntry::new(1, 500),
+                    WithdrawRouteEntry::new(2, 300),
+                ],
+                800,
+            );
+
+            assert!(route.has_target(1));
+            assert!(route.has_target(2));
+            assert!(!route.has_target(3));
+
+            let entry = route.get_entry(1);
+            assert!(entry.is_some());
+            assert_eq!(entry.unwrap().max_amount, 500);
+
+            assert!(route.get_entry(3).is_none());
+        }
+    }
+}
