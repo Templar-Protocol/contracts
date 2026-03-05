@@ -38,34 +38,32 @@ pub mod market;
 pub mod policy;
 pub mod storage;
 
-pub use auth::{ActionKind, AuthAdapter, AuthError, SorobanAuth};
-pub use contract::{
-    AllocationResult, ContractConfig, CuratorVault, DepositResult, RefreshResult,
-    SorobanVaultContract, VaultDataKey, WithdrawRequestResult,
-};
-pub use effects::{
-    AddressMap, AddressRegistrar, EffectContext, EffectInterpreter, EffectResult, EffectSummary,
-    SdkTokenAdapter, Sep41Token, SorobanEffectInterpreter,
-};
-pub use error::{ContractError, RuntimeError};
-pub use market::{
-    AttemptId, MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter, SorobanMarketAdapter,
-    TestCrossChainAdapter, TestMarketAdapter,
-};
-pub use storage::{
-    MemoryStorage, SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
-};
-pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
-
 pub mod rbac {
     pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 }
-
-pub use soroban_sdk::{Address, Bytes, Env};
-
-// Policy re-exports for convenience
-pub use policy::{
-    build_allocation_plan_with_locks, build_refresh_plan_with_locks,
-    build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets, MarketLock,
-    MarketLockSet,
+pub use {
+    auth::{ActionKind, AuthAdapter, AuthError, SorobanAuth},
+    contract::{
+        AllocationResult, ContractConfig, CuratorVault, DepositResult, RefreshResult,
+        SorobanVaultContract, VaultDataKey, WithdrawRequestResult,
+    },
+    effects::{
+        AddressMap, AddressRegistrar, EffectContext, EffectInterpreter, EffectResult,
+        EffectSummary, SdkTokenAdapter, Sep41Token, SorobanEffectInterpreter,
+    },
+    error::{ContractError, RuntimeError},
+    market::{
+        AttemptId, MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter,
+        SorobanMarketAdapter, TestCrossChainAdapter, TestMarketAdapter,
+    },
+    policy::{
+        build_allocation_plan_with_locks, build_refresh_plan_with_locks,
+        build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets,
+        MarketLock, MarketLockSet,
+    },
+    rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
+    soroban_sdk::{Address, Bytes, Env},
+    storage::{
+        MemoryStorage, SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
+    },
 };
