@@ -3,7 +3,7 @@ name = "templar-soroban-share-token"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Vault-controlled share token for Soroban vault deployments"
+description = "Soroban vault share token with vault-controlled mint/burn and user-authorized transfers"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

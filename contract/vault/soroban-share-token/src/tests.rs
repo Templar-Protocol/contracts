@@ -53,8 +53,50 @@ fn vault_can_mint() {
 }
 
 #[test]
+fn user_can_transfer_with_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(VaultCaller, ());
+    let token = env.register(
+        SorobanShareTokenContract,
+        (
+            &admin,
+            &vault,
+            &String::from_str(&env, "Templar Share"),
+            &String::from_str(&env, "tvSHARE"),
+            &7u32,
+        ),
+    );
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    env.as_contract(&vault, || {
+        VaultCaller::mint(env.clone(), token.clone(), from.clone(), 1000);
+    });
+
+    env.as_contract(&token, || {
+        SorobanShareTokenContract::transfer(env.clone(), from.clone(), to.clone(), 250).unwrap();
+    });
+
+    let from_bal = env.as_contract(&token, || {
+        SorobanShareTokenContract::balance(env.clone(), from)
+    });
+    let to_bal = env.as_contract(&token, || SorobanShareTokenContract::balance(env.clone(), to));
+    assert_eq!(from_bal, 750);
+    assert_eq!(to_bal, 250);
+}
+
+#[test]
 #[should_panic]
-fn non_vault_cannot_transfer() {
+fn transfer_without_from_auth_panics() {
     let env = Env::default();
     env.ledger().set(LedgerInfo {
         timestamp: 100,

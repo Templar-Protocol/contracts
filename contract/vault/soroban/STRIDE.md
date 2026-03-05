@@ -17,7 +17,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 - SEP-41 / ERC-4626 fungible vault interface in `src/fungible_vault.rs`.
 - Upgrade/migration lifecycle via OpenZeppelin Stellar Contracts utilities.
 - Governance contract timelocks and action lifecycle in `soroban-governance/src/lib.rs`.
-- Share token contract with vault-only transfer policy in `soroban-share-token/src/lib.rs`.
+- Share token contract with vault-controlled mint/burn and user-authorized transfers in `soroban-share-token/src/lib.rs`.
 
 ### Assets to Protect
 
@@ -41,7 +41,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 6. **Stored state ↔ Runtime** — Postcard-serialized blobs with version validation on deserialization.
 7. **Upgrade boundary** — Two-step upgrade (upgrade → migrate) with blocking interim period.
 8. **Governance contract ↔ Vault contract** — Governance contract invokes vault setters (`set_fees`, `set_sentinel`, `set_cap`, `set_skim_recipient`, `skim`, etc.) after timelock maturity. The vault trusts that the governance contract enforces timelocks; the vault itself applies changes immediately when called by governance.
-9. **Vault contract ↔ Share token contract** — Share token enforces `require_vault_invoker()` on `transfer()`, `mint()`, `burn()`. Only the vault contract address can move shares. The vault address is immutable in the share token after initialization.
+9. **Vault contract ↔ Share token contract** — Share token enforces vault auth for `mint()`/`burn()` and `from.require_auth()` for user `transfer()` (while allowing vault-driven internal transfers). The vault address is immutable in the share token after initialization.
 
 ### Privilege Hierarchy
 
@@ -133,7 +133,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | I22 | Governance → `skim(token)` | Yes | `require_auth(caller)` + governance check | Governance contract ↔ Vault, Vault ↔ External token contract |
 | I23 | Governance contract → `submit()` / `approve()` / `consume()` | Yes | `require_auth(admin)` + timelock maturity | Governance contract internal state |
 | I24 | Governance contract → `abdicate(method_name)` | Yes | `require_auth(admin)` | Governance contract storage (irreversible) |
-| I25 | Vault ↔ Share token (`transfer`/`mint`/`burn`) | Yes | `require_vault_invoker()` | Vault contract ↔ Share token contract |
+| I25 | Vault/User ↔ Share token (`transfer`/`mint`/`burn`) | Yes | `require_vault_invoker()` for `mint`/`burn`; `from.require_auth()` for user `transfer` | Vault/User ↔ Share token contract |
 
 ---
 
@@ -184,7 +184,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | | **Elevation.5** — Skim recipient, once set via governance, receives all non-asset/non-share token balances when `skim()` is called. If the recipient is set to a malicious address, airdrop/reward tokens intended for vault depositors are redirected. Interaction: I21, I22. |
 | | **Elevation.6** — The hard-coded `ESCROW_ADDRESS = [0u8; 32]` is mapped to the vault's own contract address during bootstrap. If any code path treats escrow as a distinct entity, it could cause address confusion or accounting drift. Interactions: I1–I3. |
 | | **Elevation.7** — If `has_role` for `Role::Sentinel` falls back to curator when no sentinel is set, the curator implicitly gains sentinel powers. This may be acceptable for bootstrapping but should be an explicit documented decision. Interaction: I20. |
-| | **Elevation.8** — Share token vault address is set at initialization and enforced via `require_vault_invoker()`. If the share token contract is upgradeable and the vault address is mutable post-init, an attacker who gains upgrade access could redirect share operations to a different contract. Interaction: I25. |
+| | **Elevation.8** — Share token vault address is set at initialization and enforced for privileged operations (`mint`/`burn`). If the share token contract is upgradeable and the vault address is mutable post-init, an attacker who gains upgrade access could redirect privileged share operations to a different contract. Interaction: I25. |
 | | **Elevation.9** — Governance timelock kind/decision function mappings in `soroban-governance` must match the sensitivity of each action. A misconfigured mapping (e.g., `Skim` using an immediate timelock instead of a delayed one) reduces the governance friction intended for high-impact actions. Interaction: I23. |
 
 ---
@@ -223,7 +223,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | | **Elevation.5.R.1** — ✅ **Implemented**: `skim()` explicitly rejects the asset token and share token, preventing drainage of vault-critical balances. **Elevation.5.R.2** — Skim recipient is set via timelocked governance action (`SetSkimRecipient`). **Elevation.5.R.3** — Operational: governance should set skim recipient to a treasury/multisig, not an individual key. |
 | | **Elevation.6.R.1** — `ESCROW_ADDRESS = [0u8; 32]` is mapped to the vault's own contract address, ensuring escrow operations (share transfers during withdrawal) route correctly. **Elevation.6.R.2** — The escrow mapping is set during vault bootstrap and is consistent across all invocations. No additional remediation needed. |
 | | **Elevation.7.R.1** — ✅ **Implemented**: `SorobanAuth::has_role` checks the sentinel address distinctly from the curator. When no sentinel is set (`VaultDataKey::Sentinel` absent), `Role::Sentinel` checks fall back to curator as a bootstrap convenience. **Elevation.7.R.2** — Operational: deploy with an explicit sentinel address from day one. Use `set_sentinel` to establish a distinct sentinel as soon as operational key infrastructure is ready. |
-| | **Elevation.8.R.1** — ✅ **Implemented**: Share token stores the vault address at initialization; `require_vault_invoker()` is enforced on `transfer`, `mint`, `burn`. **Elevation.8.R.2** — The share token contract has no admin endpoint to change the vault address post-initialization. **Elevation.8.R.3** — If the share token contract is made upgradeable in the future, ensure the vault address remains immutable across migrations. |
+| | **Elevation.8.R.1** — ✅ **Implemented**: Share token stores the vault address at initialization; `require_vault_invoker()` is enforced on `mint`/`burn`, while user transfers require `from.require_auth()`. **Elevation.8.R.2** — The share token contract has no admin endpoint to change the vault address post-initialization. **Elevation.8.R.3** — If the share token contract is made upgradeable in the future, ensure the vault address remains immutable across migrations. |
 | | **Elevation.9.R.1** — ✅ **Implemented**: `soroban-governance` maps each `GovernanceActionKind` to a `TimelockKind` with appropriate sensitivity levels. Decision functions from `curator-primitives` enforce directional timelocks (e.g., fee increases are timelocked, decreases are immediate). **Elevation.9.R.2** — Add integration tests that verify timelock kind mappings for all governance action kinds (partially done: 7 governance tests cover sentinel, cap, and core actions). |
 
 ---
@@ -239,7 +239,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 - **Production flows**: `allocate_supply` and `allocate_withdraw` directly manage the kernel state machine (begin/finish allocation) within the reentrancy-guarded block, then perform external calls. `refresh_markets` drives the kernel refresh flow entirely within the guard.
 - **Removed methods**: `sync_external_assets`, `verify_external_assets_against_adapter`, `manual_reconcile`, `abort_allocating`, `abort_refreshing`, `abort_withdrawing`, `recover`, `settle_payout`, `refresh_fees`, and market lock methods (`acquire_market_lock`, `release_market_lock`, `is_market_locked`) no longer exist in the Soroban implementation.
 - **Fee timelock architecture**: Fee timelocks are enforced exclusively in the `soroban-governance` contract. The vault's `set_fees` applies changes immediately when called by governance. The vault-level `PendingFeesChange` queue has been removed. This is a deliberate single-responsibility design: governance owns timelock policy, vault owns state application.
-- **Share token policy**: The share token enforces `require_vault_invoker()` on all mutating operations (`transfer`, `mint`, `burn`). No user-level share transfers are possible. This differs from the NEAR executor which has transfer gates. The vault address in the share token is set at initialization and is immutable.
+- **Share token policy**: The share token enforces `require_vault_invoker()` on `mint`/`burn`, and user transfers require `from.require_auth()`. Vault-driven internal transfer effects remain supported. The vault address in the share token is set at initialization and is immutable.
 - **Governance abdication**: `abdicate(method_name)` is irreversible. Once an action is abdicated, `require_not_abdicated` permanently blocks `submit()` for that method. This provides credible commitment that governance cannot perform certain actions — a feature, not a bug, when used for depositor protection (e.g., abdicating fee increases).
 
 ---

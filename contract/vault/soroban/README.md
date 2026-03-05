@@ -106,4 +106,5 @@ Parity tests check behavioral equivalence across the shared kernel and chain exe
 
 ## Share Token Policy
 
-- Soroban share-token transfers are vault-only; end users cannot call transfer directly.
+- Soroban share-token transfers are user-authorized (`from.require_auth()`).
+- The vault can still transfer shares for internal flows (escrow/payout effects).

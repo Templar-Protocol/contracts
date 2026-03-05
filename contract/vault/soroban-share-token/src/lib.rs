@@ -120,7 +120,7 @@ impl SorobanShareTokenContract {
         if amount <= 0 {
             return Err(ShareTokenError::InvalidInput);
         }
-        require_vault_invoker(&env)?;
+        from.require_auth();
 
         decrease_balance(&env, &from, amount)?;
         increase_balance(&env, &to, amount)?;
