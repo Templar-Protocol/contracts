@@ -95,18 +95,12 @@ impl RedStoneContractInterface for Contract {
             .collect()
     }
 
-    fn read_timestamp(&self, feed_id: FeedId) -> U64 {
-        self.redstone_prices
-            .get(&feed_id)
-            .unwrap_or_else(|| unknown())
-            .package_timestamp
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<U64> {
+        Some(self.redstone_prices.get(&feed_id)?.package_timestamp)
     }
 
-    fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData {
-        self.redstone_prices
-            .get(&feed_id)
-            .unwrap_or_else(|| unknown())
-            .clone()
+    fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData> {
+        self.redstone_prices.get(&feed_id).cloned()
     }
 
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {

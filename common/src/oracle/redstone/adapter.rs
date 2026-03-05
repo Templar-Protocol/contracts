@@ -20,14 +20,6 @@ pub struct RedStoneAdapter {
     feeds: IterableMap<FeedId, FeedData>,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum FeedDataError {
-    #[error("Missing feed")]
-    MissingFeed,
-    #[error("RedStone error: {0}")]
-    RedStone(#[from] RedStoneError),
-}
-
 impl RedStoneAdapter {
     pub fn new(prefix: impl IntoStorageKey, config: Config) -> Self {
         Self {
@@ -46,15 +38,17 @@ impl RedStoneAdapter {
         &'a self,
         feed_id: &FeedId,
         timestamp_ms: u64,
-    ) -> Result<&'a FeedData, FeedDataError> {
-        let f = self.feeds.get(feed_id).ok_or(FeedDataError::MissingFeed)?;
+    ) -> Option<Result<&'a FeedData, RedStoneError>> {
+        let f = self.feeds.get(feed_id)?;
 
-        Ok(verification::verify_data_staleness(
-            f.write_timestamp.0.into(),
-            timestamp_ms.into(),
-            DATA_STALENESS,
+        Some(
+            verification::verify_data_staleness(
+                f.write_timestamp.0.into(),
+                timestamp_ms.into(),
+                DATA_STALENESS,
+            )
+            .map(|()| f),
         )
-        .map(|()| f)?)
     }
 
     fn update_feed(
@@ -116,13 +110,9 @@ impl RedStoneAdapter {
         feed_ids: &[FeedId],
         payload: &[u8],
         timestamp_ms: u64,
-    ) -> Result<GetPrices, FeedDataError> {
+    ) -> Result<GetPrices, RedStoneError> {
         let ValidatedPayload { timestamp, values } =
             self.validate_payload(feed_ids, payload, timestamp_ms)?;
-
-        if values.len() != feed_ids.len() {
-            return Err(FeedDataError::MissingFeed);
-        }
 
         Ok(GetPrices {
             timestamp: U64(timestamp.as_millis()),
@@ -226,8 +216,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(written.len(), 2);
 
-        let eth_data = ra.feed_data(&eth, timestamp).unwrap();
-        let btc_data = ra.feed_data(&btc, timestamp).unwrap();
+        let eth_data = ra.feed_data(&eth, timestamp).unwrap().unwrap();
+        let btc_data = ra.feed_data(&btc, timestamp).unwrap().unwrap();
 
         assert_eq!(
             eth_data,

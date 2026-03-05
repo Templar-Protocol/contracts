@@ -34,8 +34,8 @@ pub trait RedStoneContractInterface {
     fn unique_signer_threshold(&self) -> U64;
     fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices;
     fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
-    fn read_timestamp(&self, feed_id: FeedId) -> U64;
-    fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData;
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<U64>;
+    fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData>;
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData>;
     fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8);
 }

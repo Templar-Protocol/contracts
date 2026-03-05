@@ -15,8 +15,8 @@ pub trait RedStoneAdapterController: ContractController {
         #[view] fn unique_signer_threshold() -> U64;
         #[view] fn get_prices(feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices;
         #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
-        #[view] fn read_timestamp(feed_id: FeedId) -> U64;
-        #[view] fn read_price_data_for_feed(feed_id: FeedId) -> FeedData;
+        #[view] fn read_timestamp(feed_id: FeedId) -> Option<U64>;
+        #[view] fn read_price_data_for_feed(feed_id: FeedId) -> Option<FeedData>;
         #[view] fn read_price_data(feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData>;
 
         #[call(exec)]

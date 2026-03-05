@@ -10,8 +10,8 @@ use near_sdk::{
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::{
     oracle::redstone::{
-        Config, FeedData, FeedDataError, FeedId, GetPrices, RedStoneAdapter,
-        RedStoneContractInterface, RedStoneEvent, SerializableU256,
+        Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
+        RedStoneEvent, SerializableU256,
     },
     UnwrapReject,
 };
@@ -59,38 +59,38 @@ impl RedStoneContractInterface for Contract {
         let now = env::block_timestamp_ms();
         feed_ids
             .into_iter()
-            .map(|feed_id| {
-                let price = self.adapter.feed_data(&feed_id, now)?.price;
-                Ok((feed_id, price))
+            .filter_map(|feed_id| {
+                let data = self.adapter.feed_data(&feed_id, now)?.ok()?;
+                Some((feed_id, data.price))
             })
-            .collect::<Result<HashMap<_, _>, FeedDataError>>()
-            .unwrap_or_reject()
+            .collect::<HashMap<_, _>>()
     }
 
-    fn read_timestamp(&self, feed_id: FeedId) -> U64 {
-        self.adapter
-            .feed_data(&feed_id, env::block_timestamp_ms())
-            .unwrap_or_reject()
-            .package_timestamp
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<U64> {
+        let data = self
+            .adapter
+            .feed_data(&feed_id, env::block_timestamp_ms())?
+            .unwrap_or_reject();
+        Some(data.package_timestamp)
     }
 
-    fn read_price_data_for_feed(&self, feed_id: FeedId) -> FeedData {
-        self.adapter
-            .feed_data(&feed_id, env::block_timestamp_ms())
-            .unwrap_or_reject()
-            .clone()
+    fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData> {
+        let data = self
+            .adapter
+            .feed_data(&feed_id, env::block_timestamp_ms())?
+            .unwrap_or_reject();
+        Some(data.clone())
     }
 
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
         let now = env::block_timestamp_ms();
         feed_ids
             .into_iter()
-            .map(|feed_id| {
-                let data = self.adapter.feed_data(&feed_id, now)?;
-                Ok((feed_id, data.clone()))
+            .filter_map(|feed_id| {
+                let data = self.adapter.feed_data(&feed_id, now)?.ok()?;
+                Some((feed_id, data.clone()))
             })
-            .collect::<Result<HashMap<_, _>, FeedDataError>>()
-            .unwrap_or_reject()
+            .collect::<HashMap<_, _>>()
     }
 
     fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8) {
