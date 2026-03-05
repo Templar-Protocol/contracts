@@ -40,6 +40,18 @@ pub struct Fee<T> {
     pub recipient: String,
 }
 
+impl<T> Fee<T> {
+    /// Create a new generic fee entry.
+    #[inline]
+    #[must_use]
+    pub fn new(fee: T, recipient: impl Into<String>) -> Self {
+        Self {
+            fee,
+            recipient: recipient.into(),
+        }
+    }
+}
+
 /// Collection of fees for a vault.
 ///
 /// This generic type uses `Fee<T>` with string recipients.
@@ -63,6 +75,23 @@ pub struct Fees<T> {
     /// fee accrual uses `min(cur_total_assets, last_total_assets * (1 + max_rate * dt / YEAR))`
     /// as the effective `cur_total_assets`.
     pub max_total_assets_growth_rate: Option<T>,
+}
+
+impl<T> Fees<T> {
+    /// Create a new generic fees configuration.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        performance: Fee<T>,
+        management: Fee<T>,
+        max_total_assets_growth_rate: Option<T>,
+    ) -> Self {
+        Self {
+            performance,
+            management,
+            max_total_assets_growth_rate,
+        }
+    }
 }
 
 // Spec-Compliant Fee Types (Address recipient - fixed size)
@@ -94,7 +123,7 @@ impl FeeSlot {
     /// Create a new fee slot.
     #[inline]
     #[must_use]
-    pub fn new(fee_wad: Wad, recipient: Address) -> Self {
+    pub const fn new(fee_wad: Wad, recipient: Address) -> Self {
         Self { fee_wad, recipient }
     }
 
@@ -151,7 +180,7 @@ impl FeesSpec {
     /// Create a new fees configuration.
     #[inline]
     #[must_use]
-    pub fn new(
+    pub const fn new(
         performance: FeeSlot,
         management: FeeSlot,
         max_total_assets_growth_rate: Option<Wad>,
@@ -161,6 +190,15 @@ impl FeesSpec {
             management,
             max_total_assets_growth_rate,
         }
+    }
+
+    /// Returns true when all fee fields are unset/zeroed.
+    #[inline]
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.performance.is_zero_rate()
+            && self.management.is_zero_rate()
+            && self.max_total_assets_growth_rate.is_none()
     }
 
     pub const ZERO: Self = Self {

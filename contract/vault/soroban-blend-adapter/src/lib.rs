@@ -144,6 +144,17 @@ impl BlendAdapterContract {
         asset: Address,
         amount: i128,
     ) -> Result<(), AdapterError> {
+        Self::progress_withdrawal(env, caller, asset, amount).map(|_| ())
+    }
+
+    /// Progress a withdrawal from Blend and return actual assets sent to the vault.
+    #[allow(deprecated)]
+    pub fn progress_withdrawal(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
         require_vault(&env, &caller)?;
         if amount <= 0 {
@@ -176,7 +187,7 @@ impl BlendAdapterContract {
             token.transfer(&adapter, &vault, &actual_withdrawn);
             env.events()
                 .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
-            Ok(())
+            Ok(actual_withdrawn)
         })
     }
 
@@ -778,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn withdraw_handles_partial_liquidity() {
+    fn progress_withdrawal_handles_partial_liquidity() {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
@@ -793,8 +804,14 @@ mod tests {
 
         let vault_before = token_client.balance(&vault);
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), 1_000)
-                .unwrap();
+            let actual = BlendAdapterContract::progress_withdrawal(
+                env.clone(),
+                vault.clone(),
+                asset.clone(),
+                1_000,
+            )
+            .unwrap();
+            assert_eq!(actual, 300);
         });
         let vault_after = token_client.balance(&vault);
         assert_eq!(vault_after - vault_before, 300);
