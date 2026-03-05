@@ -2,7 +2,7 @@
 
 //! Integration tests for NEAR vault governance operations.
 //!
-//! Covers: pause/unpause restrictions, blacklist enforcement, guardian
+//! Covers: pause/unpause restrictions, blacklist enforcement, sentinel
 //! lifecycle with timelocks, cap increase timelocks, allocator role
 //! management, and fee decrease semantics.
 
@@ -27,20 +27,20 @@ fn account_to_kernel_address(account: &near_workspaces::AccountId) -> [u8; 32] {
     sha256_array(&bytes)
 }
 
-/// Guardian can pause the vault. While paused, deposits are rejected.
+/// Sentinel can pause the vault. While paused, deposits are rejected.
 #[rstest]
 #[tokio::test]
 async fn pause_blocks_deposits(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
         worker
-        extract(vault, vault_guardian, vault_owner)
+        extract(vault, vault_sentinel, vault_owner)
         accounts(supply_user, borrow_user)
     );
     vault.init_account(&supply_user).await;
 
-    // Guardian pauses the vault
+    // Sentinel pauses the vault
     vault
-        .set_restrictions(&vault_guardian, Some(Restrictions::Paused))
+        .set_restrictions(&vault_sentinel, Some(Restrictions::Paused))
         .await;
 
     // Verify restrictions are set
@@ -48,7 +48,7 @@ async fn pause_blocks_deposits(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(
         restrictions,
         Some(Restrictions::Paused),
-        "Vault should be paused after guardian sets Paused restriction",
+        "Vault should be paused after sentinel sets Paused restriction",
     );
 
     // Attempt to deposit while paused — should fail
@@ -71,21 +71,21 @@ async fn pause_blocks_deposits(#[future(awt)] worker: Worker<Sandbox>) {
     );
 }
 
-/// Unpause after pause: guardian pauses, owner submits unpause (relaxing
+/// Unpause after pause: sentinel pauses, owner submits unpause (relaxing
 /// requires timelock), then accepts it. Vault should be usable again.
 #[rstest]
 #[tokio::test]
 async fn unpause_restores_deposits(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
         worker
-        extract(vault, vault_guardian, vault_owner)
+        extract(vault, vault_sentinel, vault_owner)
         accounts(supply_user, borrow_user)
     );
     vault.init_account(&supply_user).await;
 
     // Pause
     vault
-        .set_restrictions(&vault_guardian, Some(Restrictions::Paused))
+        .set_restrictions(&vault_sentinel, Some(Restrictions::Paused))
         .await;
     assert_eq!(vault.get_restrictions().await, Some(Restrictions::Paused));
 
@@ -116,7 +116,7 @@ async fn unpause_restores_deposits(#[future(awt)] worker: Worker<Sandbox>) {
 async fn blacklist_blocks_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
         worker
-        extract(vault, vault_guardian, vault_owner)
+        extract(vault, vault_sentinel, vault_owner)
         accounts(supply_user, borrow_user)
     );
     vault.init_account(&supply_user).await;
@@ -124,7 +124,7 @@ async fn blacklist_blocks_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     // Blacklist supply_user
     let blacklist = vec![account_to_kernel_address(supply_user.id())];
     vault
-        .set_restrictions(&vault_guardian, Some(Restrictions::Blacklist(blacklist)))
+        .set_restrictions(&vault_sentinel, Some(Restrictions::Blacklist(blacklist)))
         .await;
 
     // Attempt deposit — should fail
@@ -159,22 +159,22 @@ async fn blacklist_blocks_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     );
 }
 
-/// First guardian set is immediate; changing guardian requires timelock.
+/// First sentinel set is immediate; changing sentinel requires timelock.
 /// With MIN_TIMELOCK_NS=0, the accept is also immediate.
 #[rstest]
 #[tokio::test]
-async fn guardian_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
+async fn sentinel_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
     setup_test!(
         worker
-        extract(vault, vault_owner, vault_guardian)
+        extract(vault, vault_owner, vault_sentinel)
         accounts(supply_user, borrow_user)
     );
 
-    // Guardian was set during initialization. Changing requires timelock.
-    // Submit a new guardian. Use raw call because the controller's parameter
-    // name (`new_g`) doesn't match the contract's (`account`).
+    // Sentinel was set during initialization. Changing requires timelock.
+    // Submit a new sentinel. Use raw call because the controller's parameter
+    // name (`new_s`) doesn't match the contract's (`account`).
     vault_owner
-        .call(vault.contract().id(), "submit_guardian")
+        .call(vault.contract().id(), "submit_sentinel")
         .args_json(json!({ "account": supply_user.id() }))
         .gas(Gas::from_tgas(50))
         .transact()
@@ -182,9 +182,9 @@ async fn guardian_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
         .unwrap()
         .unwrap();
 
-    // Accept the guardian change (timelock=0, so immediate)
+    // Accept the sentinel change (timelock=0, so immediate)
     vault_owner
-        .call(vault.contract().id(), "accept_guardian")
+        .call(vault.contract().id(), "accept_sentinel")
         .args_json(json!({}))
         .gas(Gas::from_tgas(50))
         .transact()
@@ -192,18 +192,18 @@ async fn guardian_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
         .unwrap()
         .unwrap();
 
-    // Verify: the new guardian can now pause the vault
+    // Verify: the new sentinel can now pause the vault
     vault
         .set_restrictions(&supply_user, Some(Restrictions::Paused))
         .await;
     assert_eq!(
         vault.get_restrictions().await,
         Some(Restrictions::Paused),
-        "New guardian should be able to pause the vault",
+        "New sentinel should be able to pause the vault",
     );
 
-    // Old guardian should NOT be able to unpause (they lost the role)
-    let result = vault_guardian
+    // Old sentinel should NOT be able to unpause (they lost the role)
+    let result = vault_sentinel
         .call(vault.contract().id(), "set_restrictions")
         .args_json(json!({
             "restrictions": null,
@@ -215,7 +215,7 @@ async fn guardian_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert!(
         result.is_failure(),
-        "Old guardian should not be able to modify restrictions",
+        "Old sentinel should not be able to modify restrictions",
     );
 }
 

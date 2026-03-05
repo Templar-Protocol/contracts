@@ -82,7 +82,7 @@ impl VaultController {
         #[view] pub fn preview_redeem(shares: U128) -> U128;
 
         /* -------- Calls (externals) -------- */
-        // Owner/guardian-gated: mints fee shares when performance is positive.
+        // Owner/sentinel-gated: mints fee shares when performance is positive.
         #[call(exec, tgas(20))]
         pub fn accrue_fee["internal_accrue_fee"]();
 
@@ -140,15 +140,6 @@ impl VaultController {
 
         #[call(exec, tgas(50))]
         pub fn set_is_allocator(account: AccountId, allowed: bool);
-
-        #[call(exec, tgas(50))]
-        pub fn submit_guardian(new_g: AccountId);
-
-        #[call(exec, tgas(50))]
-        pub fn accept_guardian();
-
-        #[call(exec, tgas(50))]
-        pub fn revoke_pending_guardian();
 
         #[call(exec, tgas(50))]
         pub fn submit_sentinel(new_s: AccountId);
