@@ -1663,7 +1663,7 @@ impl Contract {
     // Pure helper to compute how many escrowed shares to burn on partial payout
     fn compute_burn_shares(escrow_shares: u128, collected: u128, requested_total: u128) -> u128 {
         let expected = requested_total.max(1);
-        templar_common::kernel::compute_settlement(escrow_shares, expected, collected).to_burn
+        templar_vault_kernel::compute_settlement(escrow_shares, expected, collected).to_burn
     }
 
     pub fn compute_effective_totals(

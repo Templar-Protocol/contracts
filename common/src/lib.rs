@@ -7,7 +7,6 @@ pub mod fee;
 pub mod guard;
 pub mod incoming_deposit;
 pub mod interest_rate_strategy;
-pub mod kernel;
 pub mod market;
 pub mod number;
 pub mod oracle;
