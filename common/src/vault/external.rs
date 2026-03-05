@@ -4,9 +4,6 @@ use super::*;
 pub trait VaultExternalInterface {
     fn set_curator(&mut self, account: AccountId);
     fn set_is_allocator(&mut self, account: AccountId, allowed: bool);
-    fn submit_guardian(&mut self, account: AccountId);
-    fn accept_guardian(&mut self);
-    fn revoke_pending_guardian(&mut self);
     fn submit_sentinel(&mut self, account: AccountId);
     fn accept_sentinel(&mut self);
     fn revoke_pending_sentinel(&mut self);

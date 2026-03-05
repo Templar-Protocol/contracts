@@ -3094,7 +3094,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     case("set_skim_recipient"),
     case("set_fees"),
     case("set_restrictions"),
-    case("submit_guardian"),
+    case("submit_sentinel"),
     case("submit_timelock"),
     case("submit_cap"),
     case("submit_market_removal"),
@@ -3116,10 +3116,10 @@ fn governance_abdicate_blocks_further_changes(method_name: &str) {
             "set_is_allocator" => {
                 c.set_is_allocator(mk(4), false);
             }
-            "submit_guardian" => {
-                c.submit_guardian(mk(5));
-                c.accept_guardian();
-                c.revoke_pending_guardian();
+            "submit_sentinel" => {
+                c.submit_sentinel(mk(5));
+                c.accept_sentinel();
+                c.revoke_pending_sentinel();
             }
             "set_skim_recipient" => {
                 c.set_skim_recipient(mk(1));
@@ -3191,16 +3191,16 @@ fn governance_accept_guardian_not_yet_panics() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    // First, ensure a guardian is set by submitting and accepting once.
-    let initial_guardian = mk(1);
-    c.submit_guardian(initial_guardian.clone());
+    // First, ensure a sentinel is set by submitting and accepting once.
+    let initial_sentinel = mk(1);
+    c.submit_sentinel(initial_sentinel.clone());
     set_ctx(
         &vault_id,
         &owner,
         Some(env::block_timestamp() + 1_000_000_000),
         None,
     );
-    c.accept_guardian();
+    c.accept_sentinel();
 
     let max_timelock = MAX_TIMELOCK_NS;
     c.governance_timelocks = Timelocks::new(
@@ -3208,13 +3208,12 @@ fn governance_accept_guardian_not_yet_panics() {
         max_timelock,
         max_timelock,
         max_timelock,
-        max_timelock,
     );
-    // Now submit another guardian change but do not advance time.
-    let new_g = mk(5);
+    // Now submit another sentinel change but do not advance time.
+    let new_sentinel = mk(5);
     set_ctx(&vault_id, &owner, None, None);
-    c.submit_guardian(new_g);
-    c.accept_guardian();
+    c.submit_sentinel(new_sentinel);
+    c.accept_sentinel();
 }
 
 #[test]
@@ -3225,8 +3224,8 @@ fn governance_submit_accept_and_revoke_guardian() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    let new_g = mk(4);
-    c.submit_guardian(new_g.clone());
+    let new_sentinel = mk(4);
+    c.submit_sentinel(new_sentinel.clone());
 
     set_ctx(
         &vault_id,
@@ -3234,15 +3233,15 @@ fn governance_submit_accept_and_revoke_guardian() {
         Some(env::block_timestamp() + 1_000_000_000),
         None,
     );
-    c.accept_guardian();
+    c.accept_sentinel();
 
     // Stage another pending and then revoke it
     let another = mk(3);
     set_ctx(&vault_id, &owner, None, None);
-    c.submit_guardian(another);
-    c.revoke_pending_guardian();
+    c.submit_sentinel(another);
+    c.revoke_pending_sentinel();
 
-    c.accept_guardian();
+    c.accept_sentinel();
 }
 
 #[test]
@@ -3399,7 +3398,7 @@ fn cap_group_membership_moves_principal() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.governance_timelocks = Timelocks::new(0, 0, 0, 0, 0);
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0);
 
     let group_a = CapGroupId("ga".to_string());
     let group_b = CapGroupId("gb".to_string());
@@ -3462,7 +3461,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.governance_timelocks = Timelocks::new(0, 0, 0, 0, 0);
+    c.governance_timelocks = Timelocks::new(0, 0, 0, 0);
 
     let group = CapGroupId("gr".to_string());
 

@@ -91,10 +91,7 @@ impl GuardSpec<Contract> for IdleSpec {
     fn validate(target: &Contract, _op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
         match &target.op_state {
             OpState::Idle => Ok(&IdleState),
-            op_state => panic_with_message(&format!(
-                "Invariant: Only one op in flight; current op_state = {:?}",
-                op_state
-            )),
+            _ => panic_with_message("Invariant: Only one op in flight; current op_state != Idle"),
         }
     }
 

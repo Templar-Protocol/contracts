@@ -6,8 +6,8 @@
 //!
 //! # Roles
 //!
-//! - **Curator**: Full control over the vault, including role management
-//! - **Guardian**: Can pause/unpause the vault
+//! - **Curator**: Curator-scoped actions (does not implicitly inherit other roles)
+//! - **Guardian**: Reserved governance role (runtime action auth uses sentinel for pause)
 //! - **Sentinel**: Emergency backstop, distinct from guardian (used by NEAR)
 //! - **Allocator**: Can manage allocations and refreshes
 //! - **User**: Can deposit, withdraw, execute withdrawals
@@ -30,9 +30,9 @@ use crate::auth::{
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "boundary", derive(near_sdk::BorshStorageKey))]
 pub enum Role {
-    /// Full curator control.
+    /// Curator-scoped privileged actions.
     Curator,
-    /// Can pause/unpause and perform emergency actions.
+    /// Reserved governance role.
     Guardian,
     /// Emergency backstop, distinct from guardian.
     Sentinel,
@@ -163,7 +163,7 @@ impl RbacConfig {
 pub fn required_role(action: ActionKind) -> Option<Role> {
     match canonical_policy_class(action) {
         AuthPolicyClass::Public => None,
-        AuthPolicyClass::Guardian => Some(Role::Guardian),
+        AuthPolicyClass::Guardian => Some(Role::Sentinel),
         AuthPolicyClass::Allocator | AuthPolicyClass::AllocatorEmergency => Some(Role::Allocator),
         AuthPolicyClass::Curator => Some(Role::Curator),
     }
@@ -195,21 +195,15 @@ impl RbacAuth {
         Self::new(RbacConfig::with_curator(curator))
     }
 
-    /// Check if the caller has the given role, or curator override.
-    #[inline]
-    fn has_role_or_curator(&self, caller: &Address, role: Role) -> bool {
-        self.config.is_curator(caller) || self.config.has_role(caller, role)
-    }
-
     #[inline]
     fn is_allowed(&self, action: ActionKind, caller: &Address) -> bool {
         match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
-            AuthPolicyClass::Guardian => self.has_role_or_curator(caller, Role::Guardian),
-            AuthPolicyClass::Allocator => self.has_role_or_curator(caller, Role::Allocator),
+            AuthPolicyClass::Guardian => self.config.has_role(caller, Role::Sentinel),
+            AuthPolicyClass::Allocator => self.config.has_role(caller, Role::Allocator),
             AuthPolicyClass::AllocatorEmergency => {
-                self.has_role_or_curator(caller, Role::Allocator)
-                    || self.has_role_or_curator(caller, Role::Sentinel)
+                self.config.has_role(caller, Role::Allocator)
+                    || self.config.has_role(caller, Role::Sentinel)
             }
             AuthPolicyClass::Curator => self.config.is_curator(caller),
         }
@@ -223,14 +217,10 @@ impl AuthAdapter for RbacAuth {
         caller: Address,
         _proof: Option<&[u8]>,
     ) -> AuthResult<()> {
-        // Check if paused (allow pause action even when paused)
+        // Check if paused (allow pause action even when paused).
+        // Public/user actions are blocked while paused.
         if self.config.paused && action != ActionKind::Pause {
-            // Only allow user to read/check state when paused, but not deposit/withdraw
             if !action.is_privileged() {
-                return Err(AuthError::VaultPaused);
-            }
-            // Allow curator to unpause and perform privileged recovery actions
-            if !self.config.is_curator(&caller) {
                 return Err(AuthError::VaultPaused);
             }
         }

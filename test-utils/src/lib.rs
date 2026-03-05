@@ -152,7 +152,7 @@ pub fn market_configuration(
 pub fn vault_configuration(
     owner_id: AccountId,
     curator_id: AccountId,
-    guardian_id: AccountId,
+    _guardian_id: AccountId,
     sentinel_id: AccountId,
     borrow_asset_id: AccountId,
     skim_recipient_id: AccountId,
@@ -161,7 +161,6 @@ pub fn vault_configuration(
     VaultConfiguration {
         owner: owner_id,
         curator: curator_id,
-        guardian: guardian_id,
         sentinel: sentinel_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
         initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),

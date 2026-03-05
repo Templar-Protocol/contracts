@@ -1429,12 +1429,12 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
     let paused = storage.is_paused();
     let mut rbac_config = RbacConfig::with_curator(curator_kernel);
     rbac_config.add_role(governance_kernel, Role::Curator);
-    // Load guardians from storage and add to RBAC config.
+    // Backward-compatibility bridge: legacy guardians are treated as sentinels.
     let guard_addrs: Option<soroban_sdk::Vec<SdkAddress>> =
         env.storage().instance().get(&VaultDataKey::Guardians);
     if let Some(guardians) = guard_addrs {
         for g in guardians.iter() {
-            rbac_config.add_role(kernel_address_from_sdk(env, &g), Role::Guardian);
+            rbac_config.add_role(kernel_address_from_sdk(env, &g), Role::Sentinel);
         }
     }
 

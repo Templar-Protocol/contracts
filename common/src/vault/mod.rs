@@ -247,8 +247,6 @@ pub struct VaultConfiguration {
     pub owner: AccountId,
     /// The account that can submit allocation plans. See [AllocationMode].
     pub curator: AccountId,
-    /// The safety role that can revoke pending governance actions.
-    pub guardian: AccountId,
     /// The emergency role that can cancel withdrawals and trigger deallocations.
     pub sentinel: AccountId,
     /// The underlying asset for this vault.

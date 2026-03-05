@@ -14,16 +14,14 @@ use super::*;
 /// Each variant encodes a specific combination of roles allowed to perform
 /// an action. The Owner (contract singleton) always passes all checks.
 ///
-/// Role hierarchy: Owner > Curator > Guardian/Sentinel > Allocator
+/// Role hierarchy: Owner > Curator > Sentinel > Allocator
 /// Note: Curator implicitly has Allocator privileges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthPattern {
     /// Only the contract owner.
     OwnerOnly,
-    /// Guardian or Owner.
-    GuardianOrOwner,
-    /// Guardian, Sentinel, or Owner.
-    GuardianOrSentinelOrOwner,
+    /// Sentinel or Owner.
+    SentinelOrOwner,
     /// Curator or Owner.
     CuratorOrOwner,
     /// Curator, Sentinel, or Owner.
@@ -42,8 +40,7 @@ impl AuthPattern {
     pub fn allowed_roles(self) -> &'static [Role] {
         match self {
             AuthPattern::OwnerOnly => &[],
-            AuthPattern::GuardianOrOwner => &[Role::Guardian],
-            AuthPattern::GuardianOrSentinelOrOwner => &[Role::Guardian, Role::Sentinel],
+            AuthPattern::SentinelOrOwner => &[Role::Sentinel],
             AuthPattern::CuratorOrOwner => &[Role::Curator],
             AuthPattern::CuratorOrSentinelOrOwner => &[Role::Curator, Role::Sentinel],
             AuthPattern::Allocator => &[Role::Allocator, Role::Curator],
@@ -66,11 +63,11 @@ impl AuthPattern {
 ///
 /// NEAR's mapping differs from the curator-primitives defaults:
 /// - Abort actions allow Sentinel in addition to Allocator
-/// - `Pause`/`SetRestrictions` are guardian-level (handled via governance)
+/// - `Pause`/`SetRestrictions` are sentinel-level (handled via governance)
 #[must_use]
 pub fn auth_pattern_for(action: ActionKind) -> AuthPattern {
     match boundary_policy_class(action) {
-        AuthPolicyClass::Guardian => AuthPattern::GuardianOrOwner,
+        AuthPolicyClass::Guardian => AuthPattern::SentinelOrOwner,
         AuthPolicyClass::Allocator => AuthPattern::Allocator,
         AuthPolicyClass::AllocatorEmergency => AuthPattern::AllocatorOrSentinel,
         AuthPolicyClass::Public | AuthPolicyClass::Curator => AuthPattern::OwnerOnly,

@@ -153,7 +153,7 @@ impl<'a> SorobanAuth<'a> {
     pub fn check_role(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
         let has_role = match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
-            AuthPolicyClass::Guardian => self.has_role(Role::Guardian, caller),
+            AuthPolicyClass::Guardian => self.has_role(Role::Sentinel, caller),
             AuthPolicyClass::Allocator => self.has_role(Role::Allocator, caller),
             AuthPolicyClass::AllocatorEmergency => {
                 self.has_role(Role::Allocator, caller) || self.has_role(Role::Sentinel, caller)

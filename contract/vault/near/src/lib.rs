@@ -98,7 +98,7 @@ pub enum StorageKey {
 }
 
 #[near(serializers = [borsh])]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MarketRecord {
     pub account: AccountId,
     pub cfg: MarketConfiguration,
@@ -167,7 +167,7 @@ struct OldContract {
 /// Critical invariants
 /// - Assets accounting is correct: total_assets = idle_balance + sum(all principals in markets).
 /// - Only one op in flight (op_state); mutating ops require Idle.
-/// - Governance changes obey timelocks; Guardian may revoke pending changes.
+/// - Governance changes obey timelocks; Sentinel may revoke pending changes.
 ///
 /// Note: RBAC storage is paid by the contract; callers are not charged deposits for RBAC changes.
 pub struct Contract {
@@ -243,7 +243,6 @@ impl Contract {
         let VaultConfiguration {
             owner,
             curator,
-            guardian,
             sentinel,
             underlying_token,
             initial_timelock_ns,
@@ -316,7 +315,6 @@ impl Contract {
         Owner::init(&mut contract, &owner);
         Rbac::add_role(&mut contract, &curator, &Role::Curator);
         Rbac::add_role(&mut contract, &curator, &Role::Allocator);
-        Rbac::add_role(&mut contract, &guardian, &Role::Guardian);
         Rbac::add_role(&mut contract, &sentinel, &Role::Sentinel);
 
         contract.set_storage_balance_bounds(&StorageBalanceBounds {
@@ -948,7 +946,6 @@ impl Contract {
     /// # Panics
     /// - If the owner is not set
     /// - If the curator is not set
-    /// - If the guardian is not set
     #[allow(clippy::expect_used, reason = "No side effects")]
     pub fn get_configuration(&self) -> VaultConfiguration {
         let meta = self.get_metadata();
@@ -969,7 +966,6 @@ impl Contract {
                 templar_common::panic_with_message("Owner not set in get_configuration")
             }),
             curator: role_member(&Role::Curator, "Curator"),
-            guardian: role_member(&Role::Guardian, "Guardian"),
             sentinel: role_member(&Role::Sentinel, "Sentinel"),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
@@ -1241,7 +1237,7 @@ pub struct IdleCoverage {
     pub collected_from_idle: u128,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct SupplyQueueMarketInfo {
     cap_room: u128,
     cap_group_id: Option<CapGroupId>,
@@ -1803,10 +1799,9 @@ impl Contract {
     fn ensure_idle(&self) {
         // Invariant: Only one op in flight; ensure_idle() guards all mutating ops.
         if !matches!(self.op_state, OpState::Idle) {
-            templar_common::panic_with_message(&format!(
-                "Invariant: Only one op in flight; current op_state = {:?}",
-                self.op_state
-            ));
+            templar_common::panic_with_message(
+                "Invariant: Only one op in flight; current op_state != Idle",
+            );
         }
     }
 

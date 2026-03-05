@@ -17,18 +17,6 @@ impl VaultExternalInterface for Contract {
         Contract::set_is_allocator(self, account, allowed);
     }
 
-    fn submit_guardian(&mut self, account: AccountId) {
-        Contract::submit_guardian(self, account);
-    }
-
-    fn accept_guardian(&mut self) {
-        Contract::accept_guardian(self);
-    }
-
-    fn revoke_pending_guardian(&mut self) {
-        Contract::revoke_pending_guardian(self);
-    }
-
     fn submit_sentinel(&mut self, account: AccountId) {
         Contract::submit_sentinel(self, account);
     }

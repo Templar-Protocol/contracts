@@ -32,8 +32,6 @@ const ERR_MEMBERSHIP_NO_CHANGE: &str = "Market already assigned to this cap grou
 #[near(serializers = [borsh, json])]
 #[derive(Clone, PartialEq, Eq)]
 pub enum TimelockedAction {
-    /// Change the guardian to `new_guardian`.
-    GuardianChange { account: AccountId },
     /// Change the sentinel to `new_sentinel`.
     SentinelChange { account: AccountId },
     /// Change the governance timelock configuration to `new_timelock_ns`.
@@ -84,7 +82,6 @@ fn to_shared_restrictions(
 
 #[near(serializers = [borsh])]
 pub struct Timelocks {
-    guardian_ns: TimestampNs,
     sentinel_ns: TimestampNs,
     pub timelock_config_ns: TimestampNs,
     cap_ns: TimestampNs,
@@ -95,7 +92,6 @@ pub struct Timelocks {
 impl From<TimestampNs> for Timelocks {
     fn from(ns: TimestampNs) -> Self {
         Self {
-            guardian_ns: ns,
             sentinel_ns: ns,
             timelock_config_ns: ns,
             cap_ns: ns,
@@ -107,14 +103,12 @@ impl From<TimestampNs> for Timelocks {
 
 impl Timelocks {
     pub fn new(
-        guardian_ns: TimestampNs,
         sentinel_ns: TimestampNs,
         timelock_config_ns: TimestampNs,
         cap_ns: TimestampNs,
         market_removal_ns: TimestampNs,
     ) -> Self {
         Self {
-            guardian_ns,
             sentinel_ns,
             timelock_config_ns,
             cap_ns,
@@ -346,7 +340,7 @@ impl Contract {
 
     /// Revokes any pending fee change.
     pub fn revoke_pending_fees(&mut self) {
-        AuthPattern::GuardianOrSentinelOrOwner.require();
+        AuthPattern::SentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::FeesChange { .. })) {
             Event::FeesChangeRevoked.emit();
@@ -360,34 +354,6 @@ impl Contract {
             self.schedule_timelock(&action);
         } else {
             self.apply_immediately(&action);
-        }
-    }
-
-    /// Proposes a new Guardian. If a Guardian already exists, starts a timelock; otherwise sets immediately.
-    pub fn submit_guardian(&mut self, account: AccountId) {
-        let tl = TimelockedAction::GuardianChange { account };
-        self.submit_change(tl);
-    }
-
-    /// Accepts the pending Guardian change after the timelock has elapsed.
-    pub fn accept_guardian(&mut self) {
-        Self::require_owner();
-
-        if let Some(action) =
-            self.take_timelock(|a| matches!(a, TimelockedAction::GuardianChange { .. }))
-        {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending change");
-        }
-    }
-
-    /// Revokes any pending Guardian change.
-    pub fn revoke_pending_guardian(&mut self) {
-        AuthPattern::GuardianOrSentinelOrOwner.require();
-
-        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::GuardianChange { .. })) {
-            Event::PendingTimelockRevoked.emit();
         }
     }
 
@@ -412,7 +378,7 @@ impl Contract {
 
     /// Revokes any pending Sentinel change.
     pub fn revoke_pending_sentinel(&mut self) {
-        AuthPattern::GuardianOrSentinelOrOwner.require();
+        AuthPattern::SentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::SentinelChange { .. })) {
             Event::PendingTimelockRevoked.emit();
@@ -450,7 +416,7 @@ impl Contract {
 
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
-        AuthPattern::GuardianOrSentinelOrOwner.require();
+        AuthPattern::SentinelOrOwner.require();
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. })) {
             Event::PendingTimelockRevoked.emit();
         }
@@ -735,7 +701,7 @@ impl Contract {
 
     /// Accepts a pending restrictions change after the timelock has elapsed.
     pub fn accept_restrictions(&mut self) {
-        AuthPattern::GuardianOrOwner.require();
+        AuthPattern::SentinelOrOwner.require();
 
         if let Some(action) =
             self.take_timelock(|a| matches!(a, TimelockedAction::RestrictionsChange { .. }))
@@ -748,7 +714,7 @@ impl Contract {
 
     /// Revokes any pending restrictions change.
     pub fn revoke_pending_restrictions(&mut self) {
-        AuthPattern::GuardianOrSentinelOrOwner.require();
+        AuthPattern::SentinelOrOwner.require();
 
         if self.revoke_timelocks(|a| matches!(a, TimelockedAction::RestrictionsChange { .. })) {
             Event::RestrictionsChangeRevoked.emit();
@@ -775,22 +741,6 @@ impl Contract {
     #[allow(clippy::too_many_lines)]
     fn decide_should_queue(&self, action: &TimelockedAction) -> bool {
         match action {
-            // Submit a timelocked governance change if there is already a guardian
-            TimelockedAction::GuardianChange { .. } => {
-                Self::require_owner();
-                Abdicator::require_not_abdicated(&self.abdicator, "submit_guardian");
-
-                let has_guardian = Self::with_members_of(&Role::Guardian, |members| {
-                    require!(
-                        members.len() < 2,
-                        "Invariant violation: Cannot have more than one Guardian"
-                    );
-                    !members.is_empty()
-                });
-
-                shared_gov::TimelockDecision::from_requires_timelock(has_guardian)
-                    .requires_timelock()
-            }
             // Submit a timelocked governance change if there is already a sentinel
             TimelockedAction::SentinelChange { .. } => {
                 Self::require_owner();
@@ -812,7 +762,7 @@ impl Contract {
                 kind,
                 new_timelock_ns,
             } => {
-                AuthPattern::GuardianOrOwner.require();
+                AuthPattern::SentinelOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_timelock");
 
                 let new = new_timelock_ns.0;
@@ -820,8 +770,9 @@ impl Contract {
                     None | Some(TimelockKind::Config) => {
                         self.governance_timelocks.timelock_config_ns
                     }
-                    Some(TimelockKind::Guardian) => self.governance_timelocks.guardian_ns,
-                    Some(TimelockKind::Sentinel) => self.governance_timelocks.sentinel_ns,
+                    Some(TimelockKind::Guardian) | Some(TimelockKind::Sentinel) => {
+                        self.governance_timelocks.sentinel_ns
+                    }
                     Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
                     Some(TimelockKind::MarketRemoval) => {
                         self.governance_timelocks.market_removal_ns
@@ -896,7 +847,7 @@ impl Contract {
                 let is_relaxing = shared_gov::Restrictions::determine_relaxed(&current, &proposed);
 
                 if is_relaxing {
-                    AuthPattern::GuardianOrOwner.require();
+                    AuthPattern::SentinelOrOwner.require();
                     require!(
                         !self.governance_timelocks.pending_actions.has_pending(|p| {
                             matches!(p, TimelockedAction::RestrictionsChange { .. })
@@ -906,8 +857,8 @@ impl Contract {
                     true
                 } else {
                     // Tightening (including emergency pause) is immediate and may be done by the
-                    // guardian, sentinel, or owner.
-                    AuthPattern::GuardianOrSentinelOrOwner.require();
+                    // sentinel or owner.
+                    AuthPattern::SentinelOrOwner.require();
                     false
                 }
             }
@@ -1083,16 +1034,6 @@ impl Contract {
 
     fn apply_immediately(&mut self, action: &TimelockedAction) {
         match action {
-            TimelockedAction::GuardianChange { account } => {
-                Self::with_members_of_mut(&Role::Guardian, |members| {
-                    members.clear();
-                    members.insert(account);
-                });
-                Event::GuardianSet {
-                    account: account.clone(),
-                }
-                .emit();
-            }
             TimelockedAction::SentinelChange { account } => {
                 Self::with_members_of_mut(&Role::Sentinel, |members| {
                     members.clear();
@@ -1110,16 +1051,12 @@ impl Contract {
                 let new_ns = new_timelock_ns.0;
                 match kind {
                     None => {
-                        self.governance_timelocks.guardian_ns = new_ns;
                         self.governance_timelocks.sentinel_ns = new_ns;
                         self.governance_timelocks.timelock_config_ns = new_ns;
                         self.governance_timelocks.market_removal_ns = new_ns;
                         self.governance_timelocks.cap_ns = new_ns;
                     }
-                    Some(TimelockKind::Guardian) => {
-                        self.governance_timelocks.guardian_ns = new_ns;
-                    }
-                    Some(TimelockKind::Sentinel) => {
+                    Some(TimelockKind::Guardian) | Some(TimelockKind::Sentinel) => {
                         self.governance_timelocks.sentinel_ns = new_ns;
                     }
                     Some(TimelockKind::Config) => {
@@ -1364,12 +1301,12 @@ impl Contract {
     /// Fails if an identical action is already pending.
     fn schedule_timelock(&mut self, action: &TimelockedAction) {
         let cur = match action {
-            TimelockedAction::GuardianChange { .. } => self.governance_timelocks.guardian_ns,
             TimelockedAction::SentinelChange { .. } => self.governance_timelocks.sentinel_ns,
             TimelockedAction::TimelockConfigChange { kind, .. } => match kind {
                 None | Some(TimelockKind::Config) => self.governance_timelocks.timelock_config_ns,
-                Some(TimelockKind::Guardian) => self.governance_timelocks.guardian_ns,
-                Some(TimelockKind::Sentinel) => self.governance_timelocks.sentinel_ns,
+                Some(TimelockKind::Guardian) | Some(TimelockKind::Sentinel) => {
+                    self.governance_timelocks.sentinel_ns
+                }
                 Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
                 Some(TimelockKind::MarketRemoval) => self.governance_timelocks.market_removal_ns,
             },
