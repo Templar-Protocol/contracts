@@ -26,8 +26,8 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
 };
 use templar_curator_primitives::governance::{
-    cap_change_decision, market_removal_decision, membership_change_decision,
-    relative_cap_change_decision, TimelockDecision,
+    cap_change_decision, cap_group_cap_change_decision, market_removal_decision,
+    membership_change_decision, relative_cap_change_decision, TimelockDecision,
 };
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, CapGroupUpdate};
 use templar_curator_primitives::policy::lock_filter::{
@@ -37,13 +37,12 @@ use templar_curator_primitives::policy::state::MarketConfig;
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::effects::KernelEffect;
-use templar_vault_kernel::error::KernelError;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, complete_allocation, complete_refresh, convert_to_assets, convert_to_assets_ceil,
     convert_to_shares, convert_to_shares_ceil, start_allocation, start_refresh,
     withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor, FeeSlot, FeesSpec,
-    KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, TransitionError, VaultConfig,
+    KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
     VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
     MIN_WITHDRAWAL_ASSETS,
 };
@@ -1080,7 +1079,7 @@ where
                     .cap_groups
                     .get(&cap_group_id)
                     .and_then(|record| record.cap.absolute_cap.map(NonZeroU128::get));
-                let decision = cap_change_decision(current, new_cap)
+                let decision = cap_group_cap_change_decision(current, new_cap)
                     .map_err(|_| RuntimeError::invalid_input("cap group cap unchanged"))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
