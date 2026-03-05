@@ -29,6 +29,16 @@ use crate::effects::publish_kernel_event;
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage};
 
+#[inline]
+fn checked_add_u128(lhs: u128, rhs: u128) -> Result<u128, ContractError> {
+    lhs.checked_add(rhs).ok_or(ContractError::InvalidState)
+}
+
+#[inline]
+fn checked_sub_u128(lhs: u128, rhs: u128) -> Result<u128, ContractError> {
+    lhs.checked_sub(rhs).ok_or(ContractError::InvalidState)
+}
+
 /// Load kernel state and a default config for read-only conversion math.
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
@@ -56,10 +66,9 @@ fn resolve_fee_recipient(
     storage: &SorobanStorage,
     kernel_addr: &templar_vault_kernel::Address,
 ) -> Result<SdkAddress, ContractError> {
-    match storage.load_address(kernel_addr) {
-        Some(recipient) => Ok(recipient),
-        None => Err(ContractError::EffectFailed),
-    }
+    storage
+        .load_address(kernel_addr)
+        .ok_or(ContractError::EffectFailed)
 }
 
 #[inline(never)]
@@ -125,9 +134,7 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
         management_shares,
     )?;
     if management_shares_u128 > 0 {
-        total_supply = total_supply
-            .checked_add(management_shares_u128)
-            .ok_or(ContractError::InvalidState)?;
+        total_supply = checked_add_u128(total_supply, management_shares_u128)?;
     }
 
     let profit = fee_total_assets.saturating_sub(anchor.total_assets);
@@ -145,9 +152,7 @@ pub(crate) fn refresh_fees_for_atomic(env: &Env) -> Result<(), ContractError> {
         performance_shares,
     )?;
     if performance_shares_u128 > 0 {
-        total_supply = total_supply
-            .checked_add(performance_shares_u128)
-            .ok_or(ContractError::InvalidState)?;
+        total_supply = checked_add_u128(total_supply, performance_shares_u128)?;
     }
 
     state.total_shares = total_supply;
@@ -198,18 +203,9 @@ pub(crate) fn atomic_withdraw_internal(
     let state = &mut versioned.state;
 
     // Update kernel state totals
-    state.total_shares = match state.total_shares.checked_sub(shares) {
-        Some(total_shares) => total_shares,
-        None => return Err(ContractError::InvalidState),
-    };
-    state.total_assets = match state.total_assets.checked_sub(assets) {
-        Some(total_assets) => total_assets,
-        None => return Err(ContractError::InvalidState),
-    };
-    state.idle_assets = match state.idle_assets.checked_sub(assets) {
-        Some(idle_assets) => idle_assets,
-        None => return Err(ContractError::InvalidState),
-    };
+    state.total_shares = checked_sub_u128(state.total_shares, shares)?;
+    state.total_assets = checked_sub_u128(state.total_assets, assets)?;
+    state.idle_assets = checked_sub_u128(state.idle_assets, assets)?;
 
     // Persist updated state
     runtime_to_contract(storage.save_state(&versioned))?;
