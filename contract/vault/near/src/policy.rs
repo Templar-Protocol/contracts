@@ -23,67 +23,45 @@ pub use templar_curator_primitives::policy::{
 
 pub const ERR_MARKET_LOCKED: &str = "Market is locked";
 
-/// NEAR wrapper for the curator supply queue (preserves Vec<MarketId> layout).
-#[near(serializers = [borsh, serde])]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SupplyQueue(pub Vec<MarketId>);
+macro_rules! define_market_id_vec_wrapper {
+    ($name:ident) => {
+        #[near(serializers = [borsh, serde])]
+        #[derive(Clone, Debug, Default, PartialEq, Eq)]
+        pub struct $name(pub Vec<MarketId>);
 
-impl Deref for SupplyQueue {
-    type Target = Vec<MarketId>;
+        impl Deref for $name {
+            type Target = Vec<MarketId>;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl DerefMut for $name {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl From<Vec<MarketId>> for $name {
+            fn from(markets: Vec<MarketId>) -> Self {
+                Self(markets)
+            }
+        }
+
+        impl From<$name> for Vec<MarketId> {
+            fn from(markets: $name) -> Self {
+                markets.0
+            }
+        }
+    };
 }
 
-impl DerefMut for SupplyQueue {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+// NEAR wrapper for the curator supply queue (preserves Vec<MarketId> layout).
+define_market_id_vec_wrapper!(SupplyQueue);
 
-impl From<Vec<MarketId>> for SupplyQueue {
-    fn from(markets: Vec<MarketId>) -> Self {
-        Self(markets)
-    }
-}
-
-impl From<SupplyQueue> for Vec<MarketId> {
-    fn from(queue: SupplyQueue) -> Self {
-        queue.0
-    }
-}
-
-/// NEAR wrapper for the curator withdraw route (preserves Vec<MarketId> layout).
-#[near(serializers = [borsh, serde])]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WithdrawRoute(pub Vec<MarketId>);
-
-impl Deref for WithdrawRoute {
-    type Target = Vec<MarketId>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for WithdrawRoute {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl From<Vec<MarketId>> for WithdrawRoute {
-    fn from(markets: Vec<MarketId>) -> Self {
-        Self(markets)
-    }
-}
-
-impl From<WithdrawRoute> for Vec<MarketId> {
-    fn from(route: WithdrawRoute) -> Self {
-        route.0
-    }
-}
+// NEAR wrapper for the curator withdraw route (preserves Vec<MarketId> layout).
+define_market_id_vec_wrapper!(WithdrawRoute);
 
 /// NEAR wrapper for market execution locks (backed by curator MarketLockSet).
 #[near(serializers = [borsh, serde])]
@@ -141,5 +119,27 @@ impl MarketExecutionLock {
     #[must_use]
     pub fn inner(&self) -> &MarketLockSet {
         &self.inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SupplyQueue, WithdrawRoute};
+    use templar_common::vault::MarketId;
+
+    #[test]
+    fn supply_queue_roundtrips_vec_layout() {
+        let source = vec![MarketId(1), MarketId(2)];
+        let queue = SupplyQueue::from(source.clone());
+        let roundtrip: Vec<MarketId> = queue.into();
+        assert_eq!(roundtrip, source);
+    }
+
+    #[test]
+    fn withdraw_route_roundtrips_vec_layout() {
+        let source = vec![MarketId(3), MarketId(4)];
+        let route = WithdrawRoute::from(source.clone());
+        let roundtrip: Vec<MarketId> = route.into();
+        assert_eq!(roundtrip, source);
     }
 }
