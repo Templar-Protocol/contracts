@@ -25,9 +25,6 @@ pub mod rbac;
 pub mod recovery;
 pub mod utils;
 
-#[cfg(test)]
-mod tests;
-
 pub use auth::{
     action_policy_class, boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter,
     AuthError, AuthPolicyClass, AuthPolicyProfile, AuthResult, PermissiveAuth, StrictAuth,

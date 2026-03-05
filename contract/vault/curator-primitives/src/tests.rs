@@ -544,3 +544,622 @@ fn golden_refresh_after_allocation() {
         _ => panic!("Expected AbortRefreshing"),
     }
 }
+
+mod cap_group_unit_tests {
+    use super::WAD;
+    use alloc::vec;
+
+    use crate::policy::cap_group::{validate_allocations, CapGroup, CapGroupError, CapGroupRecord};
+    use templar_vault_kernel::Wad;
+
+    #[test]
+    fn test_cap_group_unlimited() {
+        let cap = CapGroup::new();
+        assert!(cap.is_unlimited());
+        assert!(cap.can_allocate(0, u128::MAX, 1000));
+    }
+
+    #[test]
+    fn test_cap_group_absolute_only() {
+        let cap = CapGroup::absolute_only(1000);
+        assert!(!cap.is_unlimited());
+        assert!(cap.absolute_cap.is_some());
+        assert!(cap.relative_cap.is_none());
+
+        // Can allocate up to cap
+        assert!(cap.can_allocate(0, 1000, 10000));
+        assert!(cap.can_allocate(500, 500, 10000));
+
+        // Cannot exceed cap
+        assert!(!cap.can_allocate(500, 501, 10000));
+        assert!(!cap.can_allocate(1000, 1, 10000));
+    }
+
+    #[test]
+    fn test_cap_group_relative_only() {
+        // 50% relative cap
+        let cap = CapGroup::relative_only(Wad::from(WAD / 2));
+        assert!(!cap.is_unlimited());
+        assert!(cap.absolute_cap.is_none());
+        assert!(cap.relative_cap.is_some());
+
+        // Total assets = 1000, effective cap = 500
+        assert!(cap.can_allocate(0, 500, 1000));
+        assert!(cap.can_allocate(200, 300, 1000));
+        assert!(!cap.can_allocate(200, 301, 1000));
+    }
+
+    #[test]
+    fn test_cap_group_both_caps() {
+        // 1000 absolute, 50% relative
+        let cap = CapGroup::new()
+            .with_absolute(1000)
+            .with_relative(Wad::from(WAD / 2));
+
+        // With 3000 total assets, relative cap = 1500, but absolute = 1000
+        assert!(cap.can_allocate(0, 1000, 3000));
+        assert!(!cap.can_allocate(0, 1001, 3000));
+
+        // With 1000 total assets, relative cap = 500, which is stricter
+        assert!(cap.can_allocate(0, 500, 1000));
+        assert!(!cap.can_allocate(0, 501, 1000));
+    }
+
+    #[test]
+    fn test_compute_effective_cap() {
+        let cap = CapGroup::new()
+            .with_absolute(1000)
+            .with_relative(Wad::from(WAD / 2));
+
+        // When relative cap is stricter
+        assert_eq!(cap.effective_cap(1000), 500);
+
+        // When absolute cap is stricter
+        assert_eq!(cap.effective_cap(3000), 1000);
+
+        // Unlimited
+        let unlimited = CapGroup::new();
+        assert_eq!(unlimited.effective_cap(1000), u128::MAX);
+    }
+
+    #[test]
+    fn test_enforce_cap_group_errors() {
+        let cap = CapGroup::new()
+            .with_absolute(1000)
+            .with_relative(Wad::from(WAD / 2));
+
+        // Exceeds absolute cap
+        let result = cap.enforce(0, 1001, 3000);
+        assert!(matches!(
+            result,
+            Err(CapGroupError::ExceedsAbsoluteCap { .. })
+        ));
+
+        // Exceeds relative cap (500 effective cap when total = 1000)
+        let result = cap.enforce(0, 501, 1000);
+        assert!(matches!(
+            result,
+            Err(CapGroupError::ExceedsRelativeCap { .. })
+        ));
+    }
+
+    #[test]
+    fn test_compute_available_capacity() {
+        let cap = CapGroup::absolute_only(1000);
+
+        assert_eq!(cap.available_capacity(0, 2000), 1000);
+        assert_eq!(cap.available_capacity(300, 2000), 700);
+        assert_eq!(cap.available_capacity(1000, 2000), 0);
+        assert_eq!(cap.available_capacity(1500, 2000), 0); // Already over, saturates to 0
+    }
+
+    #[test]
+    fn test_apply_and_remove_allocation() {
+        let cap = CapGroup::absolute_only(1000);
+        let record = CapGroupRecord::new(cap);
+
+        let updated = record.apply_allocation(300);
+        assert_eq!(updated.principal, 300);
+
+        let reduced = updated.remove_allocation(100);
+        assert_eq!(reduced.principal, 200);
+
+        // Saturating subtraction
+        let zero = reduced.remove_allocation(500);
+        assert_eq!(zero.principal, 0);
+    }
+
+    #[test]
+    fn test_validate_allocations() {
+        let cap1 = CapGroupRecord::new(CapGroup::absolute_only(1000));
+        let cap2 = CapGroupRecord::new(CapGroup::absolute_only(500));
+
+        // Valid allocations
+        let allocations = vec![(cap1.clone(), 500), (cap2.clone(), 300)];
+        assert!(validate_allocations(&allocations, 2000).is_ok());
+
+        // Invalid - second exceeds cap
+        let invalid = vec![(cap1, 500), (cap2, 600)];
+        assert!(validate_allocations(&invalid, 2000).is_err());
+    }
+
+    #[test]
+    fn test_cap_group_record_methods() {
+        let record = CapGroupRecord::new(CapGroup::absolute_only(1000));
+
+        assert!(record.can_allocate(500, 2000));
+        assert!(!record.can_allocate(1001, 2000));
+        assert_eq!(record.available_capacity(2000), 1000);
+
+        assert!(record.enforce(500, 2000).is_ok());
+        assert!(record.enforce(1001, 2000).is_err());
+    }
+
+    #[test]
+    fn test_zero_absolute_cap_is_unlimited() {
+        let cap = CapGroup::absolute_only(0);
+        // NonZeroU128::new(0) returns None, so this should be unlimited
+        assert!(cap.absolute_cap.is_none());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_available_capacity_matches_effective_cap(
+            absolute in 0u128..=1_000_000_000_000u128,
+            relative in 0u128..=WAD,
+            current in 0u128..=1_000_000_000_000u128,
+            total in 0u128..=1_000_000_000_000u128,
+        ) {
+            let cap = CapGroup::new()
+                .with_absolute(absolute)
+                .with_relative(Wad::from(relative));
+            let effective = cap.effective_cap(total);
+            let available = cap.available_capacity(current, total);
+
+            if cap.is_unlimited() {
+                proptest::prop_assert_eq!(available, u128::MAX);
+            } else {
+                proptest::prop_assert_eq!(available, effective.saturating_sub(current));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "recovery")]
+mod recovery_unit_tests {
+    use alloc::string::String;
+    use alloc::vec;
+
+    use crate::recovery::{
+        compute_payout_failure_outcome, compute_payout_success_outcome, compute_recovery_stats,
+        compute_settlement_shares, determine_recovery_action, handle_allocation_failure,
+        handle_payout_failure, handle_payout_failure_default, handle_refresh_failure,
+        handle_withdrawal_failure, RecoveryContext, RecoveryOutcome, RecoveryProgress,
+    };
+    use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
+    use templar_vault_kernel::{
+        AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
+        WithdrawingState,
+    };
+
+    #[test]
+    fn test_determine_recovery_action_idle() {
+        let state = OpState::Idle;
+
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress);
+
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_determine_recovery_action_allocating() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 2,
+            remaining: 500,
+            plan: vec![(0, 300), (1, 200), (2, 300), (3, 200)],
+        });
+
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+
+        match action {
+            KernelAction::AbortAllocating {
+                op_id,
+                restore_idle,
+            } => {
+                assert_eq!(op_id, 1);
+                assert_eq!(restore_idle, 500);
+            }
+            _ => panic!("Expected AbortAllocating"),
+        }
+    }
+
+    #[test]
+    fn test_determine_recovery_action_not_stuck() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 10,
+            index: 0,
+            remaining: 100,
+            plan: vec![(0, 100)],
+        });
+
+        let ctx = RecoveryContext::with_stuck_threshold(1_000, 500);
+        let progress = RecoveryProgress::with_last_progress(900, 900);
+
+        let action = determine_recovery_action(&state, &ctx, &progress);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_determine_recovery_action_forced_ignores_threshold() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 11,
+            index: 0,
+            remaining: 100,
+            plan: vec![(0, 100)],
+        });
+
+        let ctx = RecoveryContext::forced(1_000);
+        let progress = RecoveryProgress::with_last_progress(999, 999);
+
+        let action = determine_recovery_action(&state, &ctx, &progress);
+        assert!(action.is_some());
+    }
+
+    #[test]
+    fn test_determine_recovery_action_withdrawing() {
+        let state = OpState::Withdrawing(WithdrawingState {
+            op_id: 2,
+            index: 1,
+            remaining: 400,
+            collected: 600,
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
+            escrow_shares: 1000,
+        });
+
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+
+        match action {
+            KernelAction::AbortWithdrawing {
+                op_id,
+                refund_shares,
+            } => {
+                assert_eq!(op_id, 2);
+                assert_eq!(refund_shares, 1000);
+            }
+            _ => panic!("Expected AbortWithdrawing"),
+        }
+    }
+
+    #[test]
+    fn test_determine_recovery_action_refreshing() {
+        let state = OpState::Refreshing(RefreshingState {
+            op_id: 3,
+            index: 1,
+            plan: vec![0, 1, 2],
+        });
+
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+
+        match action {
+            KernelAction::AbortRefreshing { op_id } => {
+                assert_eq!(op_id, 3);
+            }
+            _ => panic!("Expected AbortRefreshing"),
+        }
+    }
+
+    #[test]
+    fn test_determine_recovery_action_payout() {
+        let state = OpState::Payout(PayoutState {
+            op_id: 4,
+            receiver: receiver_addr(1),
+            amount: 1000,
+            owner: owner_addr(1),
+            escrow_shares: 500,
+            burn_shares: 400,
+        });
+
+        let ctx = RecoveryContext::new(1000);
+        let progress = RecoveryProgress::new(0);
+
+        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+
+        match action {
+            KernelAction::SettlePayout { op_id, outcome } => {
+                assert_eq!(op_id, 4);
+                match outcome {
+                    PayoutOutcome::Failure {
+                        restore_idle,
+                        refund_shares,
+                    } => {
+                        assert_eq!(restore_idle, 1000);
+                        assert_eq!(refund_shares, 500);
+                    }
+                    _ => panic!("Expected failure outcome"),
+                }
+            }
+            _ => panic!("Expected SettlePayout"),
+        }
+    }
+
+    #[test]
+    fn test_compute_settlement_shares_full_collection() {
+        let settlement = compute_settlement_shares(1000, 500, 500);
+        assert_eq!(settlement.to_burn, 1000);
+        assert_eq!(settlement.refund, 0);
+    }
+
+    #[test]
+    fn test_compute_settlement_shares_partial_collection() {
+        let settlement = compute_settlement_shares(1000, 500, 250);
+        // burn = 1000 * 250 / 500 = 500
+        assert_eq!(settlement.to_burn, 500);
+        assert_eq!(settlement.refund, 500);
+    }
+
+    #[test]
+    fn test_compute_settlement_shares_over_collection() {
+        // Collected more than expected (edge case)
+        let settlement = compute_settlement_shares(1000, 500, 600);
+        assert_eq!(settlement.to_burn, 1000);
+        assert_eq!(settlement.refund, 0);
+    }
+
+    #[test]
+    fn test_compute_payout_success_outcome_maps_settlement() {
+        let outcome = compute_payout_success_outcome(1000, 500, 250);
+        match outcome {
+            PayoutOutcome::Success {
+                burn_shares,
+                refund_shares,
+            } => {
+                assert_eq!(burn_shares, 500);
+                assert_eq!(refund_shares, 500);
+            }
+            _ => panic!("Expected success outcome"),
+        }
+    }
+
+    #[test]
+    fn test_compute_payout_failure_outcome_refunds_all() {
+        let outcome = compute_payout_failure_outcome(1000, 250);
+        match outcome {
+            PayoutOutcome::Failure {
+                restore_idle,
+                refund_shares,
+            } => {
+                assert_eq!(restore_idle, 250);
+                assert_eq!(refund_shares, 1000);
+            }
+            _ => panic!("Expected failure outcome"),
+        }
+    }
+
+    #[test]
+    fn test_compute_settlement_shares_zero_expected() {
+        let settlement = compute_settlement_shares(1000, 0, 0);
+        assert_eq!(settlement.to_burn, 0);
+        assert_eq!(settlement.refund, 1000);
+    }
+
+    #[test]
+    fn test_compute_settlement_shares_zero_escrow() {
+        let settlement = compute_settlement_shares(0, 500, 250);
+        assert_eq!(settlement.to_burn, 0);
+        assert_eq!(settlement.refund, 0);
+    }
+
+    #[test]
+    fn test_handle_allocation_failure() {
+        let state = AllocatingState {
+            op_id: 1,
+            index: 2,
+            remaining: 500,
+            plan: vec![(0, 300), (1, 200), (2, 300)],
+        };
+
+        let outcome = handle_allocation_failure(&state, "Market unavailable");
+
+        assert!(outcome.success);
+        assert_eq!(outcome.message, Some(String::from("Market unavailable")));
+        match outcome.action {
+            KernelAction::AbortAllocating {
+                op_id,
+                restore_idle,
+            } => {
+                assert_eq!(op_id, 1);
+                assert_eq!(restore_idle, 500);
+            }
+            _ => panic!("Expected AbortAllocating"),
+        }
+    }
+
+    #[test]
+    fn test_handle_withdrawal_failure() {
+        let state = WithdrawingState {
+            op_id: 2,
+            index: 1,
+            remaining: 400,
+            collected: 600,
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
+            escrow_shares: 1000,
+        };
+
+        let outcome = handle_withdrawal_failure(&state, "Insufficient liquidity");
+
+        assert!(outcome.success);
+        match outcome.action {
+            KernelAction::AbortWithdrawing {
+                op_id,
+                refund_shares,
+            } => {
+                assert_eq!(op_id, 2);
+                assert_eq!(refund_shares, 1000);
+            }
+            _ => panic!("Expected AbortWithdrawing"),
+        }
+    }
+
+    #[test]
+    fn test_handle_refresh_failure() {
+        let state = RefreshingState {
+            op_id: 3,
+            index: 1,
+            plan: vec![0, 1, 2],
+        };
+
+        let outcome = handle_refresh_failure(&state, "Oracle unavailable");
+
+        assert!(outcome.success);
+        match outcome.action {
+            KernelAction::AbortRefreshing { op_id } => {
+                assert_eq!(op_id, 3);
+            }
+            _ => panic!("Expected AbortRefreshing"),
+        }
+    }
+
+    #[test]
+    fn test_handle_payout_failure() {
+        let state = PayoutState {
+            op_id: 4,
+            receiver: receiver_addr(1),
+            amount: 1000,
+            owner: owner_addr(1),
+            escrow_shares: 500,
+            burn_shares: 400,
+        };
+
+        let outcome = handle_payout_failure(&state, 1000, "Transfer rejected");
+
+        assert!(outcome.success);
+        match outcome.action {
+            KernelAction::SettlePayout { op_id, outcome } => {
+                assert_eq!(op_id, 4);
+                match outcome {
+                    PayoutOutcome::Failure {
+                        restore_idle,
+                        refund_shares,
+                    } => {
+                        assert_eq!(restore_idle, 1000);
+                        assert_eq!(refund_shares, 500);
+                    }
+                    _ => panic!("Expected failure outcome"),
+                }
+            }
+            _ => panic!("Expected SettlePayout"),
+        }
+    }
+
+    #[test]
+    fn test_handle_payout_failure_default_uses_amount() {
+        let state = PayoutState {
+            op_id: 5,
+            receiver: receiver_addr(2),
+            amount: 1500,
+            owner: owner_addr(2),
+            escrow_shares: 750,
+            burn_shares: 0,
+        };
+
+        let outcome = handle_payout_failure_default(&state, "Transfer rejected");
+
+        match outcome.action {
+            KernelAction::SettlePayout { op_id, outcome } => {
+                assert_eq!(op_id, 5);
+                match outcome {
+                    PayoutOutcome::Failure {
+                        restore_idle,
+                        refund_shares,
+                    } => {
+                        assert_eq!(restore_idle, 1500);
+                        assert_eq!(refund_shares, 750);
+                    }
+                    _ => panic!("Expected failure outcome"),
+                }
+            }
+            _ => panic!("Expected SettlePayout"),
+        }
+    }
+
+    #[test]
+    fn test_compute_recovery_stats_allocating() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 1,
+            index: 2,
+            remaining: 500,
+            plan: vec![(0, 300), (1, 200), (2, 300), (3, 200)],
+        });
+
+        let stats = compute_recovery_stats(&state);
+
+        assert_eq!(stats.completed_targets, 2);
+        assert_eq!(stats.remaining_targets, 2);
+        assert_eq!(stats.remaining_amount, 500);
+        assert_eq!(stats.escrow_shares, 0);
+    }
+
+    #[test]
+    fn test_compute_recovery_stats_withdrawing() {
+        let state = OpState::Withdrawing(WithdrawingState {
+            op_id: 2,
+            index: 3,
+            remaining: 400,
+            collected: 600,
+            receiver: receiver_addr(1),
+            owner: owner_addr(1),
+            escrow_shares: 1000,
+        });
+
+        let stats = compute_recovery_stats(&state);
+
+        assert_eq!(stats.completed_targets, 3);
+        assert_eq!(stats.collected_amount, 600);
+        assert_eq!(stats.remaining_amount, 400);
+        assert_eq!(stats.escrow_shares, 1000);
+    }
+
+    #[test]
+    fn test_compute_recovery_stats_idle() {
+        let state = OpState::Idle;
+        let stats = compute_recovery_stats(&state);
+
+        assert_eq!(stats.completed_targets, 0);
+        assert_eq!(stats.remaining_targets, 0);
+        assert_eq!(stats.collected_amount, 0);
+        assert_eq!(stats.remaining_amount, 0);
+        assert_eq!(stats.escrow_shares, 0);
+    }
+
+    #[test]
+    fn test_recovery_outcome_creation() {
+        let action = KernelAction::AbortRefreshing { op_id: 1 };
+
+        let success = RecoveryOutcome::success(action.clone());
+        assert!(success.success);
+        assert!(success.message.is_none());
+
+        let with_msg = RecoveryOutcome::success_with_message(action.clone(), "All good");
+        assert!(with_msg.success);
+        assert_eq!(with_msg.message, Some(String::from("All good")));
+
+        let failure = RecoveryOutcome::failure(action, "Something went wrong");
+        assert!(!failure.success);
+        assert_eq!(failure.message, Some(String::from("Something went wrong")));
+    }
+}

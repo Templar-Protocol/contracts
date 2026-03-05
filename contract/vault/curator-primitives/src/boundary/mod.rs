@@ -29,6 +29,3 @@ pub const fn boundary_auth_pattern_for(action: ActionKind) -> BoundaryAuthPatter
         AuthPolicyClass::Public | AuthPolicyClass::Curator => BoundaryAuthPattern::OwnerOnly,
     }
 }
-
-#[cfg(test)]
-mod tests;

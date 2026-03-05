@@ -359,6 +359,3 @@ fn settle_payout_failure_action(state: &PayoutState, restore_idle: u128) -> Kern
         outcome: compute_payout_failure_outcome(state.escrow_shares, restore_idle),
     }
 }
-
-#[cfg(test)]
-mod tests;

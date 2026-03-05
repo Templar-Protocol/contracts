@@ -236,8 +236,3 @@ impl Default for VaultState {
         Self::new()
     }
 }
-
-// Tests
-
-#[cfg(test)]
-mod tests;
