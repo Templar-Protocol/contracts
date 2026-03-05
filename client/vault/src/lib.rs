@@ -121,6 +121,41 @@ macro_rules! define_uniffi_wrapper {
 define_uniffi_wrapper!(MarketId, u32, [Copy], templar_common::vault::MarketId);
 define_uniffi_wrapper!(CapGroupId, String, [], templar_common::vault::CapGroupId);
 
+impl MarketId {
+    #[must_use]
+    pub fn as_u64(self) -> u64 {
+        templar_common::vault::MarketId::from(self).as_u64()
+    }
+
+    #[must_use]
+    pub fn try_from_u64(value: u64) -> Option<Self> {
+        templar_common::vault::MarketId::try_from_u64(value).map(Into::into)
+    }
+}
+
+pub(crate) fn market_id_from_u64_checked(value: u64) -> Result<MarketId, ErrorWrapper> {
+    MarketId::try_from_u64(value)
+        .ok_or_else(|| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))
+}
+
+#[cfg(test)]
+mod market_id_tests {
+    use super::{market_id_from_u64_checked, MarketId};
+
+    #[test]
+    fn market_id_roundtrips_u64() {
+        let id = MarketId(42);
+        assert_eq!(id.as_u64(), 42);
+        assert_eq!(MarketId::try_from_u64(42), Some(id));
+    }
+
+    #[test]
+    fn market_id_checked_rejects_out_of_range() {
+        let err = market_id_from_u64_checked(u64::from(u32::MAX) + 1).unwrap_err();
+        assert_eq!(err.to_string(), "market id out of u32 range".to_string());
+    }
+}
+
 /// Generate a UniFFI-compatible builder for a simple struct.
 ///
 /// This macro generates:
