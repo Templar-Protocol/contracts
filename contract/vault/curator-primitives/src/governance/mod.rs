@@ -41,70 +41,118 @@ impl<T> PendingValue<T> {
     }
 }
 
-/// Schedule a new timelocked value on the queue.
-pub fn queue_schedule<T>(
-    queue: &mut VecDeque<PendingValue<T>>,
-    value: T,
-    now_ns: TimestampNs,
-    timelock_ns: TimestampNs,
-) {
-    let valid_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
-        .ready_at_ns()
-        .unwrap_or(now_ns);
-    queue.push_back(PendingValue::new(value, valid_at_ns));
-}
-
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PendingQueueError {
     NotMature,
 }
 
-#[must_use]
-pub fn queue_has_pending<T>(
-    queue: &VecDeque<PendingValue<T>>,
-    mut pred: impl FnMut(&T) -> bool,
-) -> bool {
-    queue.iter().any(|entry| pred(&entry.value))
+/// Timelocked pending governance values.
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
+#[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct PendingQueue<T> {
+    entries: VecDeque<PendingValue<T>>,
 }
 
-pub fn queue_take_mature<T>(
-    queue: &mut VecDeque<PendingValue<T>>,
-    now_ns: TimestampNs,
-    mut pred: impl FnMut(&T) -> bool,
-) -> Result<Option<T>, PendingQueueError> {
-    let Some(index) = queue.iter().position(|entry| pred(&entry.value)) else {
-        return Ok(None);
-    };
-
-    let Some(entry) = queue.get(index) else {
-        return Ok(None);
-    };
-
-    if !entry.is_mature(now_ns) {
-        return Err(PendingQueueError::NotMature);
+impl<T> PendingQueue<T> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+        }
     }
 
-    let Some(pending) = queue.remove(index) else {
-        return Ok(None);
-    };
-    Ok(Some(pending.value))
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &PendingValue<T>> {
+        self.entries.iter()
+    }
+
+    #[must_use]
+    pub fn back(&self) -> Option<&PendingValue<T>> {
+        self.entries.back()
+    }
+
+    pub fn push_pending(&mut self, pending: PendingValue<T>) {
+        self.entries.push_back(pending);
+    }
+
+    /// Schedule a new timelocked value.
+    pub fn schedule(&mut self, value: T, now_ns: TimestampNs, timelock_ns: TimestampNs) {
+        let valid_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
+            .ready_at_ns()
+            .unwrap_or(now_ns);
+        self.entries
+            .push_back(PendingValue::new(value, valid_at_ns));
+    }
+
+    #[must_use]
+    pub fn has_pending(&self, mut pred: impl FnMut(&T) -> bool) -> bool {
+        self.entries.iter().any(|entry| pred(&entry.value))
+    }
+
+    pub fn take_mature(
+        &mut self,
+        now_ns: TimestampNs,
+        mut pred: impl FnMut(&T) -> bool,
+    ) -> Result<Option<T>, PendingQueueError> {
+        let Some(index) = self.entries.iter().position(|entry| pred(&entry.value)) else {
+            return Ok(None);
+        };
+
+        let Some(entry) = self.entries.get(index) else {
+            return Ok(None);
+        };
+
+        if !entry.is_mature(now_ns) {
+            return Err(PendingQueueError::NotMature);
+        }
+
+        let Some(pending) = self.entries.remove(index) else {
+            return Ok(None);
+        };
+        Ok(Some(pending.value))
+    }
+
+    #[must_use]
+    pub fn revoke_pending(&mut self, mut pred: impl FnMut(&T) -> bool) -> bool {
+        let mut removed_any = false;
+        self.entries.retain(|entry| {
+            let keep = !pred(&entry.value);
+            if !keep {
+                removed_any = true;
+            }
+            keep
+        });
+        removed_any
+    }
 }
 
-#[must_use]
-pub fn queue_revoke_pending<T>(
-    queue: &mut VecDeque<PendingValue<T>>,
-    pred: impl Fn(&T) -> bool,
-) -> bool {
-    let mut removed_any = false;
-    queue.retain(|entry| {
-        let keep = !pred(&entry.value);
-        if !keep {
-            removed_any = true;
-        }
-        keep
-    });
-    removed_any
+impl<T> From<VecDeque<PendingValue<T>>> for PendingQueue<T> {
+    fn from(entries: VecDeque<PendingValue<T>>) -> Self {
+        Self { entries }
+    }
+}
+
+impl<T> From<PendingQueue<T>> for VecDeque<PendingValue<T>> {
+    fn from(queue: PendingQueue<T>) -> Self {
+        queue.entries
+    }
 }
 
 #[must_use]
@@ -146,12 +194,15 @@ impl TimelockDecision {
     }
 }
 
-#[must_use]
-fn timelock_decision_from_cmp(ordering: Ordering) -> Option<TimelockDecision> {
-    match ordering {
-        Ordering::Equal => None,
-        Ordering::Greater => Some(TimelockDecision::Timelocked),
-        Ordering::Less => Some(TimelockDecision::Immediate),
+impl TryFrom<Ordering> for TimelockDecision {
+    type Error = ();
+
+    fn try_from(ordering: Ordering) -> Result<Self, Self::Error> {
+        match ordering {
+            Ordering::Equal => Err(()),
+            Ordering::Greater => Ok(TimelockDecision::Timelocked),
+            Ordering::Less => Ok(TimelockDecision::Immediate),
+        }
     }
 }
 
@@ -164,31 +215,30 @@ pub enum Restrictions<T> {
     Whitelist(BTreeSet<T>),
 }
 
-/// Determine if a restriction change is relaxing (thus usually timelocked).
-#[must_use]
-pub fn determine_relaxed<T: Ord>(
-    current: &Option<Restrictions<T>>,
-    next: &Option<Restrictions<T>>,
-) -> bool {
-    match (current, next) {
-        (None, None) => false,
-        (None, Some(_)) => false,
-        (Some(_), None) => true,
-        (Some(Restrictions::Paused), Some(Restrictions::Paused)) => false,
-        (Some(Restrictions::Paused), Some(Restrictions::Whitelist(new))) => !new.is_empty(),
-        (Some(Restrictions::Paused), Some(_)) => true,
-        (Some(Restrictions::Blacklist(old)), Some(Restrictions::Blacklist(new))) => {
-            old.difference(new).next().is_some()
+impl<T: Ord> Restrictions<T> {
+    /// Determine if a restriction change is relaxing (thus usually timelocked).
+    #[must_use]
+    pub fn determine_relaxed(current: &Option<Self>, next: &Option<Self>) -> bool {
+        match (current, next) {
+            (None, None) => false,
+            (None, Some(_)) => false,
+            (Some(_), None) => true,
+            (Some(Self::Paused), Some(Self::Paused)) => false,
+            (Some(Self::Paused), Some(Self::Whitelist(new))) => !new.is_empty(),
+            (Some(Self::Paused), Some(_)) => true,
+            (Some(Self::Blacklist(old)), Some(Self::Blacklist(new))) => {
+                old.difference(new).next().is_some()
+            }
+            (Some(Self::Whitelist(old)), Some(Self::Whitelist(new))) => {
+                new.difference(old).next().is_some()
+            }
+            (Some(Self::Blacklist(old)), Some(Self::Whitelist(new))) => {
+                old.intersection(new).next().is_some()
+            }
+            (Some(Self::Whitelist(_)), Some(Self::Paused))
+            | (Some(Self::Blacklist(_)), Some(Self::Paused)) => false,
+            (Some(Self::Whitelist(_)), Some(Self::Blacklist(_))) => true,
         }
-        (Some(Restrictions::Whitelist(old)), Some(Restrictions::Whitelist(new))) => {
-            new.difference(old).next().is_some()
-        }
-        (Some(Restrictions::Blacklist(old)), Some(Restrictions::Whitelist(new))) => {
-            old.intersection(new).next().is_some()
-        }
-        (Some(Restrictions::Whitelist(_)), Some(Restrictions::Paused))
-        | (Some(Restrictions::Blacklist(_)), Some(Restrictions::Paused)) => false,
-        (Some(Restrictions::Whitelist(_)), Some(Restrictions::Blacklist(_))) => true,
     }
 }
 
@@ -220,6 +270,56 @@ impl<'a, R> FeeConfig<'a, R> {
     }
 }
 
+impl<R: PartialEq> FeeConfig<'_, R> {
+    #[must_use]
+    pub fn evaluate_change(
+        current: &Self,
+        proposed: &Self,
+    ) -> Result<FeeChangeDecision, FeeChangeError> {
+        if proposed.performance_fee > Wad::from(MAX_PERFORMANCE_FEE_WAD) {
+            return Err(FeeChangeError::PerformanceFeeTooHigh);
+        }
+        if proposed.management_fee > Wad::from(MAX_MANAGEMENT_FEE_WAD) {
+            return Err(FeeChangeError::ManagementFeeTooHigh);
+        }
+
+        let performance_fee_changed = proposed.performance_fee != current.performance_fee;
+        let management_fee_changed = proposed.management_fee != current.management_fee;
+        let performance_recipient_changed =
+            proposed.performance_recipient != current.performance_recipient;
+        let management_recipient_changed =
+            proposed.management_recipient != current.management_recipient;
+        let max_rate_changed = proposed.max_rate != current.max_rate;
+
+        if !(performance_fee_changed
+            || management_fee_changed
+            || performance_recipient_changed
+            || management_recipient_changed
+            || max_rate_changed)
+        {
+            return Err(FeeChangeError::NoChange);
+        }
+
+        let fee_increase = proposed.performance_fee > current.performance_fee
+            || proposed.management_fee > current.management_fee;
+        let recipient_changed = performance_recipient_changed || management_recipient_changed;
+
+        let max_rate_relaxed = match (current.max_rate, proposed.max_rate) {
+            (None, None) => false,
+            (None, Some(_)) => false,
+            (Some(_), None) => true,
+            (Some(old), Some(new)) => new > old,
+        };
+
+        Ok(FeeChangeDecision {
+            timelocked: fee_increase || recipient_changed || max_rate_relaxed,
+            fee_increase,
+            recipient_changed,
+            max_rate_relaxed,
+        })
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
@@ -245,54 +345,6 @@ pub enum FeeChangeError {
     NoChange,
     PerformanceFeeTooHigh,
     ManagementFeeTooHigh,
-}
-
-#[must_use]
-pub fn evaluate_fee_change<R: PartialEq>(
-    current: &FeeConfig<R>,
-    proposed: &FeeConfig<R>,
-) -> Result<FeeChangeDecision, FeeChangeError> {
-    if proposed.performance_fee > Wad::from(MAX_PERFORMANCE_FEE_WAD) {
-        return Err(FeeChangeError::PerformanceFeeTooHigh);
-    }
-    if proposed.management_fee > Wad::from(MAX_MANAGEMENT_FEE_WAD) {
-        return Err(FeeChangeError::ManagementFeeTooHigh);
-    }
-
-    let performance_fee_changed = proposed.performance_fee != current.performance_fee;
-    let management_fee_changed = proposed.management_fee != current.management_fee;
-    let performance_recipient_changed =
-        proposed.performance_recipient != current.performance_recipient;
-    let management_recipient_changed =
-        proposed.management_recipient != current.management_recipient;
-    let max_rate_changed = proposed.max_rate != current.max_rate;
-
-    if !(performance_fee_changed
-        || management_fee_changed
-        || performance_recipient_changed
-        || management_recipient_changed
-        || max_rate_changed)
-    {
-        return Err(FeeChangeError::NoChange);
-    }
-
-    let fee_increase = proposed.performance_fee > current.performance_fee
-        || proposed.management_fee > current.management_fee;
-    let recipient_changed = performance_recipient_changed || management_recipient_changed;
-
-    let max_rate_relaxed = match (current.max_rate, proposed.max_rate) {
-        (None, None) => false,
-        (None, Some(_)) => false,
-        (Some(_), None) => true,
-        (Some(old), Some(new)) => new > old,
-    };
-
-    Ok(FeeChangeDecision {
-        timelocked: fee_increase || recipient_changed || max_rate_relaxed,
-        fee_increase,
-        recipient_changed,
-        max_rate_relaxed,
-    })
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -338,46 +390,6 @@ pub enum CapChangeError {
     NoChange,
 }
 
-/// Decide timelock behavior for market caps.
-///
-/// `None` means the market has no existing cap record yet, so setting a cap is
-/// treated as timelocked.
-#[must_use]
-pub fn cap_change_decision(
-    current: Option<u128>,
-    proposed: u128,
-) -> Result<TimelockDecision, CapChangeError> {
-    match current {
-        Some(existing) => {
-            timelock_decision_from_cmp(proposed.cmp(&existing)).ok_or(CapChangeError::NoChange)
-        }
-        None => Ok(TimelockDecision::Timelocked),
-    }
-}
-
-/// Decide timelock behavior for optional caps where `0` (or `None`) means unlimited.
-///
-/// This is intended for cap-group absolute caps, where moving from unlimited to a finite
-/// cap tightens policy and should be immediate, while moving from finite to unlimited
-/// relaxes policy and should be timelocked.
-#[must_use]
-pub fn cap_group_cap_change_decision(
-    current: Option<u128>,
-    proposed: u128,
-) -> Result<TimelockDecision, CapChangeError> {
-    let normalize = |cap: Option<u128>| cap.and_then(core::num::NonZeroU128::new);
-    let current_cap = normalize(current);
-    let proposed_cap = core::num::NonZeroU128::new(proposed);
-
-    match (current_cap, proposed_cap) {
-        (None, None) => Err(CapChangeError::NoChange),
-        (None, Some(_)) => Ok(TimelockDecision::Immediate),
-        (Some(_), None) => Ok(TimelockDecision::Timelocked),
-        (Some(existing), Some(next)) => timelock_decision_from_cmp(next.get().cmp(&existing.get()))
-            .ok_or(CapChangeError::NoChange),
-    }
-}
-
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
@@ -388,22 +400,6 @@ pub fn cap_group_cap_change_decision(
 pub enum RelativeCapChangeError {
     NoChange,
     RelativeCapTooHigh,
-}
-
-#[must_use]
-pub fn relative_cap_change_decision(
-    current: Option<Wad>,
-    proposed: Wad,
-) -> Result<TimelockDecision, RelativeCapChangeError> {
-    if proposed > Wad::one() {
-        return Err(RelativeCapChangeError::RelativeCapTooHigh);
-    }
-
-    match current {
-        Some(existing) => timelock_decision_from_cmp(proposed.cmp(&existing))
-            .ok_or(RelativeCapChangeError::NoChange),
-        None => Ok(TimelockDecision::Timelocked),
-    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -417,29 +413,66 @@ pub enum MembershipChangeError {
     NoChange,
 }
 
-#[must_use]
-pub fn membership_change_decision(
-    changed: bool,
-) -> Result<TimelockDecision, MembershipChangeError> {
-    if changed {
-        Ok(TimelockDecision::Timelocked)
-    } else {
-        Err(MembershipChangeError::NoChange)
+impl TimelockDecision {
+    /// Decide timelock behavior for market caps.
+    ///
+    /// `None` means the market has no existing cap record yet, so setting a cap is
+    /// treated as timelocked.
+    #[must_use]
+    pub fn from_cap_change(current: Option<u128>, proposed: u128) -> Result<Self, CapChangeError> {
+        match current {
+            Some(existing) => {
+                Self::try_from(proposed.cmp(&existing)).map_err(|_| CapChangeError::NoChange)
+            }
+            None => Ok(Self::Timelocked),
+        }
+    }
+
+    /// Decide timelock behavior for optional caps where `0` (or `None`) means unlimited.
+    ///
+    /// This is intended for cap-group absolute caps, where moving from unlimited to a finite
+    /// cap tightens policy and should be immediate, while moving from finite to unlimited
+    /// relaxes policy and should be timelocked.
+    #[must_use]
+    pub fn from_cap_group_cap_change(
+        current: Option<u128>,
+        proposed: u128,
+    ) -> Result<Self, CapChangeError> {
+        let normalize = |cap: Option<u128>| cap.and_then(core::num::NonZeroU128::new);
+        let current_cap = normalize(current);
+        let proposed_cap = core::num::NonZeroU128::new(proposed);
+
+        match (current_cap, proposed_cap) {
+            (None, None) => Err(CapChangeError::NoChange),
+            (None, Some(_)) => Ok(Self::Immediate),
+            (Some(_), None) => Ok(Self::Timelocked),
+            (Some(existing), Some(next)) => Self::try_from(next.get().cmp(&existing.get()))
+                .map_err(|_| CapChangeError::NoChange),
+        }
+    }
+
+    #[must_use]
+    pub fn from_relative_cap_change(
+        current: Option<Wad>,
+        proposed: Wad,
+    ) -> Result<Self, RelativeCapChangeError> {
+        if proposed > Wad::one() {
+            return Err(RelativeCapChangeError::RelativeCapTooHigh);
+        }
+
+        match current {
+            Some(existing) => Self::try_from(proposed.cmp(&existing))
+                .map_err(|_| RelativeCapChangeError::NoChange),
+            None => Ok(Self::Timelocked),
+        }
+    }
+
+    #[must_use]
+    pub fn from_membership_change(changed: bool) -> Result<Self, MembershipChangeError> {
+        if changed {
+            Ok(Self::Timelocked)
+        } else {
+            Err(MembershipChangeError::NoChange)
+        }
     }
 }
-
-#[must_use]
-pub fn market_removal_decision(principal: u128) -> TimelockDecision {
-    TimelockDecision::from_requires_timelock(principal > 0)
-}
-
-#[must_use]
-pub fn guardian_change_decision(has_guardian: bool) -> TimelockDecision {
-    TimelockDecision::from_requires_timelock(has_guardian)
-}
-
-#[must_use]
-pub fn sentinel_change_decision(has_sentinel: bool) -> TimelockDecision {
-    TimelockDecision::from_requires_timelock(has_sentinel)
-}
-

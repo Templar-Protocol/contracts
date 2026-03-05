@@ -1336,7 +1336,7 @@ mod recovery_unit_tests {
 
 mod governance_module_tests {
     pub use crate::governance::*;
-    use alloc::collections::{BTreeSet, VecDeque};
+    use alloc::collections::BTreeSet;
 
     #[test]
     fn pending_value_maturity_is_time_based() {
@@ -1349,35 +1349,38 @@ mod governance_module_tests {
 
     #[test]
     fn queue_take_mature_enforces_timelock() {
-        let mut queue = VecDeque::from([PendingValue::new("change", 1_000)]);
+        let mut queue =
+            PendingQueue::from(alloc::collections::VecDeque::from([PendingValue::new(
+                "change", 1_000,
+            )]));
 
-        let not_ready = queue_take_mature(&mut queue, 999, |value| *value == "change");
+        let not_ready = queue.take_mature(999, |value| *value == "change");
         assert_eq!(not_ready, Err(PendingQueueError::NotMature));
         assert_eq!(queue.len(), 1);
 
-        let ready = queue_take_mature(&mut queue, 1_000, |value| *value == "change");
+        let ready = queue.take_mature(1_000, |value| *value == "change");
         assert_eq!(ready, Ok(Some("change")));
         assert!(queue.is_empty());
     }
 
     #[test]
     fn cap_change_decision_market_new_cap_is_timelocked() {
-        let decision = cap_change_decision(None, 100);
+        let decision = TimelockDecision::from_cap_change(None, 100);
         assert_eq!(decision, Ok(TimelockDecision::Timelocked));
     }
 
     #[test]
     fn cap_group_cap_change_decision_unlimited_to_finite_is_immediate() {
-        let from_none = cap_group_cap_change_decision(None, 100);
+        let from_none = TimelockDecision::from_cap_group_cap_change(None, 100);
         assert_eq!(from_none, Ok(TimelockDecision::Immediate));
 
-        let from_zero = cap_group_cap_change_decision(Some(0), 100);
+        let from_zero = TimelockDecision::from_cap_group_cap_change(Some(0), 100);
         assert_eq!(from_zero, Ok(TimelockDecision::Immediate));
     }
 
     #[test]
     fn cap_group_cap_change_decision_finite_to_unlimited_is_timelocked() {
-        let decision = cap_group_cap_change_decision(Some(100), 0);
+        let decision = TimelockDecision::from_cap_group_cap_change(Some(100), 0);
         assert_eq!(decision, Ok(TimelockDecision::Timelocked));
     }
 
@@ -1386,7 +1389,7 @@ mod governance_module_tests {
         let current = Some(Restrictions::<&str>::Paused);
         let next = Some(Restrictions::Whitelist(BTreeSet::new()));
 
-        assert!(!determine_relaxed(&current, &next));
+        assert!(!Restrictions::determine_relaxed(&current, &next));
     }
 
     #[test]
@@ -1394,13 +1397,13 @@ mod governance_module_tests {
         let current = Some(Restrictions::<&str>::Paused);
         let next = Some(Restrictions::Whitelist(BTreeSet::from(["alice"])));
 
-        assert!(determine_relaxed(&current, &next));
+        assert!(Restrictions::determine_relaxed(&current, &next));
     }
 }
 
 mod rbac_module_tests {
-    pub use crate::rbac::*;
     use crate::auth::{ActionKind, AuthAdapter, AuthError};
+    pub use crate::rbac::*;
     use templar_vault_kernel::Address;
 
     fn curator_addr() -> Address {
@@ -1534,7 +1537,9 @@ mod rbac_module_tests {
     fn test_guardian_can_pause() {
         let auth = test_rbac();
 
-        assert!(auth.authorize(ActionKind::Pause, guardian_addr(), None).is_ok());
+        assert!(auth
+            .authorize(ActionKind::Pause, guardian_addr(), None)
+            .is_ok());
 
         let result = auth.authorize(ActionKind::Pause, user_addr(), None);
         assert!(matches!(result, Err(AuthError::MissingRole)));
@@ -1568,14 +1573,18 @@ mod rbac_module_tests {
     fn test_curator_can_do_everything() {
         let auth = test_rbac();
 
-        assert!(auth.authorize(ActionKind::Pause, curator_addr(), None).is_ok());
+        assert!(auth
+            .authorize(ActionKind::Pause, curator_addr(), None)
+            .is_ok());
         assert!(auth
             .authorize(ActionKind::BeginAllocating, curator_addr(), None)
             .is_ok());
         assert!(auth
             .authorize(ActionKind::ManualReconcile, curator_addr(), None)
             .is_ok());
-        assert!(auth.authorize(ActionKind::Deposit, curator_addr(), None).is_ok());
+        assert!(auth
+            .authorize(ActionKind::Deposit, curator_addr(), None)
+            .is_ok());
     }
 
     #[test]
@@ -1611,7 +1620,9 @@ mod rbac_module_tests {
         let mut auth = test_rbac();
         auth.config.set_paused(true);
 
-        assert!(auth.authorize(ActionKind::Pause, guardian_addr(), None).is_ok());
+        assert!(auth
+            .authorize(ActionKind::Pause, guardian_addr(), None)
+            .is_ok());
     }
 
     #[test]
@@ -2273,9 +2284,9 @@ mod policy_market_lock_tests {
 mod policy_refresh_plan_tests {
     pub use crate::policy::refresh_plan::*;
 
+    use crate::policy::target_set::find_first_duplicate;
     use alloc::vec;
     use alloc::vec::Vec;
-    use crate::policy::target_set::find_first_duplicate;
     use templar_vault_kernel::TargetId;
 
     #[test]
@@ -2454,8 +2465,8 @@ mod policy_refresh_plan_tests {
 mod policy_state_tests {
     pub use crate::policy::state::*;
 
-    use alloc::string::String;
     use crate::policy::cap_group::{CapGroupId, CapGroupRecord};
+    use alloc::string::String;
 
     #[test]
     fn external_assets_sums_principals() {

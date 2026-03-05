@@ -5,19 +5,16 @@ extern crate alloc;
 mod types;
 pub use types::*;
 
-use alloc::collections::{BTreeSet, VecDeque};
+use alloc::collections::BTreeSet;
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, Address, BytesN, Env, IntoVal, String as SdkString, Symbol, Val, Vec,
 };
 use templar_curator_primitives::governance::{
-    cap_change_decision, determine_relaxed, evaluate_fee_change, guardian_change_decision,
-    market_removal_decision, membership_change_decision, queue_has_pending, queue_revoke_pending,
-    queue_schedule, queue_take_mature, relative_cap_change_decision, sentinel_change_decision,
     timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
-    PendingQueueError, PendingValue, RelativeCapChangeError, Restrictions as SharedRestrictions,
-    TimelockConfigError, TimelockDecision,
+    PendingQueue, PendingQueueError, PendingValue, RelativeCapChangeError,
+    Restrictions as SharedRestrictions, TimelockConfigError, TimelockDecision,
 };
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_vault_kernel::math::wad::Wad;
@@ -330,14 +327,13 @@ impl SorobanVaultGovernanceContract {
 
             let now_ns = ledger_timestamp_ns(&env)?;
             let mut queue = load_queue(&env);
-            let proposal =
-                match queue_take_mature(&mut queue, now_ns, |pending| pending.id == proposal_id) {
-                    Ok(Some(proposal)) => proposal,
-                    Ok(None) => return Err(GovernanceError::ProposalNotFound),
-                    Err(PendingQueueError::NotMature) => {
-                        return Err(GovernanceError::ProposalNotMature)
-                    }
-                };
+            let proposal = match queue.take_mature(now_ns, |pending| pending.id == proposal_id) {
+                Ok(Some(proposal)) => proposal,
+                Ok(None) => return Err(GovernanceError::ProposalNotFound),
+                Err(PendingQueueError::NotMature) => {
+                    return Err(GovernanceError::ProposalNotMature)
+                }
+            };
 
             execute_action(&env, &proposal.action)?;
             save_queue(&env, &queue);
@@ -357,15 +353,14 @@ impl SorobanVaultGovernanceContract {
             let now_ns = ledger_timestamp_ns(&env)?;
 
             let mut queue = load_queue(&env);
-            let proposal = match queue_take_mature(&mut queue, now_ns, |pending| {
-                action_kind(&pending.action) == kind
-            }) {
-                Ok(Some(proposal)) => proposal,
-                Ok(None) => return Err(GovernanceError::ProposalNotFound),
-                Err(PendingQueueError::NotMature) => {
-                    return Err(GovernanceError::ProposalNotMature)
-                }
-            };
+            let proposal =
+                match queue.take_mature(now_ns, |pending| action_kind(&pending.action) == kind) {
+                    Ok(Some(proposal)) => proposal,
+                    Ok(None) => return Err(GovernanceError::ProposalNotFound),
+                    Err(PendingQueueError::NotMature) => {
+                        return Err(GovernanceError::ProposalNotMature)
+                    }
+                };
 
             execute_action(&env, &proposal.action)?;
             save_queue(&env, &queue);
@@ -378,7 +373,7 @@ impl SorobanVaultGovernanceContract {
         extend_instance_ttl(&env);
         require_revoker(&env, &caller)?;
         let mut queue = load_queue(&env);
-        if !queue_revoke_pending(&mut queue, |pending| pending.id == proposal_id) {
+        if !queue.revoke_pending(|pending| pending.id == proposal_id) {
             return Err(GovernanceError::ProposalNotFound);
         }
         save_queue(&env, &queue);
@@ -474,12 +469,7 @@ impl SorobanVaultGovernanceContract {
             let now_ns = ledger_timestamp_ns(&env)?;
             let timelock_ns = load_timelocks(&env).get(timelock_kind_for_action(&action));
             let mut queue = load_queue(&env);
-            queue_schedule(
-                &mut queue,
-                QueuedProposal { id, action },
-                now_ns,
-                timelock_ns,
-            );
+            queue.schedule(QueuedProposal { id, action }, now_ns, timelock_ns);
             let valid_after_ns = queue
                 .back()
                 .map(|pending| pending.valid_at_ns)
@@ -589,14 +579,14 @@ fn decide_submission(
             if current.as_ref() == Some(next) {
                 return Err(GovernanceError::NoChange);
             }
-            Ok(guardian_change_decision(current.is_some()))
+            Ok(TimelockDecision::from_requires_timelock(current.is_some()))
         }
         GovernanceAction::SetSentinel(next) => {
             let current: Option<Address> = env.storage().instance().get(&DataKey::Sentinel);
             if current.as_ref() == Some(next) {
                 return Err(GovernanceError::NoChange);
             }
-            Ok(sentinel_change_decision(current.is_some()))
+            Ok(TimelockDecision::from_requires_timelock(current.is_some()))
         }
         GovernanceAction::SetTimelock(kind, proposed) => {
             let current = load_timelocks(env).get(*kind);
@@ -628,12 +618,13 @@ fn decide_submission(
                 &proposed.management_recipient,
                 to_optional_wad(proposed.max_growth_rate_wad)?,
             );
-            let decision =
-                evaluate_fee_change(&current_cfg, &proposed_cfg).map_err(|err| match err {
+            let decision = FeeConfig::evaluate_change(&current_cfg, &proposed_cfg).map_err(
+                |err| match err {
                     FeeChangeError::NoChange => GovernanceError::NoChange,
                     FeeChangeError::PerformanceFeeTooHigh
                     | FeeChangeError::ManagementFeeTooHigh => GovernanceError::InvalidInput,
-                })?;
+                },
+            )?;
 
             if decision.timelocked {
                 Ok(TimelockDecision::Timelocked)
@@ -660,23 +651,25 @@ fn decide_submission(
             let current_restrictions = to_shared_restrictions(current_mode, &current_accounts);
             let proposed_restrictions = to_shared_restrictions(*mode, accounts);
 
-            if determine_relaxed(&current_restrictions, &proposed_restrictions) {
+            if SharedRestrictions::determine_relaxed(&current_restrictions, &proposed_restrictions)
+            {
                 Ok(TimelockDecision::Timelocked)
             } else {
                 Ok(TimelockDecision::Immediate)
             }
         }
         GovernanceAction::SetCap(_, new_cap) => {
-            let decision = cap_change_decision(None, to_wad(*new_cap)?.into());
+            let decision = TimelockDecision::from_cap_change(None, to_wad(*new_cap)?.into());
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
                 Err(CapChangeError::NoChange) => Err(GovernanceError::NoChange),
             }
         }
-        GovernanceAction::RemoveMarket(_) => Ok(market_removal_decision(1)),
+        GovernanceAction::RemoveMarket(_) => Ok(TimelockDecision::from_requires_timelock(true)),
         GovernanceAction::SetGroupCap(_, new_cap) => {
-            let decision = cap_change_decision(None, to_wad(*new_cap)?.into());
+            let decision =
+                TimelockDecision::from_cap_group_cap_change(None, to_wad(*new_cap)?.into());
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
@@ -684,7 +677,7 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupRelCap(_, new_relative_cap_wad) => {
-            match relative_cap_change_decision(None, to_wad(*new_relative_cap_wad)?) {
+            match TimelockDecision::from_relative_cap_change(None, to_wad(*new_relative_cap_wad)?) {
                 Ok(decision) => Ok(decision),
                 Err(RelativeCapChangeError::NoChange) => Err(GovernanceError::NoChange),
                 Err(RelativeCapChangeError::RelativeCapTooHigh) => {
@@ -694,7 +687,7 @@ fn decide_submission(
         }
         GovernanceAction::SetGroupMember(_, cap_group_id) => {
             let changed = !cap_group_id.is_empty();
-            match membership_change_decision(changed) {
+            match TimelockDecision::from_membership_change(changed) {
                 Ok(decision) => Ok(decision),
                 Err(MembershipChangeError::NoChange) => Err(GovernanceError::NoChange),
             }
@@ -800,16 +793,16 @@ fn next_proposal_id(env: &Env) -> Result<u64, GovernanceError> {
     Ok(current)
 }
 
-fn load_queue(env: &Env) -> VecDeque<PendingValue<QueuedProposal>> {
+fn load_queue(env: &Env) -> PendingQueue<QueuedProposal> {
     let stored: Vec<StoredPending> = env
         .storage()
         .instance()
         .get(&DataKey::PendingQueue)
         .unwrap_or_else(|| Vec::new(env));
 
-    let mut queue = VecDeque::new();
+    let mut queue = PendingQueue::new();
     for item in stored.iter() {
-        queue.push_back(PendingValue::new(
+        queue.push_pending(PendingValue::new(
             QueuedProposal {
                 id: item.id,
                 action: item.action.clone(),
@@ -821,7 +814,7 @@ fn load_queue(env: &Env) -> VecDeque<PendingValue<QueuedProposal>> {
     queue
 }
 
-fn save_queue(env: &Env, queue: &VecDeque<PendingValue<QueuedProposal>>) {
+fn save_queue(env: &Env, queue: &PendingQueue<QueuedProposal>) {
     let mut stored = Vec::new(env);
     for entry in queue.iter() {
         stored.push_back(StoredPending {
@@ -860,7 +853,7 @@ fn load_proposal(env: &Env, proposal_id: u64) -> Result<PendingProposal, Governa
 
 fn has_pending_action(env: &Env, action: &GovernanceAction) -> bool {
     let queue = load_queue(env);
-    queue_has_pending(&queue, |pending| pending.action == *action)
+    queue.has_pending(|pending| pending.action == *action)
 }
 
 fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
@@ -877,7 +870,7 @@ fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
         return 0;
     }
 
-    let _removed = queue_revoke_pending(&mut queue, |pending| pred(&pending.action));
+    let _removed = queue.revoke_pending(|pending| pred(&pending.action));
     save_queue(env, &queue);
 
     for id in revoked_ids.iter() {

@@ -60,11 +60,9 @@ pub use recovery::{
 };
 
 pub use governance::{
-    cap_change_decision, determine_relaxed, evaluate_fee_change, guardian_change_decision,
-    market_removal_decision, membership_change_decision, queue_schedule,
-    relative_cap_change_decision, sentinel_change_decision, timelock_config_decision,
-    FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError, PendingValue,
-    Restrictions, TimelockConfigError, TimelockDecision,
+    timelock_config_decision, FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError,
+    PendingQueue, PendingQueueError, PendingValue, Restrictions, TimelockConfigError,
+    TimelockDecision,
 };
 pub use utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked};
 
