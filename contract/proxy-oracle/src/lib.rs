@@ -39,6 +39,9 @@ pub struct Contract {
 
 #[near]
 impl Contract {
+    pub const GAS_FOR_PYTH_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
+    pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
+
     #[init]
     pub fn new(passthrough_pyth_id: AccountId) -> Self {
         let mut self_ = Self {
@@ -166,11 +169,7 @@ impl Contract {
         result.unwrap_or(false)
     }
 
-    // TODO: Recalculate gas values
-    // GAS:
-    // Base: 3 (underlying oracle) + 2 (entry) + 3 (callback) + n*3 (redemption rate calls)
-    // Max should be 3 + 2 + 3 + 2 * 3 = 14, plus a bit of buffer => 15
-
+    pub const GAS_FOR_LIST_00_ENTRY: Gas = Gas::from_tgas(35).saturating_div(10);
     pub fn list_ema_prices_no_older_than(
         &self,
         price_ids: Vec<PriceIdentifier>,
@@ -230,7 +229,7 @@ impl Contract {
             oracle_order.push(OracleType::Pyth(oracle_id.clone()));
             oracle_promises.push(
                 ext_pyth::ext(oracle_id)
-                    .with_static_gas(Gas::from_tgas(3))
+                    .with_static_gas(Self::GAS_FOR_PYTH_REQUEST)
                     .list_ema_prices_no_older_than(Vec::from_iter(price_ids), age),
             );
         }
@@ -239,7 +238,7 @@ impl Contract {
             oracle_order.push(OracleType::RedStone(oracle_id.clone()));
             oracle_promises.push(
                 ext_redstone::ext(oracle_id)
-                    .with_static_gas(Gas::from_tgas(3))
+                    .with_static_gas(Self::GAS_FOR_REDSONE_REQUEST)
                     .read_price_data(Vec::from_iter(price_ids)),
             );
         }
@@ -250,15 +249,19 @@ impl Contract {
             .reduce(near_sdk::Promise::and)
             .expect_or_reject("No oracle invoked");
 
-        PromiseOrValue::Promise(promise.then(
-            self_ext!(Gas::from_tgas(3)).list_ema_prices_no_older_than_01_consume_results(
-                oracle_order,
-                price_ids,
-                U64(max_age_ms),
+        PromiseOrValue::Promise(
+            promise.then(
+                self_ext!(Self::GAS_FOR_LIST_01_CALLBACK)
+                    .list_ema_prices_no_older_than_01_consume_results(
+                        oracle_order,
+                        price_ids,
+                        U64(max_age_ms),
+                    ),
             ),
-        ))
+        )
     }
 
+    pub const GAS_FOR_LIST_01_CALLBACK: Gas = Gas::from_tgas(19).saturating_div(10);
     #[private]
     pub fn list_ema_prices_no_older_than_01_consume_results(
         &self,
@@ -322,16 +325,16 @@ impl<'a> CallbackHandler<'a> {
     fn new(oracle_order: &'a [OracleType], max_age_ms: u64) -> Self {
         let (pyth_results, redstone_results) = oracle_order.iter().fold(
             (HashMap::new(), HashMap::new()),
-            |(mut pyth_ids, mut redstone_ids), oracle| {
+            |(mut pyth_results, mut redstone_results), oracle| {
                 match oracle {
                     OracleType::Pyth(id) => {
-                        pyth_ids.insert(id.clone(), OnceLock::new());
+                        pyth_results.insert(id.clone(), OnceLock::new());
                     }
                     OracleType::RedStone(id) => {
-                        redstone_ids.insert(id.clone(), OnceLock::new());
+                        redstone_results.insert(id.clone(), OnceLock::new());
                     }
                 }
-                (pyth_ids, redstone_ids)
+                (pyth_results, redstone_results)
             },
         );
         Self {
