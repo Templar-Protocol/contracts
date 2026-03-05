@@ -1,7 +1,4 @@
-use super::{
-    near, AccountId, CapGroupId, Fees, IdleBalanceDelta, MarketId, Restrictions, SupplyPosition,
-    U128, U64,
-};
+use super::*;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
@@ -123,7 +120,7 @@ pub enum Event {
         remaining_after: U128,
     },
     #[event_version("1.0.0")]
-    AllocationCompleted { op_id: u64 },
+    AllocationCompleted { op_id: U64 },
     #[event_version("1.0.0")]
     AllocationStopped {
         op_id: U64,
@@ -169,13 +166,13 @@ pub enum Event {
     #[event_version("1.0.0")]
     TimelockChangeSubmitted { valid_at_ns: U64 },
     #[event_version("1.0.0")]
-    FeesChangeSubmitted { fees: Fees<U128>, valid_at_ns: u64 },
+    FeesChangeSubmitted { fees: Fees<U128>, valid_at_ns: U64 },
     #[event_version("1.0.0")]
     FeesChangeRevoked,
     #[event_version("1.0.0")]
     RestrictionsChangeSubmitted {
         restrictions: Option<Restrictions>,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     RestrictionsChangeRevoked,
@@ -197,7 +194,7 @@ pub enum Event {
     SupplyCapRaiseSubmitted {
         market: MarketId,
         new_cap: U128,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     SupplyCapRaiseRevoked { market: MarketId },
@@ -207,7 +204,7 @@ pub enum Event {
     CapGroupRaiseSubmitted {
         cap_group: CapGroupId,
         new_cap: U128,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     CapGroupRaiseRevoked { cap_group: CapGroupId },
@@ -220,7 +217,7 @@ pub enum Event {
     CapGroupRelativeCapRaiseSubmitted {
         cap_group: CapGroupId,
         new_relative_cap: U128,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     CapGroupRelativeCapRaiseRevoked { cap_group: CapGroupId },
@@ -297,7 +294,6 @@ pub enum Event {
     SupplyWithdrawRequestCreated { market: MarketId, amount: U128 },
     #[event_version("1.0.0")]
     WithdrawRequestCreated { market: MarketId, amount: U128 },
-    #[event_version("1.0.0")]
     #[event_version("1.0.0")]
     AllocationPositionIssue {
         op_id: U64,

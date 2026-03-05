@@ -25,6 +25,9 @@ _site/
 **/fuzz*.log
 **/coverage
 
+# generated soroban test snapshots
+contract/vault/**/test_snapshots/
+
 # generated bindings
 client/vault/dist/
 

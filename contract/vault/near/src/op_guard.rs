@@ -10,6 +10,36 @@ use templar_common::{
 
 use crate::Contract;
 
+macro_rules! impl_op_guard_spec {
+    ($spec:ident, $state:ty, $variant:ident, $error:expr) => {
+        impl GuardSpec<Contract> for $spec {
+            type State = $state;
+            type Error = Error;
+            type Idle = IdleSpec;
+
+            fn validate(
+                target: &Contract,
+                op_id: Option<u64>,
+            ) -> Result<&Self::State, Self::Error> {
+                match &target.op_state {
+                    OpState::$variant(state) if op_id.map_or(true, |id| state.op_id == id) => {
+                        Ok(state)
+                    }
+                    _ => Err($error),
+                }
+            }
+
+            fn set_state(target: &mut Contract, state: Self::State) {
+                target.op_state = OpState::$variant(state);
+            }
+
+            fn into_idle(target: &mut Contract) {
+                target.op_state = OpState::Idle;
+            }
+        }
+    };
+}
+
 pub(crate) struct IdleSpec;
 pub(crate) struct AllocatingSpec;
 pub(crate) struct WithdrawingSpec;
@@ -19,9 +49,6 @@ pub(crate) struct PayoutSpec;
 pub(crate) struct OpGuard<'a, S: GuardSpec<Contract>>(Guard<'a, Contract, S>);
 
 pub(crate) type IdleGuard<'a> = OpGuard<'a, IdleSpec>;
-pub(crate) type AllocatingGuard<'a> = OpGuard<'a, AllocatingSpec>;
-pub(crate) type WithdrawingGuard<'a> = OpGuard<'a, WithdrawingSpec>;
-pub(crate) type RefreshingGuard<'a> = OpGuard<'a, RefreshingSpec>;
 pub(crate) type PayoutGuard<'a> = OpGuard<'a, PayoutSpec>;
 
 impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
@@ -33,10 +60,6 @@ impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
         self.0.state()
     }
 
-    pub fn replace_state(self, state: S::State) -> Self {
-        Self(self.0.replace_state(state))
-    }
-
     pub fn into_idle(self) -> OpGuard<'a, S::Idle> {
         OpGuard(self.0.into_idle())
     }
@@ -46,7 +69,7 @@ impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
     }
 }
 
-impl<S: GuardSpec<Contract>> Deref for OpGuard<'_, S> {
+impl<'a, S: GuardSpec<Contract>> Deref for OpGuard<'a, S> {
     type Target = Contract;
 
     fn deref(&self) -> &Self::Target {
@@ -54,7 +77,7 @@ impl<S: GuardSpec<Contract>> Deref for OpGuard<'_, S> {
     }
 }
 
-impl<S: GuardSpec<Contract>> DerefMut for OpGuard<'_, S> {
+impl<'a, S: GuardSpec<Contract>> DerefMut for OpGuard<'a, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -69,7 +92,8 @@ impl GuardSpec<Contract> for IdleSpec {
         match &target.op_state {
             OpState::Idle => Ok(&IdleState),
             op_state => panic_with_message(&format!(
-                "Invariant: Only one op in flight; current op_state = {op_state:?}"
+                "Invariant: Only one op in flight; current op_state = {:?}",
+                op_state
             )),
         }
     }
@@ -83,118 +107,30 @@ impl GuardSpec<Contract> for IdleSpec {
     }
 }
 
-impl GuardSpec<Contract> for AllocatingSpec {
-    type State = AllocatingState;
-    type Error = Error;
-    type Idle = IdleSpec;
-
-    fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
-        match &target.op_state {
-            OpState::Allocating(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
-            _ => Err(Error::NotAllocating),
-        }
-    }
-
-    fn set_state(target: &mut Contract, state: Self::State) {
-        target.op_state = OpState::Allocating(state);
-    }
-
-    fn into_idle(target: &mut Contract) {
-        target.op_state = OpState::Idle;
-    }
-}
-
-impl GuardSpec<Contract> for WithdrawingSpec {
-    type State = WithdrawingState;
-    type Error = Error;
-    type Idle = IdleSpec;
-
-    fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
-        match &target.op_state {
-            OpState::Withdrawing(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
-            _ => Err(Error::NotWithdrawing),
-        }
-    }
-
-    fn set_state(target: &mut Contract, state: Self::State) {
-        target.op_state = OpState::Withdrawing(state);
-    }
-
-    fn into_idle(target: &mut Contract) {
-        target.op_state = OpState::Idle;
-    }
-}
-
-impl GuardSpec<Contract> for RefreshingSpec {
-    type State = RefreshingState;
-    type Error = Error;
-    type Idle = IdleSpec;
-
-    fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
-        match &target.op_state {
-            OpState::Refreshing(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
-            _ => Err(Error::NotRefreshing),
-        }
-    }
-
-    fn set_state(target: &mut Contract, state: Self::State) {
-        target.op_state = OpState::Refreshing(state);
-    }
-
-    fn into_idle(target: &mut Contract) {
-        target.op_state = OpState::Idle;
-    }
-}
-
-impl GuardSpec<Contract> for PayoutSpec {
-    type State = PayoutState;
-    type Error = Error;
-    type Idle = IdleSpec;
-
-    fn validate(target: &Contract, op_id: Option<u64>) -> Result<&Self::State, Self::Error> {
-        match &target.op_state {
-            OpState::Payout(state) if op_id.is_none_or(|id| state.op_id == id) => Ok(state),
-            _ => Err(Error::NotPayout),
-        }
-    }
-
-    fn set_state(target: &mut Contract, state: Self::State) {
-        target.op_state = OpState::Payout(state);
-    }
-
-    fn into_idle(target: &mut Contract) {
-        target.op_state = OpState::Idle;
-    }
-}
+impl_op_guard_spec!(
+    AllocatingSpec,
+    AllocatingState,
+    Allocating,
+    Error::NotAllocating
+);
+impl_op_guard_spec!(
+    WithdrawingSpec,
+    WithdrawingState,
+    Withdrawing,
+    Error::NotWithdrawing
+);
+impl_op_guard_spec!(
+    RefreshingSpec,
+    RefreshingState,
+    Refreshing,
+    Error::NotRefreshing
+);
+impl_op_guard_spec!(PayoutSpec, PayoutState, Payout, Error::NotPayout);
 
 impl<'a> OpGuard<'a, IdleSpec> {
     pub fn new(contract: &'a mut Contract) -> Self {
         Self::expect(contract, None)
             .unwrap_or_else(|e| panic_with_message(&format!("idle guard: {e}")))
-    }
-
-    pub fn start_allocation(self, state: AllocatingState) -> AllocatingGuard<'a> {
-        let op_id = state.op_id;
-        let contract = self.into_inner();
-        AllocatingSpec::set_state(contract, state);
-        AllocatingGuard::expect(contract, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&format!("allocating guard: {e}")))
-    }
-
-    pub fn start_withdrawal(self, state: WithdrawingState) -> WithdrawingGuard<'a> {
-        let op_id = state.op_id;
-        let contract = self.into_inner();
-        WithdrawingSpec::set_state(contract, state);
-        WithdrawingGuard::expect(contract, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&format!("withdrawing guard: {e}")))
-    }
-
-    pub fn start_refreshing(self, state: RefreshingState) -> RefreshingGuard<'a> {
-        let op_id = state.op_id;
-        let contract = self.into_inner();
-        RefreshingSpec::set_state(contract, state);
-        RefreshingGuard::expect(contract, Some(op_id))
-            .unwrap_or_else(|e| panic_with_message(&format!("refreshing guard: {e}")))
     }
 }
 

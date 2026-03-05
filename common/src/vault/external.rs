@@ -1,17 +1,13 @@
-use super::{
-    AccountId, AllocationDelta, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
-    Fees, MarketId, Promise, PromiseOrValue, RealAssetsReport, Restrictions, TimelockKind,
-    VaultConfiguration, U128, U64,
-};
+use super::*;
 
 #[near_sdk::ext_contract(ext_vault)]
 pub trait VaultExternalInterface {
     fn set_curator(&mut self, account: AccountId);
     fn set_is_allocator(&mut self, account: AccountId, allowed: bool);
-    fn submit_guardian(&mut self, new_g: AccountId);
+    fn submit_guardian(&mut self, account: AccountId);
     fn accept_guardian(&mut self);
     fn revoke_pending_guardian(&mut self);
-    fn submit_sentinel(&mut self, new_s: AccountId);
+    fn submit_sentinel(&mut self, account: AccountId);
     fn accept_sentinel(&mut self);
     fn revoke_pending_sentinel(&mut self);
     fn set_skim_recipient(&mut self, account: AccountId);
@@ -37,7 +33,7 @@ pub trait VaultExternalInterface {
 
     fn withdraw(&mut self, amount: U128, receiver: AccountId) -> PromiseOrValue<()>;
     fn redeem(&mut self, shares: U128, receiver: AccountId) -> PromiseOrValue<()>;
-    fn reallocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()>;
+    fn allocate(&mut self, delta: AllocationDelta) -> PromiseOrValue<()>;
     fn execute_rebalance_withdrawal(
         &mut self,
         market_id: MarketId,
