@@ -14,6 +14,7 @@ use templar_universal_account::{
     transaction::{Action, Transaction},
     ExecuteArgs,
 };
+use tokio::task::JoinSet;
 
 use crate::{app::App, route::SimpleResponse};
 
@@ -219,13 +220,13 @@ pub async fn relay(
     }
 
     // Send any requested price updates
-    let mut interacted_prices = HashMap::with_capacity(2);
+    let mut interacted_prices = Vec::with_capacity(2);
     for contract_id in &interacted_contract_ids {
         if let Some(market_data) = accounts.market_data.get(contract_id) {
             let c = &market_data.collateral;
-            interacted_prices.insert(c.price_id, c.update_oracle.clone());
+            interacted_prices.push((c.price_id, c.update_oracle.clone()));
             let b = &market_data.borrow;
-            interacted_prices.insert(b.price_id, b.update_oracle.clone());
+            interacted_prices.push((b.price_id, b.update_oracle.clone()));
         }
     }
 
@@ -252,29 +253,46 @@ pub async fn relay(
             },
         );
 
+    let mut oracle_update_set = JoinSet::new();
+
     for (oracle_id, feed_ids) in pyth_updates {
-        if let Err(e) = app
-            .pyth
-            .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-            .await
-        {
-            tracing::error!("Pyth update failure: {e}");
-            return SimpleResponse::Failure {
-                error: format!("Pyth update failure: {e}"),
-            };
-        }
+        let app = app.clone();
+        oracle_update_set.spawn(async move {
+            app.pyth
+                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
+                .await
+        });
     }
 
     for (oracle_id, feed_ids) in redstone_updates {
-        if let Err(e) = app
-            .redstone
-            .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-            .await
-        {
-            tracing::error!("RedStone update failure: {e}");
-            return SimpleResponse::Failure {
-                error: format!("RedStone update failure: {e}"),
-            };
+        let app = app.clone();
+        oracle_update_set.spawn(async move {
+            app.redstone
+                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
+                .await
+        });
+    }
+
+    while let Some(result) = oracle_update_set.join_next().await {
+        match result {
+            Ok(Ok(Some(hash))) => {
+                tracing::debug!(%hash, "Oracle update transaction succeeded");
+            }
+            Ok(Ok(None)) => {
+                tracing::debug!("No price updates needed");
+            }
+            Ok(Err(error)) => {
+                tracing::error!(%error, "Oracle update failed");
+                return SimpleResponse::Failure {
+                    error: format!("Oracle update failed: {error}"),
+                };
+            }
+            Err(error) => {
+                tracing::error!(%error, "Oracle update task failed");
+                return SimpleResponse::Failure {
+                    error: format!("Oracle update task failed: {error}"),
+                };
+            }
         }
     }
 
