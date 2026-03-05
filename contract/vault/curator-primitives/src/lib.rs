@@ -27,7 +27,7 @@ pub mod utils;
 
 pub use auth::{
     boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
-    AuthPolicyClass, AuthResult, PermissiveAuth, StrictAuth,
+    AuthPolicyClass, AuthResult,
 };
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
@@ -77,3 +77,6 @@ pub use utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_c
 
 #[cfg(feature = "boundary")]
 pub use boundary::VaultStorageKey;
+
+#[cfg(test)]
+mod tests;
