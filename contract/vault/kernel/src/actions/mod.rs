@@ -8,7 +8,7 @@ extern crate alloc;
 use core::mem;
 
 use crate::effects::{KernelEffect, KernelEvent};
-use crate::error::KernelError;
+use crate::error::{InvalidConfigCode, InvalidStateCode, KernelError};
 use crate::math::number::Number;
 #[cfg(any(feature = "action-refresh-fees", test))]
 use crate::math::wad::compute_fee_shares_from_assets;
@@ -470,11 +470,11 @@ pub fn preview_withdraw_assets(state: &VaultState, config: &VaultConfig, shares:
 fn require_active_op_id(
     op_state: &OpState,
     provided: u64,
-    action: &'static str,
+    error_code: InvalidStateCode,
 ) -> Result<(), KernelError> {
     let active = match op_state.op_id() {
         Some(active) => active,
-        None => return Err(KernelError::invalid_state(action)),
+        None => return Err(KernelError::invalid_state_code(error_code)),
     };
     if active != provided {
         return Err(KernelError::OpIdMismatch {
@@ -511,7 +511,9 @@ fn validate_queue_head(
         || pending.receiver != *receiver
         || pending.escrow_shares != escrow_shares
     {
-        return Err(KernelError::invalid_state("withdrawal queue head mismatch"));
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::WithdrawalQueueHeadMismatch,
+        ));
     }
     Ok(())
 }
@@ -545,9 +547,9 @@ fn mint_fee_shares(
 ) -> Result<(), KernelError> {
     if shares > Number::zero() {
         let minted: u128 = shares.into();
-        *total_supply = total_supply
-            .checked_add(minted)
-            .ok_or_else(|| KernelError::invalid_state("fee minting would overflow total_supply"))?;
+        *total_supply = total_supply.checked_add(minted).ok_or_else(|| {
+            KernelError::invalid_state_code(InvalidStateCode::FeeMintOverflowTotalSupply)
+        })?;
         effects.push(KernelEffect::MintShares {
             owner: recipient,
             shares: minted,
@@ -575,13 +577,17 @@ fn apply_transition_result(
 fn map_queue_error(err: QueueError) -> KernelError {
     match err {
         QueueError::QueueFull { current, max } => KernelError::QueueFull { current, max },
-        QueueError::CacheOverflow => KernelError::invalid_state("withdrawal queue cache overflow"),
-        QueueError::WithdrawalNotFound { .. } => {
-            KernelError::invalid_state("withdrawal queue missing entry")
+        QueueError::CacheOverflow => {
+            KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueCacheOverflow)
         }
-        QueueError::QueueEmpty => KernelError::invalid_state("withdrawal queue empty"),
+        QueueError::WithdrawalNotFound { .. } => {
+            KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueMissingEntry)
+        }
+        QueueError::QueueEmpty => {
+            KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueEmpty)
+        }
         QueueError::InvariantViolation { .. } => {
-            KernelError::invalid_state("withdrawal queue invariant violation")
+            KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueInvariantViolation)
         }
     }
 }
@@ -600,7 +606,9 @@ fn handle_deposit(
     enforce_restrictions(config, restrictions, self_id, &owner)?;
     enforce_restrictions(config, restrictions, self_id, &receiver)?;
     if !state.is_idle() {
-        return Err(KernelError::invalid_state("deposit requires Idle"));
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::DepositRequiresIdle,
+        ));
     }
     if assets_in == 0 {
         return Err(KernelError::ZeroAmount);
@@ -614,18 +622,15 @@ fn handle_deposit(
         });
     }
 
-    state.total_assets = state
-        .total_assets
-        .checked_add(assets_in)
-        .ok_or_else(|| KernelError::invalid_state("deposit would overflow total_assets"))?;
-    state.idle_assets = state
-        .idle_assets
-        .checked_add(assets_in)
-        .ok_or_else(|| KernelError::invalid_state("deposit would overflow idle_assets"))?;
-    state.total_shares = state
-        .total_shares
-        .checked_add(shares_out)
-        .ok_or_else(|| KernelError::invalid_state("minting would overflow total_shares"))?;
+    state.total_assets = state.total_assets.checked_add(assets_in).ok_or_else(|| {
+        KernelError::invalid_state_code(InvalidStateCode::DepositOverflowTotalAssets)
+    })?;
+    state.idle_assets = state.idle_assets.checked_add(assets_in).ok_or_else(|| {
+        KernelError::invalid_state_code(InvalidStateCode::DepositOverflowIdleAssets)
+    })?;
+    state.total_shares = state.total_shares.checked_add(shares_out).ok_or_else(|| {
+        KernelError::invalid_state_code(InvalidStateCode::MintOverflowTotalShares)
+    })?;
 
     let effects = vec![
         KernelEffect::TransferAssetsFrom {
@@ -665,7 +670,9 @@ fn handle_request_withdraw(
     enforce_restrictions(config, restrictions, self_id, &owner)?;
     enforce_restrictions(config, restrictions, self_id, &receiver)?;
     if !state.is_idle() {
-        return Err(KernelError::invalid_state("request_withdraw requires Idle"));
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::RequestWithdrawRequiresIdle,
+        ));
     }
     if shares == 0 {
         return Err(KernelError::ZeroAmount);
@@ -726,12 +733,12 @@ fn handle_execute_withdraw(
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
     if !state.op_state.is_idle() {
-        let message = if state.op_state.is_withdrawing() {
-            "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+        let error_code = if state.op_state.is_withdrawing() {
+            InvalidStateCode::ExecuteWithdrawRequiresIdleUseCallbacks
         } else {
-            "execute_withdraw requires Idle"
+            InvalidStateCode::ExecuteWithdrawRequiresIdle
         };
-        return Err(KernelError::invalid_state(message));
+        return Err(KernelError::invalid_state_code(error_code));
     }
 
     let Some((_, pending_ref)) = state.withdraw_queue.head() else {
@@ -807,15 +814,15 @@ fn handle_begin_allocating(
     let alloc_total = match result.new_state.as_allocating() {
         Some(allocating) => allocating.remaining,
         None => {
-            return Err(KernelError::invalid_state(
-                "start_allocation must return Allocating",
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::StartAllocationMustReturnAllocating,
             ))
         }
     };
 
     if alloc_total > state.idle_assets {
-        return Err(KernelError::invalid_state(
-            "allocation plan exceeds idle_assets",
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::AllocationPlanExceedsIdleAssets,
         ));
     }
 
@@ -872,14 +879,14 @@ fn handle_sync_external_assets(
     require_active_op_id(
         &state.op_state,
         op_id,
-        "sync_external_assets requires active op",
+        InvalidStateCode::SyncExternalRequiresActiveOp,
     )?;
 
     match state.op_state {
         OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => {}
         _ => {
-            return Err(KernelError::invalid_state(
-                "sync_external_assets requires Allocating/Withdrawing/Refreshing",
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::SyncExternalRequiresAllowedStates,
             ));
         }
     }
@@ -889,9 +896,7 @@ fn handle_sync_external_assets(
         .idle_assets
         .checked_add(new_external_assets)
         .ok_or_else(|| {
-            KernelError::invalid_state(
-                "sync_external_assets overflow: idle + external exceeds u128",
-            )
+            KernelError::invalid_state_code(InvalidStateCode::SyncExternalOverflowIdlePlusExternal)
         })?;
 
     // Sanity bound: prevent a compromised allocator from inflating
@@ -905,8 +910,8 @@ fn handle_sync_external_assets(
     };
     let reference_total = state.total_assets.saturating_add(in_flight);
     if reference_total > 0 && new_total > reference_total.saturating_mul(2) {
-        return Err(KernelError::invalid_state(
-            "sync_external_assets would more than double total_assets",
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets,
         ));
     }
 
@@ -931,12 +936,12 @@ fn handle_abort_refreshing(mut state: VaultState, op_id: u64) -> Result<KernelRe
     require_active_op_id(
         &state.op_state,
         op_id,
-        "abort_refreshing requires active op",
+        InvalidStateCode::AbortRefreshingRequiresActiveOp,
     )?;
 
     if !matches!(state.op_state, OpState::Refreshing(_)) {
-        return Err(KernelError::invalid_state(
-            "abort_refreshing requires Refreshing",
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::AbortRefreshingRequiresRefreshing,
         ));
     }
 
@@ -953,16 +958,16 @@ fn handle_abort_allocating(
     let alloc = match &state.op_state {
         OpState::Allocating(s) => s,
         _ => {
-            return Err(KernelError::invalid_state(
-                "abort_allocating requires Allocating",
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::AbortAllocatingRequiresAllocating,
             ))
         }
     };
 
     check_op_id(alloc.op_id, op_id)?;
     if restore_idle != alloc.remaining {
-        return Err(KernelError::invalid_state(
-            "abort_allocating restore_idle mismatch",
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::AbortAllocatingRestoreIdleMismatch,
         ));
     }
 
@@ -981,16 +986,16 @@ fn handle_abort_withdrawing(
     let withdraw = match &state.op_state {
         OpState::Withdrawing(s) => s,
         _ => {
-            return Err(KernelError::invalid_state(
-                "abort_withdrawing requires Withdrawing",
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::AbortWithdrawingRequiresWithdrawing,
             ))
         }
     };
 
     check_op_id(withdraw.op_id, op_id)?;
     if refund_shares != withdraw.escrow_shares {
-        return Err(KernelError::invalid_state(
-            "abort_withdrawing refund_shares mismatch",
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::AbortWithdrawingRefundMismatch,
         ));
     }
 
@@ -1020,7 +1025,11 @@ fn handle_settle_payout(
 ) -> Result<KernelResult, KernelError> {
     let payout = match mem::take(&mut state.op_state) {
         OpState::Payout(s) => s,
-        _ => return Err(KernelError::invalid_state("settle_payout requires Payout")),
+        _ => {
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::SettlePayoutRequiresPayout,
+            ))
+        }
     };
 
     check_op_id(payout.op_id, op_id)?;
@@ -1040,13 +1049,13 @@ fn handle_settle_payout(
             burn_shares: burn_amount,
             refund_shares: refund_amount,
         } => {
-            let settled_shares = burn_amount
-                .checked_add(refund_amount)
-                .ok_or_else(|| KernelError::invalid_state("payout success settlement mismatch"))?;
+            let settled_shares = burn_amount.checked_add(refund_amount).ok_or_else(|| {
+                KernelError::invalid_state_code(InvalidStateCode::PayoutSuccessSettlementMismatch)
+            })?;
 
             if settled_shares != payout.escrow_shares {
-                return Err(KernelError::invalid_state(
-                    "payout success settlement mismatch",
+                return Err(KernelError::invalid_state_code(
+                    InvalidStateCode::PayoutSuccessSettlementMismatch,
                 ));
             }
 
@@ -1057,7 +1066,9 @@ fn handle_settle_payout(
                 });
                 state.total_shares =
                     state.total_shares.checked_sub(burn_amount).ok_or_else(|| {
-                        KernelError::invalid_state("payout burn exceeds total_shares")
+                        KernelError::invalid_state_code(
+                            InvalidStateCode::PayoutBurnExceedsTotalShares,
+                        )
                     })?;
             }
             push_refund_shares(&mut effects, escrow_address, payout.owner, refund_amount);
@@ -1070,13 +1081,13 @@ fn handle_settle_payout(
             refund_shares: refund_amount,
         } => {
             if refund_amount != payout.escrow_shares {
-                return Err(KernelError::invalid_state(
-                    "payout failure settlement mismatch",
+                return Err(KernelError::invalid_state_code(
+                    InvalidStateCode::PayoutFailureSettlementMismatch,
                 ));
             }
             if restore_idle != payout.amount {
-                return Err(KernelError::invalid_state(
-                    "payout failure restore_idle must equal payout.amount",
+                return Err(KernelError::invalid_state_code(
+                    InvalidStateCode::PayoutFailureRestoreIdleMismatch,
                 ));
             }
 
@@ -1109,13 +1120,15 @@ fn handle_refresh_fees(
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
     if !state.is_idle() {
-        return Err(KernelError::invalid_state("refresh_fees requires Idle"));
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::RefreshFeesRequiresIdle,
+        ));
     }
 
     // Reject backwards time to prevent fee calculation issues
     if now_ns <= state.fee_anchor.timestamp_ns {
-        return Err(KernelError::invalid_state(
-            "fee refresh timestamp must advance",
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::FeeRefreshTimestampMustAdvance,
         ));
     }
 
@@ -1191,8 +1204,8 @@ fn handle_emergency_reset(
     let op_id = match prev_state.op_id() {
         Some(op_id) => op_id,
         None => {
-            return Err(KernelError::invalid_state(
-                "emergency_reset: vault is already Idle",
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::EmergencyResetAlreadyIdle,
             ))
         }
     };
@@ -1202,8 +1215,8 @@ fn handle_emergency_reset(
 
     match prev_state {
         OpState::Idle => {
-            return Err(KernelError::invalid_state(
-                "emergency_reset: vault is already Idle",
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::EmergencyResetAlreadyIdle,
             ))
         }
         OpState::Refreshing(_) => {
@@ -1248,8 +1261,8 @@ pub fn apply_action(
     action: KernelAction,
 ) -> Result<KernelResult, KernelError> {
     if !config.is_max_pending_valid() {
-        return Err(KernelError::invalid_config(
-            "max_pending_withdrawals exceeds MAX_PENDING",
+        return Err(KernelError::invalid_config_code(
+            InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit,
         ));
     }
 
