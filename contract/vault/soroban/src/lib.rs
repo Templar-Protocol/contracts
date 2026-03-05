@@ -53,8 +53,7 @@ pub use {
     error::{ContractError, RuntimeError},
     market::{
         invoke_progress_withdrawal, invoke_supply, invoke_total_assets, invoke_withdraw, AttemptId,
-        MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter, SorobanMarketAdapter,
-        SorobanMarketMethod, TestCrossChainAdapter, TestMarketAdapter,
+        MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter, SorobanMarketMethod,
     },
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
