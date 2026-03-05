@@ -42,11 +42,6 @@ pub use policy::{
         set_cap_group_record_relative_cap,
     },
     cooldown::{Cooldown, CooldownError},
-    lock_filter::{
-        build_allocation_plan_with_locks, build_refresh_plan_with_locks,
-        build_withdrawal_plan_with_locks, filter_allocation_plan, filter_supply_queue,
-        filter_unlocked_targets, filter_withdraw_route,
-    },
     market_lock::{validate_lock_expiry, MarketLock, MarketLockSet},
     refresh_plan::{RefreshPlan, RefreshPlanError},
     state::{MarketConfig, PolicyState},

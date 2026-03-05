@@ -30,9 +30,6 @@ use templar_curator_primitives::governance::{
     membership_change_decision, relative_cap_change_decision, TimelockDecision,
 };
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, CapGroupUpdate};
-use templar_curator_primitives::policy::lock_filter::{
-    build_refresh_plan_with_locks, filter_allocation_plan,
-};
 use templar_curator_primitives::policy::state::MarketConfig;
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::PolicyState;
@@ -789,7 +786,10 @@ where
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
         // Filter plan to exclude locked markets
-        let filtered_plan = filter_allocation_plan(&plan, &self.policy_state.locks, current_ns);
+        let filtered_plan = self
+            .policy_state
+            .locks
+            .filter_allocation_plan(&plan, current_ns);
 
         self.authorize(ActionKind::BeginAllocating, caller)?;
         let op_id = {
@@ -858,8 +858,10 @@ where
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
         // Filter plan to exclude locked markets
-        let filtered_plan =
-            build_refresh_plan_with_locks(&plan, &self.policy_state.locks, current_ns);
+        let filtered_plan = self
+            .policy_state
+            .locks
+            .build_refresh_plan_with_locks(&plan, current_ns);
 
         if filtered_plan.is_empty() {
             return Err(RuntimeError::invalid_input("empty refresh plan"));

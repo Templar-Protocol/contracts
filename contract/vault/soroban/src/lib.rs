@@ -61,10 +61,6 @@ pub use {
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
     storage::{SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState},
-    templar_curator_primitives::policy::lock_filter::{
-        build_allocation_plan_with_locks, build_refresh_plan_with_locks,
-        build_withdrawal_plan_with_locks, filter_allocation_plan, filter_unlocked_targets,
-    },
     templar_curator_primitives::policy::market_lock::{MarketLock, MarketLockSet},
 };
 
