@@ -842,9 +842,7 @@ impl Contract {
                     "Fee change already pending"
                 );
 
-                let proposed_performance_fee = Wad::from(fees.performance.fee.0);
-                let proposed_management_fee = Wad::from(fees.management.fee.0);
-                let proposed_max_rate = fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
+                let proposed_fees: Fees<Wad> = fees.clone().into();
 
                 let current = shared_gov::FeeConfig::new(
                     self.fees.performance.fee,
@@ -854,11 +852,11 @@ impl Contract {
                     self.fees.max_total_assets_growth_rate,
                 );
                 let proposed = shared_gov::FeeConfig::new(
-                    proposed_performance_fee,
-                    proposed_management_fee,
-                    &fees.performance.recipient,
-                    &fees.management.recipient,
-                    proposed_max_rate,
+                    proposed_fees.performance.fee,
+                    proposed_fees.management.fee,
+                    &proposed_fees.performance.recipient,
+                    &proposed_fees.management.recipient,
+                    proposed_fees.max_total_assets_growth_rate,
                 );
 
                 shared_gov::evaluate_fee_change(&current, &proposed)
@@ -1151,8 +1149,9 @@ impl Contract {
                 .emit();
             }
             TimelockedAction::FeesChange { fees } => {
-                let performance_fee = Wad::from(fees.performance.fee.0);
-                let management_fee = Wad::from(fees.management.fee.0);
+                let proposed_fees: Fees<Wad> = fees.clone().into();
+                let performance_fee = proposed_fees.performance.fee;
+                let management_fee = proposed_fees.management.fee;
 
                 require!(
                     performance_fee <= Wad::from(MAX_PERFORMANCE_FEE_WAD),
@@ -1163,8 +1162,7 @@ impl Contract {
                     "management fee too high"
                 );
 
-                let max_total_assets_growth_rate =
-                    fees.max_total_assets_growth_rate.map(|r| Wad::from(r.0));
+                let max_total_assets_growth_rate = proposed_fees.max_total_assets_growth_rate;
 
                 let performance_fee_changed = performance_fee != self.fees.performance.fee;
                 let management_fee_changed = management_fee != self.fees.management.fee;

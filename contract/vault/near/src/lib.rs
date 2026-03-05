@@ -1008,20 +1008,7 @@ impl Contract {
     }
 
     pub fn get_fees(&self) -> Fees<U128> {
-        Fees {
-            performance: templar_common::vault::Fee {
-                fee: U128(u128::from(self.fees.performance.fee)),
-                recipient: self.fees.performance.recipient.clone(),
-            },
-            management: templar_common::vault::Fee {
-                fee: U128(u128::from(self.fees.management.fee)),
-                recipient: self.fees.management.recipient.clone(),
-            },
-            max_total_assets_growth_rate: self
-                .fees
-                .max_total_assets_growth_rate
-                .map(|r| U128(u128::from(r))),
-        }
+        self.fees.clone().into()
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited

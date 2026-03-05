@@ -276,6 +276,48 @@ pub struct Fees<T> {
     pub max_total_assets_growth_rate: Option<T>,
 }
 
+impl From<Fee<Wad>> for Fee<U128> {
+    fn from(value: Fee<Wad>) -> Self {
+        Self {
+            fee: U128(u128::from(value.fee)),
+            recipient: value.recipient,
+        }
+    }
+}
+
+impl From<Fees<Wad>> for Fees<U128> {
+    fn from(value: Fees<Wad>) -> Self {
+        Self {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate: value
+                .max_total_assets_growth_rate
+                .map(|rate| U128(u128::from(rate))),
+        }
+    }
+}
+
+impl From<Fee<U128>> for Fee<Wad> {
+    fn from(value: Fee<U128>) -> Self {
+        Self {
+            fee: Wad::from(value.fee.0),
+            recipient: value.recipient,
+        }
+    }
+}
+
+impl From<Fees<U128>> for Fees<Wad> {
+    fn from(value: Fees<U128>) -> Self {
+        Self {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate: value
+                .max_total_assets_growth_rate
+                .map(|rate| rate.0.into()),
+        }
+    }
+}
+
 /// Configuration for the setup of a metavault.
 #[derive(Clone)]
 #[near(serializers = [json, borsh])]
@@ -436,8 +478,10 @@ pub struct FeeAccrualAnchor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CapGroupId, CapGroupUpdate, MarketId};
+    use super::{CapGroupId, CapGroupUpdate, Fee, Fees, MarketId};
     use near_sdk::json_types::U128;
+    use near_sdk::AccountId;
+    use templar_vault_kernel::Wad;
 
     #[test]
     fn cap_group_update_roundtrips_through_curator_primitive_set_cap() {
@@ -515,5 +559,45 @@ mod tests {
                 cap_group: Some(CapGroupId::from("group-c")),
             }
         );
+    }
+
+    #[test]
+    fn fees_roundtrip_between_u128_and_wad_preserves_values() {
+        let fees_u128 = Fees {
+            performance: Fee {
+                fee: U128(10),
+                recipient: "perf.testnet"
+                    .parse::<AccountId>()
+                    .expect("valid account id"),
+            },
+            management: Fee {
+                fee: U128(20),
+                recipient: "mgmt.testnet"
+                    .parse::<AccountId>()
+                    .expect("valid account id"),
+            },
+            max_total_assets_growth_rate: Some(U128(30)),
+        };
+
+        let fees_wad: Fees<Wad> = fees_u128.clone().into();
+        assert_eq!(u128::from(fees_wad.performance.fee), 10);
+        assert_eq!(u128::from(fees_wad.management.fee), 20);
+        assert_eq!(
+            fees_wad
+                .max_total_assets_growth_rate
+                .map(u128::from)
+                .expect("max rate must be present"),
+            30
+        );
+
+        let roundtrip: Fees<U128> = fees_wad.into();
+        assert_eq!(roundtrip.performance.fee.0, 10);
+        assert_eq!(roundtrip.management.fee.0, 20);
+        assert_eq!(
+            roundtrip.max_total_assets_growth_rate.map(|v| v.0),
+            Some(30)
+        );
+        assert_eq!(roundtrip.performance.recipient.as_str(), "perf.testnet");
+        assert_eq!(roundtrip.management.recipient.as_str(), "mgmt.testnet");
     }
 }
