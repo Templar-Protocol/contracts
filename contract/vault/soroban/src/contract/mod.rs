@@ -54,7 +54,7 @@ use crate::effects::{
     ShareTokenAdapter, SorobanEffectInterpreter,
 };
 use crate::error::{ContractError, RuntimeError};
-use crate::market::{invoke_supply, invoke_withdraw};
+use crate::market::{invoke_progress_withdrawal, invoke_supply};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 
@@ -1732,21 +1732,21 @@ impl SorobanVaultContract {
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
         }
-        let amount_u128 = to_u128(amount)?;
 
-        // invoke adapter.withdraw() first — sends tokens to vault
+        // Progress withdrawal in adapter first (may realize less than requested).
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
-        invoke_withdraw(&env, &adapter, &asset_token, amount);
+        let realized_amount = invoke_progress_withdrawal(&env, &adapter, &asset_token, amount);
+        let realized_amount_u128 = to_u128(realized_amount)?;
 
-        // then update accounting (external → idle)
+        // Update accounting by realized amount (external -> idle).
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let caller_kernel = kernel_address_from_sdk(&env, &caller);
             vault.authorize(ActionKind::BeginAllocating, caller_kernel)?;
             {
                 let state = vault.state_mut()?;
-                state.external_assets = state.external_assets.saturating_sub(amount_u128);
-                state.idle_assets = state.idle_assets.saturating_add(amount_u128);
+                state.external_assets = state.external_assets.saturating_sub(realized_amount_u128);
+                state.idle_assets = state.idle_assets.saturating_add(realized_amount_u128);
                 state.sync_total_assets();
                 new_external = state.external_assets;
             }
@@ -1754,7 +1754,7 @@ impl SorobanVaultContract {
             Ok(())
         };
         with_reentrancy_guarded_contract_vault(&env, &mut call)?;
-        emit_alloc_event(&env, market, amount, false);
+        emit_alloc_event(&env, market, realized_amount, false);
         to_i128(new_external)
     }
 
