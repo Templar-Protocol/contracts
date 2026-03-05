@@ -84,7 +84,18 @@ mod impl_vault_external;
 #[cfg(test)]
 mod test_utils;
 
-pub use templar_curator_primitives::boundary::VaultStorageKey as StorageKey;
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    near_sdk::BorshStorageKey,
+    near_sdk::borsh::BorshSerialize,
+)]
+pub enum StorageKey {
+    PendingWithdrawals,
+}
 
 #[near(serializers = [borsh])]
 #[derive(Debug, Clone)]

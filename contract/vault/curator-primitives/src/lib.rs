@@ -16,8 +16,6 @@
 extern crate alloc;
 
 pub mod auth;
-#[cfg(feature = "boundary")]
-pub mod boundary;
 pub mod governance;
 pub mod policy;
 pub mod rbac;
@@ -69,9 +67,6 @@ pub use governance::{
     Restrictions, TimelockConfigError, TimelockDecision,
 };
 pub use utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked};
-
-#[cfg(feature = "boundary")]
-pub use boundary::VaultStorageKey;
 
 #[cfg(test)]
 mod tests;

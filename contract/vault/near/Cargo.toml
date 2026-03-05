@@ -37,6 +37,7 @@ templar-curator-primitives = { path = "../curator-primitives", features = ["bors
 templar-vault-kernel.workspace = true
 itertools.workspace = true
 primitive-types = { version = "0.14.0", features = ["serde"] }
+borsh.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
