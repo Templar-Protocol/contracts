@@ -191,11 +191,11 @@ impl App {
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
             tracing::info!(
-                "Loaded market {} with borrow asset {} and collateral asset {}, querying oracle {}",
-                market_accounts.account_id,
-                market_accounts.borrow.price_id,
-                market_accounts.collateral.price_id,
-                market_accounts.oracle_id,
+                market_id = %market_accounts.account_id,
+                borrow_asset = %market_accounts.borrow.asset,
+                collateral_asset = %market_accounts.collateral.asset,
+                oracle_id = %market_accounts.oracle_id,
+                "Loaded market",
             );
 
             for (contract_id, allowed_methods) in [
