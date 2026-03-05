@@ -25,10 +25,7 @@ use core::num::NonZeroU128;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
 };
-use templar_curator_primitives::governance::{
-    cap_change_decision, cap_group_cap_change_decision, market_removal_decision,
-    membership_change_decision, relative_cap_change_decision, TimelockDecision,
-};
+use templar_curator_primitives::governance::TimelockDecision;
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, CapGroupUpdate};
 use templar_curator_primitives::policy::state::MarketConfig;
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
@@ -1010,7 +1007,7 @@ where
             .authorize(ActionKind::SetRestrictions, caller, None)?;
 
         let current_cap = self.policy_state.markets.get(&market_id).map(|m| m.cap);
-        let decision = cap_change_decision(current_cap, new_cap)
+        let decision = TimelockDecision::from_cap_change(current_cap, new_cap)
             .map_err(|_| RuntimeError::invalid_input("cap unchanged"))?;
         if matches!(decision, TimelockDecision::Timelocked) {
             return Err(RuntimeError::invalid_input(
@@ -1050,7 +1047,7 @@ where
             return Err(RuntimeError::invalid_input("market already removed"));
         }
 
-        if market_removal_decision(principal).requires_timelock() {
+        if TimelockDecision::from_requires_timelock(principal > 0).requires_timelock() {
             return Err(RuntimeError::invalid_input(
                 "market with principal requires timelock",
             ));
@@ -1080,7 +1077,7 @@ where
                     .cap_groups
                     .get(&cap_group_id)
                     .and_then(|record| record.cap.absolute_cap.map(NonZeroU128::get));
-                let decision = cap_group_cap_change_decision(current, new_cap)
+                let decision = TimelockDecision::from_cap_group_cap_change(current, new_cap)
                     .map_err(|_| RuntimeError::invalid_input("cap group cap unchanged"))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
@@ -1105,9 +1102,10 @@ where
                     .cap_groups
                     .get(&cap_group_id)
                     .and_then(|record| record.cap.relative_cap);
-                let decision = relative_cap_change_decision(current, proposed).map_err(|_| {
-                    RuntimeError::invalid_input("invalid cap group relative cap change")
-                })?;
+                let decision = TimelockDecision::from_relative_cap_change(current, proposed)
+                    .map_err(|_| {
+                        RuntimeError::invalid_input("invalid cap group relative cap change")
+                    })?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
                         "cap group relative cap increase requires timelock",
@@ -1137,7 +1135,7 @@ where
                         .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
                     market.cap_group_id != cap_group_id
                 };
-                let _decision = membership_change_decision(changed)
+                let _decision = TimelockDecision::from_membership_change(changed)
                     .map_err(|_| RuntimeError::invalid_input("membership unchanged"))?;
 
                 if let Some(group_id) = cap_group_id.as_ref() {
