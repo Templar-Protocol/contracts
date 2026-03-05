@@ -9,12 +9,22 @@ use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
     storage::{MemoryStorage, SorobanStorage, VersionedState},
+    EffectContext,
+    EffectInterpreter,
     Storage, // Import the trait
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
-    apply_action, Address, AllocatingState, FeesSpec, KernelAction, OpState, VaultConfig,
-    VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    apply_action, effects::KernelEffect, Address, AllocatingState, FeesSpec, KernelAction, OpState,
+    VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+};
+use templar_vault_kernel::{
+    state::op_state::RefreshingState,
+    transitions::{
+        allocation_step_callback, complete_allocation, complete_refresh, payout_complete,
+        refresh_step_callback, start_allocation, start_refresh, start_withdrawal,
+        withdrawal_collected, withdrawal_step_callback, WithdrawalRequest,
+    },
 };
 
 mod common;
@@ -49,8 +59,13 @@ fn user_addr() -> Address {
     [10u8; 32]
 }
 
-#[test]
-fn soroban_contract_vault_snapshot_matches_fields() {
+struct SorobanContractFixture {
+    env: Env,
+    contract_id: soroban_sdk::Address,
+}
+
+#[fixture]
+fn soroban_contract_fixture() -> SorobanContractFixture {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -63,6 +78,17 @@ fn soroban_contract_vault_snapshot_matches_fields() {
         SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
             .unwrap();
     });
+
+    SorobanContractFixture { env, contract_id }
+}
+
+#[rstest]
+fn soroban_contract_vault_snapshot_matches_fields(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+
     env.as_contract(&contract_id, || {
         let (total_shares, idle_assets, external_assets) =
             SorobanVaultContract::vault_snapshot(env.clone()).unwrap();
@@ -113,21 +139,12 @@ fn mint_shares_from_deposit(state: VaultState, assets_in: u128) -> u128 {
         .expect("mint shares effect")
 }
 
-#[test]
-fn soroban_contract_preview_deposit_matches_kernel() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SorobanVaultContract, ());
-    let curator = soroban_sdk::Address::generate(&env);
-    let asset = soroban_sdk::Address::generate(&env);
-    let share = soroban_sdk::Address::generate(&env);
-
-    env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-            .unwrap();
-    });
-
+#[rstest]
+fn soroban_contract_preview_deposit_matches_kernel(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
     let assets_in = 500u128;
 
     env.as_contract(&contract_id, || {
@@ -158,21 +175,12 @@ fn soroban_contract_preview_deposit_matches_kernel() {
     });
 }
 
-#[test]
-fn soroban_contract_preview_withdraw_matches_kernel() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SorobanVaultContract, ());
-    let curator = soroban_sdk::Address::generate(&env);
-    let asset = soroban_sdk::Address::generate(&env);
-    let share = soroban_sdk::Address::generate(&env);
-
-    env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-            .unwrap();
-    });
-
+#[rstest]
+fn soroban_contract_preview_withdraw_matches_kernel(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let mut state = VaultState::default();
@@ -192,21 +200,13 @@ fn soroban_contract_preview_withdraw_matches_kernel() {
     });
 }
 
-#[test]
-fn soroban_contract_execute_withdraw_queue_empty_errors() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SorobanVaultContract, ());
-    let curator = soroban_sdk::Address::generate(&env);
-    let asset = soroban_sdk::Address::generate(&env);
-    let share = soroban_sdk::Address::generate(&env);
+#[rstest]
+fn soroban_contract_execute_withdraw_queue_empty_errors(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
-
-    env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-            .unwrap();
-    });
 
     env.as_contract(&contract_id, || {
         let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
@@ -214,21 +214,13 @@ fn soroban_contract_execute_withdraw_queue_empty_errors() {
     });
 }
 
-#[test]
-fn soroban_contract_execute_withdraw_non_idle_errors() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(SorobanVaultContract, ());
-    let curator = soroban_sdk::Address::generate(&env);
-    let asset = soroban_sdk::Address::generate(&env);
-    let share = soroban_sdk::Address::generate(&env);
+#[rstest]
+fn soroban_contract_execute_withdraw_non_idle_errors(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
-
-    env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-            .unwrap();
-    });
 
     env.as_contract(&contract_id, || {
         let mut state = VaultState::default();
@@ -282,6 +274,11 @@ fn create_rbac_vault() -> RbacVault {
     );
     vault.load_state().unwrap();
     vault
+}
+
+#[fixture]
+fn rbac_vault() -> RbacVault {
+    create_rbac_vault()
 }
 
 // Deposit Flow Tests
@@ -444,56 +441,52 @@ fn test_refresh_flow_basic(mut vault: TestVault) {
 
 // RBAC Tests
 
-#[test]
-fn test_rbac_user_can_deposit() {
-    let mut vault = create_rbac_vault();
+#[rstest]
+fn test_rbac_user_can_deposit(mut rbac_vault: RbacVault) {
     let user = user_addr();
 
     // User should be able to deposit
-    let result = vault.deposit(user, user, 1000, 0, 100);
+    let result = rbac_vault.deposit(user, user, 1000, 0, 100);
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_rbac_user_cannot_allocate() {
-    let mut vault = create_rbac_vault();
+#[rstest]
+fn test_rbac_user_cannot_allocate(mut rbac_vault: RbacVault) {
     let user = user_addr();
 
     // Setup
-    vault
+    rbac_vault
         .deposit(curator_addr(), curator_addr(), 10000, 0, 100)
         .unwrap();
 
     // User should not be able to begin allocation
-    let result = vault.begin_allocating(user, vec![(0, 5000)], 1000);
+    let result = rbac_vault.begin_allocating(user, vec![(0, 5000)], 1000);
     assert!(result.is_err());
 }
 
-#[test]
-fn test_rbac_allocator_can_allocate() {
-    let mut vault = create_rbac_vault();
+#[rstest]
+fn test_rbac_allocator_can_allocate(mut rbac_vault: RbacVault) {
     let allocator = allocator_addr();
 
     // Setup
-    vault
+    rbac_vault
         .deposit(curator_addr(), curator_addr(), 10000, 0, 100)
         .unwrap();
 
     // Allocator should be able to begin allocation
-    let result = vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
+    let result = rbac_vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_rbac_curator_can_do_everything() {
+#[rstest]
+fn test_rbac_curator_can_do_everything(mut rbac_vault: RbacVault) {
     use templar_soroban_runtime::contract::{AllocationDelta, Delta};
 
-    let mut vault = create_rbac_vault();
     let curator = curator_addr();
 
-    vault.deposit(curator, curator, 10000, 0, 100).unwrap();
+    rbac_vault.deposit(curator, curator, 10000, 0, 100).unwrap();
 
-    vault
+    rbac_vault
         .allocate(
             curator,
             &AllocationDelta::Supply(Delta {
@@ -503,42 +496,39 @@ fn test_rbac_curator_can_do_everything() {
         )
         .unwrap();
 
-    vault.refresh_markets(curator, vec![0], 1000).unwrap();
+    rbac_vault.refresh_markets(curator, vec![0], 1000).unwrap();
 }
 
-#[test]
-fn test_rbac_pause_by_guardian() {
-    let mut vault = create_rbac_vault();
+#[rstest]
+fn test_rbac_pause_by_guardian(mut rbac_vault: RbacVault) {
     let guardian = guardian_addr();
 
     // Guardian should be able to pause
-    let result = vault.pause(guardian, true);
+    let result = rbac_vault.pause(guardian, true);
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_rbac_user_cannot_pause() {
-    let mut vault = create_rbac_vault();
+#[rstest]
+fn test_rbac_user_cannot_pause(mut rbac_vault: RbacVault) {
     let user = user_addr();
 
     // User should not be able to pause
-    let result = vault.pause(user, true);
+    let result = rbac_vault.pause(user, true);
     assert!(result.is_err());
 }
 
-#[test]
-fn test_restrictions_blacklist_blocks_deposit() {
+#[rstest]
+fn test_restrictions_blacklist_blocks_deposit(mut rbac_vault: RbacVault) {
     use templar_vault_kernel::Restrictions;
 
-    let mut vault = create_rbac_vault();
     let curator = curator_addr();
     let user = user_addr();
 
-    vault
+    rbac_vault
         .set_restrictions(curator, Some(Restrictions::Blacklist(vec![user])))
         .unwrap();
 
-    let result = vault.deposit(user, user, 1000, 0, 100);
+    let result = rbac_vault.deposit(user, user, 1000, 0, 100);
     assert!(result.is_err());
 }
 
@@ -1079,4 +1069,140 @@ fn test_cannot_allocate_while_refreshing(mut vault: TestVault) {
     // Try to start allocation - should fail
     let result = vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
     assert!(result.is_err());
+}
+
+#[fixture]
+fn dummy_ctx() -> EffectContext {
+    EffectContext::new(0, [1u8; 32], [2u8; 32], [3u8; 32])
+}
+
+#[fixture]
+fn mock_interpreter() -> MockInterpreter {
+    MockInterpreter::new()
+}
+
+#[rstest]
+fn test_deposit_effects_execute(mut mock_interpreter: MockInterpreter, dummy_ctx: EffectContext) {
+    let effects = vec![
+        KernelEffect::MintShares {
+            owner: [9u8; 32],
+            shares: 100,
+        },
+        KernelEffect::EmitEvent {
+            event: templar_vault_kernel::effects::KernelEvent::DepositProcessed {
+                owner: [8u8; 32],
+                receiver: [9u8; 32],
+                assets_in: 1000,
+                shares_out: 100,
+            },
+        },
+    ];
+
+    let summary = mock_interpreter
+        .execute_effects(&effects, &dummy_ctx)
+        .unwrap();
+    assert_eq!(summary.shares_minted, 100);
+    assert_eq!(summary.events_emitted, 1);
+    assert_eq!(mock_interpreter.effects.len(), 2);
+}
+
+#[rstest]
+fn test_allocation_transition_flow_reaches_idle(
+    mut mock_interpreter: MockInterpreter,
+    dummy_ctx: EffectContext,
+) {
+    let op_id = 7u64;
+    let plan = vec![(0u32, 100u128), (1u32, 200u128)];
+
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+    let mut state = result.new_state;
+
+    state = allocation_step_callback(state, true, 100, op_id)
+        .unwrap()
+        .new_state;
+    state = allocation_step_callback(state, true, 200, op_id)
+        .unwrap()
+        .new_state;
+
+    let result = complete_allocation(state, op_id, None).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
+}
+
+#[rstest]
+fn test_refresh_transition_flow_reaches_idle(
+    mut mock_interpreter: MockInterpreter,
+    dummy_ctx: EffectContext,
+) {
+    let op_id = 12u64;
+    let plan = vec![0u32, 1u32, 2u32];
+
+    let result = start_refresh(OpState::Idle, plan.clone(), op_id).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+    let mut state = result.new_state;
+
+    for _ in plan {
+        state = refresh_step_callback(state, op_id).unwrap().new_state;
+    }
+
+    let result = complete_refresh(state, op_id).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
+}
+
+#[rstest]
+fn test_withdrawal_transition_flow_reaches_idle(
+    mut mock_interpreter: MockInterpreter,
+    dummy_ctx: EffectContext,
+) {
+    let op_id = 33u64;
+
+    let request = WithdrawalRequest {
+        op_id,
+        amount: 150,
+        receiver: [6u8; 32],
+        owner: [5u8; 32],
+        escrow_shares: 150,
+    };
+
+    let result = start_withdrawal(OpState::Idle, request).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+    let state = result.new_state;
+
+    let state = withdrawal_step_callback(state, op_id, 150)
+        .unwrap()
+        .new_state;
+    let result = withdrawal_collected(state, op_id, 150).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+
+    let escrow_address = dummy_ctx.vault_address;
+    let result = payout_complete(result.new_state, true, op_id, escrow_address).unwrap();
+    mock_interpreter
+        .execute_effects(&result.effects, &dummy_ctx)
+        .unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
+}
+
+#[rstest]
+fn test_refresh_state_roundtrip() {
+    let state = OpState::Refreshing(RefreshingState {
+        op_id: 9,
+        index: 0,
+        plan: vec![0, 1],
+    });
+    let result = refresh_step_callback(state, 9).unwrap();
+    assert!(matches!(result.new_state, OpState::Refreshing(_)));
 }

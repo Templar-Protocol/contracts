@@ -22,16 +22,13 @@ curator-test:
 	cargo test -p templar-curator-primitives
 
 curator-prop:
-	cargo test -p templar-curator-primitives --test proptests
+	cargo test -p templar-curator-primitives --test property_tests
 
 near-test:
 	cargo test -p templar-vault-contract
 
 soroban-test:
 	cargo test -p templar-soroban-runtime
-
-soroban-flows:
-	cargo test -p templar-soroban-runtime --test flows
 
 soroban-integration:
 	cargo test -p templar-soroban-runtime --test integration_tests

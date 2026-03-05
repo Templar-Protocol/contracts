@@ -49,7 +49,7 @@ Core recipes:
 - Curator primitives tests: `curator-test`
 - Curator primitives property tests: `curator-prop`
 - NEAR integration tests: `near-test`
-- Soroban unit/integration recipes: `soroban-test`, `soroban-prop`, `soroban-integration`, `soroban-flows`
+- Soroban unit/integration recipes: `soroban-test`, `soroban-prop`, `soroban-integration`
 - Cross-surface parity run: `parity`
 - Full vault test sweep: `vault-test`
 - Formal verification: `kani-kernel`, `kani-curator`
