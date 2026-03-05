@@ -134,79 +134,58 @@ pub enum OpState {
     Payout(PayoutState),
 }
 
-impl From<IdleState> for OpState {
-    fn from(_: IdleState) -> Self {
-        OpState::Idle
-    }
+macro_rules! impl_op_state_from {
+    ($state:ty => $variant:path) => {
+        impl From<$state> for OpState {
+            #[inline]
+            fn from(state: $state) -> Self {
+                $variant(state)
+            }
+        }
+    };
+    ($state:ty => $variant:path, unit) => {
+        impl From<$state> for OpState {
+            #[inline]
+            fn from(_: $state) -> Self {
+                $variant
+            }
+        }
+    };
 }
 
-impl From<AllocatingState> for OpState {
-    fn from(s: AllocatingState) -> Self {
-        OpState::Allocating(s)
-    }
+macro_rules! impl_op_state_as_ref {
+    ($method:ident, $state:ty, $variant:ident) => {
+        #[inline]
+        #[must_use]
+        pub const fn $method(&self) -> Option<&$state> {
+            match self {
+                OpState::$variant(state) => Some(state),
+                _ => None,
+            }
+        }
+    };
+    ($method:ident, $state:ty, $variant:ident, unit => $value:expr) => {
+        #[inline]
+        #[must_use]
+        pub const fn $method(&self) -> Option<&$state> {
+            match self {
+                OpState::$variant => Some($value),
+                _ => None,
+            }
+        }
+    };
 }
 
-impl From<WithdrawingState> for OpState {
-    fn from(s: WithdrawingState) -> Self {
-        OpState::Withdrawing(s)
-    }
-}
-
-impl From<RefreshingState> for OpState {
-    fn from(s: RefreshingState) -> Self {
-        OpState::Refreshing(s)
-    }
-}
-
-impl From<PayoutState> for OpState {
-    fn from(s: PayoutState) -> Self {
-        OpState::Payout(s)
-    }
-}
+impl_op_state_from!(IdleState => OpState::Idle, unit);
+impl_op_state_from!(AllocatingState => OpState::Allocating);
+impl_op_state_from!(WithdrawingState => OpState::Withdrawing);
+impl_op_state_from!(RefreshingState => OpState::Refreshing);
+impl_op_state_from!(PayoutState => OpState::Payout);
 
 impl OpState {
-    #[inline]
-    #[must_use]
-    pub const fn as_idle(&self) -> Option<&IdleState> {
-        match self {
-            OpState::Idle => Some(&IdleState),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_allocating(&self) -> Option<&AllocatingState> {
-        match self {
-            OpState::Allocating(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_withdrawing(&self) -> Option<&WithdrawingState> {
-        match self {
-            OpState::Withdrawing(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_refreshing(&self) -> Option<&RefreshingState> {
-        match self {
-            OpState::Refreshing(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_payout(&self) -> Option<&PayoutState> {
-        match self {
-            OpState::Payout(s) => Some(s),
-            _ => None,
-        }
-    }
+    impl_op_state_as_ref!(as_idle, IdleState, Idle, unit => &IdleState);
+    impl_op_state_as_ref!(as_allocating, AllocatingState, Allocating);
+    impl_op_state_as_ref!(as_withdrawing, WithdrawingState, Withdrawing);
+    impl_op_state_as_ref!(as_refreshing, RefreshingState, Refreshing);
+    impl_op_state_as_ref!(as_payout, PayoutState, Payout);
 }
