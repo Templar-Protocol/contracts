@@ -43,8 +43,11 @@ pub fn panic_with_message(msg: &str) -> ! {
     panic!("{}", msg);
 }
 
+/// Extension trait for `Option` and `Result` that panics with a custom message on failure.
 pub trait UnwrapReject<T> {
+    /// Unwraps the value with a default panic message.
     fn unwrap_or_reject(self) -> T;
+    /// Unwraps the value with a custom panic message.
     fn expect_or_reject(self, msg: &str) -> T;
 }
 
