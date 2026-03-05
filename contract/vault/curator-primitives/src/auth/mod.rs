@@ -12,17 +12,10 @@ use templar_vault_kernel::{Address, KernelAction};
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum AuthPolicyProfile {
     /// Canonical policy used by shared RBAC adapters.
     Canonical,
@@ -34,17 +27,10 @@ pub enum AuthPolicyProfile {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum AuthPolicyClass {
     /// User-facing/public action (no special role requirement).
     Public,
@@ -122,17 +108,10 @@ pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum ActionKind {
     /// User deposit action.
     Deposit,

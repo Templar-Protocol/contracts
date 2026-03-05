@@ -19,18 +19,6 @@ use templar_vault_kernel::TimeGate;
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingValue<T> {
@@ -122,17 +110,10 @@ pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) ->
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum TimelockDecision {
     Immediate,
     Timelocked,
@@ -212,17 +193,10 @@ impl<'a, R> FeeConfig<'a, R> {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct FeeChangeDecision {
     pub timelocked: bool,
     pub fee_increase: bool,
@@ -233,17 +207,10 @@ pub struct FeeChangeDecision {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum FeeChangeError {
     NoChange,
     PerformanceFeeTooHigh,
@@ -300,17 +267,10 @@ pub fn evaluate_fee_change<R: PartialEq>(
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum TimelockConfigError {
     NoChange,
     OutOfBounds,
@@ -338,17 +298,10 @@ pub fn timelock_config_decision(
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum CapChangeError {
     NoChange,
 }
@@ -370,17 +323,10 @@ pub fn cap_change_decision(
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum RelativeCapChangeError {
     NoChange,
     RelativeCapTooHigh,
@@ -407,17 +353,10 @@ pub fn relative_cap_change_decision(
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum MembershipChangeError {
     NoChange,
 }

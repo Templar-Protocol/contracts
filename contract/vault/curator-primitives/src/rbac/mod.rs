@@ -29,18 +29,6 @@ use crate::auth::{
 )]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
 #[cfg_attr(feature = "boundary", derive(near_sdk::BorshStorageKey))]
 pub enum Role {
     /// Full curator control.
@@ -71,17 +59,10 @@ impl Role {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(
-    all(feature = "boundary", not(feature = "borsh")),
-    derive(near_sdk::borsh::BorshDeserialize, near_sdk::borsh::BorshSerialize)
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    derive(near_sdk::serde::Deserialize, near_sdk::serde::Serialize)
-)]
-#[cfg_attr(
-    all(feature = "boundary", not(feature = "serde")),
-    serde(crate = "near_sdk::serde")
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct RoleAssignment {
     /// The address with this role.
     pub address: Address,
