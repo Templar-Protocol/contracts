@@ -6,8 +6,6 @@
 //! The core trait [`AuthAdapter`] allows each chain executor to implement its own
 //! signature verification while sharing the same action kinds and error types.
 
-#[cfg(not(target_arch = "wasm32"))]
-use core::fmt;
 use templar_vault_kernel::{Address, KernelAction};
 
 /// Shared auth policy profile used to classify action authorization behavior.
@@ -188,33 +186,43 @@ impl ActionKind {
     }
 }
 
-impl From<&KernelAction> for ActionKind {
-    fn from(action: &KernelAction) -> Self {
-        match action {
-            KernelAction::BeginAllocating { .. } => ActionKind::BeginAllocating,
-            KernelAction::Deposit { .. } => ActionKind::Deposit,
-            KernelAction::RequestWithdraw { .. } => ActionKind::RequestWithdraw,
-            KernelAction::ExecuteWithdraw { .. } => ActionKind::ExecuteWithdraw,
-            KernelAction::BeginRefreshing { .. } => ActionKind::BeginRefreshing,
-            KernelAction::FinishAllocating { .. } => ActionKind::FinishAllocating,
-            KernelAction::SyncExternalAssets { .. } => ActionKind::SyncExternalAssets,
-            KernelAction::FinishRefreshing { .. } => ActionKind::FinishRefreshing,
-            KernelAction::AbortRefreshing { .. } => ActionKind::AbortRefreshing,
-            KernelAction::SettlePayout { .. } => ActionKind::SettlePayout,
-            KernelAction::AbortAllocating { .. } => ActionKind::AbortAllocating,
-            KernelAction::AbortWithdrawing { .. } => ActionKind::AbortWithdrawing,
-            KernelAction::RefreshFees { .. } => ActionKind::RefreshFees,
-            KernelAction::Pause { .. } => ActionKind::Pause,
-            KernelAction::EmergencyReset => ActionKind::EmergencyReset,
+macro_rules! impl_action_kind_from_kernel_action {
+    ($($variant:ident),+ $(,)?) => {
+        impl From<&KernelAction> for ActionKind {
+            #[inline]
+            fn from(action: &KernelAction) -> Self {
+                match action {
+                    $(KernelAction::$variant { .. } => Self::$variant,)+
+                    KernelAction::EmergencyReset => Self::EmergencyReset,
+                }
+            }
         }
-    }
+
+        impl From<KernelAction> for ActionKind {
+            #[inline]
+            fn from(action: KernelAction) -> Self {
+                Self::from(&action)
+            }
+        }
+    };
 }
 
-impl From<KernelAction> for ActionKind {
-    fn from(action: KernelAction) -> Self {
-        ActionKind::from(&action)
-    }
-}
+impl_action_kind_from_kernel_action!(
+    BeginAllocating,
+    Deposit,
+    RequestWithdraw,
+    ExecuteWithdraw,
+    BeginRefreshing,
+    FinishAllocating,
+    SyncExternalAssets,
+    FinishRefreshing,
+    AbortRefreshing,
+    SettlePayout,
+    AbortAllocating,
+    AbortWithdrawing,
+    RefreshFees,
+    Pause,
+);
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -225,29 +233,6 @@ pub enum Caller {
     Sentinel,
     Allocator,
     User,
-}
-
-impl Caller {
-    #[cfg(not(target_arch = "wasm32"))]
-    #[inline]
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Admin => "Admin",
-            Self::Curator => "Curator",
-            Self::Guardian => "Guardian",
-            Self::Sentinel => "Sentinel",
-            Self::Allocator => "Allocator",
-            Self::User => "User",
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl fmt::Display for Caller {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
 }
 
 impl From<Address> for Caller {

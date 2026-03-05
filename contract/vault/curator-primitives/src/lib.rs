@@ -73,9 +73,4 @@ pub use governance::{
 };
 
 #[cfg(feature = "boundary")]
-pub use boundary::{
-    auth_error_message, boundary_auth_pattern_for, cap_change_error_message,
-    fee_change_error_message, membership_change_error_message, recovery_outcome_message,
-    relative_cap_change_error_message, timelock_config_error_message, BoundaryAuthPattern,
-    VaultStorageKey,
-};
+pub use boundary::{boundary_auth_pattern_for, BoundaryAuthPattern, VaultStorageKey};

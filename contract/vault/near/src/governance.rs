@@ -5,20 +5,31 @@ use templar_common::vault::{
 
 use super::*;
 use crate::auth::AuthPattern;
+use crate::convert::{account_id_to_address, to_kernel_restrictions};
 use near_sdk::AccountIdRef;
 use near_sdk_contract_tools::ft::nep141::TransferError;
 use near_sdk_contract_tools::ft::Nep141Transfer;
 use std::collections::VecDeque;
-use templar_common::{panic_with_message, vault::Restrictions};
-use templar_curator_primitives::boundary::{
-    cap_change_error_message, fee_change_error_message, membership_change_error_message,
-    relative_cap_change_error_message, timelock_config_error_message,
+use templar_common::{
+    panic_with_message,
+    vault::{RestrictionReason, Restrictions},
 };
 use templar_curator_primitives::governance as shared_gov;
 use templar_curator_primitives::governance::PendingValue;
+use templar_vault_kernel::Address;
+
+const ERR_TIMELOCK_NO_CHANGE: &str = "Already set to this value";
+const ERR_TIMELOCK_OUT_OF_BOUNDS: &str = "Timelock out of bounds";
+const ERR_PERFORMANCE_FEE_TOO_HIGH: &str = "performance fee too high";
+const ERR_MANAGEMENT_FEE_TOO_HIGH: &str = "management fee too high";
+const ERR_NO_FEE_CHANGES: &str = "No fee changes";
+const ERR_CAP_NO_CHANGE: &str = "New cap is same as current";
+const ERR_RELATIVE_CAP_TOO_HIGH: &str = "relative cap too high";
+const ERR_RELATIVE_CAP_NO_CHANGE: &str = "New relative cap is same as current";
+const ERR_MEMBERSHIP_NO_CHANGE: &str = "Market already assigned to this cap group";
 
 #[near(serializers = [borsh, json])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TimelockedAction {
     /// Change the guardian to `new_guardian`.
     GuardianChange { account: AccountId },
@@ -57,7 +68,7 @@ pub enum TimelockedAction {
 
 fn to_shared_restrictions(
     restrictions: &Option<Restrictions>,
-) -> Option<shared_gov::Restrictions<AccountId>> {
+) -> Option<shared_gov::Restrictions<Address>> {
     match restrictions {
         None => None,
         Some(Restrictions::Paused) => Some(shared_gov::Restrictions::Paused),
@@ -178,9 +189,18 @@ impl Gate {
 
     pub(crate) fn enforce_policy(&self, account: &AccountIdRef) {
         if let Some(restrictions) = &self.restrictions {
-            if let Some(reason) = restrictions.is_restricted(account) {
+            let actor = account_id_to_address(&account.to_owned());
+            let self_id = account_id_to_address(&env::current_account_id());
+            let kernel_restrictions = to_kernel_restrictions(restrictions);
+
+            if let Some(reason) = kernel_restrictions.is_restricted(&actor, &self_id) {
+                let reason = match reason {
+                    RestrictionReason::Paused => "Paused",
+                    RestrictionReason::Blacklisted => "Blacklisted",
+                    RestrictionReason::NotWhitelisted => "NotWhitelisted",
+                };
                 templar_common::panic_with_message(&format!(
-                    "Account {account} is restricted: {reason:?}"
+                    "Account {account} is restricted: {reason}"
                 ));
             }
         }
@@ -794,7 +814,12 @@ impl Contract {
                     MIN_TIMELOCK_NS,
                     MAX_TIMELOCK_NS,
                 ))
-                .unwrap_or_else(|err| panic_with_message(timelock_config_error_message(err)))
+                .unwrap_or_else(|err| {
+                    panic_with_message(match err {
+                        shared_gov::TimelockConfigError::NoChange => ERR_TIMELOCK_NO_CHANGE,
+                        shared_gov::TimelockConfigError::OutOfBounds => ERR_TIMELOCK_OUT_OF_BOUNDS,
+                    })
+                })
             }
             TimelockedAction::FeesChange { fees } => {
                 Self::require_owner();
@@ -829,7 +854,17 @@ impl Contract {
 
                 shared_gov::evaluate_fee_change(&current, &proposed)
                     .map(|decision| decision.timelocked)
-                    .unwrap_or_else(|err| panic_with_message(fee_change_error_message(err)))
+                    .unwrap_or_else(|err| {
+                        panic_with_message(match err {
+                            shared_gov::FeeChangeError::PerformanceFeeTooHigh => {
+                                ERR_PERFORMANCE_FEE_TOO_HIGH
+                            }
+                            shared_gov::FeeChangeError::ManagementFeeTooHigh => {
+                                ERR_MANAGEMENT_FEE_TOO_HIGH
+                            }
+                            shared_gov::FeeChangeError::NoChange => ERR_NO_FEE_CHANGES,
+                        })
+                    })
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 Abdicator::require_not_abdicated(&self.abdicator, "set_restrictions");
@@ -902,7 +937,7 @@ impl Contract {
                         Some(cfg.cap.0),
                         new_cap.0,
                     ))
-                    .unwrap_or_else(|err| panic_with_message(cap_change_error_message(err)))
+                    .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
                 } else {
                     true
                 }
@@ -930,7 +965,7 @@ impl Contract {
                 shared_gov::submission_requires_timelock(shared_gov::cap_change_decision(
                     current, new_cap.0,
                 ))
-                .unwrap_or_else(|err| panic_with_message(cap_change_error_message(err)))
+                .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
             }
             TimelockedAction::CapGroupRelativeCapChange {
                 cap_group,
@@ -963,7 +998,14 @@ impl Contract {
                 shared_gov::submission_requires_timelock(shared_gov::relative_cap_change_decision(
                     current, new_wad,
                 ))
-                .unwrap_or_else(|err| panic_with_message(relative_cap_change_error_message(err)))
+                .unwrap_or_else(|err| {
+                    panic_with_message(match err {
+                        shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
+                            ERR_RELATIVE_CAP_TOO_HIGH
+                        }
+                        shared_gov::RelativeCapChangeError::NoChange => ERR_RELATIVE_CAP_NO_CHANGE,
+                    })
+                })
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 AuthPattern::CuratorOrOwner.require();
@@ -976,7 +1018,7 @@ impl Contract {
                 let decision = shared_gov::submission_requires_timelock(
                     shared_gov::membership_change_decision(changed),
                 )
-                .unwrap_or_else(|err| panic_with_message(membership_change_error_message(err)));
+                .unwrap_or_else(|_| panic_with_message(ERR_MEMBERSHIP_NO_CHANGE));
 
                 require!(
                     !shared_gov::queue_has_pending(
