@@ -2,11 +2,11 @@ use near_jsonrpc_client::JsonRpcClient;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
     price_transformer::{self, PriceTransformer, ProxyPriceTransformer},
-    proxy::{Proxy, ProxyEntry},
+    proxy::{Proxy, Source},
     pyth::PriceIdentifier,
     OracleRequest,
 };
-use templar_relayer::client::near::Near;
+use templar_relayer::client::near::{Near, ResolvePriceIdentifierError};
 use test_utils::{
     accounts,
     controller::{lst_oracle::LstOracleController, proxy_oracle::ProxyOracleController},
@@ -91,18 +91,17 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     // Test proxy contract too
-    let proxy_borrow = Proxy(vec![OracleRequest::pyth(
-        price_oracle.id().to_owned(),
-        DEFAULT_BORROW_PRICE_ID,
-    )
-    .into()]);
+    let proxy_borrow =
+        Proxy::median([
+            OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID).into(),
+        ]);
     let proxy_borrow_id = PriceIdentifier([0x01_u8; 32]);
 
     proxy_oracle
         .set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
         .await;
 
-    let transform_borrow = Proxy(vec![ProxyEntry::Transformer(ProxyPriceTransformer::lst(
+    let transform_borrow = Proxy::median([Source::Transformer(ProxyPriceTransformer::lst(
         OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
         24,
         price_transformer::Call::new_simple(borrow_asset.id(), "redemption_rate"),
@@ -120,13 +119,21 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     // Passthrough
     let request = near
         .resolve_price_identifier(proxy_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
-        .await
-        .unwrap();
+        .await;
 
-    assert_eq!(
-        request,
-        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
-    );
+    #[allow(clippy::match_wildcard_for_single_variants)]
+    match request.unwrap_err() {
+        ResolvePriceIdentifierError::NotFound {
+            oracle_id,
+            price_identifier,
+        } => {
+            assert_eq!(&oracle_id, proxy_oracle.id());
+            assert_eq!(price_identifier, DEFAULT_BORROW_PRICE_ID);
+        }
+        err => {
+            panic!("Expected NotFound error, got {err:?}");
+        }
+    }
 
     // Direct Pyth proxy
     let request = near

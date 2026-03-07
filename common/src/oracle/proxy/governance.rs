@@ -295,35 +295,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn execute() {
-        use near_sdk::{env, near};
-
-        #[derive(Debug, Clone)]
-        #[near(serializers = [borsh, json])]
-        enum Op {
-            Increment,
-            Decrement,
-        }
-
-        let mut g = Governance::<Op>::new(b"g");
-        g.create(
-            0,
-            Op::Increment,
-            env::block_timestamp_ms(),
-            env::predecessor_account_id(),
-        )
-        .unwrap();
-        match g.execute(0, env::block_timestamp_ms()).unwrap() {
-            Op::Increment => {
-                todo!("Actually perform the increment operation here")
-            }
-            Op::Decrement => {
-                todo!("Actually perform the decrement operation here")
-            }
-        }
-    }
-
-    #[test]
     fn create() {
         let alice: AccountId = "alice.near".parse().unwrap();
         let mut g = Governance::<String>::new(b"g");

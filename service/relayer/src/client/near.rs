@@ -32,7 +32,7 @@ use templar_common::{
     market::MarketConfiguration,
     oracle::{
         price_transformer::PriceTransformer,
-        proxy::{Proxy, ProxyEntry},
+        proxy::{Proxy, Source},
         pyth::PriceIdentifier,
         OracleRequest,
     },
@@ -107,6 +107,25 @@ impl ViewError {
             ))) if vm_error.contains("MethodResolveError(MethodNotFound)")
         )
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LoadMarketAccountsError {
+    #[error("View error: {0}")]
+    View(#[from] ViewError),
+    #[error(transparent)]
+    ResolvePriceIdentifier(#[from] ResolvePriceIdentifierError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolvePriceIdentifierError {
+    #[error("View error: {0}")]
+    View(#[from] ViewError),
+    #[error("Price identifier not defined on oracle {oracle_id}: {price_identifier}")]
+    NotFound {
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -540,7 +559,7 @@ impl Near {
     pub async fn load_market_accounts(
         &self,
         market_id: AccountId,
-    ) -> Result<MarketData, ViewError> {
+    ) -> Result<MarketData, LoadMarketAccountsError> {
         let config = self
             .view::<MarketConfiguration>(market_id.clone(), "get_configuration", json!({}))
             .await?;
@@ -585,13 +604,7 @@ impl Near {
             Ok(_) => {
                 tracing::debug!("Oracle supports proxy interface, treating as proxy oracle");
 
-                let passthrough_pyth_id = self
-                    .view::<AccountId>(oracle_id.clone(), "passthrough_pyth_id", json!({}))
-                    .await?;
-
-                return Ok(OracleType::Proxy {
-                    passthrough_pyth_id,
-                });
+                return Ok(OracleType::Proxy);
             }
             Err(e) if e.is_method_not_found() => {
                 tracing::debug!("Not a proxy oracle");
@@ -639,7 +652,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-    ) -> Result<OracleRequest, ViewError> {
+    ) -> Result<OracleRequest, ResolvePriceIdentifierError> {
         match self.query_oracle_type(oracle_id.clone()).await? {
             OracleType::PythDirect => {
                 tracing::debug!("Price ID resolved: direct Pyth oracle contract");
@@ -661,10 +674,8 @@ impl Near {
                     Ok(OracleRequest::pyth(pyth_id, price_identifier))
                 }
             }
-            OracleType::Proxy {
-                passthrough_pyth_id,
-            } => {
-                tracing::debug!(%passthrough_pyth_id, "Price ID resolved: Proxy oracle contract");
+            OracleType::Proxy => {
+                tracing::debug!("Price ID resolved: Proxy oracle contract");
 
                 if let Some(proxy) = self
                     .view::<Option<Proxy>>(
@@ -674,19 +685,24 @@ impl Near {
                     )
                     .await?
                 {
-                    let Some(first) = proxy.0.first() else {
-                        tracing::error!("Proxy oracle contract returned empty proxy definition, assuming passthrough");
-                        return Ok(OracleRequest::pyth(oracle_id, price_identifier));
+                    let Some(first) = proxy.entries.first() else {
+                        tracing::error!("Proxy oracle contract returned empty proxy definition");
+                        return Err(ResolvePriceIdentifierError::NotFound {
+                            oracle_id,
+                            price_identifier,
+                        });
                     };
-                    let r = match first {
-                        ProxyEntry::Transformer(transformer) => &transformer.request,
-                        ProxyEntry::Request(request) => request,
+                    let r = match &first.source {
+                        Source::Transformer(transformer) => &transformer.request,
+                        Source::Request(ref request) => request,
                     };
                     Ok(r.clone())
                 } else {
-                    // Passthrough
-                    tracing::debug!("Price ID resolved: Proxy oracle contract: passthrough");
-                    Ok(OracleRequest::pyth(passthrough_pyth_id, price_identifier))
+                    tracing::debug!("Price ID not found on proxy oracle contract");
+                    Err(ResolvePriceIdentifierError::NotFound {
+                        oracle_id,
+                        price_identifier,
+                    })
                 }
             }
         }
@@ -730,5 +746,5 @@ pub enum VersionedKeyParameters {
 pub enum OracleType {
     PythDirect,
     PythLst { pyth_id: AccountId },
-    Proxy { passthrough_pyth_id: AccountId },
+    Proxy,
 }

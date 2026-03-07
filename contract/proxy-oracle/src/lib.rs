@@ -13,7 +13,7 @@ use templar_common::{
     oracle::{
         proxy::{
             governance::{Governance, Operation},
-            OracleType, Proxy, ProxyEntry,
+            OracleType, Proxy, Source,
         },
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
@@ -104,10 +104,10 @@ impl Contract {
                 continue;
             };
 
-            for entry in proxy.0 {
-                let request = match entry {
-                    ProxyEntry::Request(request) => request,
-                    ProxyEntry::Transformer(transformer) => {
+            for entry in proxy.entries {
+                let request = match entry.source {
+                    Source::Request(request) => request,
+                    Source::Transformer(transformer) => {
                         transformer_promises.push(transformer.call.promise());
                         transformer.request
                     }
@@ -177,6 +177,7 @@ impl Contract {
         original_price_ids: Vec<PriceIdentifier>,
         max_age_ms: U64,
     ) -> OracleResponse {
+        // TODO: Race condition if the owner changes the oracle definition during the callback.
         let callback = CallbackHandler::new(&oracle_order, max_age_ms.0);
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
 
@@ -189,9 +190,9 @@ impl Contract {
 
             let mut value = None;
 
-            for entry in proxy.0 {
-                let entry_result = match entry {
-                    ProxyEntry::Transformer(transformer) => {
+            for entry in proxy.entries {
+                let entry_result = match entry.source {
+                    Source::Transformer(transformer) => {
                         let price = callback.get(transformer.request);
                         let input = callback_result::<Decimal>(i);
                         i += 1;
@@ -200,7 +201,7 @@ impl Contract {
                             .zip(input)
                             .and_then(|(price, input)| transformer.action.apply(price, input))
                     }
-                    ProxyEntry::Request(p) => callback.get(p),
+                    Source::Request(p) => callback.get(p),
                 };
 
                 value = value.or(entry_result);

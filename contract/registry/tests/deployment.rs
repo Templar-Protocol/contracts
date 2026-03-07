@@ -1,14 +1,16 @@
 use near_sdk::serde_json::{self, json};
-use near_workspaces::types::{AccessKeyPermission, SecretKey};
+use near_workspaces::{
+    network::Sandbox,
+    types::{AccessKeyPermission, SecretKey},
+    Worker,
+};
 use templar_common::market::YieldWeights;
 use test_utils::*;
 use tokio::task::JoinSet;
 
+#[rstest::rstest]
 #[tokio::test]
-pub async fn deploy_from_registry() {
-    let worker = near_workspaces::sandbox_with_version("2.7.0")
-        .await
-        .unwrap();
+pub async fn deploy_from_registry(#[future(awt)] worker: Worker<Sandbox>) {
     let r = setup_registry(&worker).await;
 
     accounts!(
@@ -98,11 +100,9 @@ pub async fn deploy_from_registry() {
     }
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn deploy_with_access_key() {
-    let worker = near_workspaces::sandbox_with_version("2.7.0")
-        .await
-        .unwrap();
+async fn deploy_with_access_key(#[future(awt)] worker: Worker<Sandbox>) {
     let r = setup_registry(&worker).await;
 
     accounts!(
@@ -159,12 +159,10 @@ async fn deploy_with_access_key() {
     ));
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Market ID collision"]
-pub async fn market_id_collision() {
-    let worker = near_workspaces::sandbox_with_version("2.7.0")
-        .await
-        .unwrap();
+pub async fn market_id_collision(#[future(awt)] worker: Worker<Sandbox>) {
     let r = setup_registry(&worker).await;
 
     accounts!(
