@@ -14,6 +14,7 @@
 # Environment files
 .env
 .env.local
+.env.smoketest
 
 # documentation site
 _site/
@@ -23,4 +24,8 @@ _site/
 **/corpus
 **/fuzz*.log
 **/coverage
+
+# generated bindings
+client/vault/dist/
+
 .aider*

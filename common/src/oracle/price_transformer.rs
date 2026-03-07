@@ -79,9 +79,10 @@ impl Call {
     }
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
+    #[allow(clippy::expect_used, reason = "AccountId round-trip parse cannot fail")]
     pub fn rpc_call(&self) -> near_primitives::views::QueryRequest {
         near_primitives::views::QueryRequest::CallFunction {
-            account_id: self.account_id.clone(),
+            account_id: self.account_id.as_str().parse().expect("valid account_id"),
             method_name: self.method_name.clone(),
             args: self.args.0.clone().into(),
         }
