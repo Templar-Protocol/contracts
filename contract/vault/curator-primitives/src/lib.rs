@@ -34,10 +34,8 @@ pub use policy::{
         CapGroup, CapGroupError, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
     },
     cap_group_adapter::{
-        available_capacity_from_fields, can_allocate_from_fields, cap_group_from_fields,
-        cap_group_record_absolute_cap, cap_group_record_from_fields, cap_group_record_relative_cap,
-        effective_cap_from_fields, enforce_from_fields, set_cap_group_record_absolute_cap,
-        set_cap_group_record_relative_cap,
+        cap_group_record_absolute_cap, cap_group_record_relative_cap,
+        set_cap_group_record_absolute_cap, set_cap_group_record_relative_cap,
     },
     cooldown::{Cooldown, CooldownError},
     market_lock::{validate_lock_expiry, MarketLock, MarketLockSet},
