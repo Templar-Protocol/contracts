@@ -17,7 +17,6 @@ The vault system follows a kernel + executor split:
 │  (templar-vault-kernel)                                         │
 │  - Pure state machine logic                                     │
 │  - Chain-agnostic property tests                                │
-│  - Formal verification harnesses (Kani)                         │
 └─────────────────────────────────────────────────────────────────┘
                               │
               ┌───────────────┴───────────────┐
@@ -52,7 +51,6 @@ Core recipes:
 - Soroban unit/integration recipes: `soroban-test`, `soroban-prop`, `soroban-integration`
 - Cross-surface parity run: `parity`
 - Full vault test sweep: `vault-test`
-- Formal verification: `kani-kernel`, `kani-curator`
 - Gas reporting: `gas-report`
 
 Soroban runtime/deployment workflows are in [contract/vault/soroban/justfile](./soroban/justfile).
