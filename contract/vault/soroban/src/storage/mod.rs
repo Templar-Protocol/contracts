@@ -40,6 +40,7 @@ impl SorobanStorageKey {
     pub const Restrictions: Symbol = symbol_short!("restrict");
     pub const Version: Symbol = symbol_short!("version");
     pub const Paused: Symbol = symbol_short!("paused_l"); // legacy pause key (migration)
+    pub const PausedState: Symbol = symbol_short!("paused_s");
 }
 
 fn pc_serialize<T: serde::Serialize>(
@@ -72,7 +73,7 @@ fn compose_policy_state(
         return None;
     }
 
-    let mut state = PolicyState::new();
+    let mut state = PolicyState::default();
     if let Some(markets) = markets {
         state.markets = markets;
     }
@@ -252,20 +253,20 @@ impl<'a> SorobanStorage<'a> {
     }
 
     /// Check if the contract is paused.
-    ///
-    /// Uses OpenZeppelin's Pausable storage for compatibility.
     pub fn is_paused(&self) -> bool {
-        stellar_contract_utils::pausable::paused(self.env)
+        self.env
+            .storage()
+            .instance()
+            .get(&SorobanStorageKey::PausedState)
+            .unwrap_or(false)
     }
 
-    /// Set the pause state using OpenZeppelin's Pausable module.
+    /// Set the pause state in instance storage.
     pub fn set_paused(&self, paused: bool) {
-        use stellar_contract_utils::pausable;
-        if paused && !self.is_paused() {
-            pausable::pause(self.env);
-        } else if !paused && self.is_paused() {
-            pausable::unpause(self.env);
-        }
+        self.env
+            .storage()
+            .instance()
+            .set(&SorobanStorageKey::PausedState, &paused);
     }
 
     /// Check if the contract has the legacy pause key (for migration).

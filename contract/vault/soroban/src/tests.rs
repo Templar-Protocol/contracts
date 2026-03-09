@@ -745,7 +745,7 @@ mod contract_tests {
         env.mock_all_auths();
         env.ledger().set(LedgerInfo {
             timestamp: 100,
-            protocol_version: 23,
+            protocol_version: 25,
             ..Default::default()
         });
 
@@ -942,7 +942,7 @@ mod contract_tests {
             storage.save_state(&versioned).unwrap();
             storage.save_paused(false).unwrap();
 
-            Storage::save_policy_state(&mut storage, &PolicyState::new()).unwrap();
+            Storage::save_policy_state(&mut storage, &PolicyState::default()).unwrap();
 
             let restrictions = Restrictions::Blacklist(alloc::vec![[9u8; 32]]);
             Storage::save_restrictions(&mut storage, &Some(restrictions.clone())).unwrap();
@@ -1012,7 +1012,7 @@ mod convert_tests {
         let env = Env::default();
         env.ledger().set(LedgerInfo {
             timestamp: 123,
-            protocol_version: 23,
+            protocol_version: 25,
             ..Default::default()
         });
 

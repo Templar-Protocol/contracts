@@ -46,13 +46,14 @@ use crate::effects::{
     ShareTokenAdapter, SorobanEffectInterpreter,
 };
 use crate::error::{ContractError, RuntimeError};
-use crate::market::{invoke_progress_withdrawal, invoke_supply};
+use crate::market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets};
 use crate::storage::{SorobanStorage, Storage, VersionedState};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 
 const ESCROW_ADDRESS: Address = [0u8; 32];
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 use crate::storage::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
+const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
 
 /// Deterministic one-way mapping from Soroban address to kernel Address.
 ///
@@ -166,7 +167,7 @@ where
             auth,
             interpreter,
             state: None,
-            policy_state: PolicyState::new(),
+            policy_state: PolicyState::default(),
             restrictions: None,
             paused: false,
         }
@@ -186,7 +187,7 @@ where
         self.policy_state = self
             .storage
             .load_policy_state()?
-            .unwrap_or_else(PolicyState::new);
+            .unwrap_or_else(PolicyState::default);
         self.restrictions = self.storage.load_restrictions()?;
         Ok(())
     }
@@ -1389,7 +1390,7 @@ fn migrate_legacy_paused(env: &Env) {
 #[inline(never)]
 fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeError> {
     // Block operations during migration (upgrade in progress)
-    if stellar_contract_utils::upgradeable::can_complete_migration(env) {
+    if migration_in_progress(env) {
         return Err(RuntimeError::invalid_state(
             "migration in progress - call migrate() first",
         ));
@@ -1451,7 +1452,9 @@ fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeE
         rbac_config.add_role(kernel_address_from_sdk(env, &sentinel_addr), Role::Sentinel);
     }
     rbac_config.set_paused(paused);
-    let auth = RbacAuth::new(rbac_config);
+    let auth = RbacAuth {
+        config: rbac_config,
+    };
 
     Ok(VaultBootstrap {
         config,
@@ -1642,12 +1645,21 @@ impl SorobanVaultContract {
             let plan = vec![(market.into(), amount_u128)];
             let op_id = vault.begin_allocation_internal(caller_kernel, &plan)?;
             {
+                let next_principal = vault
+                    .policy_state()
+                    .principal_for(market)
+                    .saturating_add(amount_u128);
+                let policy = vault.policy_state_mut();
+                policy.set_principal(market, next_principal);
+                policy.refresh_cap_group_principals();
                 let state = vault.state_mut()?;
                 state.external_assets = state.external_assets.saturating_add(amount_u128);
                 state.sync_total_assets();
             }
             vault.finish_allocation_internal(op_id)?;
             vault.save_state()?;
+            let policy_state = vault.policy_state().clone();
+            vault.storage.save_policy_state(&policy_state)?;
             new_external = vault.state()?.external_assets;
             Ok(())
         };
@@ -1690,6 +1702,13 @@ impl SorobanVaultContract {
             let caller_kernel = kernel_address_from_sdk(&env, &caller);
             vault.authorize(ActionKind::BeginAllocating, caller_kernel)?;
             {
+                let next_principal = vault
+                    .policy_state()
+                    .principal_for(market)
+                    .saturating_sub(realized_amount_u128);
+                let policy = vault.policy_state_mut();
+                policy.set_principal(market, next_principal);
+                policy.refresh_cap_group_principals();
                 let state = vault.state_mut()?;
                 state.external_assets = state.external_assets.saturating_sub(realized_amount_u128);
                 state.idle_assets = state.idle_assets.saturating_add(realized_amount_u128);
@@ -1697,6 +1716,8 @@ impl SorobanVaultContract {
                 new_external = state.external_assets;
             }
             vault.save_state()?;
+            let policy_state = vault.policy_state().clone();
+            vault.storage.save_policy_state(&policy_state)?;
             Ok(())
         };
         with_contract_vault_contract_error(&env, &mut call)?;
@@ -1711,15 +1732,43 @@ impl SorobanVaultContract {
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
         let now_ns = ledger_timestamp_ns(&env)?;
+        let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
+        let mut refreshed_positions = Vec::with_capacity(markets.len() as usize);
+        for market in markets.iter() {
+            let adapter = adapter_for_market(&env, market)?;
+            require_allowed_adapter(&env, &adapter)?;
+            let total_assets = invoke_total_assets(&env, &adapter, &asset_token);
+            refreshed_positions.push((market, to_u128(total_assets)?));
+        }
 
-        let mut markets_vec: Option<Vec<TargetId>> = Some(markets.iter().collect());
+        let mut markets_vec: Option<Vec<TargetId>> = Some(
+            refreshed_positions
+                .iter()
+                .map(|(market, _)| *market)
+                .collect(),
+        );
 
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let caller_kernel = kernel_address_from_sdk(&env, &caller);
             let op_id =
                 vault.begin_refreshing(caller_kernel, markets_vec.take().unwrap(), now_ns)?;
+            {
+                let policy = vault.policy_state_mut();
+                for (market, total_assets) in refreshed_positions.iter() {
+                    policy.set_principal(*market, *total_assets);
+                }
+                policy.refresh_cap_group_principals();
+                new_external = policy.external_assets();
+            }
+            {
+                let state = vault.state_mut()?;
+                state.external_assets = new_external;
+                state.sync_total_assets();
+            }
             let result = vault.finish_refreshing(caller_kernel, op_id)?;
+            let policy_state = vault.policy_state().clone();
+            vault.storage.save_policy_state(&policy_state)?;
             new_external = result.new_external_assets;
             Ok(())
         };
@@ -1732,7 +1781,6 @@ impl SorobanVaultContract {
         caller: soroban_sdk::Address,
         paused: bool,
     ) -> Result<(), ContractError> {
-        use stellar_contract_utils::pausable::{emit_paused, emit_unpaused};
         let caller_kernel = governance_caller(&env, &caller)?;
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
@@ -1740,12 +1788,7 @@ impl SorobanVaultContract {
         };
         with_contract_vault_contract_error(&env, &mut call)?;
 
-        // Emit OZ Pausable events
-        if paused {
-            emit_paused(&env);
-        } else {
-            emit_unpaused(&env);
-        }
+        emit_pause_state_event(&env, paused);
 
         // Emit kernel event
         crate::effects::publish_kernel_event(
@@ -1853,7 +1896,7 @@ impl SorobanVaultContract {
     ) -> Result<(), ContractError> {
         let caller_kernel = governance_caller(&env, &caller)?;
         let internal = CapGroupUpdate::SetCap {
-            cap_group_id: CapGroupId::new(sdk_string_to_alloc(cap_group_id)?),
+            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
             new_cap: to_u128(new_cap)?,
         };
         let mut internal = Some(internal);
@@ -1871,7 +1914,7 @@ impl SorobanVaultContract {
     ) -> Result<(), ContractError> {
         let caller_kernel = governance_caller(&env, &caller)?;
         let internal = CapGroupUpdate::SetRelativeCap {
-            cap_group_id: CapGroupId::new(sdk_string_to_alloc(cap_group_id)?),
+            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
             new_relative_cap_wad: to_u128(new_relative_cap_wad)?,
         };
         let mut internal = Some(internal);
@@ -1889,11 +1932,7 @@ impl SorobanVaultContract {
     ) -> Result<(), ContractError> {
         let caller_kernel = governance_caller(&env, &caller)?;
         let s = sdk_string_to_alloc(cap_group_id)?;
-        let group = if s.is_empty() {
-            None
-        } else {
-            Some(CapGroupId::new(s))
-        };
+        let group = if s.is_empty() { None } else { Some(s.into()) };
         let internal = CapGroupUpdate::SetMembership {
             market_id,
             cap_group_id: group,
@@ -2080,12 +2119,12 @@ impl SorobanVaultContract {
     pub fn cancel_migration(env: Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
         require_governance(&env, &caller)?;
 
-        if !stellar_contract_utils::upgradeable::can_complete_migration(&env) {
+        if !migration_in_progress(&env) {
             return Err(ContractError::InvalidState);
         }
 
         // Clear the migration flag so normal operations resume.
-        stellar_contract_utils::upgradeable::complete_migration(&env);
+        set_migration_in_progress(&env, false);
 
         emit_admin_event(&env, symbol_short!("cnc_migr"));
         Ok(())
@@ -2208,7 +2247,7 @@ impl SorobanVaultContract {
         require_governance(&env, &operator)?;
 
         // Enable migration state before upgrading
-        stellar_contract_utils::upgradeable::enable_migration(&env);
+        set_migration_in_progress(&env, true);
 
         // Replace contract code - takes effect after this invocation completes
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -2217,13 +2256,12 @@ impl SorobanVaultContract {
     }
 
     pub fn migrate(env: Env, operator: soroban_sdk::Address) -> Result<(), ContractError> {
-        use stellar_contract_utils::upgradeable::{
-            complete_migration, ensure_can_complete_migration,
-        };
         require_governance(&env, &operator)?;
 
         // Verify we're in migration state (upgrade was called)
-        ensure_can_complete_migration(&env);
+        if !migration_in_progress(&env) {
+            return Err(ContractError::InvalidState);
+        }
 
         // Run storage migrations
         migrate_legacy_paused(&env);
@@ -2232,15 +2270,13 @@ impl SorobanVaultContract {
         extend_storage_ttl(&env);
 
         // Mark migration as complete - normal operations can resume
-        complete_migration(&env);
+        set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));
         Ok(())
     }
 
     pub fn is_migrating(env: Env) -> Result<bool, ContractError> {
-        Ok(stellar_contract_utils::upgradeable::can_complete_migration(
-            &env,
-        ))
+        Ok(migration_in_progress(&env))
     }
 
     pub fn query_asset(env: Env) -> Result<soroban_sdk::Address, ContractError> {
@@ -2368,6 +2404,33 @@ impl SorobanVaultContract {
 #[inline]
 fn require_signed(addr: &SdkAddress) {
     addr.require_auth();
+}
+
+#[inline]
+fn migration_in_progress(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&MIGRATION_FLAG_KEY)
+        .unwrap_or(false)
+}
+
+#[inline]
+fn set_migration_in_progress(env: &Env, migrating: bool) {
+    if migrating {
+        env.storage().instance().set(&MIGRATION_FLAG_KEY, &true);
+    } else {
+        env.storage().instance().remove(&MIGRATION_FLAG_KEY);
+    }
+}
+
+#[inline]
+fn emit_pause_state_event(env: &Env, paused: bool) {
+    let event = if paused {
+        symbol_short!("paused")
+    } else {
+        symbol_short!("unpause")
+    };
+    env.events().publish((event,), ());
 }
 
 fn max_deposit_or_mint(env: &Env, use_shares: bool) -> Result<i128, ContractError> {

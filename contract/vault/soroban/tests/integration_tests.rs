@@ -273,7 +273,9 @@ fn create_rbac_vault() -> RbacVault {
     let mut vault = CuratorVault::new(
         test_config(),
         MemoryStorage::new(),
-        RbacAuth::new(rbac_config),
+        RbacAuth {
+            config: rbac_config,
+        },
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
