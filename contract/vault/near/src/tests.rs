@@ -111,7 +111,13 @@ fn build_fees(
 }
 
 fn cap_group_record(cap: u128, relative_cap: Wad, principal: u128) -> CapGroupRecord {
-    templar_curator_primitives::cap_group_record_from_fields(cap, relative_cap, principal)
+    CapGroupRecord {
+        cap: templar_curator_primitives::CapGroup::builder()
+            .absolute_cap(cap)
+            .relative_cap(relative_cap)
+            .build(),
+        principal,
+    }
 }
 
 fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
@@ -3203,12 +3209,7 @@ fn governance_accept_guardian_not_yet_panics() {
     c.accept_sentinel();
 
     let max_timelock = MAX_TIMELOCK_NS;
-    c.governance_timelocks = Timelocks::new(
-        max_timelock,
-        max_timelock,
-        max_timelock,
-        max_timelock,
-    );
+    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
     // Now submit another sentinel change but do not advance time.
     let new_sentinel = mk(5);
     set_ctx(&vault_id, &owner, None, None);

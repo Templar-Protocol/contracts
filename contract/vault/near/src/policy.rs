@@ -109,7 +109,7 @@ impl MarketExecutionLock {
     }
 
     pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
-        let mut set = MarketLockSet::new();
+        let mut set = MarketLockSet::default();
         for market in markets {
             set = Self::acquire_lock_or_panic(&set, market, locked_at_ns);
         }

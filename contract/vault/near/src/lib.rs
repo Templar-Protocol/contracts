@@ -86,12 +86,7 @@ mod test_utils;
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    near_sdk::BorshStorageKey,
-    near_sdk::borsh::BorshSerialize,
+    Clone, Copy, PartialEq, Eq, near_sdk::BorshStorageKey, near_sdk::borsh::BorshSerialize,
 )]
 pub enum StorageKey {
     PendingWithdrawals,
@@ -1245,23 +1240,13 @@ struct SupplyQueueMarketInfo {
 
 impl Contract {
     fn default_cap_group_record() -> CapGroupRecord {
-        templar_curator_primitives::cap_group_record_from_fields(0, Wad::one(), 0)
-    }
-
-    fn cap_group_absolute_cap(record: &CapGroupRecord) -> u128 {
-        templar_curator_primitives::cap_group_record_absolute_cap(record)
-    }
-
-    fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
-        templar_curator_primitives::cap_group_record_relative_cap(record)
-    }
-
-    fn set_cap_group_absolute_cap(record: &mut CapGroupRecord, cap: u128) {
-        templar_curator_primitives::set_cap_group_record_absolute_cap(record, cap);
-    }
-
-    fn set_cap_group_relative_cap(record: &mut CapGroupRecord, relative_cap: Wad) {
-        templar_curator_primitives::set_cap_group_record_relative_cap(record, relative_cap);
+        CapGroupRecord {
+            cap: templar_curator_primitives::CapGroup::builder()
+                .absolute_cap(0)
+                .relative_cap(Wad::one())
+                .build(),
+            principal: 0,
+        }
     }
 
     fn principal_of(&self, market_id: MarketId) -> u128 {
@@ -1379,11 +1364,11 @@ impl Contract {
                 continue;
             };
 
-            if Self::cap_group_absolute_cap(rec) == 0 {
+            if templar_curator_primitives::cap_group_record_absolute_cap(rec) == 0 {
                 continue;
             }
 
-            if Self::cap_group_relative_cap(rec) < Wad::one() {
+            if templar_curator_primitives::cap_group_record_relative_cap(rec) < Wad::one() {
                 groups.insert(group_id);
             }
         }

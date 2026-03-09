@@ -96,7 +96,7 @@ impl From<TimestampNs> for Timelocks {
             timelock_config_ns: ns,
             cap_ns: ns,
             market_removal_ns: ns,
-            pending_actions: PendingQueue::new(),
+            pending_actions: PendingQueue::default(),
         }
     }
 }
@@ -113,7 +113,7 @@ impl Timelocks {
             timelock_config_ns,
             cap_ns,
             market_removal_ns,
-            pending_actions: PendingQueue::new(),
+            pending_actions: PendingQueue::default(),
         }
     }
 
@@ -806,20 +806,20 @@ impl Contract {
 
                 let proposed_fees: Fees<Wad> = fees.clone().into();
 
-                let current = shared_gov::FeeConfig::new(
-                    self.fees.performance.fee,
-                    self.fees.management.fee,
-                    &self.fees.performance.recipient,
-                    &self.fees.management.recipient,
-                    self.fees.max_total_assets_growth_rate,
-                );
-                let proposed = shared_gov::FeeConfig::new(
-                    proposed_fees.performance.fee,
-                    proposed_fees.management.fee,
-                    &proposed_fees.performance.recipient,
-                    &proposed_fees.management.recipient,
-                    proposed_fees.max_total_assets_growth_rate,
-                );
+                let current = shared_gov::FeeConfig {
+                    performance_fee: self.fees.performance.fee,
+                    management_fee: self.fees.management.fee,
+                    performance_recipient: &self.fees.performance.recipient,
+                    management_recipient: &self.fees.management.recipient,
+                    max_rate: self.fees.max_total_assets_growth_rate,
+                };
+                let proposed = shared_gov::FeeConfig {
+                    performance_fee: proposed_fees.performance.fee,
+                    management_fee: proposed_fees.management.fee,
+                    performance_recipient: &proposed_fees.performance.recipient,
+                    management_recipient: &proposed_fees.management.recipient,
+                    max_rate: proposed_fees.max_total_assets_growth_rate,
+                };
 
                 shared_gov::FeeConfig::evaluate_change(&current, &proposed)
                     .map(|decision| decision.timelocked)
@@ -922,7 +922,7 @@ impl Contract {
                 let current = self
                     .cap_groups
                     .get(cap_group)
-                    .map(Self::cap_group_absolute_cap);
+                    .map(templar_curator_primitives::cap_group_record_absolute_cap);
                 shared_gov::submission_requires_timelock(
                     shared_gov::TimelockDecision::from_cap_group_cap_change(current, new_cap.0),
                 )
@@ -952,7 +952,7 @@ impl Contract {
                 let current = self
                     .cap_groups
                     .get(cap_group)
-                    .map(Self::cap_group_relative_cap);
+                    .map(templar_curator_primitives::cap_group_record_relative_cap);
                 shared_gov::submission_requires_timelock(
                     shared_gov::TimelockDecision::from_relative_cap_change(current, new_wad),
                 )
@@ -1226,7 +1226,7 @@ impl Contract {
                     .cap_groups
                     .entry(cap_group.clone())
                     .or_insert_with(Self::default_cap_group_record);
-                Self::set_cap_group_absolute_cap(record, new_cap.0);
+                templar_curator_primitives::set_cap_group_record_absolute_cap(record, new_cap.0);
                 Event::CapGroupSet {
                     cap_group: cap_group.clone(),
                     new_cap: *new_cap,
@@ -1244,7 +1244,7 @@ impl Contract {
                     .cap_groups
                     .entry(cap_group.clone())
                     .or_insert_with(Self::default_cap_group_record);
-                Self::set_cap_group_relative_cap(record, new_wad);
+                templar_curator_primitives::set_cap_group_record_relative_cap(record, new_wad);
 
                 Event::CapGroupRelativeCapSet {
                     cap_group: cap_group.clone(),
