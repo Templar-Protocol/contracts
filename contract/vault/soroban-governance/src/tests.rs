@@ -1,5 +1,8 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+use soroban_sdk::{
+    contracttype,
+    testutils::{Address as _, Ledger, LedgerInfo},
+};
 
 #[contract]
 struct MockVault;

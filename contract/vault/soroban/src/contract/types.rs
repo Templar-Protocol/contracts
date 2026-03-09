@@ -142,7 +142,6 @@ impl VaultDataKey {
     pub const ShareToken: Symbol = soroban_sdk::symbol_short!("share");
     pub const Sentinel: Symbol = soroban_sdk::symbol_short!("sntnl");
     pub const FeesSpec: Symbol = soroban_sdk::symbol_short!("fees");
-    pub const ReentrancyLock: Symbol = soroban_sdk::symbol_short!("reentry");
     pub const Initialized: Symbol = soroban_sdk::symbol_short!("init");
     pub const Paused: Symbol = soroban_sdk::symbol_short!("paused");
     pub const Guardians: Symbol = soroban_sdk::symbol_short!("guards");

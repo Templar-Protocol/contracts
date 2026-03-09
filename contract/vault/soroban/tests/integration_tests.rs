@@ -50,6 +50,10 @@ fn guardian_addr() -> Address {
     [2u8; 32]
 }
 
+fn sentinel_addr() -> Address {
+    [11u8; 32]
+}
+
 fn allocator_addr() -> Address {
     [3u8; 32]
 }
@@ -263,6 +267,7 @@ type RbacVault = CuratorVault<MemoryStorage, RbacAuth, MockInterpreter>;
 fn create_rbac_vault() -> RbacVault {
     let mut rbac_config = RbacConfig::with_curator(curator_addr());
     rbac_config.add_role(guardian_addr(), Role::Guardian);
+    rbac_config.add_role(sentinel_addr(), Role::Sentinel);
     rbac_config.add_role(allocator_addr(), Role::Allocator);
 
     let mut vault = CuratorVault::new(
@@ -499,11 +504,11 @@ fn test_rbac_curator_can_do_everything(mut rbac_vault: RbacVault) {
 }
 
 #[rstest]
-fn test_rbac_pause_by_guardian(mut rbac_vault: RbacVault) {
-    let guardian = guardian_addr();
+fn test_rbac_pause_by_sentinel(mut rbac_vault: RbacVault) {
+    let sentinel = sentinel_addr();
 
-    // Guardian should be able to pause
-    let result = rbac_vault.pause(guardian, true);
+    // Sentinel should be able to pause
+    let result = rbac_vault.pause(sentinel, true);
     assert!(result.is_ok());
 }
 

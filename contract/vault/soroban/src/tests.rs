@@ -80,18 +80,28 @@ mod auth_tests {
     }
 
     #[test]
-    fn test_soroban_auth_check_role_guardian_actions() {
+    fn test_soroban_auth_check_role_pause_actions() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
         let guardian = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, curator.clone(), Some(guardian.clone()), None);
+        let auth = SorobanAuth::with_roles_and_sentinel(
+            &env,
+            curator.clone(),
+            Some(guardian.clone()),
+            Some(sentinel.clone()),
+            None,
+        );
 
-        // Guardian can pause
-        assert!(auth.check_role(ActionKind::Pause, &guardian).is_ok());
-        // Curator can pause (curator is always guardian)
+        // Sentinel can pause
+        assert!(auth.check_role(ActionKind::Pause, &sentinel).is_ok());
+        // Curator can pause
         assert!(auth.check_role(ActionKind::Pause, &curator).is_ok());
+        // Guardian cannot pause without sentinel powers
+        let result = auth.check_role(ActionKind::Pause, &guardian);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
         // User cannot pause
         let result = auth.check_role(ActionKind::Pause, &user);
         assert!(matches!(result, Err(AuthError::MissingRole)));
@@ -202,7 +212,7 @@ mod contract_tests {
     use crate::contract::*;
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
-    use crate::error::{ContractError, RuntimeError};
+    use crate::error::RuntimeError;
     use crate::storage::{MemoryStorage, SorobanStorage, Storage, VersionedState};
     use alloc::collections::BTreeMap;
     use alloc::vec;
@@ -681,74 +691,6 @@ mod contract_tests {
         assert!(config.is_privileged(&[1u8; 32])); // curator
         assert!(config.is_privileged(&[3u8; 32])); // allocator
         assert!(!config.is_privileged(&[2u8; 32])); // guardian only
-    }
-
-    #[test]
-    fn test_reentrancy_guard_blocks_nested() {
-        use soroban_sdk::testutils::Address as _;
-
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-                .unwrap();
-            let result =
-                with_reentrancy_guard(&env, &mut || with_reentrancy_guard(&env, &mut || Ok(())));
-            assert_eq!(result, Err(ContractError::Reentrancy));
-        });
-    }
-
-    #[test]
-    fn test_reentrancy_guard_resets_between_calls() {
-        use soroban_sdk::testutils::Address as _;
-
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-                .unwrap();
-            with_reentrancy_guard(&env, &mut || Ok(())).unwrap();
-            with_reentrancy_guard(&env, &mut || Ok(())).unwrap();
-        });
-    }
-
-    #[test]
-    fn test_reentrancy_guard_blocks_read_only_entrypoints() {
-        use soroban_sdk::testutils::Address as _;
-
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-                .unwrap();
-            with_reentrancy_guard(&env, &mut || {
-                let result = SorobanVaultContract::vault_snapshot(env.clone());
-                assert!(
-                    matches!(result, Err(ContractError::Reentrancy)),
-                    "expected Reentrancy error, got: {result:?}"
-                );
-                Ok(())
-            })
-            .unwrap();
-        });
     }
 
     #[test]

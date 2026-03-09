@@ -73,9 +73,6 @@ impl SorobanVaultGovernanceContract {
             &DataKey::CurrentRestrictionAccounts,
             &Vec::<Address>::new(&env),
         );
-        env.storage()
-            .instance()
-            .set(&DataKey::ReentrancyLock, &false);
         Ok(())
     }
 
@@ -321,25 +318,21 @@ impl SorobanVaultGovernanceContract {
     }
 
     pub fn accept(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
-        with_reentrancy_guard(&env, || {
-            extend_instance_ttl(&env);
-            require_admin(&env, &caller)?;
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
 
-            let now_ns = ledger_timestamp_ns(&env)?;
-            let mut queue = load_queue(&env);
-            let proposal = match queue.take_mature(now_ns, |pending| pending.id == proposal_id) {
-                Ok(Some(proposal)) => proposal,
-                Ok(None) => return Err(GovernanceError::ProposalNotFound),
-                Err(PendingQueueError::NotMature) => {
-                    return Err(GovernanceError::ProposalNotMature)
-                }
-            };
+        let now_ns = ledger_timestamp_ns(&env)?;
+        let mut queue = load_queue(&env);
+        let proposal = match queue.take_mature(now_ns, |pending| pending.id == proposal_id) {
+            Ok(Some(proposal)) => proposal,
+            Ok(None) => return Err(GovernanceError::ProposalNotFound),
+            Err(PendingQueueError::NotMature) => return Err(GovernanceError::ProposalNotMature),
+        };
 
-            execute_action(&env, &proposal.action)?;
-            save_queue(&env, &queue);
-            ProposalAccepted { id: proposal_id }.publish(&env);
-            Ok(())
-        })
+        execute_action(&env, &proposal.action)?;
+        save_queue(&env, &queue);
+        ProposalAccepted { id: proposal_id }.publish(&env);
+        Ok(())
     }
 
     pub fn accept_kind(
@@ -347,26 +340,23 @@ impl SorobanVaultGovernanceContract {
         caller: Address,
         kind: GovernanceActionKind,
     ) -> Result<u64, GovernanceError> {
-        with_reentrancy_guard(&env, || {
-            extend_instance_ttl(&env);
-            require_admin(&env, &caller)?;
-            let now_ns = ledger_timestamp_ns(&env)?;
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        let now_ns = ledger_timestamp_ns(&env)?;
 
-            let mut queue = load_queue(&env);
-            let proposal =
-                match queue.take_mature(now_ns, |pending| action_kind(&pending.action) == kind) {
-                    Ok(Some(proposal)) => proposal,
-                    Ok(None) => return Err(GovernanceError::ProposalNotFound),
-                    Err(PendingQueueError::NotMature) => {
-                        return Err(GovernanceError::ProposalNotMature)
-                    }
-                };
+        let mut queue = load_queue(&env);
+        let proposal = match queue
+            .take_mature(now_ns, |pending| action_kind(&pending.action) == kind)
+        {
+            Ok(Some(proposal)) => proposal,
+            Ok(None) => return Err(GovernanceError::ProposalNotFound),
+            Err(PendingQueueError::NotMature) => return Err(GovernanceError::ProposalNotMature),
+        };
 
-            execute_action(&env, &proposal.action)?;
-            save_queue(&env, &queue);
-            ProposalAccepted { id: proposal.id }.publish(&env);
-            Ok(proposal.id)
-        })
+        execute_action(&env, &proposal.action)?;
+        save_queue(&env, &queue);
+        ProposalAccepted { id: proposal.id }.publish(&env);
+        Ok(proposal.id)
     }
 
     pub fn revoke(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
@@ -442,43 +432,41 @@ impl SorobanVaultGovernanceContract {
     }
 
     fn submit(env: Env, caller: Address, action: GovernanceAction) -> Result<u64, GovernanceError> {
-        with_reentrancy_guard(&env, || {
-            extend_instance_ttl(&env);
-            require_admin(&env, &caller)?;
-            require_not_abdicated(&env, &action)?;
-            validate_action(&action)?;
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        require_not_abdicated(&env, &action)?;
+        validate_action(&action)?;
 
-            let id = next_proposal_id(&env)?;
-            let decision = decide_submission(&env, &action)?;
+        let id = next_proposal_id(&env)?;
+        let decision = decide_submission(&env, &action)?;
 
-            if matches!(decision, TimelockDecision::Immediate) {
-                execute_action(&env, &action)?;
-                ProposalSubmitted {
-                    id,
-                    valid_after_ns: 0,
-                }
-                .publish(&env);
-                ProposalAccepted { id }.publish(&env);
-                return Ok(id);
+        if matches!(decision, TimelockDecision::Immediate) {
+            execute_action(&env, &action)?;
+            ProposalSubmitted {
+                id,
+                valid_after_ns: 0,
             }
+            .publish(&env);
+            ProposalAccepted { id }.publish(&env);
+            return Ok(id);
+        }
 
-            if has_pending_action(&env, &action) {
-                return Err(GovernanceError::DuplicatePending);
-            }
+        if has_pending_action(&env, &action) {
+            return Err(GovernanceError::DuplicatePending);
+        }
 
-            let now_ns = ledger_timestamp_ns(&env)?;
-            let timelock_ns = load_timelocks(&env).get(timelock_kind_for_action(&action));
-            let mut queue = load_queue(&env);
-            queue.schedule(QueuedProposal { id, action }, now_ns, timelock_ns);
-            let valid_after_ns = queue
-                .back()
-                .map(|pending| pending.valid_at_ns)
-                .unwrap_or(now_ns);
-            save_queue(&env, &queue);
+        let now_ns = ledger_timestamp_ns(&env)?;
+        let timelock_ns = load_timelocks(&env).get(timelock_kind_for_action(&action));
+        let mut queue = load_queue(&env);
+        queue.schedule(QueuedProposal { id, action }, now_ns, timelock_ns);
+        let valid_after_ns = queue
+            .back()
+            .map(|pending| pending.valid_at_ns)
+            .unwrap_or(now_ns);
+        save_queue(&env, &queue);
 
-            ProposalSubmitted { id, valid_after_ns }.publish(&env);
-            Ok(id)
-        })
+        ProposalSubmitted { id, valid_after_ns }.publish(&env);
+        Ok(id)
     }
 }
 
@@ -1124,29 +1112,6 @@ fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-}
-
-fn with_reentrancy_guard<T>(
-    env: &Env,
-    f: impl FnOnce() -> Result<T, GovernanceError>,
-) -> Result<T, GovernanceError> {
-    let locked: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::ReentrancyLock)
-        .unwrap_or(false);
-    if locked {
-        return Err(GovernanceError::Reentrancy);
-    }
-
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &true);
-    let result = f();
-    env.storage()
-        .instance()
-        .set(&DataKey::ReentrancyLock, &false);
-    result
 }
 
 #[cfg(test)]

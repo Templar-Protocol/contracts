@@ -24,7 +24,6 @@ enum DataKey {
     Admin,
     Vault,
     Pool,
-    ReentrancyLock,
 }
 
 #[contracterror]
@@ -32,19 +31,18 @@ enum DataKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AdapterError {
     Unauthorized = 1,
-    InvalidInput = 3,
-    MissingConfig = 4,
-    Reentrancy = 5,
+    InvalidInput = 2,
+    MissingConfig = 3,
     /// Arithmetic overflow when computing total assets.
-    ArithmeticOverflow = 6,
+    ArithmeticOverflow = 4,
     /// No supply position found for the given reserve index.
-    MissingPosition = 7,
+    MissingPosition = 5,
     /// Arithmetic underflow when computing actual withdrawal.
-    ArithmeticUnderflow = 8,
+    ArithmeticUnderflow = 6,
     /// Withdrawal returned zero assets.
-    ZeroWithdrawal = 9,
+    ZeroWithdrawal = 7,
     /// Reserve data is stale.
-    StaleReserve = 10,
+    StaleReserve = 8,
 }
 
 #[contract]
@@ -59,9 +57,6 @@ impl BlendAdapterContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage().instance().set(&DataKey::Pool, &pool);
-        env.storage()
-            .instance()
-            .set(&DataKey::ReentrancyLock, &false);
     }
 
     /// Update the Blend pool contract address (admin-only).
@@ -104,36 +99,34 @@ impl BlendAdapterContract {
             return Err(AdapterError::InvalidInput);
         }
 
-        with_reentrancy_guard(&env, || {
-            let pool = get_pool(&env)?;
-            let client = PoolClient::new(&env, &pool);
-            let adapter = env.current_contract_address();
-            let request = Request {
-                request_type: REQUEST_SUPPLY,
-                address: asset.clone(),
-                amount,
-            };
-            let mut requests = Vec::new(&env);
-            requests.push_back(request);
+        let pool = get_pool(&env)?;
+        let client = PoolClient::new(&env, &pool);
+        let adapter = env.current_contract_address();
+        let request = Request {
+            request_type: REQUEST_SUPPLY,
+            address: asset.clone(),
+            amount,
+        };
+        let mut requests = Vec::new(&env);
+        requests.push_back(request);
 
-            // Authorize the token transfer the pool will make from the adapter.
-            env.authorize_as_current_contract(Vec::from_array(
-                &env,
-                [InvokerContractAuthEntry::Contract(SubContractInvocation {
-                    context: ContractContext {
-                        contract: asset.clone(),
-                        fn_name: Symbol::new(&env, "transfer"),
-                        args: (adapter.clone(), pool.clone(), amount).into_val(&env),
-                    },
-                    sub_invocations: Vec::new(&env),
-                })],
-            ));
+        // Authorize the token transfer the pool will make from the adapter.
+        env.authorize_as_current_contract(Vec::from_array(
+            &env,
+            [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: asset.clone(),
+                    fn_name: Symbol::new(&env, "transfer"),
+                    args: (adapter.clone(), pool.clone(), amount).into_val(&env),
+                },
+                sub_invocations: Vec::new(&env),
+            })],
+        ));
 
-            client.submit(&adapter, &adapter, &adapter, &requests);
-            env.events()
-                .publish((symbol_short!("supply"), asset), amount);
-            Ok(())
-        })
+        client.submit(&adapter, &adapter, &adapter, &requests);
+        env.events()
+            .publish((symbol_short!("supply"), asset), amount);
+        Ok(())
     }
 
     /// Withdraw assets from the Blend pool and transfer them to the vault.
@@ -162,33 +155,31 @@ impl BlendAdapterContract {
         }
         let vault = get_vault(&env)?;
 
-        with_reentrancy_guard(&env, || {
-            let pool = get_pool(&env)?;
-            let client = PoolClient::new(&env, &pool);
-            let adapter = env.current_contract_address();
-            let request = Request {
-                request_type: REQUEST_WITHDRAW,
-                address: asset.clone(),
-                amount,
-            };
-            let mut requests = Vec::new(&env);
-            requests.push_back(request);
-            let token = soroban_sdk::token::Client::new(&env, &asset);
-            let balance_before = token.balance(&adapter);
-            client.submit(&adapter, &adapter, &adapter, &requests);
+        let pool = get_pool(&env)?;
+        let client = PoolClient::new(&env, &pool);
+        let adapter = env.current_contract_address();
+        let request = Request {
+            request_type: REQUEST_WITHDRAW,
+            address: asset.clone(),
+            amount,
+        };
+        let mut requests = Vec::new(&env);
+        requests.push_back(request);
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        let balance_before = token.balance(&adapter);
+        client.submit(&adapter, &adapter, &adapter, &requests);
 
-            let balance_after = token.balance(&adapter);
-            let actual_withdrawn = balance_after
-                .checked_sub(balance_before)
-                .ok_or(AdapterError::ArithmeticUnderflow)?;
-            if actual_withdrawn <= 0 {
-                return Err(AdapterError::ZeroWithdrawal);
-            }
-            token.transfer(&adapter, &vault, &actual_withdrawn);
-            env.events()
-                .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
-            Ok(actual_withdrawn)
-        })
+        let balance_after = token.balance(&adapter);
+        let actual_withdrawn = balance_after
+            .checked_sub(balance_before)
+            .ok_or(AdapterError::ArithmeticUnderflow)?;
+        if actual_withdrawn <= 0 {
+            return Err(AdapterError::ZeroWithdrawal);
+        }
+        token.transfer(&adapter, &vault, &actual_withdrawn);
+        env.events()
+            .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
+        Ok(actual_withdrawn)
     }
 
     /// Rescue assets held by the adapter and transfer them to `receiver`.
@@ -210,14 +201,12 @@ impl BlendAdapterContract {
             return Err(AdapterError::InvalidInput);
         }
 
-        with_reentrancy_guard(&env, || {
-            let adapter = env.current_contract_address();
-            let token = soroban_sdk::token::Client::new(&env, &asset);
-            token.transfer(&adapter, &receiver, &amount);
-            env.events()
-                .publish((symbol_short!("rescue"), asset, receiver), amount);
-            Ok(())
-        })
+        let adapter = env.current_contract_address();
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        token.transfer(&adapter, &receiver, &amount);
+        env.events()
+            .publish((symbol_short!("rescue"), asset, receiver), amount);
+        Ok(())
     }
 
     /// Query total assets for `asset` from the Blend pool.
@@ -275,35 +264,33 @@ impl BlendAdapterContract {
             return Err(AdapterError::InvalidInput);
         }
 
-        with_reentrancy_guard(&env, || {
-            let pool = get_pool(&env)?;
-            let client = PoolClient::new(&env, &pool);
-            let adapter = env.current_contract_address();
-            let request = Request {
-                request_type: REQUEST_SUPPLY,
-                address: asset.clone(),
-                amount,
-            };
-            let mut requests = Vec::new(&env);
-            requests.push_back(request);
+        let pool = get_pool(&env)?;
+        let client = PoolClient::new(&env, &pool);
+        let adapter = env.current_contract_address();
+        let request = Request {
+            request_type: REQUEST_SUPPLY,
+            address: asset.clone(),
+            amount,
+        };
+        let mut requests = Vec::new(&env);
+        requests.push_back(request);
 
-            env.authorize_as_current_contract(Vec::from_array(
-                &env,
-                [InvokerContractAuthEntry::Contract(SubContractInvocation {
-                    context: ContractContext {
-                        contract: asset.clone(),
-                        fn_name: Symbol::new(&env, "transfer"),
-                        args: (adapter.clone(), pool.clone(), amount).into_val(&env),
-                    },
-                    sub_invocations: Vec::new(&env),
-                })],
-            ));
+        env.authorize_as_current_contract(Vec::from_array(
+            &env,
+            [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: asset.clone(),
+                    fn_name: Symbol::new(&env, "transfer"),
+                    args: (adapter.clone(), pool.clone(), amount).into_val(&env),
+                },
+                sub_invocations: Vec::new(&env),
+            })],
+        ));
 
-            client.submit(&adapter, &adapter, &adapter, &requests);
-            env.events()
-                .publish((symbol_short!("supply"), asset), amount);
-            Ok(())
-        })
+        client.submit(&adapter, &adapter, &adapter, &requests);
+        env.events()
+            .publish((symbol_short!("supply"), asset), amount);
+        Ok(())
     }
 
     /// Withdraw tokens from the Blend pool and send to the vault (admin-only).
@@ -323,33 +310,31 @@ impl BlendAdapterContract {
         }
         let vault = get_vault(&env)?;
 
-        with_reentrancy_guard(&env, || {
-            let pool = get_pool(&env)?;
-            let client = PoolClient::new(&env, &pool);
-            let adapter = env.current_contract_address();
-            let request = Request {
-                request_type: REQUEST_WITHDRAW,
-                address: asset.clone(),
-                amount,
-            };
-            let mut requests = Vec::new(&env);
-            requests.push_back(request);
-            let token = soroban_sdk::token::Client::new(&env, &asset);
-            let balance_before = token.balance(&adapter);
-            client.submit(&adapter, &adapter, &adapter, &requests);
+        let pool = get_pool(&env)?;
+        let client = PoolClient::new(&env, &pool);
+        let adapter = env.current_contract_address();
+        let request = Request {
+            request_type: REQUEST_WITHDRAW,
+            address: asset.clone(),
+            amount,
+        };
+        let mut requests = Vec::new(&env);
+        requests.push_back(request);
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        let balance_before = token.balance(&adapter);
+        client.submit(&adapter, &adapter, &adapter, &requests);
 
-            let balance_after = token.balance(&adapter);
-            let actual_withdrawn = balance_after
-                .checked_sub(balance_before)
-                .ok_or(AdapterError::ArithmeticUnderflow)?;
-            if actual_withdrawn <= 0 {
-                return Err(AdapterError::ZeroWithdrawal);
-            }
-            token.transfer(&adapter, &vault, &actual_withdrawn);
-            env.events()
-                .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
-            Ok(actual_withdrawn)
-        })
+        let balance_after = token.balance(&adapter);
+        let actual_withdrawn = balance_after
+            .checked_sub(balance_before)
+            .ok_or(AdapterError::ArithmeticUnderflow)?;
+        if actual_withdrawn <= 0 {
+            return Err(AdapterError::ZeroWithdrawal);
+        }
+        token.transfer(&adapter, &vault, &actual_withdrawn);
+        env.events()
+            .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
+        Ok(actual_withdrawn)
     }
 
     /// Extend instance storage TTL (admin-only).
@@ -416,54 +401,14 @@ fn extend_instance_ttl(env: &Env) {
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
-fn with_reentrancy_guard<T>(
-    env: &Env,
-    f: impl FnOnce() -> Result<T, AdapterError>,
-) -> Result<T, AdapterError> {
-    let _guard = ReentrancyGuard::new(env)?;
-    f()
-}
-
-struct ReentrancyGuard<'a> {
-    env: &'a Env,
-}
-
-impl<'a> ReentrancyGuard<'a> {
-    fn new(env: &'a Env) -> Result<Self, AdapterError> {
-        let locked: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReentrancyLock)
-            .unwrap_or(false);
-        if locked {
-            return Err(AdapterError::Reentrancy);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::ReentrancyLock, &true);
-        Ok(Self { env })
-    }
-}
-
-impl Drop for ReentrancyGuard<'_> {
-    fn drop(&mut self) {
-        self.env
-            .storage()
-            .instance()
-            .set(&DataKey::ReentrancyLock, &false);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
 
     use super::*;
     use soroban_sdk::{
-        symbol_short,
         testutils::{Address as _, Events as _},
         token::StellarAssetClient,
-        vec, IntoVal, TryFromVal, Val,
     };
 
     #[contract]
@@ -514,16 +459,6 @@ mod tests {
             assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
             assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), vault);
             assert_eq!(BlendAdapterContract::pool(env.clone()).unwrap(), pool);
-        });
-    }
-
-    #[test]
-    fn reentrancy_guard_blocks_nested() {
-        let env = Env::default();
-        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
-        env.as_contract(&contract_id, || {
-            let result = with_reentrancy_guard(&env, || with_reentrancy_guard(&env, || Ok(())));
-            assert_eq!(result, Err(AdapterError::Reentrancy));
         });
     }
 
