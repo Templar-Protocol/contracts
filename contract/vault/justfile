@@ -48,16 +48,6 @@ parity:
 	just soroban-prop
 
 # --------------------------------------------------------------------
-# Formal verification (Kani) - do NOT run automatically
-# --------------------------------------------------------------------
-
-kani-kernel:
-	cargo kani -p templar-vault-kernel --features kani
-
-kani-curator:
-	cargo kani -p templar-curator-primitives
-
-# --------------------------------------------------------------------
 # Gas profiling (from AGENTS.md)
 # --------------------------------------------------------------------
 

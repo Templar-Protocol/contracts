@@ -38,5 +38,3 @@ near-sdk = { workspace = true, optional = true }
 proptest = "1.4"
 rstest.workspace = true
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
