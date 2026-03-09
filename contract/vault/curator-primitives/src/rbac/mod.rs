@@ -20,13 +20,8 @@ use crate::auth::{
 };
 
 /// Role types for RBAC.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "boundary", derive(near_sdk::BorshStorageKey))]
 pub enum Role {
@@ -55,13 +50,8 @@ impl Role {
 }
 
 /// Role assignment for an address.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct RoleAssignment {
     /// The address with this role.
     pub address: Address,
@@ -79,7 +69,7 @@ impl RoleAssignment {
 }
 
 /// RBAC configuration for the vault.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, Default)]
 pub struct RbacConfig {
     /// List of role assignments.
@@ -173,7 +163,7 @@ pub fn required_role(action: ActionKind) -> Option<Role> {
 ///
 /// This adapter enforces role-based access control for curator vault actions.
 /// It checks that the caller has the required role for each action type.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, Default)]
 pub struct RbacAuth {
     /// RBAC configuration.

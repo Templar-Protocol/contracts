@@ -13,18 +13,9 @@ pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u6
 }
 
 /// A lock on a specific market/target.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct MarketLock {
@@ -52,18 +43,6 @@ impl MarketLock {
         }
     }
 
-    #[must_use]
-    pub fn with_op_id(mut self, op_id: u64) -> Self {
-        self.op_id = Some(op_id);
-        self
-    }
-
-    #[must_use]
-    pub fn with_expiry(mut self, expires_at_ns: u64) -> Self {
-        self.expires_at_ns = Some(expires_at_ns);
-        self
-    }
-
     /// Fluent method: set time-to-live from locked_at timestamp.
     /// This computes `expires_at_ns = locked_at_ns + ttl_ns`.
     #[must_use]
@@ -85,18 +64,9 @@ impl MarketLock {
 }
 
 /// A set of market locks.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct MarketLockSet {
     pub locks: Vec<MarketLock>,

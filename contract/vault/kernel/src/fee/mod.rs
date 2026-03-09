@@ -11,11 +11,6 @@
 
 use alloc::string::String;
 
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 use crate::math::wad::Wad;
 use crate::types::Address;
 
@@ -25,13 +20,7 @@ use crate::types::Address;
 ///
 /// This generic type uses a string recipient for maximum chain flexibility.
 /// For spec-compliant 32-byte address recipients, see `FeeSlot`.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct Fee<T> {
     /// The fee rate (interpretation depends on T).
@@ -56,13 +45,7 @@ impl<T> Fee<T> {
 ///
 /// This generic type uses `Fee<T>` with string recipients.
 /// For spec-compliant types, see `FeesSpec`.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct Fees<T> {
     /// Performance fee (charged on profits).
@@ -104,13 +87,7 @@ impl<T> Fees<T> {
 ///
 /// The executor is responsible for mapping chain-native addresses to/from
 /// this canonical 32-byte format.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeSlot {
     /// The fee rate as a WAD value (1e18 = 100%).
@@ -157,13 +134,7 @@ impl Default for FeeSlot {
 ///
 /// This type matches the kernel spec exactly and uses fixed-size addresses
 /// for performance and predictable serialization.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeesSpec {
     /// Performance fee (charged on profits).

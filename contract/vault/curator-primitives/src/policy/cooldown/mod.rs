@@ -11,16 +11,7 @@ use templar_vault_kernel::TimeGate;
 /// A cooldown enforces a minimum interval between operations. It tracks
 /// when the last operation occurred and the required interval before
 /// the next operation is allowed.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Cooldown {
     /// Timestamp of the last operation (nanoseconds), if any.
@@ -115,7 +106,7 @@ impl Cooldown {
 }
 
 /// Errors that can occur during cooldown checks.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum CooldownError {
     /// Operation is still on cooldown.

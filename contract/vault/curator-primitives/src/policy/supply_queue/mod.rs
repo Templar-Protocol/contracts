@@ -5,16 +5,7 @@ use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
 /// An entry in the supply queue representing a pending allocation.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct SupplyQueueEntry {
@@ -36,18 +27,6 @@ impl SupplyQueueEntry {
             queued_at_ns: 0,
         }
     }
-
-    #[must_use]
-    pub fn with_priority(mut self, priority: u8) -> Self {
-        self.priority = priority;
-        self
-    }
-
-    #[must_use]
-    pub fn with_timestamp(mut self, queued_at_ns: u64) -> Self {
-        self.queued_at_ns = queued_at_ns;
-        self
-    }
 }
 
 impl From<(TargetId, u128)> for SupplyQueueEntry {
@@ -57,16 +36,7 @@ impl From<(TargetId, u128)> for SupplyQueueEntry {
 }
 
 /// A queue of pending supply requests.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default)]
 pub struct SupplyQueue {
     pub entries: Vec<SupplyQueueEntry>,
@@ -233,7 +203,7 @@ impl From<Vec<SupplyQueueEntry>> for SupplyQueue {
 }
 
 /// Errors that can occur during supply queue operations.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum SupplyQueueError {
     /// Queue is at maximum capacity.

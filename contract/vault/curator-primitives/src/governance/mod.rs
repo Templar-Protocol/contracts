@@ -13,14 +13,9 @@ use templar_vault_kernel::types::TimestampNs;
 use templar_vault_kernel::TimeGate;
 
 /// A pending governance value gated by a timelock.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingValue<T> {
     pub value: T,
@@ -41,21 +36,16 @@ impl<T> PendingValue<T> {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PendingQueueError {
     NotMature,
 }
 
 /// Timelocked pending governance values.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct PendingQueue<T> {
     entries: VecDeque<PendingValue<T>>,
@@ -161,13 +151,8 @@ pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) ->
 }
 
 /// Decision on whether an action should be timelocked.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum TimelockDecision {
     Immediate,
     Timelocked,
@@ -207,7 +192,7 @@ impl TryFrom<Ordering> for TimelockDecision {
 }
 
 /// Generic restrictions enum for shared governance checks.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum Restrictions<T> {
     Paused,
@@ -320,13 +305,8 @@ impl<R: PartialEq> FeeConfig<'_, R> {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct FeeChangeDecision {
     pub timelocked: bool,
     pub fee_increase: bool,
@@ -334,26 +314,16 @@ pub struct FeeChangeDecision {
     pub max_rate_relaxed: bool,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum FeeChangeError {
     NoChange,
     PerformanceFeeTooHigh,
     ManagementFeeTooHigh,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum TimelockConfigError {
     NoChange,
     OutOfBounds,
@@ -379,36 +349,21 @@ pub fn timelock_config_decision(
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum CapChangeError {
     NoChange,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum RelativeCapChangeError {
     NoChange,
     RelativeCapTooHigh,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum MembershipChangeError {
     NoChange,
 }

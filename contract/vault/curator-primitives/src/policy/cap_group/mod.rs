@@ -8,18 +8,9 @@ use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
 use typed_builder::TypedBuilder;
 
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
 #[display("{_0}")]
 pub struct CapGroupId(pub String);
@@ -41,18 +32,9 @@ impl From<&str> for CapGroupId {
 ///
 /// Caps are optional - `None` means no limit for that cap type.
 /// When both caps are set, the effective cap is the minimum of the two.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
@@ -66,44 +48,6 @@ pub struct CapGroup {
 }
 
 impl CapGroup {
-    #[must_use]
-    fn normalize_relative_cap(cap: Wad) -> Option<Wad> {
-        (!cap.is_zero()).then_some(cap)
-    }
-
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn absolute_only(cap: u128) -> Self {
-        Self {
-            absolute_cap: NonZeroU128::new(cap),
-            relative_cap: None,
-        }
-    }
-
-    #[must_use]
-    pub fn relative_only(relative_cap: Wad) -> Self {
-        Self {
-            absolute_cap: None,
-            relative_cap: Self::normalize_relative_cap(relative_cap),
-        }
-    }
-
-    #[must_use]
-    pub fn with_absolute(mut self, cap: u128) -> Self {
-        self.absolute_cap = NonZeroU128::new(cap);
-        self
-    }
-
-    #[must_use]
-    pub fn with_relative(mut self, cap: Wad) -> Self {
-        self.relative_cap = Self::normalize_relative_cap(cap);
-        self
-    }
-
     #[must_use]
     pub fn is_unlimited(&self) -> bool {
         self.absolute_cap.is_none() && self.relative_cap.is_none()
@@ -203,18 +147,9 @@ impl CapGroup {
 }
 
 /// Record tracking the state of a cap group.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.
@@ -224,18 +159,6 @@ pub struct CapGroupRecord {
 }
 
 impl CapGroupRecord {
-    /// Create a new cap group record.
-    #[must_use]
-    pub fn new(cap: CapGroup) -> Self {
-        Self { cap, principal: 0 }
-    }
-
-    /// Create a record with initial principal.
-    #[must_use]
-    pub fn with_principal(cap: CapGroup, principal: u128) -> Self {
-        Self { cap, principal }
-    }
-
     /// Apply an allocation to a cap group record.
     #[must_use]
     pub fn apply_allocation(&self, amount: u128) -> Self {
@@ -274,12 +197,12 @@ impl CapGroupRecord {
 
 impl From<CapGroup> for CapGroupRecord {
     fn from(cap: CapGroup) -> Self {
-        Self::new(cap)
+        Self { cap, principal: 0 }
     }
 }
 
 /// Errors that can occur during cap group operations.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum CapGroupError {
     /// Allocation would exceed the absolute cap.
@@ -305,16 +228,7 @@ pub enum CapGroupError {
 }
 
 /// A cap-group governance update (shared across chains).
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Eq)]
@@ -334,16 +248,7 @@ pub enum CapGroupUpdate {
 }
 
 /// Identifies a cap-group governance update for accept/revoke operations.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Eq)]

@@ -4,11 +4,6 @@
 
 use derive_more::{From, Into};
 
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 /// Timestamp in nanoseconds (u64).
 pub type TimestampNs = u64;
 
@@ -25,13 +20,7 @@ pub type Address = [u8; 32];
 /// Asset identifier as a fixed 32-byte hash.
 /// Executors map chain-native asset identifiers (e.g., NEAR account id)
 /// to this form (sha256 hash) and maintain the mapping.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
 pub struct AssetId(pub [u8; 32]);
 
@@ -60,13 +49,7 @@ impl AsRef<[u8]> for AssetId {
 }
 
 /// Settlement result for escrowed shares.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct EscrowSettlement {
     /// Shares to burn (successfully redeemed).
@@ -108,13 +91,7 @@ impl EscrowSettlement {
 }
 
 /// Kernel version identifier.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq, From, Into)]
 pub struct KernelVersion(pub u32);
 

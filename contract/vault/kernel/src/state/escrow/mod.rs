@@ -4,11 +4,6 @@
 //! functions for escrow logic. Storage implementation is left to chain-specific
 //! executors (NEAR, Soroban, etc.).
 
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 use crate::math::number::Number;
 use crate::types::{Address, TimestampNs};
 
@@ -17,13 +12,7 @@ pub use crate::types::EscrowSettlement;
 /// Escrow entry for a single actor.
 ///
 /// Tracks shares held in escrow for a pending withdrawal.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct EscrowEntry {
     pub owner: Address,
@@ -57,13 +46,7 @@ impl EscrowEntry {
 }
 
 /// Result of applying a settlement to an escrow entry.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SettlementResult {
     pub burned: u128,
@@ -72,13 +55,7 @@ pub struct SettlementResult {
 }
 
 /// Aggregate escrow statistics.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct EscrowStats {
     pub count: u32,

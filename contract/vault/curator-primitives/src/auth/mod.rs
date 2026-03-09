@@ -9,13 +9,8 @@
 use templar_vault_kernel::{Address, KernelAction};
 
 /// Shared authorization class for an action.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum AuthPolicyClass {
     /// User-facing/public action (no special role requirement).
     Public,
@@ -76,13 +71,8 @@ pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
 }
 
 /// Kinds of actions that require authorization.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum ActionKind {
     /// User deposit action.
     Deposit,
@@ -167,7 +157,7 @@ impl_action_kind_from_kernel_action!(
     Pause,
 );
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Caller {
     Admin,
@@ -184,7 +174,7 @@ impl From<Address> for Caller {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum AuthError {
     NotAuthorized { caller: Caller, action: ActionKind },

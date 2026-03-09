@@ -8,10 +8,6 @@
 use alloc::string::ToString;
 #[cfg(feature = "borsh-schema")]
 use borsh::BorshSchema;
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 use crate::math::number::Number;
 use crate::math::wad::Wad;
@@ -35,14 +31,8 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     pub owner: Address,
@@ -73,13 +63,7 @@ impl PendingWithdrawal {
 }
 
 /// Result of attempting to satisfy a withdrawal from available assets.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalResult {
     pub assets_out: u128,
@@ -87,13 +71,7 @@ pub struct WithdrawalResult {
 }
 
 /// Status information for a single withdrawal request in the queue.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalRequestStatus {
     pub index: u32,
@@ -102,13 +80,7 @@ pub struct WithdrawalRequestStatus {
 }
 
 /// Aggregate status of the entire withdrawal queue.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct QueueStatus {
     pub length: u32,
@@ -423,27 +395,15 @@ use alloc::vec::Vec;
 
 pub use crate::state::vault::MAX_PENDING;
 
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct PendingWithdrawals {
     entries: Vec<PendingWithdrawalEntry>,
 }
 
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 struct PendingWithdrawalEntry {
     id: u64,
@@ -562,14 +522,8 @@ impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
 /// - FIFO withdrawal ordering; no skipping head
 /// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
 /// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
@@ -937,13 +891,7 @@ impl WithdrawQueue {
 }
 
 /// Errors that can occur during queue operations.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum QueueError {
     /// Queue is at maximum capacity.

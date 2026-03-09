@@ -24,7 +24,7 @@ use templar_vault_kernel::{
 use typed_builder::TypedBuilder;
 
 /// Context for determining recovery actions.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct RecoveryContext {
@@ -72,7 +72,7 @@ impl Default for RecoveryContext {
 }
 
 /// Progress timestamps for an in-flight operation.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct RecoveryProgress {
@@ -99,12 +99,7 @@ impl RecoveryProgress {
 }
 
 /// Outcome of a recovery operation.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct RecoveryOutcome {
     pub action: KernelAction,
@@ -260,7 +255,7 @@ pub fn compute_payout_failure_outcome(escrow_shares: u128, restore_idle: u128) -
 /// Compute recovery statistics from the current state.
 ///
 /// Provides useful metrics for monitoring and debugging recovery operations.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, Default)]
 pub struct RecoveryStats {
     /// Number of targets completed before failure (for Allocating/Refreshing).

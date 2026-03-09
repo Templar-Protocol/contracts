@@ -32,11 +32,6 @@ use crate::transitions::{start_withdrawal, TransitionError, WithdrawalRequest};
 use crate::types::{Address, TimestampNs};
 use alloc::vec;
 use alloc::vec::Vec;
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 /// Result of applying a kernel action.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -53,13 +48,7 @@ impl KernelResult {
 }
 
 /// Outcome for payout settlement.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum PayoutOutcome {
     Success {
@@ -76,13 +65,7 @@ pub enum PayoutOutcome {
 ///
 /// These actions drive the vault state machine. Each action validates preconditions,
 /// updates state, and returns effects to be executed by the chain-specific runtime.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum KernelAction {
     /// Begin allocating idle assets to external markets according to a plan.

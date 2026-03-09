@@ -32,24 +32,14 @@
 //!
 use alloc::vec::Vec;
 
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
 use derive_more::{From, IsVariant};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 use crate::types::Address;
 
 pub type TargetId = u32;
 
 /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct IdleState;
 
@@ -58,13 +48,7 @@ pub struct IdleState;
 /// # Transitions
 /// - On completion of allocation: `Withdrawing` (to satisfy pending user requests) or `Idle` (if stopped).
 /// - On stop/failure: `Idle`.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct AllocatingState {
     pub op_id: u64,
@@ -79,13 +63,7 @@ pub struct AllocatingState {
 /// - Advance within queue: `Withdrawing` (index increments) while collecting funds.
 /// - When enough is collected to satisfy the request: `Payout`.
 /// - If the op is stopped or cannot proceed and needs to refund: `Idle` (escrow_shares refunded).
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawingState {
     pub op_id: u64,
@@ -102,13 +80,7 @@ pub struct WithdrawingState {
 /// # Transitions
 /// - On completion: `Idle`.
 /// - On failure: `Idle` (with potentially stale AUM data).
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct RefreshingState {
     pub op_id: u64,
@@ -125,13 +97,7 @@ pub struct RefreshingState {
 /// - `idle_balance` decreases only on payout success by `amount`.
 /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
 /// - On failure, all `escrow_shares` are refunded.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PayoutState {
     pub op_id: u64,
@@ -197,13 +163,7 @@ impl RefreshingState {
 /// # Invariants
 /// - `idle_balance` increases only when funds are received and decreases only on payout success.
 /// - `escrow_shares` are refunded on stop/failure or partially burned/refunded on payout success.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default, PartialEq, Eq, From, IsVariant)]
 pub enum OpState {
     /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.

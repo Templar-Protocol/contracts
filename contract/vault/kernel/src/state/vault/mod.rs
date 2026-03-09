@@ -4,11 +4,6 @@
 //! all state required by the kernel, including the withdrawal queue.
 //! Executors are responsible for persisting this state to storage.
 
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 use crate::fee::FeesSpec;
 use crate::state::op_state::OpState;
 use crate::state::queue::WithdrawQueue;
@@ -23,13 +18,7 @@ pub const MAX_PENDING: usize = 1024;
 /// Stores the total assets and timestamp at which fees were last accrued.
 /// Used to calculate time-weighted management fees and performance fees
 /// based on AUM growth.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeAccrualAnchor {
     pub total_assets: u128,
@@ -77,13 +66,7 @@ impl Default for FeeAccrualAnchor {
 /// Fee recipients are 32-byte addresses. Executors are responsible for mapping
 /// chain-native account identifiers (e.g., NEAR AccountId, Soroban Address) to
 /// this canonical 32-byte format, typically using a SHA256 hash.
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VaultConfig {
     pub fees: FeesSpec,
@@ -116,13 +99,7 @@ impl VaultConfig {
 /// - `withdraw_queue.check_invariants()`
 /// - `next_op_id` is monotonically increasing
 /// - Operations can only proceed when `op_state` allows them
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct VaultState {
     pub total_assets: u128,

@@ -7,16 +7,7 @@ use super::cooldown::Cooldown;
 use super::target_set::find_first_duplicate;
 
 /// A plan for refreshing market principal data.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default)]
 pub struct RefreshPlan {
     /// Ordered list of target IDs to refresh.
@@ -130,7 +121,7 @@ impl From<Vec<TargetId>> for RefreshPlan {
 }
 
 /// Errors that can occur during refresh plan operations.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum RefreshPlanError {
     /// Plan is empty.

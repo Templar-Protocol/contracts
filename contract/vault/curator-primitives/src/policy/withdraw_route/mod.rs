@@ -7,16 +7,7 @@ use typed_builder::TypedBuilder;
 use super::target_set::find_first_duplicate;
 
 /// An entry in a withdraw route.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct WithdrawRouteEntry {
@@ -50,16 +41,7 @@ impl From<(TargetId, u128)> for WithdrawRouteEntry {
 }
 
 /// A planned route for withdrawing assets.
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
-#[cfg_attr(
-    all(feature = "postcard", not(feature = "serde")),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default)]
 pub struct WithdrawRoute {
     pub entries: Vec<WithdrawRouteEntry>,
@@ -199,7 +181,7 @@ impl From<(Vec<WithdrawRouteEntry>, u128)> for WithdrawRoute {
 }
 
 /// Errors that can occur during withdraw route operations.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum WithdrawRouteError {
     /// Target amount must be greater than zero.
