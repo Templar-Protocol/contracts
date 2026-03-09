@@ -8,19 +8,10 @@ use derive_more::{Display, From, Into};
 use templar_vault_kernel::Wad;
 use typed_builder::TypedBuilder;
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
 #[display("{_0}")]
 pub struct CapGroupId(pub String);
-
-impl CapGroupId {
-    #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-}
 
 impl From<&str> for CapGroupId {
     fn from(value: &str) -> Self {
@@ -32,9 +23,7 @@ impl From<&str> for CapGroupId {
 ///
 /// Caps are optional - `None` means no limit for that cap type.
 /// When both caps are set, the effective cap is the minimum of the two.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
@@ -147,9 +136,7 @@ impl CapGroup {
 }
 
 /// Record tracking the state of a cap group.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.
@@ -228,9 +215,7 @@ pub enum CapGroupError {
 }
 
 /// A cap-group governance update (shared across chains).
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum CapGroupUpdate {
     SetCap {
@@ -248,9 +233,7 @@ pub enum CapGroupUpdate {
 }
 
 /// Identifies a cap-group governance update for accept/revoke operations.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum CapGroupUpdateKey {
     SetCap {

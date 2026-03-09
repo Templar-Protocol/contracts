@@ -20,9 +20,8 @@ use crate::auth::{
 };
 
 /// Role types for RBAC.
-#[templar_vault_macros::vault_derive(borsh, serde)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "boundary", derive(near_sdk::BorshStorageKey))]
 pub enum Role {
     /// Curator-scoped privileged actions (and allocator-class operations).
@@ -59,15 +58,6 @@ pub struct RoleAssignment {
     pub role: Role,
 }
 
-impl RoleAssignment {
-    /// Create a new role assignment.
-    #[inline]
-    #[must_use]
-    pub const fn new(address: Address, role: Role) -> Self {
-        Self { address, role }
-    }
-}
-
 /// RBAC configuration for the vault.
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, Default)]
@@ -79,19 +69,15 @@ pub struct RbacConfig {
 }
 
 impl RbacConfig {
-    /// Create a new empty RBAC configuration.
-    #[inline]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Create an RBAC configuration with a single curator.
     #[inline]
     #[must_use]
     pub fn with_curator(curator: Address) -> Self {
         Self {
-            assignments: alloc::vec![RoleAssignment::new(curator, Role::Curator)],
+            assignments: alloc::vec![RoleAssignment {
+                address: curator,
+                role: Role::Curator,
+            }],
             paused: false,
         }
     }
@@ -102,7 +88,7 @@ impl RbacConfig {
         // Remove any existing assignment for this address with the same role
         self.assignments
             .retain(|a| !(a.address == address && a.role == role));
-        self.assignments.push(RoleAssignment::new(address, role));
+        self.assignments.push(RoleAssignment { address, role });
     }
 
     /// Remove a role from an address.
@@ -171,20 +157,6 @@ pub struct RbacAuth {
 }
 
 impl RbacAuth {
-    /// Create a new RBAC auth adapter.
-    #[inline]
-    #[must_use]
-    pub fn new(config: RbacConfig) -> Self {
-        Self { config }
-    }
-
-    /// Create an RBAC auth adapter with a single curator.
-    #[inline]
-    #[must_use]
-    pub fn with_curator(curator: Address) -> Self {
-        Self::new(RbacConfig::with_curator(curator))
-    }
-
     #[inline]
     fn is_allowed(&self, action: ActionKind, caller: &Address) -> bool {
         match canonical_policy_class(action) {

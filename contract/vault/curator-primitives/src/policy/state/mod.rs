@@ -28,9 +28,7 @@ impl<K, V> Default for OrderedMap<K, V> {
 impl<K: PartialEq, V> OrderedMap<K, V> {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self::default()
     }
 
     #[must_use]
@@ -99,7 +97,7 @@ impl<K: PartialEq, V> OrderedMap<K, V> {
 
 impl<K: PartialEq, V> FromIterator<(K, V)> for OrderedMap<K, V> {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let mut map = Self::new();
+        let mut map = Self::default();
         for (key, value) in iter {
             let _ = map.insert(key, value);
         }
@@ -132,12 +130,6 @@ impl MarketConfig {
             cap_group_id,
         }
     }
-
-    #[must_use]
-    pub fn with_cap(mut self, cap: u128) -> Self {
-        self.cap = cap;
-        self
-    }
 }
 
 impl Default for MarketConfig {
@@ -162,10 +154,6 @@ pub struct PolicyState {
 }
 
 impl PolicyState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn set_market_config(&mut self, target_id: TargetId, config: MarketConfig) {
         self.markets.insert(target_id, config);
     }

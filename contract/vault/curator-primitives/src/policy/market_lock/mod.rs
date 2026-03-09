@@ -13,9 +13,7 @@ pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u6
 }
 
 /// A lock on a specific market/target.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct MarketLock {
@@ -64,9 +62,7 @@ impl MarketLock {
 }
 
 /// A set of market locks.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
 #[derive(Clone, Default)]
 pub struct MarketLockSet {
     pub locks: Vec<MarketLock>,
@@ -75,7 +71,7 @@ pub struct MarketLockSet {
 impl MarketLockSet {
     #[must_use]
     pub fn new() -> Self {
-        Self { locks: Vec::new() }
+        Self::default()
     }
 
     /// Iterator over active (non-expired) locks.
@@ -168,7 +164,7 @@ impl MarketLockSet {
     /// Clear all locks (emergency reset).
     #[must_use]
     pub fn clear(&self) -> Self {
-        Self::new()
+        Self::default()
     }
 
     /// Clean up expired locks.

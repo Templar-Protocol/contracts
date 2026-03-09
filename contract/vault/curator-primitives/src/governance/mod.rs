@@ -13,9 +13,7 @@ use templar_vault_kernel::types::TimestampNs;
 use templar_vault_kernel::TimeGate;
 
 /// A pending governance value gated by a timelock.
-#[templar_vault_macros::vault_derive(borsh, serde)]
-#[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingValue<T> {
     pub value: T,
@@ -23,12 +21,6 @@ pub struct PendingValue<T> {
 }
 
 impl<T> PendingValue<T> {
-    /// Create a new pending value.
-    #[must_use]
-    pub fn new(value: T, valid_at_ns: TimestampNs) -> Self {
-        Self { value, valid_at_ns }
-    }
-
     /// Returns true if the timelock has elapsed.
     #[must_use]
     pub fn is_mature(&self, now_ns: TimestampNs) -> bool {
@@ -43,22 +35,21 @@ pub enum PendingQueueError {
 }
 
 /// Timelocked pending governance values.
-#[templar_vault_macros::vault_derive(borsh, serde)]
-#[cfg_attr(all(feature = "borsh", feature = "std"), derive(borsh::BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[derive(Clone, PartialEq, Eq, Default)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PendingQueue<T> {
     entries: VecDeque<PendingValue<T>>,
 }
 
-impl<T> PendingQueue<T> {
-    #[must_use]
-    pub fn new() -> Self {
+impl<T> Default for PendingQueue<T> {
+    fn default() -> Self {
         Self {
             entries: VecDeque::new(),
         }
     }
+}
 
+impl<T> PendingQueue<T> {
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -87,8 +78,7 @@ impl<T> PendingQueue<T> {
         let valid_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
             .ready_at_ns()
             .unwrap_or(now_ns);
-        self.entries
-            .push_back(PendingValue::new(value, valid_at_ns));
+        self.entries.push_back(PendingValue { value, valid_at_ns });
     }
 
     #[must_use]
@@ -105,9 +95,7 @@ impl<T> PendingQueue<T> {
             return Ok(None);
         };
 
-        let Some(entry) = self.entries.get(index) else {
-            return Ok(None);
-        };
+        let entry = &self.entries[index];
 
         if !entry.is_mature(now_ns) {
             return Err(PendingQueueError::NotMature);
@@ -234,25 +222,6 @@ pub struct FeeConfig<'a, R> {
     pub performance_recipient: &'a R,
     pub management_recipient: &'a R,
     pub max_rate: Option<Wad>,
-}
-
-impl<'a, R> FeeConfig<'a, R> {
-    #[must_use]
-    pub fn new(
-        performance_fee: Wad,
-        management_fee: Wad,
-        performance_recipient: &'a R,
-        management_recipient: &'a R,
-        max_rate: Option<Wad>,
-    ) -> Self {
-        Self {
-            performance_fee,
-            management_fee,
-            performance_recipient,
-            management_recipient,
-            max_rate,
-        }
-    }
 }
 
 impl<R: PartialEq> FeeConfig<'_, R> {
