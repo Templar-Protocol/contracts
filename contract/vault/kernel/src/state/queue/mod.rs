@@ -6,8 +6,6 @@
 
 #[cfg(feature = "borsh-schema")]
 use alloc::string::ToString;
-#[cfg(feature = "borsh-schema")]
-use borsh::BorshSchema;
 
 use crate::math::number::Number;
 use crate::math::wad::Wad;
@@ -31,8 +29,7 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     pub owner: Address,
@@ -395,15 +392,13 @@ use alloc::vec::Vec;
 
 pub use crate::state::vault::MAX_PENDING;
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct PendingWithdrawals {
     entries: Vec<PendingWithdrawalEntry>,
 }
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
 #[derive(Clone, PartialEq, Eq)]
 struct PendingWithdrawalEntry {
     id: u64,
@@ -498,20 +493,21 @@ impl PendingWithdrawals {
 
 impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
     fn from_iter<T: IntoIterator<Item = (u64, PendingWithdrawal)>>(iter: T) -> Self {
-        let mut entries: Vec<PendingWithdrawalEntry> = iter
-            .into_iter()
-            .map(|(id, withdrawal)| PendingWithdrawalEntry { id, withdrawal })
-            .collect();
-        entries.sort_unstable_by(|a, b| a.id.cmp(&b.id));
-        entries.dedup_by(|a, b| a.id == b.id);
-        Self { entries }
+        let mut pending = Self::new();
+        for (id, withdrawal) in iter {
+            assert!(
+                pending.insert(id, withdrawal).is_none(),
+                "duplicate pending withdrawal id: {id}"
+            );
+        }
+        pending
     }
 }
 
 /// Withdrawal queue storage with FIFO ordering.
 ///
 /// Maintains pending withdrawals keyed by monotonic IDs with escrow parity.
-/// The queue uses a BTreeMap for efficient iteration and lookup, with two
+/// The queue uses a sorted `Vec` for efficient iteration and predictable serialization, with two
 /// pointers to track the FIFO head and next ID to allocate.
 ///
 /// # Invariants
@@ -522,8 +518,7 @@ impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
 /// - FIFO withdrawal ordering; no skipping head
 /// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
 /// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
@@ -661,6 +656,11 @@ impl WithdrawQueue {
         }
 
         let id = self.next_pending_withdrawal_id;
+        let next_id = id
+            .checked_add(1)
+            .ok_or_else(|| QueueError::InvariantViolation {
+                message: alloc::string::String::from("next_pending_withdrawal_id overflow"),
+            })?;
 
         // Compute cache totals first so we can fail without mutating queue state.
         let new_escrow = self
@@ -673,7 +673,7 @@ impl WithdrawQueue {
             .ok_or(QueueError::CacheOverflow)?;
 
         self.pending_withdrawals.insert(id, withdrawal);
-        self.next_pending_withdrawal_id = self.next_pending_withdrawal_id.saturating_add(1);
+        self.next_pending_withdrawal_id = next_id;
 
         // Update cached totals (overflow already checked)
         self.cached_total_escrow = new_escrow;
@@ -710,26 +710,14 @@ impl WithdrawQueue {
         let head_id = self.next_withdraw_to_execute;
         let withdrawal = self.pending_withdrawals.remove(&head_id)?;
 
-        #[cfg(test)]
-        {
-            self.cached_total_escrow = self
-                .cached_total_escrow
-                .checked_sub(withdrawal.escrow_shares)
-                .expect("dequeue: cached_total_escrow underflow — queue cache corrupt");
-            self.cached_total_expected = self
-                .cached_total_expected
-                .checked_sub(withdrawal.expected_assets)
-                .expect("dequeue: cached_total_expected underflow — queue cache corrupt");
-        }
-        #[cfg(not(test))]
-        {
-            self.cached_total_escrow = self
-                .cached_total_escrow
-                .saturating_sub(withdrawal.escrow_shares);
-            self.cached_total_expected = self
-                .cached_total_expected
-                .saturating_sub(withdrawal.expected_assets);
-        }
+        self.cached_total_escrow = self
+            .cached_total_escrow
+            .checked_sub(withdrawal.escrow_shares)
+            .expect("dequeue: cached_total_escrow underflow - queue cache corrupt");
+        self.cached_total_expected = self
+            .cached_total_expected
+            .checked_sub(withdrawal.expected_assets)
+            .expect("dequeue: cached_total_expected underflow - queue cache corrupt");
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self

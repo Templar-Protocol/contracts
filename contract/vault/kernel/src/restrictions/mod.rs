@@ -8,19 +8,13 @@ use alloc::vec::Vec;
 #[cfg(feature = "schemars")]
 use alloc::{borrow::ToOwned, boxed::Box, vec};
 
-#[cfg(feature = "borsh-schema")]
-use borsh::BorshSchema;
 use derive_more::IsVariant;
-#[cfg(feature = "schemars")]
-use schemars::JsonSchema;
 
 use crate::types::Address;
 
 /// Lightweight tag indicating why an actor was restricted.
 ///
-#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(JsonSchema))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[templar_vault_macros::vault_derive(borsh_schema, schemars)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RestrictionKind {
     /// Vault is paused.
@@ -34,9 +28,7 @@ pub enum RestrictionKind {
 /// Restrictions that can be applied to the vault.
 ///
 /// Supports Pausing, Whitelist, and Blacklist functionality.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[cfg_attr(feature = "borsh-schema", derive(BorshSchema))]
-#[cfg_attr(feature = "schemars", derive(JsonSchema))]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum Restrictions {
     /// Vault is paused - all operations blocked.
