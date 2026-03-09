@@ -31,4 +31,7 @@ contract/vault/**/test_snapshots/
 # generated bindings
 client/vault/dist/
 
+# local agent scratch space
+.codex/
+
 .aider*
