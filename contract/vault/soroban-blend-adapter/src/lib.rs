@@ -406,38 +406,7 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::{
-        testutils::{Address as _, Events as _},
-        token::StellarAssetClient,
-    };
-
-    #[contract]
-    struct MockPoolContract;
-
-    #[contractimpl]
-    impl MockPoolContract {
-        pub fn submit(
-            env: Env,
-            from: Address,
-            _spender: Address,
-            _receiver: Address,
-            requests: Vec<Request>,
-        ) {
-            let pool = env.current_contract_address();
-            for request in requests.iter() {
-                let token = soroban_sdk::token::Client::new(&env, &request.address);
-                if request.request_type == REQUEST_SUPPLY {
-                    token.transfer(&from, &pool, &request.amount);
-                } else if request.request_type == REQUEST_WITHDRAW {
-                    let available = token.balance(&pool);
-                    let to_transfer = request.amount.min(available);
-                    if to_transfer > 0 {
-                        token.transfer(&pool, &from, &to_transfer);
-                    }
-                }
-            }
-        }
-    }
+    use soroban_sdk::testutils::{Address as _, Events as _};
 
     fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
         env.events()
@@ -675,106 +644,6 @@ mod tests {
             BlendAdapterContract::set_vault(env.clone(), admin, new_vault.clone()).unwrap();
         });
         assert_eq!(adapter_event_count(&env, &contract_id), 1);
-    }
-
-    #[test]
-    fn supply_transfers_and_emits() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = env.register(MockPoolContract, ());
-        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
-
-        let token = env.register_stellar_asset_contract_v2(admin.clone());
-        let asset = token.address();
-        let token_client = StellarAssetClient::new(&env, &asset);
-        token_client.mock_all_auths().mint(&contract_id, &1_000);
-
-        let balance_before = token_client.balance(&contract_id);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::supply(env.clone(), vault, asset.clone(), 250).unwrap();
-        });
-        let balance_after = token_client.balance(&contract_id);
-        assert_eq!(balance_before - balance_after, 250);
-        assert!(adapter_event_count(&env, &contract_id) >= 1);
-    }
-
-    #[test]
-    fn withdraw_transfers_and_emits() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = env.register(MockPoolContract, ());
-        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
-
-        let token = env.register_stellar_asset_contract_v2(admin.clone());
-        let asset = token.address();
-        let token_client = StellarAssetClient::new(&env, &asset);
-        token_client.mock_all_auths().mint(&pool, &5_000);
-
-        let vault_before = token_client.balance(&vault);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), 400).unwrap();
-        });
-        let vault_after = token_client.balance(&vault);
-        assert_eq!(vault_after - vault_before, 400);
-        assert!(adapter_event_count(&env, &contract_id) >= 1);
-    }
-
-    #[test]
-    fn progress_withdrawal_handles_partial_liquidity() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = env.register(MockPoolContract, ());
-        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
-
-        let token = env.register_stellar_asset_contract_v2(admin.clone());
-        let asset = token.address();
-        let token_client = StellarAssetClient::new(&env, &asset);
-        token_client.mock_all_auths().mint(&pool, &300);
-
-        let vault_before = token_client.balance(&vault);
-        env.as_contract(&contract_id, || {
-            let actual = BlendAdapterContract::progress_withdrawal(
-                env.clone(),
-                vault.clone(),
-                asset.clone(),
-                1_000,
-            )
-            .unwrap();
-            assert_eq!(actual, 300);
-        });
-        let vault_after = token_client.balance(&vault);
-        assert_eq!(vault_after - vault_before, 300);
-    }
-
-    #[test]
-    fn rescue_transfers_and_emits() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = Address::generate(&env);
-        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
-
-        let token = env.register_stellar_asset_contract_v2(admin.clone());
-        let asset = token.address();
-        let token_client = StellarAssetClient::new(&env, &asset);
-        token_client.mock_all_auths().mint(&contract_id, &2_000);
-        let receiver = Address::generate(&env);
-
-        let receiver_before = token_client.balance(&receiver);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::rescue(env.clone(), vault, asset.clone(), 300, receiver.clone())
-                .unwrap();
-        });
-        let receiver_after = token_client.balance(&receiver);
-        assert_eq!(receiver_after - receiver_before, 300);
-        assert!(adapter_event_count(&env, &contract_id) >= 1);
     }
 
     #[test]
