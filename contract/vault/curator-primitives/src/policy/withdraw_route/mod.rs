@@ -50,31 +50,11 @@ pub struct WithdrawRoute {
 
 impl WithdrawRoute {
     #[must_use]
-    pub fn new(target_amount: u128) -> Self {
-        Self {
-            entries: Vec::new(),
-            target_amount,
-        }
-    }
-
-    #[must_use]
     pub fn from_entries(entries: Vec<WithdrawRouteEntry>, target_amount: u128) -> Self {
         Self {
             entries,
             target_amount,
         }
-    }
-
-    #[must_use]
-    pub fn with_entry(mut self, entry: WithdrawRouteEntry) -> Self {
-        self.entries.push(entry);
-        self
-    }
-
-    #[must_use]
-    pub fn with_entries(mut self, entries: impl IntoIterator<Item = WithdrawRouteEntry>) -> Self {
-        self.entries.extend(entries);
-        self
     }
 
     #[must_use]

@@ -179,6 +179,10 @@ pub fn build_targeted_refresh_plan(
         return Err(RefreshPlanError::EmptyPlan);
     }
 
+    if let Some(dup) = find_first_duplicate(targets) {
+        return Err(RefreshPlanError::DuplicateTarget { target_id: dup });
+    }
+
     let enabled_set: BTreeSet<_> = enabled_targets.iter().copied().collect();
 
     // Validate all targets are enabled
@@ -186,11 +190,6 @@ pub fn build_targeted_refresh_plan(
         if !enabled_set.contains(target) {
             return Err(RefreshPlanError::TargetNotFound { target_id: *target });
         }
-    }
-
-    // Check for duplicates
-    if let Some(dup) = find_first_duplicate(targets) {
-        return Err(RefreshPlanError::DuplicateTarget { target_id: dup });
     }
 
     Ok(RefreshPlan::new(targets.to_vec()))
