@@ -24,6 +24,7 @@ recovery = []
 [dependencies]
 # Core dependency - vault kernel types
 templar-vault-kernel = { path = "../kernel" }
+templar-vault-macros.workspace = true
 derive_more.workspace = true
 typed-builder = "0.20"
 
@@ -37,4 +38,3 @@ near-sdk = { workspace = true, optional = true }
 [dev-dependencies]
 proptest = "1.4"
 rstest.workspace = true
-

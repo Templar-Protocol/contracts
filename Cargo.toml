@@ -5,14 +5,15 @@ members = [
     "contract/lst-oracle",
     "contract/market",
     "contract/registry",
+    "contract/vault/macros",
     "contract/universal-account",
     "contract/vault/curator-primitives",
     "contract/vault/kernel",
     "contract/vault/near",
     "contract/vault/soroban",
-    "contract/vault/soroban-blend-adapter",
-    "contract/vault/soroban-governance",
-    "contract/vault/soroban-share-token",
+    "contract/vault/soroban/blend-adapter",
+    "contract/vault/soroban/governance",
+    "contract/vault/soroban/share-token",
     "fuzz",
     "tools/*",
     "client/*",
@@ -66,6 +67,7 @@ templar-common = { path = "./common" }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault/near" }
 templar-vault-kernel = { path = "./contract/vault/kernel", features = ["near", "borsh-schema", "serde", "schemars", "all-actions"] }
+templar-vault-macros = { path = "./contract/vault/macros" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }

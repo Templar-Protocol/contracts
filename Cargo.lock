@@ -12602,14 +12602,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stellar-contract-utils"
-version = "0.5.0"
-source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
-dependencies = [
- "soroban-sdk 23.5.2",
-]
-
-[[package]]
 name = "stellar-strkey"
 version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13043,6 +13035,7 @@ dependencies = [
  "schemars",
  "serde",
  "templar-vault-kernel",
+ "templar-vault-macros",
  "typed-builder",
 ]
 
@@ -13253,14 +13246,15 @@ dependencies = [
 name = "templar-soroban-runtime"
 version = "0.1.0"
 dependencies = [
+ "blend-contract-sdk",
  "derive_more 1.0.0",
  "postcard",
  "proptest",
  "rstest",
  "serde",
- "soroban-sdk 23.5.2",
- "stellar-contract-utils",
+ "soroban-sdk 25.1.1",
  "templar-curator-primitives",
+ "templar-soroban-blend-adapter",
  "templar-soroban-runtime",
  "templar-vault-kernel",
 ]
@@ -13373,6 +13367,16 @@ dependencies = [
  "proptest",
  "schemars",
  "serde",
+ "templar-vault-macros",
+]
+
+[[package]]
+name = "templar-vault-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]
@@ -15378,3 +15382,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "stellar-contract-utils"
+version = "0.5.0"
+source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
