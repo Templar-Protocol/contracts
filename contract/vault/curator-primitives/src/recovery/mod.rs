@@ -18,8 +18,8 @@
 
 use alloc::string::String;
 use templar_vault_kernel::{
-    AllocatingState, EscrowSettlement, KernelAction, OpState, PayoutOutcome, PayoutState,
-    RefreshingState, WithdrawingState,
+    settle_proportional, AllocatingState, EscrowEntry, EscrowSettlement, KernelAction, OpState,
+    PayoutOutcome, PayoutState, RefreshingState, WithdrawingState,
 };
 use typed_builder::TypedBuilder;
 
@@ -148,11 +148,11 @@ pub fn determine_recovery_action(
     }
 
     match state {
-        OpState::Idle => None,
         OpState::Allocating(alloc) => Some(abort_allocating_action(alloc)),
         OpState::Withdrawing(withdraw) => Some(abort_withdrawing_action(withdraw)),
         OpState::Refreshing(refresh) => Some(abort_refreshing_action(refresh)),
         OpState::Payout(payout) => Some(settle_payout_failure_action(payout, payout.amount)),
+        OpState::Idle => None,
     }
 }
 
@@ -217,10 +217,10 @@ pub fn compute_settlement_shares(
         return EscrowSettlement::burn_all(escrow_shares);
     }
 
-    let burn =
-        (escrow_shares.saturating_mul(collected_amount) / expected_amount).min(escrow_shares);
-
-    EscrowSettlement::partial(burn, escrow_shares.saturating_sub(burn))
+    settle_proportional(
+        &EscrowEntry::new([0u8; 32], escrow_shares, 0, expected_amount),
+        collected_amount,
+    )
 }
 
 /// Compute a success payout outcome from escrow and collected amounts.
