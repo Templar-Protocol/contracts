@@ -45,22 +45,6 @@ pub struct SupplyQueue {
 
 impl SupplyQueue {
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            max_length: 0,
-        }
-    }
-
-    #[must_use]
-    pub fn with_max_length(max_length: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            max_length,
-        }
-    }
-
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

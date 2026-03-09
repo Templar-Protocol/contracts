@@ -50,14 +50,6 @@ impl Cooldown {
     }
 
     #[must_use]
-    pub fn with_last_event(interval_ns: u64, last_event_ns: u64) -> Self {
-        Self {
-            last_event_ns: Some(last_event_ns),
-            interval_ns,
-        }
-    }
-
-    #[must_use]
     pub fn is_unlimited(&self) -> bool {
         self.interval_ns == 0
     }
