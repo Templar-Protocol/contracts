@@ -275,9 +275,10 @@ fn golden_cap_group_effective_caps(near_snapshot: NearVaultSnapshot) {
     ];
 
     for (group_id, abs_cap, rel_cap, _principal) in &snapshot.cap_groups {
-        let cap = CapGroup::new()
-            .with_absolute(*abs_cap)
-            .with_relative(Wad::from(*rel_cap));
+        let cap = CapGroup::builder()
+            .absolute_cap(*abs_cap)
+            .relative_cap(Wad::from(*rel_cap))
+            .build();
         let effective = cap.effective_cap(snapshot.total_assets);
 
         let expected = expected_effective_caps
@@ -310,9 +311,10 @@ fn golden_cap_group_available_capacity(near_snapshot: NearVaultSnapshot) {
     ];
 
     for (group_id, abs_cap, rel_cap, principal) in &snapshot.cap_groups {
-        let cap = CapGroup::new()
-            .with_absolute(*abs_cap)
-            .with_relative(Wad::from(*rel_cap));
+        let cap = CapGroup::builder()
+            .absolute_cap(*abs_cap)
+            .relative_cap(Wad::from(*rel_cap))
+            .build();
         let available = cap.available_capacity(*principal, snapshot.total_assets);
 
         let expected = expected_capacities
@@ -336,9 +338,10 @@ fn golden_cap_group_allocation_validation(near_snapshot: NearVaultSnapshot) {
     // Test allocations against the "volatile" group (3M cap, 2.5M used)
     // Available: 500_000_000_000 (0.5M)
 
-    let volatile_cap = CapGroup::new()
-        .with_absolute(3_000_000_000_000)
-        .with_relative(Wad::from(WAD * 30 / 100));
+    let volatile_cap = CapGroup::builder()
+        .absolute_cap(3_000_000_000_000)
+        .relative_cap(Wad::from(WAD * 30 / 100))
+        .build();
     let volatile_principal = 2_500_000_000_000u128;
 
     // Should succeed: allocate 400_000_000_000 (0.4M)
@@ -360,7 +363,7 @@ fn golden_cap_group_allocation_validation(near_snapshot: NearVaultSnapshot) {
 #[test]
 fn golden_supply_queue_to_plan() {
     // Simulate a supply queue with multiple entries for the same target
-    let mut queue = SupplyQueue::new();
+    let mut queue = SupplyQueue::default();
 
     // Add entries simulating batched deposits
     queue = queue
@@ -400,20 +403,44 @@ fn golden_supply_queue_to_plan() {
 
 #[test]
 fn golden_supply_queue_priority_ordering() {
-    let mut queue = SupplyQueue::new();
+    let mut queue = SupplyQueue::default();
 
     // Add entries with different priorities
     queue = queue
-        .enqueue(SupplyQueueEntry::new(0, 100_000_000_000).with_priority(0))
+        .enqueue(
+            SupplyQueueEntry::builder()
+                .target_id(0_u32)
+                .amount(100_000_000_000_u128)
+                .priority(0)
+                .build(),
+        )
         .unwrap();
     queue = queue
-        .enqueue(SupplyQueueEntry::new(1, 200_000_000_000).with_priority(5))
+        .enqueue(
+            SupplyQueueEntry::builder()
+                .target_id(1_u32)
+                .amount(200_000_000_000_u128)
+                .priority(5)
+                .build(),
+        )
         .unwrap();
     queue = queue
-        .enqueue(SupplyQueueEntry::new(2, 300_000_000_000).with_priority(10))
+        .enqueue(
+            SupplyQueueEntry::builder()
+                .target_id(2_u32)
+                .amount(300_000_000_000_u128)
+                .priority(10)
+                .build(),
+        )
         .unwrap();
     queue = queue
-        .enqueue(SupplyQueueEntry::new(3, 400_000_000_000).with_priority(3))
+        .enqueue(
+            SupplyQueueEntry::builder()
+                .target_id(3_u32)
+                .amount(400_000_000_000_u128)
+                .priority(3)
+                .build(),
+        )
         .unwrap();
 
     // Expected order by priority (highest first): 2, 1, 3, 0
@@ -623,15 +650,12 @@ fn golden_settlement_shares_cases(
 #[cfg(feature = "recovery")]
 #[test]
 fn golden_settlement_shares_large_values() {
-    // Test with large values to ensure no overflow
     let escrow = u128::MAX / 2;
     let expected = u128::MAX / 4;
     let collected = expected / 2;
 
     let settlement = compute_settlement_shares(escrow, expected, collected);
 
-    // burn = escrow * collected / expected = (MAX/2) * (MAX/8) / (MAX/4) = MAX/4
-    // With saturating arithmetic, this should be safe
     assert!(settlement.to_burn <= escrow);
     assert_eq!(settlement.to_burn + settlement.refund, escrow);
 }
@@ -643,7 +667,7 @@ fn golden_full_allocation_cycle(near_snapshot: NearVaultSnapshot) {
     let snapshot = near_snapshot;
 
     // Step 1: Create supply queue with batched deposits (1M total)
-    let mut queue = SupplyQueue::new();
+    let mut queue = SupplyQueue::default();
     queue = queue
         .enqueue(SupplyQueueEntry::new(0, 400_000_000_000))
         .unwrap();
@@ -675,9 +699,10 @@ fn golden_full_allocation_cycle(near_snapshot: NearVaultSnapshot) {
             })
             .unwrap();
 
-        let cap = CapGroup::new()
-            .with_absolute(*abs_cap)
-            .with_relative(Wad::from(*rel_cap));
+        let cap = CapGroup::builder()
+            .absolute_cap(*abs_cap)
+            .relative_cap(Wad::from(*rel_cap))
+            .build();
         let result = cap.enforce(*principal, *amount, snapshot.total_assets);
 
         assert!(
@@ -735,14 +760,14 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_cap_group_unlimited() {
-        let cap = CapGroup::new();
+        let cap = CapGroup::default();
         assert!(cap.is_unlimited());
         assert!(cap.can_allocate(0, u128::MAX, 1000));
     }
 
     #[test]
     fn test_cap_group_absolute_only() {
-        let cap = CapGroup::absolute_only(1000);
+        let cap = CapGroup::builder().absolute_cap(1000).build();
         assert!(!cap.is_unlimited());
         assert!(cap.absolute_cap.is_some());
         assert!(cap.relative_cap.is_none());
@@ -759,7 +784,7 @@ mod cap_group_unit_tests {
     #[test]
     fn test_cap_group_relative_only() {
         // 50% relative cap
-        let cap = CapGroup::relative_only(Wad::from(WAD / 2));
+        let cap = CapGroup::builder().relative_cap(Wad::from(WAD / 2)).build();
         assert!(!cap.is_unlimited());
         assert!(cap.absolute_cap.is_none());
         assert!(cap.relative_cap.is_some());
@@ -773,9 +798,10 @@ mod cap_group_unit_tests {
     #[test]
     fn test_cap_group_both_caps() {
         // 1000 absolute, 50% relative
-        let cap = CapGroup::new()
-            .with_absolute(1000)
-            .with_relative(Wad::from(WAD / 2));
+        let cap = CapGroup::builder()
+            .absolute_cap(1000)
+            .relative_cap(Wad::from(WAD / 2))
+            .build();
 
         // With 3000 total assets, relative cap = 1500, but absolute = 1000
         assert!(cap.can_allocate(0, 1000, 3000));
@@ -788,9 +814,10 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_compute_effective_cap() {
-        let cap = CapGroup::new()
-            .with_absolute(1000)
-            .with_relative(Wad::from(WAD / 2));
+        let cap = CapGroup::builder()
+            .absolute_cap(1000)
+            .relative_cap(Wad::from(WAD / 2))
+            .build();
 
         // When relative cap is stricter
         assert_eq!(cap.effective_cap(1000), 500);
@@ -799,15 +826,16 @@ mod cap_group_unit_tests {
         assert_eq!(cap.effective_cap(3000), 1000);
 
         // Unlimited
-        let unlimited = CapGroup::new();
+        let unlimited = CapGroup::default();
         assert_eq!(unlimited.effective_cap(1000), u128::MAX);
     }
 
     #[test]
     fn test_enforce_cap_group_errors() {
-        let cap = CapGroup::new()
-            .with_absolute(1000)
-            .with_relative(Wad::from(WAD / 2));
+        let cap = CapGroup::builder()
+            .absolute_cap(1000)
+            .relative_cap(Wad::from(WAD / 2))
+            .build();
 
         // Exceeds absolute cap
         let result = cap.enforce(0, 1001, 3000);
@@ -826,7 +854,7 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_compute_available_capacity() {
-        let cap = CapGroup::absolute_only(1000);
+        let cap = CapGroup::builder().absolute_cap(1000).build();
 
         assert_eq!(cap.available_capacity(0, 2000), 1000);
         assert_eq!(cap.available_capacity(300, 2000), 700);
@@ -836,8 +864,8 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_apply_and_remove_allocation() {
-        let cap = CapGroup::absolute_only(1000);
-        let record = CapGroupRecord::new(cap);
+        let cap = CapGroup::builder().absolute_cap(1000).build();
+        let record = CapGroupRecord { cap, principal: 0 };
 
         let updated = record.apply_allocation(300);
         assert_eq!(updated.principal, 300);
@@ -852,8 +880,14 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_validate_allocations() {
-        let cap1 = CapGroupRecord::new(CapGroup::absolute_only(1000));
-        let cap2 = CapGroupRecord::new(CapGroup::absolute_only(500));
+        let cap1 = CapGroupRecord {
+            cap: CapGroup::builder().absolute_cap(1000).build(),
+            principal: 0,
+        };
+        let cap2 = CapGroupRecord {
+            cap: CapGroup::builder().absolute_cap(500).build(),
+            principal: 0,
+        };
 
         // Valid allocations
         let allocations = vec![(cap1.clone(), 500), (cap2.clone(), 300)];
@@ -866,7 +900,10 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_cap_group_record_methods() {
-        let record = CapGroupRecord::new(CapGroup::absolute_only(1000));
+        let record = CapGroupRecord {
+            cap: CapGroup::builder().absolute_cap(1000).build(),
+            principal: 0,
+        };
 
         assert!(record.can_allocate(500, 2000));
         assert!(!record.can_allocate(1001, 2000));
@@ -878,7 +915,7 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_zero_absolute_cap_is_unlimited() {
-        let cap = CapGroup::absolute_only(0);
+        let cap = CapGroup::builder().absolute_cap(0).build();
         // NonZeroU128::new(0) returns None, so this should be unlimited
         assert!(cap.absolute_cap.is_none());
     }
@@ -891,9 +928,10 @@ mod cap_group_unit_tests {
             current in 0u128..=1_000_000_000_000u128,
             total in 0u128..=1_000_000_000_000u128,
         ) {
-            let cap = CapGroup::new()
-                .with_absolute(absolute)
-                .with_relative(Wad::from(relative));
+            let cap = CapGroup::builder()
+                .absolute_cap(absolute)
+                .relative_cap(Wad::from(relative))
+                .build();
             let effective = cap.effective_cap(total);
             let available = cap.available_capacity(current, total);
 
@@ -1332,7 +1370,10 @@ mod governance_module_tests {
 
     #[test]
     fn pending_value_maturity_is_time_based() {
-        let pending = PendingValue::new("ok", 1_000);
+        let pending = PendingValue {
+            value: "ok",
+            valid_at_ns: 1_000,
+        };
 
         assert!(!pending.is_mature(999));
         assert!(pending.is_mature(1_000));
@@ -1341,10 +1382,10 @@ mod governance_module_tests {
 
     #[test]
     fn queue_take_mature_enforces_timelock() {
-        let mut queue =
-            PendingQueue::from(alloc::collections::VecDeque::from([PendingValue::new(
-                "change", 1_000,
-            )]));
+        let mut queue = PendingQueue::from(alloc::collections::VecDeque::from([PendingValue {
+            value: "change",
+            valid_at_ns: 1_000,
+        }]));
 
         let not_ready = queue.take_mature(999, |value| *value == "change");
         assert_eq!(not_ready, Err(PendingQueueError::NotMature));
@@ -1434,7 +1475,7 @@ mod rbac_module_tests {
         config.add_role(guardian_addr, Role::Guardian);
         config.add_role(allocator_addr, Role::Allocator);
         config.add_role(sentinel_addr, Role::Sentinel);
-        RbacAuth::new(config)
+        RbacAuth { config }
     }
 
     #[rstest::rstest]
@@ -1447,7 +1488,7 @@ mod rbac_module_tests {
 
     #[rstest::rstest]
     fn test_add_remove_role(guardian_addr: Address) {
-        let mut config = RbacConfig::new();
+        let mut config = RbacConfig::default();
 
         config.add_role(guardian_addr, Role::Guardian);
         assert!(config.has_role(&guardian_addr, Role::Guardian));
@@ -1490,7 +1531,7 @@ mod rbac_module_tests {
 
     #[rstest::rstest]
     fn test_sentinel_add_remove(sentinel_addr: Address) {
-        let mut config = RbacConfig::new();
+        let mut config = RbacConfig::default();
 
         config.add_role(sentinel_addr, Role::Sentinel);
         assert!(config.has_role(&sentinel_addr, Role::Sentinel));
@@ -1790,48 +1831,62 @@ mod policy_cap_group_update_tests {
 
 mod policy_cap_group_adapter_tests {
     pub use crate::policy::cap_group_adapter::*;
+    use crate::{CapGroup, CapGroupRecord};
     pub use templar_vault_kernel::Wad;
 
     const WAD: u128 = Wad::SCALE;
 
     #[test]
     fn builds_cap_group_and_record_from_fields() {
-        let cap = cap_group_from_fields(1_000, Wad::from(WAD / 2));
+        let cap = CapGroup::builder()
+            .absolute_cap(1_000)
+            .relative_cap(Wad::from(WAD / 2))
+            .build();
         assert_eq!(cap.absolute_cap.map(|v| v.get()), Some(1_000));
         assert_eq!(cap.relative_cap, Some(Wad::from(WAD / 2)));
 
-        let record = cap_group_record_from_fields(1_000, Wad::from(WAD / 2), 300);
+        let record = CapGroupRecord {
+            cap,
+            principal: 300,
+        };
         assert_eq!(record.principal, 300);
         assert_eq!(record.cap.absolute_cap.map(|v| v.get()), Some(1_000));
     }
 
     #[test]
     fn alloc_helpers_match_cap_group_behavior() {
-        assert!(can_allocate_from_fields(1_000, Wad::one(), 300, 500, 2_000));
-        assert!(!can_allocate_from_fields(
-            1_000,
-            Wad::one(),
-            300,
-            800,
-            2_000
-        ));
+        let cap = CapGroup::builder()
+            .absolute_cap(1_000)
+            .relative_cap(Wad::one())
+            .build();
 
-        assert!(enforce_from_fields(1_000, Wad::one(), 300, 500, 2_000).is_ok());
-        assert!(enforce_from_fields(1_000, Wad::one(), 300, 800, 2_000).is_err());
+        assert!(cap.can_allocate(300, 500, 2_000));
+        assert!(!cap.can_allocate(300, 800, 2_000));
+
+        assert!(cap.enforce(300, 500, 2_000).is_ok());
+        assert!(cap.enforce(300, 800, 2_000).is_err());
     }
 
     #[test]
     fn computes_effective_and_available_from_fields() {
-        assert_eq!(effective_cap_from_fields(1_000, Wad::one(), 500), 500);
-        assert_eq!(
-            available_capacity_from_fields(1_000, Wad::one(), 300, 500),
-            200
-        );
+        let cap = CapGroup::builder()
+            .absolute_cap(1_000)
+            .relative_cap(Wad::one())
+            .build();
+
+        assert_eq!(cap.effective_cap(500), 500);
+        assert_eq!(cap.available_capacity(300, 500), 200);
     }
 
     #[test]
     fn record_field_helpers_preserve_unlimited_defaults_and_principal() {
-        let mut record = cap_group_record_from_fields(0, Wad::one(), 123);
+        let mut record = CapGroupRecord {
+            cap: CapGroup::builder()
+                .absolute_cap(0)
+                .relative_cap(Wad::one())
+                .build(),
+            principal: 123,
+        };
 
         assert_eq!(cap_group_record_absolute_cap(&record), 0);
         assert_eq!(cap_group_record_relative_cap(&record), Wad::one());
@@ -1883,7 +1938,7 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_check_returns_error() {
-        let cooldown = Cooldown::with_last_event(1000, 100);
+        let cooldown = Cooldown::new(1000).record(100);
 
         let result = cooldown.check(500);
         assert!(matches!(result, Err(CooldownError::OnCooldown { .. })));
@@ -1906,7 +1961,7 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_remaining() {
-        let cooldown = Cooldown::with_last_event(1000, 100);
+        let cooldown = Cooldown::new(1000).record(100);
 
         assert_eq!(cooldown.remaining(100), 1000);
         assert_eq!(cooldown.remaining(500), 600);
@@ -1936,7 +1991,7 @@ mod policy_lock_filter_tests {
     use templar_vault_kernel::TargetId;
 
     fn lock_set_with_target(target_id: TargetId) -> MarketLockSet {
-        MarketLockSet::new()
+        MarketLockSet::default()
             .acquire(MarketLock::new(target_id, 1_000), 1_000)
             .expect("lock should be acquirable")
     }
@@ -2065,7 +2120,7 @@ mod policy_market_lock_tests {
 
     #[rstest::fixture]
     fn empty_lock_set() -> MarketLockSet {
-        MarketLockSet::new()
+        MarketLockSet::default()
     }
 
     #[rstest::rstest]
@@ -2116,7 +2171,11 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_acquire_lock_after_expiry(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
+        let lock1 = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
         let lock2 = MarketLock::new(1, 3000);
 
         let set = set.acquire(lock1, 1000).unwrap();
@@ -2146,8 +2205,16 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_release_lock_by_op(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000).with_op_id(100);
-        let lock2 = MarketLock::new(2, 1000).with_op_id(200);
+        let lock1 = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(100_u64)
+            .build();
+        let lock2 = MarketLock::builder()
+            .target_id(2_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(200_u64)
+            .build();
 
         let set = set.acquire(lock1, 1000).unwrap();
         let set = set.acquire(lock2, 1000).unwrap();
@@ -2163,9 +2230,21 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_release_all_by_op(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000).with_op_id(100);
-        let lock2 = MarketLock::new(2, 1000).with_op_id(100);
-        let lock3 = MarketLock::new(3, 1000).with_op_id(200);
+        let lock1 = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(100_u64)
+            .build();
+        let lock2 = MarketLock::builder()
+            .target_id(2_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(100_u64)
+            .build();
+        let lock3 = MarketLock::builder()
+            .target_id(3_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(200_u64)
+            .build();
 
         let set = set.acquire(lock1, 1000).unwrap();
         let set = set.acquire(lock2, 1000).unwrap();
@@ -2182,7 +2261,11 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_is_locked_by_op(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock = MarketLock::new(1, 1000).with_op_id(100);
+        let lock = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(100_u64)
+            .build();
 
         let set = set.acquire(lock, 1000).unwrap();
 
@@ -2193,7 +2276,11 @@ mod policy_market_lock_tests {
 
     #[test]
     fn test_lock_expiry() {
-        let lock = MarketLock::new(1, 1000).with_expiry(2000);
+        let lock = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
 
         assert!(!lock.is_expired(1000));
         assert!(!lock.is_expired(1999));
@@ -2218,7 +2305,11 @@ mod policy_market_lock_tests {
 
     #[test]
     fn test_lock_remaining() {
-        let lock = MarketLock::new(1, 1000).with_expiry(2000);
+        let lock = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
         assert_eq!(lock.remaining(1000), Some(1000));
         assert_eq!(lock.remaining(1500), Some(500));
         assert_eq!(lock.remaining(2000), Some(0));
@@ -2230,8 +2321,16 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_cleanup_expired_locks(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
-        let lock2 = MarketLock::new(2, 1000).with_expiry(3000);
+        let lock1 = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
+        let lock2 = MarketLock::builder()
+            .target_id(2_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(3000_u64)
+            .build();
         let lock3 = MarketLock::new(3, 1000); // no expiry
 
         let set = set.acquire(lock1, 1000).unwrap();
@@ -2250,7 +2349,11 @@ mod policy_market_lock_tests {
     fn test_get_locked_targets(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
         let lock1 = MarketLock::new(1, 1000);
-        let lock2 = MarketLock::new(2, 1000).with_expiry(1500);
+        let lock2 = MarketLock::builder()
+            .target_id(2_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(1500_u64)
+            .build();
         let lock3 = MarketLock::new(3, 1000);
 
         let set = set.acquire(lock1, 1000).unwrap();
@@ -2295,8 +2398,16 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_active_count(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
-        let lock2 = MarketLock::new(2, 1000).with_expiry(3000);
+        let lock1 = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
+        let lock2 = MarketLock::builder()
+            .target_id(2_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(3000_u64)
+            .build();
         let lock3 = MarketLock::new(3, 1000);
 
         let set = set.acquire(lock1, 1000).unwrap();
@@ -2312,7 +2423,11 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_get_lock(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock = MarketLock::new(1, 1000).with_op_id(42);
+        let lock = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .op_id(42_u64)
+            .build();
 
         let set = set.acquire(lock, 1000).unwrap();
 
@@ -2327,8 +2442,16 @@ mod policy_market_lock_tests {
     #[rstest::rstest]
     fn test_is_all_expired(empty_lock_set: MarketLockSet) {
         let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000).with_expiry(2000);
-        let lock2 = MarketLock::new(2, 1000).with_expiry(2000);
+        let lock1 = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
+        let lock2 = MarketLock::builder()
+            .target_id(2_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(2000_u64)
+            .build();
 
         let set = set.acquire(lock1, 1000).unwrap();
         let set = set.acquire(lock2, 1000).unwrap();
@@ -2474,6 +2597,19 @@ mod policy_refresh_plan_tests {
     }
 
     #[test]
+    fn test_build_targeted_refresh_plan_duplicate_precedes_missing_target() {
+        let enabled = vec![1, 2, 3];
+        let targets = vec![1, 4, 1];
+
+        let result = build_targeted_refresh_plan(&targets, &enabled);
+
+        assert!(matches!(
+            result,
+            Err(RefreshPlanError::DuplicateTarget { target_id: 1 })
+        ));
+    }
+
+    #[test]
     fn test_record_refresh_completion() {
         let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
         let updated = plan.record_completion(5000);
@@ -2527,7 +2663,7 @@ mod policy_state_tests {
 
     #[test]
     fn external_assets_sums_principals() {
-        let mut state = PolicyState::new();
+        let mut state = PolicyState::default();
         state.set_principal(1, 100);
         state.set_principal(2, 250);
         state.set_principal(3, 50);
@@ -2537,9 +2673,9 @@ mod policy_state_tests {
 
     #[test]
     fn cap_group_totals_aggregate_by_group() {
-        let mut state = PolicyState::new();
-        let group_a = CapGroupId::new("group-a");
-        let group_b = CapGroupId::new("group-b");
+        let mut state = PolicyState::default();
+        let group_a: CapGroupId = "group-a".into();
+        let group_b: CapGroupId = "group-b".into();
 
         state.set_market_config(1, MarketConfig::new(true, Some(group_a.clone())));
         state.set_market_config(2, MarketConfig::new(true, Some(group_a.clone())));
@@ -2563,8 +2699,8 @@ mod policy_state_tests {
 
     #[test]
     fn refresh_cap_group_principals_updates_records() {
-        let mut state = PolicyState::new();
-        let group = CapGroupId::new(String::from("group"));
+        let mut state = PolicyState::default();
+        let group: CapGroupId = String::from("group").into();
         state
             .cap_groups
             .insert(group.clone(), CapGroupRecord::default());
@@ -2583,7 +2719,7 @@ mod policy_supply_queue_tests {
 
     #[rstest::fixture]
     fn empty_queue() -> SupplyQueue {
-        SupplyQueue::new()
+        SupplyQueue::default()
     }
 
     #[rstest::fixture]
@@ -2637,7 +2773,10 @@ mod policy_supply_queue_tests {
 
     #[test]
     fn test_enqueue_full_queue_error() {
-        let queue = SupplyQueue::with_max_length(2);
+        let queue = SupplyQueue {
+            entries: alloc::vec![],
+            max_length: 2,
+        };
         let entry1 = SupplyQueueEntry::new(1, 100);
         let entry2 = SupplyQueueEntry::new(2, 200);
         let entry3 = SupplyQueueEntry::new(3, 300);
@@ -2655,9 +2794,21 @@ mod policy_supply_queue_tests {
     #[rstest::rstest]
     fn test_enqueue_with_priority(empty_queue: SupplyQueue) {
         let queue = empty_queue;
-        let low = SupplyQueueEntry::new(1, 100).with_priority(0);
-        let high = SupplyQueueEntry::new(2, 200).with_priority(10);
-        let medium = SupplyQueueEntry::new(3, 300).with_priority(5);
+        let low = SupplyQueueEntry::builder()
+            .target_id(1_u32)
+            .amount(100_u128)
+            .priority(0)
+            .build();
+        let high = SupplyQueueEntry::builder()
+            .target_id(2_u32)
+            .amount(200_u128)
+            .priority(10)
+            .build();
+        let medium = SupplyQueueEntry::builder()
+            .target_id(3_u32)
+            .amount(300_u128)
+            .priority(5)
+            .build();
 
         let queue = queue.enqueue(low).unwrap();
         let queue = queue.enqueue(high).unwrap();
@@ -2764,9 +2915,12 @@ mod policy_supply_queue_tests {
 
     #[test]
     fn test_builder_pattern() {
-        let entry = SupplyQueueEntry::new(1, 100)
-            .with_priority(5)
-            .with_timestamp(1000);
+        let entry = SupplyQueueEntry::builder()
+            .target_id(1_u32)
+            .amount(100_u128)
+            .priority(5)
+            .queued_at_ns(1000_u64)
+            .build();
 
         assert_eq!(entry.target_id, 1);
         assert_eq!(entry.amount, 100);
@@ -2812,7 +2966,7 @@ mod policy_target_set_tests {
 
     #[test]
     fn target_lock_helpers_delegate_to_lock_set() {
-        let mut set = MarketLockSet::new();
+        let mut set = MarketLockSet::default();
         set = set.acquire(MarketLock::new(2, 1_000), 1_000).unwrap();
 
         let targets = vec![1, 2, 3];
@@ -2838,7 +2992,7 @@ mod policy_withdraw_route_tests {
 
     #[rstest::fixture]
     fn empty_route() -> WithdrawRoute {
-        WithdrawRoute::new(1000)
+        WithdrawRoute::from_entries(vec![], 1000)
     }
 
     #[rstest::fixture]
@@ -2900,9 +3054,13 @@ mod policy_withdraw_route_tests {
 
     #[test]
     fn test_builder_pattern() {
-        let route = WithdrawRoute::new(1000)
-            .with_entry(WithdrawRouteEntry::new(1, 500))
-            .with_entry(WithdrawRouteEntry::new(2, 600));
+        let route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 500),
+                WithdrawRouteEntry::new(2, 600),
+            ],
+            1000,
+        );
 
         assert_eq!(route.len(), 2);
         assert_eq!(route.total(), 1100);

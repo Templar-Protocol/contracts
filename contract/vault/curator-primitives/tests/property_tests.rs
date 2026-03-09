@@ -104,8 +104,8 @@ proptest! {
         for window in route.entries.windows(2) {
             let a = &window[0];
             let b = &window[1];
-            let a_liq = a.available_liquidity.unwrap_or(0);
-            let b_liq = b.available_liquidity.unwrap_or(0);
+            let a_liq = a.available_liquidity.expect("route entry should carry liquidity metadata");
+            let b_liq = b.available_liquidity.expect("route entry should carry liquidity metadata");
             if a_liq == b_liq {
                 prop_assert!(a.target_id <= b.target_id);
             } else {
