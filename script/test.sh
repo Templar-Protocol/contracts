@@ -10,19 +10,6 @@ docker compose \
     --file "${ROOT_DIR}/service/relayer/compose.dev.yaml" up postgres \
     --detach
 
-# Run Jest tests for RedStone bridge
-(
-    cd "$ROOT_DIR/service/relayer/redstone-bridge"
-    if [ -n "$CI" ]; then
-        npm ci
-        npm test -- --ci
-        rm -rf node_modules
-    else
-        npm install
-        npm test
-    fi
-)
-
 # Run tests with nextest profile (defaults to 'ci' in CI via NEXTEST_PROFILE env var)
 cargo nextest run "$@"
 

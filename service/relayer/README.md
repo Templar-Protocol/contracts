@@ -19,6 +19,19 @@ docker compose -f compose.dev.yaml up
 >
 > Be sure to run `cargo sqlx prepare` after changing SQL queries, otherwise the CI/CD will not be able to build the project.
 
+#### RedStone Adapter
+
+The relayer interfaces with a small JavaScript child process that runs the RedStone SDK.
+
+Install dependencies:
+
+```bash
+cd ./redstone-bridge
+npm install
+```
+
+To run the JavaScript tests, you _can_ run `npm test` from the `redstone-bridge` directory, however, the Rust test `test/bridge.rs` wraps this, so the JavaScript tests are also automatically run when you simply run `cargo test` in the crate.
+
 #### SQL formatting
 
 Install [sleek](https://sleek.dev) to format SQL queries, including queries inline in Rust source files:
@@ -108,11 +121,34 @@ Options:
           [env: ALLOWED_METHODS=]
           [default: borrow apply_interest harvest_yield withdraw_static_yield withdraw_collateral create_supply_withdrawal_request cancel_supply_withdrawal_request execute_next_supply_withdrawal_request storage_deposit]
 
+      --oracle-allowed-methods <ORACLE_ALLOWED_METHODS>
+          Comma-separated list of allowed methods
+
+          [env: ORACLE_ALLOWED_METHODS=]
+          [default: update_price_feeds]
+
       --starting-allowance-yocto <STARTING_ALLOWANCE_YOCTO>
           Starting allowance in yoctoNEAR
 
           [env: STARTING_ALLOWANCE_YOCTO=]
           [default: "0.250 NEAR"]
+
+      --storage-deposit-guarantee-minimum-available <STORAGE_DEPOSIT_GUARANTEE_MINIMUM_AVAILABLE>
+          The relayer will ensure that the account has at least `max(this_value, contract.storage_balance_bounds.min)` storage balance available when requested
+
+          [env: STORAGE_DEPOSIT_GUARANTEE_MINIMUM_AVAILABLE=]
+          [default: "0.005 NEAR"]
+
+      --intents-id <INTENTS_ID>
+          Account ID of the NEAR Intents contract
+
+          [env: INTENTS_ID=]
+
+      --intents-allowed-methods <INTENTS_ALLOWED_METHODS>
+          Comma-separated list of sponsored methods on the intents contract
+
+          [env: INTENTS_ALLOWED_METHODS=]
+          [default: add_public_key remove_public_key]
 
       --ua-account-id <ua-account-id>
           Account ID of the NEAR account that the relayer controls for universal account creation
@@ -140,6 +176,19 @@ Options:
           [env: UA_BLOCKREF_MAX_AGE_SECS=]
           [default: 600]
 
+      --ua-allowed-origin <ua-allowed-origin>
+          From which origins are the payloads allowed to come?
+
+          This is checked in the `clientDataJSON` field provided by WebAuthn.
+
+          [env: UA_ALLOWED_ORIGIN=]
+
+      --ua-chain-id <ua-chain-id>
+          Chain ID. NEAR mainnet = 397, NEAR testnet = 398
+
+          [env: UA_CHAIN_ID=]
+          [default: 398]
+
       --ua-registry-id <ua-registry-id>
           Account ID of the registry from which to deploy universal accounts
 
@@ -151,8 +200,70 @@ Options:
           [env: UA_VERSION_KEY=]
 
       --ua-execute-tgas <ua-execute-tgas>
+          How much gas does it take to execute the `execute` receipt on the universal account contract?
+
           [env: UA_EXECUTE_TGAS=]
           [default: 35]
+
+      --redstone-node-path <redstone-node-path>
+          Path to Node.js interpreter (or equivalent)
+
+          [env: REDSTONE_NODE_PATH=]
+          [default: node]
+
+      --redstone-bridge-path <redstone-bridge-path>
+          Path to the Redstone bridge JS application
+
+          [env: REDSTONE_BRIDGE_PATH=]
+          [default: ./redstone-bridge/dist/index.js]
+
+      --redstone-refresh-secs <redstone-refresh-secs>
+          Do not push price updates to Redstone oracle if the last push was less than this long ago, even if requested
+
+          [env: REDSTONE_REFRESH_SECS=]
+          [default: 3]
+
+      --redstone-update-gas <redstone-update-gas>
+          How much gas (in units of Tgas) to attach to oracle price update calls
+
+          [env: REDSTONE_UPDATE_GAS=]
+          [default: "300 Tgas"]
+
+      --redstone-update-deposit <redstone-update-deposit>
+          How much NEAR to attach as a deposit to oracle price update calls
+
+          [env: REDSTONE_UPDATE_DEPOSIT=]
+          [default: "0 NEAR"]
+
+      --pyth-hermes-url <HERMES_URL>
+          Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
+
+          [env: PYTH_HERMES_URL=]
+          [default: https://hermes-beta.pyth.network]
+
+      --pyth-refresh-secs <pyth-refresh-secs>
+          Do not push price updates to Pyth oracle if the last push was less than this long ago, even if requested
+
+          [env: PYTH_REFRESH_SECS=]
+          [default: 3]
+
+      --pyth-timeout-secs <pyth-timeout-secs>
+          HTTP timeout for Hermes requests (in seconds)
+
+          [env: PYTH_TIMEOUT_SECS=]
+          [default: 10]
+
+      --pyth-update-gas <pyth-update-gas>
+          How much gas (in units of Tgas) to attach to oracle price update calls
+
+          [env: PYTH_UPDATE_GAS=]
+          [default: "300 Tgas"]
+
+      --pyth-update-deposit <pyth-update-deposit>
+          How much NEAR to attach as a deposit to oracle price update calls
+
+          [env: PYTH_UPDATE_DEPOSIT=]
+          [default: "0.01 NEAR"]
 
       --cache-gase-price-secs <cache-gase-price-secs>
           Refresh the cached gas price after X seconds
@@ -165,12 +276,6 @@ Options:
 
           [env: CACHE_NONCE_SECS=]
           [default: 60]
-
-      --cache-protocol-config-secs <cache-protocol-config-secs>
-          Refresh the cached protocol configuration after X seconds
-
-          [env: CACHE_PROTOCOL_CONFIG_SECS=]
-          [default: 3600]
 
       --broom-batch-size <BROOM_BATCH_SIZE>
           Broom batch size
