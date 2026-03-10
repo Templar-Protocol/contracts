@@ -40,3 +40,22 @@ impl std::fmt::Display for Error {
         write!(f, "{self:?}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use crate::vault::MarketId;
+
+    #[test]
+    fn display_uses_debug_shape() {
+        let error = Error::MarketDrifted {
+            expected: MarketId(1),
+            actual: MarketId(2),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "MarketDrifted { expected: MarketId(1), actual: MarketId(2) }"
+        );
+    }
+}

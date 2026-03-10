@@ -80,3 +80,40 @@ pub const SUBMIT_CAP_GAS: Gas = buffer(3);
 
 const AFTER_SEND_TO_USER: u64 = 5;
 pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(AFTER_SEND_TO_USER);
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        buffer, TimelockKind, AFTER_SEND_TO_USER_GAS, CREATE_WITHDRAW_REQ_GAS, DAY_NS,
+        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, RESYNC_IDLE_GAS, YEAR_NS,
+    };
+    use near_sdk::Gas;
+
+    #[test]
+    fn time_constants_match_expected_ranges() {
+        assert_eq!(YEAR_NS, 365 * DAY_NS);
+        assert_eq!(MIN_TIMELOCK_NS, 0);
+        assert_eq!(MAX_TIMELOCK_NS, 30 * DAY_NS);
+        assert_eq!(MAX_QUEUE_LEN, 64);
+    }
+
+    #[test]
+    fn gas_constants_use_buffered_roots() {
+        assert_eq!(CREATE_WITHDRAW_REQ_GAS, buffer(5));
+        assert_eq!(RESYNC_IDLE_GAS, buffer(10));
+        assert_eq!(AFTER_SEND_TO_USER_GAS, Gas::from_tgas(5));
+    }
+
+    #[test]
+    fn timelock_kind_variants_stay_stable() {
+        let variants = [
+            TimelockKind::Guardian,
+            TimelockKind::Sentinel,
+            TimelockKind::Config,
+            TimelockKind::Cap,
+            TimelockKind::MarketRemoval,
+        ];
+
+        assert_eq!(variants.len(), 5);
+    }
+}

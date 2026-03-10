@@ -122,33 +122,17 @@ pub struct ResyncIdleReport {
 #[display("{_0}")]
 pub struct MarketId(pub u32);
 
-impl MarketId {
-    #[must_use]
-    pub fn as_u64(self) -> u64 {
-        u64::from(self.0)
-    }
-
-    #[must_use]
-    pub fn try_from_u64(value: u64) -> Option<Self> {
-        u32::try_from(value).ok().map(Self)
+impl From<MarketId> for u64 {
+    fn from(value: MarketId) -> Self {
+        u64::from(value.0)
     }
 }
 
-#[cfg(test)]
-mod market_id_tests {
-    use super::MarketId;
+impl TryFrom<u64> for MarketId {
+    type Error = <u32 as TryFrom<u64>>::Error;
 
-    #[test]
-    fn try_from_u64_accepts_u32_range() {
-        assert_eq!(
-            MarketId::try_from_u64(u32::MAX as u64),
-            Some(MarketId(u32::MAX))
-        );
-    }
-
-    #[test]
-    fn try_from_u64_rejects_out_of_range() {
-        assert_eq!(MarketId::try_from_u64(u64::from(u32::MAX) + 1), None);
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self)
     }
 }
 
@@ -397,10 +381,23 @@ pub struct FeeAccrualAnchor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fee, Fees};
+    use super::{Fee, Fees, MarketId};
     use near_sdk::json_types::U128;
     use near_sdk::AccountId;
     use templar_vault_kernel::Wad;
+
+    #[test]
+    fn market_id_try_from_u64_accepts_u32_range() {
+        assert_eq!(
+            MarketId::try_from(u64::from(u32::MAX)),
+            Ok(MarketId(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn market_id_try_from_u64_rejects_out_of_range() {
+        assert!(MarketId::try_from(u64::from(u32::MAX) + 1).is_err());
+    }
 
     #[test]
     fn fees_roundtrip_between_u128_and_wad_preserves_values() {
