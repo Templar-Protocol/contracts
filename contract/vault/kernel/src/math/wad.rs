@@ -140,6 +140,7 @@ impl Wad {
     pub const SCALE: u128 = 1_000_000_000_000_000_000u128;
 
     pub const ZERO: Self = Wad(Number::ZERO);
+    pub const ONE: Self = Wad(Number(U256([Self::SCALE as u64, 0, 0, 0])));
 
     /// Returns zero.
     #[inline]
@@ -151,8 +152,8 @@ impl Wad {
     /// Returns one unit (1.0 in WAD scale).
     #[inline]
     #[must_use]
-    pub fn one() -> Self {
-        Wad::from(Self::SCALE)
+    pub const fn one() -> Self {
+        Self::ONE
     }
 
     #[inline]

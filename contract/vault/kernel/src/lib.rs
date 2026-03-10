@@ -1,7 +1,7 @@
 #![no_std]
 
 extern crate alloc;
-#[cfg(any(test, feature = "schemars", feature = "borsh-schema"))]
+#[cfg(any(test, feature = "std", feature = "schemars", feature = "borsh-schema"))]
 extern crate std;
 
 pub mod actions;

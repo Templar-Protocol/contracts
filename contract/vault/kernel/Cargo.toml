@@ -16,6 +16,7 @@ borsh = ["dep:borsh"]
 postcard = ["dep:postcard", "serde"]
 # Enable Borsh schema generation (adds code size, only needed for NEAR).
 borsh-schema = ["borsh", "borsh/unstable__schema"]
+std = []
 serde = ["dep:serde"]
 schemars = ["dep:schemars"]
 # Strip KernelEvent Serialize/Clone for minimal WASM size in Soroban builds.
