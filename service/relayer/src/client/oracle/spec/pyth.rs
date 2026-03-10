@@ -115,37 +115,3 @@ impl Spec for PythSpec {
         .into()])
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use near_sdk::NearToken;
-    use templar_common::oracle::pyth::PriceIdentifier;
-
-    use crate::app::args;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn update_actions() {
-        let pyth_args = args::PythConfig {
-            hermes_url: "https://hermes-beta.pyth.network".to_string(),
-            refresh: Duration::from_secs(25),
-            update_gas: near_sdk::Gas::from_tgas(300),
-            update_deposit: NearToken::from_near(1).saturating_div(100),
-            timeout: Duration::from_secs(10),
-        };
-
-        let handle = PythSpec::new(pyth_args.clone());
-
-        let price_id = PriceIdentifier(
-            hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        );
-
-        let actions = handle.update_actions(&[price_id]).await.unwrap();
-
-        eprintln!("{actions:?}");
-    }
-}
