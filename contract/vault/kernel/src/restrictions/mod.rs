@@ -42,6 +42,32 @@ pub enum Restrictions {
 }
 
 impl Restrictions {
+    #[inline]
+    fn normalize_addresses(addresses: &mut Vec<Address>) {
+        addresses.sort_unstable();
+        addresses.dedup();
+    }
+
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        match &mut self {
+            Restrictions::Blacklist(addresses) | Restrictions::Whitelist(addresses) => {
+                Self::normalize_addresses(addresses);
+            }
+            Restrictions::Paused => {}
+        }
+        self
+    }
+
+    #[inline]
+    fn contains_address(addresses: &[Address], actor_id: &Address) -> bool {
+        if addresses.is_sorted() {
+            addresses.binary_search(actor_id).is_ok()
+        } else {
+            addresses.iter().any(|addr| addr == actor_id)
+        }
+    }
+
     /// Check if the given actor is restricted.
     ///
     /// Returns `Some(kind)` if blocked, `None` if allowed.
@@ -54,14 +80,14 @@ impl Restrictions {
         match self {
             Restrictions::Paused => Some(RestrictionKind::Paused),
             Restrictions::Blacklist(blacklist) => {
-                if blacklist.iter().any(|addr| addr == actor_id) {
+                if Self::contains_address(blacklist, actor_id) {
                     Some(RestrictionKind::Blacklisted)
                 } else {
                     None
                 }
             }
             Restrictions::Whitelist(whitelist) => {
-                if whitelist.iter().any(|addr| addr == actor_id) || actor_id == self_id {
+                if Self::contains_address(whitelist, actor_id) || actor_id == self_id {
                     None
                 } else {
                     Some(RestrictionKind::NotWhitelisted)

@@ -43,3 +43,21 @@ fn test_whitelist_allows_listed_and_self() {
         Some(RestrictionKind::NotWhitelisted)
     );
 }
+
+#[test]
+fn normalized_restriction_lists_sort_and_dedup() {
+    let restrictions =
+        Restrictions::Blacklist(alloc::vec![addr(3), addr(1), addr(3), addr(2)]).normalized();
+
+    assert_eq!(
+        restrictions,
+        Restrictions::Blacklist(alloc::vec![addr(1), addr(2), addr(3)])
+    );
+}
+
+#[test]
+fn test_normalized_restrictions_sort_and_dedup() {
+    let r = Restrictions::Blacklist(alloc::vec![addr(2), addr(1), addr(2)]).normalized();
+
+    assert_eq!(r, Restrictions::Blacklist(alloc::vec![addr(1), addr(2)]));
+}
