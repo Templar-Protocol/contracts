@@ -91,10 +91,11 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     // Test proxy contract too
-    let proxy_borrow =
-        Proxy::median_low([
-            OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID).into(),
-        ]);
+    let proxy_borrow = Proxy::median_low([OracleRequest::pyth(
+        price_oracle.id().to_owned(),
+        DEFAULT_BORROW_PRICE_ID,
+    )
+    .into()]);
     let proxy_borrow_id = PriceIdentifier([0x01_u8; 32]);
 
     proxy_oracle
