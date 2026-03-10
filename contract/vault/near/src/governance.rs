@@ -696,7 +696,9 @@ impl Contract {
     /// - Tightening restrictions (including `Paused`) applies immediately.
     /// - Unpause/relax actions are subject to the governance timelock.
     pub fn set_restrictions(&mut self, restrictions: Option<Restrictions>) {
-        self.submit_change(TimelockedAction::RestrictionsChange { restrictions });
+        self.submit_change(TimelockedAction::RestrictionsChange {
+            restrictions: restrictions.map(Restrictions::normalized),
+        });
     }
 
     /// Accepts a pending restrictions change after the timelock has elapsed.

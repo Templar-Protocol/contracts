@@ -656,9 +656,10 @@ where
         restrictions: Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         // Authorize
-        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.auth
+            .authorize(ActionKind::SetRestrictions, caller, None)?;
 
-        self.restrictions = restrictions;
+        self.restrictions = restrictions.map(Restrictions::normalized);
         self.storage.save_restrictions(&self.restrictions)?;
         Ok(())
     }
