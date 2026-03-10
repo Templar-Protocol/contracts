@@ -24,7 +24,7 @@ cargo near build non-reproducible-wasm 1>&2
 cd "$ROOT_DIR/contract/universal-account"
 cargo near build non-reproducible-wasm 1>&2
 
-cd "$ROOT_DIR/contract/vault"
+cd "$ROOT_DIR/contract/vault/near"
 cargo near build non-reproducible-wasm 1>&2
 
 cd "$ROOT_DIR"

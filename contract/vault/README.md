@@ -11,7 +11,7 @@ The vault system follows a kernel + executor split:
 - `contract/vault/soroban` executes kernel behavior on Soroban (storage/auth wiring and sync execution model).
 - `contract/vault/curator-primitives` holds shared policy/recovery helpers used by executors.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Kernel Crate                            │
 │  (templar-vault-kernel)                                         │
@@ -22,13 +22,23 @@ The vault system follows a kernel + executor split:
               ┌───────────────┴───────────────┐
               ▼                               ▼
 ┌─────────────────────────┐   ┌─────────────────────────┐
-│   NEAR Executor         │   │   Soroban Executor      │
-│ (templar-vault-contract)│   │ (templar-soroban-vault) │
-│ - NEAR-specific storage │   │ - Soroban-specific      │
-│ - Borsh serialization   │   │   storage & auth        │
-│ - Integration tests     │   │ - Parity property tests │
-│ - Gas profiling         │   │ - Integration tests     │
+│ Curator Primitives      │   │      Executors          │
+│ (shared policy/recovery)│   │  NEAR + Soroban runtimes│
+│ - Governance helpers    │   │ - Storage/auth adapters │
+│ - Routing/recovery      │   │ - Integration + parity  │
+│ - Shared policy state   │   │ - Effect execution      │
 └─────────────────────────┘   └─────────────────────────┘
+                                          │
+                      ┌───────────────────┴───────────────────┐
+                      ▼                                       ▼
+         ┌─────────────────────────┐             ┌─────────────────────────┐
+         │   NEAR Executor         │             │   Soroban Executor      │
+         │ (templar-vault-contract)│             │ (templar-soroban-vault) │
+         │ - NEAR-specific storage │             │ - Soroban-specific      │
+         │ - Borsh serialization   │             │   storage & auth        │
+         │ - Integration tests     │             │ - Parity property tests │
+         │ - Gas profiling         │             │ - Integration tests     │
+         └─────────────────────────┘             └─────────────────────────┘
 ```
 
 ## Parity Tests

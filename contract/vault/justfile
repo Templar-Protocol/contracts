@@ -52,8 +52,8 @@ parity:
 # --------------------------------------------------------------------
 
 gas-report:
-	cargo run --example gas_report -p market
-	cargo run --example gas_report -p vault
+	cargo run --example gas_report -p templar-market-contract
+	cargo run --example gas_report -p templar-vault-contract
 
 # --------------------------------------------------------------------
 # NEAR build/check
@@ -116,9 +116,9 @@ audit-loc:
 		"{{vault_root}}/kernel/src" \
 		"{{vault_root}}/near/src" \
 		"{{vault_root}}/soroban/src" \
-		"{{vault_root}}/soroban-blend-adapter/src" \
-		"{{vault_root}}/soroban-governance/src" \
-		"{{vault_root}}/soroban-share-token/src" \
+		"{{vault_root}}/soroban/blend-adapter/src" \
+		"{{vault_root}}/soroban/governance/src" \
+		"{{vault_root}}/soroban/share-token/src" \
 		--types Rust \
 		--exclude "**/tests/**" \
 		--exclude "**/tests.rs" \
@@ -133,7 +133,7 @@ audit-loc:
 audit-loc-per-crate:
 	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
 	@if ! command -v jq >/dev/null 2>&1; then echo "jq not found"; exit 1; fi
-	@for crate in curator-primitives kernel near soroban soroban-blend-adapter soroban-governance soroban-share-token; do \
+	@for crate in curator-primitives kernel near soroban soroban/blend-adapter soroban/governance soroban/share-token; do \
 		stats=$(tokei \
 			"{{vault_root}}/$crate/src" \
 			--types Rust \
