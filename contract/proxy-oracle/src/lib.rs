@@ -90,7 +90,7 @@ impl Contract {
             return PromiseOrValue::Value(OracleResponse::new());
         }
 
-        let max_age_ms = age * 1000;
+        let max_age_ms = age.saturating_mul(1000);
 
         let mut pyth_requests =
             HashMap::<AccountId, HashSet<PriceIdentifier>>::with_capacity(price_ids.len());
