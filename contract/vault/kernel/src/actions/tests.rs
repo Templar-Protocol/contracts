@@ -1,5 +1,6 @@
 use super::*;
-use crate::effects::{KernelEffect, KernelEvent};
+use crate::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
+use crate::error::{InvalidConfigCode, InvalidStateCode};
 use crate::fee::{FeeSlot, FeesSpec};
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
 use crate::state::op_state::WithdrawingState;
@@ -71,7 +72,7 @@ fn invalid_max_pending_rejected() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidConfig(
-            "max_pending_withdrawals exceeds MAX_PENDING"
+            InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit
         ))
     ));
 }
@@ -173,7 +174,7 @@ fn execute_withdraw_withdrawing_advances_index() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+            InvalidStateCode::ExecuteWithdrawRequiresIdleUseCallbacks
         ))
     ));
 }
@@ -372,7 +373,9 @@ fn deposit_not_idle_fails() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("deposit requires Idle"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::DepositRequiresIdle
+        ))
     ));
 }
 
@@ -472,7 +475,9 @@ fn request_withdraw_not_idle_fails() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("request_withdraw requires Idle"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::RequestWithdrawRequiresIdle
+        ))
     ));
 }
 
@@ -593,7 +598,9 @@ fn execute_withdraw_wrong_state_fails() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("execute_withdraw requires Idle"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::ExecuteWithdrawRequiresIdle
+        ))
     ));
 }
 
@@ -638,7 +645,7 @@ fn execute_withdraw_queue_head_mismatch_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+            InvalidStateCode::ExecuteWithdrawRequiresIdleUseCallbacks
         ))
     ));
 }
@@ -828,7 +835,7 @@ fn execute_withdraw_withdrawing_empty_queue() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "execute_withdraw requires Idle (use withdrawal callbacks to advance)"
+            InvalidStateCode::ExecuteWithdrawRequiresIdleUseCallbacks
         ))
     ));
 }
@@ -996,7 +1003,7 @@ fn sync_external_assets_idle_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "sync_external_assets requires active op"
+            InvalidStateCode::SyncExternalRequiresActiveOp
         ))
     ));
 }
@@ -1065,7 +1072,7 @@ fn sync_external_assets_payout_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "sync_external_assets requires Allocating/Withdrawing/Refreshing"
+            InvalidStateCode::SyncExternalRequiresAllowedStates
         ))
     ));
 }
@@ -1098,7 +1105,7 @@ fn sync_external_assets_rejects_doubling() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "sync_external_assets would more than double total_assets"
+            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets
         ))
     ));
 }
@@ -1174,7 +1181,7 @@ fn abort_refreshing_wrong_state_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "abort_refreshing requires active op"
+            InvalidStateCode::AbortRefreshingRequiresActiveOp
         ))
     ));
 }
@@ -1232,7 +1239,7 @@ fn abort_refreshing_wrong_op_type_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "abort_refreshing requires Refreshing"
+            InvalidStateCode::AbortRefreshingRequiresRefreshing
         ))
     ));
 }
@@ -1286,7 +1293,7 @@ fn abort_allocating_wrong_state_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "abort_allocating requires Allocating"
+            InvalidStateCode::AbortAllocatingRequiresAllocating
         ))
     ));
 }
@@ -1351,7 +1358,7 @@ fn abort_allocating_restore_mismatch_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "abort_allocating restore_idle mismatch"
+            InvalidStateCode::AbortAllocatingRestoreIdleMismatch
         ))
     ));
 }
@@ -1413,7 +1420,7 @@ fn abort_withdrawing_wrong_state_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "abort_withdrawing requires Withdrawing"
+            InvalidStateCode::AbortWithdrawingRequiresWithdrawing
         ))
     ));
 }
@@ -1496,7 +1503,7 @@ fn abort_withdrawing_refund_mismatch_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "abort_withdrawing refund_shares mismatch"
+            InvalidStateCode::AbortWithdrawingRefundMismatch
         ))
     ));
 }
@@ -1542,7 +1549,9 @@ fn abort_withdrawing_queue_head_mismatch_fails() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("withdrawal queue head mismatch"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::WithdrawalQueueHeadMismatch
+        ))
     ));
 }
 
@@ -1793,7 +1802,9 @@ fn settle_payout_wrong_state_fails() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("settle_payout requires Payout"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::SettlePayoutRequiresPayout
+        ))
     ));
 }
 
@@ -1920,7 +1931,9 @@ fn settle_payout_queue_head_mismatch_fails() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("withdrawal queue head mismatch"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::WithdrawalQueueHeadMismatch
+        ))
     ));
 }
 
@@ -1964,7 +1977,7 @@ fn settle_payout_success_settlement_mismatch_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "payout success settlement mismatch"
+            InvalidStateCode::PayoutSuccessSettlementMismatch
         ))
     ));
 }
@@ -2016,7 +2029,7 @@ fn settle_payout_success_settlement_overflow_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "payout success settlement mismatch"
+            InvalidStateCode::PayoutSuccessSettlementMismatch
         ))
     ));
 }
@@ -2061,7 +2074,7 @@ fn settle_payout_failure_settlement_mismatch_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "payout failure settlement mismatch"
+            InvalidStateCode::PayoutFailureSettlementMismatch
         ))
     ));
 }
@@ -2107,7 +2120,7 @@ fn settle_payout_failure_restore_idle_mismatch_fails() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "payout failure restore_idle must equal payout.amount"
+            InvalidStateCode::PayoutFailureRestoreIdleMismatch
         ))
     ));
 }
@@ -2400,7 +2413,7 @@ fn refresh_fees_rejects_backwards_time() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "fee refresh timestamp must advance"
+            InvalidStateCode::FeeRefreshTimestampMustAdvance
         ))
     ));
 }
@@ -2428,7 +2441,9 @@ fn refresh_fees_requires_idle_state() {
 
     assert!(matches!(
         result,
-        Err(KernelError::InvalidState("refresh_fees requires Idle"))
+        Err(KernelError::InvalidState(
+            InvalidStateCode::RefreshFeesRequiresIdle
+        ))
     ));
 }
 
@@ -2766,7 +2781,7 @@ fn deposit_overflow_total_assets_rejected() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "deposit would overflow total_assets"
+            InvalidStateCode::DepositOverflowTotalAssets
         ))
     ));
 }
@@ -2792,7 +2807,7 @@ fn deposit_overflow_total_shares_rejected() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "minting would overflow total_shares"
+            InvalidStateCode::MintOverflowTotalShares
         ))
     ));
 }
@@ -2818,7 +2833,7 @@ fn refresh_fees_overflow_total_supply_rejected() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "fee minting would overflow total_supply"
+            InvalidStateCode::FeeMintOverflowTotalSupply
         ))
     ));
 }
@@ -2873,10 +2888,180 @@ fn execute_withdraw_skips_zero_expected_assets() {
                     receiver: dest,
                     escrow_shares: shares,
                     expected_assets: 0,
+                    reason: WithdrawalSkipReason::ZeroExpectedAssets,
                 },
             } if *who == owner && *dest == receiver && *shares == escrow_shares
         )
     }));
+}
+
+#[test]
+fn execute_withdraw_skips_restricted_head_and_processes_next() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    let restricted_owner = [3u8; 32];
+    let first_receiver = [4u8; 32];
+    let next_owner = [5u8; 32];
+    let next_receiver = [6u8; 32];
+    let self_id = [9u8; 32];
+
+    state
+        .withdraw_queue
+        .enqueue(
+            restricted_owner,
+            first_receiver,
+            500,
+            100,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue first");
+    state
+        .withdraw_queue
+        .enqueue(
+            next_owner,
+            next_receiver,
+            250,
+            150,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue second");
+
+    let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
+    let result = apply_action(
+        state,
+        &config,
+        Some(&restrictions),
+        &self_id,
+        KernelAction::ExecuteWithdraw {
+            now_ns: DEFAULT_COOLDOWN_NS + 1,
+        },
+    )
+    .expect("execute_withdraw");
+
+    let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
+    assert_eq!(withdrawing.owner, next_owner);
+    assert_eq!(withdrawing.receiver, next_receiver);
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    owner,
+                    receiver,
+                    expected_assets: 100,
+                    reason: WithdrawalSkipReason::Restricted,
+                    ..
+                },
+            } if *owner == restricted_owner && *receiver == first_receiver
+        )
+    }));
+}
+
+#[test]
+fn finish_allocating_skips_restricted_head_and_chains_next() {
+    use crate::state::op_state::AllocatingState;
+
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    let restricted_owner = [3u8; 32];
+    let first_receiver = [4u8; 32];
+    let next_owner = [5u8; 32];
+    let next_receiver = [6u8; 32];
+    let self_id = [9u8; 32];
+
+    state
+        .withdraw_queue
+        .enqueue(
+            restricted_owner,
+            first_receiver,
+            500,
+            100,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue first");
+    state
+        .withdraw_queue
+        .enqueue(
+            next_owner,
+            next_receiver,
+            250,
+            150,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue second");
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 77,
+        index: 1,
+        remaining: 0,
+        plan: vec![(1, 500)],
+    });
+
+    let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
+    let result = apply_action(
+        state,
+        &config,
+        Some(&restrictions),
+        &self_id,
+        KernelAction::FinishAllocating {
+            op_id: 77,
+            now_ns: DEFAULT_COOLDOWN_NS + 1,
+        },
+    )
+    .expect("finish_allocating");
+
+    let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
+    assert_eq!(withdrawing.owner, next_owner);
+    assert_eq!(withdrawing.receiver, next_receiver);
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    owner,
+                    reason: WithdrawalSkipReason::Restricted,
+                    ..
+                },
+            } if *owner == restricted_owner
+        )
+    }));
+}
+
+#[test]
+fn execute_withdraw_respects_paused_restrictions() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+
+    state
+        .withdraw_queue
+        .enqueue(
+            [1u8; 32],
+            [2u8; 32],
+            100,
+            100,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue");
+
+    let result = apply_action(
+        state,
+        &config,
+        Some(&Restrictions::Paused),
+        &[9u8; 32],
+        KernelAction::ExecuteWithdraw {
+            now_ns: DEFAULT_COOLDOWN_NS + 1,
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::Restricted(RestrictionKind::Paused))
+    ));
 }
 
 fn minted_shares_for(effects: &[KernelEffect], owner: [u8; 32]) -> u128 {
@@ -2973,7 +3158,7 @@ fn refresh_fees_rejects_non_advancing_timestamp() {
     assert!(matches!(
         result,
         Err(KernelError::InvalidState(
-            "fee refresh timestamp must advance"
+            InvalidStateCode::FeeRefreshTimestampMustAdvance
         ))
     ));
 }

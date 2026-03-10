@@ -202,15 +202,15 @@ proptest! {
         }
     }
 
-    /// Property 6: op_id allocation saturates at max
+    /// Property 6: op_id allocation panics on overflow
     #[test]
-    fn prop_op_id_saturates(_seed in 0u64..100u64) {
+    fn prop_op_id_overflow_panics(_seed in 0u64..100u64) {
         let mut state = VaultState::new();
         state.next_op_id = u64::MAX;
-        let id1 = state.allocate_op_id();
-        let id2 = state.allocate_op_id();
-        prop_assert_eq!(id1, u64::MAX);
-        prop_assert_eq!(id2, u64::MAX);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = state.allocate_op_id();
+        }));
+        prop_assert!(panic.is_err());
     }
 
     /// Property 7: fee anchor update preserves structure
@@ -1822,7 +1822,7 @@ fn deposit_near_max_rejected() {
     assert!(matches!(
         result,
         Err(templar_vault_kernel::error::KernelError::InvalidState(
-            "deposit would overflow total_assets"
+            templar_vault_kernel::error::InvalidStateCode::DepositOverflowTotalAssets
         ))
     ));
 }
@@ -3740,6 +3740,7 @@ proptest! {
         idle in 0u64..1_000_000,
         external in 0u64..1_000_000,
     ) {
+        prop_assume!(external <= idle);
         let mut state = VaultState::new();
         state.idle_assets = idle as u128;
         state.external_assets = 0;

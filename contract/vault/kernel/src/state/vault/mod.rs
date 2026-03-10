@@ -137,10 +137,12 @@ impl VaultState {
         external_assets: u128,
         timestamp_ns: TimestampNs,
     ) -> Self {
-        debug_assert_eq!(
-            total_assets,
-            idle_assets.saturating_add(external_assets),
-            "total_assets invariant violated: total != idle + external",
+        let computed_total = idle_assets
+            .checked_add(external_assets)
+            .unwrap_or_else(|| panic!("total_assets invariant overflow: idle + external"));
+        assert_eq!(
+            total_assets, computed_total,
+            "total_assets invariant violated: total != idle + external"
         );
         Self {
             total_assets,
@@ -160,7 +162,9 @@ impl VaultState {
     #[inline]
     #[must_use]
     pub fn check_invariant(&self) -> bool {
-        self.total_assets == self.idle_assets.saturating_add(self.external_assets)
+        self.idle_assets
+            .checked_add(self.external_assets)
+            .is_some_and(|sum| self.total_assets == sum)
             && self.withdraw_queue.check_invariants()
     }
 
@@ -170,7 +174,10 @@ impl VaultState {
     #[inline]
     pub fn allocate_op_id(&mut self) -> u64 {
         let id = self.next_op_id;
-        self.next_op_id = self.next_op_id.saturating_add(1);
+        self.next_op_id = self
+            .next_op_id
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("op_id overflow"));
         id
     }
 
@@ -194,7 +201,10 @@ impl VaultState {
     /// to restore the fundamental accounting invariant.
     #[inline]
     pub fn sync_total_assets(&mut self) {
-        self.total_assets = self.idle_assets.saturating_add(self.external_assets);
+        self.total_assets = self
+            .idle_assets
+            .checked_add(self.external_assets)
+            .unwrap_or_else(|| panic!("total_assets overflow: idle + external"));
     }
 
     /// Add `amount` back to idle assets and recompute totals.
@@ -203,7 +213,10 @@ impl VaultState {
     /// in-flight assets are returned to idle.
     #[inline]
     pub fn restore_to_idle(&mut self, amount: u128) {
-        self.idle_assets = self.idle_assets.saturating_add(amount);
+        self.idle_assets = self
+            .idle_assets
+            .checked_add(amount)
+            .unwrap_or_else(|| panic!("idle_assets overflow while restoring"));
         self.sync_total_assets();
     }
 }
@@ -211,5 +224,35 @@ impl VaultState {
 impl Default for VaultState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VaultState;
+
+    #[test]
+    #[should_panic(expected = "total_assets invariant overflow: idle + external")]
+    fn with_initial_panics_on_overflowed_component_sum() {
+        let _ = VaultState::with_initial(u128::MAX, 0, u128::MAX, 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "op_id overflow")]
+    fn allocate_op_id_panics_on_overflow() {
+        let mut state = VaultState::new();
+        state.next_op_id = u64::MAX;
+
+        let _ = state.allocate_op_id();
+    }
+
+    #[test]
+    #[should_panic(expected = "total_assets overflow: idle + external")]
+    fn sync_total_assets_panics_on_overflow() {
+        let mut state = VaultState::new();
+        state.idle_assets = u128::MAX;
+        state.external_assets = 1;
+
+        state.sync_total_assets();
     }
 }

@@ -207,7 +207,11 @@ pub fn compute_settlement(
         return EscrowSettlement::refund_all(escrow_shares);
     }
 
-    if actual_assets >= expected_assets || expected_assets == 0 {
+    if expected_assets == 0 {
+        return EscrowSettlement::refund_all(escrow_shares);
+    }
+
+    if actual_assets >= expected_assets {
         // Full redemption - burn all shares
         return EscrowSettlement::burn_all(escrow_shares);
     }

@@ -128,7 +128,7 @@ mod schemars_impl {
         fn json_schema(generator: &mut SchemaGenerator) -> Schema {
             let mut schema = generator.subschema_for::<Number>().into_object();
             schema.metadata().description =
-                Some("Wad fixed faction back by 256-bit unsigned integer".to_string());
+                Some("Wad fixed fraction backed by 256-bit unsigned integer".to_string());
             schema.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
             schema.into()
         }

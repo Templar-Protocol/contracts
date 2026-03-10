@@ -38,7 +38,7 @@ fn convert_roundtrip_bounds() {
     let back_s: u128 = mul_div_ceil(
         Number::from(to_a),
         Number::from(ts + 1),
-        Number::from(ts + 1),
+        Number::from(ta + 1),
     )
     .into();
     assert!(back_s >= s);
@@ -417,15 +417,10 @@ proptest! {
             Number::from(total_supply),
         );
 
-        // With capped fees, fee shares should be bounded relative to supply
-        // At 30% fee with 100% profit: fee_assets = 0.3 * cur
-        // denom = cur - 0.3*cur = 0.7*cur
-        // fee_shares = 0.3*cur * supply / 0.7*cur = 0.3/0.7 * supply ≈ 0.43 * supply
-        // So fee shares should never exceed ~43% of supply with 30% fee cap
-        let max_ratio = U256::from(total_supply) / U256::from(2u8);  // Conservative 50%
+        let max_ratio = U256::from(total_supply);
         prop_assert!(
-            result.0 <= max_ratio + U256::from(total_supply),
-            "fee shares {} > 1.5x total_supply {} (unexpected with capped fees)",
+            result.0 <= max_ratio,
+            "fee shares {} > total_supply {} (unexpected with capped fees)",
             result.0,
             total_supply
         );

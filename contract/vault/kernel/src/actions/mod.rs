@@ -7,7 +7,7 @@ extern crate alloc;
 
 use core::mem;
 
-use crate::effects::{KernelEffect, KernelEvent};
+use crate::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use crate::error::{InvalidConfigCode, InvalidStateCode, KernelError};
 use crate::math::number::Number;
 #[cfg(any(feature = "action-refresh-fees", test))]
@@ -149,7 +149,7 @@ pub enum KernelAction {
     /// Refresh fee calculations and mint fee shares.
     RefreshFees { now_ns: TimestampNs },
 
-    /// Update the vault's paused state.
+    /// Emit a pause-state update for executor-owned pause configuration.
     Pause { paused: bool },
 
     /// Emergency reset: force the vault back to Idle from any non-Idle state.
@@ -724,60 +724,92 @@ fn handle_execute_withdraw(
         return Err(KernelError::invalid_state_code(error_code));
     }
 
-    let Some((_, pending_ref)) = state.withdraw_queue.head() else {
-        return Err(KernelError::EmptyQueue);
-    };
-    let pending_owner = pending_ref.owner;
-    let pending_receiver = pending_ref.receiver;
-    let pending_escrow_shares = pending_ref.escrow_shares;
-    let pending_expected_assets = pending_ref.expected_assets;
-    let pending_requested_at_ns = pending_ref.requested_at_ns;
-
-    enforce_restrictions(config, restrictions, self_id, &pending_owner)?;
-    enforce_restrictions(config, restrictions, self_id, &pending_receiver)?;
-
-    if !is_past_cooldown(
-        pending_requested_at_ns,
-        now_ns,
-        config.withdrawal_cooldown_ns,
-    ) {
-        return Err(KernelError::Cooldown {
-            requested_at: pending_requested_at_ns,
-            now: now_ns,
-            cooldown_ns: config.withdrawal_cooldown_ns,
-        });
+    if config.paused {
+        return Err(KernelError::Restricted(RestrictionKind::Paused));
+    }
+    if matches!(restrictions, Some(Restrictions::Paused)) {
+        return Err(KernelError::Restricted(RestrictionKind::Paused));
     }
 
-    if pending_expected_assets == 0 {
-        let (pending_id, pending) = match state.withdraw_queue.dequeue() {
-            Some(entry) => entry,
-            None => return Err(KernelError::EmptyQueue),
+    let mut skipped_effects = Vec::new();
+
+    loop {
+        let Some((_, pending_ref)) = state.withdraw_queue.head() else {
+            return if skipped_effects.is_empty() {
+                Err(KernelError::EmptyQueue)
+            } else {
+                Ok(KernelResult::new(state, skipped_effects))
+            };
         };
-        let mut effects = Vec::new();
-        push_refund_shares(&mut effects, *self_id, pending.owner, pending.escrow_shares);
-        effects.push(KernelEffect::EmitEvent {
-            event: KernelEvent::WithdrawalSkipped {
-                id: pending_id,
-                owner: pending.owner,
-                receiver: pending.receiver,
-                escrow_shares: pending.escrow_shares,
-                expected_assets: pending.expected_assets,
-            },
-        });
-        return Ok(KernelResult::new(state, effects));
+        let pending_owner = pending_ref.owner;
+        let pending_receiver = pending_ref.receiver;
+        let pending_escrow_shares = pending_ref.escrow_shares;
+        let pending_expected_assets = pending_ref.expected_assets;
+        let pending_requested_at_ns = pending_ref.requested_at_ns;
+
+        let actor_restricted = restrictions
+            .and_then(|r| r.is_restricted(&pending_owner, self_id))
+            .or_else(|| restrictions.and_then(|r| r.is_restricted(&pending_receiver, self_id)));
+
+        if pending_expected_assets == 0 || actor_restricted.is_some() {
+            let (pending_id, pending) = match state.withdraw_queue.dequeue() {
+                Some(entry) => entry,
+                None => return Err(KernelError::EmptyQueue),
+            };
+            push_refund_shares(
+                &mut skipped_effects,
+                *self_id,
+                pending.owner,
+                pending.escrow_shares,
+            );
+            skipped_effects.push(KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    id: pending_id,
+                    owner: pending.owner,
+                    receiver: pending.receiver,
+                    escrow_shares: pending.escrow_shares,
+                    expected_assets: pending.expected_assets,
+                    reason: if actor_restricted.is_some() {
+                        WithdrawalSkipReason::Restricted
+                    } else {
+                        WithdrawalSkipReason::ZeroExpectedAssets
+                    },
+                },
+            });
+            continue;
+        }
+
+        if !is_past_cooldown(
+            pending_requested_at_ns,
+            now_ns,
+            config.withdrawal_cooldown_ns,
+        ) {
+            return if skipped_effects.is_empty() {
+                Err(KernelError::Cooldown {
+                    requested_at: pending_requested_at_ns,
+                    now: now_ns,
+                    cooldown_ns: config.withdrawal_cooldown_ns,
+                })
+            } else {
+                Ok(KernelResult::new(state, skipped_effects))
+            };
+        }
+
+        let op_id = state.allocate_op_id();
+        let request = WithdrawalRequest {
+            op_id,
+            amount: pending_expected_assets,
+            receiver: pending_receiver,
+            owner: pending_owner,
+            escrow_shares: pending_escrow_shares,
+        };
+
+        let transition = start_withdrawal(mem::take(&mut state.op_state), request);
+        let mut result = apply_transition_result(state, transition)?;
+        skipped_effects.append(&mut result.effects);
+        result.effects = skipped_effects;
+        return Ok(result);
     }
-
-    let op_id = state.allocate_op_id();
-    let request = WithdrawalRequest {
-        op_id,
-        amount: pending_expected_assets,
-        receiver: pending_receiver,
-        owner: pending_owner,
-        escrow_shares: pending_escrow_shares,
-    };
-
-    let transition = start_withdrawal(mem::take(&mut state.op_state), request);
-    apply_transition_result(state, transition)
 }
 
 /// Start an allocation: transition to Allocating and decrement idle assets.
@@ -825,32 +857,73 @@ fn handle_finish_allocating(
     op_id: u64,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    // Copy the pending withdrawal fields so we can drop the immutable borrow
-    // before allocating a new op_id.
-    let pending = state
-        .withdraw_queue
-        .head()
-        .filter(|(_, w)| is_past_cooldown(w.requested_at_ns, now_ns, config.withdrawal_cooldown_ns))
-        .map(|(_, w)| (w.owner, w.receiver, w.escrow_shares, w.expected_assets));
+    let mut skipped_effects = Vec::new();
 
-    let pending_req = pending.and_then(|(owner, receiver, escrow_shares, expected_assets)| {
-        if enforce_restrictions(config, restrictions, self_id, &owner).is_err() {
-            return None;
+    let pending_req = if config.paused {
+        None
+    } else {
+        loop {
+            let Some((_, pending)) = state.withdraw_queue.head() else {
+                break None;
+            };
+
+            let owner = pending.owner;
+            let receiver = pending.receiver;
+            let escrow_shares = pending.escrow_shares;
+            let expected_assets = pending.expected_assets;
+            let requested_at_ns = pending.requested_at_ns;
+
+            if !is_past_cooldown(requested_at_ns, now_ns, config.withdrawal_cooldown_ns) {
+                break None;
+            }
+
+            let actor_restricted = restrictions
+                .and_then(|r| r.is_restricted(&owner, self_id))
+                .or_else(|| restrictions.and_then(|r| r.is_restricted(&receiver, self_id)));
+
+            if expected_assets == 0 || actor_restricted.is_some() {
+                let (pending_id, skipped) = state
+                    .withdraw_queue
+                    .dequeue()
+                    .ok_or(KernelError::EmptyQueue)?;
+                push_refund_shares(
+                    &mut skipped_effects,
+                    *self_id,
+                    skipped.owner,
+                    skipped.escrow_shares,
+                );
+                skipped_effects.push(KernelEffect::EmitEvent {
+                    event: KernelEvent::WithdrawalSkipped {
+                        id: pending_id,
+                        owner: skipped.owner,
+                        receiver: skipped.receiver,
+                        escrow_shares: skipped.escrow_shares,
+                        expected_assets: skipped.expected_assets,
+                        reason: if actor_restricted.is_some() {
+                            WithdrawalSkipReason::Restricted
+                        } else {
+                            WithdrawalSkipReason::ZeroExpectedAssets
+                        },
+                    },
+                });
+                continue;
+            }
+
+            break Some(WithdrawalRequest {
+                op_id: state.allocate_op_id(),
+                amount: expected_assets,
+                receiver,
+                owner,
+                escrow_shares,
+            });
         }
-        if enforce_restrictions(config, restrictions, self_id, &receiver).is_err() {
-            return None;
-        }
-        Some(WithdrawalRequest {
-            op_id: state.allocate_op_id(),
-            amount: expected_assets,
-            receiver,
-            owner,
-            escrow_shares,
-        })
-    });
+    };
 
     let transition = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req);
-    apply_transition_result(state, transition)
+    let mut result = apply_transition_result(state, transition)?;
+    skipped_effects.append(&mut result.effects);
+    result.effects = skipped_effects;
+    Ok(result)
 }
 
 #[cfg(any(feature = "action-sync-external", test))]

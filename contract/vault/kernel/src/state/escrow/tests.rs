@@ -57,6 +57,15 @@ fn test_apply_settlement_exceeds_escrow() {
 }
 
 #[test]
+fn test_apply_settlement_overflow_rejected() {
+    let entry = make_entry(1, u128::MAX, 1000);
+    let settlement = EscrowSettlement::partial(u128::MAX, 1);
+
+    assert!(apply_settlement(&entry, &settlement).is_none());
+    assert!(!can_apply_settlement(&entry, &settlement));
+}
+
+#[test]
 fn test_settle_full_burn() {
     let entry = make_entry(1, 100, 1000);
     let settlement = EscrowSettlement::burn_all(entry.shares);
@@ -94,6 +103,15 @@ fn test_settle_proportional_zero() {
     let entry = make_entry(1, 100, 1000);
 
     let settlement = settle_proportional(&entry, 0);
+    assert_eq!(settlement.to_burn, 0);
+    assert_eq!(settlement.refund, 100);
+}
+
+#[test]
+fn test_settle_proportional_zero_expected_refunds_all() {
+    let entry = make_entry(1, 100, 0);
+
+    let settlement = settle_proportional(&entry, 1);
     assert_eq!(settlement.to_burn, 0);
     assert_eq!(settlement.refund, 100);
 }

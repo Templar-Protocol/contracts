@@ -166,10 +166,18 @@ fn test_compute_settlement_edge_cases() {
     assert_eq!(settlement.to_burn, 0);
     assert_eq!(settlement.refund, 0);
 
-    // Zero expected (edge case, treated as full burn)
     let settlement = compute_settlement(100, 0, 500);
-    assert_eq!(settlement.to_burn, 100);
-    assert_eq!(settlement.refund, 0);
+    assert_eq!(settlement.to_burn, 0);
+    assert_eq!(settlement.refund, 100);
+}
+
+#[test]
+#[should_panic(expected = "duplicate pending withdrawal id")]
+fn pending_withdrawals_from_iter_rejects_duplicate_ids() {
+    let withdrawal = make_withdrawal(1, 100, 1000);
+    let _pending: PendingWithdrawals = vec![(7, withdrawal.clone()), (7, withdrawal)]
+        .into_iter()
+        .collect();
 }
 
 #[test]
@@ -453,6 +461,20 @@ fn test_withdraw_queue_enqueue_full() {
         }
         _ => panic!("Expected QueueFull error"),
     }
+}
+
+#[test]
+fn test_withdraw_queue_enqueue_id_overflow_fails() {
+    let mut queue = WithdrawQueue::new();
+    queue.next_pending_withdrawal_id = u64::MAX;
+
+    let result = queue.enqueue(owner_addr(1), owner_addr(1), 100, 1000, 0, 10);
+
+    assert!(matches!(
+        result,
+        Err(QueueError::InvariantViolation { message }) if message == "next_pending_withdrawal_id overflow"
+    ));
+    assert!(queue.is_empty());
 }
 
 #[test]

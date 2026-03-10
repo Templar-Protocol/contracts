@@ -69,7 +69,7 @@ pub fn apply_settlement(
     entry: &EscrowEntry,
     settlement: &EscrowSettlement,
 ) -> Option<SettlementResult> {
-    let total_settled = settlement.to_burn.saturating_add(settlement.refund);
+    let total_settled = settlement.to_burn.checked_add(settlement.refund)?;
 
     if total_settled > entry.shares {
         return None;
@@ -98,7 +98,11 @@ pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSe
         return EscrowSettlement::refund_all(entry.shares);
     }
 
-    if actual_assets >= entry.expected_assets || entry.expected_assets == 0 {
+    if entry.expected_assets == 0 {
+        return EscrowSettlement::refund_all(entry.shares);
+    }
+
+    if actual_assets >= entry.expected_assets {
         return EscrowSettlement::burn_all(entry.shares);
     }
 
@@ -120,8 +124,10 @@ pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSe
 #[inline]
 #[must_use]
 pub fn can_apply_settlement(entry: &EscrowEntry, settlement: &EscrowSettlement) -> bool {
-    let total = settlement.to_burn.saturating_add(settlement.refund);
-    total <= entry.shares
+    settlement
+        .to_burn
+        .checked_add(settlement.refund)
+        .is_some_and(|total| total <= entry.shares)
 }
 
 /// Check if an escrow entry is stale (past its expected settlement time).

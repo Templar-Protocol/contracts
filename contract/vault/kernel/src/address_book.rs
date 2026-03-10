@@ -82,6 +82,28 @@ impl<T> AddressBook<T> {
 
 impl<T> From<Vec<(Address, T)>> for AddressBook<T> {
     fn from(addresses: Vec<(Address, T)>) -> Self {
-        Self { addresses }
+        let mut book = Self::new();
+        for (address, value) in addresses {
+            book.insert(address, value);
+        }
+        book
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AddressBook;
+    use alloc::vec;
+
+    fn address(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn from_vec_overwrites_duplicate_addresses() {
+        let book = AddressBook::from(vec![(address(1), 10u32), (address(1), 20u32)]);
+
+        assert_eq!(book.len(), 1);
+        assert_eq!(book.resolve(&address(1)), Some(&20u32));
     }
 }

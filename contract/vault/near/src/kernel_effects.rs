@@ -12,7 +12,7 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Controller, Nep141Mint, Nep141Transfer};
 
-use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
+use templar_vault_kernel::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use templar_vault_kernel::types::Address;
 use templar_vault_kernel::AddressBook;
 
@@ -71,13 +71,14 @@ pub enum KernelEventLog {
     },
     #[event_version("1.0.0")]
     WithdrawalStopped { op_id: U64, escrow_shares: U128 },
-    #[event_version("1.0.0")]
+    #[event_version("1.1.0")]
     WithdrawalSkipped {
         id: U64,
         owner: AccountId,
         receiver: AccountId,
         escrow_shares: U128,
         expected_assets: U128,
+        reason: String,
     },
     #[event_version("1.0.0")]
     RefreshStarted { op_id: U64, plan_len: u32 },
@@ -215,6 +216,7 @@ fn emit_kernel_event(
             receiver,
             escrow_shares,
             expected_assets,
+            reason,
         } => {
             let owner = ctx.resolve(owner)?.clone();
             let receiver = ctx.resolve(receiver)?.clone();
@@ -224,6 +226,11 @@ fn emit_kernel_event(
                 receiver,
                 escrow_shares: U128(*escrow_shares),
                 expected_assets: U128(*expected_assets),
+                reason: match reason {
+                    WithdrawalSkipReason::ZeroExpectedAssets => "zero_expected_assets",
+                    WithdrawalSkipReason::Restricted => "restricted",
+                }
+                .to_string(),
             }
             .emit()
         }

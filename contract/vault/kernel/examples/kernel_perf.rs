@@ -37,6 +37,16 @@ fn run_round(withdrawals: &[PendingWithdrawal], available_assets: u128) -> u128 
     let status = compute_queue_status(withdrawals.iter());
     let (count, total_assets) = count_satisfiable(withdrawals.iter(), available_assets);
 
+    if withdrawals.is_empty() {
+        return black_box(
+            status
+                .total_expected_assets
+                .wrapping_add(status.total_escrow_shares)
+                .wrapping_add(total_assets)
+                .wrapping_add(count as u128),
+        );
+    }
+
     let head = &withdrawals[0];
     let settlement = compute_settlement(
         head.escrow_shares,

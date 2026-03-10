@@ -179,9 +179,10 @@ mod schemars_impl {
             "Number".to_string()
         }
 
-        fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-            let mut g = generator.subschema_for::<[u8; 32]>().into_object();
+        fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+            let mut g = schemars::schema::SchemaObject::default();
             g.metadata().description = Some("256-bit Unsigned Integer".to_string());
+            g.instance_type = Some(schemars::schema::InstanceType::String.into());
             g.string().pattern = Some("^(0|[1-9][0-9]{0,77})$".to_string());
             g.into()
         }

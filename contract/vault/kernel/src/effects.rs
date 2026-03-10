@@ -83,7 +83,26 @@ pub enum KernelCallback {
     PayoutTransfer,
 }
 
-// KernelEvent: keep Serialize for postcard event emission, gate Deserialize behind not(soroban).
+#[cfg_attr(
+    all(feature = "borsh", not(feature = "soroban")),
+    derive(BorshSerialize, BorshDeserialize)
+)]
+#[cfg_attr(
+    all(feature = "postcard", not(feature = "serde"), not(feature = "soroban")),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(
+    all(feature = "serde", not(feature = "soroban")),
+    derive(Serialize, Deserialize)
+)]
+#[cfg_attr(all(feature = "serde", feature = "soroban"), derive(serde::Serialize))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
+pub enum WithdrawalSkipReason {
+    ZeroExpectedAssets,
+    Restricted,
+}
+
 #[cfg_attr(
     all(feature = "borsh", not(feature = "soroban")),
     derive(BorshSerialize, BorshDeserialize)
@@ -133,13 +152,14 @@ pub enum KernelEvent {
     },
     /// Withdrawal stopped and escrow refunded.
     WithdrawalStopped { op_id: u64, escrow_shares: u128 },
-    /// Withdrawal skipped due to zero expected assets (legacy/dust).
+    /// Withdrawal skipped and escrow refunded without entering withdrawal execution.
     WithdrawalSkipped {
         id: u64,
         owner: Address,
         receiver: Address,
         escrow_shares: u128,
         expected_assets: u128,
+        reason: WithdrawalSkipReason,
     },
     /// Refresh operation started.
     RefreshStarted { op_id: u64, plan_len: u32 },
@@ -224,5 +244,75 @@ impl KernelEvent {
             } => alloc::vec![*owner, *receiver],
             _ => alloc::vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KernelEffect, KernelEvent};
+
+    fn address(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn effect_required_addresses_cover_transfer_shapes() {
+        let owner = address(1);
+        let from = address(2);
+        let to = address(3);
+
+        assert_eq!(
+            KernelEffect::MintShares { owner, shares: 10 }.required_addresses(),
+            alloc::vec![owner]
+        );
+        assert_eq!(
+            KernelEffect::TransferShares {
+                shares: 5,
+                from,
+                to
+            }
+            .required_addresses(),
+            alloc::vec![from, to]
+        );
+        assert_eq!(
+            KernelEffect::TransferAssetsFrom {
+                from,
+                to,
+                amount: 7
+            }
+            .required_addresses(),
+            alloc::vec![from, to]
+        );
+    }
+
+    #[test]
+    fn event_required_addresses_cover_account_events() {
+        let owner = address(4);
+        let receiver = address(5);
+
+        assert_eq!(
+            KernelEvent::WithdrawalStarted {
+                op_id: 1,
+                amount: 20,
+                escrow_shares: 30,
+                owner,
+                receiver,
+            }
+            .required_addresses(),
+            alloc::vec![owner, receiver]
+        );
+
+        assert!(KernelEvent::RefreshCompleted { op_id: 9 }
+            .required_addresses()
+            .is_empty());
+    }
+
+    #[test]
+    fn event_converts_into_emit_effect() {
+        let event = KernelEvent::PauseUpdated { paused: true };
+        assert_eq!(
+            KernelEffect::from(event.clone()),
+            KernelEffect::EmitEvent { event }
+        );
     }
 }
