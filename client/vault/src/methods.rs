@@ -141,7 +141,7 @@ macro_rules! impl_vault_view_methods {
                     .view::<Option<NearAccountId>>(
                         &self.vault,
                         "get_market_account_by_id",
-                        (U64::from(market_id.as_u64()),),
+                        (U64::from(u64::from(market_id)),),
                     )
                     .await
                     .map_err($crate::ErrorWrapper::from)?;
@@ -591,9 +591,14 @@ macro_rules! impl_vault_methods {
             }
 
             #[instrument(skip(self, delta))]
-            pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+            pub async fn allocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
                 let delta = templar_common::vault::AllocationDelta::try_from(delta.clone())?;
-                self.vault_call("reallocate", (delta,)).await
+                self.vault_call("allocate", (delta,)).await
+            }
+
+            #[instrument(skip(self, delta))]
+            pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+                self.allocate(delta).await
             }
 
             #[instrument(skip(self, route))]

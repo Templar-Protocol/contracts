@@ -63,3 +63,38 @@ impl<T> RwLockExt<T> for RwLock<T> {
         self.write_or_poison()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{MutexExt, RwLockExt};
+    use std::sync::{Arc, Mutex, RwLock};
+
+    #[test]
+    fn mutex_helpers_read_and_write_values() {
+        let lock = Mutex::new(7_u32);
+        assert_eq!(*lock.lock_or_poison().expect("lock must succeed"), 7);
+        *lock.lock_recover().expect("alias must succeed") = 9;
+        assert_eq!(*lock.lock_or_poison().expect("lock must succeed"), 9);
+    }
+
+    #[test]
+    fn rwlock_helpers_read_and_write_values() {
+        let lock = RwLock::new(11_u32);
+        assert_eq!(*lock.read_or_poison().expect("read must succeed"), 11);
+        *lock.write_recover().expect("write alias must succeed") = 13;
+        assert_eq!(*lock.read_recover().expect("read alias must succeed"), 13);
+    }
+
+    #[test]
+    fn poisoned_mutex_returns_error() {
+        let lock = Arc::new(Mutex::new(1_u32));
+        let cloned = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = cloned.lock().expect("lock must succeed before panic");
+            panic!("poison mutex");
+        })
+        .join();
+
+        assert!(lock.lock_or_poison().is_err());
+    }
+}

@@ -121,39 +121,23 @@ macro_rules! define_uniffi_wrapper {
 define_uniffi_wrapper!(MarketId, u32, [Copy], templar_common::vault::MarketId);
 define_uniffi_wrapper!(CapGroupId, String, [], templar_common::vault::CapGroupId);
 
-impl MarketId {
-    #[must_use]
-    pub fn as_u64(self) -> u64 {
-        templar_common::vault::MarketId::from(self).as_u64()
+impl From<MarketId> for u64 {
+    fn from(value: MarketId) -> Self {
+        u64::from(templar_common::vault::MarketId::from(value))
     }
+}
 
-    #[must_use]
-    pub fn try_from_u64(value: u64) -> Option<Self> {
-        templar_common::vault::MarketId::try_from_u64(value).map(Into::into)
+impl TryFrom<u64> for MarketId {
+    type Error = <templar_common::vault::MarketId as TryFrom<u64>>::Error;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        templar_common::vault::MarketId::try_from(value).map(Into::into)
     }
 }
 
 pub(crate) fn market_id_from_u64_checked(value: u64) -> Result<MarketId, ErrorWrapper> {
-    MarketId::try_from_u64(value)
-        .ok_or_else(|| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))
-}
-
-#[cfg(test)]
-mod market_id_tests {
-    use super::{market_id_from_u64_checked, MarketId};
-
-    #[test]
-    fn market_id_roundtrips_u64() {
-        let id = MarketId(42);
-        assert_eq!(id.as_u64(), 42);
-        assert_eq!(MarketId::try_from_u64(42), Some(id));
-    }
-
-    #[test]
-    fn market_id_checked_rejects_out_of_range() {
-        let err = market_id_from_u64_checked(u64::from(u32::MAX) + 1).unwrap_err();
-        assert_eq!(err.to_string(), "market id out of u32 range".to_string());
-    }
+    MarketId::try_from(value)
+        .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))
 }
 
 /// Generate a UniFFI-compatible builder for a simple struct.
@@ -1005,7 +989,6 @@ impl From<templar_common::vault::Fees<templar_common::vault::prelude::Wad>> for 
 pub struct VaultConfiguration {
     pub owner: AccountId,
     pub curator: AccountId,
-    pub guardian: AccountId,
     pub sentinel: AccountId,
     pub underlying_token: UnderlyingToken,
     pub initial_timelock_ns: u64,
@@ -1015,6 +998,7 @@ pub struct VaultConfiguration {
     pub symbol: String,
     pub decimals: u8,
     pub restrictions: Option<Restrictions>,
+    pub withdrawal_cooldown_ns: Option<u64>,
     pub refresh_cooldown_ns: Option<u64>,
     pub idle_resync_cooldown_ns: Option<u64>,
 }
@@ -1040,7 +1024,6 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
         VaultConfiguration {
             owner: value.owner.to_string().into(),
             curator: value.curator.to_string().into(),
-            guardian: value.guardian.to_string().into(),
             sentinel: value.sentinel.to_string().into(),
             underlying_token,
             initial_timelock_ns: value.initial_timelock_ns.0,
@@ -1050,6 +1033,7 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
             symbol: value.symbol,
             decimals: value.decimals.get(),
             restrictions: value.restrictions.map(Into::into),
+            withdrawal_cooldown_ns: value.withdrawal_cooldown_ns.map(|u| u.0),
             refresh_cooldown_ns: value.refresh_cooldown_ns.map(|u| u.0),
             idle_resync_cooldown_ns: value.idle_resync_cooldown_ns.map(|u| u.0),
         }
@@ -1131,7 +1115,10 @@ fn address_to_hex(addr: &[u8; 32]) -> String {
 
 fn parse_hex_address(input: &str) -> Result<[u8; 32], ErrorWrapper> {
     let trimmed = input.trim();
-    let hex_str = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    let hex_str = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
     let bytes = hex::decode(hex_str).map_err(|e| {
         ErrorWrapper::Wrapped(format!("invalid restriction address '{input}': {e}"))
     })?;
@@ -1264,6 +1251,19 @@ mod tests {
     #[fixture]
     fn testnet_rpc() -> String {
         "https://rpc.testnet.fastnear.com/".to_string()
+    }
+
+    #[test]
+    fn market_id_roundtrips_u64() {
+        let id = MarketId(42);
+        assert_eq!(u64::from(id), 42);
+        assert_eq!(MarketId::try_from(42_u64), Ok(id));
+    }
+
+    #[test]
+    fn market_id_checked_rejects_out_of_range() {
+        let err = market_id_from_u64_checked(u64::from(u32::MAX) + 1).unwrap_err();
+        assert_eq!(err.to_string(), "market id out of u32 range".to_string());
     }
 
     #[fixture]

@@ -88,7 +88,7 @@ impl VaultController {
 
         // Allocator/curator/owner-gated: begins allocation across markets.
         #[call(exec, tgas(300))]
-        pub fn reallocate(delta: AllocationDelta);
+        pub fn reallocate["allocate"](delta: AllocationDelta);
 
         // Allocator-only: executes an existing market-side supply withdrawal
         // request and credits any returned funds to the vault's idle balance.

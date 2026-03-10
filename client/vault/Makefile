@@ -26,7 +26,10 @@ else
 	endif
 endif
 
-.PHONY: gen python smoke-test smoke-test-view smoke-test-full
+.PHONY: clean gen python smoke-test smoke-test-view smoke-test-full
+
+clean:
+	rm -rf "$(DIST_DIR)"
 
 gen:
 	cargo run --features=uniffi/cli --bin uniffi-bindgen $@
