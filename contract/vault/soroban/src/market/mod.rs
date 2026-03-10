@@ -151,3 +151,11 @@ pub fn invoke_progress_withdrawal(
     let args: soroban_sdk::Vec<Val> = (vault, asset.clone(), amount).into_val(env);
     env.invoke_contract::<i128>(adapter, &name, args)
 }
+
+/// Invoke adapter `total_assets(asset)` and return the current market value.
+#[inline]
+pub fn invoke_total_assets(env: &Env, adapter: &Address, asset: &Address) -> i128 {
+    let name = Symbol::new(env, "total_assets");
+    let args: soroban_sdk::Vec<Val> = (asset.clone(),).into_val(env);
+    env.invoke_contract::<i128>(adapter, &name, args)
+}

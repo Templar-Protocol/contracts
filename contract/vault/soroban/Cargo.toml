@@ -25,13 +25,12 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # Soroban SDK for Stellar smart contracts
-soroban-sdk = { version = "23.5.1", features = ["alloc"] }
-
-# OpenZeppelin Stellar Contracts — Pausable and Upgradeable utilities
-stellar-contract-utils = { workspace = true, default-features = false }
+soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 
 [dev-dependencies]
 proptest = "1.4"
-soroban-sdk = { version = "23.5.1", features = ["testutils", "alloc"] }
+soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
 rstest.workspace = true
+blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
+templar-soroban-blend-adapter = { path = "./blend-adapter" }
 templar-soroban-runtime = { path = ".", features = ["testutils"] }

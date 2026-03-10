@@ -59,7 +59,7 @@ it from ~430KB to ~250KB (required to stay under Soroban's transaction limits).
 
 ## Blend Adapter
 
-Blend integration lives in the dedicated crate `contract/vault/soroban-blend-adapter`.
+Blend integration lives in the dedicated crate `contract/vault/soroban/blend-adapter`.
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-blend-adapter`

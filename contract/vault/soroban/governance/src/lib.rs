@@ -592,20 +592,20 @@ fn decide_submission(
                 .get(&DataKey::CurrentFees)
                 .ok_or(GovernanceError::MissingConfig)?;
 
-            let current_cfg = FeeConfig::new(
-                to_wad(current.performance_fee_wad)?,
-                to_wad(current.management_fee_wad)?,
-                &current.performance_recipient,
-                &current.management_recipient,
-                to_optional_wad(current.max_growth_rate_wad)?,
-            );
-            let proposed_cfg = FeeConfig::new(
-                to_wad(proposed.performance_fee_wad)?,
-                to_wad(proposed.management_fee_wad)?,
-                &proposed.performance_recipient,
-                &proposed.management_recipient,
-                to_optional_wad(proposed.max_growth_rate_wad)?,
-            );
+            let current_cfg = FeeConfig {
+                performance_fee: to_wad(current.performance_fee_wad)?,
+                management_fee: to_wad(current.management_fee_wad)?,
+                performance_recipient: &current.performance_recipient,
+                management_recipient: &current.management_recipient,
+                max_rate: to_optional_wad(current.max_growth_rate_wad)?,
+            };
+            let proposed_cfg = FeeConfig {
+                performance_fee: to_wad(proposed.performance_fee_wad)?,
+                management_fee: to_wad(proposed.management_fee_wad)?,
+                performance_recipient: &proposed.performance_recipient,
+                management_recipient: &proposed.management_recipient,
+                max_rate: to_optional_wad(proposed.max_growth_rate_wad)?,
+            };
             let decision = FeeConfig::evaluate_change(&current_cfg, &proposed_cfg).map_err(
                 |err| match err {
                     FeeChangeError::NoChange => GovernanceError::NoChange,
@@ -788,15 +788,15 @@ fn load_queue(env: &Env) -> PendingQueue<QueuedProposal> {
         .get(&DataKey::PendingQueue)
         .unwrap_or_else(|| Vec::new(env));
 
-    let mut queue = PendingQueue::new();
+    let mut queue = PendingQueue::default();
     for item in stored.iter() {
-        queue.push_pending(PendingValue::new(
-            QueuedProposal {
+        queue.push_pending(PendingValue {
+            value: QueuedProposal {
                 id: item.id,
                 action: item.action.clone(),
             },
-            item.valid_at_ns,
-        ));
+            valid_at_ns: item.valid_at_ns,
+        });
     }
 
     queue

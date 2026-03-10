@@ -89,7 +89,9 @@ fn user_can_transfer_with_auth() {
     let from_bal = env.as_contract(&token, || {
         SorobanShareTokenContract::balance(env.clone(), from)
     });
-    let to_bal = env.as_contract(&token, || SorobanShareTokenContract::balance(env.clone(), to));
+    let to_bal = env.as_contract(&token, || {
+        SorobanShareTokenContract::balance(env.clone(), to)
+    });
     assert_eq!(from_bal, 750);
     assert_eq!(to_bal, 250);
 }

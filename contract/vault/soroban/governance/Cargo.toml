@@ -16,8 +16,8 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { version = "23.5.1", features = ["alloc"] }
-templar-curator-primitives = { path = "../curator-primitives" }
-templar-vault-kernel = { path = "../kernel" }
+templar-curator-primitives = { path = "../../curator-primitives" }
+templar-vault-kernel = { path = "../../kernel" }
 
 [dev-dependencies]
 soroban-sdk = { version = "23.5.1", features = ["testutils", "alloc"] }
