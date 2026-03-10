@@ -249,11 +249,11 @@ pub struct VaultConfiguration {
     pub decimals: NonZeroU8,
     /// Restrictions for this vault.
     pub restrictions: Option<Restrictions>,
-    /// Optional cooldown (ns) between refresh_markets calls; defaults to contract constant if None.
+    /// Optional cooldown (ns) between `refresh_markets` calls; defaults to 30 seconds when `None`.
     pub refresh_cooldown_ns: Option<U64>,
-    /// Optional cooldown (ns) between idle_resync calls; defaults to contract constant if None.
+    /// Optional cooldown (ns) between `idle_resync` calls; defaults to 120 seconds when `None`.
     pub idle_resync_cooldown_ns: Option<U64>,
-    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to contract constant if None.
+    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 24 hours when `None`.
     pub withdrawal_cooldown_ns: Option<U64>,
 }
 
