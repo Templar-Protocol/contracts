@@ -67,7 +67,7 @@ impl AuthPattern {
 #[must_use]
 pub fn auth_pattern_for(action: ActionKind) -> AuthPattern {
     match boundary_policy_class(action) {
-        AuthPolicyClass::Guardian => AuthPattern::SentinelOrOwner,
+        AuthPolicyClass::Sentinel => AuthPattern::SentinelOrOwner,
         AuthPolicyClass::Allocator => AuthPattern::Allocator,
         AuthPolicyClass::AllocatorEmergency => AuthPattern::AllocatorOrSentinel,
         AuthPolicyClass::Public | AuthPolicyClass::Curator => AuthPattern::OwnerOnly,

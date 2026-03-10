@@ -136,8 +136,7 @@ impl<'a> SorobanAuth<'a> {
 
         // Check if paused (allow pause action even when paused)
         if self.paused && action != ActionKind::Pause {
-            // Only allow curator to perform actions when paused
-            if !self.has_role(Role::Curator, caller) {
+            if matches!(canonical_policy_class(action), AuthPolicyClass::Public) {
                 return Err(AuthError::VaultPaused);
             }
         }
@@ -153,7 +152,7 @@ impl<'a> SorobanAuth<'a> {
     pub fn check_role(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
         let has_role = match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
-            AuthPolicyClass::Guardian => self.has_role(Role::Sentinel, caller),
+            AuthPolicyClass::Sentinel => self.has_role(Role::Sentinel, caller),
             AuthPolicyClass::Allocator => self.has_role(Role::Allocator, caller),
             AuthPolicyClass::AllocatorEmergency => {
                 self.has_role(Role::Allocator, caller) || self.has_role(Role::Sentinel, caller)

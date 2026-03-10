@@ -139,7 +139,7 @@ impl RbacConfig {
 pub fn required_role(action: ActionKind) -> Option<Role> {
     match canonical_policy_class(action) {
         AuthPolicyClass::Public => None,
-        AuthPolicyClass::Guardian => Some(Role::Sentinel),
+        AuthPolicyClass::Sentinel => Some(Role::Sentinel),
         AuthPolicyClass::Allocator | AuthPolicyClass::AllocatorEmergency => Some(Role::Allocator),
         AuthPolicyClass::Curator => Some(Role::Curator),
     }
@@ -161,7 +161,7 @@ impl RbacAuth {
     fn is_allowed(&self, action: ActionKind, caller: &Address) -> bool {
         match canonical_policy_class(action) {
             AuthPolicyClass::Public => true,
-            AuthPolicyClass::Guardian => self.config.has_role(caller, Role::Sentinel),
+            AuthPolicyClass::Sentinel => self.config.has_role(caller, Role::Sentinel),
             AuthPolicyClass::Allocator => {
                 self.config.has_role(caller, Role::Allocator) || self.config.is_curator(caller)
             }

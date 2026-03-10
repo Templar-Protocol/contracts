@@ -656,8 +656,7 @@ where
         restrictions: Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         // Authorize
-        self.auth
-            .authorize(ActionKind::SetRestrictions, caller, None)?;
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
         self.restrictions = restrictions;
         self.storage.save_restrictions(&self.restrictions)?;
@@ -976,8 +975,7 @@ where
         caller: Address,
         target_ids: Vec<TargetId>,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::SetRestrictions, caller, None)?;
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
         let mut entries = Vec::with_capacity(target_ids.len());
         for target_id in target_ids {
@@ -1004,8 +1002,7 @@ where
         market_id: TargetId,
         new_cap: u128,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::SetRestrictions, caller, None)?;
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
         let current_cap = self.policy_state.markets.get(&market_id).map(|m| m.cap);
         let decision = TimelockDecision::from_cap_change(current_cap, new_cap)
@@ -1031,8 +1028,7 @@ where
         caller: Address,
         market_id: TargetId,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::SetRestrictions, caller, None)?;
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
         let principal = self.policy_state.principal_for(market_id);
 
@@ -1065,8 +1061,7 @@ where
         caller: Address,
         update: CapGroupUpdate,
     ) -> Result<(), RuntimeError> {
-        self.auth
-            .authorize(ActionKind::SetRestrictions, caller, None)?;
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
         match update {
             CapGroupUpdate::SetCap {

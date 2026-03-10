@@ -105,6 +105,12 @@ mod auth_tests {
         // User cannot pause
         let result = auth.check_role(ActionKind::Pause, &user);
         assert!(matches!(result, Err(AuthError::MissingRole)));
+
+        assert!(auth
+            .check_role(ActionKind::SetRestrictions, &sentinel)
+            .is_ok());
+        let result = auth.check_role(ActionKind::SetRestrictions, &guardian);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
     #[test]
@@ -190,6 +196,26 @@ mod auth_tests {
         // Allocator cannot
         let result = auth.check_role(ActionKind::ManualReconcile, &allocator);
         assert!(matches!(result, Err(AuthError::MissingRole)));
+
+        assert!(auth.check_role(ActionKind::PolicyAdmin, &curator).is_ok());
+        let result = auth.check_role(ActionKind::PolicyAdmin, &allocator);
+        assert!(matches!(result, Err(AuthError::MissingRole)));
+    }
+
+    #[test]
+    fn test_soroban_auth_paused_allows_privileged_actions() {
+        let env = Env::default();
+        let curator = SdkAddress::generate(&env);
+        let allocator = SdkAddress::generate(&env);
+
+        let mut auth =
+            SorobanAuth::with_roles(&env, curator.clone(), None, Some(allocator.clone()));
+        auth.set_paused(true);
+
+        assert!(auth
+            .check_role(ActionKind::BeginAllocating, &allocator)
+            .is_ok());
+        assert!(auth.check_role(ActionKind::PolicyAdmin, &curator).is_ok());
     }
 
     #[test]

@@ -14,8 +14,8 @@ use templar_vault_kernel::{Address, KernelAction};
 pub enum AuthPolicyClass {
     /// User-facing/public action (no special role requirement).
     Public,
-    /// Guardian-level privileged action.
-    Guardian,
+    /// Sentinel/emergency-governance privileged action.
+    Sentinel,
     /// Allocator-level privileged action.
     Allocator,
     /// Emergency allocator path (allocator + emergency role on some executors).
@@ -38,11 +38,11 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::FinishRefreshing
         | ActionKind::SettlePayout
         | ActionKind::RefreshFees => AuthPolicyClass::Allocator,
-        ActionKind::Pause => AuthPolicyClass::Guardian,
+        ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Sentinel,
         ActionKind::AbortAllocating
         | ActionKind::AbortWithdrawing
         | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
-        ActionKind::ManualReconcile | ActionKind::SetRestrictions | ActionKind::EmergencyReset => {
+        ActionKind::ManualReconcile | ActionKind::EmergencyReset | ActionKind::PolicyAdmin => {
             AuthPolicyClass::Curator
         }
     }
@@ -62,11 +62,13 @@ pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::FinishRefreshing
         | ActionKind::RefreshFees
         | ActionKind::SettlePayout => AuthPolicyClass::Allocator,
+        ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Sentinel,
         ActionKind::AbortAllocating
         | ActionKind::AbortWithdrawing
         | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
-        ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Guardian,
-        ActionKind::ManualReconcile | ActionKind::EmergencyReset => AuthPolicyClass::Curator,
+        ActionKind::ManualReconcile | ActionKind::EmergencyReset | ActionKind::PolicyAdmin => {
+            AuthPolicyClass::Curator
+        }
     }
 }
 
@@ -84,6 +86,8 @@ pub enum ActionKind {
     Pause,
     /// Set kernel restrictions (pause/allowlist/denylist).
     SetRestrictions,
+    /// Curator-only policy/state administration outside kernel restrictions.
+    PolicyAdmin,
     /// Begin allocation operation.
     BeginAllocating,
     /// Finish allocation operation.
