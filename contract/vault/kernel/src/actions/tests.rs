@@ -2961,6 +2961,70 @@ fn execute_withdraw_skips_restricted_head_and_processes_next() {
 }
 
 #[test]
+fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    let skipped_owner = [3u8; 32];
+    let skipped_receiver = [4u8; 32];
+    let waiting_owner = [5u8; 32];
+    let waiting_receiver = [6u8; 32];
+    let self_id = [9u8; 32];
+
+    state
+        .withdraw_queue
+        .enqueue(
+            skipped_owner,
+            skipped_receiver,
+            500,
+            0,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue skipped head");
+    state
+        .withdraw_queue
+        .enqueue(
+            waiting_owner,
+            waiting_receiver,
+            250,
+            150,
+            1,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue cooling-down head");
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_id,
+        KernelAction::ExecuteWithdraw { now_ns: 0 },
+    )
+    .expect("execute_withdraw");
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(
+        result.state.withdraw_queue.head().map(|(id, _)| id),
+        Some(1)
+    );
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    owner,
+                    receiver,
+                    expected_assets: 0,
+                    reason: WithdrawalSkipReason::ZeroExpectedAssets,
+                    ..
+                },
+            } if *owner == skipped_owner && *receiver == skipped_receiver
+        )
+    }));
+}
+
+#[test]
 fn finish_allocating_skips_restricted_head_and_chains_next() {
     use crate::state::op_state::AllocatingState;
 
@@ -3017,6 +3081,80 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
     let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
     assert_eq!(withdrawing.owner, next_owner);
     assert_eq!(withdrawing.receiver, next_receiver);
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    owner,
+                    reason: WithdrawalSkipReason::Restricted,
+                    ..
+                },
+            } if *owner == restricted_owner
+        )
+    }));
+}
+
+#[test]
+fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
+    use crate::state::op_state::AllocatingState;
+
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    let restricted_owner = [3u8; 32];
+    let first_receiver = [4u8; 32];
+    let waiting_owner = [5u8; 32];
+    let waiting_receiver = [6u8; 32];
+    let self_id = [9u8; 32];
+
+    state
+        .withdraw_queue
+        .enqueue(
+            restricted_owner,
+            first_receiver,
+            500,
+            100,
+            0,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue restricted head");
+    state
+        .withdraw_queue
+        .enqueue(
+            waiting_owner,
+            waiting_receiver,
+            250,
+            150,
+            1,
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue cooling-down head");
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 77,
+        index: 1,
+        remaining: 0,
+        plan: vec![(1, 500)],
+    });
+
+    let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
+    let result = apply_action(
+        state,
+        &config,
+        Some(&restrictions),
+        &self_id,
+        KernelAction::FinishAllocating {
+            op_id: 77,
+            now_ns: 0,
+        },
+    )
+    .expect("finish_allocating");
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(
+        result.state.withdraw_queue.head().map(|(id, _)| id),
+        Some(1)
+    );
     assert!(result.effects.iter().any(|effect| {
         matches!(
             effect,
