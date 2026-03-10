@@ -12537,6 +12537,7 @@ name = "templar-market-contract"
 version = "1.3.0"
 dependencies = [
  "getrandom 0.2.15",
+ "itertools 0.14.0",
  "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",

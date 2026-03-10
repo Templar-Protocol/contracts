@@ -35,6 +35,7 @@ near-contract-standards.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]
+itertools.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 rstest.workspace = true

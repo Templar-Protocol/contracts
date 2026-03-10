@@ -66,10 +66,6 @@ impl Pyth for Contract {
     }
 }
 
-fn unknown() -> ! {
-    templar_common::panic_with_message("Unknown feed ID");
-}
-
 #[allow(unused_variables)]
 #[near]
 impl RedStoneContractInterface for Contract {
@@ -84,13 +80,9 @@ impl RedStoneContractInterface for Contract {
     fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
         feed_ids
             .into_iter()
-            .map(|feed_id| {
-                let price = self
-                    .redstone_prices
-                    .get(&feed_id)
-                    .unwrap_or_else(|| unknown())
-                    .price;
-                (feed_id, price)
+            .flat_map(|feed_id| {
+                let price = self.redstone_prices.get(&feed_id)?.price;
+                Some((feed_id, price))
             })
             .collect()
     }
@@ -106,12 +98,9 @@ impl RedStoneContractInterface for Contract {
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
         feed_ids
             .into_iter()
-            .map(|feed_id| {
-                let data = self
-                    .redstone_prices
-                    .get(&feed_id)
-                    .unwrap_or_else(|| unknown());
-                (feed_id, data.clone())
+            .flat_map(|feed_id| {
+                let data = self.redstone_prices.get(&feed_id)?;
+                Some((feed_id, data.clone()))
             })
             .collect()
     }
