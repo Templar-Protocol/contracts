@@ -154,6 +154,41 @@ pub struct PolicyState {
 }
 
 impl PolicyState {
+    fn compute_cap_group_totals_sorted(&self) -> Vec<(CapGroupId, u128)> {
+        let mut totals = Vec::new();
+        for (target_id, config) in self.markets.iter() {
+            let Some(group_id) = config.cap_group_id.as_ref() else {
+                continue;
+            };
+
+            totals.push((group_id.clone(), self.principal_for(*target_id)));
+        }
+
+        totals.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+
+        let mut merged: Vec<(CapGroupId, u128)> = Vec::with_capacity(totals.len());
+        for (group_id, principal) in totals {
+            if let Some((last_group_id, total)) = merged.last_mut() {
+                if last_group_id == &group_id {
+                    *total = total.saturating_add(principal);
+                    continue;
+                }
+            }
+
+            merged.push((group_id, principal));
+        }
+
+        merged
+    }
+
+    fn cap_group_total(totals: &[(CapGroupId, u128)], group_id: &CapGroupId) -> u128 {
+        totals
+            .binary_search_by(|(candidate, _)| candidate.cmp(group_id))
+            .ok()
+            .map(|index| totals[index].1)
+            .unwrap_or(0)
+    }
+
     pub fn set_market_config(&mut self, target_id: TargetId, config: MarketConfig) {
         self.markets.insert(target_id, config);
     }
@@ -180,37 +215,14 @@ impl PolicyState {
     /// Aggregates principals for all markets assigned to each cap group.
     #[must_use]
     pub fn compute_cap_group_totals(&self) -> Vec<(CapGroupId, u128)> {
-        let mut totals: Vec<(CapGroupId, u128)> = Vec::new();
-
-        for (target_id, config) in self.markets.iter() {
-            let group_id = match &config.cap_group_id {
-                Some(id) => id.clone(),
-                None => continue,
-            };
-            let principal = self.principal_for(*target_id);
-            if let Some((_, sum)) = totals
-                .iter_mut()
-                .find(|(existing_group_id, _)| *existing_group_id == group_id)
-            {
-                *sum = sum.saturating_add(principal);
-            } else {
-                totals.push((group_id, principal));
-            }
-        }
-
-        totals
+        self.compute_cap_group_totals_sorted()
     }
 
     /// Recompute and update cap group principals in-place.
     pub fn refresh_cap_group_principals(&mut self) {
-        let totals = self.compute_cap_group_totals();
+        let totals = self.compute_cap_group_totals_sorted();
         for (group_id, record) in self.cap_groups.iter_mut() {
-            let total = totals
-                .iter()
-                .find(|(candidate, _)| candidate == group_id)
-                .map(|(_, sum)| *sum)
-                .unwrap_or(0);
-            record.principal = total;
+            record.principal = Self::cap_group_total(&totals, group_id);
         }
     }
 }
