@@ -723,21 +723,6 @@ fn test_withdraw_queue_enqueue_withdrawal() {
 }
 
 #[test]
-fn test_withdraw_queue_get_mut() {
-    let mut queue = WithdrawQueue::new();
-    enqueue_simple(&mut queue, 1, 100, 1000);
-
-    // Modify the withdrawal
-    if let Some(w) = queue.get_mut(0) {
-        w.escrow_shares = 200;
-    }
-
-    // Verify modification
-    let w = queue.get(0).unwrap();
-    assert_eq!(w.escrow_shares, 200);
-}
-
-#[test]
 fn test_withdraw_queue_empty_operations() {
     let queue = WithdrawQueue::new();
 

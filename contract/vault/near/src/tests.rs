@@ -5227,7 +5227,11 @@ fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
     assert_eq!(migrated.resolve_account(&head.owner), owner_a);
     assert_eq!(migrated.resolve_account(&head.receiver), receiver_a);
 
-    let tail = migrated.withdraw_queue.pending_withdrawals.get(&8).unwrap();
+    let tail = migrated
+        .withdraw_queue
+        .pending_withdrawals()
+        .get(&8)
+        .unwrap();
     assert_eq!(migrated.resolve_account(&tail.owner), owner_b);
     assert_eq!(migrated.resolve_account(&tail.receiver), receiver_b);
 }

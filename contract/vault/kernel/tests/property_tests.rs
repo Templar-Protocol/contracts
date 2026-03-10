@@ -307,7 +307,7 @@ proptest! {
             );
         }
         prop_assert!(!queue.is_empty());
-        prop_assert!(queue.pending_withdrawals.contains_key(&queue.next_withdraw_to_execute));
+        prop_assert!(queue.pending_withdrawals().contains_key(&queue.next_withdraw_to_execute));
         prop_assert!(queue.check_invariants());
     }
 
@@ -2279,7 +2279,7 @@ fn build_large_queue(n: u32, assets_per: u128) -> WithdrawQueue {
 fn queue_fills_to_max_pending_then_rejects() {
     let queue = build_large_queue(MAX_PENDING as u32, 1_000);
     assert_eq!(
-        queue.pending_withdrawals.len(),
+        queue.pending_withdrawals().len(),
         MAX_PENDING as usize,
         "Queue should hold exactly MAX_PENDING items"
     );
@@ -2305,7 +2305,7 @@ fn count_satisfiable_at_max_pending() {
     let n = MAX_PENDING as u32;
     let assets_per = 1_000u128;
     let queue = build_large_queue(n, assets_per);
-    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
 
     // Enough assets to satisfy all
     let available = n as u128 * assets_per;
@@ -2320,7 +2320,7 @@ fn count_satisfiable_partial_at_max_pending() {
     let n = MAX_PENDING as u32;
     let assets_per = 1_000u128;
     let queue = build_large_queue(n, assets_per);
-    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
 
     // Only enough for half
     let half = n / 2;
@@ -2339,7 +2339,7 @@ fn queue_status_at_max_pending() {
     let n = MAX_PENDING as u32;
     let assets_per = 1_000u128;
     let queue = build_large_queue(n, assets_per);
-    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
 
     let status = compute_queue_status(items.iter().copied());
     assert_eq!(status.length, n, "Length should be MAX_PENDING");
@@ -2362,7 +2362,7 @@ fn find_request_status_worst_case_at_max_pending() {
     let n = MAX_PENDING as u32;
     let assets_per = 1_000u128;
     let queue = build_large_queue(n, assets_per);
-    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
 
     // Find the last owner (worst-case linear scan)
     let mut last_owner = [0u8; 32];
@@ -2385,7 +2385,7 @@ fn find_request_status_miss_at_max_pending() {
     use templar_vault_kernel::state::queue::find_request_status;
     let n = MAX_PENDING as u32;
     let queue = build_large_queue(n, 1_000);
-    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
 
     // Owner that doesn't exist
     let missing_owner = [255u8; 32];
@@ -2399,14 +2399,14 @@ fn queue_churn_at_high_depth() {
     let n = MAX_PENDING as u32;
     let assets_per = 500u128;
     let mut queue = build_large_queue(n, assets_per);
-    assert_eq!(queue.pending_withdrawals.len(), n as usize);
+    assert_eq!(queue.pending_withdrawals().len(), n as usize);
 
     // Dequeue half from the front
     let half = n / 2;
     for _ in 0..half {
         let _ = queue.dequeue();
     }
-    assert_eq!(queue.pending_withdrawals.len(), (n - half) as usize);
+    assert_eq!(queue.pending_withdrawals().len(), (n - half) as usize);
 
     // Re-enqueue to fill back up
     for i in 0..half {
@@ -2417,13 +2417,13 @@ fn queue_churn_at_high_depth() {
             .unwrap_or_else(|e| panic!("re-enqueue {i} failed: {e:?}"));
     }
     assert_eq!(
-        queue.pending_withdrawals.len(),
+        queue.pending_withdrawals().len(),
         n as usize,
         "Should be full again"
     );
 
     // Verify queue status is correct after churn
-    let items: Vec<_> = queue.pending_withdrawals.values().collect();
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
     let status = compute_queue_status(items.iter().copied());
     assert_eq!(status.length, n);
     assert_eq!(status.total_expected_assets, n as u128 * assets_per);
@@ -3171,7 +3171,7 @@ fn parity_deposit_withdraw_settle_roundtrip() {
         },
     )
     .unwrap();
-    assert!(!result.state.withdraw_queue.pending_withdrawals.is_empty());
+    assert!(!result.state.withdraw_queue.pending_withdrawals().is_empty());
 
     // ExecuteWithdraw: Idle → Withdrawing
     let result = apply_action(
@@ -3281,7 +3281,7 @@ fn parity_preview_matches_actual() {
     let queued = result
         .state
         .withdraw_queue
-        .pending_withdrawals
+        .pending_withdrawals()
         .values()
         .next()
         .unwrap();
@@ -3671,8 +3671,14 @@ proptest! {
             },
         ).unwrap();
 
-        prop_assert_eq!(r.state.withdraw_queue.pending_withdrawals.len(), 1);
-        let queued = r.state.withdraw_queue.pending_withdrawals.values().next().unwrap();
+        prop_assert_eq!(r.state.withdraw_queue.pending_withdrawals().len(), 1);
+        let queued = r
+            .state
+            .withdraw_queue
+            .pending_withdrawals()
+            .values()
+            .next()
+            .unwrap();
         prop_assert_eq!(queued.expected_assets, amount, "at 1:1 ratio, expected_assets == deposited");
     }
 }

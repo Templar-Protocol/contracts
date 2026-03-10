@@ -161,9 +161,9 @@ mod tests {
             kernel.withdraw_queue.next_pending_withdrawal_id,
             c.queue_tail()
         );
-        assert_eq!(kernel.withdraw_queue.pending_withdrawals.len(), 2);
+        assert_eq!(kernel.withdraw_queue.pending_withdrawals().len(), 2);
 
-        let pending = kernel.withdraw_queue.pending_withdrawals.get(&3).unwrap();
+        let pending = kernel.withdraw_queue.pending_withdrawals().get(&3).unwrap();
         assert_eq!(pending.owner, owner_a_addr);
         assert_eq!(pending.receiver, receiver_a_addr);
         assert_eq!(pending.escrow_shares, 250);
@@ -256,7 +256,7 @@ mod tests {
         let pending = result
             .state
             .withdraw_queue
-            .pending_withdrawals
+            .pending_withdrawals()
             .get(&0)
             .expect("pending withdrawal");
 

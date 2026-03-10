@@ -526,7 +526,7 @@ impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
-    pub pending_withdrawals: PendingWithdrawals,
+    pending_withdrawals: PendingWithdrawals,
     /// ID of the next withdrawal to execute (queue head).
     pub next_withdraw_to_execute: u64,
     /// Next ID to allocate for new withdrawals (monotonic, never decremented).
@@ -596,6 +596,12 @@ impl WithdrawQueue {
     #[must_use]
     pub fn len(&self) -> usize {
         self.pending_withdrawals.len()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn pending_withdrawals(&self) -> &PendingWithdrawals {
+        &self.pending_withdrawals
     }
 
     /// Returns true if the queue is empty.
@@ -745,19 +751,6 @@ impl WithdrawQueue {
     #[must_use]
     pub fn get(&self, id: u64) -> Option<&PendingWithdrawal> {
         self.pending_withdrawals.get(&id)
-    }
-
-    /// Get a mutable reference to a pending withdrawal by ID.
-    ///
-    /// # Arguments
-    /// * `id` - The withdrawal ID to look up.
-    ///
-    /// # Returns
-    /// `Some(&mut withdrawal)` if found, `None` otherwise.
-    #[inline]
-    #[must_use]
-    pub fn get_mut(&mut self, id: u64) -> Option<&mut PendingWithdrawal> {
-        self.pending_withdrawals.get_mut(&id)
     }
 
     /// Check if a withdrawal ID exists in the queue.

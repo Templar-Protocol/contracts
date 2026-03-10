@@ -61,6 +61,7 @@ use templar_vault_kernel::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
 use templar_vault_kernel::{Address, KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
+const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120_000_000_000;
 const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
 const ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS: &str = "Missing address mapping for withdrawal queue";
 
@@ -296,7 +297,7 @@ impl Contract {
             idle_resync_last_ns: 0,
             idle_resync_cooldown_ns: idle_resync_cooldown_ns
                 .map(|v| v.0)
-                .unwrap_or(120_000_000_000),
+                .unwrap_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS),
             idle_resync_inflight_op_id: 0,
             withdraw_queue: templar_vault_kernel::WithdrawQueue::new(),
             address_book: BTreeMap::new(),
@@ -1512,7 +1513,7 @@ impl Contract {
             .entry(receiver_addr)
             .or_insert_with(|| entry.receiver.clone());
 
-        let mut pending = self.withdraw_queue.pending_withdrawals.clone();
+        let mut pending = self.withdraw_queue.pending_withdrawals().clone();
         pending.insert(
             id,
             templar_vault_kernel::PendingWithdrawal::new(
@@ -1543,7 +1544,7 @@ impl Contract {
 
     #[cfg(test)]
     pub(crate) fn pending_withdrawals_len(&self) -> usize {
-        self.withdraw_queue.pending_withdrawals.len()
+        self.withdraw_queue.pending_withdrawals().len()
     }
 
     /// Computes fee-aware effective totals for conversions, mimicking `MetaMorpho`:
@@ -2277,9 +2278,9 @@ impl OldContract {
             next_pending_withdrawal_id,
         );
 
-        if !withdraw_queue.pending_withdrawals.is_empty()
+        if !withdraw_queue.pending_withdrawals().is_empty()
             && !withdraw_queue
-                .pending_withdrawals
+                .pending_withdrawals()
                 .contains_key(&withdraw_queue.next_withdraw_to_execute)
         {
             panic_with_message("withdraw queue head missing during migration");

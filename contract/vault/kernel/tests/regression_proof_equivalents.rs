@@ -51,7 +51,7 @@ fn queue_contains_head_when_non_empty() {
 
     while !queue.is_empty() {
         assert!(queue
-            .pending_withdrawals
+            .pending_withdrawals()
             .contains_key(&queue.next_withdraw_to_execute));
         queue.dequeue();
     }
