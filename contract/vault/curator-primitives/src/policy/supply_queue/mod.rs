@@ -94,11 +94,7 @@ impl SupplyQueue {
         }
 
         let mut new_queue = self.clone();
-        let entry = match new_queue.entries.first().cloned() {
-            Some(entry) => entry,
-            None => return Err(SupplyQueueError::QueueEmpty),
-        };
-        new_queue.entries.remove(0);
+        let entry = new_queue.entries.remove(0);
 
         Ok((new_queue, entry))
     }
@@ -196,6 +192,4 @@ pub enum SupplyQueueError {
     ZeroAmount,
     /// Queue is empty.
     QueueEmpty,
-    /// Target not found in queue.
-    TargetNotFound { target_id: TargetId },
 }

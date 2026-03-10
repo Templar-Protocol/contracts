@@ -1351,6 +1351,20 @@ mod recovery_unit_tests {
     }
 
     #[test]
+    fn test_compute_recovery_stats_clamps_completed_targets_to_plan_len() {
+        let state = OpState::Refreshing(RefreshingState {
+            op_id: 3,
+            index: 5,
+            plan: vec![1, 2, 3],
+        });
+
+        let stats = compute_recovery_stats(&state);
+
+        assert_eq!(stats.completed_targets, 3);
+        assert_eq!(stats.remaining_targets, 0);
+    }
+
+    #[test]
     fn test_compute_recovery_stats_idle() {
         let state = OpState::Idle;
         let stats = compute_recovery_stats(&state);
