@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use near_sdk::{
     borsh::BorshSerialize, collections::UnorderedMap, env, json_types::U64, near, AccountId,
-    BorshStorageKey, Gas, IntoStorageKey, PanicOnDefault, PromiseError, PromiseOrValue,
+    BorshStorageKey, Gas, PanicOnDefault, PromiseError, PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -13,7 +13,7 @@ use templar_common::{
     oracle::{
         proxy::{
             governance::{Governance, Operation},
-            OracleType, Proxy, Source,
+            Proxy, Source,
         },
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
@@ -23,7 +23,7 @@ use templar_common::{
 };
 
 mod callback_handler;
-use callback_handler::{callback_result, CallbackHandler};
+use callback_handler::{callback_result, CallbackHandler, OracleType};
 mod impl_governance;
 
 #[derive(BorshSerialize, BorshStorageKey)]
@@ -49,7 +49,7 @@ impl Contract {
     pub fn new() -> Self {
         let mut self_ = Self {
             governance: Governance::new(StorageKey::Governance),
-            proxies: UnorderedMap::new(StorageKey::Proxies.into_storage_key()),
+            proxies: UnorderedMap::new(StorageKey::Proxies),
         };
 
         let deployer = env::predecessor_account_id();
@@ -181,6 +181,8 @@ impl Contract {
         let callback = CallbackHandler::new(&oracle_order, max_age_ms.0);
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
 
+        let now = env::block_timestamp_ms();
+
         let mut i = oracle_order.len() as u64;
         for price_id in original_price_ids {
             let Some(proxy) = self.proxies.get(&price_id) else {
@@ -188,7 +190,7 @@ impl Contract {
                 continue;
             };
 
-            let mut value = None;
+            let mut prices = vec![];
 
             for entry in proxy.entries {
                 let entry_result = match entry.source {
@@ -204,10 +206,15 @@ impl Contract {
                     Source::Request(p) => callback.get(p),
                 };
 
-                value = value.or(entry_result);
+                if let Some(entry_result) = entry_result {
+                    prices.push((entry_result, entry.weight));
+                }
             }
 
-            result.insert(price_id, value);
+            result.insert(
+                price_id,
+                proxy.aggregator.aggregate(&prices, now).map(Into::into),
+            );
         }
 
         result

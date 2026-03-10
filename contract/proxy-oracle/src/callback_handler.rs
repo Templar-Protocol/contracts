@@ -1,9 +1,8 @@
 use std::{collections::HashMap, sync::OnceLock};
 
-use near_sdk::{env, serde::de::DeserializeOwned, serde_json, AccountId, PromiseResult};
+use near_sdk::{env, near, serde::de::DeserializeOwned, serde_json, AccountId, PromiseResult};
 use templar_common::{
     oracle::{
-        proxy::OracleType,
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
         OracleRequest, PythRequest, RedStoneRequest,
@@ -12,6 +11,13 @@ use templar_common::{
 };
 
 static ERR_ORACLE_NOT_INVOKED: &str = "Invariant violation: oracle not invoked";
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json])]
+pub enum OracleType {
+    Pyth(AccountId),
+    RedStone(AccountId),
+}
 
 pub struct CallbackHandler<'a> {
     oracle_order: &'a [OracleType],

@@ -3,24 +3,19 @@
 use std::collections::HashMap;
 
 use near_sdk::{
-    env,
+    assert_one_yocto, env,
     json_types::{Base64VecU8, U64},
-    near, BorshStorageKey, PanicOnDefault,
+    near, AccountId, PanicOnDefault,
 };
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::{
+    contract::list,
     oracle::redstone::{
         Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-        RedStoneEvent, SerializableU256,
+        RedStoneEvent, Role, SerializableU256,
     },
     UnwrapReject,
 };
-
-#[derive(BorshStorageKey)]
-#[near(serializers = [borsh])]
-pub enum Role {
-    Updater,
-}
 
 #[derive(Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
@@ -33,13 +28,40 @@ pub struct Contract {
 impl Contract {
     #[init]
     pub fn new(config: Config) -> Self {
-        Self {
+        let mut self_ = Self {
             adapter: RedStoneAdapter::new(b"a", config),
-        }
+        };
+
+        let predecessor = env::predecessor_account_id();
+
+        <Self as Rbac>::add_role(&mut self_, &predecessor, &Role::ModifyRoles);
+        <Self as Rbac>::add_role(&mut self_, &predecessor, &Role::TrustedUpdater);
+
+        self_
     }
 
     pub fn get_config(&self) -> &Config {
         &self.adapter.config
+    }
+
+    pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
+        <Self as Rbac>::has_role(&account_id, &role)
+    }
+
+    #[payable]
+    pub fn set_role(&mut self, account_id: AccountId, role: Role, set: Option<bool>) {
+        assert_one_yocto();
+        let set = set.unwrap_or(true);
+        <Self as Rbac>::require_role(&Role::ModifyRoles);
+        if set {
+            <Self as Rbac>::add_role(self, &account_id, &role);
+        } else {
+            <Self as Rbac>::remove_role(self, &account_id, &role);
+        }
+    }
+
+    pub fn list_role(&self, role: Role, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
+        list(<Self as Rbac>::iter_members_of(&role), offset, count)
     }
 }
 
@@ -96,7 +118,7 @@ impl RedStoneContractInterface for Contract {
     fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8) {
         let updater = env::predecessor_account_id();
 
-        let is_trusted = Self::has_role(&updater, &Role::Updater);
+        let is_trusted = <Self as Rbac>::has_role(&updater, &Role::TrustedUpdater);
 
         let now = env::block_timestamp_ms();
 

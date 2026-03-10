@@ -9,7 +9,9 @@ use super::SerializableU256;
 #[near_sdk::near(serializers = [json, borsh])]
 pub struct FeedData {
     pub price: SerializableU256,
+    /// Package timestamp in milliseconds since Unix epoch.
     pub package_timestamp: U64,
+    /// Write timestamp in milliseconds since Unix epoch.
     pub write_timestamp: U64,
 }
 
@@ -20,7 +22,8 @@ impl FeedData {
             price: I64(price),
             conf: U64(0),
             expo: exponent.checked_sub(super::DECIMALS)?,
-            publish_time: self.package_timestamp.0.try_into().ok()?,
+            // Publish time is in seconds, but the RedStone data uses milliseconds.
+            publish_time: (self.package_timestamp.0 / 1000).try_into().ok()?,
         })
     }
 }

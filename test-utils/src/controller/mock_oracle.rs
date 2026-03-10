@@ -8,7 +8,7 @@ use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
 
-use super::{redstone_adapter::RedStoneAdapterController, ContractController};
+use super::{redstone_adapter::RedStoneAdapterInterface, ContractController};
 
 #[derive(Clone)]
 pub struct MockOracleController {
@@ -21,7 +21,7 @@ impl ContractController for MockOracleController {
     }
 }
 
-impl RedStoneAdapterController for MockOracleController {}
+impl RedStoneAdapterInterface for MockOracleController {}
 
 impl MockOracleController {
     pub async fn deploy(account: Account) -> Self {

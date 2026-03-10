@@ -1,9 +1,9 @@
-use near_sdk::{near, AccountId};
+use near_sdk::{json_types::U64, near};
 
 use super::{price_transformer::ProxyPriceTransformer, OracleRequest};
 
 pub mod aggregator;
-use aggregator::{Aggregator, Confidence, Sample};
+use aggregator::{Aggregator, Filter};
 pub mod governance;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,12 +14,13 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub fn median(entries: impl IntoIterator<Item = Source>) -> Self {
+    pub fn median_low(entries: impl IntoIterator<Item = Source>) -> Self {
         Self {
-            aggregator: Aggregator {
-                confidence: Confidence::MedianLow { ignore_zeros: true },
-                sample: Sample::MedianLow,
-            },
+            aggregator: Aggregator::median_low(Filter {
+                max_age_ms: Some(U64(60 * 1000)),
+                max_clock_drift_ms: Some(U64(10 * 1000)),
+                min_sources: Some(1),
+            }),
             entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),
         }
     }
@@ -58,18 +59,4 @@ impl From<OracleRequest> for Source {
     fn from(oracle_price: OracleRequest) -> Self {
         Self::Request(oracle_price)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub enum Oracle {
-    Pyth,
-    RedStone,
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[near(serializers = [json, borsh])]
-pub enum OracleType {
-    Pyth(AccountId),
-    RedStone(AccountId),
 }

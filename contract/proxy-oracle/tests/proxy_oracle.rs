@@ -134,10 +134,11 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
 
     let proxy_id = PriceIdentifier([0x01_u8; 32]);
-    let proxy_def =
-        Proxy::median([
-            OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into(),
-        ]);
+    let proxy_def = Proxy::median_low([OracleRequest::pyth(
+        "pyth-oracle.near".parse().unwrap(),
+        CRYPTO_BTC_USD,
+    )
+    .into()]);
 
     let proposal = c.gov_create(
         1,
@@ -178,13 +179,13 @@ pub fn gas() {
 
     let mut c = Contract::new();
 
-    let proxy_btc = Proxy::median([
+    let proxy_btc = Proxy::median_low([
         OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into(),
         OracleRequest::redstone("redstone-adapter.near".parse().unwrap(), "BTC").into(),
     ]);
     let proxy_btc_id = PriceIdentifier([0x01_u8; 32]);
 
-    let proxy_usdc = Proxy::median([
+    let proxy_usdc = Proxy::median_low([
         OracleRequest::pyth(
             "pyth-oracle.near".parse().unwrap(),
             pyth_price_id::stable::CRYPTO_USDC_USD,
@@ -194,7 +195,7 @@ pub fn gas() {
     ]);
     let proxy_usdc_id = PriceIdentifier([0x02_u8; 32]);
 
-    let proxy_wnear = Proxy::median([ProxyPriceTransformer::lst(
+    let proxy_wnear = Proxy::median_low([ProxyPriceTransformer::lst(
         OracleRequest::pyth(
             "pyth-oracle.near".parse().unwrap(),
             pyth_price_id::stable::CRYPTO_NEAR_USD,
@@ -344,17 +345,17 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         };
     }
 
-    let btc_proxy_def = Proxy::median([
+    let btc_proxy_def = Proxy::median_low([
         OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
         OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
         OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
     ]);
     let btc_proxy_id = PriceIdentifier([0x01_u8; 32]);
     let just_pyth_btc =
-        Proxy::median([OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()]);
+        Proxy::median_low([OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()]);
     let just_pyth_btc_id = PriceIdentifier([0x02_u8; 32]);
     let just_redstone_eth =
-        Proxy::median([OracleRequest::redstone(redstone_adapter.id().clone(), "ETH").into()]);
+        Proxy::median_low([OracleRequest::redstone(redstone_adapter.id().clone(), "ETH").into()]);
     let just_redstone_eth_id = PriceIdentifier([0x03_u8; 32]);
 
     proxy_oracle

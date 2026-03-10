@@ -9,6 +9,7 @@ version = "0.1.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+getrandom.workspace = true
 near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
 primitive-types.workspace = true

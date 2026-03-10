@@ -123,7 +123,7 @@ async fn proxy_oracle(
                 .set_proxy(
                     proxy_oracle.account(),
                     DEFAULT_COLLATERAL_PRICE_ID,
-                    Some(Proxy::median(oracle_requests_collateral)),
+                    Some(Proxy::median_low(oracle_requests_collateral)),
                 )
                 .await;
 
@@ -139,7 +139,7 @@ async fn proxy_oracle(
                 .set_proxy(
                     proxy_oracle.account(),
                     DEFAULT_BORROW_PRICE_ID,
-                    Some(Proxy::median(oracle_requests_borrow)),
+                    Some(Proxy::median_low(oracle_requests_borrow)),
                 )
                 .await;
         }

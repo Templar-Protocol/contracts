@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U64, near, store::IterableMap, IntoStorageKey};
+use near_sdk::{json_types::U64, near, store::IterableMap, BorshStorageKey, IntoStorageKey};
 use primitive_types::U256;
 use redstone::{
     contract::verification,
@@ -12,6 +12,13 @@ use super::{
     feed_data::FeedData,
     FeedId, GetPrices,
 };
+
+#[derive(BorshStorageKey)]
+#[near(serializers = [json, borsh])]
+pub enum Role {
+    ModifyRoles,
+    TrustedUpdater,
+}
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]

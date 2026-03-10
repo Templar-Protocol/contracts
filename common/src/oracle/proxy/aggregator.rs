@@ -1,4 +1,4 @@
-use near_sdk::near;
+use near_sdk::{json_types::U64, near};
 
 use crate::oracle::pyth;
 
@@ -23,24 +23,49 @@ fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct Aggregator {
-    pub confidence: Confidence,
-    pub sample: Sample,
+    pub sample: AggregationMethod,
+    pub filter: Filter,
 }
 
 impl Aggregator {
-    pub fn aggregate(&self, prices: &[(pyth::Price, u32)]) -> SpecificPrice {
+    pub fn median_low(filter: Filter) -> Self {
+        Self {
+            sample: AggregationMethod::MedianLow,
+            filter,
+        }
+    }
+
+    pub fn aggregate(&self, prices: &[(pyth::Price, u32)], now_ms: u64) -> Option<SpecificPrice> {
+        if prices.len() < self.filter.min_sources.unwrap_or(1).max(1) as usize {
+            return None;
+        }
+
+        let mut values = prices
+            .iter()
+            .filter(|p| {
+                let Ok(publish_time) = u64::try_from(p.0.publish_time) else {
+                    return false;
+                };
+
+                if let Some(age) = now_ms.checked_sub(publish_time) {
+                    self.filter.max_age_ms.is_none_or(|U64(max)| age <= max)
+                } else {
+                    self.filter
+                        .max_clock_drift_ms
+                        .is_none_or(|U64(max)| publish_time - now_ms <= max)
+                }
+            })
+            .flat_map(|(price, weight)| {
+                // Split apart prices so that we don't need to worry about confidence when sorting.
+                let [lower, upper] = SpecificPrice::split(price);
+                [(lower, *weight), (upper, *weight)]
+            })
+            .collect::<Vec<_>>();
+
         match &self.sample {
-            Sample::MedianLow => {
-                let mut values = prices
-                    .iter()
-                    .flat_map(|(price, weight)| {
-                        // Split apart prices so that we don't need to worry about confidence when sorting.
-                        let [lower, upper] = SpecificPrice::split(price);
-                        [(lower, *weight), (upper, *weight)]
-                    })
-                    .collect::<Vec<_>>();
+            AggregationMethod::MedianLow => {
                 values.sort_unstable();
-                values.swap_remove(weighted_median_low(&values)).0
+                Some(values.swap_remove(weighted_median_low(&values)).0)
             }
         }
     }
@@ -122,21 +147,167 @@ impl Ord for SpecificPrice {
     }
 }
 
+/// Aggregation method for the price oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub enum Confidence {
-    MedianLow { ignore_zeros: bool },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub enum Sample {
+pub enum AggregationMethod {
+    /// Selects the median value from the sources, selecting the lower value
+    /// in case of an even number of sources.
     MedianLow,
 }
 
+/// Filter configuration for the aggregation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[near(serializers = [json, borsh])]
+pub struct Filter {
+    /// Maximum age of a price in milliseconds. If a price is older than this, it will be excluded from the aggregation.
+    pub max_age_ms: Option<U64>,
+    /// Maximum clock drift in milliseconds. This is the future-analog of `max_age_ms`.
+    pub max_clock_drift_ms: Option<U64>,
+    /// Minimum number of sources required for the aggregation to produce a result.
+    ///
+    /// For example, if the proxy has a Pyth source and a RedStone source, and `min_sources` is set to `Some(2)`,
+    /// the aggregation will only produce a result if both oracles provide a price.
+    pub min_sources: Option<u32>,
+}
+
+#[allow(clippy::cast_possible_wrap)]
 #[cfg(test)]
 mod tests {
+    use near_sdk::json_types::I64;
+
     use super::*;
+
+    fn price(value: i64, conf: u64, publish_time: i64) -> pyth::Price {
+        pyth::Price {
+            price: I64(value),
+            conf: U64(conf),
+            expo: -6,
+            publish_time,
+        }
+    }
+
+    #[test]
+    fn aggregate_empty_returns_none() {
+        assert!(Aggregator::median_low(Filter::default())
+            .aggregate(&[], 0)
+            .is_none());
+    }
+
+    #[test]
+    fn aggregate_single_price_no_conf() {
+        // conf=0 means lower==upper==value, so the median is exactly the price value.
+        let result =
+            Aggregator::median_low(Filter::default()).aggregate(&[(price(1_000_000, 0, 0), 1)], 0);
+        assert_eq!(result.unwrap().value, 1_000_000);
+    }
+
+    #[test]
+    fn aggregate_median_of_three() {
+        // Three equal-weight prices: median should be the middle value.
+        let prices = [
+            (price(1_000_000, 0, 0), 1),
+            (price(2_000_000, 0, 0), 1),
+            (price(3_000_000, 0, 0), 1),
+        ];
+        let result = Aggregator::median_low(Filter::default()).aggregate(&prices, 0);
+        assert_eq!(result.unwrap().value, 2_000_000);
+    }
+
+    #[test]
+    fn aggregate_min_sources_not_met_returns_none() {
+        let filter = Filter {
+            min_sources: Some(3),
+            ..Default::default()
+        };
+        let prices = [(price(1_000_000, 0, 0), 1), (price(2_000_000, 0, 0), 1)];
+        assert!(Aggregator::median_low(filter)
+            .aggregate(&prices, 0)
+            .is_none());
+    }
+
+    #[test]
+    fn aggregate_min_sources_exactly_met() {
+        let filter = Filter {
+            min_sources: Some(2),
+            ..Default::default()
+        };
+        let prices = [(price(1_000_000, 0, 0), 1), (price(2_000_000, 0, 0), 1)];
+        assert!(Aggregator::median_low(filter)
+            .aggregate(&prices, 0)
+            .is_some());
+    }
+
+    #[rstest::rstest]
+    #[test]
+    #[case::one_under_included(501, 1000, 500, true)]
+    #[case::exactly_at_limit_included(500, 1000, 500, true)]
+    #[case::one_over_excluded(499, 1000, 500, false)]
+    fn aggregate_max_age_boundary(
+        #[case] publish_time_ms: i64,
+        #[case] now_ms: u64,
+        #[case] max_age_ms: u64,
+        #[case] included: bool,
+    ) {
+        // Use two prices: the one under test plus a fresh anchor so aggregate never returns None.
+        let anchor = (price(9_999_999, 0, now_ms as i64), 1);
+        let under_test = (price(1_000_000, 0, publish_time_ms), 1);
+        let filter = Filter {
+            max_age_ms: Some(U64(max_age_ms)),
+            ..Default::default()
+        };
+        let result = Aggregator::median_low(filter)
+            .aggregate(&[under_test, anchor], now_ms)
+            .unwrap();
+        if included {
+            // Median of [1_000_000, 9_999_999] — the lower value wins median_low.
+            assert_eq!(result.value, 1_000_000);
+        } else {
+            // Only the anchor survives filtering.
+            assert_eq!(result.value, 9_999_999);
+        }
+    }
+
+    #[rstest::rstest]
+    #[test]
+    #[case::exactly_at_limit_included(1500, 1000, 500, true)]
+    #[case::one_over_excluded(1501, 1000, 500, false)]
+    fn aggregate_max_clock_drift_boundary(
+        #[case] publish_time_ms: i64,
+        #[case] now_ms: u64,
+        #[case] max_clock_drift_ms: u64,
+        #[case] included: bool,
+    ) {
+        let anchor = (price(9_999_999, 0, now_ms as i64), 1);
+        let under_test = (price(1_000_000, 0, publish_time_ms), 1);
+        let filter = Filter {
+            max_clock_drift_ms: Some(U64(max_clock_drift_ms)),
+            ..Default::default()
+        };
+        let result = Aggregator::median_low(filter)
+            .aggregate(&[under_test, anchor], now_ms)
+            .unwrap();
+        if included {
+            assert_eq!(result.value, 1_000_000);
+        } else {
+            assert_eq!(result.value, 9_999_999);
+        }
+    }
+
+    #[test]
+    fn aggregate_negative_publish_time_excluded() {
+        // Negative publish_time can't be converted to u64, so the price is filtered out.
+        let anchor = (price(9_999_999, 0, 1000), 1);
+        let negative_time = (price(1_000_000, 0, -1), 1);
+        let filter = Filter {
+            max_age_ms: Some(U64(500)),
+            ..Default::default()
+        };
+        let result = Aggregator::median_low(filter)
+            .aggregate(&[negative_time, anchor], 1000)
+            .unwrap();
+        assert_eq!(result.value, 9_999_999);
+    }
 
     #[rstest::rstest]
     #[test]

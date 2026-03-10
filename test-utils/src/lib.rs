@@ -6,6 +6,7 @@ pub use controller::{
     market::{MarketController, UnifiedMarketController},
     mock_oracle::MockOracleController,
     proxy_oracle::{GovernanceController, ProxyOracleController},
+    redstone_adapter::{RedStoneAdapterController, RedStoneAdapterInterface},
     registry::RegistryController,
     storage_management::StorageManagementController,
     universal_account::UniversalAccountController,

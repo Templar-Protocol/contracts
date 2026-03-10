@@ -92,7 +92,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Test proxy contract too
     let proxy_borrow =
-        Proxy::median([
+        Proxy::median_low([
             OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID).into(),
         ]);
     let proxy_borrow_id = PriceIdentifier([0x01_u8; 32]);
@@ -101,7 +101,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
         .set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
         .await;
 
-    let transform_borrow = Proxy::median([Source::Transformer(ProxyPriceTransformer::lst(
+    let transform_borrow = Proxy::median_low([Source::Transformer(ProxyPriceTransformer::lst(
         OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
         24,
         price_transformer::Call::new_simple(borrow_asset.id(), "redemption_rate"),
