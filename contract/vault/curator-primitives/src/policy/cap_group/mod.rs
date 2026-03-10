@@ -151,7 +151,10 @@ impl CapGroupRecord {
     pub fn apply_allocation(&self, amount: u128) -> Self {
         Self {
             cap: self.cap.clone(),
-            principal: self.principal.saturating_add(amount),
+            principal: self
+                .principal
+                .checked_add(amount)
+                .unwrap_or_else(|| panic!("cap group principal overflow")),
         }
     }
 
@@ -160,7 +163,10 @@ impl CapGroupRecord {
     pub fn remove_allocation(&self, amount: u128) -> Self {
         Self {
             cap: self.cap.clone(),
-            principal: self.principal.saturating_sub(amount),
+            principal: self
+                .principal
+                .checked_sub(amount)
+                .unwrap_or_else(|| panic!("cap group principal underflow")),
         }
     }
 

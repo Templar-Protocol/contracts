@@ -128,7 +128,7 @@ pub enum RefreshPlanError {
     EmptyPlan,
     /// Refresh is still on cooldown.
     OnCooldown {
-        last_refresh_ns: u64,
+        last_refresh_ns: Option<u64>,
         cooldown_ns: u64,
         current_ns: u64,
     },

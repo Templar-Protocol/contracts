@@ -106,9 +106,8 @@ impl MarketLockSet {
     }
 
     #[must_use]
-    pub fn is_locked_by_op(&self, target_id: TargetId, op_id: u64) -> bool {
-        self.locks
-            .iter()
+    pub fn is_locked_by_op(&self, target_id: TargetId, op_id: u64, current_ns: u64) -> bool {
+        self.active_iter(current_ns)
             .any(|lock| lock.target_id == target_id && lock.op_id == Some(op_id))
     }
 

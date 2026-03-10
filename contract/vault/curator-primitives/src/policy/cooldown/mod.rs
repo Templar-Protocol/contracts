@@ -71,7 +71,7 @@ impl Cooldown {
             Ok(())
         } else {
             Err(CooldownError::OnCooldown {
-                last_event_ns: self.last_event_ns.unwrap_or(0),
+                last_event_ns: self.last_event_ns,
                 interval_ns: self.interval_ns,
                 current_ns,
             })
@@ -103,7 +103,7 @@ impl Cooldown {
 pub enum CooldownError {
     /// Operation is still on cooldown.
     OnCooldown {
-        last_event_ns: u64,
+        last_event_ns: Option<u64>,
         interval_ns: u64,
         current_ns: u64,
     },

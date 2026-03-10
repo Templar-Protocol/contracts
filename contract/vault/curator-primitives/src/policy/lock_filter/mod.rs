@@ -7,7 +7,7 @@ use templar_vault_kernel::TargetId;
 use super::{
     market_lock::MarketLockSet,
     supply_queue::{SupplyQueue, SupplyQueueEntry},
-    withdraw_route::{WithdrawRoute, WithdrawRouteEntry},
+    withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
 };
 
 impl MarketLockSet {
@@ -51,8 +51,11 @@ impl MarketLockSet {
     }
 
     /// Filter a withdraw route to only unlocked targets.
-    #[must_use]
-    pub fn filter_withdraw_route(&self, route: &WithdrawRoute, current_ns: u64) -> WithdrawRoute {
+    pub fn filter_withdraw_route(
+        &self,
+        route: &WithdrawRoute,
+        current_ns: u64,
+    ) -> Result<WithdrawRoute, WithdrawRouteError> {
         let entries: Vec<WithdrawRouteEntry> = route
             .entries
             .iter()
@@ -60,7 +63,9 @@ impl MarketLockSet {
             .cloned()
             .collect();
 
-        WithdrawRoute::from_entries(entries, route.target_amount)
+        let filtered = WithdrawRoute::from_entries(entries, route.target_amount);
+        filtered.validate()?;
+        Ok(filtered)
     }
 
     /// Build an allocation plan from a queue while excluding locked targets.
@@ -75,14 +80,14 @@ impl MarketLockSet {
     }
 
     /// Build a withdraw plan from a route while excluding locked targets.
-    #[must_use]
     pub fn build_withdrawal_plan_with_locks(
         &self,
         route: &WithdrawRoute,
         current_ns: u64,
-    ) -> Vec<(TargetId, u128)> {
-        self.filter_withdraw_route(route, current_ns)
-            .to_withdrawal_plan()
+    ) -> Result<Vec<(TargetId, u128)>, WithdrawRouteError> {
+        Ok(self
+            .filter_withdraw_route(route, current_ns)?
+            .to_withdrawal_plan())
     }
 
     /// Build a refresh target list while excluding locked targets.

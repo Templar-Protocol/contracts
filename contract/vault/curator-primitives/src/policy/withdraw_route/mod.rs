@@ -69,9 +69,10 @@ impl WithdrawRoute {
 
     #[must_use]
     pub fn total(&self) -> u128 {
-        self.entries
-            .iter()
-            .fold(0u128, |acc, e| acc.saturating_add(e.max_amount))
+        self.entries.iter().fold(0u128, |acc, e| {
+            acc.checked_add(e.max_amount)
+                .unwrap_or_else(|| panic!("withdraw route total overflow"))
+        })
     }
 
     #[must_use]
@@ -79,7 +80,10 @@ impl WithdrawRoute {
         self.entries
             .iter()
             .filter_map(|e| e.available_liquidity)
-            .fold(0u128, |acc, l| acc.saturating_add(l))
+            .fold(0u128, |acc, l| {
+                acc.checked_add(l)
+                    .unwrap_or_else(|| panic!("withdraw route liquidity overflow"))
+            })
     }
 
     #[must_use]
@@ -177,6 +181,18 @@ pub enum WithdrawRouteError {
     DuplicateTarget { target_id: TargetId },
     /// Entry has zero max amount.
     ZeroMaxAmount { target_id: TargetId },
+    /// Route arithmetic overflowed while summing amounts.
+    AmountOverflow,
+}
+
+fn checked_total_amount<I>(amounts: I) -> Result<u128, WithdrawRouteError>
+where
+    I: IntoIterator<Item = u128>,
+{
+    amounts.into_iter().try_fold(0u128, |acc, amount| {
+        acc.checked_add(amount)
+            .ok_or(WithdrawRouteError::AmountOverflow)
+    })
 }
 
 /// Build a withdraw route from market principals.
@@ -198,9 +214,7 @@ pub fn build_withdraw_route(
         return Err(WithdrawRouteError::ZeroTargetAmount);
     }
 
-    let total_principal: u128 = principals
-        .iter()
-        .fold(0u128, |acc, (_, p)| acc.saturating_add(*p));
+    let total_principal = checked_total_amount(principals.iter().map(|(_, p)| *p))?;
 
     if total_principal < target_amount {
         return Err(WithdrawRouteError::InsufficientRouteTotal {
@@ -267,11 +281,12 @@ pub fn build_withdraw_route_with_liquidity(
         return Err(WithdrawRouteError::EmptyRoute);
     }
 
+    let route_total = checked_total_amount(entries.iter().map(|entry| entry.max_amount))?;
     let route = WithdrawRoute::from_entries(entries, target_amount);
 
-    if !route.can_satisfy() {
+    if route_total < target_amount {
         return Err(WithdrawRouteError::InsufficientRouteTotal {
-            route_total: route.total(),
+            route_total,
             target_amount,
         });
     }

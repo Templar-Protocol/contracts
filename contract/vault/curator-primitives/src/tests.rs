@@ -175,7 +175,11 @@ mod auth_unit_tests {
         );
         assert_eq!(
             canonical_policy_class(ActionKind::Pause),
-            AuthPolicyClass::Guardian
+            AuthPolicyClass::Sentinel
+        );
+        assert_eq!(
+            canonical_policy_class(ActionKind::SetRestrictions),
+            AuthPolicyClass::Sentinel
         );
         assert_eq!(
             canonical_policy_class(ActionKind::AbortRefreshing),
@@ -183,6 +187,10 @@ mod auth_unit_tests {
         );
         assert_eq!(
             canonical_policy_class(ActionKind::ManualReconcile),
+            AuthPolicyClass::Curator
+        );
+        assert_eq!(
+            canonical_policy_class(ActionKind::PolicyAdmin),
             AuthPolicyClass::Curator
         );
     }
@@ -199,7 +207,7 @@ mod auth_unit_tests {
         );
         assert_eq!(
             boundary_policy_class(ActionKind::SetRestrictions),
-            AuthPolicyClass::Guardian
+            AuthPolicyClass::Sentinel
         );
     }
 
@@ -872,10 +880,18 @@ mod cap_group_unit_tests {
 
         let reduced = updated.remove_allocation(100);
         assert_eq!(reduced.principal, 200);
+    }
 
-        // Saturating subtraction
-        let zero = reduced.remove_allocation(500);
-        assert_eq!(zero.principal, 0);
+    #[test]
+    #[should_panic(expected = "cap group principal underflow")]
+    fn test_remove_allocation_underflow_panics() {
+        let cap = CapGroup::builder().absolute_cap(1000).build();
+        let record = CapGroupRecord {
+            cap,
+            principal: 200,
+        };
+
+        let _ = record.remove_allocation(500);
     }
 
     #[test]
@@ -1941,7 +1957,14 @@ mod policy_cooldown_tests {
         let cooldown = Cooldown::new(1000).record(100);
 
         let result = cooldown.check(500);
-        assert!(matches!(result, Err(CooldownError::OnCooldown { .. })));
+        assert!(matches!(
+            result,
+            Err(CooldownError::OnCooldown {
+                last_event_ns: Some(100),
+                interval_ns: 1000,
+                current_ns: 500,
+            })
+        ));
 
         let result = cooldown.check(1100);
         assert!(result.is_ok());
@@ -1987,7 +2010,7 @@ mod policy_lock_filter_tests {
 
     use crate::policy::market_lock::{MarketLock, MarketLockSet};
     use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
-    use crate::policy::withdraw_route::{WithdrawRoute, WithdrawRouteEntry};
+    use crate::policy::withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError};
     use templar_vault_kernel::TargetId;
 
     fn lock_set_with_target(target_id: TargetId) -> MarketLockSet {
@@ -2060,9 +2083,13 @@ mod policy_lock_filter_tests {
 
         let filtered = lock_set.filter_withdraw_route(&route, 1_500);
 
-        assert_eq!(filtered.target_amount, 250);
-        assert_eq!(filtered.entries.len(), 1);
-        assert_eq!(filtered.entries[0].target_id, 2);
+        assert!(matches!(
+            filtered,
+            Err(WithdrawRouteError::InsufficientRouteTotal {
+                route_total: 200,
+                target_amount: 250,
+            })
+        ));
     }
 
     #[rstest::rstest]
@@ -2096,9 +2123,33 @@ mod policy_lock_filter_tests {
         );
 
         assert_eq!(
-            lock_set.build_withdrawal_plan_with_locks(&route, 1_500),
+            lock_set
+                .build_withdrawal_plan_with_locks(&route, 1_500)
+                .expect("filtered route remains satisfiable"),
             vec![(2, 200), (3, 300)]
         );
+    }
+
+    #[test]
+    fn filtered_withdrawal_plan_errors_when_locks_break_route() {
+        let lock_set = lock_set_with_target(1);
+        let route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 100),
+                WithdrawRouteEntry::new(2, 200),
+            ],
+            250,
+        );
+
+        let result = lock_set.build_withdrawal_plan_with_locks(&route, 1_500);
+
+        assert!(matches!(
+            result,
+            Err(WithdrawRouteError::InsufficientRouteTotal {
+                route_total: 200,
+                target_amount: 250,
+            })
+        ));
     }
 
     #[rstest::rstest]
@@ -2269,9 +2320,25 @@ mod policy_market_lock_tests {
 
         let set = set.acquire(lock, 1000).unwrap();
 
-        assert!(set.is_locked_by_op(1, 100));
-        assert!(!set.is_locked_by_op(1, 200));
-        assert!(!set.is_locked_by_op(2, 100));
+        assert!(set.is_locked_by_op(1, 100, 1000));
+        assert!(!set.is_locked_by_op(1, 200, 1000));
+        assert!(!set.is_locked_by_op(2, 100, 1000));
+    }
+
+    #[test]
+    fn test_is_locked_by_op_ignores_expired_locks() {
+        let set = MarketLockSet::default();
+        let lock = MarketLock::builder()
+            .target_id(1_u32)
+            .locked_at_ns(1000_u64)
+            .expires_at_ns(1500_u64)
+            .op_id(100_u64)
+            .build();
+
+        let set = set.acquire(lock, 1000).unwrap();
+
+        assert!(set.is_locked_by_op(1, 100, 1499));
+        assert!(!set.is_locked_by_op(1, 100, 1500));
     }
 
     #[test]
@@ -3082,6 +3149,34 @@ mod policy_withdraw_route_tests {
     }
 
     #[test]
+    #[should_panic(expected = "withdraw route total overflow")]
+    fn test_route_total_overflow_panics() {
+        let route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, u128::MAX),
+                WithdrawRouteEntry::new(2, 1),
+            ],
+            1,
+        );
+
+        let _ = route.total();
+    }
+
+    #[test]
+    #[should_panic(expected = "withdraw route liquidity overflow")]
+    fn test_available_liquidity_overflow_panics() {
+        let route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 1).with_liquidity(u128::MAX),
+                WithdrawRouteEntry::new(2, 1).with_liquidity(1),
+            ],
+            1,
+        );
+
+        let _ = route.available_liquidity();
+    }
+
+    #[test]
     fn test_validate_withdraw_route_success() {
         let route = WithdrawRoute::from_entries(
             vec![
@@ -3174,6 +3269,13 @@ mod policy_withdraw_route_tests {
             result,
             Err(WithdrawRouteError::InsufficientRouteTotal { .. })
         ));
+    }
+
+    #[test]
+    fn test_build_withdraw_route_overflow_errors() {
+        let result = build_withdraw_route(&[(1, u128::MAX), (2, 1)], 1);
+
+        assert!(matches!(result, Err(WithdrawRouteError::AmountOverflow)));
     }
 
     #[test]
