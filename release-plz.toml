@@ -1,0 +1,28 @@
+[workspace]
+# This repository releases by git tags / GitHub releases, not crates.io.
+git_only = true
+# Release only when a release PR is merged.
+release_always = false
+# Disable API compatibility checks to keep release PRs lightweight in this large workspace.
+semver_check = false
+pr_labels = ["release"]
+
+[[package]]
+name = "templar-fuzz"
+release = false
+
+[[package]]
+name = "mock-ft"
+release = false
+
+[[package]]
+name = "mock-mt"
+release = false
+
+[[package]]
+name = "mock-oracle"
+release = false
+
+[[package]]
+name = "test-utils"
+release = false
