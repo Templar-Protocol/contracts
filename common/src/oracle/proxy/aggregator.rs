@@ -74,12 +74,9 @@ impl Aggregator {
             return None;
         }
 
-        near_sdk::log!("Values: {values:?}");
-
         match &self.sample {
             AggregationMethod::MedianLow => {
                 values.sort_unstable();
-                near_sdk::log!("Values (sorted): {values:?}");
                 Some(values.swap_remove(weighted_median_low(&values)).0)
             }
         }

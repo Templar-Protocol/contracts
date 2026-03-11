@@ -24,7 +24,6 @@ use templar_proxy_oracle_contract::Contract;
 use test_utils::{
     accounts,
     controller::proxy_oracle::ProxyOracleController,
-    print_execution,
     pyth_price_id::{self, stable::CRYPTO_BTC_USD},
     worker, ContractController, MockOracleController,
 };
@@ -390,11 +389,6 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     let result = proxy_oracle
-        .list_ema_prices_no_older_than_exec(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
-    print_execution(&result);
-
-    let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
     assert_eq!(result, HashMap::from_iter([(btc_proxy_id, None)]));
@@ -411,22 +405,6 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
 
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
     set!(redstone.ETH = 1_800).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than_exec(
-            &actor,
-            vec![
-                btc_proxy_id,
-                CRYPTO_BTC_USD,
-                btc_proxy_id,
-                CRYPTO_BTC_USD,
-                CRYPTO_BTC_USD,
-                just_pyth_btc_id,
-                just_redstone_eth_id,
-            ],
-            60_u32,
-        )
-        .await;
-    print_execution(&result);
     let result = proxy_oracle
         .list_ema_prices_no_older_than(
             &actor,
@@ -466,10 +444,6 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Set second Pyth oracle
     set!(pyth2.CRYPTO_BTC_USD = 80_000).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than_exec(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
-    print_execution(&result);
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;

@@ -44,7 +44,7 @@ pub struct Contract {
 #[near]
 impl Contract {
     pub const GAS_FOR_PYTH_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
-    pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
+    pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(17).saturating_div(10);
 
     #[init]
     pub fn new() -> Self {
@@ -189,11 +189,9 @@ impl Contract {
 
         let mut i = oracle_order.len() as u64;
         for (price_id, proxy) in invoked {
-            near_sdk::log!("price_id: {:?}", price_id);
             let mut prices = vec![];
 
             for entry in proxy.entries {
-                near_sdk::log!("entry: {:?}", entry);
                 let entry_result = match entry.source {
                     Source::Transformer(transformer) => {
                         let price = callback.get(transformer.request);
@@ -206,8 +204,6 @@ impl Contract {
                     }
                     Source::Request(p) => callback.get(p),
                 };
-
-                near_sdk::log!("entry_result: {:?}", entry_result);
 
                 if let Some(entry_result) = entry_result {
                     prices.push((entry_result, entry.weight));
