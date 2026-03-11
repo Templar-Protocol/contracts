@@ -1,36 +1,37 @@
-use near_crypto::{InMemorySigner, SecretKey};
 use near_sdk::AccountId;
 
+use super::remove_all_versions::RemoveAllVersions;
 use crate::near;
 
 /// Remove all versions from a registry then delete its account.
 ///
 /// Mirrors `script/ci/remove-registry.sh`.
-pub async fn run(
-    client: &near_fetch::Client,
-    account_id: AccountId,
-    secret_key: SecretKey,
+#[derive(clap::Args, Debug)]
+pub struct RemoveRegistry {
+    #[command(flatten)]
+    signer: super::SignerArgs,
+    #[arg(long)]
     beneficiary_id: AccountId,
-) -> anyhow::Result<()> {
-    let registry_id = account_id.clone();
+}
 
-    if !near::account_exists(client, &registry_id).await? {
-        tracing::info!(%registry_id, "Account does not exist, nothing to do");
-        return Ok(());
+impl RemoveRegistry {
+    #[tracing::instrument(skip(ctx))]
+    pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
+        let registry_id = self.signer.account_id.clone();
+
+        if !near::account_exists(&ctx.near, &registry_id).await? {
+            tracing::info!(%registry_id, "Account does not exist, nothing to do");
+            return Ok(());
+        }
+
+        RemoveAllVersions::new(self.signer.clone(), registry_id.clone())
+            .run(ctx)
+            .await?;
+
+        tracing::info!(%registry_id, beneficiary_id = %self.beneficiary_id, "Deleting registry account");
+        near::delete_account(&ctx.near, &self.signer.signer(), &registry_id, &self.beneficiary_id)
+            .await?;
+
+        Ok(())
     }
-
-    // Remove all registered versions first.
-    crate::commands::remove_all_versions::run(
-        client,
-        account_id.clone(),
-        secret_key.clone(),
-        registry_id.clone(),
-    )
-    .await?;
-
-    let signer = InMemorySigner::from_secret_key(account_id, secret_key);
-    tracing::info!(%registry_id, %beneficiary_id, "Deleting registry account");
-    near::delete_account(client, &signer, &registry_id, &beneficiary_id).await?;
-
-    Ok(())
 }

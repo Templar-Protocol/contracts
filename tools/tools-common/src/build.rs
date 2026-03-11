@@ -2,20 +2,67 @@ use std::path::Path;
 
 use anyhow::Context;
 
+fn get_metadata(workspace_dir: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
+    cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .current_dir(workspace_dir)
+        .exec()
+        .with_context(|| format!("run cargo metadata in {}", workspace_dir.display()))
+}
+
+fn get_package_from_metadata<'a>(
+    metadata: &'a cargo_metadata::Metadata,
+    package: &str,
+) -> anyhow::Result<&'a cargo_metadata::Package> {
+    let package = metadata
+        .workspace_packages()
+        .into_iter()
+        .find(|p| p.name == package)
+        .with_context(|| format!("package not found: {package}"))?;
+    Ok(package)
+}
+
+fn get_contract(
+    metadata: &cargo_metadata::Metadata,
+    package: &cargo_metadata::Package,
+) -> anyhow::Result<Vec<u8>> {
+    let name_in_path = package.name.replace('-', "_");
+
+    let path = metadata
+        .target_directory
+        .join("near")
+        .join(name_in_path.as_str())
+        .join(format!("{name_in_path}.wasm"));
+
+    Ok(std::fs::read(path)?)
+}
+
+pub fn load_contract(workspace_dir: &Path, cargo_package: &str) -> anyhow::Result<Vec<u8>> {
+    let metadata = get_metadata(workspace_dir)?;
+    let package = get_package_from_metadata(&metadata, cargo_package)?;
+
+    get_contract(&metadata, package)
+}
+
 /// Run `cargo near build reproducible-wasm` in `dir`.
 ///
 /// Used by CLI tools that need to build a contract before uploading it.
-pub fn build_contract(dir: &Path) -> anyhow::Result<()> {
+pub fn build_contract(workspace_dir: &Path, cargo_package: &str) -> anyhow::Result<Vec<u8>> {
+    let metadata = get_metadata(workspace_dir)?;
+    let package = get_package_from_metadata(&metadata, cargo_package)?;
+
     let status = std::process::Command::new("cargo")
         .args(["near", "build", "reproducible-wasm"])
-        .current_dir(dir)
+        .args(["--manifest-path", package.manifest_path.as_str()])
+        .current_dir(workspace_dir)
         .status()
-        .with_context(|| format!("run cargo near build in {}", dir.display()))?;
+        .with_context(|| format!("run cargo near build in {}", workspace_dir.display()))?;
 
     anyhow::ensure!(
         status.success(),
         "cargo near build failed in {}",
-        dir.display()
+        workspace_dir.display()
     );
-    Ok(())
+
+    get_contract(&metadata, package)
 }

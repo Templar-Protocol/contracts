@@ -1,3 +1,4 @@
+use near_crypto::SecretKey;
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::AccountId;
 use templar_common::market::MarketConfiguration;
@@ -6,14 +7,29 @@ use crate::commands::recover_nep141::RecoverNep141;
 use crate::near;
 
 #[derive(clap::Args, Debug)]
-pub struct RemoveMarketArgs {
+pub struct RemoveMarket {
     #[command(flatten)]
     signer: super::SignerArgs,
     #[arg(long)]
     beneficiary_id: AccountId,
 }
 
-impl RemoveMarketArgs {
+impl RemoveMarket {
+    /// Construct a `RemoveMarket` for use by `RemoveAllMarkets`.
+    pub(crate) fn new(
+        account_id: AccountId,
+        secret_key: SecretKey,
+        beneficiary_id: AccountId,
+    ) -> Self {
+        Self {
+            signer: super::SignerArgs {
+                account_id,
+                secret_key,
+            },
+            beneficiary_id,
+        }
+    }
+
     #[tracing::instrument(skip(ctx))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         if !near::account_exists(&ctx.near, &self.signer.account_id).await? {
@@ -58,16 +74,12 @@ impl RemoveMarketArgs {
 
         match e.status {
             FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                // should never happen
                 anyhow::bail!("Unexpected status: {:?}", e.status);
             }
             FinalExecutionStatus::Failure(tx_execution_error) => {
-                anyhow::bail!("Transaction failed: {:?}", tx_execution_error);
+                anyhow::bail!("Transaction failed: {tx_execution_error:?}");
             }
-            FinalExecutionStatus::SuccessValue(_) => {
-                // success
-                Ok(())
-            }
+            FinalExecutionStatus::SuccessValue(_) => Ok(()),
         }
     }
 }

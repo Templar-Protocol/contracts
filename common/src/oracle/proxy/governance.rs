@@ -228,7 +228,14 @@ impl<T: Clone + Serialize + BorshSerialize + BorshDeserialize> Governance<T> {
 
         let Some(min) = min else {
             // Unreachable.
-            near_sdk::env::abort();
+            #[cfg(target_family = "wasm")]
+            {
+                near_sdk::env::abort();
+            }
+            #[cfg(not(target_family = "wasm"))]
+            {
+                unreachable!();
+            }
         };
 
         // Require that operations are executed in order (or cancelled).

@@ -1,5 +1,5 @@
 use anyhow::Context;
-use near_crypto::{InMemorySigner, SecretKey};
+use near_contract_standards::storage_management::StorageBalanceBounds;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 
@@ -10,27 +10,46 @@ pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
 /// Deposit storage on `contract_id` for `account_id`.
 ///
 /// Mirrors `script/ci/storage-deposit.sh`.
-pub async fn run(
-    client: &near_fetch::Client,
-    account_id: AccountId,
-    secret_key: SecretKey,
+#[derive(clap::Args, Debug)]
+pub struct StorageDeposit {
+    #[command(flatten)]
+    signer: super::SignerArgs,
+    #[arg(long)]
     contract_id: AccountId,
-) -> anyhow::Result<()> {
-    tracing::info!(%account_id, %contract_id, deposit = %STORAGE_DEPOSIT_AMOUNT, "Depositing storage");
+    #[arg(long)]
+    deposit: Option<NearToken>,
+    #[arg(long)]
+    minimum: bool,
+}
 
-    let signer = InMemorySigner::from_secret_key(account_id.clone(), secret_key);
+impl StorageDeposit {
+    #[tracing::instrument(skip(ctx))]
+    pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
+        let deposit = if self.minimum {
+            tracing::debug!("Fetching storage balance bounds");
+            let bounds = ctx
+                .near
+                .view(&self.contract_id, "storage_balance_bounds")
+                .args_json(b"{}".to_vec())
+                .await?
+                .json::<StorageBalanceBounds>()?;
+            bounds.min
+        } else {
+            self.deposit.unwrap_or(STORAGE_DEPOSIT_AMOUNT)
+        };
+        tracing::info!(%deposit, "Depositing storage");
 
-    client
-        .call(&signer, &contract_id, "storage_deposit")
-        .args_json(json!({ "account_id": account_id }))
-        .deposit(STORAGE_DEPOSIT_AMOUNT)
-        .max_gas()
-        .transact()
-        .await
-        .with_context(|| format!("storage_deposit on {contract_id}"))?
-        .into_result()
-        .with_context(|| format!("storage_deposit execution on {contract_id}"))?;
+        ctx.near
+            .call(&self.signer.signer(), &self.contract_id, "storage_deposit")
+            .args_json(json!({ "account_id": &self.signer.account_id }))
+            .deposit(STORAGE_DEPOSIT_AMOUNT)
+            .transact()
+            .await
+            .with_context(|| format!("storage_deposit on {}", self.contract_id))?
+            .into_result()
+            .with_context(|| format!("storage_deposit execution on {}", self.contract_id))?;
 
-    tracing::info!(%account_id, %contract_id, "Storage deposit complete");
-    Ok(())
+        tracing::info!("Storage deposit complete");
+        Ok(())
+    }
 }

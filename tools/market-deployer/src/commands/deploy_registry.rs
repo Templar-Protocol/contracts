@@ -1,18 +1,18 @@
 use anyhow::Context;
 use near_fetch::ops::Function;
+use near_primitives::views::FinalExecutionStatus;
 use near_sdk::serde_json::json;
 
-use crate::commands::ContractWasm;
+use super::FixedContractWasm;
 
-const REGISTRY_PACKAGE: &str = "templar_registry_contract";
-const REGISTRY_CONTRACT_DIR: &str = "contract/registry";
+const REGISTRY_PACKAGE: &str = "templar-registry-contract";
 
 #[derive(clap::Args, Debug)]
 pub struct DeployRegistry {
     #[command(flatten)]
     signer: super::SignerArgs,
-    #[arg(long)]
-    no_build: bool,
+    #[command(flatten)]
+    contract: FixedContractWasm,
     #[arg(long)]
     no_init: bool,
 }
@@ -20,18 +20,16 @@ pub struct DeployRegistry {
 impl DeployRegistry {
     #[tracing::instrument(skip(context))]
     pub async fn run(self, context: &crate::CliContext) -> anyhow::Result<()> {
-        let wasm = ContractWasm::new(REGISTRY_PACKAGE)
-            .no_build(self.no_build)
-            .wasm(context)?;
+        let wasm = self.contract.wasm(context, REGISTRY_PACKAGE)?;
 
-        if self.no_init {
+        let result = if self.no_init {
             context
                 .near
                 .batch(&self.signer.signer(), &self.signer.account_id)
                 .deploy(&wasm)
                 .transact()
                 .await
-                .context("deploy registry without init")?;
+                .context("deploy registry without init")?
         } else {
             context
                 .near
@@ -40,7 +38,20 @@ impl DeployRegistry {
                 .call(Function::new("new").args_json(json!({})).max_gas())
                 .transact()
                 .await
-                .context("deploy registry with init")?;
+                .context("deploy registry with init")?
+        };
+
+        tracing::info!(transaction_hash = %result.transaction.hash, "Deploy registry transaction submitted");
+
+        // Ensure transaction was successful
+        match result.status {
+            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
+                anyhow::bail!("Deploy registry failed: transaction not started");
+            }
+            FinalExecutionStatus::Failure(e) => {
+                anyhow::bail!("Deploy registry failed: {e}");
+            }
+            FinalExecutionStatus::SuccessValue(_) => {}
         }
 
         tracing::info!("Registry deployed successfully");

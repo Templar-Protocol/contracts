@@ -1,16 +1,7 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
-use near_sdk::json_types::Base64VecU8;
-use near_sdk::{AccountId, NearToken, PublicKey};
-use templar_tools_common::near::contract_version;
-use templar_tools_common::version::RegistryVersion;
-
-#[derive(serde::Serialize, Debug)]
-struct DeployMethodArgs {
-    name: String,
-    version_key: String,
-    init_args: Base64VecU8,
-    full_access_keys: Option<Vec<near_sdk::PublicKey>>,
-}
+use near_crypto::PublicKey;
+use near_sdk::{json_types::Base64VecU8, AccountId, NearToken};
+use serde_json::json;
+use templar_tools_common::{near::contract_version, version::RegistryVersion};
 
 #[derive(clap::Args, Debug)]
 pub struct DeployFromRegistry {
@@ -35,10 +26,10 @@ pub struct DeployFromRegistry {
 }
 
 impl DeployFromRegistry {
-    #[tracing::instrument(skip(context))]
-    pub async fn run(&self, context: &crate::CliContext) -> anyhow::Result<()> {
+    #[tracing::instrument(skip(ctx))]
+    pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let registry_version: RegistryVersion =
-            contract_version(&context.near, &self.registry_id).await?;
+            contract_version(&ctx.near, &self.registry_id).await?;
 
         let deposit = if registry_version.supports_global_contracts() {
             NearToken::from_yoctonear(1)
@@ -47,71 +38,27 @@ impl DeployFromRegistry {
         };
 
         let init_args = serde_json::to_vec(&self.init_args)?;
-        let args = DeployMethodArgs {
-            name: self.name.clone(),
-            version_key: self.version_key.clone(),
-            init_args: Base64VecU8::from(init_args),
-            full_access_keys: Some(self.with_full_access_key.clone()),
-        };
 
         tracing::info!(%deposit, "Deploying from registry");
-        tracing::debug!(args = ?args);
 
-        context
-            .near
-            .call(
-                &self.signer.signer(),
-                &self.registry_id,
-                registry_version.deploy_method_name(),
-            )
+        let method = registry_version.deploy_method_name();
+        let signer = self.signer.signer();
+
+        ctx.near
+            .call(&signer, &self.registry_id, method)
             .deposit(deposit)
             .max_gas()
-            .args_json(args)
+            .args_json(json!({
+                "name": self.name,
+                "version_key": self.version_key,
+                "init_args": Base64VecU8(init_args),
+                "full_access_keys": self.with_full_access_key,
+            }))
             .transact()
             .await?;
 
         tracing::info!("Deployed from registry");
 
         Ok(())
-    }
-}
-
-/// Base64-encode `init_args` as required by the registry `deploy` / `deploy_market` methods.
-pub fn encode_init_args(init_args: &str) -> String {
-    STANDARD.encode(init_args.as_bytes())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn encode_init_args_round_trips() {
-        let input = r#"{"oracle_id":"pyth.near","borrow_asset":"usdt.near"}"#;
-        let encoded = encode_init_args(input);
-        let decoded = String::from_utf8(STANDARD.decode(&encoded).unwrap()).unwrap();
-        assert_eq!(decoded, input);
-    }
-
-    #[test]
-    fn encode_init_args_empty_json() {
-        let encoded = encode_init_args("{}");
-        let decoded = String::from_utf8(STANDARD.decode(&encoded).unwrap()).unwrap();
-        assert_eq!(decoded, "{}");
-    }
-
-    #[test]
-    fn encode_init_args_produces_valid_base64() {
-        let encoded = encode_init_args(r#"{"key":"value"}"#);
-        // Valid standard base64 uses only alphanumeric, +, /, and = padding.
-        assert!(encoded
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='));
-    }
-
-    #[test]
-    fn encode_init_args_is_deterministic() {
-        let input = r#"{"a":1}"#;
-        assert_eq!(encode_init_args(input), encode_init_args(input));
     }
 }

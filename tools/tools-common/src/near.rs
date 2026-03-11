@@ -4,9 +4,9 @@ use anyhow::Context;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 use near_crypto::Signer;
 use near_sdk::serde_json::Value;
-use near_sdk::{AccountId, AccountIdRef};
+use near_sdk::AccountId;
 
-use crate::version::{RegistryVersion, Version};
+use crate::version::Version;
 
 /// Return `true` when the account exists on-chain.
 ///

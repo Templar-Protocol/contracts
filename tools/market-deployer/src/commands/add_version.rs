@@ -5,7 +5,10 @@ use templar_common::registry::DeployMode;
 
 use crate::CliContext;
 
-use super::{ContractWasm, SignerArgs};
+use super::{ContractWasm, FixedContractWasm, SignerArgs};
+
+const MARKET_PACKAGE: &str = "templar-market-contract";
+const UAC_PACKAGE: &str = "templar-universal-account-contract";
 
 #[derive(Args, Debug)]
 pub struct AddVersion {
@@ -31,27 +34,112 @@ impl AddVersion {
     #[tracing::instrument(skip(ctx))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let wasm = self.contract_wasm.wasm(ctx)?;
-
-        let borsh_args = encode_add_version_args(&self.version_key, self.deploy_mode, &wasm)?;
-
-        let deposit = self.deposit.unwrap_or(NearToken::from_yoctonear(1));
-
-        tracing::info!(wasm_bytes = wasm.len(), "Calling add_version on registry");
-
-        ctx.near
-            .call(&self.signer.signer(), &self.registry_id, "add_version")
-            .args(borsh_args)
-            .deposit(deposit)
-            .max_gas()
-            .transact()
-            .await
-            .context("add_version")?
-            .into_result()
-            .context("add_version execution")?;
-
-        tracing::info!("Version registered");
-        Ok(())
+        send_add_version(
+            ctx,
+            &self.signer,
+            &self.registry_id,
+            &self.version_key,
+            self.deploy_mode,
+            self.deposit,
+            &wasm,
+        )
+        .await
     }
+}
+
+/// Build the market contract and register it as a new version.
+#[derive(Args, Debug)]
+pub struct AddMarketVersion {
+    #[command(flatten)]
+    signer: SignerArgs,
+    #[command(flatten)]
+    contract: FixedContractWasm,
+    #[arg(long, env = "REGISTRY_ID")]
+    registry_id: AccountId,
+    #[arg(long)]
+    version_key: String,
+    #[arg(long, default_value_t = DeployMode::Normal)]
+    deploy_mode: DeployMode,
+    #[arg(long)]
+    deposit: Option<NearToken>,
+}
+
+impl AddMarketVersion {
+    #[tracing::instrument(skip(ctx))]
+    pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
+        let wasm = self.contract.wasm(ctx, MARKET_PACKAGE)?;
+        send_add_version(
+            ctx,
+            &self.signer,
+            &self.registry_id,
+            &self.version_key,
+            self.deploy_mode,
+            self.deposit,
+            &wasm,
+        )
+        .await
+    }
+}
+
+/// Build the universal-account contract and register it as a new version.
+#[derive(Args, Debug)]
+pub struct AddUacVersion {
+    #[command(flatten)]
+    signer: SignerArgs,
+    #[command(flatten)]
+    contract: FixedContractWasm,
+    #[arg(long, env = "REGISTRY_ID")]
+    registry_id: AccountId,
+    #[arg(long)]
+    version_key: String,
+    #[arg(long, default_value_t = DeployMode::GlobalHash)]
+    deploy_mode: DeployMode,
+    #[arg(long)]
+    deposit: Option<NearToken>,
+}
+
+impl AddUacVersion {
+    #[tracing::instrument(skip(ctx))]
+    pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
+        let wasm = self.contract.wasm(ctx, UAC_PACKAGE)?;
+        send_add_version(
+            ctx,
+            &self.signer,
+            &self.registry_id,
+            &self.version_key,
+            self.deploy_mode,
+            self.deposit,
+            &wasm,
+        )
+        .await
+    }
+}
+
+async fn send_add_version(
+    ctx: &CliContext,
+    signer: &SignerArgs,
+    registry_id: &AccountId,
+    version_key: &str,
+    deploy_mode: DeployMode,
+    deposit: Option<NearToken>,
+    wasm: &[u8],
+) -> anyhow::Result<()> {
+    let borsh_args = encode_add_version_args(version_key, deploy_mode, wasm)?;
+    let deposit = deposit.unwrap_or(NearToken::from_yoctonear(1));
+
+    tracing::info!(wasm_bytes = wasm.len(), "Calling add_version on registry");
+
+    ctx.near
+        .call(&signer.signer(), registry_id, "add_version")
+        .args(borsh_args)
+        .deposit(deposit)
+        .max_gas()
+        .transact()
+        .await
+        .context("add_version")?;
+
+    tracing::info!("Version registered");
+    Ok(())
 }
 
 /// Borsh-encode the `add_version` arguments, matching the layout produced by

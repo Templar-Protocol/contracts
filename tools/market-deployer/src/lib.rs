@@ -2,16 +2,22 @@ pub mod commands;
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use commands::{
-    add_version::AddVersion, deploy_from_registry::DeployFromRegistry,
-    deploy_registry::DeployRegistry, SignerArgs,
+    add_version::{AddMarketVersion, AddUacVersion, AddVersion},
+    deploy_from_registry::DeployFromRegistry,
+    deploy_registry::DeployRegistry,
+    recover_nep141::RecoverNep141,
+    remove_all_markets::RemoveAllMarkets,
+    remove_all_versions::RemoveAllVersions,
+    remove_market::RemoveMarket,
+    remove_registry::RemoveRegistry,
+    remove_version::RemoveVersion,
+    storage_deposit::StorageDeposit,
 };
-use near_crypto::SecretKey;
-use near_sdk::{AccountId, NearToken};
-use templar_common::{registry::DeployMode, utils::Network};
+use templar_common::utils::Network;
 /// Re-export shared NEAR client utilities so command modules can use `crate::near`.
-pub use tools_common::near;
+pub use templar_tools_common::near;
 
 #[derive(Parser)]
 #[command(
@@ -28,8 +34,12 @@ struct Cli {
     #[arg(long, env = "RPC_URL")]
     rpc_url: Option<String>,
 
+    /// Specify a URL for transaction links. The transaction hash will be appended to this URL.
+    #[arg(long)]
+    transaction_url_prefix: Option<String>,
+
     /// Path to the workspace root (defaults to current directory)
-    #[arg(long, env = "WORKSPACE_DIR", default_value = ".")]
+    #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
     workspace_dir: PathBuf,
 
     #[command(subcommand)]
@@ -37,139 +47,97 @@ struct Cli {
 }
 
 impl Cli {
-    pub fn make_context(&self) -> anyhow::Result<Context> {
+    fn make_context(&self) -> CliContext {
         let near = near_fetch::Client::new(
             self.rpc_url
                 .as_deref()
                 .unwrap_or_else(|| self.network.rpc_url()),
         );
-        let workspace_path = self.workspace_dir.clone();
-        Ok(Context {
-            workspace_path,
+        CliContext {
+            workspace_path: self.workspace_dir.clone(),
+            transaction_url_prefix: match self.network {
+                Network::Mainnet => "https://nearblocks.io/txns/".to_string(),
+                Network::Testnet => "https://testnet.nearblocks.io/txns/".to_string(),
+            },
             near,
-        })
+        }
     }
 }
 
-struct CliContext {
+pub struct CliContext {
     workspace_path: PathBuf,
+    transaction_url_prefix: String,
     near: near_fetch::Client,
-}
-
-impl CliContext {
-    pub fn contract_wasm_path(&self, package: &str) -> PathBuf {
-        self.workspace_path
-            .join("target/near")
-            .join(package)
-            .join(format!("{}.wasm", package))
-    }
-
-    pub fn contract_wasm(&self, package: &str) -> std::io::Result<Vec<u8>> {
-        let path = self.contract_wasm_path(package);
-        tracing::info!(path = %path.display(), "Reading wasm");
-        std::fs::read(path)
-    }
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Build and deploy the registry contract with an initialisation call
+    /// Build and deploy the registry contract with an initialization call
     DeployRegistry(DeployRegistry),
 
     /// Add a contract version to the registry (wasm must already be built)
     AddVersion(AddVersion),
 
     /// Build the market contract and register it as a new version
-    AddMarketVersion(AddMarketVersionArgs),
+    AddMarketVersion(AddMarketVersion),
 
     /// Build the universal-account contract and register it as a new version
-    AddUacVersion(AddUacVersionArgs),
+    AddUacVersion(AddUacVersion),
 
     /// Deploy a market from the registry
     DeployFromRegistry(DeployFromRegistry),
 
     /// Remove a market: recover NEP-141 tokens then delete the account
-    RemoveMarket(RemoveMarketArgs),
+    RemoveMarket(RemoveMarket),
 
     /// Remove all versions from a registry then delete the registry account
-    RemoveRegistry(RemoveRegistryArgs),
+    RemoveRegistry(RemoveRegistry),
 
     /// Remove every market listed in a registry
-    RemoveAllMarkets(RemoveAllMarketsArgs),
+    RemoveAllMarkets(RemoveAllMarkets),
 
     /// Remove all versions stored in a registry
-    RemoveAllVersions(RemoveAllVersionsArgs),
+    RemoveAllVersions(RemoveAllVersions),
 
     /// Remove a single version from a registry
-    RemoveVersion(RemoveVersionArgs),
+    RemoveVersion(RemoveVersion),
 
     /// Perform a storage deposit on a contract on behalf of an account
-    StorageDeposit(StorageDepositArgs),
+    StorageDeposit(StorageDeposit),
 
     /// Recover NEP-141 tokens from an account and unregister its storage slot
-    RecoverNep141(RecoverNep141Args),
+    RecoverNep141(RecoverNep141),
 }
 
-// ── per-command argument structs ─────────────────────────────────────────────
+pub async fn run() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
-#[derive(Args)]
-struct AddMarketVersionArgs {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[arg(long, env = "REGISTRY_ID")]
-    registry_id: AccountId,
-    #[arg(long)]
-    version_key: String,
-    #[arg(long, default_value = "normal")]
-    deploy_mode: DeployMode,
-    #[arg(long)]
-    deposit: Option<NearToken>,
-}
+    let cli = Cli::parse();
 
-#[derive(Args)]
-struct AddUacVersionArgs {
-    #[command(flatten)]
-    signer: SignerArgs,
-    /// Registry contract account ID (defaults to --account-id)
-    #[arg(long, env = "REGISTRY_ID")]
-    registry_id: Option<AccountId>,
-    #[arg(long)]
-    version_key: String,
-    #[arg(long, default_value = "global-hash")]
-    deploy_mode: DeployMode,
-    #[arg(long)]
-    deposit: Option<NearToken>,
-}
+    tracing::info!(network = %cli.network, "Connecting");
 
-#[derive(Args)]
-struct RemoveRegistryArgs {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[arg(long)]
-    beneficiary_id: AccountId,
-}
-#[derive(Args)]
-struct RemoveAllVersionsArgs {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[arg(long, env = "REGISTRY_ID")]
-    registry_id: AccountId,
-}
+    let ctx = cli.make_context();
 
-#[derive(Args)]
-struct RemoveVersionArgs {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[arg(long, env = "REGISTRY_ID")]
-    registry_id: AccountId,
-    #[arg(long)]
-    version_key: String,
-}
+    match cli.command {
+        Commands::DeployRegistry(a) => a.run(&ctx).await?,
+        Commands::AddVersion(a) => a.run(&ctx).await?,
+        Commands::AddMarketVersion(a) => a.run(&ctx).await?,
+        Commands::AddUacVersion(a) => a.run(&ctx).await?,
+        Commands::DeployFromRegistry(a) => a.run(&ctx).await?,
+        Commands::RemoveMarket(a) => a.run(&ctx).await?,
+        Commands::RemoveRegistry(a) => a.run(&ctx).await?,
+        Commands::RemoveAllMarkets(a) => a.run(&ctx).await?,
+        Commands::RemoveAllVersions(a) => a.run(&ctx).await?,
+        Commands::RemoveVersion(a) => a.run(&ctx).await?,
+        Commands::StorageDeposit(a) => a.run(&ctx).await?,
+        Commands::RecoverNep141(a) => a.run(&ctx).await?,
+    }
 
-#[derive(Args)]
-struct StorageDepositArgs {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[arg(long)]
-    contract_id: AccountId,
+    tracing::info!("Done");
+    Ok(())
 }

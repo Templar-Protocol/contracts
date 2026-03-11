@@ -1,5 +1,5 @@
 use anyhow::Context;
-use near_crypto::{InMemorySigner, SecretKey, Signer};
+use near_crypto::Signer;
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};

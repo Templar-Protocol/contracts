@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+cargo_metadata = "0.23.1"
 near-contract-standards.workspace = true
 near-crypto.workspace = true
 near-fetch.workspace = true

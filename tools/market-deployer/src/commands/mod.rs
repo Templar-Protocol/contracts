@@ -1,7 +1,7 @@
 use clap::Args;
 use near_crypto::{InMemorySigner, SecretKey, Signer};
 use near_sdk::AccountId;
-use templar_tools_common::build::build_contract;
+use templar_tools_common::build::{build_contract, load_contract};
 
 pub mod add_version;
 pub mod deploy_from_registry;
@@ -15,31 +15,32 @@ pub mod remove_version;
 pub mod storage_deposit;
 
 #[derive(Args, Debug)]
-pub struct ContractWasm {
-    #[arg(long)]
-    pub package: String,
+pub struct FixedContractWasm {
     #[arg(long)]
     pub no_build: bool,
 }
 
+impl FixedContractWasm {
+    pub fn wasm(&self, context: &crate::CliContext, package: &str) -> anyhow::Result<Vec<u8>> {
+        if self.no_build {
+            load_contract(&context.workspace_path, package)
+        } else {
+            build_contract(&context.workspace_path, package)
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct ContractWasm {
+    #[command(flatten)]
+    pub fixed: FixedContractWasm,
+    #[arg(long)]
+    pub package: String,
+}
+
 impl ContractWasm {
-    pub fn new(package: impl Into<String>) -> Self {
-        Self {
-            package: package.into(),
-            no_build: false,
-        }
-    }
-
-    pub fn no_build(&mut self, no_build: bool) -> &mut Self {
-        self.no_build = no_build;
-        self
-    }
-
     pub fn wasm(&self, context: &crate::CliContext) -> anyhow::Result<Vec<u8>> {
-        if !self.no_build {
-            build_contract(&context.contract_wasm_path(&self.package))?;
-        }
-        Ok(context.contract_wasm(&self.package)?)
+        self.fixed.wasm(context, &self.package)
     }
 }
 
@@ -59,6 +60,7 @@ impl std::fmt::Debug for SignerArgs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignerArgs")
             .field("account_id", &self.account_id)
+            .field("secret_key", &"***")
             .finish()
     }
 }
