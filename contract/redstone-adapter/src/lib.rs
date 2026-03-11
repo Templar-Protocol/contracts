@@ -10,9 +10,12 @@ use near_sdk::{
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::{
     contract::list,
-    oracle::redstone::{
-        Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-        RedStoneEvent, Role, SerializableU256,
+    oracle::{
+        redstone::{
+            Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
+            RedStoneEvent, Role, SerializableU256,
+        },
+        time::Milliseconds,
     },
     UnwrapReject,
 };
@@ -73,12 +76,12 @@ impl RedStoneContractInterface for Contract {
 
     fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices {
         self.adapter
-            .get_prices(&feed_ids, &payload.0, env::block_timestamp_ms())
+            .get_prices(&feed_ids, &payload.0, Milliseconds::now())
             .unwrap_or_reject()
     }
 
     fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
-        let now = env::block_timestamp_ms();
+        let now = Milliseconds::now();
         feed_ids
             .into_iter()
             .filter_map(|feed_id| {
@@ -88,10 +91,10 @@ impl RedStoneContractInterface for Contract {
             .collect::<HashMap<_, _>>()
     }
 
-    fn read_timestamp(&self, feed_id: FeedId) -> Option<U64> {
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<Milliseconds> {
         let data = self
             .adapter
-            .feed_data(&feed_id, env::block_timestamp_ms())?
+            .feed_data(&feed_id, Milliseconds::now())?
             .unwrap_or_reject();
         Some(data.package_timestamp)
     }
@@ -99,13 +102,13 @@ impl RedStoneContractInterface for Contract {
     fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData> {
         let data = self
             .adapter
-            .feed_data(&feed_id, env::block_timestamp_ms())?
+            .feed_data(&feed_id, Milliseconds::now())?
             .unwrap_or_reject();
         Some(data.clone())
     }
 
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
-        let now = env::block_timestamp_ms();
+        let now = Milliseconds::now();
         feed_ids
             .into_iter()
             .filter_map(|feed_id| {
@@ -120,7 +123,7 @@ impl RedStoneContractInterface for Contract {
 
         let is_trusted = <Self as Rbac>::has_role(&updater, &Role::TrustedUpdater);
 
-        let now = env::block_timestamp_ms();
+        let now = Milliseconds::now();
 
         let payload = self
             .adapter

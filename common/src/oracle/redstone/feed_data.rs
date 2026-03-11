@@ -1,7 +1,7 @@
 use near_sdk::json_types::{I64, U64};
 use primitive_types::U256;
 
-use crate::oracle::pyth;
+use crate::oracle::{pyth, time::Milliseconds};
 
 use super::SerializableU256;
 
@@ -10,9 +10,9 @@ use super::SerializableU256;
 pub struct FeedData {
     pub price: SerializableU256,
     /// Package timestamp in milliseconds since Unix epoch.
-    pub package_timestamp: U64,
+    pub package_timestamp: Milliseconds,
     /// Write timestamp in milliseconds since Unix epoch.
-    pub write_timestamp: U64,
+    pub write_timestamp: Milliseconds,
 }
 
 impl FeedData {
@@ -23,7 +23,7 @@ impl FeedData {
             conf: U64(0),
             expo: exponent.checked_sub(super::DECIMALS)?,
             // Publish time is in seconds, but the RedStone data uses milliseconds.
-            publish_time: (self.package_timestamp.0 / 1000).try_into().ok()?,
+            publish_time: self.package_timestamp.as_s().try_into().ok()?,
         })
     }
 }
@@ -112,8 +112,8 @@ mod tests {
     fn json() {
         let fd = FeedData {
             price: U256::from(3333).into(),
-            package_timestamp: U64(5555),
-            write_timestamp: U64(6666),
+            package_timestamp: Milliseconds::from_ms(5555),
+            write_timestamp: Milliseconds::from_ms(6666),
         };
 
         let serialized = serde_json::to_string(&fd).unwrap();

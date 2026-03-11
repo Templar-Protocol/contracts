@@ -9,6 +9,7 @@ use templar_common::{
         proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier},
         redstone::FeedData,
+        time::Milliseconds,
         OracleRequest,
     },
     primitive_types::U256,
@@ -35,10 +36,11 @@ pub fn redstone_price(price: f64) -> FeedData {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
+    let now_ms = Milliseconds::from_ms(now_ms);
     FeedData {
         price: U256::from((price * 1e8) as u128).into(),
-        package_timestamp: now_ms.into(),
-        write_timestamp: now_ms.into(),
+        package_timestamp: now_ms,
+        write_timestamp: now_ms,
     }
 }
 
@@ -101,49 +103,35 @@ async fn proxy_oracle(
         }
     };
 
-    join!(
-        // async {
-        //     set_pyth(PYTH_BORROW_PRICE_ID, Some(1.0)).await;
-        //     set_pyth(PYTH_COLLATERAL_PRICE_ID, Some(1.0)).await;
-        // },
-        // async {
-        //     set_redstone(REDSTONE_BORROW_FEED_ID, Some(1.0)).await;
-        //     set_redstone(REDSTONE_COLLATERAL_FEED_ID, Some(1.0)).await;
-        // },
-        async {
-            let mut oracle_requests_collateral: Vec<Source> = vec![
-                OracleRequest::pyth(pyth_oracle.id().clone(), PYTH_COLLATERAL_PRICE_ID).into(),
-                OracleRequest::redstone(redstone_oracle.id().clone(), REDSTONE_COLLATERAL_FEED_ID)
-                    .into(),
-            ];
-            if !proxy_collateral_pyth_first {
-                oracle_requests_collateral.reverse();
-            }
-            proxy_oracle
-                .set_proxy(
-                    proxy_oracle.account(),
-                    DEFAULT_COLLATERAL_PRICE_ID,
-                    Some(Proxy::median_low(oracle_requests_collateral)),
-                )
-                .await;
+    let mut oracle_requests_collateral: Vec<Source> = vec![
+        OracleRequest::pyth(pyth_oracle.id().clone(), PYTH_COLLATERAL_PRICE_ID).into(),
+        OracleRequest::redstone(redstone_oracle.id().clone(), REDSTONE_COLLATERAL_FEED_ID).into(),
+    ];
+    if !proxy_collateral_pyth_first {
+        oracle_requests_collateral.reverse();
+    }
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            DEFAULT_COLLATERAL_PRICE_ID,
+            Some(Proxy::median_low(oracle_requests_collateral)),
+        )
+        .await;
 
-            let mut oracle_requests_borrow: Vec<Source> = vec![
-                OracleRequest::pyth(pyth_oracle.id().clone(), PYTH_BORROW_PRICE_ID).into(),
-                OracleRequest::redstone(redstone_oracle.id().clone(), REDSTONE_BORROW_FEED_ID)
-                    .into(),
-            ];
-            if !proxy_borrow_pyth_first {
-                oracle_requests_borrow.reverse();
-            }
-            proxy_oracle
-                .set_proxy(
-                    proxy_oracle.account(),
-                    DEFAULT_BORROW_PRICE_ID,
-                    Some(Proxy::median_low(oracle_requests_borrow)),
-                )
-                .await;
-        }
-    );
+    let mut oracle_requests_borrow: Vec<Source> = vec![
+        OracleRequest::pyth(pyth_oracle.id().clone(), PYTH_BORROW_PRICE_ID).into(),
+        OracleRequest::redstone(redstone_oracle.id().clone(), REDSTONE_BORROW_FEED_ID).into(),
+    ];
+    if !proxy_borrow_pyth_first {
+        oracle_requests_borrow.reverse();
+    }
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            DEFAULT_BORROW_PRICE_ID,
+            Some(Proxy::median_low(oracle_requests_borrow)),
+        )
+        .await;
 
     let configuration = market_configuration(
         proxy_oracle.id().clone(),

@@ -7,6 +7,8 @@ use redstone::{
     ConfigFactory, FeedValue,
 };
 
+use crate::oracle::time::Milliseconds;
+
 use super::{
     config::{Config, DATA_STALENESS},
     feed_data::FeedData,
@@ -44,14 +46,14 @@ impl RedStoneAdapter {
     pub fn feed_data<'a>(
         &'a self,
         feed_id: &FeedId,
-        timestamp_ms: u64,
+        timestamp: Milliseconds,
     ) -> Option<Result<&'a FeedData, RedStoneError>> {
         let f = self.feeds.get(feed_id)?;
 
         Some(
             verification::verify_data_staleness(
-                f.write_timestamp.0.into(),
-                timestamp_ms.into(),
+                f.write_timestamp.as_ms().into(),
+                timestamp.into(),
                 DATA_STALENESS,
             )
             .map(|()| f),
@@ -64,12 +66,12 @@ impl RedStoneAdapter {
         feed_id: &FeedId,
         feed_data: FeedData,
     ) -> Result<FeedData, RedStoneError> {
-        let now = feed_data.write_timestamp.0.into();
-        let new_pkg = feed_data.package_timestamp.0.into();
+        let now = feed_data.write_timestamp.as_ms().into();
+        let new_pkg = feed_data.package_timestamp.as_ms().into();
 
         let old = self.feeds.get(feed_id);
-        let old_write = old.map(|d| d.write_timestamp.0.into());
-        let old_pkg = old.map(|d| d.package_timestamp.0.into());
+        let old_write = old.map(|d| d.write_timestamp.as_ms().into());
+        let old_pkg = old.map(|d| d.package_timestamp.as_ms().into());
 
         if is_trusted {
             verification::verify_trusted_update(now, old_write, old_pkg, new_pkg)?;
@@ -92,16 +94,16 @@ impl RedStoneAdapter {
         &self,
         feed_ids: &[FeedId],
         payload: &[u8],
-        timestamp_ms: u64,
+        timestamp: Milliseconds,
     ) -> Result<ValidatedPayload, RedStoneError> {
         let feed_ids = feed_ids
             .iter()
             .map(|id| id.as_bytes().to_vec().into())
             .collect();
 
-        let mut config =
-            self.config
-                .redstone_config::<StdEnv>((), feed_ids, timestamp_ms.into())?;
+        let mut config = self
+            .config
+            .redstone_config::<StdEnv>((), feed_ids, timestamp.into())?;
         process_payload(&mut config, payload.to_vec())
     }
 
@@ -116,10 +118,10 @@ impl RedStoneAdapter {
         &self,
         feed_ids: &[FeedId],
         payload: &[u8],
-        timestamp_ms: u64,
+        timestamp: Milliseconds,
     ) -> Result<GetPrices, RedStoneError> {
         let ValidatedPayload { timestamp, values } =
-            self.validate_payload(feed_ids, payload, timestamp_ms)?;
+            self.validate_payload(feed_ids, payload, timestamp)?;
 
         Ok(GetPrices {
             timestamp: U64(timestamp.as_millis()),
@@ -142,7 +144,7 @@ impl RedStoneAdapter {
         &mut self,
         is_trusted: bool,
         payload: ValidatedPayload,
-        timestamp_ms: u64,
+        timestamp: Milliseconds,
     ) -> Vec<(FeedId, Result<FeedData, RedStoneError>)> {
         payload
             .values
@@ -151,8 +153,8 @@ impl RedStoneAdapter {
                 let feed_id: super::FeedId = feed.into();
                 let feed_data = FeedData {
                     price: U256::from_big_endian(value.as_be_bytes()).into(),
-                    package_timestamp: U64(payload.timestamp.as_millis()),
-                    write_timestamp: U64(timestamp_ms),
+                    package_timestamp: payload.timestamp.into(),
+                    write_timestamp: timestamp,
                 };
                 let update = self.update_feed(is_trusted, &feed_id, feed_data);
 
@@ -166,7 +168,6 @@ impl RedStoneAdapter {
 #[cfg(test)]
 mod tests {
     use hex_literal::hex;
-    use near_sdk::json_types::U64;
     use primitive_types::U256;
 
     use super::*;
@@ -185,6 +186,7 @@ mod tests {
     #[should_panic = "called `Option::unwrap()` on a `None` value"]
     #[case::js_sdk_feed_id(1_771_336_150_000, &hex!("A2544300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000062f31d92220019c6bdcabf000000020000001bcf952b4490f2e1d3eb14363fafb17785628ff35574c473a425c1b91bc7d69b32f5076efc05eeb87bd731cdd4573991e18b2e51d32cb6d338d72ec63b495b1be1c42544300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000062f31d92220019c6bdcabf0000000200000012d94c6893f264b770f3af4e27f1053fef182f4fec1349e28ef0827b99a846409178e4d0629f89da7dacc2b923459d761629f7c2535f41419649eafa3f4b8f2901b42544300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000062f2fbbb4d0019c6bdcabf000000020000001f4399f7127decb4c5f5d51e3fbdc70ea877f790cff4a262c3b8856ece72365273dcfcfe62aafda679c928c7aba4bed48e36e0d8d06f3eef2dea8c69696863aa01c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002e22882520019c6bdcabf0000000200000018df63ce1bea5fc8738cb02cb09141604906fcba269e9fb1f873bc6a9edb705f07f963841bc56c4bd7c8b9748d243bc0113acfb59f6c6973b91a61550c260736f1b45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002e22882520019c6bdcabf0000000200000014060619a0ce0de8d714d0b0e0c9f86be2e2a8d841a63261079fa8e5bddc951b672aa9eeebf0780ff442ef3dc65530b1af3817eb8bc87ddd5bf44851702cfdc671c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002e22882520019c6bdcabf0000000200000011c86e4b37fa2cd9a229594abe55056d8c55b7c1662cdbb4fff15881cf6e0a6043929c9b3965f63715de745cbcfd7292547609a015d5129352c5c1d699262fb241c0006000000000002ed57011e0000"))]
     fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
+        let timestamp = Milliseconds::from_ms(timestamp);
         let mut ra = RedStoneAdapter::new(b"a", config::prod());
 
         let eth = FeedId::from("ETH");
@@ -205,7 +207,7 @@ mod tests {
 
     #[rstest::rstest]
     fn output() {
-        let timestamp = 1_770_985_144_000_u64;
+        let timestamp = Milliseconds::from_ms(1_770_985_144_000_u64);
         let input = hex!("45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9030a710019c56f0bec0000000200000015d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e25aa0bcfa3a41df8212eddd51db3496b95c7c3dc4caa9ac9705602af0515db1b31c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec000000020000001dcaf484941c0d206f1898185b953c6a92d7fd188b347505c0f5beb2030e06e3e1b2f7dfb45929ac7676136af93fee7f14a614b40fa4dc2d1e625dbece02eaca21c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec00000002000000199bd54930138268baad2869e9ceb99b6bc67cd6b8a4cc98e05f0b1cd9b7f07066008208399a728fac3d1dc3ca407cb8199a0209377bceb0c48f2cc3d756078051b4254430000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006179a92ab8c019c56f0bec000000020000001f08af53ed34046f7f64cc02ffb7973252954d7c395e440693c896bffdbc2de1e31cf5675bf66583d3e3438f5002ae9c10870d4dc45de05c560b239aa3a2d50a41b425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec0000000200000011b96dc2763a692e3245ce4f1b0c16ea245c240204e99ebd323b340e58bfb14fb5f0465ce11b8dd52ff839547cc949d20e4e8ba0be43dd6417cade2a8ebfd8c9e1c425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec00000002000000114a02710892325b13afc74bbd350dd9ec80342b2d6c0c94df7b7a60dbf67a1b91b182fa4555e0e0db91e6258b279f00b7eeb8f5de9930e352d5321a6b8b64a031c00063137373039383531343539383223302e392e30237374656c6c61722d636f6e6e6563746f72000025000002ed57011e0000");
 
         let mut ra = RedStoneAdapter::new(b"a", config::prod());
@@ -230,8 +232,8 @@ mod tests {
             eth_data,
             &FeedData {
                 price: U256::from(195_692_129_540_u128).into(),
-                package_timestamp: U64(1_770_985_144_000),
-                write_timestamp: U64(1_770_985_144_000),
+                package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
             },
         );
 
@@ -239,8 +241,8 @@ mod tests {
             btc_data,
             &FeedData {
                 price: U256::from(6_698_556_748_915_u128).into(),
-                package_timestamp: U64(1_770_985_144_000),
-                write_timestamp: U64(1_770_985_144_000),
+                package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
             },
         );
     }

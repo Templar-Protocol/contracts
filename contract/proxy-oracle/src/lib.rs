@@ -17,6 +17,7 @@ use templar_common::{
         },
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
+        time::Milliseconds,
         OracleRequest,
     },
     self_ext, UnwrapReject,
@@ -181,7 +182,7 @@ impl Contract {
         let callback = CallbackHandler::new(&oracle_order, max_age_ms.0);
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
 
-        let now = env::block_timestamp_ms();
+        let now = Milliseconds::now();
 
         let mut i = oracle_order.len() as u64;
         for price_id in original_price_ids {

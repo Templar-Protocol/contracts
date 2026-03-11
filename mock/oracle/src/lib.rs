@@ -10,6 +10,7 @@ use near_sdk::{
 use templar_common::oracle::{
     pyth::{Price, PriceIdentifier, Pyth},
     redstone::{FeedData, FeedId, GetPrices, RedStoneContractInterface, SerializableU256},
+    time::Milliseconds,
 };
 
 #[derive(PanicOnDefault)]
@@ -87,7 +88,7 @@ impl RedStoneContractInterface for Contract {
             .collect()
     }
 
-    fn read_timestamp(&self, feed_id: FeedId) -> Option<U64> {
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<Milliseconds> {
         Some(self.redstone_prices.get(&feed_id)?.package_timestamp)
     }
 

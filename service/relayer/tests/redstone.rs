@@ -5,7 +5,12 @@ use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::views::TxExecutionStatus;
 use near_sdk::NearToken;
 use near_workspaces::{network::Sandbox, Worker};
-use templar_common::oracle::redstone::{self, FeedId};
+use templar_common::oracle::{
+    proxy::Proxy,
+    pyth::PriceIdentifier,
+    redstone::{self, FeedId},
+    OracleRequest,
+};
 use templar_relayer::{
     app::args,
     cache::Cache,
@@ -17,6 +22,9 @@ use templar_relayer::{
 use test_utils::*;
 use tokio::sync::watch;
 
+const ETH_PRICE_ID: PriceIdentifier = PriceIdentifier([0xe7_u8; 32]);
+const BTC_PRICE_ID: PriceIdentifier = PriceIdentifier([0xb7_u8; 32]);
+
 #[rstest::rstest]
 #[tokio::test]
 async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
@@ -24,7 +32,7 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
         .with_max_level(tracing::Level::INFO)
         .try_init();
 
-    accounts!(worker, redstone_oracle);
+    accounts!(worker, redstone_oracle, proxy_oracle);
 
     let jsonrpc_client = JsonRpcClient::connect(worker.rpc_addr());
 
@@ -53,6 +61,33 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
     let redstone_oracle =
         RedStoneAdapterController::deploy(redstone_oracle, redstone::config::prod()).await;
 
+    let redstone_eth_id = FeedId::from("ETH");
+    let redstone_btc_id = FeedId::from("BTC");
+
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle).await;
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            ETH_PRICE_ID,
+            Some(Proxy::median_low([OracleRequest::redstone(
+                redstone_oracle.id().clone(),
+                redstone_eth_id.clone(),
+            )
+            .into()])),
+        )
+        .await;
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            BTC_PRICE_ID,
+            Some(Proxy::median_low([OracleRequest::redstone(
+                redstone_oracle.id().clone(),
+                redstone_btc_id.clone(),
+            )
+            .into()])),
+        )
+        .await;
+
     let redstone_args = args::RedStoneConfig {
         refresh: Duration::from_secs(25),
         update_gas: near_sdk::Gas::from_tgas(300),
@@ -63,18 +98,15 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
 
     let spec = RedStoneSpec::new(redstone_args, kill.clone());
 
-    let eth = FeedId::from("ETH");
-    let btc = FeedId::from("BTC");
-
     let price_data_before = redstone_oracle
-        .read_price_data(vec![eth.clone(), btc.clone()])
+        .read_price_data(vec![redstone_eth_id.clone(), redstone_btc_id.clone()])
         .await;
 
-    assert_eq!(price_data_before.get(&eth), None);
-    assert_eq!(price_data_before.get(&btc), None);
+    assert_eq!(price_data_before.get(&redstone_eth_id), None);
+    assert_eq!(price_data_before.get(&redstone_btc_id), None);
 
     let actions = spec
-        .update_actions(&[eth.clone(), btc.clone()])
+        .update_actions(&[redstone_eth_id.clone(), redstone_btc_id.clone()])
         .await
         .unwrap();
 
@@ -86,13 +118,36 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
         .unwrap();
 
     let price_data_after = redstone_oracle
-        .read_price_data(vec![eth.clone(), btc.clone()])
+        .read_price_data(vec![redstone_eth_id.clone(), redstone_btc_id.clone()])
         .await;
 
     println!("{price_data_after:#?}");
 
-    assert_ne!(price_data_after.get(&eth), None);
-    assert_ne!(price_data_after.get(&btc), None);
+    assert_ne!(price_data_after.get(&redstone_eth_id), None);
+    assert_ne!(price_data_after.get(&redstone_btc_id), None);
+
+    let r = proxy_oracle
+        .list_ema_prices_no_older_than_exec(
+            proxy_oracle.account(),
+            vec![ETH_PRICE_ID, BTC_PRICE_ID],
+            60u32,
+        )
+        .await;
+
+    print_execution(&r);
+
+    let proxy_prices = proxy_oracle
+        .list_ema_prices_no_older_than(
+            proxy_oracle.account(),
+            vec![ETH_PRICE_ID, BTC_PRICE_ID],
+            60u32,
+        )
+        .await;
+
+    println!("{proxy_prices:#?}");
+
+    assert!(proxy_prices.get(&ETH_PRICE_ID).is_some_and(|p| p.is_some()));
+    assert!(proxy_prices.get(&BTC_PRICE_ID).is_some_and(|p| p.is_some()));
 
     kill.send(()).unwrap();
 }

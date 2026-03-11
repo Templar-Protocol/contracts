@@ -1,6 +1,6 @@
-use near_sdk::{json_types::U64, near};
+use near_sdk::near;
 
-use super::{price_transformer::ProxyPriceTransformer, OracleRequest};
+use super::{price_transformer::ProxyPriceTransformer, time::Milliseconds, OracleRequest};
 
 pub mod aggregator;
 use aggregator::{Aggregator, Filter};
@@ -17,8 +17,8 @@ impl Proxy {
     pub fn median_low(entries: impl IntoIterator<Item = Source>) -> Self {
         Self {
             aggregator: Aggregator::median_low(Filter {
-                max_age_ms: Some(U64(60 * 1000)),
-                max_clock_drift_ms: Some(U64(10 * 1000)),
+                max_age: Some(Milliseconds::from_ms(60 * 1000)),
+                max_clock_drift: Some(Milliseconds::from_ms(10 * 1000)),
                 min_sources: Some(1),
             }),
             entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),

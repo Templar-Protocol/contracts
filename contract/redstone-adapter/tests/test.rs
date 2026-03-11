@@ -2,12 +2,14 @@ use std::collections::HashMap;
 
 use hex_literal::hex;
 use near_sdk::{
-    json_types::U64,
     test_utils::{self, VMContextBuilder},
     testing_env,
 };
 use primitive_types::U256;
-use templar_common::oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface};
+use templar_common::oracle::{
+    redstone::{config, FeedData, FeedId, RedStoneContractInterface},
+    time::Milliseconds,
+};
 
 use templar_redstone_adapter_contract::*;
 
@@ -67,16 +69,16 @@ fn output() {
                 "ETH".into(),
                 FeedData {
                     price: U256::from(195_692_129_540_u128).into(),
-                    package_timestamp: U64(1_770_985_144_000),
-                    write_timestamp: U64(1_770_985_144_000),
+                    package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                    write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
                 }
             ),
             (
                 "BTC".into(),
                 FeedData {
                     price: U256::from(6_698_556_748_915_u128).into(),
-                    package_timestamp: U64(1_770_985_144_000),
-                    write_timestamp: U64(1_770_985_144_000),
+                    package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                    write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
                 }
             ),
         ])
