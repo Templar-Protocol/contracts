@@ -3,7 +3,7 @@ use near_contract_standards::storage_management::StorageBalanceBounds;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 
-/// `0.00125 NEAR` expressed in yoctoNEAR — the standard NEP-141 storage deposit.
+/// `0.00125 NEAR` expressed in yoctoNEAR, a common storage deposit amount.
 pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
     NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
 
@@ -16,16 +16,18 @@ pub struct StorageDeposit {
     signer: super::SignerArgs,
     #[arg(long)]
     contract_id: AccountId,
+    /// Deposit a specific amount of NEAR tokens.
     #[arg(long)]
     deposit: Option<NearToken>,
+    /// Deposit only the minimum storage deposit required by the contract.
     #[arg(long)]
-    minimum: bool,
+    registration_only: bool,
 }
 
 impl StorageDeposit {
     #[tracing::instrument(skip_all, name = "storage_deposit", fields(account_id = %self.signer.account_id, contract_id = %self.contract_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        let deposit = if self.minimum {
+        let deposit = if self.registration_only {
             tracing::debug!("Fetching storage balance bounds");
             let bounds = ctx
                 .near
@@ -41,7 +43,7 @@ impl StorageDeposit {
 
         ctx.near
             .call(&self.signer.signer(), &self.contract_id, "storage_deposit")
-            .args_json(json!({ "account_id": &self.signer.account_id }))
+            .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
             .deposit(STORAGE_DEPOSIT_AMOUNT)
             .transact()
             .await

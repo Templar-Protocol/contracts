@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    market_deployer::run().await
+    templar_deployment_manager::run().await
 }

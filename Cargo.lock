@@ -5541,29 +5541,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "market-deployer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "borsh 1.5.7",
- "clap",
- "near-contract-standards",
- "near-crypto 0.31.1",
- "near-fetch",
- "near-primitives 0.31.1",
- "near-sdk",
- "serde",
- "serde_json",
- "templar-common",
- "templar-tools-common",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "matchers"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12530,6 +12507,29 @@ dependencies = [
  "schemars 0.8.22",
  "sha2 0.10.9",
  "thiserror 2.0.17",
+]
+
+[[package]]
+name = "templar-deployment-manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "borsh 1.5.7",
+ "clap",
+ "near-contract-standards",
+ "near-crypto 0.31.1",
+ "near-fetch",
+ "near-primitives 0.31.1",
+ "near-sdk",
+ "serde",
+ "serde_json",
+ "templar-common",
+ "templar-tools-common",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

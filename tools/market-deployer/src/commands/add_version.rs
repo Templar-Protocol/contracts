@@ -17,12 +17,16 @@ const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_
 #[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
 pub struct Package {
+    /// Market contract
     #[arg(long)]
     market: bool,
+    /// Universal account contract
     #[arg(long)]
     uac: bool,
+    /// Proxy oracle contract
     #[arg(long)]
     proxy_oracle: bool,
+    /// Specify a contract by package name
     #[arg(long)]
     package: Option<String>,
 }

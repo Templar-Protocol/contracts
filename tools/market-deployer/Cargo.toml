@@ -1,17 +1,9 @@
 [package]
-name = "market-deployer"
+name = "templar-deployment-manager"
 version = "0.1.0"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-
-[lib]
-name = "market_deployer"
-path = "src/lib.rs"
-
-[[bin]]
-name = "market-deployer"
-path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
