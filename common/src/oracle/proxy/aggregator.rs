@@ -3,6 +3,10 @@ use near_sdk::near;
 use crate::oracle::{pyth, time::Milliseconds};
 
 fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
+    if sorted_weighted_items.len() == 1 {
+        return 0;
+    }
+
     let mut lo = 0;
     let mut hi = sorted_weighted_items.len() - 1;
     let mut acc: u32 = 0;
@@ -66,9 +70,16 @@ impl Aggregator {
             })
             .collect::<Vec<_>>();
 
+        if values.is_empty() {
+            return None;
+        }
+
+        near_sdk::log!("Values: {values:?}");
+
         match &self.sample {
             AggregationMethod::MedianLow => {
                 values.sort_unstable();
+                near_sdk::log!("Values (sorted): {values:?}");
                 Some(values.swap_remove(weighted_median_low(&values)).0)
             }
         }
@@ -181,6 +192,50 @@ mod tests {
     use near_sdk::json_types::{I64, U64};
 
     use super::*;
+
+    fn sp(value: i64, exponent: i32) -> SpecificPrice {
+        SpecificPrice {
+            value,
+            exponent,
+            publish_time: 0,
+        }
+    }
+
+    // --- SpecificPrice::cmp ---
+
+    #[rstest::rstest]
+    #[test]
+    // Same exponent: direct comparison.
+    #[case(sp(100, -4), sp(200, -4), std::cmp::Ordering::Less)]
+    #[case(sp(200, -4), sp(200, -4), std::cmp::Ordering::Equal)]
+    #[case(sp(300, -4), sp(200, -4), std::cmp::Ordering::Greater)]
+    // Different exponents, equal real values: 1e-3 == 10e-4.
+    #[case(sp(1, -3), sp(10, -4), std::cmp::Ordering::Equal)]
+    #[case(sp(10, -4), sp(1, -3), std::cmp::Ordering::Equal)]
+    // Different exponents, unequal: 1e-3 vs 9e-4 and 11e-4.
+    #[case(sp(1, -3), sp(9, -4), std::cmp::Ordering::Greater)]
+    #[case(sp(1, -3), sp(11, -4), std::cmp::Ordering::Less)]
+    // Negative values.
+    #[case(sp(-100, -4), sp(-200, -4), std::cmp::Ordering::Greater)]
+    #[case(sp(-1, -3), sp(-10, -4), std::cmp::Ordering::Equal)]
+    #[case(sp(-1, -3), sp(-9, -4), std::cmp::Ordering::Less)]
+    // Zero.
+    #[case(sp(0, -4), sp(0, 4), std::cmp::Ordering::Equal)]
+    #[case(sp(0, -4), sp(1, -4), std::cmp::Ordering::Less)]
+    // Large expo_diff (>= 39): saturating_mul kicks in.
+    // Any positive value with expo_diff=39 saturates to i128::MAX, dominating any finite rhs.
+    #[case(sp(1, 39), sp(1, 0), std::cmp::Ordering::Greater)]
+    #[case(sp(0, 39), sp(1, 0), std::cmp::Ordering::Less)]
+    #[case(sp(1, 0), sp(1, 39), std::cmp::Ordering::Less)]
+    // expo_diff = 38 is the last precise case (10^38 < i128::MAX).
+    #[case(sp(1, 38), sp(1, 0), std::cmp::Ordering::Greater)]
+    fn specific_price_cmp(
+        #[case] a: SpecificPrice,
+        #[case] b: SpecificPrice,
+        #[case] expected: std::cmp::Ordering,
+    ) {
+        assert_eq!(a.cmp(&b), expected);
+    }
 
     fn price(value: i64, conf: u64, publish_time: i64) -> pyth::Price {
         pyth::Price {

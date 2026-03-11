@@ -278,7 +278,7 @@ pub fn gas() {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 #[rstest::rstest]
 #[tokio::test]
 pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
@@ -307,7 +307,7 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
                     price: I64($val),
                     conf: U64(0),
                     expo: 0,
-                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as i64,
+                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
                 })
             )
         };
@@ -320,7 +320,7 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
                     price: I64($val),
                     conf: U64(0),
                     expo: 0,
-                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as i64,
+                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
                 })
             )
         };
@@ -409,9 +409,24 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         Some(100_000),
     );
 
-    // Pyth appears first on the list
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
     set!(redstone.ETH = 1_800).await;
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than_exec(
+            &actor,
+            vec![
+                btc_proxy_id,
+                CRYPTO_BTC_USD,
+                btc_proxy_id,
+                CRYPTO_BTC_USD,
+                CRYPTO_BTC_USD,
+                just_pyth_btc_id,
+                just_redstone_eth_id,
+            ],
+            60_u32,
+        )
+        .await;
+    print_execution(&result);
     let result = proxy_oracle
         .list_ema_prices_no_older_than(
             &actor,

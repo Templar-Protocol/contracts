@@ -90,9 +90,11 @@ impl Contract {
         if price_ids.is_empty() {
             return PromiseOrValue::Value(OracleResponse::new());
         }
+        let price_ids = HashSet::<PriceIdentifier>::from_iter(price_ids);
 
         let max_age = Milliseconds::from_s(age);
 
+        let mut invoked = Vec::with_capacity(price_ids.len());
         let mut pyth_requests =
             HashMap::<AccountId, HashSet<PriceIdentifier>>::with_capacity(price_ids.len());
         let mut redstone_requests =
@@ -104,6 +106,8 @@ impl Contract {
                 // Skip unknown.
                 continue;
             };
+
+            invoked.push((*price_id, proxy.clone()));
 
             for entry in proxy.entries {
                 let request = match entry.source {
@@ -163,7 +167,7 @@ impl Contract {
                 self_ext!(Self::GAS_FOR_LIST_01_CALLBACK)
                     .list_ema_prices_no_older_than_01_consume_results(
                         oracle_order,
-                        price_ids,
+                        invoked,
                         max_age,
                     ),
             ),
@@ -175,26 +179,21 @@ impl Contract {
     pub fn list_ema_prices_no_older_than_01_consume_results(
         &self,
         oracle_order: Vec<OracleType>,
-        original_price_ids: Vec<PriceIdentifier>,
+        invoked: Vec<(PriceIdentifier, Proxy)>,
         max_age: Milliseconds,
     ) -> OracleResponse {
-        // TODO: Race condition if the owner changes the oracle definition during the callback.
         let callback = CallbackHandler::new(&oracle_order, max_age);
-        let mut result = OracleResponse::with_capacity(original_price_ids.len());
+        let mut result = OracleResponse::with_capacity(invoked.len());
 
         let now = Milliseconds::now();
 
         let mut i = oracle_order.len() as u64;
-        for price_id in original_price_ids {
-            let Some(proxy) = self.proxies.get(&price_id) else {
-                // Skip unknown.
-                continue;
-            };
-
+        for (price_id, proxy) in invoked {
+            near_sdk::log!("price_id: {:?}", price_id);
             let mut prices = vec![];
 
             for entry in proxy.entries {
-                near_sdk::log!("Entry source: {:?}", entry.source);
+                near_sdk::log!("entry: {:?}", entry);
                 let entry_result = match entry.source {
                     Source::Transformer(transformer) => {
                         let price = callback.get(transformer.request);
@@ -207,18 +206,13 @@ impl Contract {
                     }
                     Source::Request(p) => callback.get(p),
                 };
-                near_sdk::log!("Entry result: {:?}", entry_result);
+
+                near_sdk::log!("entry_result: {:?}", entry_result);
 
                 if let Some(entry_result) = entry_result {
                     prices.push((entry_result, entry.weight));
                 }
             }
-
-            near_sdk::log!(
-                "Prices to aggregate for price ID {:?}: {:?}",
-                price_id,
-                prices
-            );
 
             result.insert(
                 price_id,
