@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use near_sdk::{
-    borsh::BorshSerialize, collections::UnorderedMap, env, json_types::U64, near, AccountId,
-    BorshStorageKey, Gas, PanicOnDefault, PromiseError, PromiseOrValue,
+    borsh::BorshSerialize, collections::UnorderedMap, env, near, AccountId, BorshStorageKey, Gas,
+    PanicOnDefault, PromiseError, PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -91,7 +91,7 @@ impl Contract {
             return PromiseOrValue::Value(OracleResponse::new());
         }
 
-        let max_age_ms = age.saturating_mul(1000);
+        let max_age = Milliseconds::from_s(age);
 
         let mut pyth_requests =
             HashMap::<AccountId, HashSet<PriceIdentifier>>::with_capacity(price_ids.len());
@@ -164,7 +164,7 @@ impl Contract {
                     .list_ema_prices_no_older_than_01_consume_results(
                         oracle_order,
                         price_ids,
-                        U64(max_age_ms),
+                        max_age,
                     ),
             ),
         )
@@ -176,10 +176,10 @@ impl Contract {
         &self,
         oracle_order: Vec<OracleType>,
         original_price_ids: Vec<PriceIdentifier>,
-        max_age_ms: U64,
+        max_age: Milliseconds,
     ) -> OracleResponse {
         // TODO: Race condition if the owner changes the oracle definition during the callback.
-        let callback = CallbackHandler::new(&oracle_order, max_age_ms.0);
+        let callback = CallbackHandler::new(&oracle_order, max_age);
         let mut result = OracleResponse::with_capacity(original_price_ids.len());
 
         let now = Milliseconds::now();
@@ -194,6 +194,7 @@ impl Contract {
             let mut prices = vec![];
 
             for entry in proxy.entries {
+                near_sdk::log!("Entry source: {:?}", entry.source);
                 let entry_result = match entry.source {
                     Source::Transformer(transformer) => {
                         let price = callback.get(transformer.request);
@@ -206,11 +207,18 @@ impl Contract {
                     }
                     Source::Request(p) => callback.get(p),
                 };
+                near_sdk::log!("Entry result: {:?}", entry_result);
 
                 if let Some(entry_result) = entry_result {
                     prices.push((entry_result, entry.weight));
                 }
             }
+
+            near_sdk::log!(
+                "Prices to aggregate for price ID {:?}: {:?}",
+                price_id,
+                prices
+            );
 
             result.insert(
                 price_id,

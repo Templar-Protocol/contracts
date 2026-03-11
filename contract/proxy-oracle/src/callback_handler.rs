@@ -5,6 +5,7 @@ use templar_common::{
     oracle::{
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
+        time::Milliseconds,
         OracleRequest, PythRequest, RedStoneRequest,
     },
     UnwrapReject,
@@ -23,12 +24,12 @@ pub struct CallbackHandler<'a> {
     oracle_order: &'a [OracleType],
     pyth_results: HashMap<AccountId, OnceLock<Option<OracleResponse>>>,
     redstone_results: HashMap<AccountId, OnceLock<Option<HashMap<redstone::FeedId, FeedData>>>>,
-    now_ms: u64,
-    max_age_ms: u64,
+    now: Milliseconds,
+    max_age: Milliseconds,
 }
 
 impl<'a> CallbackHandler<'a> {
-    pub fn new(oracle_order: &'a [OracleType], max_age_ms: u64) -> Self {
+    pub fn new(oracle_order: &'a [OracleType], max_age: Milliseconds) -> Self {
         let (pyth_results, redstone_results) = oracle_order.iter().fold(
             (HashMap::new(), HashMap::new()),
             |(mut pyth_results, mut redstone_results), oracle| {
@@ -47,8 +48,8 @@ impl<'a> CallbackHandler<'a> {
             oracle_order,
             pyth_results,
             redstone_results,
-            now_ms: env::block_timestamp_ms(),
-            max_age_ms,
+            now: Milliseconds::now(),
+            max_age,
         }
     }
 
@@ -93,16 +94,19 @@ impl<'a> CallbackHandler<'a> {
         }?;
 
         // Filter for staleness
-        let publish_time = match u64::try_from(price.publish_time) {
-            Ok(p) => p,
-            Err(e) => {
-                near_sdk::log!("Failed to convert publish_time to u64: {e}");
+        let Some(publish_time) = Milliseconds::try_from_secs_i64(price.publish_time) else {
+            near_sdk::log!("Failed to convert publish_time");
+            return None;
+        };
+
+        if self.now >= publish_time {
+            let age = self.now - publish_time;
+            if age > self.max_age {
+                near_sdk::log!("Price is stale: age={}, max_age={}", age, self.max_age);
                 return None;
             }
-        };
-        let price_age_ms = self.now_ms.saturating_sub(publish_time);
-        if price_age_ms > self.max_age_ms {
-            return None;
+        } else {
+            // Future price/clock drift is handled by the Aggregator
         }
 
         Some(price)

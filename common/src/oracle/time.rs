@@ -19,7 +19,7 @@ impl Milliseconds {
 
     /// Creates a `Milliseconds` value from seconds.
     pub const fn from_s(value: u64) -> Self {
-        Self(U64(value * 1000))
+        Self(U64(value.saturating_mul(1000)))
     }
 
     /// Returns the value as seconds, truncated.
@@ -40,6 +40,12 @@ impl Milliseconds {
 
     pub fn now() -> Self {
         Self::from_ms(near_sdk::env::block_timestamp_ms())
+    }
+}
+
+impl std::fmt::Display for Milliseconds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}ms", self.as_ms())
     }
 }
 
