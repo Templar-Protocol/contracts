@@ -23,7 +23,7 @@ pub struct StorageDeposit {
 }
 
 impl StorageDeposit {
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "storage_deposit", fields(account_id = %self.signer.account_id, contract_id = %self.contract_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let deposit = if self.minimum {
             tracing::debug!("Fetching storage balance bounds");

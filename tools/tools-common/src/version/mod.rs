@@ -1,14 +1,17 @@
 mod registry_version;
-pub use registry_version::RegistryVersion;
+pub use registry_version::{Registry, RegistryVersion};
 mod market_version;
-pub use market_version::MarketVersion;
+pub use market_version::{Market, MarketVersion};
+
+type N = u64;
+type Repr = (N, N, N);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version<T> {
     _phantom: std::marker::PhantomData<T>,
-    pub major: u16,
-    pub minor: u16,
-    pub patch: u16,
+    pub major: N,
+    pub minor: N,
+    pub patch: N,
 }
 
 impl<T> Clone for Version<T> {
@@ -25,20 +28,20 @@ impl<T> std::fmt::Display for Version<T> {
     }
 }
 
-impl<T> From<Version<T>> for (u16, u16, u16) {
+impl<T> From<Version<T>> for Repr {
     fn from(value: Version<T>) -> Self {
         (value.major, value.minor, value.patch)
     }
 }
 
-impl<T> From<&Version<T>> for (u16, u16, u16) {
+impl<T> From<&Version<T>> for Repr {
     fn from(value: &Version<T>) -> Self {
         (value.major, value.minor, value.patch)
     }
 }
 
-impl<T> From<(u16, u16, u16)> for Version<T> {
-    fn from((major, minor, patch): (u16, u16, u16)) -> Self {
+impl<T> From<Repr> for Version<T> {
+    fn from((major, minor, patch): Repr) -> Self {
         Self {
             _phantom: std::marker::PhantomData,
             major,
@@ -48,15 +51,15 @@ impl<T> From<(u16, u16, u16)> for Version<T> {
     }
 }
 
-impl<T> std::cmp::PartialEq<(u16, u16, u16)> for Version<T> {
-    fn eq(&self, other: &(u16, u16, u16)) -> bool {
-        <(u16, u16, u16)>::from(self).eq(other)
+impl<T> std::cmp::PartialEq<Repr> for Version<T> {
+    fn eq(&self, other: &Repr) -> bool {
+        <Repr>::from(self).eq(other)
     }
 }
 
-impl<T> std::cmp::PartialOrd<(u16, u16, u16)> for Version<T> {
-    fn partial_cmp(&self, other: &(u16, u16, u16)) -> Option<std::cmp::Ordering> {
-        <(u16, u16, u16)>::from(self).partial_cmp(other)
+impl<T> std::cmp::PartialOrd<Repr> for Version<T> {
+    fn partial_cmp(&self, other: &Repr) -> Option<std::cmp::Ordering> {
+        <Repr>::from(self).partial_cmp(other)
     }
 }
 
@@ -76,7 +79,7 @@ impl<T> std::str::FromStr for Version<T> {
             index: 0,
             input: s.to_string(),
         })?;
-        let major: u16 = major.parse().map_err(|_| ParseError::Segment {
+        let major: N = major.parse().map_err(|_| ParseError::Segment {
             index: 0,
             input: s.to_string(),
         })?;
@@ -84,11 +87,11 @@ impl<T> std::str::FromStr for Version<T> {
             index: 1,
             input: s.to_string(),
         })?;
-        let minor: u16 = minor.parse().map_err(|_| ParseError::Segment {
+        let minor: N = minor.parse().map_err(|_| ParseError::Segment {
             index: 1,
             input: s.to_string(),
         })?;
-        let patch: u16 = patch.parse().map_err(|_| ParseError::Segment {
+        let patch: N = patch.parse().map_err(|_| ParseError::Segment {
             index: 2,
             input: s.to_string(),
         })?;

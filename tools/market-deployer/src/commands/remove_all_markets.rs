@@ -16,12 +16,12 @@ pub struct RemoveAllMarkets {
     /// Secret key authorised on all market accounts
     #[arg(long, env = "SECRET_KEY")]
     secret_key: SecretKey,
-    #[arg(long, env = "REGISTRY_ID")]
+    #[arg(long)]
     registry_id: AccountId,
 }
 
 impl RemoveAllMarkets {
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "remove_all_markets", fields(registry_id = %self.registry_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let deployments: Vec<AccountId> = ctx
             .near
@@ -32,18 +32,21 @@ impl RemoveAllMarkets {
             .json()
             .context("deserialise deployments")?;
 
-        tracing::info!(registry_id = %self.registry_id, count = deployments.len(), "Removing markets");
+        tracing::info!(count = deployments.len(), "Removing markets");
 
         for market_id in deployments {
             tracing::info!(%market_id, "Removing market");
-            RemoveMarket::new(
+            if let Err(error) = RemoveMarket::new(
                 market_id.clone(),
                 self.secret_key.clone(),
                 self.registry_id.clone(),
             )
             .run(ctx)
             .await
-            .with_context(|| format!("remove market {market_id}"))?;
+            {
+                // Don't short-circuit because maybe the market was already removed.
+                tracing::warn!(%market_id, %error, "Failed to remove market");
+            }
         }
 
         Ok(())

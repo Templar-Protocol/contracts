@@ -4,15 +4,10 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use commands::{
-    add_version::{AddMarketVersion, AddUacVersion, AddVersion},
-    deploy_from_registry::DeployFromRegistry,
-    deploy_registry::DeployRegistry,
-    recover_nep141::RecoverNep141,
-    remove_all_markets::RemoveAllMarkets,
-    remove_all_versions::RemoveAllVersions,
-    remove_market::RemoveMarket,
-    remove_registry::RemoveRegistry,
-    remove_version::RemoveVersion,
+    add_version::AddVersion, deploy_from_registry::DeployFromRegistry,
+    deploy_registry::DeployRegistry, recover_nep141::RecoverNep141,
+    remove_all_markets::RemoveAllMarkets, remove_all_versions::RemoveAllVersions,
+    remove_market::RemoveMarket, remove_registry::RemoveRegistry, remove_version::RemoveVersion,
     storage_deposit::StorageDeposit,
 };
 use templar_common::utils::Network;
@@ -34,10 +29,6 @@ struct Cli {
     #[arg(long, env = "RPC_URL")]
     rpc_url: Option<String>,
 
-    /// Specify a URL for transaction links. The transaction hash will be appended to this URL.
-    #[arg(long)]
-    transaction_url_prefix: Option<String>,
-
     /// Path to the workspace root (defaults to current directory)
     #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
     workspace_dir: PathBuf,
@@ -55,10 +46,6 @@ impl Cli {
         );
         CliContext {
             workspace_path: self.workspace_dir.clone(),
-            transaction_url_prefix: match self.network {
-                Network::Mainnet => "https://nearblocks.io/txns/".to_string(),
-                Network::Testnet => "https://testnet.nearblocks.io/txns/".to_string(),
-            },
             near,
         }
     }
@@ -66,7 +53,6 @@ impl Cli {
 
 pub struct CliContext {
     workspace_path: PathBuf,
-    transaction_url_prefix: String,
     near: near_fetch::Client,
 }
 
@@ -77,12 +63,6 @@ enum Commands {
 
     /// Add a contract version to the registry (wasm must already be built)
     AddVersion(AddVersion),
-
-    /// Build the market contract and register it as a new version
-    AddMarketVersion(AddMarketVersion),
-
-    /// Build the universal-account contract and register it as a new version
-    AddUacVersion(AddUacVersion),
 
     /// Deploy a market from the registry
     DeployFromRegistry(DeployFromRegistry),
@@ -126,8 +106,6 @@ pub async fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::DeployRegistry(a) => a.run(&ctx).await?,
         Commands::AddVersion(a) => a.run(&ctx).await?,
-        Commands::AddMarketVersion(a) => a.run(&ctx).await?,
-        Commands::AddUacVersion(a) => a.run(&ctx).await?,
         Commands::DeployFromRegistry(a) => a.run(&ctx).await?,
         Commands::RemoveMarket(a) => a.run(&ctx).await?,
         Commands::RemoveRegistry(a) => a.run(&ctx).await?,

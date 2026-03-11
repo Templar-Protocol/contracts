@@ -11,16 +11,19 @@ use super::remove_version::RemoveVersion;
 pub struct RemoveAllVersions {
     #[command(flatten)]
     signer: super::SignerArgs,
-    #[arg(long, env = "REGISTRY_ID")]
+    #[arg(long)]
     registry_id: AccountId,
 }
 
 impl RemoveAllVersions {
     pub(crate) fn new(signer: super::SignerArgs, registry_id: AccountId) -> Self {
-        Self { signer, registry_id }
+        Self {
+            signer,
+            registry_id,
+        }
     }
 
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "remove_all_versions", fields(registry_id = %self.registry_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let versions: Vec<String> = ctx
             .near
@@ -31,18 +34,20 @@ impl RemoveAllVersions {
             .json()
             .context("deserialise versions")?;
 
-        tracing::info!(registry_id = %self.registry_id, count = versions.len(), "Removing versions");
+        tracing::info!(count = versions.len(), "Removing versions");
 
         for version_key in versions {
-            tracing::info!(registry_id = %self.registry_id, %version_key, "Removing version");
-            RemoveVersion::new(
+            tracing::info!(%version_key, "Removing version");
+            if let Err(error) = RemoveVersion::new(
                 self.signer.clone(),
                 self.registry_id.clone(),
                 version_key.clone(),
             )
             .run(ctx)
             .await
-            .with_context(|| format!("remove version {version_key}"))?;
+            {
+                tracing::warn!(%version_key, %error, "Failed to remove version");
+            }
         }
 
         Ok(())

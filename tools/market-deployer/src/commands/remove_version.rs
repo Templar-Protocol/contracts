@@ -11,7 +11,7 @@ const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 pub struct RemoveVersion {
     #[command(flatten)]
     signer: super::SignerArgs,
-    #[arg(long, env = "REGISTRY_ID")]
+    #[arg(long)]
     registry_id: AccountId,
     #[arg(long)]
     version_key: String,
@@ -30,7 +30,7 @@ impl RemoveVersion {
         }
     }
 
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "remove_version", fields(registry_id = %self.registry_id, version_key = %self.version_key))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         ctx.near
             .call(&self.signer.signer(), &self.registry_id, "remove_version")

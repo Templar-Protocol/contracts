@@ -7,7 +7,7 @@ use templar_tools_common::{near::contract_version, version::RegistryVersion};
 pub struct DeployFromRegistry {
     #[command(flatten)]
     signer: super::SignerArgs,
-    #[arg(long, env = "REGISTRY_ID")]
+    #[arg(long)]
     registry_id: AccountId,
     /// Version key to deploy from the registry
     #[arg(long)]
@@ -23,23 +23,30 @@ pub struct DeployFromRegistry {
     /// Public keys to add as full access keys to the new account
     #[arg(long)]
     with_full_access_key: Vec<PublicKey>,
+    /// Deposit to send with the deployment
+    #[arg(long)]
+    deposit: Option<NearToken>,
 }
 
 impl DeployFromRegistry {
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "deploy_from_registry", fields(registry_id = %self.registry_id, version_key = %self.version_key, name = %self.name))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let registry_version: RegistryVersion =
             contract_version(&ctx.near, &self.registry_id).await?;
+        tracing::debug!(%registry_version);
 
-        let deposit = if registry_version.supports_global_contracts() {
-            NearToken::from_yoctonear(1)
-        } else {
-            NearToken::from_near(6)
-        };
+        let deposit = self.deposit.unwrap_or_else(|| {
+            if registry_version.supports_global_contracts() {
+                NearToken::from_yoctonear(1)
+            } else {
+                NearToken::from_near(6)
+            }
+        });
+        tracing::debug!(%deposit);
 
         let init_args = serde_json::to_vec(&self.init_args)?;
 
-        tracing::info!(%deposit, "Deploying from registry");
+        tracing::info!("Deploying from registry");
 
         let method = registry_version.deploy_method_name();
         let signer = self.signer.signer();

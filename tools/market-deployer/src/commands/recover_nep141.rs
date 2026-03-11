@@ -17,7 +17,7 @@ pub struct RecoverNep141 {
 }
 
 impl RecoverNep141 {
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "recover_nep141", fields(account_id = %self.signer.account_id, token_id = %self.token_id, beneficiary_id = %self.beneficiary_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         transfer_all_tokens(
             &ctx.near,

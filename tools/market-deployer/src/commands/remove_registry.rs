@@ -15,7 +15,7 @@ pub struct RemoveRegistry {
 }
 
 impl RemoveRegistry {
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "remove_registry", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let registry_id = self.signer.account_id.clone();
 
@@ -29,8 +29,13 @@ impl RemoveRegistry {
             .await?;
 
         tracing::info!(%registry_id, beneficiary_id = %self.beneficiary_id, "Deleting registry account");
-        near::delete_account(&ctx.near, &self.signer.signer(), &registry_id, &self.beneficiary_id)
-            .await?;
+        near::delete_account(
+            &ctx.near,
+            &self.signer.signer(),
+            &registry_id,
+            &self.beneficiary_id,
+        )
+        .await?;
 
         Ok(())
     }

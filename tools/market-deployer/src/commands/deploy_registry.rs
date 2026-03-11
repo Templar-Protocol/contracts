@@ -2,6 +2,7 @@ use anyhow::Context;
 use near_fetch::ops::Function;
 use near_primitives::views::FinalExecutionStatus;
 use near_sdk::serde_json::json;
+use templar_tools_common::version;
 
 use super::FixedContractWasm;
 
@@ -18,23 +19,24 @@ pub struct DeployRegistry {
 }
 
 impl DeployRegistry {
-    #[tracing::instrument(skip(context))]
-    pub async fn run(self, context: &crate::CliContext) -> anyhow::Result<()> {
-        let wasm = self.contract.wasm(context, REGISTRY_PACKAGE)?;
+    #[tracing::instrument(skip_all, name = "deploy_registry", fields(account_id = %self.signer.account_id))]
+    pub async fn run(self, ctx: &crate::CliContext) -> anyhow::Result<()> {
+        let loaded_contract = self
+            .contract
+            .load_contract::<version::Registry>(ctx, REGISTRY_PACKAGE)?;
+        tracing::info!(version = %loaded_contract.version, "Deploying registry");
 
         let result = if self.no_init {
-            context
-                .near
+            ctx.near
                 .batch(&self.signer.signer(), &self.signer.account_id)
-                .deploy(&wasm)
+                .deploy(&loaded_contract.wasm_bytes)
                 .transact()
                 .await
                 .context("deploy registry without init")?
         } else {
-            context
-                .near
+            ctx.near
                 .batch(&self.signer.signer(), &self.signer.account_id)
-                .deploy(&wasm)
+                .deploy(&loaded_contract.wasm_bytes)
                 .call(Function::new("new").args_json(json!({})).max_gas())
                 .transact()
                 .await

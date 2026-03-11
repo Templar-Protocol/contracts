@@ -2,144 +2,117 @@ use anyhow::Context;
 use clap::Args;
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
+use templar_tools_common::{near, version::RegistryVersion};
 
 use crate::CliContext;
 
-use super::{ContractWasm, FixedContractWasm, SignerArgs};
+use super::{FixedContractWasm, SignerArgs};
 
 const MARKET_PACKAGE: &str = "templar-market-contract";
 const UAC_PACKAGE: &str = "templar-universal-account-contract";
+const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-contract";
+
+const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);
+
+#[derive(Args, Debug)]
+#[group(required = true, multiple = false)]
+pub struct Package {
+    #[arg(long)]
+    market: bool,
+    #[arg(long)]
+    uac: bool,
+    #[arg(long)]
+    proxy_oracle: bool,
+    #[arg(long)]
+    package: Option<String>,
+}
+
+impl Package {
+    pub fn package(&self) -> &str {
+        if self.market {
+            MARKET_PACKAGE
+        } else if self.uac {
+            UAC_PACKAGE
+        } else if self.proxy_oracle {
+            PROXY_ORACLE_PACKAGE
+        } else {
+            self.package.as_deref().unwrap_or_default()
+        }
+    }
+}
 
 #[derive(Args, Debug)]
 pub struct AddVersion {
     #[command(flatten)]
     signer: SignerArgs,
     #[command(flatten)]
-    contract_wasm: ContractWasm,
+    contract_wasm: FixedContractWasm,
+    #[command(flatten)]
+    package: Package,
     /// Registry contract account ID
-    #[arg(long, env = "REGISTRY_ID")]
+    #[arg(long)]
     registry_id: AccountId,
     /// Version key to store in the registry
+    ///
+    /// If not provided, the version key will be derived from the package version.
     #[arg(long)]
-    version_key: String,
+    version_key: Option<String>,
     /// Deployment mode
     #[arg(long, default_value_t = DeployMode::Normal)]
     deploy_mode: DeployMode,
-    /// Deposit to attach in NEAR (defaults to 1 yoctoNEAR for `normal` mode)
+    /// Deposit to attach in NEAR
     #[arg(long)]
     deposit: Option<NearToken>,
 }
 
 impl AddVersion {
-    #[tracing::instrument(skip(ctx))]
+    #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package(), registry_id = %self.registry_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let wasm = self.contract_wasm.wasm(ctx)?;
-        send_add_version(
-            ctx,
-            &self.signer,
-            &self.registry_id,
-            &self.version_key,
-            self.deploy_mode,
-            self.deposit,
-            &wasm,
-        )
-        .await
+        let loaded_contract = self
+            .contract_wasm
+            .load_contract::<()>(ctx, self.package.package())?;
+        tracing::debug!(loaded_contract_version = %loaded_contract.version, "Loaded contract");
+        let registry_version: RegistryVersion =
+            near::contract_version(&ctx.near, &self.registry_id).await?;
+        tracing::debug!(%registry_version, "Loaded registry");
+        let deploy_mode = if registry_version.supports_global_contracts() {
+            self.deploy_mode
+        } else {
+            DeployMode::Normal
+        };
+        tracing::debug!(%deploy_mode);
+        let version_key = self
+            .version_key
+            .clone()
+            .unwrap_or_else(|| format!("{}@{}", self.package.package(), loaded_contract.version));
+        tracing::debug!(%version_key);
+        let borsh_args = registry_version.encode_add_version_args(
+            &version_key,
+            deploy_mode,
+            &loaded_contract.wasm_bytes,
+        )?;
+        let deposit = if deploy_mode == DeployMode::GlobalHash {
+            self.deposit.unwrap_or(
+                STORAGE_AMOUNT_PER_BYTE
+                    .saturating_mul(loaded_contract.wasm_bytes.len() as u128 * 10),
+            )
+        } else {
+            NearToken::from_yoctonear(1)
+        };
+        tracing::debug!(%deposit);
+        tracing::info!(%version_key, "Calling add_version on registry");
+        ctx.near
+            .call(&self.signer.signer(), &self.registry_id, "add_version")
+            .args(borsh_args)
+            .deposit(deposit)
+            .max_gas()
+            .transact()
+            .await
+            .context("add_version")?;
+        tracing::info!(%version_key, "Version registered");
+
+        Ok(())
     }
-}
-
-/// Build the market contract and register it as a new version.
-#[derive(Args, Debug)]
-pub struct AddMarketVersion {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[command(flatten)]
-    contract: FixedContractWasm,
-    #[arg(long, env = "REGISTRY_ID")]
-    registry_id: AccountId,
-    #[arg(long)]
-    version_key: String,
-    #[arg(long, default_value_t = DeployMode::Normal)]
-    deploy_mode: DeployMode,
-    #[arg(long)]
-    deposit: Option<NearToken>,
-}
-
-impl AddMarketVersion {
-    #[tracing::instrument(skip(ctx))]
-    pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let wasm = self.contract.wasm(ctx, MARKET_PACKAGE)?;
-        send_add_version(
-            ctx,
-            &self.signer,
-            &self.registry_id,
-            &self.version_key,
-            self.deploy_mode,
-            self.deposit,
-            &wasm,
-        )
-        .await
-    }
-}
-
-/// Build the universal-account contract and register it as a new version.
-#[derive(Args, Debug)]
-pub struct AddUacVersion {
-    #[command(flatten)]
-    signer: SignerArgs,
-    #[command(flatten)]
-    contract: FixedContractWasm,
-    #[arg(long, env = "REGISTRY_ID")]
-    registry_id: AccountId,
-    #[arg(long)]
-    version_key: String,
-    #[arg(long, default_value_t = DeployMode::GlobalHash)]
-    deploy_mode: DeployMode,
-    #[arg(long)]
-    deposit: Option<NearToken>,
-}
-
-impl AddUacVersion {
-    #[tracing::instrument(skip(ctx))]
-    pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let wasm = self.contract.wasm(ctx, UAC_PACKAGE)?;
-        send_add_version(
-            ctx,
-            &self.signer,
-            &self.registry_id,
-            &self.version_key,
-            self.deploy_mode,
-            self.deposit,
-            &wasm,
-        )
-        .await
-    }
-}
-
-async fn send_add_version(
-    ctx: &CliContext,
-    signer: &SignerArgs,
-    registry_id: &AccountId,
-    version_key: &str,
-    deploy_mode: DeployMode,
-    deposit: Option<NearToken>,
-    wasm: &[u8],
-) -> anyhow::Result<()> {
-    let borsh_args = encode_add_version_args(version_key, deploy_mode, wasm)?;
-    let deposit = deposit.unwrap_or(NearToken::from_yoctonear(1));
-
-    tracing::info!(wasm_bytes = wasm.len(), "Calling add_version on registry");
-
-    ctx.near
-        .call(&signer.signer(), registry_id, "add_version")
-        .args(borsh_args)
-        .deposit(deposit)
-        .max_gas()
-        .transact()
-        .await
-        .context("add_version")?;
-
-    tracing::info!("Version registered");
-    Ok(())
 }
 
 /// Borsh-encode the `add_version` arguments, matching the layout produced by

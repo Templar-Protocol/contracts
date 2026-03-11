@@ -2,6 +2,8 @@ use std::path::Path;
 
 use anyhow::Context;
 
+use crate::version::Version;
+
 fn get_metadata(workspace_dir: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
     cargo_metadata::MetadataCommand::new()
         .no_deps()
@@ -22,7 +24,7 @@ fn get_package_from_metadata<'a>(
     Ok(package)
 }
 
-fn get_contract(
+fn get_contract_wasm_bytes(
     metadata: &cargo_metadata::Metadata,
     package: &cargo_metadata::Package,
 ) -> anyhow::Result<Vec<u8>> {
@@ -37,17 +39,40 @@ fn get_contract(
     Ok(std::fs::read(path)?)
 }
 
-pub fn load_contract(workspace_dir: &Path, cargo_package: &str) -> anyhow::Result<Vec<u8>> {
+fn version<T>(package: &cargo_metadata::Package) -> Version<T> {
+    Version::from((
+        package.version.major,
+        package.version.minor,
+        package.version.patch,
+    ))
+}
+
+pub struct LoadedContract<T> {
+    pub version: Version<T>,
+    pub wasm_bytes: Vec<u8>,
+}
+
+pub fn load_contract<T>(
+    workspace_dir: &Path,
+    cargo_package: &str,
+) -> anyhow::Result<LoadedContract<T>> {
     let metadata = get_metadata(workspace_dir)?;
     let package = get_package_from_metadata(&metadata, cargo_package)?;
 
-    get_contract(&metadata, package)
+    let bytes = get_contract_wasm_bytes(&metadata, package)?;
+    Ok(LoadedContract {
+        wasm_bytes: bytes,
+        version: version(package),
+    })
 }
 
 /// Run `cargo near build reproducible-wasm` in `dir`.
 ///
 /// Used by CLI tools that need to build a contract before uploading it.
-pub fn build_contract(workspace_dir: &Path, cargo_package: &str) -> anyhow::Result<Vec<u8>> {
+pub fn build_contract<T>(
+    workspace_dir: &Path,
+    cargo_package: &str,
+) -> anyhow::Result<LoadedContract<T>> {
     let metadata = get_metadata(workspace_dir)?;
     let package = get_package_from_metadata(&metadata, cargo_package)?;
 
@@ -64,5 +89,9 @@ pub fn build_contract(workspace_dir: &Path, cargo_package: &str) -> anyhow::Resu
         workspace_dir.display()
     );
 
-    get_contract(&metadata, package)
+    let bytes = get_contract_wasm_bytes(&metadata, package)?;
+    Ok(LoadedContract {
+        wasm_bytes: bytes,
+        version: version(package),
+    })
 }

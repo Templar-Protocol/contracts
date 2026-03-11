@@ -1,7 +1,7 @@
 use clap::Args;
 use near_crypto::{InMemorySigner, SecretKey, Signer};
 use near_sdk::AccountId;
-use templar_tools_common::build::{build_contract, load_contract};
+use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
 
 pub mod add_version;
 pub mod deploy_from_registry;
@@ -21,7 +21,11 @@ pub struct FixedContractWasm {
 }
 
 impl FixedContractWasm {
-    pub fn wasm(&self, context: &crate::CliContext, package: &str) -> anyhow::Result<Vec<u8>> {
+    pub fn load_contract<T>(
+        &self,
+        context: &crate::CliContext,
+        package: &str,
+    ) -> anyhow::Result<LoadedContract<T>> {
         if self.no_build {
             load_contract(&context.workspace_path, package)
         } else {
@@ -39,8 +43,11 @@ pub struct ContractWasm {
 }
 
 impl ContractWasm {
-    pub fn wasm(&self, context: &crate::CliContext) -> anyhow::Result<Vec<u8>> {
-        self.fixed.wasm(context, &self.package)
+    pub fn load_contract<T>(
+        &self,
+        context: &crate::CliContext,
+    ) -> anyhow::Result<LoadedContract<T>> {
+        self.fixed.load_contract(context, &self.package)
     }
 }
 
