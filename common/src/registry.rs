@@ -3,11 +3,21 @@ use near_sdk::{
     near,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rpc", derive(clap::ValueEnum))]
 #[near(serializers = [json, borsh])]
 pub enum DeployMode {
     Normal,
     GlobalHash,
+}
+
+impl std::fmt::Display for DeployMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeployMode::Normal => write!(f, "Normal"),
+            DeployMode::GlobalHash => write!(f, "GlobalHash"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

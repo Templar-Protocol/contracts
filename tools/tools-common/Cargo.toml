@@ -1,0 +1,20 @@
+[package]
+name = "templar-tools-common"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+
+[dependencies]
+anyhow.workspace = true
+near-contract-standards.workspace = true
+near-crypto.workspace = true
+near-fetch.workspace = true
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

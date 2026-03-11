@@ -1,25 +1,46 @@
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MarketVersion {
+mod registry_version;
+pub use registry_version::RegistryVersion;
+mod market_version;
+pub use market_version::MarketVersion;
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Version<T> {
+    _phantom: std::marker::PhantomData<T>,
     pub major: u16,
     pub minor: u16,
     pub patch: u16,
 }
 
-impl std::fmt::Display for MarketVersion {
+impl<T> Clone for Version<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Version<T> {}
+
+impl<T> std::fmt::Display for Version<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 
-impl From<MarketVersion> for (u16, u16, u16) {
-    fn from(value: MarketVersion) -> Self {
+impl<T> From<Version<T>> for (u16, u16, u16) {
+    fn from(value: Version<T>) -> Self {
         (value.major, value.minor, value.patch)
     }
 }
 
-impl From<(u16, u16, u16)> for MarketVersion {
+impl<T> From<&Version<T>> for (u16, u16, u16) {
+    fn from(value: &Version<T>) -> Self {
+        (value.major, value.minor, value.patch)
+    }
+}
+
+impl<T> From<(u16, u16, u16)> for Version<T> {
     fn from((major, minor, patch): (u16, u16, u16)) -> Self {
         Self {
+            _phantom: std::marker::PhantomData,
             major,
             minor,
             patch,
@@ -27,25 +48,15 @@ impl From<(u16, u16, u16)> for MarketVersion {
     }
 }
 
-impl std::cmp::PartialEq<(u16, u16, u16)> for MarketVersion {
+impl<T> std::cmp::PartialEq<(u16, u16, u16)> for Version<T> {
     fn eq(&self, other: &(u16, u16, u16)) -> bool {
-        <(u16, u16, u16)>::from(*self).eq(other)
+        <(u16, u16, u16)>::from(self).eq(other)
     }
 }
 
-impl std::cmp::PartialOrd<(u16, u16, u16)> for MarketVersion {
+impl<T> std::cmp::PartialOrd<(u16, u16, u16)> for Version<T> {
     fn partial_cmp(&self, other: &(u16, u16, u16)) -> Option<std::cmp::Ordering> {
-        <(u16, u16, u16)>::from(*self).partial_cmp(other)
-    }
-}
-
-impl MarketVersion {
-    pub fn supports_partial_liquidation(self) -> bool {
-        self >= (1, 1, 0)
-    }
-
-    pub fn requires_static_yield_accumulation(self) -> bool {
-        self >= (1, 1, 0)
+        <(u16, u16, u16)>::from(self).partial_cmp(other)
     }
 }
 
@@ -57,7 +68,7 @@ pub enum ParseError {
     Segment { index: usize, input: String },
 }
 
-impl std::str::FromStr for MarketVersion {
+impl<T> std::str::FromStr for Version<T> {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -83,6 +94,7 @@ impl std::str::FromStr for MarketVersion {
         })?;
 
         Ok(Self {
+            _phantom: std::marker::PhantomData,
             major,
             minor,
             patch,
