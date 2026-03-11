@@ -33,19 +33,21 @@ relayer_allowed_source_ranges = [
   "0.0.0.0/0"
 ]
 
-# Required relayer env vars (example placeholders)
+# Required relayer env vars (non-secret only)
 relayer_env = {
   DATABASE_URL            = "postgres://user:pass@db-host:5432/relayer"
   RPC_URL                 = "https://rpc.mainnet.near.org"
   RELAY_ACCOUNT_ID        = "relayer.near"
-  RELAY_SECRET_KEY        = "ed25519:..."
   UA_ACCOUNT_ID           = "ua-relayer.near"
-  UA_SECRET_KEY           = "ed25519:..."
   UA_REGISTRY_ID          = "v1.tmplr.near"
   UA_VERSION_KEY          = "market-current"
   MONITOR_REGISTRY_ID     = "v1.tmplr.near"
   PYTH_ORACLE_ID          = "pyth-oracle.near"
   INTENTS_ID              = "intents.near"
+}
+relayer_secret_env = {
+  RELAY_SECRET_KEY = "relayer-secret-key"
+  UA_SECRET_KEY    = "ua-secret-key"
 }
 
 # Accumulator (lightweight)
@@ -53,10 +55,12 @@ accumulator_machine_type = "e2-micro"
 accumulator_env = {
   NETWORK                = "mainnet"
   SIGNER_ACCOUNT_ID      = "accumulator.near"
-  SIGNER_KEY             = "ed25519:..."
   REGISTRIES_ACCOUNT_IDS = "v1.tmplr.near"
   INTERVAL               = "43200"
   STATIC_INTERVAL        = "86400"
+}
+accumulator_secret_env = {
+  SIGNER_KEY = "accumulator-signer-key"
 }
 
 # Market monitor
@@ -64,6 +68,7 @@ market_monitor_machine_type = "e2-small"
 market_monitor_env = {
   NETWORK = "mainnet"
 }
+market_monitor_secret_env = {}
 
 # Funding bridge
 funding_bridge_port = 3000
@@ -73,5 +78,7 @@ funding_bridge_allowed_source_ranges = [
 funding_bridge_env = {
   NETWORK              = "mainnet"
   NEAR_TREASURY_ACCOUNT = "treasury.near"
-  NEAR_TREASURY_KEY     = "ed25519:..."
+}
+funding_bridge_secret_env = {
+  NEAR_TREASURY_KEY = "funding-bridge-treasury-key"
 }

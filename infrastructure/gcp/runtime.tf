@@ -26,9 +26,13 @@ locals {
     },
     var.relayer_env
   )
+  relayer_secret_env_effective = var.relayer_secret_env
 
   relayer_env_file = join("\n", [
     for key in sort(keys(local.relayer_env_effective)) : "${key}=${replace(replace(local.relayer_env_effective[key], "\\n", ""), "\\r", "")}"
+  ])
+  relayer_secret_env_file = join("\n", [
+    for key in sort(keys(local.relayer_secret_env_effective)) : "${key}=${replace(replace(local.relayer_secret_env_effective[key], "\\n", ""), "\\r", "")}"
   ])
 
   accumulator_env_effective = merge(
@@ -38,28 +42,47 @@ locals {
     },
     var.accumulator_env
   )
+  accumulator_secret_env_effective = var.accumulator_secret_env
   market_monitor_env_effective = merge(
     {
       RUST_LOG = "info,templar_market_monitor=info"
     },
     var.market_monitor_env
   )
+  market_monitor_secret_env_effective = var.market_monitor_secret_env
   funding_bridge_env_effective = merge(
     {
       PORT = tostring(var.funding_bridge_port)
     },
     var.funding_bridge_env
   )
+  funding_bridge_secret_env_effective = var.funding_bridge_secret_env
 
   accumulator_env_file = join("\n", [
     for key in sort(keys(local.accumulator_env_effective)) : "${key}=${replace(replace(local.accumulator_env_effective[key], "\\n", ""), "\\r", "")}"
   ])
+  accumulator_secret_env_file = join("\n", [
+    for key in sort(keys(local.accumulator_secret_env_effective)) : "${key}=${replace(replace(local.accumulator_secret_env_effective[key], "\\n", ""), "\\r", "")}"
+  ])
   market_monitor_env_file = join("\n", [
     for key in sort(keys(local.market_monitor_env_effective)) : "${key}=${replace(replace(local.market_monitor_env_effective[key], "\\n", ""), "\\r", "")}"
+  ])
+  market_monitor_secret_env_file = join("\n", [
+    for key in sort(keys(local.market_monitor_secret_env_effective)) : "${key}=${replace(replace(local.market_monitor_secret_env_effective[key], "\\n", ""), "\\r", "")}"
   ])
   funding_bridge_env_file = join("\n", [
     for key in sort(keys(local.funding_bridge_env_effective)) : "${key}=${replace(replace(local.funding_bridge_env_effective[key], "\\n", ""), "\\r", "")}"
   ])
+  funding_bridge_secret_env_file = join("\n", [
+    for key in sort(keys(local.funding_bridge_secret_env_effective)) : "${key}=${replace(replace(local.funding_bridge_secret_env_effective[key], "\\n", ""), "\\r", "")}"
+  ])
+
+  all_runtime_secret_ids = distinct(concat(
+    values(local.relayer_secret_env_effective),
+    values(local.accumulator_secret_env_effective),
+    values(local.market_monitor_secret_env_effective),
+    values(local.funding_bridge_secret_env_effective)
+  ))
 }
 
 resource "google_service_account" "runtime" {
@@ -76,6 +99,17 @@ resource "google_project_iam_member" "runtime_sa_roles" {
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.runtime[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "runtime_secret_accessor" {
+  for_each = var.enable_runtime ? toset(local.all_runtime_secret_ids) : toset([])
+
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime[0].email}"
+
+  depends_on = [google_project_service.required]
 }
 
 resource "google_compute_network" "runtime" {
@@ -205,11 +239,13 @@ resource "google_compute_instance_template" "relayer" {
   }
 
   metadata_startup_script = templatefile("${path.module}/templates/daemon-startup.sh.tftpl", {
-    registry_host  = "${local.artifact_registry_location}-docker.pkg.dev"
-    image          = local.relayer_image_effective
-    container_name = var.relayer_container_name
-    binary_path    = "/app/bin/templar-relayer"
-    env_file       = local.relayer_env_file
+    registry_host   = "${local.artifact_registry_location}-docker.pkg.dev"
+    image           = local.relayer_image_effective
+    container_name  = var.relayer_container_name
+    binary_path     = "/app/bin/templar-relayer"
+    project_id      = var.project_id
+    env_file        = local.relayer_env_file
+    secret_env_file = local.relayer_secret_env_file
   })
 
   scheduling {
@@ -227,7 +263,10 @@ resource "google_compute_instance_template" "relayer" {
     create_before_destroy = true
   }
 
-  depends_on = [google_project_iam_member.runtime_sa_roles]
+  depends_on = [
+    google_project_iam_member.runtime_sa_roles,
+    google_secret_manager_secret_iam_member.runtime_secret_accessor
+  ]
 }
 
 resource "google_compute_region_instance_group_manager" "relayer" {
@@ -310,11 +349,13 @@ resource "google_compute_instance" "accumulator" {
   }
 
   metadata_startup_script = templatefile("${path.module}/templates/daemon-startup.sh.tftpl", {
-    registry_host  = "${local.artifact_registry_location}-docker.pkg.dev"
-    image          = local.accumulator_image_effective
-    container_name = var.accumulator_container_name
-    binary_path    = "/app/bin/accumulator"
-    env_file       = local.accumulator_env_file
+    registry_host   = "${local.artifact_registry_location}-docker.pkg.dev"
+    image           = local.accumulator_image_effective
+    container_name  = var.accumulator_container_name
+    binary_path     = "/app/bin/accumulator"
+    project_id      = var.project_id
+    env_file        = local.accumulator_env_file
+    secret_env_file = local.accumulator_secret_env_file
   })
 
   service_account {
@@ -330,7 +371,10 @@ resource "google_compute_instance" "accumulator" {
 
   allow_stopping_for_update = true
 
-  depends_on = [google_project_iam_member.runtime_sa_roles]
+  depends_on = [
+    google_project_iam_member.runtime_sa_roles,
+    google_secret_manager_secret_iam_member.runtime_secret_accessor
+  ]
 }
 
 resource "google_compute_instance" "market_monitor" {
@@ -359,11 +403,13 @@ resource "google_compute_instance" "market_monitor" {
   }
 
   metadata_startup_script = templatefile("${path.module}/templates/daemon-startup.sh.tftpl", {
-    registry_host  = "${local.artifact_registry_location}-docker.pkg.dev"
-    image          = local.market_monitor_image_effective
-    container_name = var.market_monitor_container_name
-    binary_path    = "/app/bin/market-monitor"
-    env_file       = local.market_monitor_env_file
+    registry_host   = "${local.artifact_registry_location}-docker.pkg.dev"
+    image           = local.market_monitor_image_effective
+    container_name  = var.market_monitor_container_name
+    binary_path     = "/app/bin/market-monitor"
+    project_id      = var.project_id
+    env_file        = local.market_monitor_env_file
+    secret_env_file = local.market_monitor_secret_env_file
   })
 
   service_account {
@@ -379,7 +425,10 @@ resource "google_compute_instance" "market_monitor" {
 
   allow_stopping_for_update = true
 
-  depends_on = [google_project_iam_member.runtime_sa_roles]
+  depends_on = [
+    google_project_iam_member.runtime_sa_roles,
+    google_secret_manager_secret_iam_member.runtime_secret_accessor
+  ]
 }
 
 resource "google_compute_instance" "funding_bridge" {
@@ -408,11 +457,13 @@ resource "google_compute_instance" "funding_bridge" {
   }
 
   metadata_startup_script = templatefile("${path.module}/templates/daemon-startup.sh.tftpl", {
-    registry_host  = "${local.artifact_registry_location}-docker.pkg.dev"
-    image          = local.funding_bridge_image_effective
-    container_name = var.funding_bridge_container_name
-    binary_path    = "/app/bin/funding-bridge"
-    env_file       = local.funding_bridge_env_file
+    registry_host   = "${local.artifact_registry_location}-docker.pkg.dev"
+    image           = local.funding_bridge_image_effective
+    container_name  = var.funding_bridge_container_name
+    binary_path     = "/app/bin/funding-bridge"
+    project_id      = var.project_id
+    env_file        = local.funding_bridge_env_file
+    secret_env_file = local.funding_bridge_secret_env_file
   })
 
   service_account {
@@ -428,5 +479,8 @@ resource "google_compute_instance" "funding_bridge" {
 
   allow_stopping_for_update = true
 
-  depends_on = [google_project_iam_member.runtime_sa_roles]
+  depends_on = [
+    google_project_iam_member.runtime_sa_roles,
+    google_secret_manager_secret_iam_member.runtime_secret_accessor
+  ]
 }

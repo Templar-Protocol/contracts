@@ -198,7 +198,7 @@ variable "relayer_zones" {
 variable "relayer_allowed_source_ranges" {
   description = "Source CIDRs allowed to reach relayer TCP port."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = [""]
 }
 
 variable "relayer_autoscaling_enabled" {
@@ -241,9 +241,20 @@ variable "relayer_cpu_target" {
 }
 
 variable "relayer_env" {
-  description = "Environment variables injected into relayer container."
+  description = "Non-secret environment variables injected into relayer container."
   type        = map(string)
   default     = {}
+}
+
+variable "relayer_secret_env" {
+  description = "Secret Manager bindings for relayer environment variables (ENV_VAR => SECRET_ID)."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for secret_id in values(var.relayer_secret_env) : can(regex("^[A-Za-z0-9_-]+$", secret_id))])
+    error_message = "relayer_secret_env values must be Secret Manager secret IDs (letters, numbers, underscores, hyphens)."
+  }
 }
 
 variable "market_monitor_enabled" {
@@ -285,9 +296,20 @@ variable "market_monitor_zone" {
 }
 
 variable "market_monitor_env" {
-  description = "Environment variables injected into market-monitor container."
+  description = "Non-secret environment variables injected into market-monitor container."
   type        = map(string)
   default     = {}
+}
+
+variable "market_monitor_secret_env" {
+  description = "Secret Manager bindings for market-monitor environment variables (ENV_VAR => SECRET_ID)."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for secret_id in values(var.market_monitor_secret_env) : can(regex("^[A-Za-z0-9_-]+$", secret_id))])
+    error_message = "market_monitor_secret_env values must be Secret Manager secret IDs (letters, numbers, underscores, hyphens)."
+  }
 }
 
 variable "accumulator_enabled" {
@@ -329,9 +351,20 @@ variable "accumulator_zone" {
 }
 
 variable "accumulator_env" {
-  description = "Environment variables injected into accumulator container."
+  description = "Non-secret environment variables injected into accumulator container."
   type        = map(string)
   default     = {}
+}
+
+variable "accumulator_secret_env" {
+  description = "Secret Manager bindings for accumulator environment variables (ENV_VAR => SECRET_ID)."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for secret_id in values(var.accumulator_secret_env) : can(regex("^[A-Za-z0-9_-]+$", secret_id))])
+    error_message = "accumulator_secret_env values must be Secret Manager secret IDs (letters, numbers, underscores, hyphens)."
+  }
 }
 
 variable "funding_bridge_enabled" {
@@ -386,11 +419,22 @@ variable "funding_bridge_port" {
 variable "funding_bridge_allowed_source_ranges" {
   description = "Source CIDRs allowed to reach funding-bridge TCP port."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = [""]
 }
 
 variable "funding_bridge_env" {
-  description = "Environment variables injected into funding-bridge container."
+  description = "Non-secret environment variables injected into funding-bridge container."
   type        = map(string)
   default     = {}
+}
+
+variable "funding_bridge_secret_env" {
+  description = "Secret Manager bindings for funding-bridge environment variables (ENV_VAR => SECRET_ID)."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for secret_id in values(var.funding_bridge_secret_env) : can(regex("^[A-Za-z0-9_-]+$", secret_id))])
+    error_message = "funding_bridge_secret_env values must be Secret Manager secret IDs (letters, numbers, underscores, hyphens)."
+  }
 }

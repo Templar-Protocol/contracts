@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euxo pipefail
+set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -7,7 +7,8 @@ apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
-  docker.io
+  docker.io \
+  jq
 
 systemctl enable --now docker
 
@@ -17,9 +18,34 @@ cat > /opt/templar/${container_name}.env <<'ENVFILE'
 ${env_file}
 ENVFILE
 
+cat > /opt/templar/${container_name}.secret-env <<'SECRETENVFILE'
+${secret_env_file}
+SECRETENVFILE
+
 TOKEN="$(curl -fsS -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
 
-echo "$${TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${registry_host}"
+if [ -s "/opt/templar/${container_name}.secret-env" ]; then
+  while IFS='=' read -r env_key secret_id; do
+    if [ -z "$env_key" ] || [ -z "$secret_id" ]; then
+      continue
+    fi
+
+    secret_payload="$(curl -fsS \
+      -H "Authorization: Bearer $TOKEN" \
+      "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/$secret_id/versions/latest:access" \
+      | jq -r '.payload.data')"
+
+    if [ -z "$secret_payload" ] || [ "$secret_payload" = "null" ]; then
+      echo "Failed to retrieve secret payload for secret '$secret_id'"
+      exit 1
+    fi
+
+    secret_value="$(printf '%s' "$secret_payload" | tr '_-' '/+' | base64 -d | tr -d '\r\n')"
+    printf '%s=%s\n' "$env_key" "$secret_value" >> "/opt/templar/${container_name}.env"
+  done < "/opt/templar/${container_name}.secret-env"
+fi
+
+echo "$TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${registry_host}"
 docker pull "${image}"
 
 docker rm -f "${container_name}" || true

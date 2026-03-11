@@ -45,7 +45,7 @@ tofu apply
 
 State backend is fixed in `backend.tf`:
 
-- bucket: `templar-contract-mvp-tfstate`
+- bucket: `templar-tfstate`
 - prefix: `templar/gcp`
 
 Use workspaces to separate environments (`dev`, `main`):
@@ -91,10 +91,10 @@ All runtime services run the pushed Artifact Registry image and execute service-
 
 Set service env maps in `terraform.tfvars`:
 
-- `relayer_env` must include the required relayer configuration (database, signer keys, monitored registries, etc.)
-- `market_monitor_env` should contain monitor-specific runtime configuration
-- `funding_bridge_env` must include bridge treasury/runtime configuration
-- `accumulator_env` must include signer and registry configuration
+- `relayer_env`, `market_monitor_env`, `funding_bridge_env`, `accumulator_env`: non-secret environment variables only
+- `relayer_secret_env`, `market_monitor_secret_env`, `funding_bridge_secret_env`, `accumulator_secret_env`: secret bindings in the form `ENV_VAR => SECRET_ID`
+
+Secrets are fetched from Secret Manager at instance boot and written to the local runtime env file only on the VM.
 
 ## GitHub repository configuration
 
@@ -141,5 +141,5 @@ Runtime outputs:
 
 - `relayer_allowed_source_ranges` defaults to `0.0.0.0/0`; tighten this for production.
 - `funding_bridge_allowed_source_ranges` defaults to `0.0.0.0/0`; tighten this for production.
-- Runtime env maps are stored in Terraform state; move secrets to Secret Manager integration in a follow-up.
+- Do not put secret values in `*_env` maps; only use `*_secret_env` mappings to Secret Manager secret IDs.
 - This stack does not yet provision a public load balancer for relayer; add one in a follow-up if you need a single stable endpoint.

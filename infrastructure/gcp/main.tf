@@ -10,6 +10,7 @@ locals {
     "compute.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "secretmanager.googleapis.com",
     "sts.googleapis.com",
     "serviceusage.googleapis.com"
   ], var.additional_project_services))
