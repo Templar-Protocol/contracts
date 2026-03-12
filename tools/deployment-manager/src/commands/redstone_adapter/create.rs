@@ -23,9 +23,10 @@ impl ConfigSource {
             Ok(templar_common::oracle::redstone::config::prod())
         } else if self.test {
             Ok(templar_common::oracle::redstone::config::test())
+        } else if let Some(configuration) = self.configuration.clone() {
+            serde_json::from_value(configuration).context("invalid RedStone configuration")
         } else {
-            serde_json::from_value(self.configuration.clone().unwrap())
-                .context("invalid RedStone configuration")
+            unreachable!()
         }
     }
 }
@@ -46,8 +47,8 @@ impl CreateRedStoneAdapter {
     #[tracing::instrument(skip_all, name = "redstone_adapter_create")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let config = self.config_source.resolve()?;
-        let init_args =
-            serde_json::to_vec(&serde_json::json!({ "config": config })).context("serialise init args")?;
+        let init_args = serde_json::to_vec(&serde_json::json!({ "config": config }))
+            .context("serialise init args")?;
 
         tracing::info!("Creating RedStone adapter from registry");
         self.deploy
