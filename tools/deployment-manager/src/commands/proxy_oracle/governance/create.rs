@@ -18,7 +18,7 @@ pub struct CreateProposal {
     signer: SignerArgs,
     #[arg(long)]
     oracle_id: AccountId,
-    /// Proposal ID (auto-fetched from gov_next_id if omitted)
+    /// Proposal ID (auto-fetched if omitted)
     #[arg(long)]
     id: Option<u32>,
     #[command(subcommand)]

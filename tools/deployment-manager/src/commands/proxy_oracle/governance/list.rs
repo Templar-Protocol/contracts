@@ -15,11 +15,7 @@ pub struct ListProposals {
 impl ListProposals {
     #[tracing::instrument(skip_all, name = "governance_list", fields(oracle_id = %self.oracle_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let ttl_ms: U64 = ctx
-            .near
-            .view(&self.oracle_id, "gov_ttl_ms")
-            .await?
-            .json()?;
+        let ttl_ms: U64 = ctx.near.view(&self.oracle_id, "gov_ttl_ms").await?.json()?;
 
         let ids: Vec<u32> = ctx
             .near
@@ -33,12 +29,10 @@ impl ListProposals {
             return Ok(());
         }
 
-        println!(
-            "{}",
-            style(format!("TTL: {}ms", ttl_ms.0)).dim(),
-        );
+        println!("{}", style(format!("TTL: {}ms", ttl_ms.0)).dim());
         println!();
 
+        #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

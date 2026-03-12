@@ -32,6 +32,7 @@ impl GetProposal {
             return Ok(());
         };
 
+        #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
