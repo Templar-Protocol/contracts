@@ -19,7 +19,13 @@ async fn main() {
         .init();
 
     // Parse arguments and build configuration
-    let args = Args::parse_args();
+    let args = match Args::parse_args() {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+    };
     args.log_startup();
 
     let config = args.build_config();

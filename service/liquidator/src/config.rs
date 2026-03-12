@@ -2,7 +2,7 @@
 //!
 //! This module handles CLI argument parsing and service configuration creation.
 
-use std::{str::FromStr, sync::Arc};
+use std::{env, fs, str::FromStr, sync::Arc};
 
 use clap::Parser;
 use near_sdk::AccountId;
@@ -79,8 +79,8 @@ pub struct Args {
     pub registries: Vec<AccountId>,
 
     /// Signer key to use for signing transactions
-    #[arg(short = 'k', long, env = "SIGNER_KEY")]
-    pub signer_key: near_crypto::SecretKey,
+    #[arg(short = 'k', long)]
+    pub signer_key: Option<near_crypto::SecretKey>,
 
     /// Signer account ID
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
@@ -175,8 +175,15 @@ pub struct Args {
 
 impl Args {
     /// Parse command-line arguments
-    pub fn parse_args() -> Self {
-        Self::parse()
+    pub fn parse_args() -> Result<Self, String> {
+        let mut args = Self::parse();
+        args.signer_key =
+            resolve_secret_key(args.signer_key.take(), "SIGNER_KEY", "SIGNER_KEY_FILE")?;
+        if args.signer_key.is_none() {
+            return Err("SIGNER_KEY or SIGNER_KEY_FILE is required".to_string());
+        }
+
+        Ok(args)
     }
 
     /// Create a liquidation strategy from the arguments
@@ -296,7 +303,10 @@ impl Args {
 
         ServiceConfig {
             registries: self.registries.clone(),
-            signer_key: self.signer_key.clone(),
+            signer_key: self
+                .signer_key
+                .clone()
+                .expect("SIGNER_KEY or SIGNER_KEY_FILE must be set before build_config"),
             signer_account: self.signer_account.clone(),
             network: self.network,
             rpc_url: self.rpc_url.clone(),
@@ -332,8 +342,57 @@ impl Args {
     }
 }
 
+fn resolve_secret_key(
+    cli_value: Option<near_crypto::SecretKey>,
+    env_var: &str,
+    file_env_var: &str,
+) -> Result<Option<near_crypto::SecretKey>, String> {
+    if cli_value.is_some() {
+        return Ok(cli_value);
+    }
+
+    if let Some(path) = read_env_value(file_env_var) {
+        let key = fs::read_to_string(&path)
+            .map_err(|err| format!("Failed to read {} from {}: {}", env_var, path, err))?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!(
+                "{} points to an empty file: {}",
+                file_env_var, path
+            ));
+        }
+
+        return key
+            .parse::<near_crypto::SecretKey>()
+            .map(Some)
+            .map_err(|err| format!("Failed to parse {} from {}: {}", env_var, path, err));
+    }
+
+    read_env_value(env_var)
+        .map(|key| {
+            key.parse::<near_crypto::SecretKey>()
+                .map_err(|err| format!("Failed to parse {}: {}", env_var, err))
+        })
+        .transpose()
+}
+
+fn read_env_value(name: &str) -> Option<String> {
+    let value = env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use templar_common::utils::Network;
 
     use super::*;
@@ -341,9 +400,11 @@ mod tests {
     fn create_test_args() -> Args {
         Args {
             registries: vec!["registry.testnet".parse().unwrap()],
-            signer_key: "ed25519:5JQFYvABVhxnvvvULXqZUSP8QtEiRBMUi5dHfkqZmJ2FLVJqMn3mEhZpF8p8qvC6SvdZLd5VDSvkeVJdyBDZfGi1"
-                .parse()
-                .unwrap(),
+            signer_key: Some(
+                "ed25519:5JQFYvABVhxnvvvULXqZUSP8QtEiRBMUi5dHfkqZmJ2FLVJqMn3mEhZpF8p8qvC6SvdZLd5VDSvkeVJdyBDZfGi1"
+                    .parse()
+                    .unwrap(),
+            ),
             signer_account: "liquidator.testnet".parse().unwrap(),
             network: Network::Testnet,
             rpc_url: None,
@@ -437,6 +498,40 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_signer_key_from_file_env() {
+        let key = near_crypto::SecretKey::from_random(near_crypto::KeyType::ED25519);
+        let file_path = unique_temp_file_path("liquidator-signer-key");
+        let original_key = std::env::var("SIGNER_KEY").ok();
+        let original_key_file = std::env::var("SIGNER_KEY_FILE").ok();
+
+        fs::write(&file_path, key.to_string()).unwrap();
+        std::env::remove_var("SIGNER_KEY");
+        std::env::set_var("SIGNER_KEY_FILE", &file_path);
+
+        let resolved = resolve_secret_key(None, "SIGNER_KEY", "SIGNER_KEY_FILE").unwrap();
+        assert_eq!(resolved, Some(key.clone()));
+
+        restore_env("SIGNER_KEY", original_key);
+        restore_env("SIGNER_KEY_FILE", original_key_file);
+        fs::remove_file(file_path).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_signer_key_ignores_blank_env() {
+        let original_key = std::env::var("SIGNER_KEY").ok();
+        let original_key_file = std::env::var("SIGNER_KEY_FILE").ok();
+
+        std::env::set_var("SIGNER_KEY", "");
+        std::env::set_var("SIGNER_KEY_FILE", "   ");
+
+        let resolved = resolve_secret_key(None, "SIGNER_KEY", "SIGNER_KEY_FILE").unwrap();
+        assert!(resolved.is_none());
+
+        restore_env("SIGNER_KEY", original_key);
+        restore_env("SIGNER_KEY_FILE", original_key_file);
+    }
+
+    #[test]
     fn test_network_display() {
         assert_eq!(Network::Mainnet.to_string(), "mainnet");
         assert_eq!(Network::Testnet.to_string(), "testnet");
@@ -476,5 +571,21 @@ mod tests {
         assert!(validate_percentage("101").is_err());
         assert!(validate_percentage("abc").is_err());
         assert!(validate_percentage("-5").is_err());
+    }
+
+    fn unique_temp_file_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{nanos}.txt"))
+    }
+
+    fn restore_env(name: &str, value: Option<String>) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
     }
 }

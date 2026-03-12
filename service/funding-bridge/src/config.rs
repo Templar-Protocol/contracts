@@ -2,6 +2,8 @@
 //!
 //! Supports CLI arguments and environment variables via clap.
 
+use std::{env, fs};
+
 use clap::Parser;
 use near_crypto::SecretKey;
 use near_primitives::types::AccountId;
@@ -43,7 +45,7 @@ pub struct Args {
     pub near_treasury_account: Option<AccountId>,
 
     /// NEAR treasury signer key
-    #[arg(long, env = "NEAR_TREASURY_KEY")]
+    #[arg(long)]
     pub near_treasury_key: Option<SecretKey>,
 
     /// NEAR RPC URL (optional, uses network default if not specified)
@@ -116,6 +118,17 @@ pub struct Args {
 }
 
 impl Args {
+    /// Parse command-line arguments and resolve secret-backed key inputs.
+    pub fn parse_args() -> FundingResult<Self> {
+        let mut args = Self::parse();
+        args.near_treasury_key = resolve_secret_key(
+            args.near_treasury_key.take(),
+            "NEAR_TREASURY_KEY",
+            "NEAR_TREASURY_KEY_FILE",
+        )?;
+        Ok(args)
+    }
+
     /// Validate configuration
     pub fn validate(&self) -> FundingResult<()> {
         // Validate NEAR treasury config
@@ -126,7 +139,7 @@ impl Args {
         }
         if self.near_treasury_key.is_none() {
             return Err(FundingError::ConfigError(
-                "NEAR_TREASURY_KEY is required".to_string(),
+                "NEAR_TREASURY_KEY or NEAR_TREASURY_KEY_FILE is required".to_string(),
             ));
         }
 
@@ -161,10 +174,62 @@ impl Args {
     }
 }
 
+fn resolve_secret_key(
+    cli_value: Option<SecretKey>,
+    env_var: &str,
+    file_env_var: &str,
+) -> FundingResult<Option<SecretKey>> {
+    if cli_value.is_some() {
+        return Ok(cli_value);
+    }
+
+    if let Some(path) = read_env_value(file_env_var) {
+        let key = fs::read_to_string(&path).map_err(|err| {
+            FundingError::ConfigError(format!("Failed to read {} from {}: {}", env_var, path, err))
+        })?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(FundingError::ConfigError(format!(
+                "{} points to an empty file: {}",
+                file_env_var, path
+            )));
+        }
+
+        return key.parse::<SecretKey>().map(Some).map_err(|err| {
+            FundingError::ConfigError(format!(
+                "Failed to parse {} from {}: {}",
+                env_var, path, err
+            ))
+        });
+    }
+
+    read_env_value(env_var)
+        .map(|key| {
+            key.parse::<SecretKey>().map_err(|err| {
+                FundingError::ConfigError(format!("Failed to parse {}: {}", env_var, err))
+            })
+        })
+        .transpose()
+}
+
+fn read_env_value(name: &str) -> Option<String> {
+    let value = env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn create_valid_config() -> Args {
         Args {
@@ -228,6 +293,42 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_secret_key_from_file_env() {
+        let key = SecretKey::from_random(near_crypto::KeyType::ED25519);
+        let file_path = unique_temp_file_path("funding-bridge-near-key");
+        let original_key = std::env::var("NEAR_TREASURY_KEY").ok();
+        let original_key_file = std::env::var("NEAR_TREASURY_KEY_FILE").ok();
+
+        fs::write(&file_path, key.to_string()).unwrap();
+        std::env::remove_var("NEAR_TREASURY_KEY");
+        std::env::set_var("NEAR_TREASURY_KEY_FILE", &file_path);
+
+        let resolved =
+            resolve_secret_key(None, "NEAR_TREASURY_KEY", "NEAR_TREASURY_KEY_FILE").unwrap();
+        assert_eq!(resolved, Some(key.clone()));
+
+        restore_env("NEAR_TREASURY_KEY", original_key);
+        restore_env("NEAR_TREASURY_KEY_FILE", original_key_file);
+        fs::remove_file(file_path).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_secret_key_ignores_blank_env() {
+        let original_key = std::env::var("NEAR_TREASURY_KEY").ok();
+        let original_key_file = std::env::var("NEAR_TREASURY_KEY_FILE").ok();
+
+        std::env::set_var("NEAR_TREASURY_KEY", "");
+        std::env::set_var("NEAR_TREASURY_KEY_FILE", "   ");
+
+        let resolved =
+            resolve_secret_key(None, "NEAR_TREASURY_KEY", "NEAR_TREASURY_KEY_FILE").unwrap();
+        assert!(resolved.is_none());
+
+        restore_env("NEAR_TREASURY_KEY", original_key);
+        restore_env("NEAR_TREASURY_KEY_FILE", original_key_file);
+    }
+
+    #[test]
     fn test_get_near_treasury_rpc_url_mainnet() {
         let mut config = create_valid_config();
         config.network = Network::Mainnet;
@@ -270,5 +371,21 @@ mod tests {
         config.dry_run = true;
         assert!(config.dry_run);
         assert!(config.validate().is_ok());
+    }
+
+    fn unique_temp_file_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{nanos}.txt"))
+    }
+
+    fn restore_env(name: &str, value: Option<String>) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
     }
 }

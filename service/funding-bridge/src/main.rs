@@ -4,7 +4,6 @@
 
 use std::net::SocketAddr;
 
-use clap::Parser;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
@@ -24,7 +23,7 @@ async fn main() -> FundingResult<()> {
         .init();
 
     // Parse CLI arguments
-    let args = Args::parse();
+    let args = Args::parse_args()?;
 
     info!(
         version = VERSION,
