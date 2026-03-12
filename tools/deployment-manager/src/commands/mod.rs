@@ -4,6 +4,7 @@ use near_sdk::AccountId;
 use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
 
 pub mod market;
+pub mod proxy_oracle;
 pub mod recover_nep141;
 pub mod registry;
 pub mod storage_deposit;

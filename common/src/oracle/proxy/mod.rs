@@ -13,6 +13,16 @@ pub struct Proxy {
     pub entries: Vec<Entry>,
 }
 
+#[test]
+fn output() {
+    let p = Proxy::median_low([OracleRequest::pyth(
+        "pyth-oracle.testnet".parse().unwrap(),
+        super::pyth::PriceIdentifier([0x77; 32]),
+    )
+    .into()]);
+    println!("{}", near_sdk::serde_json::to_string(&p).unwrap());
+}
+
 impl Proxy {
     pub fn median_low(entries: impl IntoIterator<Item = Source>) -> Self {
         Self {

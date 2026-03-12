@@ -12518,6 +12518,7 @@ dependencies = [
  "borsh 1.5.7",
  "clap",
  "console",
+ "hex",
  "near-contract-standards",
  "near-crypto 0.31.1",
  "near-fetch",
