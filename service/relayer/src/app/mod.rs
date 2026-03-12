@@ -54,7 +54,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Self {
+    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Result<Self, templar_redstone_bridge::BridgeError> {
         let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             args.relay.account_id.clone(),
@@ -92,7 +92,7 @@ impl App {
             relay_near.clone(),
             cache.clone(),
             kill.clone(),
-        );
+        )?;
 
         tokio::spawn(broom::start(
             database.clone(),
@@ -102,7 +102,7 @@ impl App {
             kill,
         ));
 
-        Self {
+        Ok(Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             relay_near,
@@ -111,7 +111,7 @@ impl App {
             redstone,
             cache: Arc::new(cache),
             database,
-        }
+        })
     }
 
     #[tracing::instrument(skip(self), fields(gas = %gas))]

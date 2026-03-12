@@ -126,6 +126,7 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
         .await;
 
     let kill = watch::Sender::default();
+    #[allow(clippy::expect_used)]
     let mut app = App::new(
         Configuration::parse_from([
             "relayer",
@@ -155,7 +156,8 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             "intents.near",
         ]),
         kill,
-    );
+    )
+    .expect("Failed to initialize app");
     app.database.migrate().await.unwrap();
     app.load_markets().await;
 

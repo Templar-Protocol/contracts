@@ -21,16 +21,13 @@ pub struct UpdatePrices {
     /// Path to Node.js binary
     #[arg(long, env = "REDSTONE_NODE_PATH", default_value = "node")]
     node_path: PathBuf,
-    /// Path to the compiled RedStone bridge JS entry point
-    #[arg(long, env = "REDSTONE_BRIDGE_PATH")]
-    bridge_path: PathBuf,
 }
 
 impl UpdatePrices {
     #[tracing::instrument(skip_all, name = "redstone_adapter_update_prices", fields(adapter_id = %self.adapter_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let (kill_tx, _kill_rx) = watch::channel(());
-        let bridge = Bridge::new(&self.node_path, &self.bridge_path, kill_tx.clone());
+        let bridge = Bridge::new(&self.node_path, kill_tx.clone())?;
 
         tracing::info!(feeds = ?self.feed_id, "Fetching prices from RedStone bridge");
         let payload_bytes = bridge.fetch(self.feed_id.clone()).await?;

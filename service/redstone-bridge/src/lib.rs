@@ -231,38 +231,58 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
     send
 }
 
+/// The bundled RedStone bridge JS source, embedded at compile time.
+pub const BRIDGE_BUNDLE: &str = include_str!(concat!(env!("OUT_DIR"), "/bundle.js"));
+
 /// Manages a Node.js child process and Unix socket IPC for communicating
 /// with the RedStone bridge.
 #[derive(Debug, Clone)]
 pub struct Bridge {
     socket_path: PathBuf,
+    /// Temp file holding the embedded JS bundle, cleaned up on drop.
+    bundle_path: Arc<PathBuf>,
     #[allow(unused, reason = "Used for Drop implementation")]
     bridge_process: Arc<JoinHandle<()>>,
     bridge_send: mpsc::Sender<Request>,
 }
 
 impl Bridge {
-    /// Create a new bridge instance.
+    /// Create a new bridge instance using the embedded JS bundle.
     ///
-    /// - `node_path`: path to the Node.js binary
-    /// - `bridge_path`: path to the compiled JS entry point
-    /// - `kill`: shutdown signal
-    pub fn new(node_path: &Path, bridge_path: &Path, kill: watch::Sender<()>) -> Self {
+    /// Writes the compiled bundle to a temporary file and spawns a Node.js
+    /// process. The temp file is cleaned up when the `Bridge` is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the temp file cannot be written.
+    pub fn new(node_path: &Path, kill: watch::Sender<()>) -> Result<Self, BridgeError> {
+        let bundle_path =
+            std::env::temp_dir().join(format!("templar_redstone_bundle_{}.js", std::process::id()));
+        std::fs::write(&bundle_path, BRIDGE_BUNDLE).map_err(|e| {
+            BridgeError::Bundle(format!(
+                "Failed to write bundle to {}: {e}",
+                bundle_path.display()
+            ))
+        })?;
+
+        let bundle_path = Arc::new(bundle_path);
         let socket_path = generate_socket_path();
         let bridge_send = start_messenger(socket_path.clone(), kill.clone());
         let bridge_process = Arc::new(start_bridge(
             BridgePaths {
                 node: node_path,
-                bridge: bridge_path,
+                bridge: &bundle_path,
                 socket: socket_path.clone(),
             },
             kill,
         ));
-        Self {
+
+        Ok(Self {
             socket_path,
+            bundle_path,
             bridge_process,
             bridge_send,
-        }
+        })
     }
 
     /// Fetch update payloads for given feed IDs from the RedStone bridge.
@@ -290,6 +310,7 @@ impl Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
+        let _ = std::fs::remove_file(self.bundle_path.as_ref());
     }
 }
 
@@ -303,4 +324,6 @@ pub enum BridgeError {
     Bridge(String),
     #[error("Data encoding error: {0}")]
     Data(#[from] hex::FromHexError),
+    #[error("Bundle error: {0}")]
+    Bundle(String),
 }

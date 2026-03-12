@@ -47,12 +47,11 @@ async fn redstone() {
         update_gas: near_sdk::Gas::from_tgas(300),
         update_deposit: NearToken::from_near(0),
         node_path: Path::new("node").to_owned(),
-        bridge_path: "../redstone-bridge/js/dist/index.js".parse().unwrap(),
     };
 
     let kill = watch::Sender::default();
 
-    let spec = RedStoneSpec::new(redstone_args, kill.clone());
+    let spec = RedStoneSpec::new(redstone_args, kill.clone()).expect("Failed to create RedStoneSpec");
 
     let t = spec
         .update_actions(&["ETH".into(), "BTC".into()])

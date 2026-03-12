@@ -52,14 +52,6 @@ pub struct RedStoneConfig {
         default_value = "node"
     )]
     pub node_path: PathBuf,
-    /// Path to the Redstone bridge JS application.
-    #[arg(
-        id = "redstone-bridge-path",
-        long = "redstone-bridge-path",
-        env = "REDSTONE_BRIDGE_PATH",
-        default_value = "./redstone-bridge/dist/index.js"
-    )]
-    pub bridge_path: PathBuf,
     /// Do not push price updates to Redstone oracle if the last push was less
     /// than this long ago, even if requested.
     #[arg(

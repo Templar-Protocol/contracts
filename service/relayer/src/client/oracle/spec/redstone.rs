@@ -24,9 +24,12 @@ pub struct RedStoneSpec {
 }
 
 impl RedStoneSpec {
-    pub fn new(config: args::RedStoneConfig, kill: watch::Sender<()>) -> Self {
-        let bridge = Bridge::new(&config.node_path, &config.bridge_path, kill);
-        Self { bridge, config }
+    /// # Errors
+    ///
+    /// Returns an error if the embedded JS bridge bundle is unavailable.
+    pub fn new(config: args::RedStoneConfig, kill: watch::Sender<()>) -> Result<Self, BridgeError> {
+        let bridge = Bridge::new(&config.node_path, kill)?;
+        Ok(Self { bridge, config })
     }
 
     pub fn handle(
@@ -34,8 +37,8 @@ impl RedStoneSpec {
         near: Near,
         cache: Cache,
         kill: watch::Sender<()>,
-    ) -> Handle<Self> {
-        Handle::new(Arc::new(Self::new(config, kill.clone())), near, cache, kill)
+    ) -> Result<Handle<Self>, BridgeError> {
+        Ok(Handle::new(Arc::new(Self::new(config, kill.clone())?), near, cache, kill))
     }
 }
 
