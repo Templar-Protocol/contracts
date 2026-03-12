@@ -19,10 +19,7 @@ impl AdapterConfig {
             .await?
             .json()?;
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&config)?
-        );
+        println!("{}", serde_json::to_string_pretty(&config)?);
 
         Ok(())
     }

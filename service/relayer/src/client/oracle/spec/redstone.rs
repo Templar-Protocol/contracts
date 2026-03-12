@@ -38,7 +38,12 @@ impl RedStoneSpec {
         cache: Cache,
         kill: watch::Sender<()>,
     ) -> Result<Handle<Self>, BridgeError> {
-        Ok(Handle::new(Arc::new(Self::new(config, kill.clone())?), near, cache, kill))
+        Ok(Handle::new(
+            Arc::new(Self::new(config, kill.clone())?),
+            near,
+            cache,
+            kill,
+        ))
     }
 }
 

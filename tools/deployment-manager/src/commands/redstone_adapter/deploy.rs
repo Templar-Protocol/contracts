@@ -28,8 +28,8 @@ impl DeployRedStoneAdapter {
             .load_contract::<()>(ctx, REDSTONE_ADAPTER_PACKAGE)?;
         tracing::info!(version = %loaded_contract.version, "Deploying RedStone adapter");
 
-        let init_args =
-            serde_json::to_vec(&serde_json::json!({ "config": config })).context("serialise init args")?;
+        let init_args = serde_json::to_vec(&serde_json::json!({ "config": config }))
+            .context("serialise init args")?;
         let signer = self.signer.signer();
 
         ctx.batch(&signer, &self.signer.account_id)

@@ -95,7 +95,8 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
         node_path: Path::new("node").to_owned(),
     };
 
-    let spec = RedStoneSpec::new(redstone_args, kill.clone()).expect("Failed to create RedStoneSpec");
+    let spec =
+        RedStoneSpec::new(redstone_args, kill.clone()).expect("Failed to create RedStoneSpec");
 
     let price_data_before = redstone_oracle
         .read_price_data(vec![redstone_eth_id.clone(), redstone_btc_id.clone()])

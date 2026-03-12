@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use sha2::Digest;
 
 use crate::version::Version;
 
@@ -55,7 +56,8 @@ pub struct LoadedContract<T> {
 
 impl<T> LoadedContract<T> {
     pub fn version_key(&self) -> String {
-        format!("{}@{}", self.name, self.version)
+        let hash = sha2::Sha256::digest(&self.wasm_bytes);
+        format!("{}@{}#{}", self.name, self.version, hex::encode(hash))
     }
 }
 

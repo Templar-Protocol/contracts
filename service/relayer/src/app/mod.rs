@@ -54,7 +54,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Result<Self, templar_redstone_bridge::BridgeError> {
+    pub fn new(
+        args: args::Configuration,
+        kill: watch::Sender<()>,
+    ) -> Result<Self, templar_redstone_bridge::BridgeError> {
         let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             args.relay.account_id.clone(),

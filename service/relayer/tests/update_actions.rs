@@ -51,7 +51,8 @@ async fn redstone() {
 
     let kill = watch::Sender::default();
 
-    let spec = RedStoneSpec::new(redstone_args, kill.clone()).expect("Failed to create RedStoneSpec");
+    let spec =
+        RedStoneSpec::new(redstone_args, kill.clone()).expect("Failed to create RedStoneSpec");
 
     let t = spec
         .update_actions(&["ETH".into(), "BTC".into()])
