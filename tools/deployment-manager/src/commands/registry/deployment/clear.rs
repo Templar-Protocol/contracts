@@ -25,6 +25,7 @@ impl ClearDeployments {
     #[tracing::instrument(skip_all, name = "clear_deployments", fields(registry_id = %self.registry_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let beneficiary_id = self.beneficiary_id.as_ref().unwrap_or(&self.registry_id);
+        tracing::info!(%beneficiary_id, "Clearing deployments for registry");
 
         let deployments: Vec<AccountId> = ctx
             .near

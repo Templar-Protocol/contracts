@@ -1,5 +1,5 @@
-pub mod clear_deployments;
 pub mod deploy;
+pub mod deployment;
 pub mod remove;
 pub mod version;
 
@@ -22,8 +22,8 @@ enum RegistryCommand {
     /// Manage versions stored in a registry
     Version(version::VersionArgs),
 
-    /// Remove all markets listed in the registry's deployments
-    ClearDeployments(clear_deployments::ClearDeployments),
+    /// Manage deployments tracked by a registry
+    Deployment(deployment::DeploymentArgs),
 }
 
 impl RegistryArgs {
@@ -32,7 +32,7 @@ impl RegistryArgs {
             RegistryCommand::Deploy(a) => a.run(ctx).await,
             RegistryCommand::Remove(a) => a.run(ctx).await,
             RegistryCommand::Version(a) => a.run(ctx).await,
-            RegistryCommand::ClearDeployments(a) => a.run(ctx).await,
+            RegistryCommand::Deployment(a) => a.run(ctx).await,
         }
     }
 }
