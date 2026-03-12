@@ -16,6 +16,7 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { version = "23.5.1", features = ["alloc"] }
+stellar-tokens.workspace = true
 
 [dev-dependencies]
 soroban-sdk = { version = "23.5.1", features = ["testutils", "alloc"] }

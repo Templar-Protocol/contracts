@@ -12602,6 +12602,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-contract-utils"
+version = "0.5.0"
+source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
+dependencies = [
+ "soroban-sdk 23.5.2",
+]
+
+[[package]]
 name = "stellar-strkey"
 version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12642,6 +12650,15 @@ dependencies = [
  "crate-git-revision",
  "data-encoding",
  "heapless",
+]
+
+[[package]]
+name = "stellar-tokens"
+version = "0.5.0"
+source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
+dependencies = [
+ "soroban-sdk 23.5.2",
+ "stellar-contract-utils",
 ]
 
 [[package]]
@@ -13264,6 +13281,7 @@ name = "templar-soroban-share-token"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk 23.5.2",
+ "stellar-tokens",
 ]
 
 [[package]]
@@ -15382,8 +15400,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "stellar-contract-utils"
-version = "0.5.0"
-source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"

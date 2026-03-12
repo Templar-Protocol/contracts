@@ -3,15 +3,85 @@
 mod types;
 pub use types::*;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, String};
+use stellar_tokens::fungible::{
+    burnable::{emit_burn, FungibleBurnable},
+    Base, FungibleToken,
+};
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
-const BALANCE_TTL_THRESHOLD: u32 = 501_120;
-const BALANCE_TTL_EXTEND_TO: u32 = 518_400;
 
 #[contract]
 pub struct SorobanShareTokenContract;
+
+// ── SEP-41 core (delegates to OZ Base) ───────────────────────
+
+#[contractimpl]
+impl FungibleToken for SorobanShareTokenContract {
+    type ContractType = Base;
+
+    fn total_supply(e: &Env) -> i128 {
+        Base::total_supply(e)
+    }
+
+    fn balance(e: &Env, account: Address) -> i128 {
+        Base::balance(e, &account)
+    }
+
+    fn allowance(e: &Env, owner: Address, spender: Address) -> i128 {
+        Base::allowance(e, &owner, &spender)
+    }
+
+    fn transfer(e: &Env, from: Address, to: Address, amount: i128) {
+        extend_instance_ttl(e);
+        Base::transfer(e, &from, &to, amount);
+    }
+
+    fn transfer_from(e: &Env, spender: Address, from: Address, to: Address, amount: i128) {
+        extend_instance_ttl(e);
+        Base::transfer_from(e, &spender, &from, &to, amount);
+    }
+
+    fn approve(e: &Env, owner: Address, spender: Address, amount: i128, live_until_ledger: u32) {
+        extend_instance_ttl(e);
+        Base::approve(e, &owner, &spender, amount, live_until_ledger);
+    }
+
+    fn decimals(e: &Env) -> u32 {
+        Base::decimals(e)
+    }
+
+    fn name(e: &Env) -> String {
+        Base::name(e)
+    }
+
+    fn symbol(e: &Env) -> String {
+        Base::symbol(e)
+    }
+}
+
+// ── SEP-41 burnable (vault-gated override) ───────────────────
+
+#[contractimpl]
+impl FungibleBurnable for SorobanShareTokenContract {
+    fn burn(e: &Env, from: Address, amount: i128) {
+        extend_instance_ttl(e);
+        require_vault_invoker(e);
+        Base::update(e, Some(&from), None, amount);
+        emit_burn(e, &from, amount);
+    }
+
+    fn burn_from(e: &Env, spender: Address, from: Address, amount: i128) {
+        extend_instance_ttl(e);
+        require_vault_invoker(e);
+        Base::spend_allowance(e, &from, &spender, amount);
+        Base::update(e, Some(&from), None, amount);
+        emit_burn(e, &from, amount);
+    }
+}
+
+// ── Vault share-token extras ─────────────────────────────────
 
 #[contractimpl]
 impl SorobanShareTokenContract {
@@ -22,239 +92,82 @@ impl SorobanShareTokenContract {
         name: String,
         symbol: String,
         decimals: u32,
-    ) -> Result<(), ShareTokenError> {
+    ) {
         extend_instance_ttl(&env);
-        require_contract_address(&vault)?;
-
+        require_contract_address(&env, &vault);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
-        env.storage().instance().set(&DataKey::Name, &name);
-        env.storage().instance().set(&DataKey::Symbol, &symbol);
-        env.storage().instance().set(&DataKey::Decimals, &decimals);
-        env.storage().instance().set(&DataKey::TotalSupply, &0i128);
-        Ok(())
+        Base::set_metadata(&env, decimals, name, symbol);
     }
 
-    pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), ShareTokenError> {
+    pub fn mint(env: Env, to: Address, amount: i128) {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
+        require_vault_invoker(&env);
+        Base::mint(&env, &to, amount);
+    }
+
+    pub fn set_admin(env: Env, caller: Address, admin: Address) {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
     }
 
-    pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), ShareTokenError> {
+    pub fn set_vault(env: Env, caller: Address, vault: Address) {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        require_contract_address(&vault)?;
+        require_admin(&env, &caller);
+        require_contract_address(&env, &vault);
         env.storage().instance().set(&DataKey::Vault, &vault);
-        Ok(())
     }
 
-    pub fn set_metadata(
-        env: Env,
-        caller: Address,
-        name: String,
-        symbol: String,
-        decimals: u32,
-    ) -> Result<(), ShareTokenError> {
+    pub fn set_metadata(env: Env, caller: Address, name: String, symbol: String, decimals: u32) {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Name, &name);
-        env.storage().instance().set(&DataKey::Symbol, &symbol);
-        env.storage().instance().set(&DataKey::Decimals, &decimals);
-        Ok(())
+        require_admin(&env, &caller);
+        Base::set_metadata(&env, decimals, name, symbol);
     }
 
-    pub fn mint(env: Env, to: Address, amount: i128) -> Result<(), ShareTokenError> {
-        extend_instance_ttl(&env);
-        if amount <= 0 {
-            return Err(ShareTokenError::InvalidInput);
-        }
-        require_vault_invoker(&env)?;
-
-        let total_supply = total_supply_raw(&env);
-        let next_total = total_supply
-            .checked_add(amount)
-            .ok_or(ShareTokenError::ArithmeticOverflow)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &next_total);
-
-        increase_balance(&env, &to, amount)?;
-        Mint {
-            to: to.clone(),
-            amount,
-        }
-        .publish(&env);
-        Ok(())
-    }
-
-    pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), ShareTokenError> {
-        extend_instance_ttl(&env);
-        if amount <= 0 {
-            return Err(ShareTokenError::InvalidInput);
-        }
-        require_vault_invoker(&env)?;
-
-        decrease_balance(&env, &from, amount)?;
-
-        let total_supply = total_supply_raw(&env);
-        let next_total = total_supply
-            .checked_sub(amount)
-            .ok_or(ShareTokenError::ArithmeticOverflow)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &next_total);
-
-        Burn { from, amount }.publish(&env);
-        Ok(())
-    }
-
-    pub fn transfer(
-        env: Env,
-        from: Address,
-        to: Address,
-        amount: i128,
-    ) -> Result<(), ShareTokenError> {
-        extend_instance_ttl(&env);
-        if amount <= 0 {
-            return Err(ShareTokenError::InvalidInput);
-        }
-        from.require_auth();
-
-        decrease_balance(&env, &from, amount)?;
-        increase_balance(&env, &to, amount)?;
-
-        Transfer { from, to, amount }.publish(&env);
-        Ok(())
-    }
-
-    pub fn balance(env: Env, owner: Address) -> i128 {
-        extend_instance_ttl(&env);
-        balance_raw(&env, &owner)
-    }
-
-    pub fn total_supply(env: Env) -> i128 {
-        extend_instance_ttl(&env);
-        total_supply_raw(&env)
-    }
-
-    pub fn name(env: Env) -> Result<String, ShareTokenError> {
-        extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::Name)
-            .ok_or(ShareTokenError::MissingConfig)
-    }
-
-    pub fn symbol(env: Env) -> Result<String, ShareTokenError> {
-        extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::Symbol)
-            .ok_or(ShareTokenError::MissingConfig)
-    }
-
-    pub fn decimals(env: Env) -> Result<u32, ShareTokenError> {
-        extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::Decimals)
-            .ok_or(ShareTokenError::MissingConfig)
-    }
-
-    pub fn admin(env: Env) -> Result<Address, ShareTokenError> {
+    pub fn admin(env: Env) -> Address {
         extend_instance_ttl(&env);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .ok_or(ShareTokenError::MissingConfig)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig))
     }
 
-    pub fn vault(env: Env) -> Result<Address, ShareTokenError> {
+    pub fn vault(env: Env) -> Address {
         extend_instance_ttl(&env);
         env.storage()
             .instance()
             .get(&DataKey::Vault)
-            .ok_or(ShareTokenError::MissingConfig)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig))
     }
 
-    pub fn extend_ttl(env: Env, caller: Address) -> Result<(), ShareTokenError> {
-        require_admin(&env, &caller)?;
+    pub fn extend_ttl(env: Env, caller: Address) {
+        require_admin(&env, &caller);
         extend_instance_ttl(&env);
-        Ok(())
     }
 }
 
-fn require_admin(env: &Env, caller: &Address) -> Result<(), ShareTokenError> {
+// ── Helpers ──────────────────────────────────────────────────
+
+fn require_admin(env: &Env, caller: &Address) {
     caller.require_auth();
     let admin: Address = env
         .storage()
         .instance()
         .get(&DataKey::Admin)
-        .ok_or(ShareTokenError::MissingConfig)?;
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
     if caller != &admin {
-        return Err(ShareTokenError::Unauthorized);
+        panic_with_error!(env, ShareTokenError::Unauthorized);
     }
-    Ok(())
 }
 
-fn require_vault_invoker(env: &Env) -> Result<(), ShareTokenError> {
+fn require_vault_invoker(env: &Env) {
     let vault: Address = env
         .storage()
         .instance()
         .get(&DataKey::Vault)
-        .ok_or(ShareTokenError::MissingConfig)?;
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
     vault.require_auth();
-    Ok(())
-}
-
-fn balance_raw(env: &Env, owner: &Address) -> i128 {
-    let key = DataKey::Balance(owner.clone());
-    if let Some(balance) = env.storage().persistent().get::<_, i128>(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL_EXTEND_TO);
-        balance
-    } else {
-        0
-    }
-}
-
-fn increase_balance(env: &Env, owner: &Address, amount: i128) -> Result<(), ShareTokenError> {
-    let current = balance_raw(env, owner);
-    let next = current
-        .checked_add(amount)
-        .ok_or(ShareTokenError::ArithmeticOverflow)?;
-    let key = DataKey::Balance(owner.clone());
-    env.storage().persistent().set(&key, &next);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL_EXTEND_TO);
-    Ok(())
-}
-
-fn decrease_balance(env: &Env, owner: &Address, amount: i128) -> Result<(), ShareTokenError> {
-    let current = balance_raw(env, owner);
-    if current < amount {
-        return Err(ShareTokenError::InsufficientBalance);
-    }
-    let next = current
-        .checked_sub(amount)
-        .ok_or(ShareTokenError::ArithmeticOverflow)?;
-    let key = DataKey::Balance(owner.clone());
-    env.storage().persistent().set(&key, &next);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_TTL_EXTEND_TO);
-    Ok(())
-}
-
-fn total_supply_raw(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::TotalSupply)
-        .unwrap_or(0)
 }
 
 fn is_contract_address(addr: &Address) -> bool {
@@ -262,11 +175,9 @@ fn is_contract_address(addr: &Address) -> bool {
     matches!(bytes.get(0), Some(b'C'))
 }
 
-fn require_contract_address(addr: &Address) -> Result<(), ShareTokenError> {
-    if is_contract_address(addr) {
-        Ok(())
-    } else {
-        Err(ShareTokenError::InvalidInput)
+fn require_contract_address(env: &Env, addr: &Address) {
+    if !is_contract_address(addr) {
+        panic_with_error!(env, ShareTokenError::InvalidInput);
     }
 }
 
