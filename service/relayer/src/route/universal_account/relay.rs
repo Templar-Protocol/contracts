@@ -25,6 +25,7 @@ pub struct RelayRequest {
     pub args: serde_json::Value,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
+    // TODO: Get rid of this field / switch to boolean.
     #[serde(default)]
     pub update_price_feeds: HashSet<PriceIdentifier>,
 }
