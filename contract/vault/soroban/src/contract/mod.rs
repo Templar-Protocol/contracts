@@ -659,7 +659,7 @@ where
         self.auth
             .authorize(ActionKind::SetRestrictions, caller, None)?;
 
-        self.restrictions = restrictions.map(Restrictions::normalized);
+        self.restrictions = restrictions;
         self.storage.save_restrictions(&self.restrictions)?;
         Ok(())
     }

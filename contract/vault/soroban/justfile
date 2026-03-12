@@ -118,6 +118,12 @@ build:
 	@echo "✓ Built governance: {{governance_wasm}}"
 	@echo "✓ Built share token: {{share_token_wasm}}"
 
+# Enforce Soroban vault deploy WASM size budget (default: 128 KiB).
+size-budget-check max_bytes="131072": build
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{deploy_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+
 # Build and optimize the Blend adapter WASM.
 build-blend-adapter:
 	@echo "Building Blend adapter WASM..."

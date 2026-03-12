@@ -44,6 +44,32 @@ jobs:
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
 
+  soroban:
+    name: Soroban
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust
+
+      - name: Install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,nextest
+
+      - name: Run Soroban runtime tests
+        env:
+          SQLX_OFFLINE: true
+        run: cargo nextest run -p templar-soroban-runtime
+
+      - name: Install stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Enforce Soroban runtime size budget
+        run: just -f contract/vault/soroban/justfile size-budget-check
+
   curator-primitives-feature-matrix:
     name: Curator Primitives Feature Matrix
     runs-on: ubuntu-latest
@@ -112,7 +138,7 @@ jobs:
           # Optimize cargo build for faster compilation
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
-        run: ./script/test.sh
+        run: ./script/test.sh --workspace --exclude templar-soroban-runtime
 
       - name: Cleanup Docker resources
         if: always()
