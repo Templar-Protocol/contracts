@@ -3,19 +3,14 @@ use near_crypto::{InMemorySigner, SecretKey, Signer};
 use near_sdk::AccountId;
 use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
 
-pub mod add_version;
-pub mod deploy_from_registry;
-pub mod deploy_registry;
+pub mod market;
 pub mod recover_nep141;
-pub mod remove_all_markets;
-pub mod remove_all_versions;
-pub mod remove_market;
-pub mod remove_registry;
-pub mod remove_version;
+pub mod registry;
 pub mod storage_deposit;
 
 #[derive(Args, Debug)]
 pub struct FixedContractWasm {
+    /// Skip the build step and use an existing WASM file. Warning: it may be stale!
     #[arg(long)]
     pub no_build: bool,
 }

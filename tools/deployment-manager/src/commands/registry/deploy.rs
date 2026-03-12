@@ -3,14 +3,14 @@ use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use templar_tools_common::version;
 
-use super::FixedContractWasm;
+use crate::commands::{FixedContractWasm, SignerArgs};
 
 const REGISTRY_PACKAGE: &str = "templar-registry-contract";
 
 #[derive(clap::Args, Debug)]
 pub struct DeployRegistry {
     #[command(flatten)]
-    signer: super::SignerArgs,
+    signer: SignerArgs,
     #[command(flatten)]
     contract: FixedContractWasm,
     #[arg(long)]

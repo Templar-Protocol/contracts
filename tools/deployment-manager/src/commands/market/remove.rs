@@ -1,20 +1,23 @@
 use near_sdk::AccountId;
 use templar_common::market::MarketConfiguration;
 
-use crate::commands::recover_nep141::RecoverNep141;
-use crate::near;
+use crate::{
+    commands::{recover_nep141::RecoverNep141, SignerArgs},
+    near, CliContext,
+};
 
+/// Remove a single market: recover NEP-141 tokens then delete the account.
 #[derive(clap::Args, Debug)]
-pub struct RemoveMarket {
+pub struct MarketRemove {
     #[command(flatten)]
-    pub signer: super::SignerArgs,
+    pub signer: SignerArgs,
     #[arg(long)]
     pub beneficiary_id: AccountId,
 }
 
-impl RemoveMarket {
-    #[tracing::instrument(skip_all, name = "remove_market", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
-    pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
+impl MarketRemove {
+    #[tracing::instrument(skip_all, name = "market_remove", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
+    pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         if !near::account_exists(&ctx.near, &self.signer.account_id).await? {
             tracing::info!(account_id = %self.signer.account_id, "Account does not exist, nothing to do");
             return Ok(());
@@ -55,7 +58,6 @@ impl RemoveMarket {
             }
         }
 
-        // Delete account
         let signer = self.signer.signer();
         ctx.batch(&signer, &self.signer.account_id)
             .delete_account(&self.beneficiary_id)

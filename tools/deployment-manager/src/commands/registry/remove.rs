@@ -1,15 +1,13 @@
 use near_sdk::AccountId;
 
-use super::remove_all_versions::RemoveAllVersions;
+use crate::commands::SignerArgs;
 use crate::near;
 
 /// Remove all versions from a registry then delete its account.
-///
-/// Mirrors `script/ci/remove-registry.sh`.
 #[derive(clap::Args, Debug)]
 pub struct RemoveRegistry {
     #[command(flatten)]
-    signer: super::SignerArgs,
+    signer: SignerArgs,
     #[arg(long)]
     beneficiary_id: AccountId,
 }
@@ -24,9 +22,7 @@ impl RemoveRegistry {
             return Ok(());
         }
 
-        RemoveAllVersions::new(self.signer.clone(), registry_id.clone())
-            .run(ctx)
-            .await?;
+        super::version::remove::remove_all(ctx, &self.signer, &registry_id).await?;
 
         tracing::info!(%registry_id, beneficiary_id = %self.beneficiary_id, "Deleting registry account");
         let signer = self.signer.signer();

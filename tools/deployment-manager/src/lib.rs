@@ -5,10 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use commands::{
-    add_version::AddVersion, deploy_from_registry::DeployFromRegistry,
-    deploy_registry::DeployRegistry, recover_nep141::RecoverNep141,
-    remove_all_markets::RemoveAllMarkets, remove_all_versions::RemoveAllVersions,
-    remove_market::RemoveMarket, remove_registry::RemoveRegistry, remove_version::RemoveVersion,
+    market::MarketArgs, recover_nep141::RecoverNep141, registry::RegistryArgs,
     storage_deposit::StorageDeposit,
 };
 use templar_common::utils::Network;
@@ -88,29 +85,11 @@ impl CliContext {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Build and deploy the registry contract with an initialization call
-    DeployRegistry(DeployRegistry),
+    /// Manage the registry contract and its versions
+    Registry(RegistryArgs),
 
-    /// Add a contract version to the registry (wasm must already be built)
-    AddVersion(AddVersion),
-
-    /// Deploy a market from the registry
-    DeployFromRegistry(DeployFromRegistry),
-
-    /// Remove a market: recover NEP-141 tokens then delete the account
-    RemoveMarket(RemoveMarket),
-
-    /// Remove all versions from a registry then delete the registry account
-    RemoveRegistry(RemoveRegistry),
-
-    /// Remove every market listed in a registry
-    RemoveAllMarkets(RemoveAllMarkets),
-
-    /// Remove all versions stored in a registry
-    RemoveAllVersions(RemoveAllVersions),
-
-    /// Remove a single version from a registry
-    RemoveVersion(RemoveVersion),
+    /// Deploy, create, and remove market contracts
+    Market(MarketArgs),
 
     /// Perform a storage deposit on a contract on behalf of an account
     StorageDeposit(StorageDeposit),
@@ -134,14 +113,8 @@ pub async fn run() -> anyhow::Result<()> {
     let ctx = cli.make_context();
 
     match cli.command {
-        Commands::DeployRegistry(a) => a.run(&ctx).await?,
-        Commands::AddVersion(a) => a.run(&ctx).await?,
-        Commands::DeployFromRegistry(a) => a.run(&ctx).await?,
-        Commands::RemoveMarket(a) => a.run(&ctx).await?,
-        Commands::RemoveRegistry(a) => a.run(&ctx).await?,
-        Commands::RemoveAllMarkets(a) => a.run(&ctx).await?,
-        Commands::RemoveAllVersions(a) => a.run(&ctx).await?,
-        Commands::RemoveVersion(a) => a.run(&ctx).await?,
+        Commands::Registry(a) => a.run(&ctx).await?,
+        Commands::Market(a) => a.run(&ctx).await?,
         Commands::StorageDeposit(a) => a.run(&ctx).await?,
         Commands::RecoverNep141(a) => a.run(&ctx).await?,
     }

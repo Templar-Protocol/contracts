@@ -4,10 +4,12 @@ use near_sdk::{json_types::Base64VecU8, AccountId, NearToken};
 use serde_json::json;
 use templar_tools_common::{near::contract_version, version::RegistryVersion};
 
+use crate::commands::SignerArgs;
+
 #[derive(clap::Args, Debug)]
-pub struct DeployFromRegistry {
+pub struct CreateMarket {
     #[command(flatten)]
-    signer: super::SignerArgs,
+    signer: SignerArgs,
     #[arg(long)]
     registry_id: AccountId,
     /// Version key to deploy from the registry
@@ -29,8 +31,8 @@ pub struct DeployFromRegistry {
     deposit: Option<NearToken>,
 }
 
-impl DeployFromRegistry {
-    #[tracing::instrument(skip_all, name = "deploy_from_registry", fields(registry_id = %self.registry_id, version_key = %self.version_key, name = %self.name))]
+impl CreateMarket {
+    #[tracing::instrument(skip_all, name = "market_create", fields(registry_id = %self.registry_id, version_key = %self.version_key, name = %self.name))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let registry_version: RegistryVersion =
             contract_version(&ctx.near, &self.registry_id).await?;
@@ -47,7 +49,7 @@ impl DeployFromRegistry {
 
         let init_args = serde_json::to_vec(&self.init_args)?;
 
-        tracing::info!("Deploying from registry");
+        tracing::info!("Creating market from registry");
 
         let method = registry_version.deploy_method_name();
         let signer = self.signer.signer();
@@ -67,7 +69,7 @@ impl DeployFromRegistry {
             .transact()
             .await?;
 
-        tracing::info!("Deployed from registry");
+        tracing::info!("Market created");
 
         Ok(())
     }

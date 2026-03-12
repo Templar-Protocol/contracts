@@ -5,9 +5,8 @@ use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
 use templar_tools_common::{near, version::RegistryVersion};
 
+use crate::commands::{FixedContractWasm, SignerArgs};
 use crate::CliContext;
-
-use super::{FixedContractWasm, SignerArgs};
 
 const MARKET_PACKAGE: &str = "templar-market-contract";
 const UAC_PACKAGE: &str = "templar-universal-account-contract";
@@ -65,7 +64,8 @@ pub struct AddVersion {
     /// Deployment mode
     #[arg(long, default_value_t = DeployMode::Normal)]
     deploy_mode: DeployMode,
-    /// Deposit to attach in NEAR
+    /// Deposit to attach in NEAR. If not provided, it will be estimated based
+    /// on the contract size and the deploy mode.
     #[arg(long)]
     deposit: Option<NearToken>,
 }
