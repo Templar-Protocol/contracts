@@ -4,6 +4,7 @@ pub mod deploy;
 pub mod feed;
 pub mod remove;
 pub mod role;
+pub mod update_prices;
 pub mod write_prices;
 
 use std::str::FromStr;
@@ -79,6 +80,9 @@ enum RedStoneAdapterCommand {
 
     /// Write prices to a RedStone adapter
     WritePrices(write_prices::WritePrices),
+
+    /// Fetch live prices from RedStone and write them to an adapter
+    UpdatePrices(update_prices::UpdatePrices),
 }
 
 impl RedStoneAdapterArgs {
@@ -91,6 +95,7 @@ impl RedStoneAdapterArgs {
             RedStoneAdapterCommand::Config(a) => a.run(ctx).await,
             RedStoneAdapterCommand::Role(a) => a.run(ctx).await,
             RedStoneAdapterCommand::WritePrices(a) => a.run(ctx).await,
+            RedStoneAdapterCommand::UpdatePrices(a) => a.run(ctx).await,
         }
     }
 }

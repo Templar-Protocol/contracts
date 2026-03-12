@@ -12527,6 +12527,7 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-redstone-bridge",
  "templar-tools-common",
  "thiserror 2.0.17",
  "tokio",

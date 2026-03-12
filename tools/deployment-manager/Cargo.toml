@@ -18,6 +18,7 @@ near-sdk = { workspace = true, features = ["non-contract-usage"] }
 serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
+templar-redstone-bridge.workspace = true
 templar-tools-common.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
