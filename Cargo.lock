@@ -12705,6 +12705,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-redstone-bridge"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "near-sdk",
+ "sha2 0.10.9",
+ "templar-common",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "templar-registry-contract"
 version = "1.2.1"
 dependencies = [
@@ -12741,6 +12754,7 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "templar-common",
+ "templar-redstone-bridge",
  "templar-universal-account",
  "test-utils",
  "thiserror 2.0.17",

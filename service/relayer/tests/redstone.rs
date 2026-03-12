@@ -93,7 +93,7 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
         update_gas: near_sdk::Gas::from_tgas(300),
         update_deposit: NearToken::from_near(0),
         node_path: Path::new("node").to_owned(),
-        bridge_path: "./redstone-bridge/dist/index.js".parse().unwrap(),
+        bridge_path: "../redstone-bridge/js/dist/index.js".parse().unwrap(),
     };
 
     let spec = RedStoneSpec::new(redstone_args, kill.clone());

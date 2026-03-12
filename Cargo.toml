@@ -55,6 +55,7 @@ schemars = { version = "0.8" }
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
+templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault" }

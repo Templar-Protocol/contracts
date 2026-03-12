@@ -3,7 +3,7 @@ use std::{env, path::PathBuf};
 #[test]
 fn run_bridge_jest_tests() {
     let crate_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let bridge_dir = crate_root.join("redstone-bridge");
+    let bridge_dir = crate_root.join("js");
 
     if env::var("CI").is_ok_and(|v| !v.is_empty()) {
         let status = std::process::Command::new("npm")
