@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use commands::{
     market::MarketArgs, proxy_oracle::ProxyOracleArgs, recover_nep141::RecoverNep141,
-    registry::RegistryArgs, storage_deposit::StorageDeposit,
+    redstone_adapter::RedStoneAdapterArgs, registry::RegistryArgs,
+    storage_deposit::StorageDeposit,
 };
 use templar_common::utils::Network;
 /// Re-export shared NEAR client utilities so command modules can use `crate::near`.
@@ -94,6 +95,9 @@ enum Commands {
     /// Deploy, create, and manage proxy oracle contracts
     ProxyOracle(ProxyOracleArgs),
 
+    /// Deploy, create, and manage RedStone adapter contracts
+    RedstoneAdapter(RedStoneAdapterArgs),
+
     /// Perform a storage deposit on a contract on behalf of an account
     StorageDeposit(StorageDeposit),
 
@@ -119,6 +123,7 @@ pub async fn run() -> anyhow::Result<()> {
         Commands::Registry(a) => a.run(&ctx).await?,
         Commands::Market(a) => a.run(&ctx).await?,
         Commands::ProxyOracle(a) => a.run(&ctx).await?,
+        Commands::RedstoneAdapter(a) => a.run(&ctx).await?,
         Commands::StorageDeposit(a) => a.run(&ctx).await?,
         Commands::RecoverNep141(a) => a.run(&ctx).await?,
     }

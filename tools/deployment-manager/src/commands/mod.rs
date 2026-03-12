@@ -12,6 +12,7 @@ use templar_tools_common::{
 pub mod market;
 pub mod proxy_oracle;
 pub mod recover_nep141;
+pub mod redstone_adapter;
 pub mod registry;
 pub mod storage_deposit;
 

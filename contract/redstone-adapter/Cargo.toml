@@ -2,7 +2,7 @@
 edition.workspace = true
 license.workspace = true
 name = "templar-redstone-adapter-contract"
-publish = false
+repository.workspace = true
 version = "0.1.0"
 
 [lib]

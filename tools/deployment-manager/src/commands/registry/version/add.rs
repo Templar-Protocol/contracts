@@ -11,6 +11,7 @@ use crate::CliContext;
 const MARKET_PACKAGE: &str = "templar-market-contract";
 const UAC_PACKAGE: &str = "templar-universal-account-contract";
 const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-contract";
+const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
 
 const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);
 
@@ -26,6 +27,9 @@ pub struct Package {
     /// Proxy oracle contract
     #[arg(long)]
     proxy_oracle: bool,
+    /// RedStone adapter contract
+    #[arg(long)]
+    redstone_adapter: bool,
     /// Specify a contract by package name
     #[arg(long)]
     package: Option<String>,
@@ -39,6 +43,8 @@ impl Package {
             UAC_PACKAGE
         } else if self.proxy_oracle {
             PROXY_ORACLE_PACKAGE
+        } else if self.redstone_adapter {
+            REDSTONE_ADAPTER_PACKAGE
         } else {
             self.package.as_deref().unwrap_or_default()
         }
