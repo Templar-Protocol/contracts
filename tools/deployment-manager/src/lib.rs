@@ -6,8 +6,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use commands::{
     market::MarketArgs, proxy_oracle::ProxyOracleArgs, recover_nep141::RecoverNep141,
-    redstone_adapter::RedStoneAdapterArgs, registry::RegistryArgs,
-    storage_deposit::StorageDeposit,
+    redstone_adapter::RedStoneAdapterArgs, registry::RegistryArgs, storage_deposit::StorageDeposit,
 };
 use templar_common::utils::Network;
 /// Re-export shared NEAR client utilities so command modules can use `crate::near`.
@@ -128,6 +127,5 @@ pub async fn run() -> anyhow::Result<()> {
         Commands::RecoverNep141(a) => a.run(&ctx).await?,
     }
 
-    tracing::info!("Done");
     Ok(())
 }

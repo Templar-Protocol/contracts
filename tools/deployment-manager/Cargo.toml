@@ -9,6 +9,7 @@ license.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 borsh.workspace = true
+chrono.workspace = true
 clap.workspace = true
 near-crypto.workspace = true
 near-contract-standards.workspace = true

@@ -135,13 +135,13 @@ impl RedStoneContractInterface for Contract {
         let updated_feeds = writes
             .into_iter()
             .filter_map(|(feed_id, result)| match result {
-                Ok(feed_data) => Some(feed_data),
+                Ok(feed_data) => Some((feed_id, feed_data)),
                 Err(e) => {
                     near_sdk::log!("Failed to update feed {feed_id}: {e}");
                     None
                 }
             })
-            .collect::<Vec<_>>();
+            .collect::<HashMap<_, _>>();
 
         RedStoneEvent::WritePrices {
             updater,

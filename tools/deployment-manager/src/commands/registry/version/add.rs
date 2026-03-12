@@ -15,6 +15,7 @@ const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
 
 const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
 pub struct Package {
