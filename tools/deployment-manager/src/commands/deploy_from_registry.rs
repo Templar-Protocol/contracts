@@ -1,4 +1,5 @@
 use near_crypto::PublicKey;
+use near_fetch::ops::Function;
 use near_sdk::{json_types::Base64VecU8, AccountId, NearToken};
 use serde_json::json;
 use templar_tools_common::{near::contract_version, version::RegistryVersion};
@@ -51,16 +52,18 @@ impl DeployFromRegistry {
         let method = registry_version.deploy_method_name();
         let signer = self.signer.signer();
 
-        ctx.near
-            .call(&signer, &self.registry_id, method)
-            .deposit(deposit)
-            .max_gas()
-            .args_json(json!({
-                "name": self.name,
-                "version_key": self.version_key,
-                "init_args": Base64VecU8(init_args),
-                "full_access_keys": self.with_full_access_key,
-            }))
+        ctx.batch(&signer, &self.registry_id)
+            .call(
+                Function::new(method)
+                    .deposit(deposit)
+                    .max_gas()
+                    .args_json(json!({
+                        "name": self.name,
+                        "version_key": self.version_key,
+                        "init_args": Base64VecU8(init_args),
+                        "full_access_keys": self.with_full_access_key,
+                    })),
+            )
             .transact()
             .await?;
 

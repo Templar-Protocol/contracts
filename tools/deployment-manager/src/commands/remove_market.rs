@@ -1,5 +1,3 @@
-use near_crypto::SecretKey;
-use near_primitives::views::FinalExecutionStatus;
 use near_sdk::AccountId;
 use templar_common::market::MarketConfiguration;
 
@@ -9,27 +7,12 @@ use crate::near;
 #[derive(clap::Args, Debug)]
 pub struct RemoveMarket {
     #[command(flatten)]
-    signer: super::SignerArgs,
+    pub signer: super::SignerArgs,
     #[arg(long)]
-    beneficiary_id: AccountId,
+    pub beneficiary_id: AccountId,
 }
 
 impl RemoveMarket {
-    /// Construct a `RemoveMarket` for use by `RemoveAllMarkets`.
-    pub(crate) fn new(
-        account_id: AccountId,
-        secret_key: SecretKey,
-        beneficiary_id: AccountId,
-    ) -> Self {
-        Self {
-            signer: super::SignerArgs {
-                account_id,
-                secret_key,
-            },
-            beneficiary_id,
-        }
-    }
-
     #[tracing::instrument(skip_all, name = "remove_market", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         if !near::account_exists(&ctx.near, &self.signer.account_id).await? {
@@ -40,46 +23,45 @@ impl RemoveMarket {
         let configuration = ctx
             .near
             .view(&self.signer.account_id, "get_configuration")
-            .await?
-            .json::<MarketConfiguration>()?;
+            .await
+            .and_then(|r| r.json::<MarketConfiguration>());
 
-        tracing::debug!(?configuration, "Market configuration");
+        match configuration {
+            Ok(configuration) => {
+                tracing::debug!(?configuration, "Market configuration");
 
-        if let Some(borrow_id) = configuration.borrow_asset.into_nep141() {
-            RecoverNep141 {
-                signer: self.signer.clone(),
-                token_id: borrow_id,
-                beneficiary_id: self.beneficiary_id.clone(),
+                if let Some(borrow_id) = configuration.borrow_asset.into_nep141() {
+                    RecoverNep141 {
+                        signer: self.signer.clone(),
+                        token_id: borrow_id,
+                        beneficiary_id: self.beneficiary_id.clone(),
+                    }
+                    .run(ctx)
+                    .await?;
+                }
+
+                if let Some(collateral_id) = configuration.collateral_asset.into_nep141() {
+                    RecoverNep141 {
+                        signer: self.signer.clone(),
+                        token_id: collateral_id,
+                        beneficiary_id: self.beneficiary_id.clone(),
+                    }
+                    .run(ctx)
+                    .await?;
+                }
             }
-            .run(ctx)
-            .await?;
+            Err(error) => {
+                tracing::warn!(%error, "Failed to fetch market configuration");
+            }
         }
 
-        if let Some(collateral_id) = configuration.collateral_asset.into_nep141() {
-            RecoverNep141 {
-                signer: self.signer.clone(),
-                token_id: collateral_id,
-                beneficiary_id: self.beneficiary_id.clone(),
-            }
-            .run(ctx)
-            .await?;
-        }
-
-        let e = ctx
-            .near
-            .batch(&self.signer.signer(), &self.signer.account_id)
+        // Delete account
+        let signer = self.signer.signer();
+        ctx.batch(&signer, &self.signer.account_id)
             .delete_account(&self.beneficiary_id)
             .transact()
             .await?;
 
-        match e.status {
-            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                anyhow::bail!("Unexpected status: {:?}", e.status);
-            }
-            FinalExecutionStatus::Failure(tx_execution_error) => {
-                anyhow::bail!("Transaction failed: {tx_execution_error:?}");
-            }
-            FinalExecutionStatus::SuccessValue(_) => Ok(()),
-        }
+        Ok(())
     }
 }

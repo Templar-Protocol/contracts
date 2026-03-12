@@ -12758,6 +12758,7 @@ dependencies = [
  "near-contract-standards",
  "near-crypto 0.31.1",
  "near-fetch",
+ "near-primitives 0.31.1",
  "near-sdk",
  "templar-common",
  "thiserror 2.0.17",

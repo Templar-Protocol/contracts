@@ -1,5 +1,6 @@
 use anyhow::Context;
 use near_contract_standards::storage_management::StorageBalanceBounds;
+use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 
@@ -41,15 +42,16 @@ impl StorageDeposit {
         };
         tracing::info!(%deposit, "Depositing storage");
 
-        ctx.near
-            .call(&self.signer.signer(), &self.contract_id, "storage_deposit")
-            .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
-            .deposit(STORAGE_DEPOSIT_AMOUNT)
+        let signer = self.signer.signer();
+        ctx.batch(&signer, &self.contract_id)
+            .call(
+                Function::new("storage_deposit")
+                    .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
+                    .deposit(STORAGE_DEPOSIT_AMOUNT),
+            )
             .transact()
             .await
-            .with_context(|| format!("storage_deposit on {}", self.contract_id))?
-            .into_result()
-            .with_context(|| format!("storage_deposit execution on {}", self.contract_id))?;
+            .with_context(|| format!("storage_deposit on {}", self.contract_id))?;
 
         tracing::info!("Storage deposit complete");
         Ok(())

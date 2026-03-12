@@ -1,4 +1,5 @@
 use anyhow::Context;
+use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 
@@ -32,21 +33,17 @@ impl RemoveVersion {
 
     #[tracing::instrument(skip_all, name = "remove_version", fields(registry_id = %self.registry_id, version_key = %self.version_key))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        ctx.near
-            .call(&self.signer.signer(), &self.registry_id, "remove_version")
-            .args_json(json!({ "version_key": &self.version_key }))
-            .deposit(ONE_YOCTO)
-            .max_gas()
+        let signer = self.signer.signer();
+        ctx.batch(&signer, &self.registry_id)
+            .call(
+                Function::new("remove_version")
+                    .args_json(json!({ "version_key": &self.version_key }))
+                    .deposit(ONE_YOCTO)
+                    .max_gas(),
+            )
             .transact()
             .await
-            .with_context(|| {
-                format!(
-                    "remove_version {} from {}",
-                    self.version_key, self.registry_id
-                )
-            })?
-            .into_result()
-            .with_context(|| format!("remove_version execution: {}", self.version_key))?;
+            .with_context(|| format!("remove_version {} from {}", self.version_key, self.registry_id))?;
 
         tracing::info!("Version removed");
         Ok(())

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::Args;
+use near_fetch::ops::Function;
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
 use templar_tools_common::{near, version::RegistryVersion};
@@ -88,7 +89,7 @@ impl AddVersion {
         let version_key = self
             .version_key
             .clone()
-            .unwrap_or_else(|| format!("{}@{}", self.package.package(), loaded_contract.version));
+            .unwrap_or_else(|| loaded_contract.version_key());
         tracing::debug!(%version_key);
         let borsh_args = registry_version.encode_add_version_args(
             &version_key,
@@ -105,77 +106,19 @@ impl AddVersion {
         };
         tracing::debug!(%deposit);
         tracing::info!(%version_key, "Calling add_version on registry");
-        ctx.near
-            .call(&self.signer.signer(), &self.registry_id, "add_version")
-            .args(borsh_args)
-            .deposit(deposit)
-            .max_gas()
+        let signer = self.signer.signer();
+        ctx.batch(&signer, &self.registry_id)
+            .call(
+                Function::new("add_version")
+                    .args(borsh_args)
+                    .deposit(deposit)
+                    .max_gas(),
+            )
             .transact()
             .await
             .context("add_version")?;
         tracing::info!(%version_key, "Version registered");
 
         Ok(())
-    }
-}
-
-/// Borsh-encode the `add_version` arguments, matching the layout produced by
-/// `test-utils/examples/registry_add_version_args.rs`.
-///
-/// The encoding is `(version_key: String, deploy_mode: DeployMode, wasm: Vec<u8>)`.
-pub fn encode_add_version_args(
-    version_key: &str,
-    deploy_mode: DeployMode,
-    wasm: &[u8],
-) -> anyhow::Result<Vec<u8>> {
-    borsh::to_vec(&(version_key, deploy_mode, wasm)).context("borsh-encode add_version args")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use templar_common::registry::DeployMode;
-
-    #[test]
-    fn encode_add_version_args_is_deterministic() {
-        let wasm = b"fake_wasm";
-        let a = encode_add_version_args("v1.0.0", DeployMode::Normal, wasm).unwrap();
-        let b = encode_add_version_args("v1.0.0", DeployMode::Normal, wasm).unwrap();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn encode_add_version_args_differs_by_deploy_mode() {
-        let wasm = b"fake_wasm";
-        let normal = encode_add_version_args("v1", DeployMode::Normal, wasm).unwrap();
-        let global_hash = encode_add_version_args("v1", DeployMode::GlobalHash, wasm).unwrap();
-        assert_ne!(normal, global_hash, "deploy mode must affect the encoding");
-    }
-
-    #[test]
-    fn encode_add_version_args_differs_by_version_key() {
-        let wasm = b"fake_wasm";
-        let a = encode_add_version_args("v1", DeployMode::Normal, wasm).unwrap();
-        let b = encode_add_version_args("v2", DeployMode::Normal, wasm).unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn encode_add_version_args_round_trips_via_borsh() {
-        let wasm: &[u8] = b"some_contract_bytes";
-        let version_key = "v1.2.3";
-        let deploy_mode = DeployMode::Normal;
-
-        let encoded = encode_add_version_args(version_key, deploy_mode, wasm).unwrap();
-
-        // Decode and verify each field via borsh reader
-        let mut reader = encoded.as_slice();
-        let decoded_key: String = borsh::BorshDeserialize::deserialize(&mut reader).unwrap();
-        let decoded_mode: DeployMode = borsh::BorshDeserialize::deserialize(&mut reader).unwrap();
-        let decoded_wasm: Vec<u8> = borsh::BorshDeserialize::deserialize(&mut reader).unwrap();
-
-        assert_eq!(decoded_key, version_key);
-        assert!(matches!(decoded_mode, DeployMode::Normal));
-        assert_eq!(decoded_wasm, wasm);
     }
 }

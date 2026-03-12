@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod commands;
 
 use std::path::PathBuf;
@@ -29,6 +30,11 @@ struct Cli {
     #[arg(long, env = "RPC_URL")]
     rpc_url: Option<String>,
 
+    /// Base URL for transaction explorer links (hash is appended). Defaults to
+    /// the Nearblocks explorer for the selected network.
+    #[arg(long)]
+    transaction_url_prefix: Option<String>,
+
     /// Path to the workspace root (defaults to current directory)
     #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
     workspace_dir: PathBuf,
@@ -44,8 +50,16 @@ impl Cli {
                 .as_deref()
                 .unwrap_or_else(|| self.network.rpc_url()),
         );
+        let transaction_url_prefix =
+            self.transaction_url_prefix
+                .clone()
+                .unwrap_or_else(|| match self.network {
+                    Network::Mainnet => "https://nearblocks.io/txns/".to_string(),
+                    Network::Testnet => "https://testnet.nearblocks.io/txns/".to_string(),
+                });
         CliContext {
             workspace_path: self.workspace_dir.clone(),
+            transaction_url_prefix,
             near,
         }
     }
@@ -53,7 +67,23 @@ impl Cli {
 
 pub struct CliContext {
     workspace_path: PathBuf,
+    transaction_url_prefix: String,
     near: near_fetch::Client,
+}
+
+impl CliContext {
+    /// Create a [`batch::BoundBatch`] that automatically logs the transaction hash and
+    /// propagates execution failures when [`batch::BoundBatch::transact`] is called.
+    pub fn batch<'a>(
+        &self,
+        signer: &'a near_crypto::Signer,
+        receiver_id: &near_sdk::AccountId,
+    ) -> batch::BoundBatch<'a> {
+        batch::BoundBatch::new(
+            self.transaction_url_prefix.clone(),
+            self.near.batch(signer, receiver_id),
+        )
+    }
 }
 
 #[derive(Subcommand)]

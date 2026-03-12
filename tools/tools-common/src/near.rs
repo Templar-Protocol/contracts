@@ -71,11 +71,17 @@ pub async fn delete_account(
     account_id: &AccountId,
     beneficiary_id: &AccountId,
 ) -> anyhow::Result<()> {
-    near.batch(signer, account_id)
+    let outcome = near
+        .batch(signer, account_id)
         .delete_account(beneficiary_id)
         .transact()
         .await
         .with_context(|| format!("delete account {account_id}"))?;
-    tracing::info!(%account_id, %beneficiary_id, "account deleted");
-    Ok(())
+    match outcome.status {
+        near_primitives::views::FinalExecutionStatus::SuccessValue(_) => Ok(()),
+        near_primitives::views::FinalExecutionStatus::Failure(e) => {
+            anyhow::bail!("delete account {account_id} failed: {e:?}")
+        }
+        status => anyhow::bail!("Unexpected status deleting {account_id}: {status:?}"),
+    }
 }

@@ -48,8 +48,15 @@ fn version<T>(package: &cargo_metadata::Package) -> Version<T> {
 }
 
 pub struct LoadedContract<T> {
+    pub name: String,
     pub version: Version<T>,
     pub wasm_bytes: Vec<u8>,
+}
+
+impl<T> LoadedContract<T> {
+    pub fn version_key(&self) -> String {
+        format!("{}@{}", self.name, self.version)
+    }
 }
 
 pub fn load_contract<T>(
@@ -61,6 +68,7 @@ pub fn load_contract<T>(
 
     let bytes = get_contract_wasm_bytes(&metadata, package)?;
     Ok(LoadedContract {
+        name: package.name.to_string(),
         wasm_bytes: bytes,
         version: version(package),
     })
@@ -91,6 +99,7 @@ pub fn build_contract<T>(
 
     let bytes = get_contract_wasm_bytes(&metadata, package)?;
     Ok(LoadedContract {
+        name: package.name.to_string(),
         wasm_bytes: bytes,
         version: version(package),
     })

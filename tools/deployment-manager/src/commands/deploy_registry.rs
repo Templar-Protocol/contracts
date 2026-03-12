@@ -1,6 +1,5 @@
 use anyhow::Context;
 use near_fetch::ops::Function;
-use near_primitives::views::FinalExecutionStatus;
 use near_sdk::serde_json::json;
 use templar_tools_common::version;
 
@@ -26,34 +25,20 @@ impl DeployRegistry {
             .load_contract::<version::Registry>(ctx, REGISTRY_PACKAGE)?;
         tracing::info!(version = %loaded_contract.version, "Deploying registry");
 
-        let result = if self.no_init {
-            ctx.near
-                .batch(&self.signer.signer(), &self.signer.account_id)
+        let signer = self.signer.signer();
+        if self.no_init {
+            ctx.batch(&signer, &self.signer.account_id)
                 .deploy(&loaded_contract.wasm_bytes)
                 .transact()
                 .await
-                .context("deploy registry without init")?
+                .context("deploy registry without init")?;
         } else {
-            ctx.near
-                .batch(&self.signer.signer(), &self.signer.account_id)
+            ctx.batch(&signer, &self.signer.account_id)
                 .deploy(&loaded_contract.wasm_bytes)
                 .call(Function::new("new").args_json(json!({})).max_gas())
                 .transact()
                 .await
-                .context("deploy registry with init")?
-        };
-
-        tracing::info!(transaction_hash = %result.transaction.hash, "Deploy registry transaction submitted");
-
-        // Ensure transaction was successful
-        match result.status {
-            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                anyhow::bail!("Deploy registry failed: transaction not started");
-            }
-            FinalExecutionStatus::Failure(e) => {
-                anyhow::bail!("Deploy registry failed: {e}");
-            }
-            FinalExecutionStatus::SuccessValue(_) => {}
+                .context("deploy registry with init")?;
         }
 
         tracing::info!("Registry deployed successfully");

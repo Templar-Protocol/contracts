@@ -3,6 +3,8 @@ use near_crypto::SecretKey;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 
+use crate::commands::SignerArgs;
+
 use super::remove_market::RemoveMarket;
 
 /// Remove every market listed in a registry's deployments.
@@ -14,10 +16,15 @@ use super::remove_market::RemoveMarket;
 #[derive(clap::Args, Debug)]
 pub struct RemoveAllMarkets {
     /// Secret key authorised on all market accounts
-    #[arg(long, env = "SECRET_KEY")]
+    #[arg(long)]
     secret_key: SecretKey,
+    /// Registry account containing the list of markets to remove.
     #[arg(long)]
     registry_id: AccountId,
+    /// Beneficiary account to receive the NEAR balance from each removed
+    /// market. If not provided, the registry account receives the balance.
+    #[arg(long)]
+    beneficiary_id: Option<AccountId>,
 }
 
 impl RemoveAllMarkets {
@@ -34,13 +41,17 @@ impl RemoveAllMarkets {
 
         tracing::info!(count = deployments.len(), "Removing markets");
 
+        let beneficiary_id = self.beneficiary_id.as_ref().unwrap_or(&self.registry_id);
+
         for market_id in deployments {
             tracing::info!(%market_id, "Removing market");
-            if let Err(error) = RemoveMarket::new(
-                market_id.clone(),
-                self.secret_key.clone(),
-                self.registry_id.clone(),
-            )
+            if let Err(error) = (RemoveMarket {
+                signer: SignerArgs {
+                    account_id: market_id.clone(),
+                    secret_key: self.secret_key.clone(),
+                },
+                beneficiary_id: beneficiary_id.clone(),
+            })
             .run(ctx)
             .await
             {

@@ -29,13 +29,11 @@ impl RemoveRegistry {
             .await?;
 
         tracing::info!(%registry_id, beneficiary_id = %self.beneficiary_id, "Deleting registry account");
-        near::delete_account(
-            &ctx.near,
-            &self.signer.signer(),
-            &registry_id,
-            &self.beneficiary_id,
-        )
-        .await?;
+        let signer = self.signer.signer();
+        ctx.batch(&signer, &registry_id)
+            .delete_account(&self.beneficiary_id)
+            .transact()
+            .await?;
 
         Ok(())
     }
