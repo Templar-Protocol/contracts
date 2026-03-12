@@ -527,11 +527,11 @@ fn test_rbac_user_cannot_pause(mut rbac_vault: RbacVault) {
 fn test_restrictions_blacklist_blocks_deposit(mut rbac_vault: RbacVault) {
     use templar_vault_kernel::Restrictions;
 
-    let curator = curator_addr();
+    let sentinel = sentinel_addr();
     let user = user_addr();
 
     rbac_vault
-        .set_restrictions(curator, Some(Restrictions::Blacklist(vec![user])))
+        .set_restrictions(sentinel, Some(Restrictions::Blacklist(vec![user])))
         .unwrap();
 
     let result = rbac_vault.deposit(user, user, 1000, 0, 100);
