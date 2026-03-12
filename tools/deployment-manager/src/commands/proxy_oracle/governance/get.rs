@@ -18,11 +18,7 @@ pub struct GetProposal {
 impl GetProposal {
     #[tracing::instrument(skip_all, name = "governance_get", fields(oracle_id = %self.oracle_id, id = self.id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let ttl_ms: U64 = ctx
-            .near
-            .view(&self.oracle_id, "gov_ttl_ms")
-            .await?
-            .json()?;
+        let ttl_ms: U64 = ctx.near.view(&self.oracle_id, "gov_ttl_ms").await?.json()?;
 
         let proposal: Option<Proposal<Operation>> = ctx
             .near
@@ -45,7 +41,11 @@ impl GetProposal {
 
         println!("{}: {}", style("Proposal").bold(), self.id);
         println!("{}: {}", style("Created by").bold(), proposal.created_by);
-        println!("{}: {}ms", style("Created at").bold(), proposal.created_at_ms.0);
+        println!(
+            "{}: {}ms",
+            style("Created at").bold(),
+            proposal.created_at_ms.0
+        );
         println!("{}: {}ms", style("TTL").bold(), ttl_ms.0);
 
         if executable {
@@ -71,7 +71,7 @@ impl GetProposal {
                         println!(
                             "    proxy: {} entries, aggregator={:?}",
                             proxy.entries.len(),
-                            proxy.aggregator.sample,
+                            proxy.aggregator.method,
                         );
                     }
                     None => {

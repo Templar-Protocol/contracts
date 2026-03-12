@@ -1,3 +1,4 @@
+use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::{
@@ -15,6 +16,9 @@ pub struct GetProxy {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
     price_id: CliPriceIdentifier,
+    /// Output the raw JSON representation of the proxy
+    #[arg(long)]
+    json: bool,
 }
 
 impl GetProxy {
@@ -34,18 +38,27 @@ impl GetProxy {
             return Ok(());
         };
 
-        println!("Aggregator: {:?}", proxy.aggregator.sample);
-        if let Some(max_age) = proxy.aggregator.filter.max_age {
-            println!("  max_age: {max_age}");
-        }
-        if let Some(max_clock_drift) = proxy.aggregator.filter.max_clock_drift {
-            println!("  max_clock_drift: {max_clock_drift}");
-        }
-        if let Some(min_sources) = proxy.aggregator.filter.min_sources {
-            println!("  min_sources: {min_sources}");
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&proxy)?);
+            return Ok(());
         }
 
-        println!("\nEntries ({}):", proxy.entries.len());
+        println!(
+            "{}: {:?}",
+            style("Aggregator").bold(),
+            proxy.aggregator.method,
+        );
+        if let Some(max_age) = proxy.aggregator.filter.max_age {
+            println!("  {}: {max_age}", style("max_age").dim());
+        }
+        if let Some(max_clock_drift) = proxy.aggregator.filter.max_clock_drift {
+            println!("  {}: {max_clock_drift}", style("max_clock_drift").dim());
+        }
+        if let Some(min_sources) = proxy.aggregator.filter.min_sources {
+            println!("  {}: {min_sources}", style("min_sources").dim());
+        }
+
+        println!("\n{} ({}):", style("Entries").bold(), proxy.entries.len());
         for (i, entry) in proxy.entries.iter().enumerate() {
             print_entry(i, entry);
         }
@@ -55,31 +68,41 @@ impl GetProxy {
 }
 
 fn print_entry(index: usize, entry: &Entry) {
-    print!("  [{index}] weight={} ", entry.weight);
+    println!(
+        "  {} {}={}",
+        style(format!("[{index}]")).bold(),
+        style("weight").dim(),
+        entry.weight,
+    );
     match &entry.source {
-        Source::Request(request) => match request {
-            OracleRequest::Pyth(p) => {
-                println!("Pyth oracle={} price_id={}", p.oracle_id, p.price_id);
-            }
-            OracleRequest::RedStone(p) => {
-                println!("RedStone oracle={} feed_id={}", p.oracle_id, p.price_id);
-            }
-        },
+        Source::Request(request) => {
+            print_oracle_request("    ", request);
+        }
         Source::Transformer(t) => {
-            let request_desc = match &t.request {
-                OracleRequest::Pyth(p) => {
-                    format!("Pyth oracle={} price_id={}", p.oracle_id, p.price_id)
-                }
-                OracleRequest::RedStone(p) => {
-                    format!("RedStone oracle={} feed_id={}", p.oracle_id, p.price_id)
-                }
-            };
-            println!("Transformer {request_desc}");
+            println!("    {}", style("Transformer").cyan());
+            print_oracle_request("      ", &t.request);
             println!(
-                "      call: {}.{}",
-                t.call.account_id, t.call.method_name
+                "      {}: {}.{}",
+                style("call").dim(),
+                t.call.account_id,
+                t.call.method_name,
             );
-            println!("      action: {:?}", t.action);
+            println!("      {}: {:?}", style("action").dim(), t.action);
+        }
+    }
+}
+
+fn print_oracle_request(indent: &str, request: &OracleRequest) {
+    match request {
+        OracleRequest::Pyth(p) => {
+            println!("{indent}{}", style("Pyth").cyan());
+            println!("{indent}  {}: {}", style("oracle").dim(), p.oracle_id);
+            println!("{indent}  {}: {}", style("price_id").dim(), p.price_id);
+        }
+        OracleRequest::RedStone(p) => {
+            println!("{indent}{}", style("RedStone").cyan());
+            println!("{indent}  {}: {}", style("oracle").dim(), p.oracle_id);
+            println!("{indent}  {}: {}", style("feed_id").dim(), p.price_id);
         }
     }
 }

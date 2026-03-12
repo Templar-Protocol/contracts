@@ -27,14 +27,14 @@ fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct Aggregator {
-    pub sample: AggregationMethod,
+    pub method: AggregationMethod,
     pub filter: Filter,
 }
 
 impl Aggregator {
     pub fn median_low(filter: Filter) -> Self {
         Self {
-            sample: AggregationMethod::MedianLow,
+            method: AggregationMethod::MedianLow,
             filter,
         }
     }
@@ -74,7 +74,7 @@ impl Aggregator {
             return None;
         }
 
-        match &self.sample {
+        match &self.method {
             AggregationMethod::MedianLow => {
                 values.sort_unstable();
                 Some(values.swap_remove(weighted_median_low(&values)).0)
