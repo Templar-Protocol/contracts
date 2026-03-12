@@ -12,26 +12,20 @@ pub struct CreateMarket {
     deploy: DeployFromRegistry,
     /// JSON-encoded `MarketConfiguration`
     #[arg(long)]
-    configuration: serde_json::Value,
-    /// Skip validation of --configuration
-    #[arg(long)]
-    skip_validation: bool,
+    configuration: String,
 }
 
 impl CreateMarket {
     #[tracing::instrument(skip_all, name = "market_create")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        if !self.skip_validation {
-            let configuration: MarketConfiguration =
-                serde_json::from_value(self.configuration.clone())
-                    .context("invalid market configuration")?;
+        let configuration: MarketConfiguration =
+            serde_json::from_str(&self.configuration).context("invalid market configuration")?;
 
-            configuration
-                .validate()
-                .context("market configuration validation failed")?;
-        }
+        configuration
+            .validate()
+            .context("market configuration validation failed")?;
 
-        let init_args = serde_json::to_vec(&json!({ "configuration": self.configuration }))?;
+        let init_args = serde_json::to_vec(&json!({ "configuration": configuration }))?;
 
         tracing::info!("Creating market from registry");
         self.deploy
