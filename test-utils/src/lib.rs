@@ -29,7 +29,7 @@ use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
-    oracle::pyth::{self, PriceIdentifier},
+    oracle::pyth::{self, PriceIdentifier, PythTimestamp},
     registry::DeployMode,
     vault::{
         wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
@@ -60,7 +60,7 @@ pub fn to_price(price: f64) -> pyth::Price {
         price: I64((price * 10000.0) as i64),
         conf: U64(0),
         expo: -4,
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     }
 }
 

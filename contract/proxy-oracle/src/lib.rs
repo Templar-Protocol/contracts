@@ -92,7 +92,7 @@ impl Contract {
         }
         let price_ids = HashSet::<PriceIdentifier>::from_iter(price_ids);
 
-        let max_age = Milliseconds::from_s(age);
+        let max_age = Milliseconds::from_secs(age);
 
         let mut invoked = Vec::with_capacity(price_ids.len());
         let mut pyth_requests =

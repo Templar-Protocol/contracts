@@ -14,7 +14,7 @@ use templar_common::{
             governance::{GovernanceInterface, Operation, Proposal},
             Proxy, Source,
         },
-        pyth::{self, PriceIdentifier},
+        pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
         OracleRequest,
     },
@@ -306,7 +306,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
                     price: I64($val),
                     conf: U64(0),
                     expo: 0,
-                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                    publish_time: PythTimestamp::from_secs(
+                        std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
+                    ),
                 })
             )
         };
@@ -319,7 +321,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
                     price: I64($val),
                     conf: U64(0),
                     expo: 0,
-                    publish_time: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                    publish_time: PythTimestamp::from_secs(
+                        std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
+                    ),
                 })
             )
         };

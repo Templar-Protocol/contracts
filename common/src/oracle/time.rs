@@ -29,12 +29,12 @@ impl Milliseconds {
     }
 
     /// Creates a `Milliseconds` value from seconds.
-    pub const fn from_s(value: u64) -> Self {
+    pub const fn from_secs(value: u64) -> Self {
         Self(U64(value.saturating_mul(1000)))
     }
 
     /// Returns the value as seconds, truncated.
-    pub const fn as_s(&self) -> u64 {
+    pub const fn as_secs(&self) -> u64 {
         self.0 .0 / 1000
     }
 

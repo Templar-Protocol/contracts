@@ -186,7 +186,7 @@ pub struct Filter {
     pub min_sources: Option<u32>,
 }
 
-#[allow(clippy::cast_possible_wrap)]
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 #[cfg(test)]
 mod tests {
     use near_sdk::json_types::{I64, U64};
@@ -201,8 +201,8 @@ mod tests {
         }
     }
 
-    fn ms(ms: i64) -> PythTimestamp {
-        PythTimestamp::from_ms(ms)
+    fn secs(s: i64) -> PythTimestamp {
+        PythTimestamp::from_secs(s)
     }
 
     // --- SpecificPrice::cmp ---
@@ -261,7 +261,7 @@ mod tests {
     fn aggregate_single_price_no_conf() {
         // conf=0 means lower==upper==value, so the median is exactly the price value.
         let result = Aggregator::median_low(Filter::default())
-            .aggregate(&[(price(1_000_000, 0, ms(0)), 1)], Milliseconds::zero());
+            .aggregate(&[(price(1_000_000, 0, secs(0)), 1)], Milliseconds::zero());
         assert_eq!(result.unwrap().value, 1_000_000);
     }
 
@@ -269,9 +269,9 @@ mod tests {
     fn aggregate_median_of_three() {
         // Three equal-weight prices: median should be the middle value.
         let prices = [
-            (price(1_000_000, 0, ms(0)), 1),
-            (price(2_000_000, 0, ms(0)), 1),
-            (price(3_000_000, 0, ms(0)), 1),
+            (price(1_000_000, 0, secs(0)), 1),
+            (price(2_000_000, 0, secs(0)), 1),
+            (price(3_000_000, 0, secs(0)), 1),
         ];
         let result =
             Aggregator::median_low(Filter::default()).aggregate(&prices, Milliseconds::zero());
@@ -285,8 +285,8 @@ mod tests {
             ..Default::default()
         };
         let prices = [
-            (price(1_000_000, 0, ms(0)), 1),
-            (price(2_000_000, 0, ms(0)), 1),
+            (price(1_000_000, 0, secs(0)), 1),
+            (price(2_000_000, 0, secs(0)), 1),
         ];
         assert!(Aggregator::median_low(filter)
             .aggregate(&prices, Milliseconds::zero())
@@ -300,8 +300,8 @@ mod tests {
             ..Default::default()
         };
         let prices = [
-            (price(1_000_000, 0, ms(0)), 1),
-            (price(2_000_000, 0, ms(0)), 1),
+            (price(1_000_000, 0, secs(0)), 1),
+            (price(2_000_000, 0, secs(0)), 1),
         ];
         assert!(Aggregator::median_low(filter)
             .aggregate(&prices, Milliseconds::zero())
@@ -314,20 +314,20 @@ mod tests {
     #[case::exactly_at_limit_included(500, 1000, 500, true)]
     #[case::one_over_excluded(499, 1000, 500, false)]
     fn aggregate_max_age_boundary(
-        #[case] publish_time_ms: i64,
-        #[case] now_ms: u64,
-        #[case] max_age_ms: u64,
+        #[case] publish_time_s: i64,
+        #[case] now_s: i64,
+        #[case] max_age_s: u64,
         #[case] included: bool,
     ) {
         // Use two prices: the one under test plus a fresh anchor so aggregate never returns None.
-        let anchor = (price(9_999_999, 0, ms(now_ms as i64)), 1);
-        let under_test = (price(1_000_000, 0, ms(publish_time_ms)), 1);
+        let anchor = (price(9_999_999, 0, secs(now_s)), 1);
+        let under_test = (price(1_000_000, 0, secs(publish_time_s)), 1);
         let filter = Filter {
-            max_age: Some(Milliseconds::from_ms(max_age_ms)),
+            max_age: Some(Milliseconds::from_secs(max_age_s)),
             ..Default::default()
         };
         let result = Aggregator::median_low(filter)
-            .aggregate(&[under_test, anchor], Milliseconds::from_ms(now_ms))
+            .aggregate(&[under_test, anchor], Milliseconds::from_secs(now_s as u64))
             .unwrap();
         if included {
             // Median of [1_000_000, 9_999_999] — the lower value wins median_low.
@@ -343,19 +343,19 @@ mod tests {
     #[case::exactly_at_limit_included(1500, 1000, 500, true)]
     #[case::one_over_excluded(1501, 1000, 500, false)]
     fn aggregate_max_clock_drift_boundary(
-        #[case] publish_time_ms: i64,
-        #[case] now_ms: u64,
-        #[case] max_clock_drift_ms: u64,
+        #[case] publish_time_s: i64,
+        #[case] now_s: i64,
+        #[case] max_clock_drift_s: u64,
         #[case] included: bool,
     ) {
-        let anchor = (price(9_999_999, 0, ms(now_ms as i64)), 1);
-        let under_test = (price(1_000_000, 0, ms(publish_time_ms)), 1);
+        let anchor = (price(9_999_999, 0, secs(now_s)), 1);
+        let under_test = (price(1_000_000, 0, secs(publish_time_s)), 1);
         let filter = Filter {
-            max_clock_drift: Some(Milliseconds::from_ms(max_clock_drift_ms)),
+            max_clock_drift: Some(Milliseconds::from_secs(max_clock_drift_s)),
             ..Default::default()
         };
         let result = Aggregator::median_low(filter)
-            .aggregate(&[under_test, anchor], Milliseconds::from_ms(now_ms))
+            .aggregate(&[under_test, anchor], Milliseconds::from_secs(now_s as u64))
             .unwrap();
         if included {
             assert_eq!(result.value, 1_000_000);
@@ -367,8 +367,8 @@ mod tests {
     #[test]
     fn aggregate_negative_publish_time_excluded() {
         // Negative publish_time can't be converted to u64, so the price is filtered out.
-        let anchor = (price(9_999_999, 0, ms(1000)), 1);
-        let negative_time = (price(1_000_000, 0, ms(-1)), 1);
+        let anchor = (price(9_999_999, 0, secs(1000)), 1);
+        let negative_time = (price(1_000_000, 0, secs(-1)), 1);
         let filter = Filter {
             max_age: Some(Milliseconds::from_ms(500)),
             ..Default::default()

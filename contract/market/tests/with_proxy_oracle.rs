@@ -7,7 +7,7 @@ use templar_common::{
     market::YieldWeights,
     oracle::{
         proxy::{Proxy, Source},
-        pyth::{self, PriceIdentifier},
+        pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
         time::Milliseconds,
         OracleRequest,
@@ -26,7 +26,7 @@ pub fn pyth_price(price: f64) -> pyth::Price {
         price: I64((price * 10000.0) as i64),
         conf: U64(0),
         expo: -4,
-        publish_time: now_ms,
+        publish_time: PythTimestamp::from_ms(now_ms),
     }
 }
 

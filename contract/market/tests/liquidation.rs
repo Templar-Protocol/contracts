@@ -536,6 +536,8 @@ async fn extreme_prices(
     #[case] (new_collateral_price, new_collateral_exponent): (i64, i32),
     #[case] (new_borrow_price, new_borrow_exponent): (i64, i32),
 ) {
+    use templar_common::oracle::pyth::PythTimestamp;
+
     setup_test!(
         worker
         extract(c)
@@ -553,14 +555,14 @@ async fn extreme_prices(
         price: collateral_price.into(),
         conf: 0.into(),
         expo: collateral_exponent,
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     }))
     .await;
     c.set_borrow_asset_price_exact(Some(pyth::Price {
         price: borrow_price.into(),
         conf: 0.into(),
         expo: borrow_exponent,
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     }))
     .await;
 
@@ -580,13 +582,13 @@ async fn extreme_prices(
             price: new_collateral_price.into(),
             conf: 0.into(),
             expo: new_collateral_exponent,
-            publish_time: 0,
+            publish_time: PythTimestamp::from_secs(0),
         })),
         c.set_borrow_asset_price_exact(Some(pyth::Price {
             price: new_borrow_price.into(),
             conf: 0.into(),
             expo: new_borrow_exponent,
-            publish_time: 0,
+            publish_time: PythTimestamp::from_secs(0),
         })),
     );
     let (liquidate, price) = c
