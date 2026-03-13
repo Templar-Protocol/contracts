@@ -8,7 +8,7 @@ use crate::CliContext;
 
 use super::super::CliRole;
 
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+
 
 #[derive(clap::Args, Debug)]
 pub struct RoleSet {
@@ -46,7 +46,7 @@ impl RoleSet {
                         "role": role,
                         "set": set,
                     }))
-                    .deposit(ONE_YOCTO)
+                    .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )
             .transact()

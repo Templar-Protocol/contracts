@@ -1,11 +1,9 @@
 use anyhow::Context;
 use near_fetch::ops::Function;
-use near_sdk::NearToken;
 
 use crate::commands::{FixedContractWasm, SignerArgs};
 
 const MARKET_PACKAGE: &str = "templar-market-contract";
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 
 #[derive(clap::Args, Debug)]
 pub struct DeployMarket {
@@ -34,7 +32,6 @@ impl DeployMarket {
             .call(
                 Function::new("new")
                     .args(init_args)
-                    .deposit(ONE_YOCTO)
                     .max_gas(),
             )
             .transact()

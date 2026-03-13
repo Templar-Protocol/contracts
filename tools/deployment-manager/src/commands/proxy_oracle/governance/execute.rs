@@ -6,7 +6,7 @@ use near_sdk::NearToken;
 use crate::commands::SignerArgs;
 use crate::CliContext;
 
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+
 
 #[derive(clap::Args, Debug)]
 pub struct ExecuteProposal {
@@ -28,7 +28,7 @@ impl ExecuteProposal {
             .call(
                 Function::new("gov_execute")
                     .args_json(json!({ "id": self.id }))
-                    .deposit(ONE_YOCTO)
+                    .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )
             .transact()

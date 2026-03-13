@@ -3,7 +3,7 @@ use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+
 
 #[derive(clap::Args, Debug)]
 pub struct RecoverNep141 {
@@ -46,7 +46,7 @@ impl RecoverNep141 {
                             "receiver_id": &self.beneficiary_id,
                             "amount": U128(balance),
                         }))
-                        .deposit(ONE_YOCTO),
+                        .deposit(NearToken::from_yoctonear(1)),
                 )
                 .transact()
                 .await
@@ -64,7 +64,7 @@ impl RecoverNep141 {
             .call(
                 Function::new("storage_unregister")
                     .args_json(json!({ "force": true }))
-                    .deposit(ONE_YOCTO)
+                    .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )
             .transact()

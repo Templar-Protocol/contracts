@@ -1,8 +1,6 @@
 use near_sdk::AccountId;
 
-use crate::{near, CliContext};
-
-use crate::commands::SignerArgs;
+use crate::commands::{self, SignerArgs};
 
 #[derive(clap::Args, Debug)]
 pub struct RedStoneAdapterRemove {
@@ -14,18 +12,8 @@ pub struct RedStoneAdapterRemove {
 
 impl RedStoneAdapterRemove {
     #[tracing::instrument(skip_all, name = "redstone_adapter_remove", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
-    pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        if !near::account_exists(&ctx.near, &self.signer.account_id).await? {
-            tracing::info!(account_id = %self.signer.account_id, "Account does not exist, nothing to do");
-            return Ok(());
-        }
-
-        let signer = self.signer.signer();
-        ctx.batch(&signer, &self.signer.account_id)
-            .delete_account(&self.beneficiary_id)
-            .transact()
-            .await?;
-
+    pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
+        commands::delete_account(ctx, &self.signer, &self.beneficiary_id).await?;
         Ok(())
     }
 }

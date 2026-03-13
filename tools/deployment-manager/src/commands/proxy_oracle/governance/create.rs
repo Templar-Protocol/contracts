@@ -10,7 +10,7 @@ use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
 use crate::commands::SignerArgs;
 use crate::CliContext;
 
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+
 
 #[derive(clap::Args, Debug)]
 pub struct CreateProposal {
@@ -91,7 +91,7 @@ impl CreateProposal {
                         "id": id,
                         "operation": operation,
                     }))
-                    .deposit(ONE_YOCTO)
+                    .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )
             .transact()

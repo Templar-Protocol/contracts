@@ -2,7 +2,7 @@ use near_sdk::AccountId;
 use templar_common::market::MarketConfiguration;
 
 use crate::{
-    commands::{recover_nep141::RecoverNep141, SignerArgs},
+    commands::{self, recover_nep141::RecoverNep141, SignerArgs},
     near, CliContext,
 };
 
@@ -58,11 +58,7 @@ impl MarketRemove {
             }
         }
 
-        let signer = self.signer.signer();
-        ctx.batch(&signer, &self.signer.account_id)
-            .delete_account(&self.beneficiary_id)
-            .transact()
-            .await?;
+        commands::delete_account(ctx, &self.signer, &self.beneficiary_id).await?;
 
         Ok(())
     }

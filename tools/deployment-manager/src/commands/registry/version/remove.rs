@@ -6,7 +6,7 @@ use near_sdk::{AccountId, NearToken};
 use crate::commands::SignerArgs;
 use crate::CliContext;
 
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+
 
 /// Remove one or all versions from a registry.
 #[derive(clap::Args, Debug)]
@@ -76,7 +76,7 @@ async fn remove_one(
         .call(
             Function::new("remove_version")
                 .args_json(json!({ "version_key": version_key }))
-                .deposit(ONE_YOCTO)
+                .deposit(NearToken::from_yoctonear(1))
                 .max_gas(),
         )
         .transact()

@@ -1,10 +1,8 @@
 use near_fetch::ops::Function;
-use near_sdk::NearToken;
 
 use crate::commands::{FixedContractWasm, SignerArgs};
 
 const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-contract";
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 
 #[derive(clap::Args, Debug)]
 pub struct DeployProxyOracle {
@@ -29,7 +27,6 @@ impl DeployProxyOracle {
             .call(
                 Function::new("new")
                     .args_json(serde_json::json!({}))
-                    .deposit(ONE_YOCTO)
                     .max_gas(),
             )
             .transact()
