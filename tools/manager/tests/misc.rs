@@ -4,9 +4,7 @@ use common::{setup_ctx, signer_args};
 use near_sdk::{json_types::U128, serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_deployment_manager::commands::{
-    recover_nep141::RecoverNep141, storage_deposit::StorageDeposit,
-};
+use templar_manager::commands::{recover_nep141::RecoverNep141, storage_deposit::StorageDeposit};
 use test_utils::{
     accounts,
     controller::{ft::FtController, storage_management::StorageManagementController},

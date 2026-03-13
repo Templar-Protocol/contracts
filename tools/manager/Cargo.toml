@@ -1,9 +1,13 @@
 [package]
-name = "templar-deployment-manager"
+name = "templar-manager"
 version = "0.1.0"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+
+[[bin]]
+name = "tmplrmgr"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true

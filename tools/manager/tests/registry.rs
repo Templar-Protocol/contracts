@@ -6,7 +6,7 @@ use near_sdk::serde_json::json;
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::registry::DeployMode;
-use templar_deployment_manager::commands::{
+use templar_manager::commands::{
     registry::{
         deploy::DeployRegistry,
         deployment::{clear::ClearDeployments, list::ListDeployments},
@@ -36,7 +36,7 @@ fn market_package() -> Package {
 }
 
 /// Helper: deploy a registry contract on the given account.
-async fn deploy_registry(ctx: &templar_deployment_manager::CliContext, signer: SignerArgs) {
+async fn deploy_registry(ctx: &templar_manager::CliContext, signer: SignerArgs) {
     DeployRegistry {
         signer,
         contract: no_build(),
@@ -49,7 +49,7 @@ async fn deploy_registry(ctx: &templar_deployment_manager::CliContext, signer: S
 
 /// Helper: add a market version to the registry.
 async fn add_market_version(
-    ctx: &templar_deployment_manager::CliContext,
+    ctx: &templar_manager::CliContext,
     signer: &SignerArgs,
     registry_id: &near_sdk::AccountId,
     version_key: &str,
@@ -70,7 +70,7 @@ async fn add_market_version(
 
 /// List versions via view call (returns version keys).
 async fn view_versions(
-    ctx: &templar_deployment_manager::CliContext,
+    ctx: &templar_manager::CliContext,
     registry_id: &near_sdk::AccountId,
 ) -> Vec<String> {
     ctx.near()

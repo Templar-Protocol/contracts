@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use near_workspaces::{network::Sandbox, Account, Worker};
-use templar_deployment_manager::{commands::SignerArgs, CliContext};
+use templar_manager::{commands::SignerArgs, CliContext};
 
 /// Create a [`CliContext`] pointing at the sandbox RPC.
 ///

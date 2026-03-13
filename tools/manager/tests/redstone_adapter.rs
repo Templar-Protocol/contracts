@@ -8,7 +8,7 @@ use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{oracle::redstone::Config, registry::DeployMode};
-use templar_deployment_manager::commands::{
+use templar_manager::commands::{
     redstone_adapter::{
         config::AdapterConfig,
         create::{ConfigSource, CreateRedStoneAdapter},
@@ -54,10 +54,7 @@ fn prod_config_with_relaxed_timestamps() -> ConfigSource {
 }
 
 /// Helper: deploy a RedStone adapter on the given account.
-async fn deploy_adapter(
-    ctx: &templar_deployment_manager::CliContext,
-    account: &near_workspaces::Account,
-) {
+async fn deploy_adapter(ctx: &templar_manager::CliContext, account: &near_workspaces::Account) {
     DeployRedStoneAdapter {
         signer: signer_args(account),
         contract_wasm: FixedContractWasm { no_build: true },

@@ -6,7 +6,7 @@ use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::registry::DeployMode;
-use templar_deployment_manager::commands::{
+use templar_manager::commands::{
     proxy_oracle::{
         create::CreateProxyOracle,
         deploy::DeployProxyOracle,
@@ -34,7 +34,7 @@ fn no_build() -> FixedContractWasm {
 
 /// Helper: deploy a proxy oracle on the given account.
 async fn deploy_proxy_oracle(
-    ctx: &templar_deployment_manager::CliContext,
+    ctx: &templar_manager::CliContext,
     account: &near_workspaces::Account,
 ) {
     DeployProxyOracle {

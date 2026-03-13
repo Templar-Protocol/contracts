@@ -8,7 +8,7 @@ use templar_common::{
     market::{MarketConfiguration, YieldWeights},
     registry::DeployMode,
 };
-use templar_deployment_manager::commands::{
+use templar_manager::commands::{
     market::{create::CreateMarket, deploy::DeployMarket, remove::MarketRemove},
     registry::{
         deploy::DeployRegistry,

@@ -12510,37 +12510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-deployment-manager"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "borsh 1.5.7",
- "chrono",
- "clap",
- "console",
- "hex",
- "hex-literal",
- "near-contract-standards",
- "near-crypto 0.31.1",
- "near-fetch",
- "near-primitives 0.31.1",
- "near-sdk",
- "near-workspaces 0.21.0",
- "rstest",
- "serde",
- "serde_json",
- "templar-common",
- "templar-redstone-bridge",
- "templar-tools-common",
- "test-utils",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "templar-funding-bridge"
 version = "0.1.0"
 dependencies = [
@@ -12638,6 +12607,37 @@ dependencies = [
  "templar-common",
  "test-utils",
  "tokio",
+]
+
+[[package]]
+name = "templar-manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "borsh 1.5.7",
+ "chrono",
+ "clap",
+ "console",
+ "hex",
+ "hex-literal",
+ "near-contract-standards",
+ "near-crypto 0.31.1",
+ "near-fetch",
+ "near-primitives 0.31.1",
+ "near-sdk",
+ "near-workspaces 0.21.0",
+ "rstest",
+ "serde",
+ "serde_json",
+ "templar-common",
+ "templar-redstone-bridge",
+ "templar-tools-common",
+ "test-utils",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
