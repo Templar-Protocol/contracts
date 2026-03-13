@@ -25,14 +25,15 @@ serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
 templar-redstone-bridge.workspace = true
 templar-tools-common.workspace = true
+dirs.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 console = "0.16.2"
 hex.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 hex-literal.workspace = true
 near-workspaces.workspace = true
 rstest.workspace = true

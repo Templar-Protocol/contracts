@@ -101,6 +101,42 @@ impl CliContext {
     }
 }
 
+fn init_tracing(verbose: u8) {
+    use tracing_subscriber::{
+        fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+    };
+
+    let console_default = match verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    };
+
+    let console_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(console_default));
+    let console_layer = fmt::layer().with_filter(console_filter);
+
+    let registry = tracing_subscriber::registry().with(console_layer);
+
+    // Attempt to set up file logging; fall back to console-only if it fails.
+    let log_dir = dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .map(|d| d.join(env!("CARGO_PKG_NAME")).join("logs"));
+
+    if let Some(log_dir) = log_dir {
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "log");
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_writer(file_appender)
+            .with_filter(EnvFilter::new("debug"));
+        registry.with(file_layer).init();
+        tracing::debug!(path = %log_dir.display(), "File logging enabled");
+    } else {
+        registry.init();
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Manage the registry contract and its versions
@@ -125,19 +161,7 @@ enum Commands {
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let default_level = match cli.verbose {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
-    };
-
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
-        )
-        .init();
+    init_tracing(cli.verbose);
 
     tracing::info!(network = %cli.network, "Connecting");
 
