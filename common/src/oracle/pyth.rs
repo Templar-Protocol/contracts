@@ -66,7 +66,30 @@ pub struct Price {
     /// The exponent
     pub expo: i32,
     /// Unix timestamp of when this price was computed
-    pub publish_time: i64,
+    pub publish_time: PythTimestamp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+#[serde(transparent)]
+pub struct PythTimestamp(i64);
+
+impl PythTimestamp {
+    pub fn from_secs(secs: i64) -> Self {
+        Self(secs)
+    }
+
+    pub fn from_ms(ms: i64) -> Self {
+        Self(ms / 1000)
+    }
+
+    pub fn as_secs(&self) -> i64 {
+        self.0
+    }
+
+    pub fn as_ms(&self) -> Option<i64> {
+        self.0.checked_mul(1000)
+    }
 }
 
 #[ext_contract(ext_pyth)]
@@ -105,4 +128,20 @@ pub trait Pyth {
         price_ids: Vec<PriceIdentifier>,
         age: u64,
     ) -> HashMap<PriceIdentifier, Option<Price>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_parse_real_price() {
+        let real_price = r#"{ "conf": "2696300000", "expo": -8, "price": "7154901300000", "publish_time": 1773381271 }"#;
+
+        let parsed = near_sdk::serde_json::from_str::<Price>(real_price).unwrap();
+        assert_eq!(parsed.price.0, 7_154_901_300_000);
+        assert_eq!(parsed.conf.0, 2_696_300_000);
+        assert_eq!(parsed.expo, -8);
+        assert_eq!(parsed.publish_time.as_secs(), 1_773_381_271);
+    }
 }

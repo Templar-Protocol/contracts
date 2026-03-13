@@ -94,7 +94,7 @@ impl<'a> CallbackHandler<'a> {
         }?;
 
         // Filter for staleness
-        let Some(publish_time) = Milliseconds::try_from_secs_i64(price.publish_time) else {
+        let Some(publish_time) = Milliseconds::try_from_pyth(price.publish_time) else {
             near_sdk::log!("Failed to convert publish_time");
             return None;
         };

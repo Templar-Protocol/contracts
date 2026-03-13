@@ -23,7 +23,7 @@ impl FeedData {
             conf: U64(0),
             expo: exponent.checked_sub(super::DECIMALS)?,
             // Publish time is in seconds, but the RedStone data uses milliseconds.
-            publish_time: self.package_timestamp.as_s().try_into().ok()?,
+            publish_time: self.package_timestamp.try_to_pyth()?,
         })
     }
 }

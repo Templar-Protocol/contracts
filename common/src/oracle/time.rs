@@ -2,12 +2,23 @@ use std::ops::{Add, AddAssign, Sub, SubAssign};
 
 use near_sdk::{json_types::U64, near};
 
+use super::pyth::PythTimestamp;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
 #[serde(transparent)]
 pub struct Milliseconds(U64);
 
 impl Milliseconds {
+    pub fn try_from_pyth(value: PythTimestamp) -> Option<Self> {
+        let ms = value.as_ms()?;
+        Some(Self(U64(u64::try_from(ms).ok()?)))
+    }
+
+    pub fn try_to_pyth(&self) -> Option<PythTimestamp> {
+        Some(PythTimestamp::from_ms(i64::try_from(self.as_ms()).ok()?))
+    }
+
     pub const fn zero() -> Self {
         Self(U64(0))
     }
@@ -30,12 +41,6 @@ impl Milliseconds {
     /// Returns the value as milliseconds.
     pub const fn as_ms(&self) -> u64 {
         self.0 .0
-    }
-
-    /// Creates a `Milliseconds` value from seconds, returning `None` if the value is negative.
-    pub fn try_from_secs_i64(value: i64) -> Option<Self> {
-        let ms = value.checked_mul(1000)?;
-        Some(Self(U64(u64::try_from(ms).ok()?)))
     }
 
     pub fn now() -> Self {

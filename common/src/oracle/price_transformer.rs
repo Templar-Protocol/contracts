@@ -127,7 +127,7 @@ impl ProxyPriceTransformer {
 
 #[cfg(test)]
 mod tests {
-    use crate::dec;
+    use crate::{dec, oracle::pyth::PythTimestamp};
 
     use super::*;
 
@@ -138,7 +138,7 @@ mod tests {
             price: 1234.into(),
             conf: 4.into(),
             expo: 5,
-            publish_time: 0.into(),
+            publish_time: PythTimestamp::from_secs(0),
         };
 
         let price_after = transformation
@@ -151,7 +151,7 @@ mod tests {
                 price: 1480.into(),
                 conf: 5.into(),
                 expo: 5,
-                publish_time: 0.into(),
+                publish_time: PythTimestamp::from_secs(0),
             },
         );
     }
