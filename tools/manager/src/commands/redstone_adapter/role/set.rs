@@ -8,8 +8,6 @@ use crate::CliContext;
 
 use super::super::CliRole;
 
-
-
 #[derive(clap::Args, Debug)]
 pub struct RoleSet {
     #[command(flatten)]

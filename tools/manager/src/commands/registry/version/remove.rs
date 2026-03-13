@@ -6,8 +6,6 @@ use near_sdk::{AccountId, NearToken};
 use crate::commands::SignerArgs;
 use crate::CliContext;
 
-
-
 /// Remove one or all versions from a registry.
 #[derive(clap::Args, Debug)]
 pub struct VersionRemove {

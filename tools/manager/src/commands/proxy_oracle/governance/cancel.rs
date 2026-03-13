@@ -6,8 +6,6 @@ use near_sdk::NearToken;
 use crate::commands::SignerArgs;
 use crate::CliContext;
 
-
-
 #[derive(clap::Args, Debug)]
 pub struct CancelProposal {
     #[command(flatten)]

@@ -32,11 +32,7 @@ impl DeployRedStoneAdapter {
 
         ctx.batch(&signer, &self.signer.account_id)
             .deploy(&loaded_contract.wasm_bytes)
-            .call(
-                Function::new("new")
-                    .args(init_args)
-                    .max_gas(),
-            )
+            .call(Function::new("new").args(init_args).max_gas())
             .transact()
             .await?;
 

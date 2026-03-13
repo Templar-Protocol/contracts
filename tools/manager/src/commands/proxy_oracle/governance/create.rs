@@ -10,8 +10,6 @@ use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
 use crate::commands::SignerArgs;
 use crate::CliContext;
 
-
-
 #[derive(clap::Args, Debug)]
 pub struct CreateProposal {
     #[command(flatten)]
