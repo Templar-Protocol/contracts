@@ -42,6 +42,13 @@ impl Aggregator {
         }
     }
 
+    pub fn priority(filter: Filter) -> Self {
+        Self {
+            method: AggregationMethod::Priority,
+            filter,
+        }
+    }
+
     pub fn aggregate(
         &self,
         prices: &[(pyth::Price, u32)],
@@ -81,6 +88,15 @@ impl Aggregator {
             AggregationMethod::MedianLow => {
                 values.sort_unstable();
                 Some(values.swap_remove(weighted_median_low(&values)).0)
+            }
+            AggregationMethod::Priority => {
+                let mut highest_weighted_ix = 0;
+                for (i, (_p, w)) in values.iter().enumerate().skip(1) {
+                    if *w > values[highest_weighted_ix].1 {
+                        highest_weighted_ix = i;
+                    }
+                }
+                Some(values.swap_remove(highest_weighted_ix).0)
             }
         }
     }
@@ -169,6 +185,8 @@ pub enum AggregationMethod {
     /// Selects the median value from the sources, selecting the lower value
     /// in case of an even number of sources.
     MedianLow,
+    /// Selects the value of the source with the highest weight.
+    Priority,
 }
 
 /// Filter configuration for the aggregation.
@@ -378,6 +396,99 @@ mod tests {
             .unwrap();
         assert_eq!(result.value, 9_999_999);
     }
+
+    // --- Priority aggregation ---
+
+    #[test]
+    fn priority_empty_returns_none() {
+        assert!(Aggregator::priority(Filter::default())
+            .aggregate(&[], Milliseconds::zero())
+            .is_none());
+    }
+
+    #[test]
+    fn priority_single_price() {
+        let result = Aggregator::priority(Filter::default())
+            .aggregate(&[(price(1_000_000, 0, secs(0)), 1)], Milliseconds::zero());
+        assert_eq!(result.unwrap().value, 1_000_000);
+    }
+
+    #[test]
+    fn priority_selects_highest_weight() {
+        let prices = [
+            (price(1_000_000, 0, secs(0)), 1),
+            (price(2_000_000, 0, secs(0)), 10),
+            (price(3_000_000, 0, secs(0)), 5),
+        ];
+        let result = Aggregator::priority(Filter::default())
+            .aggregate(&prices, Milliseconds::zero())
+            .unwrap();
+        // Highest weight is 10 → price 2_000_000 (lower bound with conf=0).
+        assert_eq!(result.value, 2_000_000);
+    }
+
+    #[test]
+    fn priority_equal_weights_selects_first() {
+        let prices = [
+            (price(1_000_000, 0, secs(0)), 5),
+            (price(2_000_000, 0, secs(0)), 5),
+            (price(3_000_000, 0, secs(0)), 5),
+        ];
+        let result = Aggregator::priority(Filter::default())
+            .aggregate(&prices, Milliseconds::zero())
+            .unwrap();
+        // All weights equal → first entry wins (lower bound of first price).
+        assert_eq!(result.value, 1_000_000);
+    }
+
+    #[test]
+    fn priority_with_confidence_returns_lower_bound() {
+        // conf=100 splits into lower (900) and upper (1100), both weight 10.
+        // The lower bound comes first in iteration, so it's selected.
+        let prices = [
+            (price(1_000, 100, secs(0)), 10),
+            (price(2_000, 0, secs(0)), 1),
+        ];
+        let result = Aggregator::priority(Filter::default())
+            .aggregate(&prices, Milliseconds::zero())
+            .unwrap();
+        assert_eq!(result.value, 1_000 - 100);
+    }
+
+    #[test]
+    fn priority_respects_max_age_filter() {
+        let filter = Filter {
+            max_age: Some(Milliseconds::from_secs(500)),
+            ..Default::default()
+        };
+        // High-weight price is stale, low-weight price is fresh.
+        let prices = [
+            (price(1_000_000, 0, secs(0)), 100), // stale at now=1000, max_age=500
+            (price(2_000_000, 0, secs(900)), 1), // fresh
+        ];
+        let result = Aggregator::priority(filter)
+            .aggregate(&prices, Milliseconds::from_secs(1000))
+            .unwrap();
+        // Stale price filtered out, only fresh one remains.
+        assert_eq!(result.value, 2_000_000);
+    }
+
+    #[test]
+    fn priority_min_sources_not_met_returns_none() {
+        let filter = Filter {
+            min_sources: Some(3),
+            ..Default::default()
+        };
+        let prices = [
+            (price(1_000_000, 0, secs(0)), 10),
+            (price(2_000_000, 0, secs(0)), 1),
+        ];
+        assert!(Aggregator::priority(filter)
+            .aggregate(&prices, Milliseconds::zero())
+            .is_none());
+    }
+
+    // --- weighted_median_low ---
 
     #[rstest::rstest]
     #[test]
