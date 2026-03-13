@@ -11,7 +11,6 @@ use commands::{
 use templar_common::utils::Network;
 
 pub use templar_tools_common::near;
-use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
 #[command(version, about = "CLI tool for deploying and managing Templar markets")]
@@ -99,6 +98,7 @@ impl CliContext {
 }
 
 fn init_tracing(verbose: u8) {
+    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{
         fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
     };
