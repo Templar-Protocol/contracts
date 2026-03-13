@@ -21,19 +21,19 @@ const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_
 pub struct Package {
     /// Market contract
     #[arg(long)]
-    market: bool,
+    pub market: bool,
     /// Universal account contract
     #[arg(long)]
-    uac: bool,
+    pub uac: bool,
     /// Proxy oracle contract
     #[arg(long)]
-    proxy_oracle: bool,
+    pub proxy_oracle: bool,
     /// RedStone adapter contract
     #[arg(long)]
-    redstone_adapter: bool,
+    pub redstone_adapter: bool,
     /// Specify a contract by package name
     #[arg(long)]
-    package: Option<String>,
+    pub package: Option<String>,
 }
 
 impl Package {
@@ -55,26 +55,26 @@ impl Package {
 #[derive(Args, Debug)]
 pub struct AddVersion {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[command(flatten)]
-    contract_wasm: FixedContractWasm,
+    pub contract_wasm: FixedContractWasm,
     #[command(flatten)]
-    package: Package,
+    pub package: Package,
     /// Registry contract account ID
     #[arg(long)]
-    registry_id: AccountId,
+    pub registry_id: AccountId,
     /// Version key to store in the registry
     ///
     /// If not provided, the version key will be derived from the package version.
     #[arg(long)]
-    version_key: Option<String>,
+    pub version_key: Option<String>,
     /// Deployment mode
     #[arg(long, default_value_t = DeployMode::Normal)]
-    deploy_mode: DeployMode,
+    pub deploy_mode: DeployMode,
     /// Deposit to attach in NEAR. If not provided, it will be estimated based
     /// on the contract size and the deploy mode.
     #[arg(long)]
-    deposit: Option<NearToken>,
+    pub deposit: Option<NearToken>,
 }
 
 impl AddVersion {

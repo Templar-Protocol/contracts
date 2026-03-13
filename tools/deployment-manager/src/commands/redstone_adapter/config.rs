@@ -7,7 +7,7 @@ use crate::CliContext;
 pub struct AdapterConfig {
     /// RedStone adapter contract account ID
     #[arg(long)]
-    adapter_id: AccountId,
+    pub adapter_id: AccountId,
 }
 
 impl AdapterConfig {

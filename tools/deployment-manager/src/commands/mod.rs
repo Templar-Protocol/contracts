@@ -59,11 +59,11 @@ impl ContractWasm {
 pub struct SignerArgs {
     /// Account ID to sign transactions as
     #[arg(long, env = "ACCOUNT_ID")]
-    account_id: AccountId,
+    pub account_id: AccountId,
 
     /// Ed25519 private key for signing (ed25519:...)
     #[arg(long, env = "SECRET_KEY")]
-    secret_key: SecretKey,
+    pub secret_key: SecretKey,
 }
 
 impl std::fmt::Debug for SignerArgs {
@@ -82,6 +82,13 @@ impl std::fmt::Display for SignerArgs {
 }
 
 impl SignerArgs {
+    pub fn new(account_id: AccountId, secret_key: SecretKey) -> Self {
+        Self {
+            account_id,
+            secret_key,
+        }
+    }
+
     pub fn signer(&self) -> Signer {
         InMemorySigner::from_secret_key(self.account_id.clone(), self.secret_key.clone())
     }
@@ -112,25 +119,25 @@ pub async fn delete_account(
 #[derive(Args, Debug)]
 pub struct DeployFromRegistry {
     #[arg(long)]
-    registry_id: AccountId,
+    pub registry_id: AccountId,
     /// Version key to deploy from the registry
     #[arg(long)]
-    version_key: String,
+    pub version_key: String,
     /// Name of the contract that will be deployed
     ///
     /// This will be used as the prefix for the account ID.
     #[arg(long)]
-    name: String,
+    pub name: String,
     /// Additional public keys to add as full access keys to the new account.
     /// The signer's public key is included by default unless --no-signer-full-access-key is set.
     #[arg(long)]
-    with_full_access_key: Vec<PublicKey>,
+    pub with_full_access_key: Vec<PublicKey>,
     /// Do not add the signer's public key as a full access key on the new account
     #[arg(long)]
-    no_signer_full_access_key: bool,
+    pub no_signer_full_access_key: bool,
     /// Deposit to send with the deployment
     #[arg(long)]
-    deposit: Option<NearToken>,
+    pub deposit: Option<NearToken>,
 }
 
 impl DeployFromRegistry {

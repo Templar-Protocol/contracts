@@ -10,11 +10,11 @@ const REGISTRY_PACKAGE: &str = "templar-registry-contract";
 #[derive(clap::Args, Debug)]
 pub struct DeployRegistry {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[command(flatten)]
-    contract: FixedContractWasm,
+    pub contract: FixedContractWasm,
     #[arg(long)]
-    no_init: bool,
+    pub no_init: bool,
 }
 
 impl DeployRegistry {

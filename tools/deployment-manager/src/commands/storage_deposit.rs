@@ -14,15 +14,15 @@ pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
 #[derive(clap::Args, Debug)]
 pub struct StorageDeposit {
     #[command(flatten)]
-    signer: super::SignerArgs,
+    pub signer: super::SignerArgs,
     #[arg(long)]
-    contract_id: AccountId,
+    pub contract_id: AccountId,
     /// Deposit a specific amount of NEAR tokens.
     #[arg(long)]
-    deposit: Option<NearToken>,
+    pub deposit: Option<NearToken>,
     /// Deposit only the minimum storage deposit required by the contract.
     #[arg(long)]
-    registration_only: bool,
+    pub registration_only: bool,
 }
 
 impl StorageDeposit {

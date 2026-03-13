@@ -10,11 +10,11 @@ const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
 #[derive(clap::Args, Debug)]
 pub struct DeployRedStoneAdapter {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[command(flatten)]
-    contract_wasm: FixedContractWasm,
+    pub contract_wasm: FixedContractWasm,
     #[command(flatten)]
-    config_source: ConfigSource,
+    pub config_source: ConfigSource,
 }
 
 impl DeployRedStoneAdapter {

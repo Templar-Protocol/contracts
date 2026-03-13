@@ -9,7 +9,7 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct ListDeployments {
     #[arg(long)]
-    registry_id: AccountId,
+    pub registry_id: AccountId,
 }
 
 impl ListDeployments {

@@ -3,10 +3,10 @@ use crate::commands::{DeployFromRegistry, SignerArgs};
 #[derive(clap::Args, Debug)]
 pub struct CreateProxyOracle {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
 
     #[command(flatten)]
-    deploy: DeployFromRegistry,
+    pub deploy: DeployFromRegistry,
 }
 
 impl CreateProxyOracle {

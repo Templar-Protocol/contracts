@@ -28,5 +28,12 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 console = "0.16.2"
 hex.workspace = true
 
+[dev-dependencies]
+base64.workspace = true
+hex-literal.workspace = true
+near-workspaces.workspace = true
+rstest.workspace = true
+test-utils.workspace = true
+
 [lints]
 workspace = true

@@ -15,14 +15,14 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct CreateProposal {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[arg(long)]
-    oracle_id: AccountId,
+    pub oracle_id: AccountId,
     /// Proposal ID (auto-fetched if omitted)
     #[arg(long)]
-    id: Option<u32>,
+    pub id: Option<u32>,
     #[command(subcommand)]
-    operation: OperationCommand,
+    pub operation: OperationCommand,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -47,7 +47,7 @@ pub struct SetProxyArgs {
 pub struct SetTtlArgs {
     /// New TTL in milliseconds
     #[arg(long)]
-    ttl_ms: u64,
+    pub ttl_ms: u64,
 }
 
 impl CreateProposal {

@@ -9,7 +9,7 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct ListProposals {
     #[arg(long)]
-    oracle_id: AccountId,
+    pub oracle_id: AccountId,
 }
 
 impl ListProposals {

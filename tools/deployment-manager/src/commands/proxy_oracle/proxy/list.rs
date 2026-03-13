@@ -8,7 +8,7 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct ListProxies {
     #[arg(long)]
-    oracle_id: AccountId,
+    pub oracle_id: AccountId,
 }
 
 impl ListProxies {

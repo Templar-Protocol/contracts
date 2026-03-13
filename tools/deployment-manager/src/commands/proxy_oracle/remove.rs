@@ -5,9 +5,9 @@ use crate::commands::{self, SignerArgs};
 #[derive(clap::Args, Debug)]
 pub struct ProxyOracleRemove {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[arg(long)]
-    beneficiary_id: AccountId,
+    pub beneficiary_id: AccountId,
 }
 
 impl ProxyOracleRemove {

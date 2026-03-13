@@ -7,12 +7,12 @@ use crate::commands::{DeployFromRegistry, SignerArgs};
 #[derive(clap::Args, Debug)]
 pub struct CreateMarket {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[command(flatten)]
-    deploy: DeployFromRegistry,
+    pub deploy: DeployFromRegistry,
     /// JSON-encoded `MarketConfiguration`
     #[arg(long)]
-    configuration: String,
+    pub configuration: String,
 }
 
 impl CreateMarket {

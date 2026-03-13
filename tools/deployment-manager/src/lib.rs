@@ -69,6 +69,20 @@ pub struct CliContext {
 }
 
 impl CliContext {
+    /// Create a new `CliContext` with the given RPC URL and workspace path.
+    pub fn new(rpc_url: &str, workspace_path: PathBuf) -> Self {
+        Self {
+            workspace_path,
+            transaction_url_prefix: String::new(),
+            near: near_fetch::Client::new(rpc_url),
+        }
+    }
+
+    /// Access the underlying NEAR RPC client.
+    pub fn near(&self) -> &near_fetch::Client {
+        &self.near
+    }
+
     /// Create a [`batch::BoundBatch`] that automatically logs the transaction hash and
     /// propagates execution failures when [`batch::BoundBatch::transact`] is called.
     pub fn batch<'a>(

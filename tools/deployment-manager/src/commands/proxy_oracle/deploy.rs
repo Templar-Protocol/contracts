@@ -7,9 +7,9 @@ const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-contract";
 #[derive(clap::Args, Debug)]
 pub struct DeployProxyOracle {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[command(flatten)]
-    contract_wasm: FixedContractWasm,
+    pub contract_wasm: FixedContractWasm,
 }
 
 impl DeployProxyOracle {

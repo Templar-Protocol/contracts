@@ -10,10 +10,10 @@ use super::super::CliRole;
 pub struct RoleList {
     /// RedStone adapter contract account ID
     #[arg(long)]
-    adapter_id: AccountId,
+    pub adapter_id: AccountId,
     /// Role to list members of
     #[arg(long)]
-    role: CliRole,
+    pub role: CliRole,
 }
 
 impl RoleList {

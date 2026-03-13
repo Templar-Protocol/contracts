@@ -9,16 +9,16 @@ use crate::{commands::SignerArgs, CliContext};
 #[derive(clap::Args, Debug)]
 pub struct WritePrices {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     /// RedStone adapter contract account ID
     #[arg(long)]
-    adapter_id: AccountId,
+    pub adapter_id: AccountId,
     /// Feed IDs to update (e.g. BTC, ETH, NEAR)
     #[arg(long, required = true)]
-    feed_id: Vec<FeedId>,
+    pub feed_id: Vec<FeedId>,
     /// Base64-encoded RedStone payload
     #[arg(long)]
-    payload: String,
+    pub payload: String,
 }
 
 impl WritePrices {

@@ -13,19 +13,19 @@ use super::super::CliRole;
 #[derive(clap::Args, Debug)]
 pub struct RoleSet {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     /// RedStone adapter contract account ID
     #[arg(long)]
-    adapter_id: AccountId,
+    pub adapter_id: AccountId,
     /// Account to grant or revoke the role for
     #[arg(long)]
-    target_account_id: AccountId,
+    pub target_account_id: AccountId,
     /// Role to set
     #[arg(long)]
-    role: CliRole,
+    pub role: CliRole,
     /// Revoke the role instead of granting it
     #[arg(long)]
-    revoke: bool,
+    pub revoke: bool,
 }
 
 impl RoleSet {

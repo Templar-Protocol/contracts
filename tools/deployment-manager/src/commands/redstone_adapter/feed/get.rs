@@ -12,13 +12,13 @@ use crate::CliContext;
 pub struct FeedGet {
     /// RedStone adapter contract account ID
     #[arg(long)]
-    adapter_id: AccountId,
+    pub adapter_id: AccountId,
     /// Feed IDs to query (e.g. BTC, ETH, NEAR)
     #[arg(long, required = true)]
-    feed_id: Vec<String>,
+    pub feed_id: Vec<String>,
     /// Output raw JSON
     #[arg(long)]
-    json: bool,
+    pub json: bool,
 }
 
 fn format_price(price: U256) -> String {

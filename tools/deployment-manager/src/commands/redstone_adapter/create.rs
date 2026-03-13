@@ -8,13 +8,13 @@ use crate::commands::{DeployFromRegistry, SignerArgs};
 pub struct ConfigSource {
     /// Use the production RedStone configuration
     #[arg(long)]
-    prod: bool,
+    pub prod: bool,
     /// Use the test RedStone configuration
     #[arg(long)]
-    test: bool,
+    pub test: bool,
     /// JSON-encoded RedStone `Config`
     #[arg(long)]
-    configuration: Option<serde_json::Value>,
+    pub configuration: Option<serde_json::Value>,
 }
 
 impl ConfigSource {
@@ -34,13 +34,13 @@ impl ConfigSource {
 #[derive(clap::Args, Debug)]
 pub struct CreateRedStoneAdapter {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
 
     #[command(flatten)]
-    deploy: DeployFromRegistry,
+    pub deploy: DeployFromRegistry,
 
     #[command(flatten)]
-    config_source: ConfigSource,
+    pub config_source: ConfigSource,
 }
 
 impl CreateRedStoneAdapter {

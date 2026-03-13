@@ -12,15 +12,15 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct VersionRemove {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[arg(long)]
-    registry_id: AccountId,
+    pub registry_id: AccountId,
     /// Remove all registered versions
     #[arg(long)]
-    all: bool,
+    pub all: bool,
     /// Version key to remove (required without --all)
     #[arg(long)]
-    version_key: Option<String>,
+    pub version_key: Option<String>,
 }
 
 impl VersionRemove {

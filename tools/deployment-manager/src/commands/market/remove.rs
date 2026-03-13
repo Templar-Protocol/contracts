@@ -34,23 +34,25 @@ impl MarketRemove {
                 tracing::debug!(?configuration, "Market configuration");
 
                 if let Some(borrow_id) = configuration.borrow_asset.into_nep141() {
-                    RecoverNep141 {
+                    let recover_nep141 = RecoverNep141 {
                         signer: self.signer.clone(),
                         token_id: borrow_id,
                         beneficiary_id: self.beneficiary_id.clone(),
+                    };
+                    if let Err(e) = recover_nep141.run(ctx).await {
+                        tracing::warn!(%e, "Failed to recover borrow asset");
                     }
-                    .run(ctx)
-                    .await?;
                 }
 
                 if let Some(collateral_id) = configuration.collateral_asset.into_nep141() {
-                    RecoverNep141 {
+                    let recover_nep141 = RecoverNep141 {
                         signer: self.signer.clone(),
                         token_id: collateral_id,
                         beneficiary_id: self.beneficiary_id.clone(),
+                    };
+                    if let Err(e) = recover_nep141.run(ctx).await {
+                        tracing::warn!(%e, "Failed to recover collateral asset");
                     }
-                    .run(ctx)
-                    .await?;
                 }
             }
             Err(error) => {

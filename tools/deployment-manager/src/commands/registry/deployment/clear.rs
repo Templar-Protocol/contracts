@@ -12,13 +12,13 @@ use crate::CliContext;
 pub struct ClearDeployments {
     /// Secret key authorized on all market accounts
     #[arg(long, env = "SECRET_KEY")]
-    secret_key: SecretKey,
+    pub secret_key: SecretKey,
     /// Registry to query for the list of deployments
     #[arg(long)]
-    registry_id: AccountId,
+    pub registry_id: AccountId,
     /// Where to send recovered funds (defaults to registry ID)
     #[arg(long)]
-    beneficiary_id: Option<AccountId>,
+    pub beneficiary_id: Option<AccountId>,
 }
 
 impl ClearDeployments {

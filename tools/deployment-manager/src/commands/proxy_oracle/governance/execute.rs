@@ -11,12 +11,12 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct ExecuteProposal {
     #[command(flatten)]
-    signer: SignerArgs,
+    pub signer: SignerArgs,
     #[arg(long)]
-    oracle_id: AccountId,
+    pub oracle_id: AccountId,
     /// Proposal ID to execute
     #[arg(long)]
-    id: u32,
+    pub id: u32,
 }
 
 impl ExecuteProposal {

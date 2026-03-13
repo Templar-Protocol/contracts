@@ -12,13 +12,13 @@ use crate::CliContext;
 #[derive(clap::Args, Debug)]
 pub struct GetProxy {
     #[arg(long)]
-    oracle_id: AccountId,
+    pub oracle_id: AccountId,
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
-    price_id: CliPriceIdentifier,
+    pub price_id: CliPriceIdentifier,
     /// Output the raw JSON representation of the proxy
     #[arg(long)]
-    json: bool,
+    pub json: bool,
 }
 
 impl GetProxy {
