@@ -25,7 +25,6 @@ serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
 templar-redstone-bridge.workspace = true
 templar-tools-common.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

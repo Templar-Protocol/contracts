@@ -12634,7 +12634,6 @@ dependencies = [
  "templar-redstone-bridge",
  "templar-tools-common",
  "test-utils",
- "thiserror 2.0.17",
  "tokio",
  "tracing",
  "tracing-subscriber",
