@@ -3,7 +3,7 @@ pub mod commands;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use commands::{
     market::MarketArgs, proxy_oracle::ProxyOracleArgs, recover_nep141::RecoverNep141,
     redstone_adapter::RedStoneAdapterArgs, registry::RegistryArgs, storage_deposit::StorageDeposit,
@@ -35,6 +35,10 @@ struct Cli {
     /// Path to the workspace root (defaults to current directory)
     #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
     workspace_dir: PathBuf,
+
+    /// Increase log verbosity (-v = info, -vv = debug, -vvv = trace)
+    #[arg(short, long, action = ArgAction::Count, global = true)]
+    verbose: u8,
 
     #[command(subcommand)]
     command: Commands,
@@ -119,14 +123,21 @@ enum Commands {
 }
 
 pub async fn run() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    let default_level = match cli.verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
         )
         .init();
-
-    let cli = Cli::parse();
 
     tracing::info!(network = %cli.network, "Connecting");
 
