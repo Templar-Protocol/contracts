@@ -55,23 +55,12 @@ impl Aggregator {
             .iter()
             .filter(|p| {
                 let Some(published) = Milliseconds::try_from_pyth(p.0.publish_time) else {
-                    eprintln!("Failed to convert");
                     return false;
                 };
 
                 if now >= published {
-                    eprintln!(
-                        "Price {} has been published {} ago",
-                        p.0.price.0,
-                        now - published
-                    );
                     self.filter.max_age.is_none_or(|max| now - published <= max)
                 } else {
-                    eprintln!(
-                        "Price {} has been published {} in the future",
-                        p.0.price.0,
-                        published - now
-                    );
                     self.filter
                         .max_clock_drift
                         .is_none_or(|max| published - now <= max)
