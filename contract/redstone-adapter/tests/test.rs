@@ -87,7 +87,7 @@ fn output() {
     assert_eq!(
         test_utils::get_logs(),
         vec![
-            r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"write_prices","data":{"updater":"bob.near","updated_feeds":[{"price":"195692129540","package_timestamp":"1770985144000","write_timestamp":"1770985144000"},{"price":"6698556748915","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}]}}"#,
+            r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"write_prices","data":{"updater":"bob.near","updated_feeds":[["ETH",{"price":"195692129540","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}],["BTC",{"price":"6698556748915","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}]]}}"#,
         ],
     );
 }

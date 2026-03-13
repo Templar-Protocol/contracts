@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use near_sdk::{near, AccountId};
 
 use super::{feed_data::FeedData, FeedId};
@@ -9,6 +7,6 @@ pub enum RedStoneEvent {
     #[event_version("1.0.0")]
     WritePrices {
         updater: AccountId,
-        updated_feeds: HashMap<FeedId, FeedData>,
+        updated_feeds: Vec<(FeedId, FeedData)>,
     },
 }

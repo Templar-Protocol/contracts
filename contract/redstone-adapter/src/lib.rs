@@ -141,7 +141,7 @@ impl RedStoneContractInterface for Contract {
                     None
                 }
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<Vec<_>>();
 
         RedStoneEvent::WritePrices {
             updater,
