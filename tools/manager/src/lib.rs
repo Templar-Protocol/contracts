@@ -9,15 +9,12 @@ use commands::{
     redstone_adapter::RedStoneAdapterArgs, registry::RegistryArgs, storage_deposit::StorageDeposit,
 };
 use templar_common::utils::Network;
-/// Re-export shared NEAR client utilities so command modules can use `crate::near`.
+
 pub use templar_tools_common::near;
+use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
-#[command(
-    name = "market-deployer",
-    version,
-    about = "CLI tool for deploying and managing Templar markets"
-)]
+#[command(version, about = "CLI tool for deploying and managing Templar markets")]
 struct Cli {
     /// NEAR network to connect to
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
@@ -107,14 +104,16 @@ fn init_tracing(verbose: u8) {
     };
 
     let console_default = match verbose {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
+        0 => LevelFilter::WARN,
+        1 => LevelFilter::INFO,
+        2 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
     };
 
-    let console_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(console_default));
+    let console_filter = EnvFilter::builder()
+        .with_default_directive(console_default.into())
+        .from_env_lossy();
+
     let console_layer = fmt::layer().with_filter(console_filter);
 
     let registry = tracing_subscriber::registry().with(console_layer);
@@ -129,7 +128,7 @@ fn init_tracing(verbose: u8) {
         let file_layer = fmt::layer()
             .with_ansi(false)
             .with_writer(file_appender)
-            .with_filter(EnvFilter::new("debug"));
+            .with_filter(LevelFilter::DEBUG);
         registry.with(file_layer).init();
         tracing::debug!(path = %log_dir.display(), "File logging enabled");
     } else {
