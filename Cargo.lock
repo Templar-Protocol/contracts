@@ -12748,8 +12748,8 @@ name = "templar-redstone-bridge"
 version = "0.1.0"
 dependencies = [
  "hex",
- "near-sdk",
- "sha2 0.10.9",
+ "serde",
+ "serde_json",
  "templar-common",
  "thiserror 2.0.17",
  "tokio",

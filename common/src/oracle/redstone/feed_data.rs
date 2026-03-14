@@ -16,6 +16,8 @@ pub struct FeedData {
 }
 
 impl FeedData {
+    /// Converts this [`FeedData`] to a [`pyth::Price`], with the confidence
+    /// set to zero, because RedStone does not provide confidence intervals.
     pub fn to_pyth_price(&self) -> Option<pyth::Price> {
         let (price, exponent) = approximate_u256(self.price.into());
         Some(pyth::Price {

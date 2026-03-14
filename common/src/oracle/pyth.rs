@@ -79,6 +79,8 @@ impl PythTimestamp {
         Self(secs)
     }
 
+    /// Converts milliseconds to a [`PythTimestamp`], stored in whole seconds,
+    /// truncating any fractional seconds.
     pub fn from_ms(ms: i64) -> Self {
         Self(ms / 1000)
     }
@@ -87,6 +89,8 @@ impl PythTimestamp {
         self.0
     }
 
+    /// Converts a [`PythTimestamp`] (stored in whole seconds) to milliseconds
+    /// by performing a checked multiplication by 1000.
     pub fn as_ms(&self) -> Option<i64> {
         self.0.checked_mul(1000)
     }

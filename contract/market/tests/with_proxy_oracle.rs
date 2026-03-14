@@ -173,20 +173,12 @@ async fn proxy_oracle(
             },
         );
 
-        dbg!(
-            pyth_borrow,
-            pyth_collateral,
-            redstone_borrow,
-            redstone_collateral
-        );
-
         let collateral_before = c
             .get_borrow_position(borrow_user.id())
             .await
             .map_or(0.into(), |p| p.get_total_collateral_amount());
 
-        let e = c.collateralize(&borrow_user, 1_000_000).await;
-        print_execution(&e);
+        c.collateralize(&borrow_user, 1_000_000).await;
         let expect_success =
             (pyth_borrow || redstone_borrow) && (pyth_collateral || redstone_collateral);
 

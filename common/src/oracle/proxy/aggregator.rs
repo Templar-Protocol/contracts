@@ -5,6 +5,9 @@ use crate::oracle::{
     time::Milliseconds,
 };
 
+/// Calculates the weighted median of a sorted list of weighted items.
+///
+/// If all of the weights are zero, returns the first item.
 fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
     if sorted_weighted_items.len() == 1 {
         return 0;
@@ -109,12 +112,12 @@ impl SpecificPrice {
         let conf = i64::try_from(price.conf.0).unwrap_or(i64::MAX);
         [
             Self {
-                value: price.price.0 - conf,
+                value: price.price.0.saturating_sub(conf),
                 exponent: price.expo,
                 publish_time: price.publish_time,
             },
             Self {
-                value: price.price.0 + conf,
+                value: price.price.0.saturating_add(conf),
                 exponent: price.expo,
                 publish_time: price.publish_time,
             },

@@ -2,12 +2,9 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::UNIX_EPOCH,
 };
 
-use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::serde_json;
-use sha2::Digest;
+use serde::{Deserialize, Serialize};
 use templar_common::oracle::redstone::FeedId;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
@@ -18,24 +15,19 @@ use tokio::{
 };
 
 fn generate_socket_path() -> PathBuf {
-    std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or_else(
-            |_| Path::new("/tmp/templar_redstone_bridge.sock").to_owned(),
-            |t| {
-                let d = hex::encode(&sha2::Sha256::digest(t.as_micros().to_le_bytes())[0..4]);
-                Path::new(&format!("/tmp/templar_redstone_bridge_{d}.sock")).to_owned()
-            },
-        )
+    let pid = std::process::id();
+    let mut path = std::env::temp_dir();
+    path.push(format!("templar_redstone_bridge_{pid}.sock"));
+    path
 }
 
+#[derive(Debug)]
 struct Request {
     send: oneshot::Sender<Result<String, String>>,
     method: IpcRequestMethod,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "near_sdk::serde")]
 struct IpcRequest {
     id: u32,
     #[serde(flatten)]
@@ -43,18 +35,12 @@ struct IpcRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(
-    crate = "near_sdk::serde",
-    tag = "method",
-    rename_all = "snake_case",
-    content = "params"
-)]
+#[serde(tag = "method", rename_all = "snake_case", content = "params")]
 enum IpcRequestMethod {
     Fetch(Vec<FeedId>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "near_sdk::serde")]
 struct IpcResponse {
     id: u32,
     #[serde(flatten)]
@@ -62,7 +48,7 @@ struct IpcResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(crate = "near_sdk::serde", tag = "status", rename_all = "snake_case")]
+#[serde(tag = "status", rename_all = "snake_case")]
 enum IpcResponseResult {
     Success { data: String },
     Failure { message: String },
@@ -77,13 +63,18 @@ impl From<IpcResponseResult> for Result<String, String> {
     }
 }
 
+#[derive(Debug)]
 struct BridgePaths<'a> {
     node: &'a Path,
     bridge: &'a Path,
     socket: PathBuf,
 }
 
-fn start_bridge(paths: BridgePaths<'_>, kill: watch::Sender<()>) -> JoinHandle<()> {
+#[tracing::instrument(skip(kill))]
+fn start_bridge(
+    paths: BridgePaths<'_>,
+    kill: watch::Sender<()>,
+) -> Result<JoinHandle<()>, std::io::Error> {
     use tokio::process::Command;
 
     let mut cmd = Command::new(paths.node);
@@ -94,18 +85,11 @@ fn start_bridge(paths: BridgePaths<'_>, kill: watch::Sender<()>) -> JoinHandle<(
     cmd.arg("redstone-primary-prod");
     cmd.kill_on_drop(true);
 
+    let mut process = cmd.spawn()?;
+
     let mut on_kill = kill.subscribe();
 
-    tokio::spawn(async move {
-        let mut process = match cmd.spawn() {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(error = ?e, "Failed to start RedStone bridge");
-                let _ = kill.send(());
-                return;
-            }
-        };
-
+    Ok(tokio::spawn(async move {
         select! {
             _ = on_kill.changed() => {
                 tracing::debug!("Received kill notification");
@@ -120,20 +104,17 @@ fn start_bridge(paths: BridgePaths<'_>, kill: watch::Sender<()>) -> JoinHandle<(
         }
 
         let _ = std::fs::remove_file(&paths.socket);
-    })
+    }))
 }
 
-fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sender<Request> {
+#[tracing::instrument(skip(kill), name = "messenger")]
+fn start_messenger(
+    socket_path: PathBuf,
+    kill: watch::Sender<()>,
+) -> Result<mpsc::Sender<Request>, std::io::Error> {
+    let listener = UnixListener::bind(&socket_path)?;
     let (send, mut recv) = mpsc::channel::<Request>(64);
     let mut on_kill = kill.subscribe();
-    let listener = match UnixListener::bind(&socket_path) {
-        Ok(listener) => listener,
-        Err(e) => {
-            tracing::error!(error = ?e, "Failed to bind to socket");
-            let _ = kill.send(());
-            return send;
-        }
-    };
 
     tokio::spawn(async move {
         // Race acceptance with shutdown so we don't block forever on accept().
@@ -156,9 +137,8 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
         };
 
         let (read, mut write) = socket.into_split();
-        let mut read = tokio::io::BufReader::new(read);
+        let mut read = tokio::io::BufReader::new(read).lines();
         let mut next_id = 0u32;
-        let mut line = String::new();
         let mut pending = HashMap::<u32, oneshot::Sender<Result<String, String>>>::new();
 
         loop {
@@ -167,7 +147,19 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
                     tracing::debug!("Received kill notification.");
                     break;
                 },
-                _ = read.read_line(&mut line) => {
+                line = read.next_line() => {
+                    let line = match line {
+                        Ok(Some(line)) => line,
+                        Ok(None) => {
+                            tracing::error!("Unexpected EOF from socket");
+                            let _ = kill.send(());
+                            break;
+                        },
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Failed reading line from bridge socket");
+                            continue;
+                        },
+                    };
                     tracing::debug!(line, "Received IPC message");
                     let received: IpcResponse = match serde_json::from_str(&line) {
                         Ok(r) => {r},
@@ -176,7 +168,6 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
                             continue;
                         },
                     };
-                    line.clear();
 
                     if let Some(sender) = pending.remove(&received.id) {
                         if let Err(result) = sender.send(received.result.into()) {
@@ -228,7 +219,7 @@ fn start_messenger(socket_path: PathBuf, kill: watch::Sender<()>) -> mpsc::Sende
         let _ = std::fs::remove_file(&socket_path);
     });
 
-    send
+    Ok(send)
 }
 
 /// The bundled RedStone bridge JS source, embedded at compile time.
@@ -238,11 +229,8 @@ pub const BRIDGE_BUNDLE: &str = include_str!(concat!(env!("OUT_DIR"), "/bundle.j
 /// with the RedStone bridge.
 #[derive(Debug, Clone)]
 pub struct Bridge {
-    socket_path: PathBuf,
-    /// Temp file holding the embedded JS bundle, cleaned up on drop.
-    bundle_path: Arc<PathBuf>,
-    #[allow(unused, reason = "Used for Drop implementation")]
-    bridge_process: Arc<JoinHandle<()>>,
+    #[allow(unused, reason = "cleanup on Drop")]
+    cleanup: Arc<Cleanup>,
     bridge_send: mpsc::Sender<Request>,
 }
 
@@ -258,29 +246,27 @@ impl Bridge {
     pub fn new(node_path: &Path, kill: watch::Sender<()>) -> Result<Self, BridgeError> {
         let bundle_path =
             std::env::temp_dir().join(format!("templar_redstone_bundle_{}.js", std::process::id()));
-        std::fs::write(&bundle_path, BRIDGE_BUNDLE).map_err(|e| {
-            BridgeError::Bundle(format!(
-                "Failed to write bundle to {}: {e}",
-                bundle_path.display()
-            ))
-        })?;
+        std::fs::write(&bundle_path, BRIDGE_BUNDLE).map_err(BridgeError::WriteBundle)?;
 
-        let bundle_path = Arc::new(bundle_path);
         let socket_path = generate_socket_path();
-        let bridge_send = start_messenger(socket_path.clone(), kill.clone());
-        let bridge_process = Arc::new(start_bridge(
+        let bridge_send = start_messenger(socket_path.clone(), kill.clone())
+            .map_err(BridgeError::StartMessenger)?;
+        let bridge_process = start_bridge(
             BridgePaths {
                 node: node_path,
                 bridge: &bundle_path,
                 socket: socket_path.clone(),
             },
             kill,
-        ));
+        )
+        .map_err(BridgeError::StartBridge)?;
 
         Ok(Self {
-            socket_path,
-            bundle_path,
-            bridge_process,
+            cleanup: Arc::new(Cleanup {
+                socket_path,
+                bundle_path,
+                bridge_process,
+            }),
             bridge_send,
         })
     }
@@ -292,25 +278,36 @@ impl Bridge {
     /// - Communication with the bridge.
     /// - Communication between the bridge and RedStone nodes.
     /// - Deserialization of response from the bridge.
+    #[tracing::instrument(skip(self))]
     pub async fn fetch(&self, feed_ids: Vec<FeedId>) -> Result<Vec<u8>, BridgeError> {
         let (send, recv) = oneshot::channel();
-        self.bridge_send
-            .send(Request {
-                send,
-                method: IpcRequestMethod::Fetch(feed_ids),
-            })
-            .await
-            .map_err(|_| BridgeError::Send)?;
+        let request = Request {
+            send,
+            method: IpcRequestMethod::Fetch(feed_ids),
+        };
+        tracing::debug!(?request);
+        self.bridge_send.send(request).await.map_err(|e| {
+            tracing::warn!("Failed to send to bridge: {}", e);
+            BridgeError::Send
+        })?;
         let payload_hex = recv.await?.map_err(BridgeError::Bridge)?;
 
         Ok(hex::decode(&payload_hex)?)
     }
 }
 
-impl Drop for Bridge {
+#[derive(Debug)]
+struct Cleanup {
+    socket_path: PathBuf,
+    bundle_path: PathBuf,
+    #[allow(unused)]
+    bridge_process: JoinHandle<()>,
+}
+
+impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(self.bundle_path.as_ref());
+        let _ = std::fs::remove_file(&self.bundle_path);
     }
 }
 
@@ -324,6 +321,10 @@ pub enum BridgeError {
     Bridge(String),
     #[error("Data encoding error: {0}")]
     Data(#[from] hex::FromHexError),
-    #[error("Bundle error: {0}")]
-    Bundle(String),
+    #[error("Failed to write bundle: {0}")]
+    WriteBundle(#[source] std::io::Error),
+    #[error("Failed to start messenger: {0}")]
+    StartMessenger(#[source] std::io::Error),
+    #[error("Failed to start bridge: {0}")]
+    StartBridge(#[source] std::io::Error),
 }

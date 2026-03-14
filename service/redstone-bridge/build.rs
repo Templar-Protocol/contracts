@@ -1,35 +1,46 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 fn main() {
-    println!("cargo:rerun-if-changed=js/src/**/*.ts");
-    println!("cargo:rerun-if-changed=js/package*.json");
+    println!("cargo:rerun-if-changed=js/src/");
+    println!("cargo:rerun-if-changed=js/package.json");
+    println!("cargo:rerun-if-changed=js/package-lock.json");
     println!("cargo:rerun-if-changed=js/tsconfig.json");
     println!("cargo:rerun-if-changed=js/dist/bundle.js");
 
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let js_dir = manifest_dir.join("js");
+
     #[allow(clippy::expect_used)]
     if std::env::var("CI").is_ok() {
-        std::process::Command::new("npm")
+        let status = std::process::Command::new("npm")
             .args(["ci"])
-            .current_dir("js")
+            .current_dir(&js_dir)
             .status()
             .expect("Failed to install npm dependencies for redstone-bridge");
+        assert!(status.success(), "npm ci failed");
 
-        std::process::Command::new("npm")
+        let status = std::process::Command::new("npm")
             .args(["run", "build"])
-            .current_dir("js")
+            .current_dir(&js_dir)
             .status()
             .expect("Failed to build redstone-bridge");
+        assert!(status.success(), "npm run build failed");
 
-        std::process::Command::new("npm")
+        let status = std::process::Command::new("npm")
             .args(["run", "bundle"])
-            .current_dir("js")
+            .current_dir(&js_dir)
             .status()
             .expect("Failed to bundle redstone-bridge");
+        assert!(status.success(), "npm run bundle failed");
     }
 
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
-    let dest = std::path::Path::new(&out_dir).join("bundle.js");
-    std::fs::copy("js/dist/bundle.js", &dest).expect(
-        "Failed to copy js/dist/bundle.js to OUT_DIR. Run `npm run bundle` in service/redstone-bridge/js",
-    );
+    let bundle = js_dir.join("dist/bundle.js");
+    let dest = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundle.js");
+    std::fs::copy(&bundle, &dest).unwrap_or_else(|_| {
+        panic!(
+            "Failed to copy {} to {}. Run `npm run bundle` in service/redstone-bridge/js",
+            bundle.display(),
+            dest.display(),
+        )
+    });
 }

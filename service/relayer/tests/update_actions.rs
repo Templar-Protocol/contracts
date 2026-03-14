@@ -1,5 +1,6 @@
 use std::{path::Path, time::Duration};
 
+use near_primitives::action::Action;
 use near_sdk::NearToken;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_relayer::{
@@ -9,7 +10,7 @@ use templar_relayer::{
 use tokio::sync::watch;
 
 #[tokio::test]
-async fn pyth() {
+async fn requires_network_pyth() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .try_init();
@@ -32,12 +33,18 @@ async fn pyth() {
     );
 
     let actions = handle.update_actions(&[price_id]).await.unwrap();
+    assert_eq!(actions.len(), 1);
+    let Action::FunctionCall(fc) = &actions[0] else {
+        panic!("Unexpected action type: {:?}", &actions[0]);
+    };
+    assert_eq!(fc.method_name, "update_price_feeds");
+    assert!(!fc.args.is_empty());
 
     eprintln!("{actions:?}");
 }
 
 #[tokio::test]
-async fn redstone() {
+async fn requires_network_redstone() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .try_init();
@@ -54,12 +61,17 @@ async fn redstone() {
     let spec =
         RedStoneSpec::new(redstone_args, kill.clone()).expect("Failed to create RedStoneSpec");
 
-    let t = spec
+    let actions = spec
         .update_actions(&["ETH".into(), "BTC".into()])
         .await
         .unwrap();
-
-    eprintln!("{t:?}");
-
     kill.send(()).unwrap();
+
+    eprintln!("{actions:?}");
+    assert_eq!(actions.len(), 1);
+    let Action::FunctionCall(fc) = &actions[0] else {
+        panic!("Unexpected action type: {:?}", &actions[0]);
+    };
+    assert_eq!(fc.method_name, "write_prices");
+    assert!(!fc.args.is_empty());
 }

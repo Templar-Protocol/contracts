@@ -104,7 +104,7 @@ impl ViewError {
             self,
             ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
                 RpcQueryError::ContractExecutionError { vm_error, .. }
-            ))) if vm_error.contains("MethodResolveError(MethodNotFound)")
+            ))) if vm_error.contains("MethodNotFound")
         )
     }
 }

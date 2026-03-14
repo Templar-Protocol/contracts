@@ -38,10 +38,13 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
 
     let price_data = ra.read_price_data(prices.clone());
 
-    let _eth = price_data.get(&"ETH".into()).unwrap();
-    let _btc = price_data.get(&"BTC".into()).unwrap();
+    let eth = price_data.get(&"ETH".into()).unwrap();
+    let btc = price_data.get(&"BTC".into()).unwrap();
 
     eprintln!("{price_data:#?}");
+
+    assert_ne!(U256::from(eth.price), U256::zero());
+    assert_ne!(U256::from(btc.price), U256::zero());
 }
 
 #[rstest::rstest]

@@ -11,7 +11,7 @@ export default async function handle(
 ): Promise<Response> {
   try {
     switch (request.method) {
-      case "fetch":
+      case "fetch": {
         console.debug("Fetching", request.params);
 
         const payloadString = await requestRedstonePayload({
@@ -30,6 +30,7 @@ export default async function handle(
           status: "success",
           data: payloadString,
         };
+      }
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
