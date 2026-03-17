@@ -52,7 +52,8 @@ impl GetProposal {
         if executable {
             println!("{}: {}", style("Status").bold(), style("ready").green());
         } else {
-            let remaining = (proposal.created_at_ms.0 + ttl_ms.0).saturating_sub(now_ms);
+            let ready_at = proposal.created_at_ms.0.saturating_add(ttl_ms.0);
+            let remaining = ready_at.saturating_sub(now_ms);
             println!(
                 "{}: {} ({}ms remaining)",
                 style("Status").bold(),
