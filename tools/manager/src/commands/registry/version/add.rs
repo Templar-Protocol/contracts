@@ -103,14 +103,12 @@ impl AddVersion {
             deploy_mode,
             &loaded_contract.wasm_bytes,
         )?;
-        let deposit = if deploy_mode == DeployMode::GlobalHash {
-            self.deposit.unwrap_or(
-                STORAGE_AMOUNT_PER_BYTE
-                    .saturating_mul(loaded_contract.wasm_bytes.len() as u128 * 10),
-            )
+        let estimated_deposit = if deploy_mode == DeployMode::GlobalHash {
+            STORAGE_AMOUNT_PER_BYTE.saturating_mul(loaded_contract.wasm_bytes.len() as u128 * 10)
         } else {
             NearToken::from_yoctonear(1)
         };
+        let deposit = self.deposit.unwrap_or(estimated_deposit);
         tracing::debug!(%deposit);
         tracing::info!(%version_key, "Calling add_version on registry");
         let signer = self.signer.signer();
