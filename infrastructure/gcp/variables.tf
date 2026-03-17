@@ -176,6 +176,11 @@ variable "relayer_port" {
   description = "Port exposed by the relayer service."
   type        = number
   default     = 3000
+
+  validation {
+    condition     = var.relayer_port > 0 && var.relayer_port < 65536
+    error_message = "relayer_port must be between 1 and 65535."
+  }
 }
 
 variable "relayer_instance_count" {
@@ -244,6 +249,7 @@ variable "relayer_env" {
   description = "Non-secret environment variables injected into relayer container."
   type        = map(string)
   default     = {}
+  sensitive   = true
 }
 
 variable "relayer_secret_env" {
@@ -299,6 +305,7 @@ variable "market_monitor_env" {
   description = "Non-secret environment variables injected into market-monitor container."
   type        = map(string)
   default     = {}
+  sensitive   = true
 }
 
 variable "market_monitor_secret_env" {
@@ -354,6 +361,7 @@ variable "accumulator_env" {
   description = "Non-secret environment variables injected into accumulator container."
   type        = map(string)
   default     = {}
+  sensitive   = true
 }
 
 variable "accumulator_secret_env" {
@@ -426,6 +434,7 @@ variable "funding_bridge_env" {
   description = "Non-secret environment variables injected into funding-bridge container."
   type        = map(string)
   default     = {}
+  sensitive   = true
 }
 
 variable "funding_bridge_secret_env" {
