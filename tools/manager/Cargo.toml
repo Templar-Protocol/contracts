@@ -15,8 +15,11 @@ base64.workspace = true
 borsh.workspace = true
 chrono.workspace = true
 clap.workspace = true
-near-crypto.workspace = true
+console.workspace = true
+dirs.workspace = true
+hex.workspace = true
 near-contract-standards.workspace = true
+near-crypto.workspace = true
 near-fetch.workspace = true
 near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
@@ -25,13 +28,10 @@ serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
 templar-redstone-bridge.workspace = true
 templar-tools-common.workspace = true
-dirs.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-console = "0.16.2"
-hex.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 hex-literal.workspace = true
