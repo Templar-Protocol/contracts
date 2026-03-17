@@ -26,6 +26,7 @@ impl ConfigSource {
         } else if let Some(configuration) = self.configuration.clone() {
             serde_json::from_value(configuration).context("invalid RedStone configuration")
         } else {
+            // Guaranteed by #[group(...)] attribute on ConfigSource struct
             unreachable!()
         }
     }
