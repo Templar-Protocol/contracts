@@ -52,12 +52,26 @@ pub(crate) async fn remove_all(
         .context("deserialise versions")?;
 
     tracing::info!(count = versions.len(), %registry_id, "Removing versions");
+    let mut failures = Vec::new();
 
     for version_key in versions {
         tracing::info!(%version_key, "Removing version");
         if let Err(error) = remove_one(ctx, signer, registry_id, &version_key).await {
             tracing::warn!(%version_key, %error, "Failed to remove version");
+            failures.push((version_key, error));
         }
+    }
+
+    if !failures.is_empty() {
+        let mut e = String::new();
+        for (version_key, error) in &failures {
+            e.push_str("  ");
+            e.push_str(version_key);
+            e.push_str(": ");
+            e.push_str(&error.to_string());
+            e.push('\n');
+        }
+        anyhow::bail!("Failed to remove {} versions:\n{e}", failures.len());
     }
 
     Ok(())
