@@ -46,6 +46,8 @@ impl ListProposals {
             style("Status").bold(),
         );
 
+        let mut count = 0;
+
         for id in &ids {
             let proposal: Option<Proposal<Operation>> = ctx
                 .near
@@ -77,9 +79,11 @@ impl ListProposals {
                 proposal.created_by,
                 status,
             );
+
+            count += 1;
         }
 
-        tracing::info!(count = ids.len(), "Listed proposals");
+        tracing::info!(count, "Listed proposals");
         Ok(())
     }
 }
