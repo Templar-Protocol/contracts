@@ -47,7 +47,7 @@ impl StorageDeposit {
             .call(
                 Function::new("storage_deposit")
                     .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
-                    .deposit(STORAGE_DEPOSIT_AMOUNT),
+                    .deposit(deposit),
             )
             .transact()
             .await
