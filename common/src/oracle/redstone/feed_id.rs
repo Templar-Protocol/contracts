@@ -53,6 +53,9 @@ impl From<redstone::FeedId> for FeedId {
             end -= 1;
         }
 
+        // Feed IDs from RedStone are expected to be valid UTF-8 (ASCII strings).
+        // Using lossy conversion here is intentional - invalid bytes would indicate
+        // a misconfigured or corrupted feed ID from the oracle.
         Self(Arc::from(String::from_utf8_lossy(&bytes[..end])))
     }
 }
