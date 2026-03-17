@@ -8,6 +8,8 @@ use crate::oracle::{
 /// Calculates the weighted median of a sorted list of weighted items.
 ///
 /// If all of the weights are zero, returns the first item.
+///
+/// Only definitely correct for lists where `sum(weights)` does not overflow `u32`.
 fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
     if sorted_weighted_items.len() == 1 {
         return 0;
@@ -18,11 +20,11 @@ fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
     let mut acc: u32 = 0;
 
     while lo < hi {
-        acc += sorted_weighted_items[lo].1;
+        acc = acc.saturating_add(sorted_weighted_items[lo].1);
         lo += 1;
 
         while acc >= sorted_weighted_items[hi].1 && hi != 0 {
-            acc -= sorted_weighted_items[hi].1;
+            acc = acc.saturating_sub(sorted_weighted_items[hi].1);
             hi -= 1;
         }
     }
