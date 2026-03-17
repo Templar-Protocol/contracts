@@ -46,6 +46,7 @@ impl ClearDeployments {
                     secret_key: self.secret_key.clone(),
                 },
                 beneficiary_id: beneficiary_id.clone(),
+                force: true,
             };
             if let Err(error) = market_remove.run(ctx).await {
                 tracing::warn!(%market_id, %error, "Failed to remove market");

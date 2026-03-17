@@ -11,8 +11,13 @@ use crate::{
 pub struct MarketRemove {
     #[command(flatten)]
     pub signer: SignerArgs,
+    /// Recovered tokens will be sent to this account.
     #[arg(long)]
     pub beneficiary_id: AccountId,
+    /// Proceed with account deletion even if prior actions (fetching
+    /// configuration, recovering tokens, etc.) fail.
+    #[arg(long)]
+    pub force: bool,
 }
 
 impl MarketRemove {
@@ -39,8 +44,11 @@ impl MarketRemove {
                         token_id: borrow_id,
                         beneficiary_id: self.beneficiary_id.clone(),
                     };
-                    if let Err(e) = recover_nep141.run(ctx).await {
-                        tracing::warn!(%e, "Failed to recover borrow asset");
+                    if let Err(error) = recover_nep141.run(ctx).await {
+                        if !self.force {
+                            return Err(error.context("Failed to recover borrow asset"));
+                        }
+                        tracing::warn!(%error, "Failed to recover borrow asset");
                     }
                 }
 
@@ -50,12 +58,20 @@ impl MarketRemove {
                         token_id: collateral_id,
                         beneficiary_id: self.beneficiary_id.clone(),
                     };
-                    if let Err(e) = recover_nep141.run(ctx).await {
-                        tracing::warn!(%e, "Failed to recover collateral asset");
+                    if let Err(error) = recover_nep141.run(ctx).await {
+                        if !self.force {
+                            return Err(error.context("Failed to recover collateral asset"));
+                        }
+                        tracing::warn!(%error, "Failed to recover collateral asset");
                     }
                 }
             }
             Err(error) => {
+                if !self.force {
+                    return Err(
+                        anyhow::Error::new(error).context("Failed to fetch market configuration")
+                    );
+                }
                 tracing::warn!(%error, "Failed to fetch market configuration");
             }
         }
