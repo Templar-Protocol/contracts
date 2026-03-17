@@ -1,16 +1,32 @@
 use near_fetch::ops::Function;
+use near_fetch::signer::ExposeAccountId;
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
-use near_sdk::{AccountId, NearToken};
+use near_sdk::{AccountId, AccountIdRef, NearToken};
 
 #[derive(clap::Args, Debug)]
 pub struct RecoverNep141 {
     #[command(flatten)]
     pub signer: super::SignerArgs,
+    /// Token ID to recover
     #[arg(long)]
     pub token_id: AccountId,
+    /// Beneficiary account ID to receive the tokens
     #[arg(long)]
     pub beneficiary_id: AccountId,
+}
+
+async fn ft_balance_of(
+    near: &near_fetch::Client,
+    token_id: &AccountId,
+    account_id: &AccountIdRef,
+) -> Result<u128, near_fetch::Error> {
+    Ok(near
+        .view(token_id, "ft_balance_of")
+        .args_json(json!({ "account_id": account_id }))
+        .await?
+        .json::<U128>()?
+        .0)
 }
 
 impl RecoverNep141 {
@@ -19,17 +35,10 @@ impl RecoverNep141 {
         let signer = &self.signer.signer();
 
         // Transfer all tokens
-        let balance = match ctx
-            .near
-            .view(&self.token_id, "ft_balance_of")
-            .args_json(json!({ "account_id": signer.get_account_id() }))
-            .await
-            .and_then(|r| r.json::<U128>())
-        {
-            Ok(b) => b.0,
+        let balance = match ft_balance_of(&ctx.near, &self.token_id, signer.account_id()).await {
+            Ok(b) => b,
             Err(e) => {
-                tracing::warn!(%self.token_id, error = %e, "Could not fetch FT balance, skipping transfer");
-                0
+                anyhow::bail!("Could not fetch FT balance, skipping transfer: {e}")
             }
         };
 
@@ -58,16 +67,28 @@ impl RecoverNep141 {
         // Unregister storage
         tracing::info!(%self.token_id, "Performing storage unregistration");
 
-        ctx.batch(signer, &self.token_id)
-            .call(
-                Function::new("storage_unregister")
-                    .args_json(json!({ "force": true }))
-                    .deposit(NearToken::from_yoctonear(1))
-                    .max_gas(),
-            )
-            .transact()
-            .await?;
+        // Read balance again, unregister storage if balance is zero
+        let balance = match ft_balance_of(&ctx.near, &self.token_id, signer.account_id()).await {
+            Ok(b) => b,
+            Err(e) => {
+                anyhow::bail!("Failed to fetch balance before storage registration: {e}")
+            }
+        };
 
-        Ok(())
+        if balance == 0 {
+            tracing::info!("Balance is zero, unregistering storage");
+            ctx.batch(signer, &self.token_id)
+                .call(
+                    Function::new("storage_unregister")
+                        .args_json(json!({ "force": true }))
+                        .deposit(NearToken::from_yoctonear(1))
+                        .max_gas(),
+                )
+                .transact()
+                .await?;
+            Ok(())
+        } else {
+            anyhow::bail!("Non-zero balance ({balance}) after attempting to transfer all to beneficiary, skipping storage unregistration")
+        }
     }
 }
