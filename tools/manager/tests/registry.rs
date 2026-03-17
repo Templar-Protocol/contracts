@@ -73,7 +73,7 @@ async fn view_versions(
     ctx: &templar_manager::CliContext,
     registry_id: &near_sdk::AccountId,
 ) -> Vec<String> {
-    ctx.near()
+    ctx.near
         .view(registry_id, "list_versions")
         .args_json(json!({}))
         .await
@@ -237,7 +237,10 @@ async fn registry_remove(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn registry_clear_deployments_empty(#[future(awt)] worker: Worker<Sandbox>) {
+async fn registry_clear_deployments_empty(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(true, false)] force: bool,
+) {
     let ctx = setup_ctx(&worker);
     accounts!(worker, registry);
     let signer = signer_args(&registry);
@@ -250,6 +253,7 @@ async fn registry_clear_deployments_empty(#[future(awt)] worker: Worker<Sandbox>
         secret_key: registry.secret_key().to_string().parse().unwrap(),
         registry_id: registry_id.clone(),
         beneficiary_id: None,
+        force,
     }
     .run(&ctx)
     .await

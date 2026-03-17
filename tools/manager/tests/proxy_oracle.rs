@@ -62,7 +62,7 @@ async fn proxy_oracle_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify contract responds to view call.
     let proxies: Vec<serde_json::Value> = ctx
-        .near()
+        .near
         .view(oracle.id(), "list_proxies")
         .args_json(json!({}))
         .await
@@ -188,7 +188,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
 
     // List proposals — should have 1.
     let ids: Vec<u32> = ctx
-        .near()
+        .near
         .view(&oracle_id, "gov_list")
         .args_json(json!({}))
         .await
@@ -226,7 +226,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
 
     // Verify proposal is gone.
     let ids: Vec<u32> = ctx
-        .near()
+        .near
         .view(&oracle_id, "gov_list")
         .args_json(json!({}))
         .await
@@ -291,7 +291,7 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
 
     // Verify the proposal was executed (no longer in the list).
     let ids: Vec<u32> = ctx
-        .near()
+        .near
         .view(&oracle_id, "gov_list")
         .args_json(json!({}))
         .await

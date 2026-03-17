@@ -81,7 +81,7 @@ async fn redstone_adapter_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify config view call works.
     let config: Config = ctx
-        .near()
+        .near
         .view(adapter.id(), "get_config")
         .await
         .unwrap()
@@ -211,7 +211,7 @@ async fn redstone_adapter_role_lifecycle(#[future(awt)] worker: Worker<Sandbox>)
 
     // List role members — target should appear.
     let members: Vec<AccountId> = ctx
-        .near()
+        .near
         .view(&adapter_id, "list_role")
         .args_json(json!({ "role": templar_common::oracle::redstone::Role::TrustedUpdater }))
         .await
@@ -243,7 +243,7 @@ async fn redstone_adapter_role_lifecycle(#[future(awt)] worker: Worker<Sandbox>)
 
     // Verify the role is gone.
     let members: Vec<AccountId> = ctx
-        .near()
+        .near
         .view(&adapter_id, "list_role")
         .args_json(json!({ "role": templar_common::oracle::redstone::Role::TrustedUpdater }))
         .await

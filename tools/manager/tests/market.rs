@@ -45,7 +45,7 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify the contract is deployed by querying its configuration.
     let stored_config: MarketConfiguration = ctx
-        .near()
+        .near
         .view(market_account.id(), "get_configuration")
         .await
         .unwrap()
@@ -126,7 +126,7 @@ async fn market_create_from_registry_and_removal(
 
     // Verify market exists by querying configuration
     let stored_config: MarketConfiguration = ctx
-        .near()
+        .near
         .view(&market_id, "get_configuration")
         .await
         .unwrap()

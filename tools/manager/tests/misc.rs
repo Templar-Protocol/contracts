@@ -36,7 +36,7 @@ async fn storage_deposit(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify storage is registered by checking ft_balance_of (should return 0, not error).
     let balance: U128 = ctx
-        .near()
+        .near
         .view(ft.id(), "ft_balance_of")
         .args_json(json!({ "account_id": user.id() }))
         .await
@@ -64,7 +64,7 @@ async fn recover_nep141(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify source has tokens.
     let balance: U128 = ctx
-        .near()
+        .near
         .view(ft.id(), "ft_balance_of")
         .args_json(json!({ "account_id": source.id() }))
         .await
@@ -90,7 +90,7 @@ async fn recover_nep141(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Beneficiary should now have the tokens (transfer succeeded before the error).
     let beneficiary_balance: U128 = ctx
-        .near()
+        .near
         .view(ft.id(), "ft_balance_of")
         .args_json(json!({ "account_id": beneficiary.id() }))
         .await
