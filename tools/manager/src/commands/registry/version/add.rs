@@ -65,7 +65,7 @@ pub struct AddVersion {
     pub registry_id: AccountId,
     /// Version key to store in the registry
     ///
-    /// If not provided, the version key will be derived from the package version.
+    /// If not provided, the version key will be derived from the package metadata.
     #[arg(long)]
     pub version_key: Option<String>,
     /// Deployment mode
