@@ -86,4 +86,21 @@ mod tests {
 
         assert_eq!(convert_non_btc_feed_id_to_string, "BTC\0C".into());
     }
+
+    #[test]
+    fn test_feed_to_string_all_zero_bytes() {
+        let feed_id = redstone::FeedId::from([0u8; 32]);
+        let converted = super::FeedId::from(feed_id);
+        assert_eq!(converted, "".into());
+    }
+
+    #[test]
+    fn test_feed_to_string_invalid_utf8_is_lossy() {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0xFF;
+        bytes[1] = b'B';
+        let feed_id = redstone::FeedId::from(bytes);
+        let converted = super::FeedId::from(feed_id);
+        assert_eq!(converted.as_ref(), "�B");
+    }
 }
