@@ -6,6 +6,12 @@ use schemars::JsonSchema;
 #[near(serializers = [borsh])]
 pub struct SerializableU256([u64; 4]);
 
+impl SerializableU256 {
+    pub fn to_u256(self) -> U256 {
+        self.into()
+    }
+}
+
 impl From<U256> for SerializableU256 {
     fn from(value: U256) -> Self {
         Self(value.0)

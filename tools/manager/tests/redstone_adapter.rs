@@ -1,13 +1,18 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
+use std::collections::HashMap;
+
 use base64::prelude::*;
 use common::{setup_ctx, signer_args};
 use hex_literal::hex;
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::{oracle::redstone::Config, registry::DeployMode};
+use templar_common::{
+    oracle::redstone::{Config, FeedId, SerializableU256},
+    registry::DeployMode,
+};
 use templar_manager::commands::{
     redstone_adapter::{
         config::AdapterConfig,
@@ -308,4 +313,26 @@ async fn redstone_adapter_write_prices(#[future(awt)] worker: Worker<Sandbox>) {
     .run(&ctx)
     .await
     .unwrap();
+
+    // #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
+
+    let read_prices = ctx
+        .near
+        .view(adapter.id(), "read_prices")
+        .args_json(json!({
+            "feed_ids": ["ETH", "BTC"],
+        }))
+        .await
+        .unwrap()
+        .json::<HashMap<FeedId, SerializableU256>>()
+        .unwrap();
+
+    assert_eq!(
+        read_prices.get(&"ETH".into()).unwrap().to_u256(),
+        195_692_129_540_u128.into()
+    );
+    assert_eq!(
+        read_prices.get(&"BTC".into()).unwrap().to_u256(),
+        6_698_556_748_915_u128.into()
+    );
 }
