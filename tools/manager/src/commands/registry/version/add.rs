@@ -69,7 +69,7 @@ pub struct AddVersion {
     #[arg(long)]
     pub version_key: Option<String>,
     /// Deployment mode
-    #[arg(long, default_value_t = DeployMode::Normal)]
+    #[arg(long)]
     pub deploy_mode: DeployMode,
     /// Deposit to attach in NEAR. If not provided, it will be estimated based
     /// on the contract size and the deploy mode.
@@ -78,7 +78,7 @@ pub struct AddVersion {
 }
 
 impl AddVersion {
-    #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package(), registry_id = %self.registry_id))]
+    #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package(), registry_id = %self.registry_id, deploy_mode = %self.deploy_mode))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let loaded_contract = self
             .contract_wasm
@@ -87,12 +87,13 @@ impl AddVersion {
         let registry_version: RegistryVersion =
             near::contract_version(&ctx.near, &self.registry_id).await?;
         tracing::debug!(%registry_version, "Loaded registry");
-        let deploy_mode = if registry_version.supports_global_contracts() {
-            self.deploy_mode
-        } else {
-            DeployMode::Normal
-        };
-        tracing::debug!(%deploy_mode);
+        if !registry_version.supports_global_contracts() && self.deploy_mode != DeployMode::Normal {
+            anyhow::bail!(
+                "Registry version {} does not support global contracts, but deploy mode {:?} was requested",
+                registry_version,
+                self.deploy_mode
+            );
+        }
         let version_key = self
             .version_key
             .clone()
@@ -100,10 +101,10 @@ impl AddVersion {
         tracing::debug!(%version_key);
         let borsh_args = registry_version.encode_add_version_args(
             &version_key,
-            deploy_mode,
+            self.deploy_mode,
             &loaded_contract.wasm_bytes,
         )?;
-        let estimated_deposit = if deploy_mode == DeployMode::GlobalHash {
+        let estimated_deposit = if self.deploy_mode == DeployMode::GlobalHash {
             STORAGE_AMOUNT_PER_BYTE.saturating_mul(loaded_contract.wasm_bytes.len() as u128 * 10)
         } else {
             NearToken::from_yoctonear(1)
