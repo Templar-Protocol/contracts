@@ -105,19 +105,31 @@ fn init_tracing(verbose: u8) {
     let registry = tracing_subscriber::registry().with(console_layer);
 
     // Attempt to set up file logging; fall back to console-only if it fails.
-    let log_dir = dirs::state_dir()
+    let file_layer = dirs::state_dir()
         .or_else(dirs::data_local_dir)
-        .map(|d| d.join(env!("CARGO_PKG_NAME")).join("logs"));
+        .map(|d| d.join(env!("CARGO_PKG_NAME")).join("logs"))
+        .and_then(|log_dir| {
+            tracing::debug!(log_dir = %log_dir.display(), "Initializing file logging");
+            tracing_appender::rolling::RollingFileAppender::builder()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("log")
+                .build(&log_dir)
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, "Failed to initialize file logging");
+                })
+                .ok()
+        })
+        .map(|file_appender| {
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(file_appender)
+                .with_filter(LevelFilter::DEBUG)
+        });
 
-    if let Some(log_dir) = log_dir {
-        let file_appender = tracing_appender::rolling::daily(&log_dir, "log");
-        let file_layer = fmt::layer()
-            .with_ansi(false)
-            .with_writer(file_appender)
-            .with_filter(LevelFilter::DEBUG);
+    if let Some(file_layer) = file_layer {
         registry.with(file_layer).init();
-        tracing::debug!(path = %log_dir.display(), "File logging enabled");
     } else {
+        tracing::warn!("Failed to initialize file logging");
         registry.init();
     }
 }
