@@ -259,3 +259,53 @@ async fn registry_clear_deployments_empty(
     .await
     .unwrap();
 }
+
+#[rstest]
+#[tokio::test]
+async fn registry_version_remove_mutual_exclusivity_conflict(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, registry);
+    let signer = signer_args(&registry);
+    let registry_id = registry.id().clone();
+
+    deploy_registry(&ctx, signer.clone()).await;
+
+    let err_msg = VersionRemove {
+        signer: signer.clone(),
+        registry_id: registry_id.clone(),
+        all: true,
+        version_key: Some("market@v1".to_string()),
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(err_msg, "Cannot specify both --all and --version-key");
+}
+
+#[rstest]
+#[tokio::test]
+async fn registry_version_remove_neither_specified(#[future(awt)] worker: Worker<Sandbox>) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, registry);
+    let signer = signer_args(&registry);
+    let registry_id = registry.id().clone();
+
+    deploy_registry(&ctx, signer.clone()).await;
+
+    let err_msg = VersionRemove {
+        signer: signer.clone(),
+        registry_id: registry_id.clone(),
+        all: false,
+        version_key: None,
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(err_msg, "Please specify either --all or --version-key");
+}
