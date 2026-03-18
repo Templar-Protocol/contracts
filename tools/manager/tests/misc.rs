@@ -1,10 +1,14 @@
 mod common;
 
 use common::{setup_ctx, signer_args};
+use near_contract_standards::storage_management::StorageBalance;
 use near_sdk::{json_types::U128, serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_manager::commands::{recover_nep141::RecoverNep141, storage_deposit::StorageDeposit};
+use templar_manager::commands::{
+    recover_nep141::RecoverNep141,
+    storage_deposit::{StorageDeposit, STORAGE_DEPOSIT_AMOUNT},
+};
 use test_utils::{
     accounts,
     controller::{ft::FtController, storage_management::StorageManagementController},
@@ -34,16 +38,15 @@ async fn storage_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     .await
     .unwrap();
 
-    // Verify storage is registered by checking ft_balance_of (should return 0, not error).
-    let balance: U128 = ctx
+    let balance: StorageBalance = ctx
         .near
-        .view(ft.id(), "ft_balance_of")
+        .view(ft.id(), "storage_balance_of")
         .args_json(json!({ "account_id": user.id() }))
         .await
         .unwrap()
         .json()
         .unwrap();
-    assert_eq!(balance.0, 0);
+    assert_eq!(balance.total, STORAGE_DEPOSIT_AMOUNT);
 }
 
 #[rstest]

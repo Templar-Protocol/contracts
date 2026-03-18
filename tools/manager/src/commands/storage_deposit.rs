@@ -15,9 +15,13 @@ pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
 pub struct StorageDeposit {
     #[command(flatten)]
     pub signer: super::SignerArgs,
+    /// The contract to deposit storage on.
     #[arg(long)]
     pub contract_id: AccountId,
     /// Deposit a specific amount of NEAR tokens.
+    ///
+    /// If neither --depost nor --registration-only are provided, the default
+    /// storage amount of 0.00125 NEAR will be used.
     #[arg(long)]
     pub deposit: Option<NearToken>,
     /// Deposit only the minimum storage deposit required by the contract.
