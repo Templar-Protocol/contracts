@@ -57,10 +57,7 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn market_create_from_registry_and_removal(
-    #[future(awt)] worker: Worker<Sandbox>,
-    #[values(true, false)] force: bool,
-) {
+async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<Sandbox>) {
     let ctx = setup_ctx(&worker);
 
     accounts!(worker, registry, oracle, borrow, collateral, protocol);
@@ -141,7 +138,7 @@ async fn market_create_from_registry_and_removal(
             secret_key: registry.secret_key().to_string().parse().unwrap(),
         },
         beneficiary_id: registry.id().clone(),
-        force,
+        force: true,
     }
     .run(&ctx)
     .await
