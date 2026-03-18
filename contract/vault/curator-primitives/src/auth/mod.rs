@@ -166,16 +166,9 @@ impl_action_kind_from_kernel_action!(
 pub enum Caller {
     Admin,
     Curator,
-    Guardian,
     Sentinel,
     Allocator,
     User,
-}
-
-impl From<Address> for Caller {
-    fn from(_: Address) -> Self {
-        Self::User
-    }
 }
 
 #[templar_vault_macros::vault_derive]

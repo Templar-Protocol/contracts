@@ -280,17 +280,51 @@ impl From<&CapGroupUpdate> for CapGroupUpdateKey {
 /// Validate a list of allocations against their cap groups.
 ///
 /// # Arguments
-/// * `allocations` - List of (cap_group_record, allocation_amount) pairs
+/// * `allocations` - List of (cap_group_id, cap_group_record, allocation_amount) tuples
 /// * `total_assets` - Total vault assets for relative cap calculation
 ///
 /// # Returns
 /// `Ok(())` if all allocations are valid, or the first error encountered.
+///
+/// Note: This function tracks cumulative allocations per cap group to detect
+/// cases where multiple allocations to the same group would exceed the cap,
+/// even if each individual allocation is valid against the original principal.
 pub fn validate_allocations(
-    allocations: &[(CapGroupRecord, u128)],
+    allocations: &[(&CapGroupId, &CapGroupRecord, u128)],
     total_assets: u128,
 ) -> Result<(), CapGroupError> {
-    for (record, amount) in allocations {
-        record.enforce(*amount, total_assets)?;
+    use alloc::collections::BTreeMap;
+
+    // Track cumulative allocations per cap group ID
+    let mut cumulative: BTreeMap<&CapGroupId, u128> = BTreeMap::new();
+
+    for (group_id, record, amount) in allocations {
+        let prior_cumulative = cumulative.get(group_id).copied().unwrap_or(0);
+
+        // Compute effective principal including prior allocations in this batch
+        let effective_principal =
+            record
+                .principal
+                .checked_add(prior_cumulative)
+                .ok_or(CapGroupError::Overflow {
+                    current_principal: record.principal,
+                    requested: prior_cumulative,
+                })?;
+
+        // Enforce against the effective (cumulative) principal
+        record
+            .cap
+            .enforce(effective_principal, *amount, total_assets)?;
+
+        // Update cumulative total for this group
+        let new_cumulative =
+            prior_cumulative
+                .checked_add(*amount)
+                .ok_or(CapGroupError::Overflow {
+                    current_principal: prior_cumulative,
+                    requested: *amount,
+                })?;
+        cumulative.insert(group_id, new_cumulative);
     }
     Ok(())
 }

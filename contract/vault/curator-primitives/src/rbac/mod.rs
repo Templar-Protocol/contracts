@@ -7,8 +7,7 @@
 //! # Roles
 //!
 //! - **Curator**: Curator-scoped actions, plus allocator-class operations
-//! - **Guardian**: Reserved governance role (runtime action auth uses sentinel for pause)
-//! - **Sentinel**: Emergency backstop, distinct from guardian (used by NEAR)
+//! - **Sentinel**: Emergency backstop (used for pause and restriction updates)
 //! - **Allocator**: Can manage allocations and refreshes
 //! - **User**: Can deposit, withdraw, execute withdrawals
 
@@ -26,9 +25,7 @@ use crate::auth::{
 pub enum Role {
     /// Curator-scoped privileged actions (and allocator-class operations).
     Curator,
-    /// Reserved governance role.
-    Guardian,
-    /// Emergency backstop, distinct from guardian.
+    /// Emergency backstop (used for pause and restriction updates).
     Sentinel,
     /// Can manage allocations and market operations.
     Allocator,
@@ -41,7 +38,6 @@ impl Role {
     pub const fn as_str(self) -> &'static str {
         match self {
             Role::Curator => "curator",
-            Role::Guardian => "guardian",
             Role::Sentinel => "sentinel",
             Role::Allocator => "allocator",
         }

@@ -156,10 +156,14 @@ pub struct PolicyState {
 impl PolicyState {
     pub fn set_market_config(&mut self, target_id: TargetId, config: MarketConfig) {
         self.markets.insert(target_id, config);
+        // Refresh cap group principals to keep them in sync with market config changes
+        self.refresh_cap_group_principals();
     }
 
     pub fn set_principal(&mut self, target_id: TargetId, principal: u128) {
         self.principals.insert(target_id, principal);
+        // Refresh cap group principals to keep them in sync with principal changes
+        self.refresh_cap_group_principals();
     }
 
     /// Return the principal for a market (0 if missing).
@@ -202,8 +206,24 @@ impl PolicyState {
     }
 
     /// Recompute and update cap group principals in-place.
+    ///
+    /// Note: This also creates missing cap group entries (with default caps)
+    /// for any cap groups referenced by markets but not yet in `cap_groups`.
+    /// This prevents silently dropping principals for unknown groups.
     pub fn refresh_cap_group_principals(&mut self) {
         let totals = self.compute_cap_group_totals();
+
+        // First, ensure all referenced cap groups exist (create missing ones with defaults)
+        for (group_id, principal) in &totals {
+            if !self.cap_groups.contains_key(group_id) {
+                // Create a default cap group record for the missing group
+                let mut record = CapGroupRecord::default();
+                record.principal = *principal;
+                self.cap_groups.insert(group_id.clone(), record);
+            }
+        }
+
+        // Now update all cap group principals
         for (group_id, record) in self.cap_groups.iter_mut() {
             let total = totals
                 .iter()

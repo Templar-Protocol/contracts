@@ -90,7 +90,7 @@ fn near_snapshot() -> NearVaultSnapshot {
 mod auth_unit_tests {
     use crate::auth::{
         boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
-        AuthPolicyClass, AuthResult,
+        AuthPolicyClass, AuthResult, Caller,
     };
     use templar_vault_kernel::Address;
 
@@ -140,7 +140,7 @@ mod auth_unit_tests {
 
             if action.is_privileged() {
                 return Err(AuthError::NotAuthorized {
-                    caller: caller.into(),
+                    caller: Caller::User,
                     action,
                 });
             }
@@ -763,7 +763,9 @@ mod cap_group_unit_tests {
     use super::WAD;
     use alloc::vec;
 
-    use crate::policy::cap_group::{validate_allocations, CapGroup, CapGroupError, CapGroupRecord};
+    use crate::policy::cap_group::{
+        validate_allocations, CapGroup, CapGroupError, CapGroupId, CapGroupRecord,
+    };
     use templar_vault_kernel::Wad;
 
     #[test]
@@ -896,6 +898,9 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_validate_allocations() {
+        let group1 = CapGroupId::from("group1");
+        let group2 = CapGroupId::from("group2");
+
         let cap1 = CapGroupRecord {
             cap: CapGroup::builder().absolute_cap(1000).build(),
             principal: 0,
@@ -905,13 +910,39 @@ mod cap_group_unit_tests {
             principal: 0,
         };
 
-        // Valid allocations
-        let allocations = vec![(cap1.clone(), 500), (cap2.clone(), 300)];
+        // Valid allocations to different groups
+        let allocations = vec![(&group1, &cap1, 500u128), (&group2, &cap2, 300u128)];
         assert!(validate_allocations(&allocations, 2000).is_ok());
 
         // Invalid - second exceeds cap
-        let invalid = vec![(cap1, 500), (cap2, 600)];
+        let invalid = vec![(&group1, &cap1, 500u128), (&group2, &cap2, 600u128)];
         assert!(validate_allocations(&invalid, 2000).is_err());
+    }
+
+    #[test]
+    fn test_validate_allocations_cumulative_breach() {
+        // CR-069: Test that multiple allocations to the same group are tracked cumulatively
+        let group1 = CapGroupId::from("group1");
+
+        let cap1 = CapGroupRecord {
+            cap: CapGroup::builder().absolute_cap(1000).build(),
+            principal: 0,
+        };
+
+        // Two allocations of 600 each - individually valid (600 < 1000),
+        // but together they exceed the cap (1200 > 1000)
+        let allocations = vec![(&group1, &cap1, 600u128), (&group1, &cap1, 600u128)];
+        assert!(
+            validate_allocations(&allocations, 2000).is_err(),
+            "cumulative allocations exceeding cap should fail"
+        );
+
+        // Two allocations that together stay within cap should succeed
+        let valid_cumulative = vec![(&group1, &cap1, 400u128), (&group1, &cap1, 400u128)];
+        assert!(
+            validate_allocations(&valid_cumulative, 2000).is_ok(),
+            "cumulative allocations within cap should succeed"
+        );
     }
 
     #[test]
@@ -1497,12 +1528,10 @@ mod rbac_module_tests {
     #[rstest::fixture]
     fn rbac_auth(
         curator_addr: Address,
-        guardian_addr: Address,
         allocator_addr: Address,
         sentinel_addr: Address,
     ) -> RbacAuth {
         let mut config = RbacConfig::with_curator(curator_addr);
-        config.add_role(guardian_addr, Role::Guardian);
         config.add_role(allocator_addr, Role::Allocator);
         config.add_role(sentinel_addr, Role::Sentinel);
         RbacAuth { config }
@@ -1517,25 +1546,25 @@ mod rbac_module_tests {
     }
 
     #[rstest::rstest]
-    fn test_add_remove_role(guardian_addr: Address) {
+    fn test_add_remove_role(sentinel_addr: Address) {
         let mut config = RbacConfig::default();
 
-        config.add_role(guardian_addr, Role::Guardian);
-        assert!(config.has_role(&guardian_addr, Role::Guardian));
+        config.add_role(sentinel_addr, Role::Sentinel);
+        assert!(config.has_role(&sentinel_addr, Role::Sentinel));
 
-        config.remove_role(&guardian_addr, Role::Guardian);
-        assert!(!config.has_role(&guardian_addr, Role::Guardian));
+        config.remove_role(&sentinel_addr, Role::Sentinel);
+        assert!(!config.has_role(&sentinel_addr, Role::Sentinel));
     }
 
     #[rstest::rstest]
     fn test_get_roles(curator_addr: Address) {
         let mut config = RbacConfig::with_curator(curator_addr);
-        config.add_role(curator_addr, Role::Guardian); // Curator also guardian
+        config.add_role(curator_addr, Role::Sentinel); // Curator also sentinel
 
         let roles = config.get_roles(&curator_addr);
         assert_eq!(roles.len(), 2);
         assert!(roles.contains(&Role::Curator));
-        assert!(roles.contains(&Role::Guardian));
+        assert!(roles.contains(&Role::Sentinel));
     }
 
     #[rstest::rstest]
@@ -1751,7 +1780,6 @@ mod rbac_module_tests {
     #[test]
     fn test_role_as_str() {
         assert_eq!(Role::Curator.as_str(), "curator");
-        assert_eq!(Role::Guardian.as_str(), "guardian");
         assert_eq!(Role::Sentinel.as_str(), "sentinel");
         assert_eq!(Role::Allocator.as_str(), "allocator");
     }

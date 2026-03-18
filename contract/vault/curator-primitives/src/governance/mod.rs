@@ -91,20 +91,27 @@ impl<T> PendingQueue<T> {
         now_ns: TimestampNs,
         mut pred: impl FnMut(&T) -> bool,
     ) -> Result<Option<T>, PendingQueueError> {
-        let Some(index) = self.entries.iter().position(|entry| pred(&entry.value)) else {
-            return Ok(None);
-        };
+        // Find the first entry that matches the predicate AND is mature.
+        // This prevents a stale locked entry from blocking a mature one behind it.
+        let mature_index = self
+            .entries
+            .iter()
+            .position(|entry| pred(&entry.value) && entry.is_mature(now_ns));
 
-        let entry = &self.entries[index];
+        if let Some(index) = mature_index {
+            let Some(pending) = self.entries.remove(index) else {
+                return Ok(None);
+            };
+            return Ok(Some(pending.value));
+        }
 
-        if !entry.is_mature(now_ns) {
+        // No mature match found - check if there's any match at all (immature).
+        let has_immature_match = self.entries.iter().any(|entry| pred(&entry.value));
+        if has_immature_match {
             return Err(PendingQueueError::NotMature);
         }
 
-        let Some(pending) = self.entries.remove(index) else {
-            return Ok(None);
-        };
-        Ok(Some(pending.value))
+        Ok(None)
     }
 
     #[must_use]
