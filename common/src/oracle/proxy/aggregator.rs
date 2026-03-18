@@ -52,11 +52,7 @@ impl Aggregator {
         prices: &[(pyth::Price, u32)],
         now: Milliseconds,
     ) -> Option<SpecificPrice> {
-        if prices.len() < self.filter.min_sources.unwrap_or(1).max(1) as usize {
-            return None;
-        }
-
-        let mut values = prices
+        let prices_filtered = prices
             .iter()
             .filter(|p| {
                 let Some(published) = Milliseconds::try_from_pyth(p.0.publish_time) else {
@@ -71,6 +67,14 @@ impl Aggregator {
                         .is_none_or(|max| published - now <= max)
                 }
             })
+            .collect::<Vec<_>>();
+
+        if prices_filtered.len() < self.filter.min_sources.unwrap_or(1).max(1) as usize {
+            return None;
+        }
+
+        let mut values = prices_filtered
+            .into_iter()
             .flat_map(|(price, weight)| {
                 // Split apart prices so that we don't need to worry about confidence when sorting.
                 let [lower, upper] = SpecificPrice::split(price);
@@ -302,6 +306,22 @@ mod tests {
         assert!(Aggregator::median_low(filter)
             .aggregate(&prices, Milliseconds::zero())
             .is_some());
+    }
+
+    #[test]
+    fn aggregate_min_sources_applies_after_time_filtering() {
+        let filter = Filter {
+            min_sources: Some(2),
+            max_age: Some(Milliseconds::from_secs(500)),
+            ..Default::default()
+        };
+        let prices = [
+            (price(1_000_000, 0, secs(1_000)), 1),
+            (price(2_000_000, 0, secs(100)), 1),
+        ];
+        assert!(Aggregator::median_low(filter)
+            .aggregate(&prices, Milliseconds::from_secs(1_000))
+            .is_none());
     }
 
     #[rstest::rstest]
