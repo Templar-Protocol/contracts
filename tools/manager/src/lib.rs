@@ -3,16 +3,18 @@ pub mod commands;
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use commands::{
     market::MarketArgs, proxy_oracle::ProxyOracleArgs, recover_nep141::RecoverNep141,
     redstone_adapter::RedStoneAdapterArgs, registry::RegistryArgs, storage_deposit::StorageDeposit,
 };
 use templar_common::utils::Network;
+use tracing::level_filters::LevelFilter;
 
 pub use templar_tools_common::near;
 
 #[derive(Parser)]
+#[command(group(ArgGroup::new("verbosity").multiple(false).args(["quiet", "verbose"])))]
 #[command(version, about = "CLI tool for deploying and managing Templar markets")]
 struct Cli {
     /// NEAR network to connect to
@@ -32,12 +34,47 @@ struct Cli {
     #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
     workspace_dir: PathBuf,
 
-    /// Increase log verbosity (-v = info, -vv = debug, -vvv = trace)
-    #[arg(short, long, action = ArgAction::Count, global = true)]
-    verbose: u8,
+    #[command(flatten)]
+    verbosity: VerbosityArgs,
 
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Args, Debug, Default)]
+struct VerbosityArgs {
+    /// Reduce console log verbosity (-q = warn, -qq = error, -qqq = off)
+    #[arg(short, long, action = ArgAction::Count, conflicts_with = "verbose")]
+    quiet: u8,
+
+    /// Increase console log verbosity (-v = debug, -vv = trace)
+    #[arg(short, long, action = ArgAction::Count, conflicts_with = "quiet")]
+    verbose: u8,
+}
+
+impl VerbosityArgs {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !(self.quiet > 0 && self.verbose > 0),
+            "Only one of --quiet or --verbose may be specified"
+        );
+        Ok(())
+    }
+
+    fn console_level(&self) -> LevelFilter {
+        const DEFAULT_LEVEL: u8 = 3;
+        match DEFAULT_LEVEL
+            .saturating_sub(self.quiet)
+            .saturating_add(self.verbose)
+        {
+            0 => LevelFilter::OFF,
+            1 => LevelFilter::ERROR,
+            2 => LevelFilter::WARN,
+            3 => LevelFilter::INFO,
+            4 => LevelFilter::DEBUG,
+            5.. => LevelFilter::TRACE,
+        }
+    }
 }
 
 impl Cli {
@@ -83,17 +120,9 @@ impl CliContext {
     }
 }
 
-fn init_tracing(verbose: u8) {
-    use tracing::level_filters::LevelFilter;
+fn init_tracing(console_default: LevelFilter) {
     use tracing_subscriber::{
         fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
-    };
-
-    let console_default = match verbose {
-        0 => LevelFilter::WARN,
-        1 => LevelFilter::INFO,
-        2 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
     };
 
     let console_filter = EnvFilter::builder()
@@ -157,8 +186,9 @@ enum Commands {
 
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    cli.verbosity.validate()?;
 
-    init_tracing(cli.verbose);
+    init_tracing(cli.verbosity.console_level());
 
     tracing::info!(network = %cli.network, "Connecting");
 
