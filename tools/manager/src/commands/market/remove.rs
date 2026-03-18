@@ -1,5 +1,8 @@
 use near_sdk::AccountId;
-use templar_common::market::MarketConfiguration;
+use templar_common::{
+    asset::{AssetClass, FungibleAsset},
+    market::MarketConfiguration,
+};
 
 use crate::{
     commands::{self, recover_nep141::RecoverNep141, SignerArgs},
@@ -35,36 +38,11 @@ impl MarketRemove {
             .and_then(|r| r.json::<MarketConfiguration>());
 
         match configuration {
-            Ok(configuration) => {
-                tracing::debug!(?configuration, "Market configuration");
+            Ok(c) => {
+                tracing::debug!(market_configuration = ?c);
 
-                if let Some(borrow_id) = configuration.borrow_asset.into_nep141() {
-                    let recover_nep141 = RecoverNep141 {
-                        signer: self.signer.clone(),
-                        token_id: borrow_id,
-                        beneficiary_id: self.beneficiary_id.clone(),
-                    };
-                    if let Err(error) = recover_nep141.run(ctx).await {
-                        if !self.force {
-                            return Err(error.context("Failed to recover borrow asset"));
-                        }
-                        tracing::warn!(%error, "Failed to recover borrow asset");
-                    }
-                }
-
-                if let Some(collateral_id) = configuration.collateral_asset.into_nep141() {
-                    let recover_nep141 = RecoverNep141 {
-                        signer: self.signer.clone(),
-                        token_id: collateral_id,
-                        beneficiary_id: self.beneficiary_id.clone(),
-                    };
-                    if let Err(error) = recover_nep141.run(ctx).await {
-                        if !self.force {
-                            return Err(error.context("Failed to recover collateral asset"));
-                        }
-                        tracing::warn!(%error, "Failed to recover collateral asset");
-                    }
-                }
+                self.try_recover(ctx, c.borrow_asset).await?;
+                self.try_recover(ctx, c.collateral_asset).await?;
             }
             Err(error) => {
                 if !self.force {
@@ -77,6 +55,28 @@ impl MarketRemove {
         }
 
         commands::delete_account(ctx, &self.signer, &self.beneficiary_id).await?;
+
+        Ok(())
+    }
+
+    async fn try_recover<T: AssetClass>(
+        &self,
+        ctx: &CliContext,
+        asset: FungibleAsset<T>,
+    ) -> anyhow::Result<()> {
+        if let Some(token_id) = asset.into_nep141() {
+            let recover = RecoverNep141 {
+                signer: self.signer.clone(),
+                token_id: token_id.clone(),
+                beneficiary_id: self.beneficiary_id.clone(),
+            };
+            if let Err(error) = recover.run(ctx).await {
+                if !self.force {
+                    anyhow::bail!("Failed to recover asset {token_id}: {error}");
+                }
+                tracing::warn!(%token_id, %error, "Failed to recover asset");
+            }
+        }
 
         Ok(())
     }
