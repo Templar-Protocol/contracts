@@ -18,7 +18,12 @@ pub struct ConfigSource {
 }
 
 impl ConfigSource {
-    pub fn resolve(&self) -> anyhow::Result<Config> {
+    pub fn init_args(&self) -> anyhow::Result<Vec<u8>> {
+        serde_json::to_vec(&serde_json::json!({ "config": self.resolve()? }))
+            .context("serialise init args")
+    }
+
+    fn resolve(&self) -> anyhow::Result<Config> {
         if self.prod {
             Ok(templar_common::oracle::redstone::config::prod())
         } else if self.test {
@@ -47,9 +52,7 @@ pub struct CreateRedStoneAdapter {
 impl CreateRedStoneAdapter {
     #[tracing::instrument(skip_all, name = "redstone_adapter_create")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        let config = self.config_source.resolve()?;
-        let init_args = serde_json::to_vec(&serde_json::json!({ "config": config }))
-            .context("serialise init args")?;
+        let init_args = self.config_source.init_args()?;
 
         tracing::info!("Creating RedStone adapter from registry");
         self.deploy
