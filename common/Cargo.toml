@@ -3,7 +3,7 @@ edition.workspace = true
 license.workspace = true
 name = "templar-common"
 repository.workspace = true
-version = "1.3.0"
+version = "1.3.1"
 
 [dependencies]
 borsh.workspace = true
