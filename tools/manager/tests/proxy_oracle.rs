@@ -2,7 +2,7 @@
 mod common;
 
 use common::{setup_ctx, signer_args};
-use near_sdk::{serde_json::json, AccountId, NearToken};
+use near_sdk::{json_types::U64, serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::registry::DeployMode;
@@ -299,4 +299,15 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         .json()
         .unwrap();
     assert!(ids.is_empty());
+
+    let new_ttl = ctx
+        .near
+        .view(&oracle_id, "gov_ttl_ms")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<U64>()
+        .unwrap()
+        .0;
+    assert_eq!(new_ttl, 5000);
 }
