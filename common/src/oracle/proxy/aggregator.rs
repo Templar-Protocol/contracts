@@ -141,23 +141,14 @@ impl PartialOrd for SpecificPrice {
 
 impl Ord for SpecificPrice {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let expo_diff = self.exponent - other.exponent;
-        let (lhs, rhs) = if expo_diff >= 0 {
-            let scale = if expo_diff < 39 {
-                10i128.pow(expo_diff.unsigned_abs())
-            } else {
-                i128::MAX
-            };
+        let expo_diff = self.exponent.abs_diff(other.exponent);
+        let scale = 10i128.saturating_pow(expo_diff);
+        let (lhs, rhs) = if self.exponent >= other.exponent {
             (
                 i128::from(self.value).saturating_mul(scale),
                 i128::from(other.value),
             )
         } else {
-            let scale = if -expo_diff < 39 {
-                10i128.pow((-expo_diff).unsigned_abs())
-            } else {
-                i128::MAX
-            };
             (
                 i128::from(self.value),
                 i128::from(other.value).saturating_mul(scale),
