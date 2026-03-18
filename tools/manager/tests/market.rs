@@ -148,7 +148,12 @@ async fn market_create_from_registry_and_removal(
     .unwrap();
 
     // Verify the account no longer exists
-    worker.view_account(&market_id).await.unwrap_err();
+    let e = worker.view_account(&market_id).await.unwrap_err();
+    assert!(e
+        .into_inner()
+        .unwrap()
+        .to_string()
+        .contains("does not exist while viewing"));
 }
 
 #[rstest]
