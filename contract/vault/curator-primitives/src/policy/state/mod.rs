@@ -217,8 +217,10 @@ impl PolicyState {
         for (group_id, principal) in &totals {
             if !self.cap_groups.contains_key(group_id) {
                 // Create a default cap group record for the missing group
-                let mut record = CapGroupRecord::default();
-                record.principal = *principal;
+                let record = CapGroupRecord {
+                    principal: *principal,
+                    ..Default::default()
+                };
                 self.cap_groups.insert(group_id.clone(), record);
             }
         }

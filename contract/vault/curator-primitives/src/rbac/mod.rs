@@ -180,10 +180,8 @@ impl AuthAdapter for RbacAuth {
     ) -> AuthResult<()> {
         // Check if paused (allow pause action even when paused).
         // Public/user actions are blocked while paused.
-        if self.config.paused && action != ActionKind::Pause {
-            if !action.is_privileged() {
-                return Err(AuthError::VaultPaused);
-            }
+        if self.config.paused && action != ActionKind::Pause && !action.is_privileged() {
+            return Err(AuthError::VaultPaused);
         }
 
         if !self.is_allowed(action, &caller) {

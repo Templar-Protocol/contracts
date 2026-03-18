@@ -576,6 +576,7 @@ fn map_queue_error(err: QueueError) -> KernelError {
 }
 
 /// Process a deposit: validate restrictions, convert assets→shares, update totals.
+#[allow(clippy::too_many_arguments)]
 fn handle_deposit(
     mut state: VaultState,
     config: &VaultConfig,
@@ -639,6 +640,7 @@ fn handle_deposit(
 }
 
 /// Enqueue a withdrawal request: validate, compute expected assets, escrow shares.
+#[allow(clippy::too_many_arguments)]
 fn handle_request_withdraw(
     mut state: VaultState,
     config: &VaultConfig,

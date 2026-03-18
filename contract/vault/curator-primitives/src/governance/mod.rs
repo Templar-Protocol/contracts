@@ -140,7 +140,6 @@ impl<T> From<PendingQueue<T>> for VecDeque<PendingValue<T>> {
     }
 }
 
-#[must_use]
 pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) -> Result<bool, E> {
     decision.map(TimelockDecision::requires_timelock)
 }
@@ -232,7 +231,6 @@ pub struct FeeConfig<'a, R> {
 }
 
 impl<R: PartialEq> FeeConfig<'_, R> {
-    #[must_use]
     pub fn evaluate_change(
         current: &Self,
         proposed: &Self,
@@ -305,7 +303,6 @@ pub enum TimelockConfigError {
     OutOfBounds,
 }
 
-#[must_use]
 pub fn timelock_config_decision(
     current: TimestampNs,
     proposed: TimestampNs,
@@ -349,7 +346,6 @@ impl TimelockDecision {
     ///
     /// `None` means the market has no existing cap record yet, so setting a cap is
     /// treated as timelocked.
-    #[must_use]
     pub fn from_cap_change(current: Option<u128>, proposed: u128) -> Result<Self, CapChangeError> {
         match current {
             Some(existing) => {
@@ -364,7 +360,6 @@ impl TimelockDecision {
     /// This is intended for cap-group absolute caps, where moving from unlimited to a finite
     /// cap tightens policy and should be immediate, while moving from finite to unlimited
     /// relaxes policy and should be timelocked.
-    #[must_use]
     pub fn from_cap_group_cap_change(
         current: Option<u128>,
         proposed: u128,
@@ -382,7 +377,6 @@ impl TimelockDecision {
         }
     }
 
-    #[must_use]
     pub fn from_relative_cap_change(
         current: Option<Wad>,
         proposed: Wad,
@@ -398,7 +392,6 @@ impl TimelockDecision {
         }
     }
 
-    #[must_use]
     pub fn from_membership_change(changed: bool) -> Result<Self, MembershipChangeError> {
         if changed {
             Ok(Self::Timelocked)

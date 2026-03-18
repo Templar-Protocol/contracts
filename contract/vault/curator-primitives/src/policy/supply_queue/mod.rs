@@ -140,7 +140,7 @@ impl SupplyQueue {
     /// Drain the queue into a list of entries.
     #[must_use]
     pub fn drain(&self) -> (Self, Vec<SupplyQueueEntry>) {
-        let entries: Vec<SupplyQueueEntry> = self.entries.iter().cloned().collect();
+        let entries: Vec<SupplyQueueEntry> = self.entries.to_vec();
         let empty_queue = Self {
             entries: Vec::new(),
             max_length: self.max_length,

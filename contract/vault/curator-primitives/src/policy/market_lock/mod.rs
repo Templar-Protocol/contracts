@@ -52,7 +52,7 @@ impl MarketLock {
     #[must_use]
     pub fn is_expired(&self, current_ns: u64) -> bool {
         self.expiry_gate()
-            .map_or(false, |gate| gate.is_ready(current_ns))
+            .is_some_and(|gate| gate.is_ready(current_ns))
     }
 
     #[must_use]

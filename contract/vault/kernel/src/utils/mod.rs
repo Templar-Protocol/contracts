@@ -37,7 +37,7 @@ impl TimeGate {
 
     #[must_use]
     pub fn is_ready(self, now_ns: TimestampNs) -> bool {
-        self.ready_at_ns.map_or(true, |ready_at| now_ns >= ready_at)
+        self.ready_at_ns.is_none_or(|ready_at| now_ns >= ready_at)
     }
 
     #[must_use]
