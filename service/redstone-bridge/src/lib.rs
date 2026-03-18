@@ -9,12 +9,13 @@ use templar_common::oracle::redstone::FeedId;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     net::UnixListener,
+    process::Command,
     select,
     sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
-fn generate_socket_path() -> PathBuf {
+fn gen_temp_file_path(name: &str, extension: &str) -> TryDeleteOnDrop {
     let pid = std::process::id();
     #[allow(
         clippy::expect_used,
@@ -24,9 +25,23 @@ fn generate_socket_path() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time before unix epoch")
         .as_nanos();
-    let mut path = std::env::temp_dir();
-    path.push(format!("templar_redstone_bridge_{pid}_{ts}.sock"));
-    path
+    TryDeleteOnDrop(std::env::temp_dir().join(format!("{name}_{pid}_{ts}.{extension}")))
+}
+
+#[derive(Debug, Clone)]
+#[must_use]
+struct TryDeleteOnDrop(PathBuf);
+
+impl AsRef<Path> for TryDeleteOnDrop {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TryDeleteOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 #[derive(Debug)]
@@ -71,24 +86,17 @@ impl From<IpcResponseResult> for Result<String, String> {
     }
 }
 
-#[derive(Debug)]
-struct BridgePaths<'a> {
-    node: &'a Path,
-    bridge: &'a Path,
-    socket: PathBuf,
-}
-
 #[tracing::instrument(skip(kill))]
 fn start_bridge(
-    paths: BridgePaths<'_>,
+    node: &Path,
+    bridge: &Path,
+    socket: &Path,
     kill: watch::Sender<()>,
 ) -> Result<JoinHandle<()>, std::io::Error> {
-    use tokio::process::Command;
-
-    let mut cmd = Command::new(paths.node);
-    cmd.arg(paths.bridge);
+    let mut cmd = Command::new(node);
+    cmd.arg(bridge);
     cmd.arg("--socket");
-    cmd.arg(&paths.socket);
+    cmd.arg(socket);
     cmd.arg("--data-service-id");
     cmd.arg("redstone-primary-prod");
     cmd.kill_on_drop(true);
@@ -110,17 +118,15 @@ fn start_bridge(
                 let _ = kill.send(());
             }
         }
-
-        let _ = std::fs::remove_file(&paths.socket);
     }))
 }
 
 #[tracing::instrument(skip(kill), name = "messenger")]
 fn start_messenger(
-    socket_path: PathBuf,
+    socket_path: &Path,
     kill: watch::Sender<()>,
 ) -> Result<mpsc::Sender<Request>, std::io::Error> {
-    let listener = UnixListener::bind(&socket_path)?;
+    let listener = UnixListener::bind(socket_path)?;
     let (send, mut recv) = mpsc::channel::<Request>(64);
     let mut on_kill = kill.subscribe();
 
@@ -130,8 +136,6 @@ fn start_messenger(
             connection = listener.accept() => connection,
             _ = on_kill.changed() => {
                 tracing::debug!("Received kill notification before accepting connection.");
-                // Clean up socket file and exit early since we never accepted a connection.
-                let _ = std::fs::remove_file(&socket_path);
                 return;
             }
         } {
@@ -139,7 +143,6 @@ fn start_messenger(
             Err(e) => {
                 tracing::error!(error = ?e, "Failed to accept socket connection");
                 let _ = kill.send(());
-                let _ = std::fs::remove_file(&socket_path);
                 return;
             }
         };
@@ -223,8 +226,6 @@ fn start_messenger(
                 },
             }
         }
-
-        let _ = std::fs::remove_file(&socket_path);
     });
 
     Ok(send)
@@ -237,9 +238,15 @@ pub const BRIDGE_BUNDLE: &str = include_str!(concat!(env!("OUT_DIR"), "/bundle.j
 /// with the RedStone bridge.
 #[derive(Debug, Clone)]
 pub struct Bridge {
-    #[allow(unused, reason = "cleanup on Drop")]
-    cleanup: Arc<Cleanup>,
+    _cleanup: Arc<Cleanup>,
     bridge_send: mpsc::Sender<Request>,
+}
+
+#[derive(Debug)]
+struct Cleanup {
+    _bridge_process: JoinHandle<()>,
+    _socket_path: TryDeleteOnDrop,
+    _bundle_path: TryDeleteOnDrop,
 }
 
 impl Bridge {
@@ -252,37 +259,21 @@ impl Bridge {
     ///
     /// Returns an error if the temp file cannot be written.
     pub fn new(node_path: &Path, kill: watch::Sender<()>) -> Result<Self, BridgeError> {
-        let pid = std::process::id();
-        #[allow(
-            clippy::expect_used,
-            reason = "system time before unix epoch is impossible"
-        )]
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        let bundle_path =
-            std::env::temp_dir().join(format!("templar_redstone_bundle_{pid}_{ts}.js"));
+        let bundle_path = gen_temp_file_path("templar_redstone_bundle", "js");
         std::fs::write(&bundle_path, BRIDGE_BUNDLE).map_err(BridgeError::WriteBundle)?;
 
-        let socket_path = generate_socket_path();
-        let bridge_send = start_messenger(socket_path.clone(), kill.clone())
+        let socket_path = gen_temp_file_path("templar_redstone_bridge", "sock");
+        let bridge_send = start_messenger(socket_path.as_ref(), kill.clone())
             .map_err(BridgeError::StartMessenger)?;
-        let bridge_process = start_bridge(
-            BridgePaths {
-                node: node_path,
-                bridge: &bundle_path,
-                socket: socket_path.clone(),
-            },
-            kill,
-        )
-        .map_err(BridgeError::StartBridge)?;
+        let bridge_process =
+            start_bridge(node_path, bundle_path.as_ref(), socket_path.as_ref(), kill)
+                .map_err(BridgeError::StartBridge)?;
 
         Ok(Self {
-            cleanup: Arc::new(Cleanup {
-                socket_path,
-                bundle_path,
-                bridge_process,
+            _cleanup: Arc::new(Cleanup {
+                _socket_path: socket_path,
+                _bundle_path: bundle_path,
+                _bridge_process: bridge_process,
             }),
             bridge_send,
         })
@@ -310,21 +301,6 @@ impl Bridge {
         let payload_hex = recv.await?.map_err(BridgeError::Bridge)?;
 
         Ok(hex::decode(&payload_hex)?)
-    }
-}
-
-#[derive(Debug)]
-struct Cleanup {
-    socket_path: PathBuf,
-    bundle_path: PathBuf,
-    #[allow(unused)]
-    bridge_process: JoinHandle<()>,
-}
-
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(&self.bundle_path);
     }
 }
 
