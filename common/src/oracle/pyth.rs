@@ -75,6 +75,7 @@ pub struct Price {
 pub struct PythTimestamp(i64);
 
 impl PythTimestamp {
+    /// Creates a `PythTimestamp` from a value in seconds.
     pub fn from_secs(secs: i64) -> Self {
         Self(secs)
     }
@@ -85,6 +86,7 @@ impl PythTimestamp {
         Self(ms / 1000)
     }
 
+    /// Returns the timestamp value in seconds.
     pub fn as_secs(&self) -> i64 {
         self.0
     }
