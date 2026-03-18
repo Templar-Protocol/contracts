@@ -2,11 +2,15 @@
 mod common;
 
 use common::{setup_ctx, signer_args};
-use near_sdk::serde_json::json;
+use near_sdk::{serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::registry::DeployMode;
+use templar_common::{
+    market::YieldWeights,
+    registry::DeployMode,
+};
 use templar_manager::commands::{
+    market::create::CreateMarket,
     registry::{
         deploy::DeployRegistry,
         deployment::{clear::ClearDeployments, list::ListDeployments},
@@ -17,9 +21,9 @@ use templar_manager::commands::{
             remove::VersionRemove,
         },
     },
-    FixedContractWasm, SignerArgs,
+    DeployFromRegistry, FixedContractWasm, SignerArgs,
 };
-use test_utils::{accounts, worker};
+use test_utils::{accounts, market_configuration, worker};
 
 fn no_build() -> FixedContractWasm {
     FixedContractWasm { no_build: true }
@@ -106,7 +110,7 @@ async fn registry_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 #[tokio::test]
 async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
     let ctx = setup_ctx(&worker);
-    accounts!(worker, registry);
+    accounts!(worker, registry, oracle, borrow, collateral, protocol);
     let signer = signer_args(&registry);
     let registry_id = registry.id().clone();
 
@@ -137,6 +141,36 @@ async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
         versions,
         vec!["market@v1"],
         "entry remains but code is cleared"
+    );
+
+    let config = market_configuration(
+        oracle.id().clone(),
+        borrow.id().clone(),
+        collateral.id().clone(),
+        protocol.id().clone(),
+        YieldWeights::new_with_supply_weight(1),
+    );
+
+    let deploy_err = CreateMarket {
+        signer: signer.clone(),
+        deploy: DeployFromRegistry {
+            registry_id: registry_id.clone(),
+            version_key: "market@v1".to_string(),
+            name: "removed-version".to_string(),
+            with_full_access_key: vec![],
+            no_signer_full_access_key: false,
+            deposit: Some(NearToken::from_near(6)),
+        },
+        configuration: serde_json::to_string(&config).unwrap(),
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        deploy_err.contains("Version code has been deleted"),
+        "expected deploy to fail because the removed version code was deleted, got: {deploy_err}"
     );
 }
 
