@@ -743,6 +743,7 @@ pub enum VersionedKeyParameters {
     V0(KeyParameters),
 }
 
+#[derive(Debug)]
 pub enum OracleType {
     PythDirect,
     PythLst { pyth_id: AccountId },
