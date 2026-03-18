@@ -43,8 +43,8 @@ fn test_config_source() -> ConfigSource {
 /// timestamp tolerance so old payloads are accepted regardless of sandbox time.
 fn prod_config_with_relaxed_timestamps() -> ConfigSource {
     let mut config = templar_common::oracle::redstone::config::prod();
-    config.max_timestamp_delay_ms = 365 * 24 * 60 * 60 * 1000; // 1 year
-    config.max_timestamp_ahead_ms = 365 * 24 * 60 * 60 * 1000;
+    config.max_timestamp_delay_ms = u64::MAX;
+    config.max_timestamp_ahead_ms = u64::MAX;
     config.min_interval_between_updates_ms = 0;
     ConfigSource {
         prod: false,
