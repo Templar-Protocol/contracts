@@ -32,9 +32,7 @@ impl VersionRemove {
             (false, None) => {
                 anyhow::bail!("Please specify either --all or --version-key");
             }
-            (true, None) => {
-                remove_all(ctx, &self.signer, &self.registry_id).await
-            }
+            (true, None) => remove_all(ctx, &self.signer, &self.registry_id).await,
             (false, Some(version_key)) => {
                 remove_one(ctx, &self.signer, &self.registry_id, version_key).await
             }

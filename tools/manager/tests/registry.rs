@@ -5,10 +5,7 @@ use common::{setup_ctx, signer_args};
 use near_sdk::{serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::{
-    market::YieldWeights,
-    registry::DeployMode,
-};
+use templar_common::{market::YieldWeights, registry::DeployMode};
 use templar_manager::commands::{
     market::create::CreateMarket,
     registry::{
