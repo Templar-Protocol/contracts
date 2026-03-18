@@ -22,8 +22,8 @@
     "borrow_asset_decimals": 7,
     "price_maximum_age_s": 60
   },
-  "borrow_mcr_maintenance": "1.5",
-  "borrow_mcr_liquidation": "1.4",
+  "borrow_mcr_maintenance": "1.25",
+  "borrow_mcr_liquidation": "1.2",
   "borrow_asset_maximum_usage_ratio": "0.99",
   "borrow_origination_fee": { "Flat": "0" },
   "borrow_interest_rate_strategy": {
