@@ -14,6 +14,11 @@ pub struct RecoverNep141 {
     /// Beneficiary account ID to receive the tokens
     #[arg(long)]
     pub beneficiary_id: AccountId,
+    /// Force-unregister from storage
+    ///
+    /// Unregisters even if recovering tokens fails or balance is non-zero even after sending.
+    #[arg(long)]
+    pub force: bool,
 }
 
 async fn ft_balance_of(
@@ -30,7 +35,7 @@ async fn ft_balance_of(
 }
 
 impl RecoverNep141 {
-    #[tracing::instrument(skip_all, name = "recover_nep141", fields(account_id = %self.signer.account_id, token_id = %self.token_id, beneficiary_id = %self.beneficiary_id))]
+    #[tracing::instrument(skip_all, name = "recover_nep141", fields(account_id = %self.signer.account_id, token_id = %self.token_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let signer = &self.signer.signer();
 
@@ -80,7 +85,7 @@ impl RecoverNep141 {
             ctx.batch(signer, &self.token_id)
                 .call(
                     Function::new("storage_unregister")
-                        .args_json(json!({ "force": true }))
+                        .args_json(json!({ "force": self.force }))
                         .deposit(NearToken::from_yoctonear(1))
                         .max_gas(),
                 )

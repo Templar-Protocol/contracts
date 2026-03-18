@@ -48,7 +48,10 @@ async fn storage_deposit(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn recover_nep141(#[future(awt)] worker: Worker<Sandbox>) {
+async fn recover_nep141(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(true, false)] force: bool,
+) {
     let ctx = setup_ctx(&worker);
     accounts!(worker, ft_account, source, beneficiary);
 
@@ -81,6 +84,7 @@ async fn recover_nep141(#[future(awt)] worker: Worker<Sandbox>) {
         signer: signer_args(&source),
         token_id: ft.id().clone(),
         beneficiary_id: beneficiary.id().clone(),
+        force,
     }
     .run(&ctx)
     .await;

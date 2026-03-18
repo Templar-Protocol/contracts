@@ -18,13 +18,14 @@ pub struct MarketRemove {
     #[arg(long)]
     pub beneficiary_id: AccountId,
     /// Proceed with account deletion even if prior actions (fetching
-    /// configuration, recovering tokens, etc.) fail.
+    /// configuration, recovering tokens, etc.) fail. Forwards --force to the
+    /// underlying NEP-141 token recovery command.
     #[arg(long)]
     pub force: bool,
 }
 
 impl MarketRemove {
-    #[tracing::instrument(skip_all, name = "market_remove", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
+    #[tracing::instrument(skip_all, name = "market_remove", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         if !near::account_exists(&ctx.near, &self.signer.account_id).await? {
             tracing::info!(account_id = %self.signer.account_id, "Account does not exist, nothing to do");
@@ -69,6 +70,7 @@ impl MarketRemove {
                 signer: self.signer.clone(),
                 token_id: token_id.clone(),
                 beneficiary_id: self.beneficiary_id.clone(),
+                force: self.force,
             };
             if let Err(error) = recover.run(ctx).await {
                 if !self.force {
