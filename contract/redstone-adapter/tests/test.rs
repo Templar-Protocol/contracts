@@ -28,7 +28,7 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
     let context = VMContextBuilder::new()
         .block_timestamp(timestamp * 1_000_000)
         .build();
-    testing_env!(context.clone());
+    testing_env!(context);
 
     let mut ra = Contract::new(config::prod());
 
@@ -55,7 +55,7 @@ fn output() {
     let context = VMContextBuilder::new()
         .block_timestamp(timestamp * 1_000_000)
         .build();
-    testing_env!(context.clone());
+    testing_env!(context);
 
     let mut ra = Contract::new(config::prod());
 
