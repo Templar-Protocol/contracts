@@ -16,8 +16,16 @@ use tokio::{
 
 fn generate_socket_path() -> PathBuf {
     let pid = std::process::id();
+    #[allow(
+        clippy::expect_used,
+        reason = "system time before unix epoch is impossible"
+    )]
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_nanos();
     let mut path = std::env::temp_dir();
-    path.push(format!("templar_redstone_bridge_{pid}.sock"));
+    path.push(format!("templar_redstone_bridge_{pid}_{ts}.sock"));
     path
 }
 
@@ -244,8 +252,17 @@ impl Bridge {
     ///
     /// Returns an error if the temp file cannot be written.
     pub fn new(node_path: &Path, kill: watch::Sender<()>) -> Result<Self, BridgeError> {
+        let pid = std::process::id();
+        #[allow(
+            clippy::expect_used,
+            reason = "system time before unix epoch is impossible"
+        )]
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
         let bundle_path =
-            std::env::temp_dir().join(format!("templar_redstone_bundle_{}.js", std::process::id()));
+            std::env::temp_dir().join(format!("templar_redstone_bundle_{pid}_{ts}.js"));
         std::fs::write(&bundle_path, BRIDGE_BUNDLE).map_err(BridgeError::WriteBundle)?;
 
         let socket_path = generate_socket_path();
