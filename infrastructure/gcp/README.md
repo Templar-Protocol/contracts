@@ -139,7 +139,7 @@ Runtime outputs:
 
 ## Notes
 
-- `relayer_allowed_source_ranges` defaults to `0.0.0.0/0`; tighten this for production.
-- `funding_bridge_allowed_source_ranges` defaults to `0.0.0.0/0`; tighten this for production.
+- `relayer_allowed_source_ranges` defaults to `[]`; configure explicitly for your environment.
+- `funding_bridge_allowed_source_ranges` defaults to `[]`; configure explicitly for your environment.
 - Do not put secret values in `*_env` maps; only use `*_secret_env` mappings to Secret Manager secret IDs.
 - This stack does not yet provision a public load balancer for relayer; add one in a follow-up if you need a single stable endpoint.

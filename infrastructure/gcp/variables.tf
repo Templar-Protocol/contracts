@@ -203,7 +203,7 @@ variable "relayer_zones" {
 variable "relayer_allowed_source_ranges" {
   description = "Source CIDRs allowed to reach relayer TCP port."
   type        = list(string)
-  default     = [""]
+  default     = []
 }
 
 variable "relayer_autoscaling_enabled" {
@@ -427,7 +427,7 @@ variable "funding_bridge_port" {
 variable "funding_bridge_allowed_source_ranges" {
   description = "Source CIDRs allowed to reach funding-bridge TCP port."
   type        = list(string)
-  default     = [""]
+  default     = []
 }
 
 variable "funding_bridge_env" {
