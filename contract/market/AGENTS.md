@@ -19,12 +19,14 @@ Read these files together before making non-trivial changes:
 
 ## Current Findings
 
+As of 2026-03-19 (commit `44ebfbe51fb8`; PR [#382](https://github.com/Templar-Protocol/contracts/pull/382)).
+
 - Low: excessive collateral withdrawal is enforced by underflow, not by an explicit precondition.
   In `common/src/borrow.rs`, `record_collateral_asset_withdrawal_initial` subtracts the requested collateral directly from the position and market totals without an explicit bounds check.
   In the public flow, `withdraw_collateral` reaches that path before transfer finalization, so an excessive request panics instead of returning a controlled error.
   Evidence:
-  - `templar_common::borrow::BorrowPositionGuard::record_collateral_asset_withdrawal_initial`
-  - `contract/market/tests/collateral.rs::excessive_collateral_withdrawal`
+  - `templar_common::borrow::BorrowPositionGuard::record_collateral_asset_withdrawal_initial` (status: open as of `44ebfbe51fb8`)
+  - `contract/market/tests/collateral.rs::excessive_collateral_withdrawal` (status: open as of `44ebfbe51fb8`)
   Security impact:
   - This is not a direct fund-loss issue.
   - It is still undesirable for a public entrypoint to rely on overflow panic behavior for bounds enforcement.
