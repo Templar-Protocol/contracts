@@ -30,8 +30,8 @@ Current review status:
   In `common/src/borrow.rs`, `record_collateral_asset_withdrawal_initial` subtracts the requested collateral directly from the position and market totals without an explicit bounds check.
   In the public flow, `withdraw_collateral` reaches that path before transfer finalization, so an excessive request panics instead of returning a controlled error.
   Evidence:
-  - `common/src/borrow.rs:455`
-  - `contract/market/tests/collateral.rs:68`
+  - `templar_common::borrow::BorrowPositionGuard::record_collateral_asset_withdrawal_initial`
+  - `contract/market/tests/collateral.rs::excessive_collateral_withdrawal`
   Security impact:
   - This is not a direct fund-loss issue.
   - It is still undesirable for a public entrypoint to rely on overflow panic behavior for bounds enforcement.
@@ -62,18 +62,19 @@ These are surprising on first read, but they are exercised by tests and should n
 
 - Failed borrow finalization intentionally does not roll back fees or yield distribution.
   The borrower temporarily removed liquidity from the available borrow pool during the async receipt window, so charging fees in this case is an anti-griefing policy, not a bug.
-  - `common/src/borrow.rs:531`
-  - `common/src/borrow.rs:554`
-  - `common/src/borrow.rs:560`
+  - `templar_common::borrow::BorrowPositionGuard::record_borrow_initial`
+  - `templar_common::market::Market::record_borrow_asset_yield_distribution`
+  - `templar_common::borrow::BorrowPositionGuard::record_borrow_final`
 - Repayment is intentionally disallowed while a position is in liquidation.
-  - `contract/market/src/impl_helper.rs:83`
-  - `contract/market/tests/disabled_when_liquidatable.rs:69`
+  - `contract/market/src/impl_helper.rs::Contract::execute_repay`
+  - `contract/market/tests/disabled_when_liquidatable.rs::repayment`
 - Additional collateral is allowed during liquidation only if it restores the position to a non-liquidatable state.
-  - `contract/market/src/impl_helper.rs:50`
-  - `contract/market/tests/disabled_when_liquidatable.rs:1`
+  - `contract/market/src/impl_helper.rs::Contract::execute_collateralize`
+  - `contract/market/tests/disabled_when_liquidatable.rs::disable_collateralize_if_still_liquidatable`
+  - `contract/market/tests/disabled_when_liquidatable.rs::allow_sufficient_collateralization_during_liquidation`
 - If collateral transfer to the liquidator fails during liquidation, the contract still does not undo the debt reduction or collateral removal.
   This is intentional to avoid griefing liquidations through receiver-side storage unregistration.
-  - `contract/market/src/impl_helper.rs:299`
+  - `contract/market/src/impl_helper.rs::Contract::liquidate_transfer_call_02_finalize`
 - `RepayAccount` allows third-party repayment of another account when the position is not liquidatable.
 
 ## NEAR-Specific Security Notes
