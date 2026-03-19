@@ -38,7 +38,8 @@ if [ -s "/opt/templar/${container_name}.secret-env" ]; then
       continue
     fi
 
-    secret_payload="$(curl -fsS \
+    secret_payload="$(curl -fsS --connect-timeout 2 --max-time 5 --retry 3 \
+      --retry-connrefused --retry-max-time 15 \
       -H "Authorization: Bearer $TOKEN" \
       "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/$secret_id/versions/latest:access" |
       jq -r '.payload.data')"
@@ -48,7 +49,7 @@ if [ -s "/opt/templar/${container_name}.secret-env" ]; then
       exit 1
     fi
 
-    secret_value="$(printf '%s' "$secret_payload" | tr '_-' '/+' | base64 -d | tr -d '\r\n')"
+    secret_value="$(printf '%s' "$secret_payload" | base64 -d | tr -d '\r\n')"
     printf '%s=%s\n' "$env_key" "$secret_value" >>"/opt/templar/${container_name}.env"
   done <"/opt/templar/${container_name}.secret-env"
 fi
