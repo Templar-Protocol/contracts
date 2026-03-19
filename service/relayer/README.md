@@ -301,13 +301,36 @@ This route will relay a [signed delegate action](https://nomicon.io/RuntimeSpec/
 
 The JSON body has one required field, `signed_delegate_action`, which contains the Borsh-serialized, base64-encoded signed delegate action.
 
-In addition, there are two optional fields.
+In addition, there are three optional fields.
 
 - `storage_deposit: bool` \
   If `true`, the relayer will attempt to pay the minimum [storage deposit](https://nomicon.io/Standards/StorageManagement) to the receiver of the delegate action on behalf of the delegating account. It will fail with an error if the receiver does not support storage deposits or if the account already has a storage balance. The amount paid to the account is deducted from the user's allowance.
 
+- `update_prices: bool` \
+  If `true`, the relayer will update the prices for the known market or markets touched by the relayed transaction before it submits the transaction. The relayer derives those markets from the transaction itself and applies its normal relayer-side oracle refresh cooldowns.
+
 - `wait_until: TxExecutionStatus` \
   If provided, the relayer will wait for the transaction to reach the specified status before returning. If not provided, the default is `TxExecutionStatus::ExecutedOptimistic`.
+
+### `POST /update_prices`
+
+Requests price refreshes for one or more known markets.
+
+Example payload:
+
+```json
+{
+  "market_ids": [
+    "templar-market-a.testnet",
+    "templar-market-b.testnet"
+  ]
+}
+```
+
+- `market_ids` must not be empty.
+- Every market ID must already be known to the relayer.
+- Duplicate market IDs are ignored.
+- The relayer updates the configured borrow and collateral price inputs for each market, subject to its normal oracle refresh cooldowns.
 
 ### `GET /get_allowance`
 
@@ -383,11 +406,17 @@ To break down the `"message"` string a little more:
 
 Relays a signed message from a user, paying for the gas costs of the `execute` call.
 
+The request may also include:
+
+- `storage_deposit: [AccountId, ...]` to top up storage for interacted contracts as before.
+- `update_prices: bool` to tell the relayer to refresh the prices for the known markets touched by the relayed universal-account transaction before submitting it.
+
 Example payload:
 
 ```json
 {
   "account_id": "f92e7ab484da.templar-user.testnet",
+  "update_prices": true,
   "args": {
     "Passkey": {
       "key": "p256:QE4spgPCif6HrYkGhk2UadjYDogYXq8ARBFnB2RXCqj3JCfcL4EgW7CjfwSZsXAUcB6aGx4pTnrWRzKeuwzMg4kM",

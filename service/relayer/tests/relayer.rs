@@ -26,7 +26,10 @@ use p256::{
 use rstest::{fixture, rstest};
 use tokio::sync::watch;
 
-use templar_common::{oracle::pyth::PriceIdentifier, registry::DeployMode};
+use templar_common::{
+    oracle::{proxy::Proxy, pyth::PriceIdentifier, redstone, OracleRequest},
+    registry::DeployMode,
+};
 use templar_relayer::{
     app::{args, App, Configuration},
     cache::Cache,
@@ -38,6 +41,7 @@ use templar_relayer::{
             pow::Pow,
             relay::RelayRequest as UaRelayRequest,
         },
+        update_prices::UpdatePricesRequest,
         SimpleResponse,
     },
 };
@@ -224,6 +228,7 @@ pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
         Json(SdaRelayRequest {
             signed_delegate_action,
             storage_deposit: false,
+            update_prices: false,
             wait_until: TxExecutionStatus::Final,
         }),
     )
@@ -249,6 +254,166 @@ pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
         .unwrap()
         .into_outcome()
         .assert_success();
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn update_prices_rejects_empty_request(#[future(awt)] init_test: InitTest) {
+    let InitTest { app, .. } = init_test;
+
+    let response = templar_relayer::route::update_prices::update_prices(
+        State(app),
+        Json(UpdatePricesRequest { market_ids: vec![] }),
+    )
+    .await;
+
+    let SimpleResponse::Rejected { reason } = response else {
+        panic!("Empty request should be rejected");
+    };
+
+    assert_eq!(reason, "market_ids must not be empty");
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: InitTest) {
+    let InitTest { app, .. } = init_test;
+
+    let response = templar_relayer::route::update_prices::update_prices(
+        State(app),
+        Json(UpdatePricesRequest {
+            market_ids: vec!["unknown-market.test.near".parse().unwrap()],
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Rejected { reason } = response else {
+        panic!("Unknown market should be rejected");
+    };
+
+    assert_eq!(reason, "Unknown market: unknown-market.test.near");
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn update_prices_updates_redstone_market(#[future(awt)] worker: Worker<Sandbox>) {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .try_init();
+
+    accounts!(
+        worker,
+        market,
+        proxy_oracle,
+        redstone_oracle,
+        borrow_asset,
+        collateral_asset,
+        protocol_yield_user,
+        relay_user,
+        ua_account
+    );
+
+    let config = market_configuration(
+        proxy_oracle.id().clone(),
+        borrow_asset.id().clone(),
+        collateral_asset.id().clone(),
+        protocol_yield_user.id().clone(),
+        templar_common::market::YieldWeights::new_with_supply_weight(8),
+    );
+
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
+    let redstone_oracle =
+        RedStoneAdapterController::deploy(redstone_oracle, redstone::config::prod());
+    let borrow_asset = FtController::deploy(borrow_asset, "Borrow Asset", "BORROW");
+    let collateral_asset = FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL");
+    let market = MarketController::deploy(market, &config);
+    let (proxy_oracle, redstone_oracle, _borrow_asset, _collateral_asset, market) = tokio::join!(
+        proxy_oracle,
+        redstone_oracle,
+        borrow_asset,
+        collateral_asset,
+        market,
+    );
+
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            test_utils::DEFAULT_COLLATERAL_PRICE_ID,
+            Some(Proxy::median_low([OracleRequest::redstone(
+                redstone_oracle.id().clone(),
+                "ETH",
+            )
+            .into()])),
+        )
+        .await;
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            test_utils::DEFAULT_BORROW_PRICE_ID,
+            Some(Proxy::median_low([OracleRequest::redstone(
+                redstone_oracle.id().clone(),
+                "BTC",
+            )
+            .into()])),
+        )
+        .await;
+
+    let mut app = App::new(
+        Configuration::parse_from([
+            "relayer",
+            "--rpc-url",
+            &worker.rpc_addr(),
+            "--database-url",
+            "postgres://relayeruser:password@0.0.0.0:5432/relayer",
+            "--monitor-market-id",
+            market.id().as_ref(),
+            "--relay-account-id",
+            relay_user.id().as_ref(),
+            "--relay-secret-key",
+            &relay_user.secret_key().to_string(),
+            "--ua-account-id",
+            ua_account.id().as_ref(),
+            "--ua-secret-key",
+            &ua_account.secret_key().to_string(),
+            "--ua-registry-id",
+            ua_account.id().as_ref(),
+            "--ua-version-key",
+            "latest",
+            "--ua-chain-id",
+            &NEAR_TESTNET_CHAIN_ID.to_string(),
+        ]),
+        watch::Sender::default(),
+    )
+    .unwrap();
+    app.database.migrate().await.unwrap();
+    app.load_markets().await;
+
+    let eth = redstone::FeedId::from("ETH");
+    let btc = redstone::FeedId::from("BTC");
+
+    let price_data_before = redstone_oracle
+        .read_price_data(vec![eth.clone(), btc.clone()])
+        .await;
+    assert!(price_data_before.is_empty());
+
+    let response = templar_relayer::route::update_prices::update_prices(
+        State(app),
+        Json(UpdatePricesRequest {
+            market_ids: vec![market.id().clone(), market.id().clone()],
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Success(response) = response else {
+        panic!("update_prices should succeed");
+    };
+    assert_eq!(response.market_ids, vec![market.id().clone()]);
+
+    let price_data_after = redstone_oracle
+        .read_price_data(vec![eth.clone(), btc.clone()])
+        .await;
+    assert!(price_data_after.contains_key(&eth));
+    assert!(price_data_after.contains_key(&btc));
 }
 
 #[rstest]
@@ -349,7 +514,7 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTe
             account_id: ua.id().clone(),
             args: serde_json::from_str(&args).unwrap(),
             storage_deposit: HashSet::default(),
-            update_price_feeds: HashSet::default(),
+            update_prices: false,
         }),
     )
     .await;

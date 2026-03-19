@@ -4,6 +4,7 @@ use near_sdk::serde::{Deserialize, Serialize};
 pub mod get_allowance;
 pub mod relay;
 pub mod universal_account;
+pub mod update_prices;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]

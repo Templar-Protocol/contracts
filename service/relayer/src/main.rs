@@ -46,6 +46,10 @@ async fn main() {
         .route("/", routing::get(|| async { "Hello, World!" }))
         .route("/relay", routing::post(route::relay::relay))
         .route(
+            "/update_prices",
+            routing::post(route::update_prices::update_prices),
+        )
+        .route(
             "/get_allowance",
             routing::get(route::get_allowance::get_allowance),
         )
