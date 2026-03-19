@@ -38,7 +38,7 @@ Read these files together before making non-trivial changes:
 - Position storage is charged when a supply or borrow position is first created and refunded only after cleanup when the position becomes removable.
 - The deployable contract adds NEP-145 storage logic, but the core borrow/supply accounting lives in `templar-common`. Review both layers for every change.
 - Borrow, collateral withdrawal, liquidation, and supply-withdrawal execution are asynchronous. Review the full initial-call plus finalize path, not only the first function.
-- In the borrow flow specifically, `record_borrow_initial` mutates state before the outbound transfer, so the finalize path must compensate every pre-transfer mutation on failure.
+- In the borrow flow specifically, `record_borrow_initial` mutates state before the outbound transfer. On failure, the finalize path must restore liquidity and unwind in-flight principal accounting. Do not assume that every pre-transfer mutation is rolled back: fee retention on failed borrow finalization is currently intentional policy.
 - Keep market-wide accounting coherent across:
   - `borrow_asset_balance`
   - `borrow_asset_deposited_active`
@@ -51,13 +51,15 @@ Read these files together before making non-trivial changes:
 
 ## Intentional Behaviors
 
-These are surprising on first read, but they are exercised by tests and should not be changed casually:
+These are surprising on first read and should not be changed casually. Some are exercised by tests; others are documented policy decisions that should be treated as intentional until changed deliberately:
 
 - Failed borrow finalization intentionally does not roll back fees or yield distribution.
   The borrower temporarily removed liquidity from the available borrow pool during the async receipt window, so charging fees in this case is an anti-griefing policy, not a bug.
   - `templar_common::borrow::BorrowPositionGuard::record_borrow_initial`
   - `templar_common::market::Market::record_borrow_asset_yield_distribution`
   - `templar_common::borrow::BorrowPositionGuard::record_borrow_final`
+  Test status:
+  - No dedicated regression test currently documents this policy. If behavior around failed borrow finalization changes, add one.
 - Repayment is intentionally disallowed while a position is in liquidation.
   - `contract/market/src/impl_helper.rs::Contract::execute_repay`
   - `contract/market/tests/disabled_when_liquidatable.rs::repayment`

@@ -5,7 +5,7 @@ This repository is a Rust workspace for Templar Protocol smart contracts, servic
 ## Repository Layout
 
 - `common`: shared protocol logic used by contracts and tests
-- `contract`: deployable smart contracts (`market`, `registry`, `vault`, `proxy-oracle`, `redstone-adapter`, `universal-account`, `lst-oracle`)
+- `contract`: deployable smart contracts (`market`, `registry`, `vault`, `universal-account`, `lst-oracle`)
 - `service`: standalone executables and off-chain services
 - `tools`: operator and developer CLIs
 - `test-utils`: shared test harness utilities
