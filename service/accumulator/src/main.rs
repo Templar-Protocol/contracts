@@ -1,6 +1,5 @@
 use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
-use clap::Parser;
 use near_crypto::InMemorySigner;
 use near_jsonrpc_client::JsonRpcClient;
 use templar_accumulator::{rpc::list_all_deployments, Accumulator, Args};
@@ -14,7 +13,17 @@ async fn main() -> anyhow::Result<()> {
         .with(EnvFilter::from_default_env())
         .init();
 
-    let args = Args::parse();
+    let args = match Args::parse_args() {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(err) = args.validate() {
+        eprintln!("{err}");
+        std::process::exit(2);
+    }
     info!("Starting accumulator bot with args: {args}");
     run_service(args, std::future::pending()).await
 }
@@ -99,9 +108,13 @@ async fn run_service(
         .as_deref()
         .unwrap_or_else(|| args.network.rpc_url());
     let client = JsonRpcClient::connect(rpc_url);
+    let signer_key = args
+        .signer_key
+        .clone()
+        .expect("SIGNER_KEY or SIGNER_KEY_FILE must be set before run_service");
     let signer = Arc::new(InMemorySigner::from_secret_key(
         args.signer_account.clone(),
-        args.signer_key.clone(),
+        signer_key,
     ));
 
     run_service_with_client(args, client, signer, shutdown).await
@@ -270,7 +283,7 @@ mod tests {
 
         let args = Args {
             registries: vec!["registry.testnet".parse().unwrap()],
-            signer_key: SecretKey::from_random(KeyType::ED25519),
+            signer_key: Some(SecretKey::from_random(KeyType::ED25519)),
             signer_account: "signer.testnet".parse().unwrap(),
             network: Network::Testnet,
             rpc_url: None,
@@ -283,7 +296,7 @@ mod tests {
         let client = JsonRpcClient::connect(server.uri());
         let signer = Arc::new(InMemorySigner::from_secret_key(
             args.signer_account.clone(),
-            args.signer_key.clone(),
+            args.signer_key.clone().unwrap(),
         ));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -311,12 +324,14 @@ mod tests {
         let original_regs = env::var("REGISTRIES_ACCOUNT_IDS").ok();
         let original_signer = env::var("SIGNER_ACCOUNT_ID").ok();
         let original_key = env::var("SIGNER_KEY").ok();
+        let original_key_file = env::var("SIGNER_KEY_FILE").ok();
 
         env::set_var("REGISTRIES_ACCOUNT_IDS", "one.testnet two.testnet");
         env::set_var("SIGNER_ACCOUNT_ID", "signer.testnet");
         env::set_var("SIGNER_KEY", sk.to_string());
+        env::remove_var("SIGNER_KEY_FILE");
 
-        let args = Args::parse_from(["accumulator"]);
+        let args = Args::parse_args_from(["accumulator"]).unwrap();
         let expected: Vec<AccountId> = vec![
             "one.testnet".parse().unwrap(),
             "two.testnet".parse().unwrap(),
@@ -338,6 +353,11 @@ mod tests {
             env::set_var("SIGNER_KEY", val);
         } else {
             env::remove_var("SIGNER_KEY");
+        }
+        if let Some(val) = original_key_file {
+            env::set_var("SIGNER_KEY_FILE", val);
+        } else {
+            env::remove_var("SIGNER_KEY_FILE");
         }
     }
 }

@@ -14,12 +14,20 @@ accumulator \
     --network testnet
 ```
 
+Or use the service runner:
+
+```bash
+cp .env.example .env
+# Edit .env and set SIGNER_ACCOUNT_ID plus either SIGNER_KEY or SIGNER_KEY_FILE
+./scripts/run_service.sh
+```
+
 ## CLI Arguments
 
 | Argument                      | Env Variable                | Default   | Description                                     |
 | ----------------------------- | --------------------------- | --------- | ----------------------------------------------- |
 | `--registries`                | `REGISTRIES_ACCOUNT_IDS`    | Required  | Registry contracts (space-separated)            |
-| `--signer-key`                | `SIGNER_KEY`                | Required  | Private key (`ed25519:...`)                     |
+| `--signer-key`                | `SIGNER_KEY` / `SIGNER_KEY_FILE` | Required  | Private key (`ed25519:...`) or path to key file |
 | `--signer-account`            | `SIGNER_ACCOUNT_ID`         | Required  | NEAR account for signing                        |
 | `--network`                   | `NETWORK`                   | `testnet` | Network: `testnet` or `mainnet`                 |
 | `--timeout`                   | `TIMEOUT`                   | `60`      | RPC timeout in seconds                          |

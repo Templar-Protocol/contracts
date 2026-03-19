@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ffi::OsString,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -15,6 +16,7 @@ use near_primitives::{
 };
 use near_sdk::{serde_json::json, AccountId};
 use rpc::{get_contract_version, is_v1_0_0};
+use templar_common::config::env::resolve_secret_key;
 use templar_common::market::MarketConfiguration;
 use tracing::{debug, error, info, instrument};
 
@@ -33,8 +35,8 @@ pub struct Args {
     #[arg(short, long, env = "REGISTRIES_ACCOUNT_IDS", value_delimiter = ' ')]
     pub registries: Vec<AccountId>,
     /// Signer key to use for signing transactions
-    #[arg(short = 'k', long, env = "SIGNER_KEY")]
-    pub signer_key: SecretKey,
+    #[arg(short = 'k', long)]
+    pub signer_key: Option<SecretKey>,
     /// Signer 'Account'
     #[arg(short, long, env = "SIGNER_ACCOUNT_ID")]
     pub signer_account: AccountId,
@@ -64,6 +66,35 @@ pub struct Args {
     /// Concurrency for accumulation tasks
     #[arg(short, long, default_value_t = 4, env = "CONCURRENCY")]
     pub concurrency: usize,
+}
+
+impl Args {
+    pub fn parse_args() -> Result<Self, String> {
+        Self::parse_args_from(std::env::args_os())
+    }
+
+    pub fn parse_args_from<I, T>(itr: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let mut args = Self::parse_from(itr);
+        args.signer_key = resolve_secret_key(
+            args.signer_key.take(),
+            "SIGNER_KEY",
+            "SIGNER_KEY_FILE",
+            |err| err.to_string(),
+        )?;
+        Ok(args)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.signer_key.is_none() {
+            return Err("SIGNER_KEY or SIGNER_KEY_FILE is required".to_string());
+        }
+
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for Args {
@@ -326,6 +357,52 @@ mod tests {
         matchers::{method, path},
         Mock, MockServer, Request, ResponseTemplate,
     };
+
+    #[test]
+    fn parse_args_from_supports_signer_key_file() {
+        let key = SecretKey::from_random(KeyType::ED25519);
+        let file_path = unique_temp_file_path("accumulator-signer-key");
+        let original_regs = std::env::var("REGISTRIES_ACCOUNT_IDS").ok();
+        let original_signer = std::env::var("SIGNER_ACCOUNT_ID").ok();
+        let original_key = std::env::var("SIGNER_KEY").ok();
+        let original_key_file = std::env::var("SIGNER_KEY_FILE").ok();
+
+        std::fs::write(&file_path, key.to_string()).unwrap();
+        std::env::set_var("REGISTRIES_ACCOUNT_IDS", "registry.testnet");
+        std::env::set_var("SIGNER_ACCOUNT_ID", "signer.testnet");
+        std::env::remove_var("SIGNER_KEY");
+        std::env::set_var("SIGNER_KEY_FILE", &file_path);
+
+        let args = Args::parse_args_from(["accumulator"]).unwrap();
+        assert_eq!(args.signer_key, Some(key));
+
+        restore_env("REGISTRIES_ACCOUNT_IDS", original_regs);
+        restore_env("SIGNER_ACCOUNT_ID", original_signer);
+        restore_env("SIGNER_KEY", original_key);
+        restore_env("SIGNER_KEY_FILE", original_key_file);
+        std::fs::remove_file(file_path).unwrap();
+    }
+
+    #[test]
+    fn validate_requires_signer_key() {
+        let args = Args {
+            registries: vec!["registry.testnet".parse().unwrap()],
+            signer_key: None,
+            signer_account: "signer.testnet".parse().unwrap(),
+            network: Network::Testnet,
+            rpc_url: None,
+            timeout: 60,
+            interval: 600,
+            static_interval: 86_400,
+            registry_refresh_interval: 3600,
+            concurrency: 4,
+        };
+
+        assert_eq!(
+            args.validate().unwrap_err(),
+            "SIGNER_KEY or SIGNER_KEY_FILE is required"
+        );
+    }
 
     fn build_accumulator(server: &MockServer, market_id: &str) -> Accumulator {
         let client = JsonRpcClient::connect(server.uri());
@@ -785,5 +862,21 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    fn unique_temp_file_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{nanos}.txt"))
+    }
+
+    fn restore_env(name: &str, value: Option<String>) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
     }
 }
