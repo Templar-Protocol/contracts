@@ -17,13 +17,6 @@ Read these files together before making non-trivial changes:
 - `common/src/supply.rs`
 - `common/src/event.rs`
 
-## Audit Summary
-
-Current review status:
-
-- No critical or high-severity fund-loss vulnerabilities were identified in the reviewed market contract logic.
-- One low-severity robustness issue was identified: excessive collateral withdrawal attempts currently panic via arithmetic underflow instead of failing with a deliberate user-facing error.
-
 ## Current Findings
 
 - Low: excessive collateral withdrawal is enforced by underflow, not by an explicit precondition.
