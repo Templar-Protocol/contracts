@@ -10,22 +10,8 @@ PROJECT_ID=""
 TFVARS_PATH="infrastructure/gcp/terraform.tfvars"
 RUNTIME_SA_EMAIL=""
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --project)
-      PROJECT_ID="${2:-}"
-      shift 2
-      ;;
-    --tfvars)
-      TFVARS_PATH="${2:-}"
-      shift 2
-      ;;
-    --runtime-sa)
-      RUNTIME_SA_EMAIL="${2:-}"
-      shift 2
-      ;;
-    -h|--help)
-      cat <<'EOM'
+usage() {
+  cat <<'EOM'
 Usage:
   setup-secret-manager-from-tfvars.sh --project PROJECT_ID [--tfvars PATH] [--runtime-sa SA_EMAIL]
 
@@ -34,6 +20,42 @@ Options:
   --tfvars      Path to terraform.tfvars (default: infrastructure/gcp/terraform.tfvars)
   --runtime-sa  Runtime service account email to grant Secret Accessor on each secret
 EOM
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      val="${2:-}"
+      if [[ -z "${val}" || "${val}" == --* ]]; then
+        echo "Missing value for --project." >&2
+        usage >&2
+        exit 1
+      fi
+      PROJECT_ID="${val}"
+      shift 2
+      ;;
+    --tfvars)
+      val="${2:-}"
+      if [[ -z "${val}" || "${val}" == --* ]]; then
+        echo "Missing value for --tfvars." >&2
+        usage >&2
+        exit 1
+      fi
+      TFVARS_PATH="${val}"
+      shift 2
+      ;;
+    --runtime-sa)
+      val="${2:-}"
+      if [[ -z "${val}" || "${val}" == --* ]]; then
+        echo "Missing value for --runtime-sa." >&2
+        usage >&2
+        exit 1
+      fi
+      RUNTIME_SA_EMAIL="${val}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
       exit 0
       ;;
     *)
