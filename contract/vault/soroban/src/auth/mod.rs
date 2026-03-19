@@ -36,8 +36,7 @@ pub struct SorobanAuth<'a> {
     curator: SdkAddress,
     /// Whether the vault is paused.
     paused: bool,
-    /// Optional guardian address.
-    guardian: Option<SdkAddress>,
+    /// Optional sentinel address (emergency backstop).
     sentinel: Option<SdkAddress>,
     /// Optional allocator address.
     allocator: Option<SdkAddress>,
@@ -63,7 +62,6 @@ impl<'a> SorobanAuth<'a> {
         match role {
             Role::Curator => caller == &self.curator,
             Role::Sentinel => Self::is_curator_or(caller, &self.sentinel, &self.curator),
-            Role::Guardian => Self::is_curator_or(caller, &self.guardian, &self.curator),
             Role::Allocator => Self::is_curator_or(caller, &self.allocator, &self.curator),
         }
     }
@@ -76,7 +74,6 @@ impl<'a> SorobanAuth<'a> {
             env,
             curator,
             paused: false,
-            guardian: None,
             sentinel: None,
             allocator: None,
         }
@@ -88,18 +85,6 @@ impl<'a> SorobanAuth<'a> {
     pub fn with_roles(
         env: &'a Env,
         curator: SdkAddress,
-        guardian: Option<SdkAddress>,
-        allocator: Option<SdkAddress>,
-    ) -> Self {
-        Self::with_roles_and_sentinel(env, curator, guardian, None, allocator)
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn with_roles_and_sentinel(
-        env: &'a Env,
-        curator: SdkAddress,
-        guardian: Option<SdkAddress>,
         sentinel: Option<SdkAddress>,
         allocator: Option<SdkAddress>,
     ) -> Self {
@@ -107,7 +92,6 @@ impl<'a> SorobanAuth<'a> {
             env,
             curator,
             paused: false,
-            guardian,
             sentinel,
             allocator,
         }
