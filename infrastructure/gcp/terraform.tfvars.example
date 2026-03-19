@@ -33,9 +33,10 @@ relayer_allowed_source_ranges = [
   "0.0.0.0/0"
 ]
 
-# Required relayer env vars (non-secret only)
+# Required relayer env vars: keep non-secret settings in relayer_env and put
+# credentials or full connection strings in relayer_secret_env
 relayer_env = {
-  DATABASE_URL            = "postgres://user:pass@db-host:5432/relayer"
+  DATABASE_URL            = "postgres://db-host:5432/relayer"
   RPC_URL                 = "https://rpc.mainnet.near.org"
   RELAY_ACCOUNT_ID        = "relayer.near"
   UA_ACCOUNT_ID           = "ua-relayer.near"
@@ -46,6 +47,7 @@ relayer_env = {
   INTENTS_ID              = "intents.near"
 }
 relayer_secret_env = {
+  DATABASE_URL     = "relayer-database-url"
   RELAY_SECRET_KEY = "relayer-secret-key"
   UA_SECRET_KEY    = "ua-secret-key"
 }
