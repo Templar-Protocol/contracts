@@ -97,8 +97,6 @@ For `near-workspaces` tests:
 - Prefer prebuilt test contracts.
 - `./script/test.sh` already runs `./script/prebuild-test-contracts.sh` and sets `TEST_CONTRACTS_PREBUILT=1`.
 - If running market integration tests directly, prefer prebuilding first and setting `TEST_CONTRACTS_PREBUILT=1`.
-- Current branch limitation:
-  - `cargo test -p templar-market-contract -- --nocapture` is presently blocked in this environment by unrelated `templar-relayer` dev-dependency compilation failures in `service/relayer/src/client/database.rs` (`sqlx::query!` database access and a separate type error). Do not treat that as evidence about market-contract correctness.
 
 ## Documentation Maintenance
 
