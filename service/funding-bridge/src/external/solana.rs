@@ -16,6 +16,7 @@ use spl_associated_token_account::{
 use spl_token::instruction as token_instruction;
 use std::collections::HashMap;
 use std::sync::Arc;
+use templar_common::config::env::read_env_value;
 use tracing::{error, info};
 
 /// Solana chain configuration for SDK-based transfers
@@ -399,21 +400,17 @@ impl ExternalChainHandler for SolanaSdkHandler {
 ///
 /// Optional:
 /// - `SOLANA_RPC_URL`: Custom RPC URL (overrides default)
-pub fn solana_sdk_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
+pub fn solana_sdk_handler(
+    private_key: &str,
+    rpc_url: Option<&str>,
+) -> Option<Box<dyn ExternalChainHandler>> {
     let mut config = SolanaSdkConfig::mainnet();
 
-    // Allow RPC URL override
-    if let Ok(rpc_url) = std::env::var("SOLANA_RPC_URL") {
-        config.rpc_url = rpc_url;
+    if let Some(rpc_url) = rpc_url {
+        config.rpc_url = rpc_url.to_string();
     }
 
-    // Load keypair from base58 format
-    let handler: Option<SolanaSdkHandler> = if let Ok(base58) = std::env::var("SOLANA_PRIVATE_KEY")
-    {
-        SolanaSdkHandler::from_base58(config.clone(), &base58).ok()
-    } else {
-        None
-    };
+    let handler = SolanaSdkHandler::from_base58(config.clone(), private_key).ok();
 
     if let Some(h) = handler {
         info!(
@@ -426,6 +423,12 @@ pub fn solana_sdk_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
     } else {
         None
     }
+}
+
+pub fn solana_sdk_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
+    let private_key = read_env_value("SOLANA_PRIVATE_KEY")?;
+    let rpc_url = read_env_value("SOLANA_RPC_URL");
+    solana_sdk_handler(&private_key, rpc_url.as_deref())
 }
 
 #[cfg(test)]

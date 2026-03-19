@@ -26,6 +26,10 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    if let Err(err) = args.validate() {
+        eprintln!("{err}");
+        std::process::exit(2);
+    }
     args.log_startup();
 
     let config = args.build_config();

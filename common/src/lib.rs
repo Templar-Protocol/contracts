@@ -2,6 +2,8 @@ pub mod accumulator;
 pub mod asset;
 pub mod borrow;
 pub mod chunked_append_only_list;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod config;
 pub mod event;
 pub mod fee;
 pub mod incoming_deposit;

@@ -117,26 +117,38 @@ impl App {
             tracing::info!("ETH_PRIVATE_KEY not configured - EVM deposits disabled");
         }
 
-        // Check for Solana configuration from environment
-        if let Some(solana_handler) = crate::external::solana::solana_sdk_handler_from_env() {
-            let chain_id = solana_handler.chain_id().to_string();
-            tracing::info!(
-                chain_id = %chain_id,
-                "Registered Solana chain handler"
-            );
-            registry.register(solana_handler);
+        if let Some(ref private_key) = args.solana_private_key {
+            if let Some(solana_handler) = crate::external::solana::solana_sdk_handler(
+                private_key,
+                Some(args.solana_rpc_url.as_str()),
+            ) {
+                let chain_id = solana_handler.chain_id().to_string();
+                tracing::info!(
+                    chain_id = %chain_id,
+                    "Registered Solana chain handler"
+                );
+                registry.register(solana_handler);
+            } else {
+                tracing::error!("Failed to configure Solana chain handler");
+            }
         } else {
             tracing::info!("No Solana keypair configured - Solana deposits disabled");
         }
 
-        // Check for Stellar configuration from environment
-        if let Some(stellar_handler) = crate::external::stellar::stellar_handler_from_env() {
-            let chain_id = stellar_handler.chain_id().to_string();
-            tracing::info!(
-                chain_id = %chain_id,
-                "Registered Stellar chain handler"
-            );
-            registry.register(stellar_handler);
+        if let Some(ref secret_key) = args.stellar_secret_key {
+            if let Some(stellar_handler) = crate::external::stellar::stellar_handler(
+                secret_key,
+                Some(args.stellar_horizon_url.as_str()),
+            ) {
+                let chain_id = stellar_handler.chain_id().to_string();
+                tracing::info!(
+                    chain_id = %chain_id,
+                    "Registered Stellar chain handler"
+                );
+                registry.register(stellar_handler);
+            } else {
+                tracing::error!("Failed to configure Stellar chain handler");
+            }
         } else {
             tracing::info!("No Stellar keypair configured - Stellar deposits disabled");
         }

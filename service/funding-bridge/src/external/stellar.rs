@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use templar_common::config::env::read_env_value;
 use tracing::{error, info};
 
 /// Stellar asset information
@@ -418,32 +419,37 @@ impl ExternalChainHandler for StellarHandler {
 ///
 /// To derive a secret key from a BIP39 seed phrase, use:
 /// `node scripts/derive-stellar-key.js "your seed phrase here"`
-pub fn stellar_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
+pub fn stellar_handler(
+    secret_key: &str,
+    horizon_url: Option<&str>,
+) -> Option<Box<dyn ExternalChainHandler>> {
     let mut config = StellarConfig::mainnet();
 
-    if let Ok(horizon_url) = std::env::var("STELLAR_HORIZON_URL") {
-        config.horizon_url = horizon_url;
+    if let Some(horizon_url) = horizon_url {
+        config.horizon_url = horizon_url.to_string();
     }
 
-    if let Ok(secret_key) = std::env::var("STELLAR_SECRET_KEY") {
-        match StellarHandler::new(config.clone(), &secret_key) {
-            Ok(handler) => {
-                info!(
-                    chain_id = %handler.config.chain_id,
-                    horizon_url = %handler.config.horizon_url,
-                    public_key = %handler.keypair.public_key(),
-                    "Configured Stellar handler"
-                );
-                Some(Box::new(handler))
-            }
-            Err(e) => {
-                error!("Failed to create Stellar handler: {}", e);
-                None
-            }
+    match StellarHandler::new(config.clone(), secret_key) {
+        Ok(handler) => {
+            info!(
+                chain_id = %handler.config.chain_id,
+                horizon_url = %handler.config.horizon_url,
+                public_key = %handler.keypair.public_key(),
+                "Configured Stellar handler"
+            );
+            Some(Box::new(handler))
         }
-    } else {
-        None
+        Err(e) => {
+            error!("Failed to create Stellar handler: {}", e);
+            None
+        }
     }
+}
+
+pub fn stellar_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
+    let secret_key = read_env_value("STELLAR_SECRET_KEY")?;
+    let horizon_url = read_env_value("STELLAR_HORIZON_URL");
+    stellar_handler(&secret_key, horizon_url.as_deref())
 }
 
 #[cfg(test)]
