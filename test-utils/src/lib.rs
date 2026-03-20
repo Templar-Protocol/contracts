@@ -46,7 +46,7 @@ pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
 
-fn workspace_root() -> &'static Path {
+pub fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_WORKSPACE_DIR"))
 }
 
