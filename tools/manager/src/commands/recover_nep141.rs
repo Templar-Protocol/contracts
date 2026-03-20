@@ -14,9 +14,10 @@ pub struct RecoverNep141 {
     /// Beneficiary account ID to receive the tokens
     #[arg(long)]
     pub beneficiary_id: AccountId,
-    /// Force-unregister from storage
+    /// Forward `force` to `storage_unregister`
     ///
-    /// Unregisters even if recovering tokens fails or balance is non-zero even after sending.
+    /// This only affects the `storage_unregister(force=...)` call during storage unregistration.
+    /// It does not skip transfer attempts and does not allow unregistering here with a non-zero balance.
     #[arg(long)]
     pub force: bool,
 }
@@ -63,7 +64,7 @@ impl RecoverNep141 {
                 .transact()
                 .await
             {
-                tracing::warn!(%self.token_id, %error, "ft_transfer failed (ignoring)");
+                tracing::warn!(%self.token_id, %error, "ft_transfer failed; --force only affects storage_unregister");
             }
         } else {
             tracing::info!(%self.token_id, "Zero balance, skipping transfer");
@@ -76,12 +77,12 @@ impl RecoverNep141 {
         let balance = match ft_balance_of(&ctx.near, &self.token_id, signer.account_id()).await {
             Ok(b) => b,
             Err(e) => {
-                anyhow::bail!("Failed to fetch balance before storage registration: {e}")
+                anyhow::bail!("Failed to fetch balance before storage unregistration: {e}")
             }
         };
 
         if balance == 0 {
-            tracing::info!("Balance is zero, unregistering storage");
+            tracing::info!(force = self.force, "Balance is zero, unregistering storage");
             ctx.batch(signer, &self.token_id)
                 .call(
                     Function::new("storage_unregister")
@@ -93,7 +94,7 @@ impl RecoverNep141 {
                 .await?;
             Ok(())
         } else {
-            anyhow::bail!("Non-zero balance ({balance}) after attempting to transfer all to beneficiary, skipping storage unregistration")
+            anyhow::bail!("Non-zero balance ({balance}) after attempting to transfer all to beneficiary; --force only affects storage_unregister and this command will still skip storage unregistration")
         }
     }
 }
