@@ -37,7 +37,7 @@ impl StorageDeposit {
             let bounds = ctx
                 .near
                 .view(&self.contract_id, "storage_balance_bounds")
-                .args_json(b"{}".to_vec())
+                .args_json(json!({}))
                 .await?
                 .json::<StorageBalanceBounds>()?;
             bounds.min
