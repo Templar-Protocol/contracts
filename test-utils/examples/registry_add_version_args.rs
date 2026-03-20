@@ -5,9 +5,7 @@ use templar_common::registry::DeployMode;
 pub fn main() {
     let cliargs = std::env::args().collect::<Vec<_>>();
     let name = &cliargs[1];
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("test-utils manifest should be in workspace root child dir");
+    let workspace_root = Path::new(env!("CARGO_WORKSPACE_DIR"));
 
     let path = workspace_root
         .join("target/near/")

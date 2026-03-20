@@ -47,9 +47,7 @@ pub mod partial;
 pub mod pyth_price_id;
 
 fn workspace_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("test-utils manifest should be in workspace root child dir")
+    Path::new(env!("CARGO_WORKSPACE_DIR"))
 }
 
 #[rstest::fixture]
