@@ -36,7 +36,7 @@ set dotenv-load := false
 # =============================================================================
 
 root := justfile_directory() + "/../../.."
-wasm_dir := root + "/target/wasm32-unknown-unknown/release"
+wasm_dir := root + "/target/wasm32-unknown-unknown/release-soroban"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
@@ -103,7 +103,7 @@ _optimize-wasm package wasm_path:
 # Build and optimize the Soroban vault WASM.
 build:
 	@echo "Building Soroban vault/governance/share-token WASMs..."
-	@cargo build --release --target wasm32-unknown-unknown \
+	@cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" \
 		-p templar-soroban-runtime \
 		-p templar-soroban-governance \
@@ -127,7 +127,7 @@ size-budget-check max_bytes="131072": build
 # Build and optimize the Blend adapter WASM.
 build-blend-adapter:
 	@echo "Building Blend adapter WASM..."
-	@cargo build --release --target wasm32-unknown-unknown \
+	@cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-blend-adapter
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
@@ -156,7 +156,7 @@ wasm-analyze rows="250" lines="120":
 	@echo "  {{wasm_analysis_dir}}/monos.txt"
 	@echo ""
 	@echo "Computing release/optimized WASM sizes..."
-	@cargo build --release --target wasm32-unknown-unknown \
+	@cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime >/dev/null
 	@if [ -d "/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib" ]; then \
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \

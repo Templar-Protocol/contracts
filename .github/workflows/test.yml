@@ -70,32 +70,20 @@ jobs:
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
 
-  curator-primitives-feature-matrix:
-    name: Curator Primitives Feature Matrix
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: default
-            check_args: -p templar-curator-primitives
-          - name: std
-            check_args: -p templar-curator-primitives --no-default-features --features std
-          - name: serde-borsh
-            check_args: -p templar-curator-primitives --no-default-features --features borsh,serde,schemars,std
-          - name: boundary
-            check_args: -p templar-curator-primitives --no-default-features --features boundary,std --target wasm32-unknown-unknown
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # Curator primitives feature matrix (Soroban-related)
+      - name: Check curator-primitives (default)
+        run: cargo check -p templar-curator-primitives
 
-      - uses: ./.github/actions/rust
+      - name: Check curator-primitives (std)
+        run: cargo check -p templar-curator-primitives --no-default-features --features std
 
-      - name: cargo check (${{ matrix.name }})
-        run: cargo check ${{ matrix.check_args }}
+      - name: Check curator-primitives (serde-borsh)
+        run: cargo check -p templar-curator-primitives --no-default-features --features borsh,serde,schemars,std
 
-      - name: cargo test (boundary)
-        if: matrix.name == 'boundary'
+      - name: Check curator-primitives (boundary/wasm)
+        run: cargo check -p templar-curator-primitives --no-default-features --features boundary,std --target wasm32-unknown-unknown
+
+      - name: Test curator-primitives (boundary)
         run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
 
   tests:

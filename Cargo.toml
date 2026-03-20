@@ -115,18 +115,21 @@ strip = "symbols"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
 overflow-checks = true
 
+# Soroban-specific release profile (use with --profile release-soroban)
 # Dependencies don't need overflow-check panic strings in WASM — saves ~2.5 KiB.
-# Our code uses explicit checked_* arithmetic everywhere.
-[profile.release.package."*"]
+[profile.release-soroban]
+inherits = "release"
+
+[profile.release-soroban.package."*"]
 overflow-checks = false
 
-[profile.release.package.templar-soroban-runtime]
+[profile.release-soroban.package.templar-soroban-runtime]
 overflow-checks = true
 
-[profile.release.package.templar-vault-kernel]
+[profile.release-soroban.package.templar-vault-kernel]
 overflow-checks = true
 
-[profile.release.package.templar-curator-primitives]
+[profile.release-soroban.package.templar-curator-primitives]
 overflow-checks = true
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification
