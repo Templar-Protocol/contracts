@@ -126,7 +126,7 @@ impl WithdrawingState {
     /// Advance to the next withdrawal step after `amount_collected` was received.
     #[inline]
     #[must_use]
-    pub fn advance(&self, amount_collected: u128) -> Self {
+    pub fn advance(self, amount_collected: u128) -> Self {
         Self {
             op_id: self.op_id,
             index: self.index.saturating_add(1),

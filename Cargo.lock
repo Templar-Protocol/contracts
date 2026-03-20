@@ -13385,6 +13385,7 @@ dependencies = [
  "proptest",
  "schemars",
  "serde",
+ "templar-vault-kernel",
  "templar-vault-macros",
 ]
 

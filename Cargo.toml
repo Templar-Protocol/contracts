@@ -24,10 +24,10 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.1"
 license = "MIT"
 repository = "https://github.com/Templar-Protocol/contracts"
 edition = "2021"
+version = "1.2.1"
 
 [workspace.dependencies]
 alloy = { version = "1", default-features = false }

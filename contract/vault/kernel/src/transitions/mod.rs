@@ -104,9 +104,10 @@ impl TransitionResult {
 pub type TransitionRes = Result<TransitionResult, TransitionError>;
 
 /// Extract the inner state of a specific OpState variant, or return a typed error.
+/// Takes ownership of the state to avoid unnecessary clones.
 macro_rules! require_state {
     ($state:expr, $variant:ident) => {
-        match &$state {
+        match $state {
             OpState::$variant(s) => s,
             _ => {
                 return Err(TransitionError::WrongState);
