@@ -108,10 +108,9 @@ async fn run_service(
         .as_deref()
         .unwrap_or_else(|| args.network.rpc_url());
     let client = JsonRpcClient::connect(rpc_url);
-    let signer_key = args
-        .signer_key
-        .clone()
-        .expect("SIGNER_KEY or SIGNER_KEY_FILE must be set before run_service");
+    let signer_key = match args.signer_key.clone() else {
+        panic!("SIGNER_KEY or SIGNER_KEY_FILE must be set before run_service")
+    }
     let signer = Arc::new(InMemorySigner::from_secret_key(
         args.signer_account.clone(),
         signer_key,
