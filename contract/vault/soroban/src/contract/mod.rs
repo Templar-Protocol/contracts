@@ -53,6 +53,16 @@ pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 use crate::storage::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
 
+#[cold]
+fn contract_error(msg: &'static str) -> RuntimeError {
+    RuntimeError::contract_error(msg)
+}
+
+#[cold]
+fn invalid_state_error(msg: &'static str) -> RuntimeError {
+    RuntimeError::invalid_state(msg)
+}
+
 /// Deterministic one-way mapping from Soroban address to kernel Address.
 ///
 /// Uses a domain prefix so hashes do not collide with other chains' mappings.
@@ -111,16 +121,6 @@ fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-#[cold]
-fn contract_error(msg: &'static str) -> RuntimeError {
-    RuntimeError::contract_error(msg)
-}
-
-#[cold]
-fn invalid_state_error(msg: &'static str) -> RuntimeError {
-    RuntimeError::invalid_state(msg)
-}
-
 /// Curator vault contract.
 ///
 /// This struct wraps the vault state, storage, auth, effect interpreter,
@@ -173,14 +173,10 @@ where
 
     #[inline(never)]
     pub fn load_state(&mut self) -> Result<(), RuntimeError> {
-        match self.storage.load_state()? {
-            Some(versioned) => {
-                self.state = Some(versioned.state);
-            }
-            None => {
-                self.state = Some(VaultState::default());
-            }
-        }
+        self.state = Some(match self.storage.load_state()? {
+            Some(versioned) => versioned.state,
+            None => VaultState::default(),
+        });
         self.paused = self.storage.load_paused()?;
         self.policy_state = self
             .storage
@@ -294,7 +290,7 @@ where
     }
 
     #[inline(never)]
-    fn apply_kernel_action_local(
+    fn apply_kernel_action(
         &mut self,
         action: KernelAction,
         now_ns: u64,
@@ -325,15 +321,6 @@ where
         self.state = Some(result.state);
         self.save_state()?;
         Ok(summary)
-    }
-
-    #[inline(never)]
-    fn apply_kernel_action(
-        &mut self,
-        action: KernelAction,
-        now_ns: u64,
-    ) -> Result<EffectSummary, RuntimeError> {
-        self.apply_kernel_action_local(action, now_ns)
     }
 
     #[inline(never)]
@@ -418,7 +405,7 @@ where
     }
 
     #[inline(never)]
-    pub fn deposit_soroban(
+    pub fn deposit_mapped(
         &mut self,
         env: &Env,
         caller: SdkAddress,
@@ -476,7 +463,7 @@ where
     }
 
     #[inline(never)]
-    pub fn request_withdraw_soroban(
+    pub fn request_withdraw_mapped(
         &mut self,
         env: &Env,
         caller: SdkAddress,
@@ -533,7 +520,7 @@ where
     }
 
     #[inline(never)]
-    pub fn execute_withdraw_soroban(
+    pub fn execute_withdraw_mapped(
         &mut self,
         env: &Env,
         caller: SdkAddress,
@@ -544,8 +531,54 @@ where
         self.execute_withdraw(caller_kernel, now_ns)
     }
 
+    fn prepare_atomic_call(
+        &mut self,
+        env: &Env,
+        receiver: &SdkAddress,
+        owner: &SdkAddress,
+        operator: &SdkAddress,
+    ) -> Result<(Address, Address, Address, u64), RuntimeError> {
+        require_signed(operator);
+        self.ensure_vault_mapped(env)?;
+        let owner_kernel = self.register_sdk_address(env, owner)?;
+        let receiver_kernel = self.register_sdk_address(env, receiver)?;
+        let operator_kernel = self.register_sdk_address(env, operator)?;
+        let now_ns = ledger_timestamp_ns(env)
+            .map_err(|_| RuntimeError::invalid_input("timestamp overflow"))?;
+
+        let fees_active = !self.config.fees.management.fee_wad.is_zero()
+            || !self.config.fees.performance.fee_wad.is_zero();
+        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns {
+            let _ = self.apply_kernel_action(KernelAction::RefreshFees { now_ns }, now_ns)?;
+        }
+
+        Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
+    }
+
+    fn atomic_payout(
+        &mut self,
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        amount: u128,
+        kind: templar_vault_kernel::actions::AtomicPayoutKind,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.apply_kernel_action(
+            KernelAction::AtomicWithdraw {
+                owner,
+                receiver,
+                operator,
+                amount,
+                kind,
+                now_ns,
+            },
+            now_ns,
+        )
+    }
+
     #[inline(never)]
-    pub fn atomic_withdraw_soroban(
+    pub fn atomic_withdraw(
         &mut self,
         env: &Env,
         assets: i128,
@@ -553,35 +586,19 @@ where
         owner: SdkAddress,
         operator: SdkAddress,
     ) -> Result<i128, RuntimeError> {
-        require_signed(&operator);
         if assets <= 0 {
             return Err(RuntimeError::invalid_input("amount must be > 0"));
         }
 
-        self.ensure_vault_mapped(env)?;
-        let owner_kernel = self.register_sdk_address(env, &owner)?;
-        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
-        let operator_kernel = self.register_sdk_address(env, &operator)?;
-        let now_ns = u64::from(env.ledger().timestamp())
-            .checked_mul(1_000_000_000)
-            .ok_or_else(|| RuntimeError::invalid_input("timestamp overflow"))?;
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
+            self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let fees_active = !self.config.fees.management.fee_wad.is_zero()
-            || !self.config.fees.performance.fee_wad.is_zero();
-        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns {
-            let _ = self.apply_kernel_action(KernelAction::RefreshFees { now_ns }, now_ns)?;
-        }
-
-        let burned = self.apply_kernel_action(
-            KernelAction::AtomicWithdraw {
-                owner: owner_kernel,
-                receiver: receiver_kernel,
-                operator: operator_kernel,
-                amount: to_u128(assets)
-                    .map_err(|_| RuntimeError::invalid_input("invalid assets"))?,
-                kind: templar_vault_kernel::actions::AtomicPayoutKind::Withdraw,
-                now_ns,
-            },
+        let burned = self.atomic_payout(
+            owner_kernel,
+            receiver_kernel,
+            operator_kernel,
+            to_u128(assets).map_err(|_| RuntimeError::invalid_input("invalid assets"))?,
+            templar_vault_kernel::actions::AtomicPayoutKind::Withdraw,
             now_ns,
         )?;
         Ok(to_i128(burned.shares_burned)
@@ -589,7 +606,7 @@ where
     }
 
     #[inline(never)]
-    pub fn atomic_redeem_soroban(
+    pub fn atomic_redeem(
         &mut self,
         env: &Env,
         shares: i128,
@@ -597,35 +614,19 @@ where
         owner: SdkAddress,
         operator: SdkAddress,
     ) -> Result<i128, RuntimeError> {
-        require_signed(&operator);
         if shares <= 0 {
             return Err(RuntimeError::invalid_input("amount must be > 0"));
         }
 
-        self.ensure_vault_mapped(env)?;
-        let owner_kernel = self.register_sdk_address(env, &owner)?;
-        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
-        let operator_kernel = self.register_sdk_address(env, &operator)?;
-        let now_ns = u64::from(env.ledger().timestamp())
-            .checked_mul(1_000_000_000)
-            .ok_or_else(|| RuntimeError::invalid_input("timestamp overflow"))?;
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
+            self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let fees_active = !self.config.fees.management.fee_wad.is_zero()
-            || !self.config.fees.performance.fee_wad.is_zero();
-        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns {
-            let _ = self.apply_kernel_action(KernelAction::RefreshFees { now_ns }, now_ns)?;
-        }
-
-        let summary = self.apply_kernel_action(
-            KernelAction::AtomicWithdraw {
-                owner: owner_kernel,
-                receiver: receiver_kernel,
-                operator: operator_kernel,
-                amount: to_u128(shares)
-                    .map_err(|_| RuntimeError::invalid_input("invalid shares"))?,
-                kind: templar_vault_kernel::actions::AtomicPayoutKind::Redeem,
-                now_ns,
-            },
+        let summary = self.atomic_payout(
+            owner_kernel,
+            receiver_kernel,
+            operator_kernel,
+            to_u128(shares).map_err(|_| RuntimeError::invalid_input("invalid shares"))?,
+            templar_vault_kernel::actions::AtomicPayoutKind::Redeem,
             now_ns,
         )?;
         Ok(to_i128(summary.assets_transferred)
@@ -1339,7 +1340,8 @@ fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, ContractErro
 fn current_supply_queue_len(env: &Env) -> Result<u32, ContractError> {
     let mut len: u32 = 0;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        len = u32::try_from(vault.supply_queue_targets().len())
+        let targets = vault.supply_queue_targets();
+        len = u32::try_from(targets.len())
             .map_err(|_| RuntimeError::invalid_input("queue overflow"))?;
         Ok(())
     };
@@ -1415,10 +1417,7 @@ fn require_config_address(
     key: &soroban_sdk::Symbol,
     msg: &'static str,
 ) -> Result<SdkAddress, RuntimeError> {
-    match get_config_address(env, key) {
-        Ok(addr) => Ok(addr),
-        Err(_) => Err(RuntimeError::storage_error(msg)),
-    }
+    get_config_address(env, key).map_err(|_| RuntimeError::storage_error(msg))
 }
 
 /// Write an `SdkAddress` into instance storage.
@@ -1658,7 +1657,7 @@ impl SorobanVaultContract {
 
         let mut shares_minted = 0u128;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let result = vault.deposit_soroban(
+            let result = vault.deposit_mapped(
                 &env,
                 owner.clone(),
                 receiver.clone(),
@@ -1696,7 +1695,7 @@ impl SorobanVaultContract {
 
         let mut request_id = 0u64;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let result = vault.request_withdraw_soroban(
+            let result = vault.request_withdraw_mapped(
                 &env,
                 owner.clone(),
                 receiver.clone(),
@@ -1717,7 +1716,7 @@ impl SorobanVaultContract {
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             vault
-                .execute_withdraw_soroban(&env, caller.clone(), now_ns)
+                .execute_withdraw_mapped(&env, caller.clone(), now_ns)
                 .map(|_| ())
         };
         with_contract_vault_contract_error(&env, &mut call)
@@ -2506,7 +2505,7 @@ impl SorobanVaultContract {
     ) -> Result<i128, ContractError> {
         let mut result: Option<i128> = None;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            result = Some(vault.atomic_withdraw_soroban(
+            result = Some(vault.atomic_withdraw(
                 &env,
                 assets,
                 receiver.clone(),
@@ -2528,7 +2527,7 @@ impl SorobanVaultContract {
     ) -> Result<i128, ContractError> {
         let mut result: Option<i128> = None;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            result = Some(vault.atomic_redeem_soroban(
+            result = Some(vault.atomic_redeem(
                 &env,
                 shares,
                 receiver.clone(),

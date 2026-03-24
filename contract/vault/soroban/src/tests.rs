@@ -645,10 +645,10 @@ mod contract_tests {
             let assets = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
 
             vault
-                .deposit_soroban(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
+                .deposit_mapped(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
                 .unwrap();
             vault
-                .request_withdraw_soroban(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
+                .request_withdraw_mapped(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
                 .unwrap();
 
             let storage = vault.storage.clone();
@@ -676,7 +676,7 @@ mod contract_tests {
                 .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
                 .saturating_add(1);
             let summary = next_vault
-                .execute_withdraw_soroban(&env, executor, exec_time)
+                .execute_withdraw_mapped(&env, executor, exec_time)
                 .unwrap();
 
             assert!(summary.assets_transferred > 0);
