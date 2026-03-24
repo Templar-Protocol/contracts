@@ -308,10 +308,12 @@ impl App {
             .fold(
                 (HashMap::new(), HashMap::new()),
                 |(mut pyth, mut redstone), market_data| {
-                    for request in [
-                        &market_data.collateral.update_oracle,
-                        &market_data.borrow.update_oracle,
-                    ] {
+                    for request in market_data
+                        .collateral
+                        .update_oracle
+                        .iter()
+                        .chain(market_data.borrow.update_oracle.iter())
+                    {
                         match request {
                             OracleRequest::Pyth(request) => {
                                 pyth.entry(request.oracle_id.clone())
@@ -756,15 +758,18 @@ mod tests {
                 collateral: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("collateral.test.near")),
                     price_id: price_id(1),
-                    update_oracle: OracleRequest::pyth(account_id("oracle.test.near"), price_id(1)),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        account_id("oracle.test.near"),
+                        price_id(1),
+                    )]),
                 },
                 borrow: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("borrow.test.near")),
                     price_id: price_id(2),
-                    update_oracle: OracleRequest::redstone(
+                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
                         account_id("oracle.test.near"),
                         FeedId::from("BTC"),
-                    ),
+                    )]),
                 },
             },
         );
@@ -797,12 +802,18 @@ mod tests {
                 collateral: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("collateral-a.test.near")),
                     price_id: price_id(1),
-                    update_oracle: OracleRequest::pyth(pyth_oracle.clone(), price_id(11)),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        pyth_oracle.clone(),
+                        price_id(11),
+                    )]),
                 },
                 borrow: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("borrow-a.test.near")),
                     price_id: price_id(2),
-                    update_oracle: OracleRequest::pyth(pyth_oracle.clone(), price_id(12)),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        pyth_oracle.clone(),
+                        price_id(12),
+                    )]),
                 },
             },
         );
@@ -814,18 +825,18 @@ mod tests {
                 collateral: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("collateral-b.test.near")),
                     price_id: price_id(3),
-                    update_oracle: OracleRequest::redstone(
+                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
                         redstone_oracle.clone(),
                         FeedId::from("ETH"),
-                    ),
+                    )]),
                 },
                 borrow: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("borrow-b.test.near")),
                     price_id: price_id(4),
-                    update_oracle: OracleRequest::redstone(
+                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
                         redstone_oracle.clone(),
                         FeedId::from("BTC"),
-                    ),
+                    )]),
                 },
             },
         );
