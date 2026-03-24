@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use near_jsonrpc_client::JsonRpcClient;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
@@ -54,7 +56,10 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         resolved_normal,
-        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID),
+        HashSet::from_iter([OracleRequest::pyth(
+            price_oracle.id().clone(),
+            DEFAULT_BORROW_PRICE_ID,
+        )]),
     );
 
     let resolved_passthrough = near
@@ -64,7 +69,10 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         resolved_passthrough,
-        OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
+        HashSet::from_iter([OracleRequest::pyth(
+            price_oracle.id().to_owned(),
+            DEFAULT_BORROW_PRICE_ID,
+        )]),
     );
 
     let proxy_id = PriceIdentifier([0xa6; 32]);
@@ -87,7 +95,10 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         resolved_proxy,
-        OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
+        HashSet::from_iter([OracleRequest::pyth(
+            price_oracle.id().to_owned(),
+            DEFAULT_BORROW_PRICE_ID
+        )]),
     );
 
     // Test proxy contract too
@@ -144,7 +155,10 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         request,
-        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
+        HashSet::from_iter([OracleRequest::pyth(
+            price_oracle.id().clone(),
+            DEFAULT_BORROW_PRICE_ID
+        )]),
     );
 
     // Transformed Pyth price
@@ -155,6 +169,9 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_eq!(
         request,
-        OracleRequest::pyth(price_oracle.id().clone(), DEFAULT_BORROW_PRICE_ID)
+        HashSet::from_iter([OracleRequest::pyth(
+            price_oracle.id().clone(),
+            DEFAULT_BORROW_PRICE_ID
+        )]),
     );
 }

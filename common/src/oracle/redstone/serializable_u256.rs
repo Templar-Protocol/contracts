@@ -26,7 +26,7 @@ impl From<SerializableU256> for U256 {
 
 impl JsonSchema for SerializableU256 {
     fn schema_name() -> String {
-        "U256".to_string()
+        "SerializableU256".to_string()
     }
 
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
