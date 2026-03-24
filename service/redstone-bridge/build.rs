@@ -11,36 +11,39 @@ fn main() {
     let js_dir = manifest_dir.join("js");
 
     #[allow(clippy::expect_used)]
-    if std::env::var("CI").is_ok() {
-        let status = std::process::Command::new("npm")
-            .args(["ci"])
-            .current_dir(&js_dir)
-            .status()
-            .expect("Failed to install npm dependencies for redstone-bridge");
-        assert!(status.success(), "npm ci failed");
+    let npm_command = if std::env::var("CI").is_ok() {
+        "ci"
+    } else {
+        "install"
+    };
+    let status = std::process::Command::new("npm")
+        .args([npm_command])
+        .current_dir(&js_dir)
+        .status()
+        .expect("Failed to install npm dependencies for redstone-bridge");
+    assert!(status.success(), "npm {npm_command} failed");
 
-        let status = std::process::Command::new("npm")
-            .args(["run", "build"])
-            .current_dir(&js_dir)
-            .status()
-            .expect("Failed to build redstone-bridge");
-        assert!(status.success(), "npm run build failed");
+    let status = std::process::Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(&js_dir)
+        .status()
+        .expect("Failed to build redstone-bridge");
+    assert!(status.success(), "npm run build failed");
 
-        let status = std::process::Command::new("npm")
-            .args(["run", "bundle"])
-            .current_dir(&js_dir)
-            .status()
-            .expect("Failed to bundle redstone-bridge");
-        assert!(status.success(), "npm run bundle failed");
-    }
+    let status = std::process::Command::new("npm")
+        .args(["run", "bundle"])
+        .current_dir(&js_dir)
+        .status()
+        .expect("Failed to bundle redstone-bridge");
+    assert!(status.success(), "npm run bundle failed");
 
     let bundle = js_dir.join("dist/bundle.js");
     let dest = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundle.js");
-    std::fs::copy(&bundle, &dest).unwrap_or_else(|_| {
+    std::fs::copy(&bundle, &dest).unwrap_or_else(|e| {
         panic!(
-            "Failed to copy {} to {}. Run `npm run bundle` in service/redstone-bridge/js",
+            "Failed to copy {} to {}: {e}",
             bundle.display(),
-            dest.display(),
+            dest.display()
         )
     });
 }
