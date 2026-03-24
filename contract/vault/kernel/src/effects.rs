@@ -28,6 +28,11 @@ pub enum KernelEffect {
     MintShares { owner: Address, shares: u128 },
     /// Burn share tokens from an owner.
     BurnShares { owner: Address, shares: u128 },
+    BurnSharesFrom {
+        spender: Address,
+        owner: Address,
+        shares: u128,
+    },
     /// Transfer shares between addresses.
     TransferShares {
         from: Address,
@@ -180,6 +185,12 @@ pub enum KernelEvent {
         assets_in: u128,
         shares_out: u128,
     },
+    AtomicWithdrawProcessed {
+        owner: Address,
+        receiver: Address,
+        shares_burned: u128,
+        assets_out: u128,
+    },
     /// Withdrawal requested and enqueued.
     WithdrawalRequested {
         id: u64,
@@ -214,6 +225,7 @@ impl KernelEffect {
         match self {
             KernelEffect::MintShares { owner, .. } => alloc::vec![*owner],
             KernelEffect::BurnShares { owner, .. } => alloc::vec![*owner],
+            KernelEffect::BurnSharesFrom { spender, owner, .. } => alloc::vec![*spender, *owner],
             KernelEffect::TransferShares { from, to, .. } => alloc::vec![*from, *to],
             KernelEffect::TransferAssets { to, .. } => alloc::vec![*to],
             KernelEffect::TransferAssetsFrom { from, to, .. } => alloc::vec![*from, *to],
@@ -234,6 +246,9 @@ impl KernelEvent {
                 owner, receiver, ..
             } => alloc::vec![*owner, *receiver],
             KernelEvent::DepositProcessed {
+                owner, receiver, ..
+            } => alloc::vec![*owner, *receiver],
+            KernelEvent::AtomicWithdrawProcessed {
                 owner, receiver, ..
             } => alloc::vec![*owner, *receiver],
             KernelEvent::WithdrawalRequested {
@@ -283,6 +298,15 @@ mod tests {
             .required_addresses(),
             alloc::vec![from, to]
         );
+        assert_eq!(
+            KernelEffect::BurnSharesFrom {
+                spender: from,
+                owner,
+                shares: 9,
+            }
+            .required_addresses(),
+            alloc::vec![from, owner]
+        );
     }
 
     #[test]
@@ -301,7 +325,16 @@ mod tests {
             .required_addresses(),
             alloc::vec![owner, receiver]
         );
-
+        assert_eq!(
+            KernelEvent::AtomicWithdrawProcessed {
+                owner,
+                receiver,
+                shares_burned: 10,
+                assets_out: 5,
+            }
+            .required_addresses(),
+            alloc::vec![owner, receiver]
+        );
         assert!(KernelEvent::RefreshCompleted { op_id: 9 }
             .required_addresses()
             .is_empty());

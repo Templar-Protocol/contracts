@@ -42,6 +42,10 @@ pub enum InvalidStateCode {
     RefreshFeesRequiresIdle = 31,
     FeeRefreshTimestampMustAdvance = 32,
     EmergencyResetAlreadyIdle = 33,
+    AtomicWithdrawRequiresIdle = 34,
+    AtomicWithdrawExceedsIdleAssets = 35,
+    AtomicWithdrawBurnExceedsTotalShares = 36,
+    AtomicWithdrawTotalAssetsUnderflow = 37,
 }
 
 impl InvalidStateCode {
@@ -99,6 +103,14 @@ impl InvalidStateCode {
             Self::RefreshFeesRequiresIdle => "refresh_fees requires Idle",
             Self::FeeRefreshTimestampMustAdvance => "fee refresh timestamp must advance",
             Self::EmergencyResetAlreadyIdle => "emergency_reset: vault is already Idle",
+            Self::AtomicWithdrawRequiresIdle => "atomic_withdraw requires Idle",
+            Self::AtomicWithdrawExceedsIdleAssets => "atomic_withdraw exceeds idle_assets",
+            Self::AtomicWithdrawBurnExceedsTotalShares => {
+                "atomic_withdraw burn exceeds total_shares"
+            }
+            Self::AtomicWithdrawTotalAssetsUnderflow => {
+                "atomic_withdraw would underflow total_assets"
+            }
         }
     }
 }

@@ -30,20 +30,17 @@ mod auth_tests {
     }
 
     #[test]
-    fn test_soroban_auth_guardian_role() {
+    fn test_soroban_auth_sentinel_role() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
-        let guardian = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles(&env, curator.clone(), Some(guardian.clone()), None);
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), Some(sentinel.clone()), None);
 
-        // Curator is always a guardian
-        assert!(auth.has_role(Role::Guardian, &curator));
-        // Designated guardian
-        assert!(auth.has_role(Role::Guardian, &guardian));
-        // Regular user is not
-        assert!(!auth.has_role(Role::Guardian, &user));
+        assert!(auth.has_role(Role::Sentinel, &curator));
+        assert!(auth.has_role(Role::Sentinel, &sentinel));
+        assert!(!auth.has_role(Role::Sentinel, &user));
     }
 
     #[test]
@@ -83,25 +80,15 @@ mod auth_tests {
     fn test_soroban_auth_check_role_pause_actions() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
-        let guardian = SdkAddress::generate(&env);
         let sentinel = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles_and_sentinel(
-            &env,
-            curator.clone(),
-            Some(guardian.clone()),
-            Some(sentinel.clone()),
-            None,
-        );
+        let auth = SorobanAuth::with_roles(&env, curator.clone(), Some(sentinel.clone()), None);
 
         // Sentinel can pause
         assert!(auth.check_role(ActionKind::Pause, &sentinel).is_ok());
         // Curator can pause
         assert!(auth.check_role(ActionKind::Pause, &curator).is_ok());
-        // Guardian cannot pause without sentinel powers
-        let result = auth.check_role(ActionKind::Pause, &guardian);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
         // User cannot pause
         let result = auth.check_role(ActionKind::Pause, &user);
         assert!(matches!(result, Err(AuthError::MissingRole)));
@@ -109,8 +96,6 @@ mod auth_tests {
         assert!(auth
             .check_role(ActionKind::SetRestrictions, &sentinel)
             .is_ok());
-        let result = auth.check_role(ActionKind::SetRestrictions, &guardian);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
     }
 
     #[test]
@@ -153,15 +138,13 @@ mod auth_tests {
     fn test_soroban_auth_check_role_allocator_emergency_actions() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
-        let guardian = SdkAddress::generate(&env);
         let sentinel = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
         let user = SdkAddress::generate(&env);
 
-        let auth = SorobanAuth::with_roles_and_sentinel(
+        let auth = SorobanAuth::with_roles(
             &env,
             curator.clone(),
-            Some(guardian),
             Some(sentinel.clone()),
             Some(allocator.clone()),
         );
@@ -726,7 +709,7 @@ mod contract_tests {
         use templar_vault_kernel::math::wad::Wad;
 
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
@@ -768,7 +751,7 @@ mod contract_tests {
         use templar_vault_kernel::math::wad::Wad;
 
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set(LedgerInfo {
             timestamp: 100,
             protocol_version: 25,
@@ -789,7 +772,7 @@ mod contract_tests {
 
         let owner = soroban_sdk::Address::generate(&env);
         let receiver = soroban_sdk::Address::generate(&env);
-        let operator = soroban_sdk::Address::generate(&env);
+        let operator = owner.clone();
         let mgmt_recipient = soroban_sdk::Address::generate(&env);
         let perf_recipient = soroban_sdk::Address::generate(&env);
 
@@ -861,6 +844,94 @@ mod contract_tests {
                 ledger_timestamp_ns(&env).expect("timestamp")
             );
         });
+    }
+
+    #[test]
+    fn test_atomic_withdraw_requires_allowance_for_delegated_operator() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+        use soroban_sdk::IntoVal;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+        let operator = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator,
+                asset.clone(),
+                share.clone(),
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = VaultState::default();
+            state.total_assets = 1_500;
+            state.total_shares = 1_000;
+            state.idle_assets = 1_500;
+            storage
+                .save_state(&VersionedState::new(state))
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &1_500);
+        share_admin_client.mint(&owner, &1_000);
+
+        let without_approval = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            env.as_contract(&contract_id, || {
+                SorobanVaultContract::withdraw(
+                    env.clone(),
+                    500,
+                    receiver.clone(),
+                    owner.clone(),
+                    operator.clone(),
+                )
+            })
+        }));
+        assert!(without_approval.is_err());
+
+        env.invoke_contract::<()>(
+            &share,
+            &soroban_sdk::Symbol::new(&env, "approve"),
+            (&owner, &operator, &1_000i128, &1_000_000u32).into_val(&env),
+        );
+
+        let burned = env
+            .as_contract(&contract_id, || {
+                SorobanVaultContract::withdraw(
+                    env.clone(),
+                    500,
+                    receiver.clone(),
+                    owner.clone(),
+                    operator.clone(),
+                )
+            })
+            .expect("delegated withdraw should succeed with approval");
+        assert!(burned > 0);
+
+        let remaining_allowance: i128 = env.invoke_contract(
+            &share,
+            &soroban_sdk::Symbol::new(&env, "allowance"),
+            (&owner, &operator).into_val(&env),
+        );
+        assert!(remaining_allowance < 1_000);
     }
 
     #[test]
@@ -1089,6 +1160,18 @@ mod effects_tests {
         fn burn(&self, _from: &Address, _amount: i128) -> EffectResult<()> {
             if self.should_fail {
                 return Err(RuntimeError::effect_failed("test burn failed"));
+            }
+            Ok(())
+        }
+
+        fn burn_from(
+            &self,
+            _spender: &Address,
+            _from: &Address,
+            _amount: i128,
+        ) -> EffectResult<()> {
+            if self.should_fail {
+                return Err(RuntimeError::effect_failed("test burn_from failed"));
             }
             Ok(())
         }

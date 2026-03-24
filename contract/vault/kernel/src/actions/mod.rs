@@ -86,6 +86,15 @@ pub enum KernelAction {
         now_ns: TimestampNs,
     },
 
+    AtomicWithdraw {
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        amount: u128,
+        kind: AtomicPayoutKind,
+        now_ns: TimestampNs,
+    },
+
     /// Request a withdrawal by escrowing shares in the queue.
     RequestWithdraw {
         owner: Address,
@@ -162,27 +171,6 @@ pub enum KernelAction {
     EmergencyReset,
 }
 
-/// Discriminant-like view for [`KernelAction`] variants.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum KernelActionKind {
-    BeginAllocating,
-    Deposit,
-    RequestWithdraw,
-    ExecuteWithdraw,
-    BeginRefreshing,
-    FinishAllocating,
-    SyncExternalAssets,
-    FinishRefreshing,
-    AbortRefreshing,
-    SettlePayout,
-    AbortAllocating,
-    AbortWithdrawing,
-    RefreshFees,
-    Pause,
-    EmergencyReset,
-}
-
 impl KernelAction {
     #[must_use]
     pub fn begin_allocating(op_id: u64, plan: Vec<(TargetId, u128)>, now_ns: TimestampNs) -> Self {
@@ -206,6 +194,42 @@ impl KernelAction {
             receiver,
             assets_in,
             min_shares_out,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn atomic_withdraw(
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        assets_out: u128,
+        now_ns: TimestampNs,
+    ) -> Self {
+        Self::AtomicWithdraw {
+            owner,
+            receiver,
+            operator,
+            amount: assets_out,
+            kind: AtomicPayoutKind::Withdraw,
+            now_ns,
+        }
+    }
+
+    #[must_use]
+    pub fn atomic_redeem(
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        shares: u128,
+        now_ns: TimestampNs,
+    ) -> Self {
+        Self::AtomicWithdraw {
+            owner,
+            receiver,
+            operator,
+            amount: shares,
+            kind: AtomicPayoutKind::Redeem,
             now_ns,
         }
     }
@@ -306,27 +330,6 @@ impl KernelAction {
     }
 
     #[must_use]
-    pub const fn kind(&self) -> KernelActionKind {
-        match self {
-            Self::BeginAllocating { .. } => KernelActionKind::BeginAllocating,
-            Self::Deposit { .. } => KernelActionKind::Deposit,
-            Self::RequestWithdraw { .. } => KernelActionKind::RequestWithdraw,
-            Self::ExecuteWithdraw { .. } => KernelActionKind::ExecuteWithdraw,
-            Self::BeginRefreshing { .. } => KernelActionKind::BeginRefreshing,
-            Self::FinishAllocating { .. } => KernelActionKind::FinishAllocating,
-            Self::SyncExternalAssets { .. } => KernelActionKind::SyncExternalAssets,
-            Self::FinishRefreshing { .. } => KernelActionKind::FinishRefreshing,
-            Self::AbortRefreshing { .. } => KernelActionKind::AbortRefreshing,
-            Self::SettlePayout { .. } => KernelActionKind::SettlePayout,
-            Self::AbortAllocating { .. } => KernelActionKind::AbortAllocating,
-            Self::AbortWithdrawing { .. } => KernelActionKind::AbortWithdrawing,
-            Self::RefreshFees { .. } => KernelActionKind::RefreshFees,
-            Self::Pause { .. } => KernelActionKind::Pause,
-            Self::EmergencyReset => KernelActionKind::EmergencyReset,
-        }
-    }
-
-    #[must_use]
     pub const fn op_id(&self) -> Option<u64> {
         match self {
             Self::BeginAllocating { op_id, .. }
@@ -339,6 +342,7 @@ impl KernelAction {
             | Self::AbortAllocating { op_id, .. }
             | Self::AbortWithdrawing { op_id, .. } => Some(*op_id),
             Self::Deposit { .. }
+            | Self::AtomicWithdraw { .. }
             | Self::RequestWithdraw { .. }
             | Self::ExecuteWithdraw { .. }
             | Self::RefreshFees { .. }
@@ -352,6 +356,7 @@ impl KernelAction {
         match self {
             Self::BeginAllocating { now_ns, .. }
             | Self::Deposit { now_ns, .. }
+            | Self::AtomicWithdraw { now_ns, .. }
             | Self::RequestWithdraw { now_ns, .. }
             | Self::ExecuteWithdraw { now_ns }
             | Self::BeginRefreshing { now_ns, .. }
@@ -367,6 +372,13 @@ impl KernelAction {
             | Self::EmergencyReset => None,
         }
     }
+}
+
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AtomicPayoutKind {
+    Withdraw,
+    Redeem,
 }
 
 /// Effective totals after applying virtual share/asset offsets.
@@ -636,6 +648,98 @@ fn handle_deposit(
         },
     ];
 
+    Ok(KernelResult::new(state, effects))
+}
+
+#[inline]
+fn push_atomic_burn_shares(
+    effects: &mut Vec<KernelEffect>,
+    owner: Address,
+    operator: Address,
+    shares: u128,
+) {
+    if operator == owner {
+        effects.push(KernelEffect::BurnShares { owner, shares });
+    } else {
+        effects.push(KernelEffect::BurnSharesFrom {
+            spender: operator,
+            owner,
+            shares,
+        });
+    }
+}
+
+fn handle_atomic_withdraw(
+    mut state: VaultState,
+    config: &VaultConfig,
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
+    owner: Address,
+    receiver: Address,
+    operator: Address,
+    amount: u128,
+    kind: AtomicPayoutKind,
+) -> Result<KernelResult, KernelError> {
+    enforce_restrictions(config, restrictions, self_id, &owner)?;
+    enforce_restrictions(config, restrictions, self_id, &receiver)?;
+    if !state.is_idle() {
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::AtomicWithdrawRequiresIdle,
+        ));
+    }
+    if amount == 0 {
+        return Err(KernelError::ZeroAmount);
+    }
+
+    let (shares, assets_out) = match kind {
+        AtomicPayoutKind::Withdraw => {
+            if amount > state.idle_assets {
+                return Err(KernelError::invalid_state_code(
+                    InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
+                ));
+            }
+            (convert_to_shares_ceil(&state, config, amount), amount)
+        }
+        AtomicPayoutKind::Redeem => {
+            let assets_out = convert_to_assets(&state, config, amount);
+            if assets_out > state.idle_assets {
+                return Err(KernelError::invalid_state_code(
+                    InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
+                ));
+            }
+            (amount, assets_out)
+        }
+    };
+
+    if assets_out > state.idle_assets {
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
+        ));
+    }
+    state.total_shares = state.total_shares.checked_sub(shares).ok_or_else(|| {
+        KernelError::invalid_state_code(InvalidStateCode::AtomicWithdrawBurnExceedsTotalShares)
+    })?;
+    state.idle_assets = state.idle_assets.checked_sub(assets_out).ok_or_else(|| {
+        KernelError::invalid_state_code(InvalidStateCode::AtomicWithdrawExceedsIdleAssets)
+    })?;
+    state.total_assets = state.total_assets.checked_sub(assets_out).ok_or_else(|| {
+        KernelError::invalid_state_code(InvalidStateCode::AtomicWithdrawTotalAssetsUnderflow)
+    })?;
+
+    let mut effects = Vec::new();
+    push_atomic_burn_shares(&mut effects, owner, operator, shares);
+    effects.push(KernelEffect::TransferAssets {
+        to: receiver,
+        amount: assets_out,
+    });
+    effects.push(KernelEffect::EmitEvent {
+        event: KernelEvent::AtomicWithdrawProcessed {
+            owner,
+            receiver,
+            shares_burned: shares,
+            assets_out,
+        },
+    });
     Ok(KernelResult::new(state, effects))
 }
 
@@ -1340,6 +1444,25 @@ pub fn apply_action(
             receiver,
             assets_in,
             min_shares_out,
+        ),
+
+        KernelAction::AtomicWithdraw {
+            owner,
+            receiver,
+            operator,
+            amount,
+            kind,
+            now_ns: _,
+        } => handle_atomic_withdraw(
+            state,
+            config,
+            restrictions,
+            self_id,
+            owner,
+            receiver,
+            operator,
+            amount,
+            kind,
         ),
 
         KernelAction::RequestWithdraw {

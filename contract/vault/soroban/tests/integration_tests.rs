@@ -266,7 +266,6 @@ type RbacVault = CuratorVault<MemoryStorage, RbacAuth, MockInterpreter>;
 
 fn create_rbac_vault() -> RbacVault {
     let mut rbac_config = RbacConfig::with_curator(curator_addr());
-    rbac_config.add_role(guardian_addr(), Role::Guardian);
     rbac_config.add_role(sentinel_addr(), Role::Sentinel);
     rbac_config.add_role(allocator_addr(), Role::Allocator);
 

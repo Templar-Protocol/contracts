@@ -29,7 +29,9 @@ pub enum AuthPolicyClass {
 #[must_use]
 pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
     match action {
-        ActionKind::Deposit | ActionKind::RequestWithdraw => AuthPolicyClass::Public,
+        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::AtomicWithdraw => {
+            AuthPolicyClass::Public
+        }
         ActionKind::ExecuteWithdraw
         | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
@@ -53,7 +55,9 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
 #[must_use]
 pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
     match action {
-        ActionKind::Deposit | ActionKind::RequestWithdraw => AuthPolicyClass::Public,
+        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::AtomicWithdraw => {
+            AuthPolicyClass::Public
+        }
         ActionKind::ExecuteWithdraw
         | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
@@ -112,6 +116,8 @@ pub enum ActionKind {
     ManualReconcile,
     /// Emergency reset to force-idle a stuck vault.
     EmergencyReset,
+    /// Atomic withdraw (by assets, idle-only fast path).
+    AtomicWithdraw,
 }
 
 impl ActionKind {
@@ -159,6 +165,7 @@ impl_action_kind_from_kernel_action!(
     AbortWithdrawing,
     RefreshFees,
     Pause,
+    AtomicWithdraw,
 );
 
 #[templar_vault_macros::vault_derive]

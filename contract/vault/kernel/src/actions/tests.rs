@@ -27,21 +27,19 @@ fn test_config() -> VaultConfig {
 #[test]
 fn action_builder_and_metadata_helpers() {
     let action = KernelAction::finish_allocating(42, 1_000);
-    assert_eq!(action.kind(), KernelActionKind::FinishAllocating);
+    assert!(matches!(action, KernelAction::FinishAllocating { .. }));
     assert_eq!(action.op_id(), Some(42));
     assert_eq!(action.timestamp_ns(), Some(1_000));
-    assert_eq!(
-        action,
-        KernelAction::FinishAllocating {
-            op_id: 42,
-            now_ns: 1_000
-        }
-    );
 
     let pause = KernelAction::pause(true);
-    assert_eq!(pause.kind(), KernelActionKind::Pause);
+    assert!(matches!(pause, KernelAction::Pause { .. }));
     assert_eq!(pause.op_id(), None);
     assert_eq!(pause.timestamp_ns(), None);
+
+    let atomic = KernelAction::atomic_withdraw(addr(1), addr(2), addr(3), 11, 1_000);
+    assert!(matches!(atomic, KernelAction::AtomicWithdraw { .. }));
+    assert_eq!(atomic.op_id(), None);
+    assert_eq!(atomic.timestamp_ns(), Some(1_000));
 
     let settle = KernelAction::settle_payout(
         7,
@@ -50,7 +48,7 @@ fn action_builder_and_metadata_helpers() {
             refund_shares: 20,
         },
     );
-    assert_eq!(settle.kind(), KernelActionKind::SettlePayout);
+    assert!(matches!(settle, KernelAction::SettlePayout { .. }));
     assert_eq!(settle.op_id(), Some(7));
     assert_eq!(settle.timestamp_ns(), None);
 }
@@ -377,6 +375,190 @@ fn deposit_not_idle_fails() {
             InvalidStateCode::DepositRequiresIdle
         ))
     ));
+}
+
+#[test]
+fn atomic_withdraw_success_emits_burn_and_transfer() {
+    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let config = test_config();
+    let owner = addr(1);
+    let receiver = addr(2);
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner,
+            receiver,
+            operator: owner,
+            amount: 100,
+            kind: AtomicPayoutKind::Withdraw,
+            now_ns: 0,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.total_assets, 900);
+    assert_eq!(result.state.idle_assets, 900);
+    assert_eq!(result.state.total_shares, 900);
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::BurnShares { owner: effect_owner, shares: 100 }) if *effect_owner == owner
+    ));
+    assert!(matches!(
+        result.effects.get(1),
+        Some(KernelEffect::TransferAssets { to, amount: 100 }) if *to == receiver
+    ));
+    assert!(matches!(
+        result.effects.get(2),
+        Some(KernelEffect::EmitEvent {
+            event: KernelEvent::AtomicWithdrawProcessed { owner: event_owner, receiver: event_receiver, shares_burned: 100, assets_out: 100 }
+        }) if *event_owner == owner && *event_receiver == receiver
+    ));
+}
+
+#[test]
+fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
+    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let config = test_config();
+    let owner = addr(1);
+    let receiver = addr(2);
+    let operator = addr(9);
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner,
+            receiver,
+            operator,
+            amount: 100,
+            kind: AtomicPayoutKind::Redeem,
+            now_ns: 0,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.total_assets, 900);
+    assert_eq!(result.state.idle_assets, 900);
+    assert_eq!(result.state.total_shares, 900);
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::BurnSharesFrom { spender, owner: effect_owner, shares: 100 })
+            if *spender == operator && *effect_owner == owner
+    ));
+}
+
+#[test]
+fn atomic_withdraw_not_idle_fails() {
+    use crate::state::op_state::AllocatingState;
+
+    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 1,
+        index: 0,
+        remaining: 500,
+        plan: vec![(0, 500)],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            amount: 100,
+            kind: AtomicPayoutKind::Withdraw,
+            now_ns: 0,
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::AtomicWithdrawRequiresIdle
+        ))
+    ));
+}
+
+#[test]
+fn atomic_withdraw_exceeding_idle_fails() {
+    let state = VaultState::with_initial(1_000, 1_000, 250, 750, 0);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            amount: 300,
+            kind: AtomicPayoutKind::Withdraw,
+            now_ns: 0,
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::AtomicWithdrawExceedsIdleAssets
+        ))
+    ));
+}
+
+#[test]
+fn refresh_fees_then_atomic_withdraw_succeeds() {
+    let mut state = VaultState::with_initial(1_500, 1_000, 1_500, 0, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    let config = VaultConfig {
+        fees: FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, addr(7)),
+            FeeSlot::new(Wad::one() / 10, addr(8)),
+            None,
+        ),
+        ..test_config()
+    };
+
+    let refreshed = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees { now_ns: 100 },
+    )
+    .unwrap();
+    let refreshed_total_shares = refreshed.state.total_shares;
+
+    let withdrawn = apply_action(
+        refreshed.state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            amount: 500,
+            kind: AtomicPayoutKind::Withdraw,
+            now_ns: 100,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(withdrawn.state.total_assets, 1_000);
+    assert_eq!(withdrawn.state.idle_assets, 1_000);
+    assert!(withdrawn.state.total_shares < refreshed_total_shares);
 }
 
 #[test]

@@ -20,10 +20,12 @@ pub(crate) fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
 /// the same event data available to indexers.
 #[inline(never)]
 #[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
-pub fn publish_kernel_event(env: &Env, event: &KernelEvent) {
-    let payload = postcard::to_allocvec(event).expect("kernel event serialize");
+pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
+    let payload = postcard::to_allocvec(event)
+        .map_err(|_| RuntimeError::effect_failed("kernel event serialize failed"))?;
     env.events()
         .publish((symbol_short!("kernel"),), Bytes::from_slice(env, &payload));
+    Ok(())
 }
 
 /// Result type for effect operations.
@@ -205,6 +207,9 @@ pub trait EffectInterpreter {
                 KernelEffect::BurnShares { shares, .. } => {
                     summary.record_burn(*shares);
                 }
+                KernelEffect::BurnSharesFrom { shares, .. } => {
+                    summary.record_burn(*shares);
+                }
                 KernelEffect::TransferShares { shares, .. } => {
                     summary.record_share_transfer(*shares);
                 }
@@ -259,6 +264,8 @@ pub trait Sep41Token {
     /// * `from` - Address to burn from.
     /// * `amount` - Amount to burn.
     fn burn(&self, from: &Address, amount: i128) -> EffectResult<()>;
+
+    fn burn_from(&self, spender: &Address, from: &Address, amount: i128) -> EffectResult<()>;
 
     /// Transfer tokens between addresses.
     ///
@@ -318,6 +325,11 @@ impl Sep41Token for SdkTokenAdapter<'_> {
 
     fn burn(&self, from: &Address, amount: i128) -> EffectResult<()> {
         self.client.burn(from, &amount);
+        Ok(())
+    }
+
+    fn burn_from(&self, spender: &Address, from: &Address, amount: i128) -> EffectResult<()> {
+        self.client.burn_from(spender, from, &amount);
         Ok(())
     }
 
@@ -465,6 +477,17 @@ where
                 self.share_token.burn(addr, amount)
             }
 
+            KernelEffect::BurnSharesFrom {
+                spender,
+                owner,
+                shares,
+            } => {
+                let amount = to_i128_event(*shares)?;
+                let spender_addr = self.resolve_address(spender)?;
+                let owner_addr = self.resolve_address(owner)?;
+                self.share_token.burn_from(spender_addr, owner_addr, amount)
+            }
+
             KernelEffect::TransferShares { from, to, shares } => {
                 let amount = to_i128_event(*shares)?;
                 let from_addr = self.resolve_address(from)?;
@@ -487,10 +510,7 @@ where
                 self.asset_token.transfer(from_addr, to_addr, amount_i128)
             }
 
-            KernelEffect::EmitEvent { event } => {
-                publish_kernel_event(self.env, event);
-                Ok(())
-            }
+            KernelEffect::EmitEvent { event } => publish_kernel_event(self.env, event),
 
             // Chain-specific effects (NEAR only) - unreachable in Soroban
             #[allow(unreachable_patterns)]

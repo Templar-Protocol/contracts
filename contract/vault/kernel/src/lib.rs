@@ -22,7 +22,7 @@ pub mod utils;
 pub use actions::{
     apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
     convert_to_shares_ceil, effective_totals, preview_deposit_shares, preview_withdraw_assets,
-    EffectiveTotals, KernelAction, KernelActionKind, KernelResult, PayoutOutcome,
+    EffectiveTotals, KernelAction, KernelResult, PayoutOutcome,
 };
 pub use address_book::AddressBook;
 pub use fee::{Fee, FeeSlot, Fees, FeesSpec};

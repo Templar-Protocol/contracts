@@ -14,9 +14,7 @@ mod types;
 pub use types::*;
 
 use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_i128, to_u128};
-use crate::fungible_vault::{
-    atomic_withdraw_internal, load_state_and_config, refresh_fees_for_atomic, share_balance,
-};
+use crate::fungible_vault::{load_state_and_config, share_balance};
 use alloc::string::String as AllocString;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -349,6 +347,10 @@ where
                 KernelEffect::MintShares { owner, .. } | KernelEffect::BurnShares { owner, .. } => {
                     self.ensure_mapped(owner)?;
                 }
+                KernelEffect::BurnSharesFrom { spender, owner, .. } => {
+                    self.ensure_mapped(spender)?;
+                    self.ensure_mapped(owner)?;
+                }
                 KernelEffect::TransferShares { from, to, .. } => {
                     self.ensure_mapped(from)?;
                     self.ensure_mapped(to)?;
@@ -543,6 +545,94 @@ where
     }
 
     #[inline(never)]
+    pub fn atomic_withdraw_soroban(
+        &mut self,
+        env: &Env,
+        assets: i128,
+        receiver: SdkAddress,
+        owner: SdkAddress,
+        operator: SdkAddress,
+    ) -> Result<i128, RuntimeError> {
+        require_signed(&operator);
+        if assets <= 0 {
+            return Err(RuntimeError::invalid_input("amount must be > 0"));
+        }
+
+        self.ensure_vault_mapped(env)?;
+        let owner_kernel = self.register_sdk_address(env, &owner)?;
+        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
+        let operator_kernel = self.register_sdk_address(env, &operator)?;
+        let now_ns = u64::from(env.ledger().timestamp())
+            .checked_mul(1_000_000_000)
+            .ok_or_else(|| RuntimeError::invalid_input("timestamp overflow"))?;
+
+        let fees_active = !self.config.fees.management.fee_wad.is_zero()
+            || !self.config.fees.performance.fee_wad.is_zero();
+        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns {
+            let _ = self.apply_kernel_action(KernelAction::RefreshFees { now_ns }, now_ns)?;
+        }
+
+        let burned = self.apply_kernel_action(
+            KernelAction::AtomicWithdraw {
+                owner: owner_kernel,
+                receiver: receiver_kernel,
+                operator: operator_kernel,
+                amount: to_u128(assets)
+                    .map_err(|_| RuntimeError::invalid_input("invalid assets"))?,
+                kind: templar_vault_kernel::actions::AtomicPayoutKind::Withdraw,
+                now_ns,
+            },
+            now_ns,
+        )?;
+        Ok(to_i128(burned.shares_burned)
+            .map_err(|_| RuntimeError::invalid_input("burn overflow"))?)
+    }
+
+    #[inline(never)]
+    pub fn atomic_redeem_soroban(
+        &mut self,
+        env: &Env,
+        shares: i128,
+        receiver: SdkAddress,
+        owner: SdkAddress,
+        operator: SdkAddress,
+    ) -> Result<i128, RuntimeError> {
+        require_signed(&operator);
+        if shares <= 0 {
+            return Err(RuntimeError::invalid_input("amount must be > 0"));
+        }
+
+        self.ensure_vault_mapped(env)?;
+        let owner_kernel = self.register_sdk_address(env, &owner)?;
+        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
+        let operator_kernel = self.register_sdk_address(env, &operator)?;
+        let now_ns = u64::from(env.ledger().timestamp())
+            .checked_mul(1_000_000_000)
+            .ok_or_else(|| RuntimeError::invalid_input("timestamp overflow"))?;
+
+        let fees_active = !self.config.fees.management.fee_wad.is_zero()
+            || !self.config.fees.performance.fee_wad.is_zero();
+        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns {
+            let _ = self.apply_kernel_action(KernelAction::RefreshFees { now_ns }, now_ns)?;
+        }
+
+        let summary = self.apply_kernel_action(
+            KernelAction::AtomicWithdraw {
+                owner: owner_kernel,
+                receiver: receiver_kernel,
+                operator: operator_kernel,
+                amount: to_u128(shares)
+                    .map_err(|_| RuntimeError::invalid_input("invalid shares"))?,
+                kind: templar_vault_kernel::actions::AtomicPayoutKind::Redeem,
+                now_ns,
+            },
+            now_ns,
+        )?;
+        Ok(to_i128(summary.assets_transferred)
+            .map_err(|_| RuntimeError::invalid_input("asset overflow"))?)
+    }
+
+    #[inline(never)]
     fn complete_withdrawal_from_idle(
         &mut self,
         now_ns: u64,
@@ -680,7 +770,10 @@ where
 
                 {
                     let state = self.state_mut()?;
-                    state.external_assets = state.external_assets.saturating_add(d.amount);
+                    state.external_assets = state
+                        .external_assets
+                        .checked_add(d.amount)
+                        .ok_or_else(|| invalid_state_error("external_assets overflow on supply"))?;
                     state.sync_total_assets();
                 }
 
@@ -700,8 +793,14 @@ where
                 self.authorize(ActionKind::BeginAllocating, caller)?;
                 let new_external = {
                     let state = self.state_mut()?;
-                    state.external_assets = state.external_assets.saturating_sub(d.amount);
-                    state.idle_assets = state.idle_assets.saturating_add(d.amount);
+                    state.external_assets =
+                        state.external_assets.checked_sub(d.amount).ok_or_else(|| {
+                            invalid_state_error("external_assets underflow on withdraw")
+                        })?;
+                    state.idle_assets = state
+                        .idle_assets
+                        .checked_add(d.amount)
+                        .ok_or_else(|| invalid_state_error("idle_assets overflow on withdraw"))?;
                     state.sync_total_assets();
                     state.external_assets
                 };
@@ -723,14 +822,6 @@ where
     ) -> Result<u64, RuntimeError> {
         self.authorize(ActionKind::BeginAllocating, caller)?;
         let state = self.state_mut()?;
-        let op_id = state.next_op_id;
-        state.next_op_id = state.next_op_id.saturating_add(1);
-
-        let result = transition_to_runtime(start_allocation(
-            mem::take(&mut state.op_state),
-            plan.to_vec(),
-            op_id,
-        ))?;
 
         let alloc_total: u128 = plan.iter().map(|(_, amt)| *amt).sum();
         if alloc_total > state.idle_assets {
@@ -739,6 +830,15 @@ where
                 alloc_total,
             ));
         }
+
+        let op_id = Self::reserve_op_id(state)?;
+
+        let result = transition_to_runtime(start_allocation(
+            mem::take(&mut state.op_state),
+            plan.to_vec(),
+            op_id,
+        ))?;
+
         state.idle_assets -= alloc_total;
         state.sync_total_assets();
         state.op_state = result.new_state;
@@ -792,8 +892,6 @@ where
         self.authorize(ActionKind::BeginAllocating, caller)?;
         let op_id = {
             let state = self.state_mut()?;
-            let op_id = state.next_op_id;
-            state.next_op_id = state.next_op_id.saturating_add(1);
 
             let alloc_total: u128 = filtered_plan.iter().map(|(_, amt)| *amt).sum();
             if alloc_total > state.idle_assets {
@@ -802,6 +900,9 @@ where
                     alloc_total,
                 ));
             }
+
+            let op_id = Self::reserve_op_id(state)?;
+
             state.idle_assets -= alloc_total;
             state.sync_total_assets();
 
@@ -1644,12 +1745,19 @@ impl SorobanVaultContract {
                 let next_principal = vault
                     .policy_state()
                     .principal_for(market)
-                    .saturating_add(amount_u128);
+                    .checked_add(amount_u128)
+                    .ok_or_else(|| RuntimeError::invalid_state("principal overflow on supply"))?;
                 let policy = vault.policy_state_mut();
                 policy.set_principal(market, next_principal);
                 policy.refresh_cap_group_principals();
                 let state = vault.state_mut()?;
-                state.external_assets = state.external_assets.saturating_add(amount_u128);
+                state.external_assets =
+                    state
+                        .external_assets
+                        .checked_add(amount_u128)
+                        .ok_or_else(|| {
+                            RuntimeError::invalid_state("external_assets overflow on supply")
+                        })?;
                 state.sync_total_assets();
             }
             vault.finish_allocation_internal(op_id)?;
@@ -1701,13 +1809,26 @@ impl SorobanVaultContract {
                 let next_principal = vault
                     .policy_state()
                     .principal_for(market)
-                    .saturating_sub(realized_amount_u128);
+                    .checked_sub(realized_amount_u128)
+                    .ok_or_else(|| {
+                        RuntimeError::invalid_state("principal underflow on withdraw")
+                    })?;
                 let policy = vault.policy_state_mut();
                 policy.set_principal(market, next_principal);
                 policy.refresh_cap_group_principals();
                 let state = vault.state_mut()?;
-                state.external_assets = state.external_assets.saturating_sub(realized_amount_u128);
-                state.idle_assets = state.idle_assets.saturating_add(realized_amount_u128);
+                state.external_assets = state
+                    .external_assets
+                    .checked_sub(realized_amount_u128)
+                    .ok_or_else(|| {
+                        RuntimeError::invalid_state("external_assets underflow on withdraw")
+                    })?;
+                state.idle_assets = state
+                    .idle_assets
+                    .checked_add(realized_amount_u128)
+                    .ok_or_else(|| {
+                        RuntimeError::invalid_state("idle_assets overflow on withdraw")
+                    })?;
                 state.sync_total_assets();
                 new_external = state.external_assets;
             }
@@ -1787,10 +1908,10 @@ impl SorobanVaultContract {
         emit_pause_state_event(&env, paused);
 
         // Emit kernel event
-        crate::effects::publish_kernel_event(
+        runtime_to_contract(crate::effects::publish_kernel_event(
             &env,
             &templar_vault_kernel::effects::KernelEvent::PauseUpdated { paused },
-        );
+        ))?;
         Ok(())
     }
 
@@ -2383,7 +2504,19 @@ impl SorobanVaultContract {
         owner: soroban_sdk::Address,
         operator: soroban_sdk::Address,
     ) -> Result<i128, ContractError> {
-        atomic_withdraw_impl(&env, assets, &receiver, &owner, &operator, false)
+        let mut result: Option<i128> = None;
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            result = Some(vault.atomic_withdraw_soroban(
+                &env,
+                assets,
+                receiver.clone(),
+                owner.clone(),
+                operator.clone(),
+            )?);
+            Ok(())
+        };
+        with_contract_vault_contract_error(&env, &mut call)?;
+        Ok(result.unwrap_or(0))
     }
 
     pub fn redeem(
@@ -2393,7 +2526,19 @@ impl SorobanVaultContract {
         owner: soroban_sdk::Address,
         operator: soroban_sdk::Address,
     ) -> Result<i128, ContractError> {
-        atomic_withdraw_impl(&env, shares, &receiver, &owner, &operator, true)
+        let mut result: Option<i128> = None;
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            result = Some(vault.atomic_redeem_soroban(
+                &env,
+                shares,
+                receiver.clone(),
+                owner.clone(),
+                operator.clone(),
+            )?);
+            Ok(())
+        };
+        with_contract_vault_contract_error(&env, &mut call)?;
+        Ok(result.unwrap_or(0))
     }
 }
 
@@ -2471,47 +2616,6 @@ fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractErro
         return Err(ContractError::Unauthorized);
     }
     Ok(())
-}
-
-/// Shared implementation for SEP-41 `withdraw` (by assets) and `redeem` (by shares).
-fn atomic_withdraw_impl(
-    env: &Env,
-    amount: i128,
-    receiver: &SdkAddress,
-    owner: &SdkAddress,
-    operator: &SdkAddress,
-    is_redeem: bool,
-) -> Result<i128, ContractError> {
-    require_signed(operator);
-    require_signed(owner);
-    if amount <= 0 {
-        return Err(ContractError::InvalidInput);
-    }
-    let amount_u128 = to_u128(amount)?;
-    let (state, _config) = load_state_and_config(env)?;
-    if !state.op_state.is_idle() {
-        return Err(ContractError::VaultNotIdle);
-    }
-    if !is_redeem && amount_u128 > state.idle_assets {
-        return Err(ContractError::InsufficientIdleAssets);
-    }
-    refresh_fees_for_atomic(env)?;
-    let (state, config) = load_state_and_config(env)?;
-    let (assets, shares) = if is_redeem {
-        let assets_out = convert_to_assets(&state, &config, amount_u128);
-        if assets_out > state.idle_assets {
-            return Err(ContractError::InsufficientIdleAssets);
-        }
-        (assets_out, amount_u128)
-    } else {
-        (
-            amount_u128,
-            convert_to_shares_ceil(&state, &config, amount_u128),
-        )
-    };
-    atomic_withdraw_internal(env, owner, receiver, assets, shares)?;
-    let result = if is_redeem { assets } else { shares };
-    to_i128(result)
 }
 
 /// Shared preamble for governance entrypoints: auth check + curator kernel address.

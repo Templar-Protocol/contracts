@@ -100,6 +100,13 @@ pub enum KernelEventLog {
         shares_out: U128,
     },
     #[event_version("1.0.0")]
+    AtomicWithdrawProcessed {
+        owner: AccountId,
+        receiver: AccountId,
+        shares_burned: U128,
+        assets_out: U128,
+    },
+    #[event_version("1.0.0")]
     WithdrawalRequested {
         id: U64,
         owner: AccountId,
@@ -272,6 +279,22 @@ fn emit_kernel_event(
             }
             .emit()
         }
+        KernelEvent::AtomicWithdrawProcessed {
+            owner,
+            receiver,
+            shares_burned,
+            assets_out,
+        } => {
+            let owner = ctx.resolve(owner)?.clone();
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::AtomicWithdrawProcessed {
+                owner,
+                receiver,
+                shares_burned: U128(*shares_burned),
+                assets_out: U128(*assets_out),
+            }
+            .emit()
+        }
         KernelEvent::WithdrawalRequested {
             id,
             owner,
@@ -339,6 +362,12 @@ pub(crate) fn apply_kernel_effects(
                     .map_err(|_| KernelEffectError::MintFailed)?;
             }
             KernelEffect::BurnShares { owner, shares } => {
+                let account = ctx.resolve(owner)?;
+                contract
+                    .burn(&Nep141Burn::new(*shares, account))
+                    .map_err(|_| KernelEffectError::BurnFailed)?;
+            }
+            KernelEffect::BurnSharesFrom { owner, shares, .. } => {
                 let account = ctx.resolve(owner)?;
                 contract
                     .burn(&Nep141Burn::new(*shares, account))
