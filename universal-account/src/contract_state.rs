@@ -1,124 +1,143 @@
-use near_sdk::{env, json_types::U128, near, store::IterableMap};
+use borsh::{BorshDeserialize, BorshSerialize};
+use near_sdk::{env, ext_contract, near};
 
-use crate::{KeyId, KeyParameters};
+const VERSION_KEY: &[u8] = b"__v";
 
-pub const STATE_VERSION: u32 = 1;
-
-#[near(serializers = [borsh])]
-pub struct StateV0 {
-    pub next_key_index: u64,
-    pub keys: IterableMap<KeyId, KeyParameters>,
+pub fn stored_version() -> u32 {
+    env::storage_read(VERSION_KEY)
+        .filter(|bytes| bytes.len() == 4)
+        .map_or(0, |bytes| {
+            let mut buf = [0u8; 4];
+            buf.copy_from_slice(&bytes);
+            u32::from_le_bytes(buf)
+        })
 }
 
-#[near(serializers = [borsh])]
-pub struct StateV1 {
-    pub next_key_index: u64,
-    pub keys: IterableMap<KeyId, KeyParameters>,
-    pub chain_id: u128,
-}
+pub trait StateVersion {
+    const VERSION: u32;
 
-impl StateV1 {
-    fn from_v0(old: StateV0, chain_id: u128) -> Self {
-        Self {
-            next_key_index: old.next_key_index,
-            keys: old.keys,
-            chain_id,
-        }
+    fn needs_migration() -> bool {
+        stored_version() < Self::VERSION
     }
 }
 
-#[near(serializers = [json])]
-#[serde(tag = "from_version", rename_all = "snake_case")]
-pub enum Migration {
-    V0 { chain_id: U128 },
-}
+pub trait StateTransformer {
+    type Input: StateVersion + BorshDeserialize;
+    type Output: StateVersion + BorshSerialize;
+    type Error;
 
-impl Migration {
-    pub fn input_version(&self) -> u32 {
-        match self {
-            Migration::V0 { .. } => 0,
-        }
+    fn input_version(&self) -> u32 {
+        Self::Input::VERSION
     }
 
-    pub fn output_version(&self) -> u32 {
-        match self {
-            Migration::V0 { .. } => 1,
-        }
+    fn output_version(&self) -> u32 {
+        Self::Output::VERSION
     }
 
-    /// Migrates the contract state by one state version.
-    ///
-    /// # Errors
-    ///
-    /// - If deserializing the previous state fails.
-    pub fn migrate(self) -> Result<StateV1, FailedToDeserializeOldState> {
-        match self {
-            Migration::V0 { chain_id } => {
-                let old = env::state_read::<StateV0>().ok_or(FailedToDeserializeOldState)?;
-
-                Ok(StateV1::from_v0(old, chain_id.0))
-            }
+    fn run(&self) -> Result<Self::Output, MigrationError<Self::Error>> {
+        let stored = stored_version();
+        let expected = self.input_version();
+        if stored != expected {
+            return Err(MigrationError::StoredVersionMismatch { stored, expected });
         }
+        let old_state =
+            env::state_read::<Self::Input>().ok_or(MigrationError::FailedToDeserializeOldState)?;
+        let new_state = self.transform(old_state)?;
+        env::state_write(&new_state);
+        env::storage_write(VERSION_KEY, &self.output_version().to_le_bytes());
+        Ok(new_state)
     }
+
+    fn transform(&self, input: Self::Input) -> Result<Self::Output, Self::Error>;
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error("Failed to deserialize old state")]
-pub struct FailedToDeserializeOldState;
+pub enum MigrationError<E> {
+    #[error("Stored state version {stored} != args `from_version` {expected}")]
+    StoredVersionMismatch { stored: u32, expected: u32 },
+    #[error("Failed to deserialize old state")]
+    FailedToDeserializeOldState,
+    #[error(transparent)]
+    VersionAlreadyInitialized(VersionAlreadyInitializedError),
+    #[error("Failed to transform old state")]
+    TransformationError(#[from] E),
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error("State version already initialized")]
+pub struct VersionAlreadyInitializedError;
+
+#[near(serializers = [json])]
+pub struct MigrationArgs<T> {
+    pub args: T,
+}
+
+pub trait Migrator {
+    fn run(self);
+}
+
+#[ext_contract]
+pub trait MigrateExternalInterface {
+    fn migrate_stored_state_version() -> u32;
+    fn migrate_target_state_version() -> u32;
+    fn migrate_needs_migration() -> bool;
+}
+
+#[macro_export]
+macro_rules! impl_migration {
+    ($current_state: ty, $migrations: ty) => {
+        #[::near_sdk::near]
+        impl $crate::contract_state::MigrateExternalInterface for Contract {
+            fn migrate_stored_state_version() -> u32 {
+                $crate::contract_state::stored_version()
+            }
+
+            fn migrate_target_state_version() -> u32 {
+                <$current_state as $crate::contract_state::StateVersion>::VERSION
+            }
+
+            fn migrate_needs_migration() -> bool {
+                <$current_state as $crate::contract_state::StateVersion>::needs_migration()
+            }
+        }
+
+        #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+        #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+        pub fn migrate() {
+            use ::near_sdk::env;
+
+            env::setup_panic_hook();
+
+            let current_id = env::current_account_id();
+            assert!(
+                env::predecessor_account_id() == current_id,
+                "migrate function is private",
+            );
+
+            let input = env::input().unwrap_or_else(|| env::panic_str("no input"));
+
+            let args: $crate::contract_state::MigrationArgs<$migrations> =
+                ::near_sdk::serde_json::from_slice(&input)
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+            $crate::contract_state::Migrator::run(args.args);
+        }
+    };
+}
 
 #[cfg(test)]
 mod tests {
     use near_sdk::{test_utils::VMContextBuilder, testing_env};
 
-    use crate::authentication::{
-        ed25519::raw,
-        passkey::{self},
-    };
-
     use super::*;
 
+    fn context() {
+        testing_env!(VMContextBuilder::new().build());
+    }
+
     #[test]
-    fn v0_to_v1() {
-        let ctx = VMContextBuilder::new().build();
-        testing_env!(ctx.clone());
-
-        let mut old = StateV0 {
-            next_key_index: 42,
-            keys: IterableMap::new(b"k"),
-        };
-
-        let passkey = p256::SecretKey::from_bytes(&[0x88_u8; 32].into()).unwrap();
-
-        old.keys.insert(
-            KeyId::Passkey(passkey::VerifyKey(passkey.public_key().into())),
-            KeyParameters {
-                block_height: 1111.into(),
-                index: 2222.into(),
-                nonce: 3333.into(),
-            },
-        );
-        old.keys.insert(
-            KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into())),
-            KeyParameters {
-                block_height: 4444.into(),
-                index: 5555.into(),
-                nonce: 6666.into(),
-            },
-        );
-
-        near_sdk::env::state_write(&old);
-
-        let migration = Migration::V0 {
-            chain_id: 1234.into(),
-        };
-
-        assert_eq!(migration.input_version(), 0);
-        assert_eq!(migration.output_version(), 1);
-
-        let new = migration.migrate().unwrap();
-
-        assert_eq!(new.chain_id, 1234);
-        assert_eq!(new.next_key_index, 42);
-        assert_eq!(new.keys.len(), 2);
+    fn stored_version_defaults_to_zero() {
+        context();
+        assert_eq!(stored_version(), 0);
     }
 }

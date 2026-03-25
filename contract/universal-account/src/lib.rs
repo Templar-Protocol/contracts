@@ -3,28 +3,26 @@
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{
-    borsh::BorshSerialize,
     env,
     json_types::{U128, U64},
-    near, require,
-    store::IterableMap,
-    BorshStorageKey, PanicOnDefault, Promise,
+    near, require, PanicOnDefault, Promise,
 };
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    contract_state::StateV1, transaction::Transaction, ExecuteArgs, KeyId, KeyParameters,
+    impl_migration, state, transaction::Transaction, ExecuteArgs, KeyId, KeyParameters,
     PayloadExecutionParameters,
 };
 
-mod impl_migrate;
+type State = state::V2;
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
-pub struct Contract(pub StateV1);
+pub struct Contract(pub State);
+impl_migration!(State, state::Migration);
 
 impl Deref for Contract {
-    type Target = StateV1;
+    type Target = State;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -35,12 +33,6 @@ impl DerefMut for Contract {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
-}
-
-#[derive(Debug, Clone, BorshSerialize, BorshStorageKey)]
-#[borsh(crate = "near_sdk::borsh")]
-enum StorageKey {
-    Keys,
 }
 
 /// # Panics
@@ -60,11 +52,10 @@ fn transactions_to_promise(transactions: &[Transaction]) -> Promise {
 impl Contract {
     #[init]
     pub fn new(key: KeyId, chain_id: U128, execute: Option<Box<[Transaction]>>) -> Self {
-        let mut self_ = Self(StateV1 {
-            next_key_index: 0,
-            keys: IterableMap::new(StorageKey::Keys),
-            chain_id: chain_id.0,
-        });
+        let mut self_ = Self(
+            State::new(chain_id.0)
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
+        );
 
         self_.add_key(key);
 

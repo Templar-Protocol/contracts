@@ -20,7 +20,7 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         HashForSigning, MessageWithSignature, Payload,
     },
-    contract_state::Migration,
+    state,
     transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
     NEAR_TESTNET_CHAIN_ID,
@@ -203,10 +203,18 @@ async fn setup(
             let r = ua
                 .migrate(
                     ua.contract().as_account(),
-                    Migration::V0 {
+                    state::migration::V0 {
                         chain_id: U128(NEAR_TESTNET_CHAIN_ID),
                     },
                 )
+                .await;
+
+            for o in r.outcomes() {
+                o.clone().into_result().unwrap();
+            }
+
+            let r = ua
+                .migrate(ua.contract().as_account(), state::migration::V1)
                 .await;
 
             for o in r.outcomes() {
@@ -235,10 +243,8 @@ async fn setup(
         }
     };
 
-    let (uac, ft) = tokio::join!(
-        make_uac(),
-        FtController::deploy(ft_account, "Fungible Token", "FT"),
-    );
+    let ft = FtController::deploy(ft_account, "Fungible Token", "FT").await;
+    let uac = make_uac().await;
 
     let counter = ft.get_counter(uac.contract.id()).await;
     if execute_on_create == ExecuteOnCreate::Counter && !migrated {

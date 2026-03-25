@@ -19,6 +19,7 @@ pub mod init_args;
 pub use init_args::InitArgs;
 pub mod key_id;
 pub use key_id::KeyId;
+pub mod state;
 pub mod transaction;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
