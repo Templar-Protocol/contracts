@@ -58,7 +58,6 @@ use templar_vault_kernel::{
 #[cfg(any(test, feature = "testutils"))]
 use templar_vault_kernel::{complete_allocation, start_allocation};
 
-const ESCROW_ADDRESS: Address = [0u8; 32];
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
 

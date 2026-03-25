@@ -124,8 +124,7 @@ where
                 "vault address mismatch for effect mapping",
             ));
         }
-        self.register_address(vault_kernel, vault_sdk.clone())?;
-        self.register_address(ESCROW_ADDRESS, vault_sdk)?;
+        self.register_address(vault_kernel, vault_sdk)?;
         Ok(())
     }
 
