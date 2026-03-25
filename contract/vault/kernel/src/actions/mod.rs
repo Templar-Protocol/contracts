@@ -669,6 +669,91 @@ fn push_atomic_burn_shares(
     }
 }
 
+#[inline]
+fn enforce_withdrawal_actors(
+    config: &VaultConfig,
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
+    owner: &Address,
+    receiver: &Address,
+) -> Result<(), KernelError> {
+    enforce_restrictions(config, restrictions, self_id, owner)?;
+    enforce_restrictions(config, restrictions, self_id, receiver)
+}
+
+#[inline]
+fn require_idle_with_nonzero_amount(
+    state: &VaultState,
+    idle_error: InvalidStateCode,
+    amount: u128,
+) -> Result<(), KernelError> {
+    if !state.is_idle() {
+        return Err(KernelError::invalid_state_code(idle_error));
+    }
+    if amount == 0 {
+        return Err(KernelError::ZeroAmount);
+    }
+    Ok(())
+}
+
+#[inline]
+fn restricted_withdraw_actor(
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
+    owner: &Address,
+    receiver: &Address,
+) -> Option<RestrictionKind> {
+    restrictions
+        .and_then(|r| r.is_restricted(owner, self_id))
+        .or_else(|| restrictions.and_then(|r| r.is_restricted(receiver, self_id)))
+}
+
+#[inline]
+fn pending_withdrawal_skip_reason(
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
+    owner: &Address,
+    receiver: &Address,
+    expected_assets: u128,
+) -> Option<WithdrawalSkipReason> {
+    if restricted_withdraw_actor(restrictions, self_id, owner, receiver).is_some() {
+        Some(WithdrawalSkipReason::Restricted)
+    } else if expected_assets == 0 {
+        Some(WithdrawalSkipReason::ZeroExpectedAssets)
+    } else {
+        None
+    }
+}
+
+fn dequeue_skipped_withdrawal(
+    state: &mut VaultState,
+    self_id: &Address,
+    skipped_effects: &mut Vec<KernelEffect>,
+    reason: WithdrawalSkipReason,
+) -> Result<(), KernelError> {
+    let (pending_id, pending) = state
+        .withdraw_queue
+        .dequeue()
+        .ok_or(KernelError::EmptyQueue)?;
+    push_refund_shares(
+        skipped_effects,
+        *self_id,
+        pending.owner,
+        pending.escrow_shares,
+    );
+    skipped_effects.push(KernelEffect::EmitEvent {
+        event: KernelEvent::WithdrawalSkipped {
+            id: pending_id,
+            owner: pending.owner,
+            receiver: pending.receiver,
+            escrow_shares: pending.escrow_shares,
+            expected_assets: pending.expected_assets,
+            reason,
+        },
+    });
+    Ok(())
+}
+
 fn handle_atomic_withdraw(
     mut state: VaultState,
     config: &VaultConfig,
@@ -680,16 +765,8 @@ fn handle_atomic_withdraw(
     amount: u128,
     kind: AtomicPayoutKind,
 ) -> Result<KernelResult, KernelError> {
-    enforce_restrictions(config, restrictions, self_id, &owner)?;
-    enforce_restrictions(config, restrictions, self_id, &receiver)?;
-    if !state.is_idle() {
-        return Err(KernelError::invalid_state_code(
-            InvalidStateCode::AtomicWithdrawRequiresIdle,
-        ));
-    }
-    if amount == 0 {
-        return Err(KernelError::ZeroAmount);
-    }
+    enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
+    require_idle_with_nonzero_amount(&state, InvalidStateCode::AtomicWithdrawRequiresIdle, amount)?;
 
     let (shares, assets_out) = match kind {
         AtomicPayoutKind::Withdraw => {
@@ -756,16 +833,12 @@ fn handle_request_withdraw(
     min_assets_out: u128,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    enforce_restrictions(config, restrictions, self_id, &owner)?;
-    enforce_restrictions(config, restrictions, self_id, &receiver)?;
-    if !state.is_idle() {
-        return Err(KernelError::invalid_state_code(
-            InvalidStateCode::RequestWithdrawRequiresIdle,
-        ));
-    }
-    if shares == 0 {
-        return Err(KernelError::ZeroAmount);
-    }
+    enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
+    require_idle_with_nonzero_amount(
+        &state,
+        InvalidStateCode::RequestWithdrawRequiresIdle,
+        shares,
+    )?;
 
     let expected_assets = convert_to_assets(&state, config, shares);
     if expected_assets < min_assets_out {
@@ -853,35 +926,14 @@ fn handle_execute_withdraw(
         let pending_expected_assets = pending_ref.expected_assets;
         let pending_requested_at_ns = pending_ref.requested_at_ns;
 
-        let actor_restricted = restrictions
-            .and_then(|r| r.is_restricted(&pending_owner, self_id))
-            .or_else(|| restrictions.and_then(|r| r.is_restricted(&pending_receiver, self_id)));
-
-        if pending_expected_assets == 0 || actor_restricted.is_some() {
-            let (pending_id, pending) = match state.withdraw_queue.dequeue() {
-                Some(entry) => entry,
-                None => return Err(KernelError::EmptyQueue),
-            };
-            push_refund_shares(
-                &mut skipped_effects,
-                *self_id,
-                pending.owner,
-                pending.escrow_shares,
-            );
-            skipped_effects.push(KernelEffect::EmitEvent {
-                event: KernelEvent::WithdrawalSkipped {
-                    id: pending_id,
-                    owner: pending.owner,
-                    receiver: pending.receiver,
-                    escrow_shares: pending.escrow_shares,
-                    expected_assets: pending.expected_assets,
-                    reason: if actor_restricted.is_some() {
-                        WithdrawalSkipReason::Restricted
-                    } else {
-                        WithdrawalSkipReason::ZeroExpectedAssets
-                    },
-                },
-            });
+        if let Some(reason) = pending_withdrawal_skip_reason(
+            restrictions,
+            self_id,
+            &pending_owner,
+            &pending_receiver,
+            pending_expected_assets,
+        ) {
+            dequeue_skipped_withdrawal(&mut state, self_id, &mut skipped_effects, reason)?;
             continue;
         }
 
@@ -983,35 +1035,14 @@ fn handle_finish_allocating(
                 break None;
             }
 
-            let actor_restricted = restrictions
-                .and_then(|r| r.is_restricted(&owner, self_id))
-                .or_else(|| restrictions.and_then(|r| r.is_restricted(&receiver, self_id)));
-
-            if expected_assets == 0 || actor_restricted.is_some() {
-                let (pending_id, skipped) = state
-                    .withdraw_queue
-                    .dequeue()
-                    .ok_or(KernelError::EmptyQueue)?;
-                push_refund_shares(
-                    &mut skipped_effects,
-                    *self_id,
-                    skipped.owner,
-                    skipped.escrow_shares,
-                );
-                skipped_effects.push(KernelEffect::EmitEvent {
-                    event: KernelEvent::WithdrawalSkipped {
-                        id: pending_id,
-                        owner: skipped.owner,
-                        receiver: skipped.receiver,
-                        escrow_shares: skipped.escrow_shares,
-                        expected_assets: skipped.expected_assets,
-                        reason: if actor_restricted.is_some() {
-                            WithdrawalSkipReason::Restricted
-                        } else {
-                            WithdrawalSkipReason::ZeroExpectedAssets
-                        },
-                    },
-                });
+            if let Some(reason) = pending_withdrawal_skip_reason(
+                restrictions,
+                self_id,
+                &owner,
+                &receiver,
+                expected_assets,
+            ) {
+                dequeue_skipped_withdrawal(&mut state, self_id, &mut skipped_effects, reason)?;
                 continue;
             }
 
