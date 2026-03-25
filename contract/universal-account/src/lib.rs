@@ -10,16 +10,18 @@ use near_sdk::{
 
 use templar_common::contract::list;
 use templar_universal_account::{
-    impl_migration, state, transaction::Transaction, ExecuteArgs, KeyId, KeyParameters,
-    PayloadExecutionParameters,
+    contract_state::{StateVersion, VersionedState},
+    impl_versioned_state, state,
+    transaction::Transaction,
+    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
 };
 
 type State = state::V2;
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
-pub struct Contract(pub State);
-impl_migration!(State, state::Migration);
+pub struct Contract(pub VersionedState<State>);
+impl_versioned_state!(Contract, State, state::Migration);
 
 impl Deref for Contract {
     type Target = State;
@@ -52,10 +54,7 @@ fn transactions_to_promise(transactions: &[Transaction]) -> Promise {
 impl Contract {
     #[init]
     pub fn new(key: KeyId, chain_id: U128, execute: Option<Box<[Transaction]>>) -> Self {
-        let mut self_ = Self(
-            State::new(chain_id.0)
-                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
-        );
+        let mut self_ = Self(State::new(chain_id.0));
 
         self_.add_key(key);
 

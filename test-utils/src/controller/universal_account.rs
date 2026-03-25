@@ -64,11 +64,11 @@ impl UniversalAccountController {
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
         #[view]
-        pub fn get_stored_state_version() -> u32;
+        pub fn migrate_stored_state_version() -> u32;
         #[view]
-        pub fn get_target_state_version() -> u32;
+        pub fn migrate_target_state_version() -> u32;
         #[view]
-        pub fn needs_migration() -> bool;
+        pub fn migrate_needs_migration() -> bool;
 
         #[call(exec, tgas(300))]
         pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);

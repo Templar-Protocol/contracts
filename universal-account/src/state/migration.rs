@@ -76,7 +76,7 @@ mod tests {
             ed25519::raw,
             passkey::{self},
         },
-        contract_state::stored_version,
+        contract_state::read_state_version,
         KeyId, KeyParameters,
     };
 
@@ -120,12 +120,9 @@ mod tests {
             chain_id: 1234.into(),
         };
 
-        assert_eq!(migration.input_version(), 0);
-        assert_eq!(migration.output_version(), 1);
-
         let new = migration.run().unwrap();
 
-        assert_eq!(stored_version(), 1);
+        assert_eq!(read_state_version().unwrap(), 1);
         assert_eq!(new.chain_id, 1234);
         assert_eq!(new.next_key_index, 42);
         assert_eq!(new.keys.len(), 2);
@@ -138,7 +135,7 @@ mod tests {
 
         let new = V1.run().unwrap();
 
-        assert_eq!(stored_version(), 2);
+        assert_eq!(read_state_version().unwrap(), 2);
         assert_eq!(new.chain_id, 1234);
         assert_eq!(new.next_key_index, 42);
         assert_eq!(new.keys.len(), 2);

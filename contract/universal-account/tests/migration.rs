@@ -25,9 +25,9 @@ pub async fn new_account_writes_current_state_version_on_init(
     )
     .await;
 
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    assert_eq!(ua.migrate_target_state_version().await, 2);
+    assert_eq!(ua.migrate_stored_state_version().await, 2);
+    assert!(!ua.migrate_needs_migration().await);
 }
 
 #[rstest::rstest]
@@ -53,9 +53,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
         .unwrap();
     let ua = UniversalAccountController { contract };
 
-    assert_eq!(ua.get_stored_state_version().await, 0);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(ua.needs_migration().await);
+    assert_eq!(ua.migrate_stored_state_version().await, 0);
+    assert_eq!(ua.migrate_target_state_version().await, 2);
+    assert!(ua.migrate_needs_migration().await);
 
     let r = ua
         .migrate(
@@ -70,9 +70,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
         o.clone().into_result().unwrap();
     }
 
-    assert_eq!(ua.get_stored_state_version().await, 1);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(ua.needs_migration().await);
+    assert_eq!(ua.migrate_stored_state_version().await, 1);
+    assert_eq!(ua.migrate_target_state_version().await, 2);
+    assert!(ua.migrate_needs_migration().await);
 
     let get_key = ua.get_key(passkey.clone()).await.unwrap();
 
@@ -92,9 +92,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
         o.clone().into_result().unwrap();
     }
 
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    assert_eq!(ua.migrate_stored_state_version().await, 2);
+    assert_eq!(ua.migrate_target_state_version().await, 2);
+    assert!(!ua.migrate_needs_migration().await);
 }
 
 #[rstest::rstest]

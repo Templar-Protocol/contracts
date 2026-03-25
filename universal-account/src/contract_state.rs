@@ -3,21 +3,59 @@ use near_sdk::{env, ext_contract, near};
 
 const VERSION_KEY: &[u8] = b"__v";
 
-pub fn stored_version() -> u32 {
-    env::storage_read(VERSION_KEY)
-        .filter(|bytes| bytes.len() == 4)
-        .map_or(0, |bytes| {
-            let mut buf = [0u8; 4];
-            buf.copy_from_slice(&bytes);
-            u32::from_le_bytes(buf)
-        })
+#[doc(hidden)]
+pub fn write_state_version(version: u32) {
+    env::storage_write(VERSION_KEY, &version.to_le_bytes());
+}
+
+#[doc(hidden)]
+pub fn read_state_version() -> Result<u32, std::io::Error> {
+    let Some(bytes) = env::storage_read(VERSION_KEY) else {
+        return Ok(0);
+    };
+
+    borsh::from_slice(&bytes)
+}
+
+#[derive(Debug)]
+#[near(serializers = [borsh])]
+pub struct VersionedState<T: StateVersion>(T);
+
+impl<T: StateVersion> VersionedState<T> {
+    pub fn new(state: T) -> Self {
+        write_state_version(T::VERSION);
+        Self(state)
+    }
+
+    pub fn version(&self) -> u32 {
+        T::VERSION
+    }
+}
+
+impl<T: StateVersion> std::ops::Deref for VersionedState<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: StateVersion> std::ops::DerefMut for VersionedState<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 pub trait StateVersion {
     const VERSION: u32;
+    type NewArgs;
 
-    fn needs_migration() -> bool {
-        stored_version() < Self::VERSION
+    fn new(args: Self::NewArgs) -> VersionedState<Self>
+    where
+        Self: Sized;
+
+    fn needs_migration() -> Result<bool, std::io::Error> {
+        Ok(read_state_version()? < Self::VERSION)
     }
 }
 
@@ -26,25 +64,19 @@ pub trait StateTransformer {
     type Output: StateVersion + BorshSerialize;
     type Error;
 
-    fn input_version(&self) -> u32 {
-        Self::Input::VERSION
-    }
-
-    fn output_version(&self) -> u32 {
-        Self::Output::VERSION
-    }
-
     fn run(&self) -> Result<Self::Output, MigrationError<Self::Error>> {
-        let stored = stored_version();
-        let expected = self.input_version();
+        let stored = read_state_version()?;
+        let expected = Self::Input::VERSION;
         if stored != expected {
             return Err(MigrationError::StoredVersionMismatch { stored, expected });
         }
         let old_state =
             env::state_read::<Self::Input>().ok_or(MigrationError::FailedToDeserializeOldState)?;
-        let new_state = self.transform(old_state)?;
+        let new_state = self
+            .transform(old_state)
+            .map_err(MigrationError::Transformation)?;
         env::state_write(&new_state);
-        env::storage_write(VERSION_KEY, &self.output_version().to_le_bytes());
+        write_state_version(Self::Output::VERSION);
         Ok(new_state)
     }
 
@@ -53,19 +85,15 @@ pub trait StateTransformer {
 
 #[derive(thiserror::Error, Debug)]
 pub enum MigrationError<E> {
+    #[error("Failed to deserialize stored state version: {0}")]
+    StoredVersionDeserialization(#[from] std::io::Error),
     #[error("Stored state version {stored} != args `from_version` {expected}")]
     StoredVersionMismatch { stored: u32, expected: u32 },
     #[error("Failed to deserialize old state")]
     FailedToDeserializeOldState,
-    #[error(transparent)]
-    VersionAlreadyInitialized(VersionAlreadyInitializedError),
     #[error("Failed to transform old state")]
-    TransformationError(#[from] E),
+    Transformation(E),
 }
-
-#[derive(thiserror::Error, Debug)]
-#[error("State version already initialized")]
-pub struct VersionAlreadyInitializedError;
 
 #[near(serializers = [json])]
 pub struct MigrationArgs<T> {
@@ -78,26 +106,28 @@ pub trait Migrator {
 
 #[ext_contract]
 pub trait MigrateExternalInterface {
-    fn migrate_stored_state_version() -> u32;
-    fn migrate_target_state_version() -> u32;
-    fn migrate_needs_migration() -> bool;
+    fn mig_stored_state_version() -> u32;
+    fn mig_target_state_version() -> u32;
+    fn mig_needs_migration() -> bool;
 }
 
 #[macro_export]
-macro_rules! impl_migration {
-    ($current_state: ty, $migrations: ty) => {
+macro_rules! impl_versioned_state {
+    ($contract: ident, $current_state: ty, $migrations: ty) => {
         #[::near_sdk::near]
-        impl $crate::contract_state::MigrateExternalInterface for Contract {
-            fn migrate_stored_state_version() -> u32 {
-                $crate::contract_state::stored_version()
+        impl $crate::contract_state::MigrateExternalInterface for $contract {
+            fn mig_stored_state_version() -> u32 {
+                $crate::contract_state::read_state_version()
+                    .unwrap_or_else(|e| ::near_sdk::env::panic_str(&e.to_string()))
             }
 
-            fn migrate_target_state_version() -> u32 {
+            fn mig_target_state_version() -> u32 {
                 <$current_state as $crate::contract_state::StateVersion>::VERSION
             }
 
-            fn migrate_needs_migration() -> bool {
+            fn mig_needs_migration() -> bool {
                 <$current_state as $crate::contract_state::StateVersion>::needs_migration()
+                    .unwrap_or_else(|e| ::near_sdk::env::panic_str(&e.to_string()))
             }
         }
 
@@ -105,12 +135,10 @@ macro_rules! impl_migration {
         #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
         pub fn migrate() {
             use ::near_sdk::env;
-
             env::setup_panic_hook();
 
-            let current_id = env::current_account_id();
-            assert!(
-                env::predecessor_account_id() == current_id,
+            ::near_sdk::require!(
+                env::predecessor_account_id() == env::current_account_id(),
                 "migrate function is private",
             );
 
@@ -138,6 +166,6 @@ mod tests {
     #[test]
     fn stored_version_defaults_to_zero() {
         context();
-        assert_eq!(stored_version(), 0);
+        assert_eq!(read_state_version().unwrap(), 0);
     }
 }

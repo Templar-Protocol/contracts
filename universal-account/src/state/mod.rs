@@ -1,7 +1,7 @@
 use near_sdk::{near, store::IterableMap};
 
 use crate::{
-    contract_state::{StateVersion, VersionAlreadyInitializedError},
+    contract_state::{StateVersion, VersionedState},
     KeyId, KeyParameters,
 };
 
@@ -16,6 +16,15 @@ pub struct V0 {
 
 impl StateVersion for V0 {
     const VERSION: u32 = 0;
+
+    type NewArgs = ();
+
+    fn new((): ()) -> VersionedState<Self> {
+        VersionedState::new(Self {
+            next_key_index: 0,
+            keys: IterableMap::new(b"k"),
+        })
+    }
 }
 
 #[near(serializers = [borsh])]
@@ -37,6 +46,16 @@ impl V1 {
 
 impl StateVersion for V1 {
     const VERSION: u32 = 1;
+
+    type NewArgs = u128;
+
+    fn new(chain_id: u128) -> VersionedState<Self> {
+        VersionedState::new(Self {
+            next_key_index: 0,
+            keys: IterableMap::new(b"k"),
+            chain_id,
+        })
+    }
 }
 
 #[near(serializers = [borsh])]
@@ -47,14 +66,6 @@ pub struct V2 {
 }
 
 impl V2 {
-    pub fn new(chain_id: u128) -> Result<Self, VersionAlreadyInitializedError> {
-        Ok(Self {
-            next_key_index: 0,
-            keys: IterableMap::new(b"k"),
-            chain_id,
-        })
-    }
-
     fn from_v1(old: V1) -> Self {
         Self {
             next_key_index: old.next_key_index,
@@ -66,4 +77,14 @@ impl V2 {
 
 impl StateVersion for V2 {
     const VERSION: u32 = 2;
+
+    type NewArgs = u128;
+
+    fn new(chain_id: u128) -> VersionedState<Self> {
+        VersionedState::new(Self {
+            next_key_index: 0,
+            keys: IterableMap::new(b"k"),
+            chain_id,
+        })
+    }
 }
