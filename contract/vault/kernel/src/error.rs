@@ -1,5 +1,7 @@
 //! Kernel error types.
 
+use core::fmt;
+
 use crate::restrictions::RestrictionKind;
 use crate::transitions::TransitionError;
 
@@ -115,6 +117,12 @@ impl InvalidStateCode {
     }
 }
 
+impl fmt::Display for InvalidStateCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
 /// Indexed invalid-config reasons for stable wasm diagnostics.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,6 +147,77 @@ impl InvalidConfigCode {
             Self::MaxPendingWithdrawalsExceedsLimit => {
                 "max_pending_withdrawals exceeds MAX_PENDING"
             }
+        }
+    }
+}
+
+impl fmt::Display for InvalidConfigCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum KernelErrorCode {
+    InvalidState = 1000,
+    OpIdMismatch = 1001,
+    Slippage = 1002,
+    MinWithdrawal = 1003,
+    QueueFull = 1004,
+    EmptyQueue = 1005,
+    Cooldown = 1006,
+    Transition = 1007,
+    NotImplemented = 1008,
+    Restricted = 1009,
+    InvalidConfig = 1010,
+    ZeroAmount = 1011,
+}
+
+impl KernelErrorCode {
+    #[inline]
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self as u32
+    }
+}
+
+const INVALID_STATE_INDEXED_BASE: u32 = 100_000;
+const INVALID_CONFIG_INDEXED_BASE: u32 = 101_000;
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StableKernelErrorCode {
+    Base(KernelErrorCode),
+    InvalidState(InvalidStateCode),
+    InvalidConfig(InvalidConfigCode),
+}
+
+impl StableKernelErrorCode {
+    #[inline]
+    #[must_use]
+    pub const fn family(self) -> KernelErrorCode {
+        match self {
+            Self::Base(code) => code,
+            Self::InvalidState(_) => KernelErrorCode::InvalidState,
+            Self::InvalidConfig(_) => KernelErrorCode::InvalidConfig,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        self.family().value()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn indexed_code(self) -> u32 {
+        match self {
+            Self::Base(code) => code.value(),
+            Self::InvalidState(code) => INVALID_STATE_INDEXED_BASE + code.index() as u32,
+            Self::InvalidConfig(code) => INVALID_CONFIG_INDEXED_BASE + code.index() as u32,
         }
     }
 }
@@ -186,50 +265,145 @@ impl KernelError {
 
     #[inline]
     #[must_use]
-    pub const fn invalid_state(message: &'static str) -> Self {
-        let _ = message;
-        Self::InvalidState(InvalidStateCode::Unknown)
-    }
-
-    #[inline]
-    #[must_use]
     pub const fn invalid_config_code(code: InvalidConfigCode) -> Self {
         Self::InvalidConfig(code)
     }
 
     #[inline]
     #[must_use]
-    pub const fn invalid_config(message: &'static str) -> Self {
-        let _ = message;
-        Self::InvalidConfig(InvalidConfigCode::Unknown)
+    pub const fn stable_code(&self) -> StableKernelErrorCode {
+        match self {
+            Self::InvalidState(code) => StableKernelErrorCode::InvalidState(*code),
+            Self::OpIdMismatch { .. } => StableKernelErrorCode::Base(KernelErrorCode::OpIdMismatch),
+            Self::Slippage { .. } => StableKernelErrorCode::Base(KernelErrorCode::Slippage),
+            Self::MinWithdrawal { .. } => {
+                StableKernelErrorCode::Base(KernelErrorCode::MinWithdrawal)
+            }
+            Self::QueueFull { .. } => StableKernelErrorCode::Base(KernelErrorCode::QueueFull),
+            Self::EmptyQueue => StableKernelErrorCode::Base(KernelErrorCode::EmptyQueue),
+            Self::Cooldown { .. } => StableKernelErrorCode::Base(KernelErrorCode::Cooldown),
+            Self::Transition(_) => StableKernelErrorCode::Base(KernelErrorCode::Transition),
+            Self::NotImplemented => StableKernelErrorCode::Base(KernelErrorCode::NotImplemented),
+            Self::Restricted(_) => StableKernelErrorCode::Base(KernelErrorCode::Restricted),
+            Self::InvalidConfig(code) => StableKernelErrorCode::InvalidConfig(*code),
+            Self::ZeroAmount => StableKernelErrorCode::Base(KernelErrorCode::ZeroAmount),
+        }
     }
 
     /// Stable numeric code for on-chain debugging and indexing.
     #[must_use]
     pub fn code(&self) -> u32 {
-        match self {
-            KernelError::InvalidState(_) => 1000,
-            KernelError::OpIdMismatch { .. } => 1001,
-            KernelError::Slippage { .. } => 1002,
-            KernelError::MinWithdrawal { .. } => 1003,
-            KernelError::QueueFull { .. } => 1004,
-            KernelError::EmptyQueue => 1005,
-            KernelError::Cooldown { .. } => 1006,
-            KernelError::Transition(_) => 1007,
-            KernelError::NotImplemented => 1008,
-            KernelError::Restricted(_) => 1009,
-            KernelError::InvalidConfig(_) => 1010,
-            KernelError::ZeroAmount => 1011,
-        }
+        self.stable_code().code()
     }
 
     /// Stable indexed code with finer-grained invalid-state/config reason.
     #[must_use]
     pub fn indexed_code(&self) -> u32 {
+        self.stable_code().indexed_code()
+    }
+}
+
+impl From<InvalidStateCode> for KernelError {
+    fn from(code: InvalidStateCode) -> Self {
+        Self::InvalidState(code)
+    }
+}
+
+impl From<InvalidConfigCode> for KernelError {
+    fn from(code: InvalidConfigCode) -> Self {
+        Self::InvalidConfig(code)
+    }
+}
+
+impl From<TransitionError> for KernelError {
+    fn from(error: TransitionError) -> Self {
+        Self::Transition(error)
+    }
+}
+
+impl fmt::Display for KernelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            KernelError::InvalidState(code) => 100_000 + u32::from(code.index()),
-            KernelError::InvalidConfig(code) => 101_000 + u32::from(code.index()),
-            _ => self.code(),
+            Self::InvalidState(code) => write!(f, "{code} (code {})", self.indexed_code()),
+            Self::OpIdMismatch { expected, actual } => {
+                write!(f, "op id mismatch: expected {expected}, actual {actual}")
+            }
+            Self::Slippage { min, actual } => {
+                write!(f, "slippage exceeded: min {min}, actual {actual}")
+            }
+            Self::MinWithdrawal { amount, min } => {
+                write!(f, "minimum withdrawal not met: amount {amount}, min {min}")
+            }
+            Self::QueueFull { current, max } => {
+                write!(f, "withdrawal queue full: current {current}, max {max}")
+            }
+            Self::EmptyQueue => f.write_str("withdrawal queue empty"),
+            Self::Cooldown {
+                requested_at,
+                now,
+                cooldown_ns,
+            } => write!(
+                f,
+                "cooldown active: requested_at {requested_at}, now {now}, cooldown_ns {cooldown_ns}"
+            ),
+            Self::Transition(error) => match error {
+                TransitionError::WrongState => f.write_str("transition error: wrong state"),
+                TransitionError::OpIdMismatch { expected, actual } => write!(
+                    f,
+                    "transition error: op id mismatch: expected {expected}, actual {actual}"
+                ),
+                TransitionError::EmptyAllocationPlan => {
+                    f.write_str("transition error: empty allocation plan")
+                }
+                TransitionError::EmptyRefreshPlan => {
+                    f.write_str("transition error: empty refresh plan")
+                }
+                TransitionError::ZeroWithdrawalAmount => {
+                    f.write_str("transition error: zero withdrawal amount")
+                }
+                TransitionError::ZeroEscrowShares => {
+                    f.write_str("transition error: zero escrow shares")
+                }
+                TransitionError::InvalidIndex { index, max } => {
+                    write!(f, "transition error: invalid index: index {index}, max {max}")
+                }
+                TransitionError::CollectionOverflow {
+                    collected,
+                    remaining,
+                } => write!(
+                    f,
+                    "transition error: collection overflow: collected {collected}, remaining {remaining}"
+                ),
+                TransitionError::AllocationOverflow {
+                    allocated,
+                    remaining,
+                } => write!(
+                    f,
+                    "transition error: allocation overflow: allocated {allocated}, remaining {remaining}"
+                ),
+                TransitionError::ZeroAllocationAmount => {
+                    f.write_str("transition error: zero allocation amount")
+                }
+                TransitionError::BurnExceedsEscrow { burn, escrow } => write!(
+                    f,
+                    "transition error: burn exceeds escrow: burn {burn}, escrow {escrow}"
+                ),
+                TransitionError::WithdrawalIncomplete {
+                    remaining,
+                    collected,
+                } => write!(
+                    f,
+                    "transition error: withdrawal incomplete: remaining {remaining}, collected {collected}"
+                ),
+            },
+            Self::NotImplemented => f.write_str("action not implemented"),
+            Self::Restricted(kind) => match kind {
+                RestrictionKind::Paused => f.write_str("restricted: paused"),
+                RestrictionKind::Blacklisted => f.write_str("restricted: blacklisted"),
+                RestrictionKind::NotWhitelisted => f.write_str("restricted: not whitelisted"),
+            },
+            Self::InvalidConfig(code) => write!(f, "{code} (code {})", self.indexed_code()),
+            Self::ZeroAmount => f.write_str("amount must be greater than zero"),
         }
     }
 }
