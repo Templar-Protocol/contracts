@@ -1331,6 +1331,16 @@ fn handle_settle_payout(
             }
             push_refund_shares(&mut effects, escrow_address, payout.owner, refund_amount);
 
+            state.idle_assets = state
+                .idle_assets
+                .checked_sub(payout.amount)
+                .ok_or_else(|| {
+                    KernelError::invalid_state_code(
+                        InvalidStateCode::PayoutFailureRestoreIdleMismatch,
+                    )
+                })?;
+            state.sync_total_assets();
+
             state.op_state = OpState::Idle;
             (burn_amount, refund_amount, payout.amount, true)
         }

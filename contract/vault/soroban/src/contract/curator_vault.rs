@@ -516,16 +516,6 @@ where
         let transfer_summary = self.interpreter.execute_effects(&transfer_effects, &ctx)?;
         summary.merge(transfer_summary);
 
-        let state = self.state_mut()?;
-        state.idle_assets = state
-            .idle_assets
-            .checked_sub(assets_out)
-            .ok_or_else(|| invalid_state_error("idle_assets underflow on withdrawal"))?;
-        state.total_assets = state
-            .idle_assets
-            .checked_add(state.external_assets)
-            .ok_or_else(|| invalid_state_error("total_assets overflow on withdrawal"))?;
-
         let settle_summary = self.apply_kernel_action(
             KernelAction::SettlePayout {
                 op_id,

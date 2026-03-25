@@ -1916,6 +1916,7 @@ fn settle_payout_success_burn_only() {
     .unwrap();
 
     assert!(result.state.is_idle());
+    assert_eq!(result.state.idle_assets, 400);
     assert_eq!(result.state.total_shares, 900); // 1000 - 100 burned
     assert_eq!(result.state.withdraw_queue.len(), 0);
     let (burn_owner, burn_shares) = result
@@ -1987,6 +1988,7 @@ fn settle_payout_success_partial_refund() {
     .unwrap();
 
     assert!(result.state.is_idle());
+    assert_eq!(result.state.idle_assets, 450);
     assert_eq!(result.state.total_shares, 950);
     assert_eq!(result.effects.len(), 3); // BurnShares + TransferShares + PayoutCompleted
     let event = result
