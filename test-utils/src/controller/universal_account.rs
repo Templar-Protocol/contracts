@@ -24,6 +24,10 @@ impl UniversalAccountController {
         include_bytes!("wasm/uac_0_2_0.wasm")
     }
 
+    pub const fn wasm_0_4_0() -> &'static [u8] {
+        include_bytes!("wasm/uac_0_4_0.wasm")
+    }
+
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
@@ -58,17 +62,26 @@ impl UniversalAccountController {
         Self { contract }
     }
 
+    pub async fn migrate_stored_state_version(&self) -> u32 {
+        self.view("mig_stored_state_version", near_sdk::serde_json::json!({}))
+            .await
+    }
+
+    pub async fn migrate_target_state_version(&self) -> u32 {
+        self.view("mig_target_state_version", near_sdk::serde_json::json!({}))
+            .await
+    }
+
+    pub async fn migrate_needs_migration(&self) -> bool {
+        self.view("mig_needs_migration", near_sdk::serde_json::json!({}))
+            .await
+    }
+
     define! {
         #[view]
         pub fn get_key(key: KeyId) -> Option<PayloadExecutionParameters>;
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
-        #[view]
-        pub fn migrate_stored_state_version() -> u32;
-        #[view]
-        pub fn migrate_target_state_version() -> u32;
-        #[view]
-        pub fn migrate_needs_migration() -> bool;
 
         #[call(exec, tgas(300))]
         pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);

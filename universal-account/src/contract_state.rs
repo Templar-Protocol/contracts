@@ -64,9 +64,17 @@ pub trait StateTransformer {
     type Output: StateVersion + BorshSerialize;
     type Error;
 
+    fn input_version(&self) -> u32 {
+        Self::Input::VERSION
+    }
+
+    fn output_version(&self) -> u32 {
+        Self::Output::VERSION
+    }
+
     fn run(&self) -> Result<Self::Output, MigrationError<Self::Error>> {
         let stored = read_state_version()?;
-        let expected = Self::Input::VERSION;
+        let expected = self.input_version();
         if stored != expected {
             return Err(MigrationError::StoredVersionMismatch { stored, expected });
         }
@@ -76,7 +84,7 @@ pub trait StateTransformer {
             .transform(old_state)
             .map_err(MigrationError::Transformation)?;
         env::state_write(&new_state);
-        write_state_version(Self::Output::VERSION);
+        write_state_version(self.output_version());
         Ok(new_state)
     }
 
@@ -167,5 +175,14 @@ mod tests {
     fn stored_version_defaults_to_zero() {
         context();
         assert_eq!(read_state_version().unwrap(), 0);
+    }
+
+    #[test]
+    fn malformed_stored_version_errors() {
+        context();
+        write_state_version(7);
+        env::storage_write(VERSION_KEY, &[1, 2, 3]);
+
+        assert!(read_state_version().is_err());
     }
 }

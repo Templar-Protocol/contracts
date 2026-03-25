@@ -1,7 +1,7 @@
 use near_sdk::{env, json_types::U128, near};
 
 use crate::{
-    contract_state::{Migrator, StateTransformer},
+    contract_state::{Migrator, StateTransformer, StateVersion},
     state,
 };
 
@@ -34,10 +34,28 @@ impl StateTransformer for V1 {
 }
 
 #[near(serializers = [json])]
+pub struct UnbrickV1;
+
+impl StateTransformer for UnbrickV1 {
+    type Input = state::V1;
+    type Output = state::V2;
+    type Error = ();
+
+    fn input_version(&self) -> u32 {
+        state::V0::VERSION
+    }
+
+    fn transform(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
+        Ok(state::V2::from_v1(input))
+    }
+}
+
+#[near(serializers = [json])]
 #[serde(tag = "from_version", rename_all = "snake_case")]
 pub enum Migration {
     V0(V0),
     V1(V1),
+    UnbrickV1(UnbrickV1),
 }
 
 impl From<V0> for Migration {
@@ -52,6 +70,12 @@ impl From<V1> for Migration {
     }
 }
 
+impl From<UnbrickV1> for Migration {
+    fn from(value: UnbrickV1) -> Self {
+        Self::UnbrickV1(value)
+    }
+}
+
 impl Migrator for Migration {
     fn run(self) {
         match self {
@@ -62,6 +86,11 @@ impl Migrator for Migration {
             Migration::V1(v1) => {
                 v1.run()
                     .unwrap_or_else(|e| env::panic_str(&format!("Failed to migrate V1: {e}")));
+            }
+            Migration::UnbrickV1(unbrick_v1) => {
+                unbrick_v1.run().unwrap_or_else(|e| {
+                    env::panic_str(&format!("Failed to migrate UnbrickV1: {e}"))
+                });
             }
         }
     }
@@ -76,7 +105,7 @@ mod tests {
             ed25519::raw,
             passkey::{self},
         },
-        contract_state::read_state_version,
+        contract_state::{read_state_version, write_state_version},
         KeyId, KeyParameters,
     };
 
@@ -139,5 +168,35 @@ mod tests {
         assert_eq!(new.chain_id, 1234);
         assert_eq!(new.next_key_index, 42);
         assert_eq!(new.keys.len(), 2);
+    }
+
+    #[test]
+    fn unbrick_v1_reads_broken_v1_state_from_version_zero() {
+        context();
+
+        let mut old = state::V1 {
+            next_key_index: 42,
+            keys: IterableMap::new(b"k"),
+            chain_id: 1234,
+        };
+
+        old.keys.insert(
+            KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into())),
+            KeyParameters {
+                block_height: 4444.into(),
+                index: 5555.into(),
+                nonce: 6666.into(),
+            },
+        );
+
+        env::state_write(&old);
+        write_state_version(0);
+
+        let new = UnbrickV1.run().unwrap();
+
+        assert_eq!(read_state_version().unwrap(), 2);
+        assert_eq!(new.chain_id, 1234);
+        assert_eq!(new.next_key_index, 42);
+        assert_eq!(new.keys.len(), 1);
     }
 }
