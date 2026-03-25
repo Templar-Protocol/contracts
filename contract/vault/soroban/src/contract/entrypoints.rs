@@ -64,14 +64,9 @@ impl SorobanVaultContract {
 
         let mut shares_minted = 0u128;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let result = vault.deposit_mapped(
-                &env,
-                owner.clone(),
-                receiver.clone(),
-                assets_u128,
-                min_shares_u128,
-                now_ns,
-            )?;
+            let (caller_k, receiver_k) = vault.map_pair(&env, &owner, &receiver)?;
+            let result =
+                vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
             shares_minted = result.shares_minted;
             Ok(())
         };
@@ -100,10 +95,10 @@ impl SorobanVaultContract {
 
         let mut request_id = 0u64;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let result = vault.request_withdraw_mapped(
-                &env,
-                owner.clone(),
-                receiver.clone(),
+            let (caller_k, receiver_k) = vault.map_pair(&env, &owner, &receiver)?;
+            let result = vault.request_withdraw(
+                caller_k,
+                receiver_k,
                 shares_u128,
                 min_assets_u128,
                 now_ns,
@@ -120,9 +115,8 @@ impl SorobanVaultContract {
         let now_ns = ledger_timestamp_ns(&env)?;
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault
-                .execute_withdraw_mapped(&env, caller.clone(), now_ns)
-                .map(|_| ())
+            let caller_k = vault.map_caller(&env, &caller)?;
+            vault.execute_withdraw(caller_k, now_ns).map(|_| ())
         };
         with_contract_vault_contract_error(&env, &mut call)
     }

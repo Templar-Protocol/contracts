@@ -117,6 +117,7 @@ impl InvalidStateCode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for InvalidStateCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.message())
@@ -151,6 +152,7 @@ impl InvalidConfigCode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for InvalidConfigCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.message())
@@ -321,6 +323,7 @@ impl From<TransitionError> for KernelError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -69,10 +69,9 @@ impl WithdrawRoute {
 
     #[must_use]
     pub fn total(&self) -> u128 {
-        self.entries.iter().fold(0u128, |acc, e| {
-            acc.checked_add(e.max_amount)
-                .unwrap_or_else(|| panic!("withdraw route total overflow"))
-        })
+        self.entries
+            .iter()
+            .fold(0u128, |acc, e| acc.checked_add(e.max_amount).unwrap())
     }
 
     #[must_use]
@@ -80,10 +79,7 @@ impl WithdrawRoute {
         self.entries
             .iter()
             .filter_map(|e| e.available_liquidity)
-            .fold(0u128, |acc, l| {
-                acc.checked_add(l)
-                    .unwrap_or_else(|| panic!("withdraw route liquidity overflow"))
-            })
+            .fold(0u128, |acc, l| acc.checked_add(l).unwrap())
     }
 
     #[must_use]

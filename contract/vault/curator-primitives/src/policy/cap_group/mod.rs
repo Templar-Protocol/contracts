@@ -4,13 +4,16 @@ use alloc::string::String;
 #[cfg(feature = "borsh-schema")]
 use alloc::string::ToString;
 use core::num::NonZeroU128;
-use derive_more::{Display, From, Into};
+#[cfg(not(target_arch = "wasm32"))]
+use derive_more::Display;
+use derive_more::{From, Into};
 use templar_vault_kernel::Wad;
 use typed_builder::TypedBuilder;
 
 #[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
-#[display("{_0}")]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Display))]
+#[cfg_attr(not(target_arch = "wasm32"), display("{_0}"))]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
 pub struct CapGroupId(pub String);
 
 impl From<&str> for CapGroupId {
@@ -151,10 +154,7 @@ impl CapGroupRecord {
     pub fn apply_allocation(&self, amount: u128) -> Self {
         Self {
             cap: self.cap.clone(),
-            principal: self
-                .principal
-                .checked_add(amount)
-                .unwrap_or_else(|| panic!("cap group principal overflow")),
+            principal: self.principal.checked_add(amount).unwrap(),
         }
     }
 
@@ -163,10 +163,7 @@ impl CapGroupRecord {
     pub fn remove_allocation(&self, amount: u128) -> Self {
         Self {
             cap: self.cap.clone(),
-            principal: self
-                .principal
-                .checked_sub(amount)
-                .unwrap_or_else(|| panic!("cap group principal underflow")),
+            principal: self.principal.checked_sub(amount).unwrap(),
         }
     }
 

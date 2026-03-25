@@ -262,26 +262,17 @@ where
         })
     }
 
-    #[inline(never)]
-    pub fn deposit_mapped(
+    /// Map vault + caller + receiver SDK addresses to kernel addresses.
+    pub fn map_pair(
         &mut self,
         env: &Env,
-        caller: SdkAddress,
-        receiver: SdkAddress,
-        assets: u128,
-        min_shares_out: u128,
-        now_ns: u64,
-    ) -> Result<DepositResult, RuntimeError> {
+        caller: &SdkAddress,
+        receiver: &SdkAddress,
+    ) -> Result<(Address, Address), RuntimeError> {
         self.ensure_vault_mapped(env)?;
-        let caller_kernel = self.register_sdk_address(env, &caller)?;
-        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
-        self.deposit(
-            caller_kernel,
-            receiver_kernel,
-            assets,
-            min_shares_out,
-            now_ns,
-        )
+        let caller_kernel = self.register_sdk_address(env, caller)?;
+        let receiver_kernel = self.register_sdk_address(env, receiver)?;
+        Ok((caller_kernel, receiver_kernel))
     }
 
     #[inline(never)]
@@ -319,28 +310,6 @@ where
     }
 
     #[inline(never)]
-    pub fn request_withdraw_mapped(
-        &mut self,
-        env: &Env,
-        caller: SdkAddress,
-        receiver: SdkAddress,
-        shares: u128,
-        min_assets_out: u128,
-        now_ns: u64,
-    ) -> Result<WithdrawRequestResult, RuntimeError> {
-        self.ensure_vault_mapped(env)?;
-        let caller_kernel = self.register_sdk_address(env, &caller)?;
-        let receiver_kernel = self.register_sdk_address(env, &receiver)?;
-        self.request_withdraw(
-            caller_kernel,
-            receiver_kernel,
-            shares,
-            min_assets_out,
-            now_ns,
-        )
-    }
-
-    #[inline(never)]
     pub fn execute_withdraw(
         &mut self,
         caller: Address,
@@ -372,16 +341,10 @@ where
         Ok(summary)
     }
 
-    #[inline(never)]
-    pub fn execute_withdraw_mapped(
-        &mut self,
-        env: &Env,
-        caller: SdkAddress,
-        now_ns: u64,
-    ) -> Result<EffectSummary, RuntimeError> {
+    /// Map vault + caller SDK address to kernel address.
+    pub fn map_caller(&mut self, env: &Env, caller: &SdkAddress) -> Result<Address, RuntimeError> {
         self.ensure_vault_mapped(env)?;
-        let caller_kernel = self.register_sdk_address(env, &caller)?;
-        self.execute_withdraw(caller_kernel, now_ns)
+        self.register_sdk_address(env, caller)
     }
 
     fn prepare_atomic_call(

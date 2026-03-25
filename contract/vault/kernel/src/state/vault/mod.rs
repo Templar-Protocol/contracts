@@ -137,13 +137,8 @@ impl VaultState {
         external_assets: u128,
         timestamp_ns: TimestampNs,
     ) -> Self {
-        let computed_total = idle_assets
-            .checked_add(external_assets)
-            .unwrap_or_else(|| panic!("total_assets invariant overflow: idle + external"));
-        assert_eq!(
-            total_assets, computed_total,
-            "total_assets invariant violated: total != idle + external"
-        );
+        let computed_total = idle_assets.checked_add(external_assets).unwrap();
+        assert!(total_assets == computed_total);
         Self {
             total_assets,
             total_shares,
@@ -174,10 +169,7 @@ impl VaultState {
     #[inline]
     pub fn allocate_op_id(&mut self) -> u64 {
         let id = self.next_op_id;
-        self.next_op_id = self
-            .next_op_id
-            .checked_add(1)
-            .unwrap_or_else(|| panic!("op_id overflow"));
+        self.next_op_id = self.next_op_id.checked_add(1).unwrap();
         id
     }
 
@@ -201,10 +193,7 @@ impl VaultState {
     /// to restore the fundamental accounting invariant.
     #[inline]
     pub fn sync_total_assets(&mut self) {
-        self.total_assets = self
-            .idle_assets
-            .checked_add(self.external_assets)
-            .unwrap_or_else(|| panic!("total_assets overflow: idle + external"));
+        self.total_assets = self.idle_assets.checked_add(self.external_assets).unwrap();
     }
 
     /// Add `amount` back to idle assets and recompute totals.
@@ -213,10 +202,7 @@ impl VaultState {
     /// in-flight assets are returned to idle.
     #[inline]
     pub fn restore_to_idle(&mut self, amount: u128) {
-        self.idle_assets = self
-            .idle_assets
-            .checked_add(amount)
-            .unwrap_or_else(|| panic!("idle_assets overflow while restoring"));
+        self.idle_assets = self.idle_assets.checked_add(amount).unwrap();
         self.sync_total_assets();
     }
 }
