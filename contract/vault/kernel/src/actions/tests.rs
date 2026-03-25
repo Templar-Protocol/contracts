@@ -1333,6 +1333,7 @@ fn rebalance_withdraw_moves_assets_from_external_to_idle() {
         None,
         &addr(0xFF),
         KernelAction::RebalanceWithdraw {
+            op_id: 0,
             amount: 300,
             now_ns: 0,
         },
@@ -1346,7 +1347,7 @@ fn rebalance_withdraw_moves_assets_from_external_to_idle() {
 }
 
 #[test]
-fn rebalance_withdraw_requires_idle() {
+fn rebalance_withdraw_allows_allocating_with_matching_op_id() {
     let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 7,
@@ -1362,17 +1363,17 @@ fn rebalance_withdraw_requires_idle() {
         None,
         &addr(0xFF),
         KernelAction::RebalanceWithdraw {
+            op_id: 7,
             amount: 50,
             now_ns: 0,
         },
-    );
+    )
+    .unwrap();
 
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::RebalanceWithdrawRequiresIdle
-        ))
-    ));
+    assert!(result.state.op_state.is_allocating());
+    assert_eq!(result.state.idle_assets, 250);
+    assert_eq!(result.state.external_assets, 750);
+    assert_eq!(result.state.total_assets, 1_000);
 }
 
 #[test]
@@ -1386,6 +1387,7 @@ fn rebalance_withdraw_rejects_amount_above_external_assets() {
         None,
         &addr(0xFF),
         KernelAction::RebalanceWithdraw {
+            op_id: 0,
             amount: 801,
             now_ns: 0,
         },
@@ -1396,6 +1398,38 @@ fn rebalance_withdraw_rejects_amount_above_external_assets() {
         Err(KernelError::InvalidState(
             InvalidStateCode::RebalanceWithdrawExceedsExternalAssets
         ))
+    ));
+}
+
+#[test]
+fn rebalance_withdraw_requires_matching_op_id_when_allocating() {
+    let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 7,
+        index: 0,
+        remaining: 100,
+        plan: vec![(1, 100)],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RebalanceWithdraw {
+            op_id: 8,
+            amount: 50,
+            now_ns: 0,
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::OpIdMismatch {
+            expected: 7,
+            actual: 8
+        })
     ));
 }
 

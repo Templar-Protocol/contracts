@@ -607,19 +607,7 @@ where
                     policy.set_principal(d.market, next_principal);
                     policy.refresh_cap_group_principals();
                 }
-                {
-                    let state = self.state_mut()?;
-                    state.idle_assets = state
-                        .idle_assets
-                        .checked_add(d.amount)
-                        .ok_or_else(|| invalid_state_error("idle_assets overflow on withdraw"))?;
-                }
-                let new_external = self.sync_external_assets(
-                    caller,
-                    op_id,
-                    self.policy_state().external_assets(),
-                    0,
-                )?;
+                let new_external = self.rebalance_withdraw(caller, op_id, d.amount, 0)?;
                 self.finish_allocation_internal(caller, op_id, 0)?;
                 self.storage.save_policy_state(&self.policy_state)?;
                 Ok(AllocationResult {
@@ -821,11 +809,15 @@ where
     pub(crate) fn rebalance_withdraw(
         &mut self,
         caller: Address,
+        op_id: u64,
         amount: u128,
         now_ns: u64,
     ) -> Result<u128, RuntimeError> {
         self.authorize(ActionKind::RebalanceWithdraw, caller)?;
-        self.apply_kernel_action(KernelAction::rebalance_withdraw(amount, now_ns), now_ns)?;
+        self.apply_kernel_action(
+            KernelAction::rebalance_withdraw(op_id, amount, now_ns),
+            now_ns,
+        )?;
         Ok(self.state()?.external_assets)
     }
 

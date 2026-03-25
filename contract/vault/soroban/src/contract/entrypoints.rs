@@ -242,21 +242,8 @@ impl SorobanVaultContract {
                 policy.set_principal(market, next_principal);
                 policy.refresh_cap_group_principals();
             }
-            {
-                let state = vault.state_mut()?;
-                state.idle_assets = state
-                    .idle_assets
-                    .checked_add(realized_amount_u128)
-                    .ok_or_else(|| {
-                        RuntimeError::invalid_state("idle_assets overflow on withdraw")
-                    })?;
-            }
-            new_external = vault.sync_external_assets(
-                caller_kernel,
-                op_id,
-                vault.policy_state().external_assets(),
-                now_ns,
-            )?;
+            new_external =
+                vault.rebalance_withdraw(caller_kernel, op_id, realized_amount_u128, now_ns)?;
             vault.finish_allocation_internal(caller_kernel, op_id, now_ns)?;
             let policy_state = vault.policy_state().clone();
             vault.storage.save_policy_state(&policy_state)?;

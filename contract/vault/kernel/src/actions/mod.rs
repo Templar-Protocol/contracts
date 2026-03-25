@@ -107,9 +107,7 @@ pub enum KernelAction {
     /// Execute the next pending withdrawal from the queue.
     ///
     /// Transition: Idle -> Withdrawing
-    ExecuteWithdraw {
-        now_ns: TimestampNs,
-    },
+    ExecuteWithdraw { now_ns: TimestampNs },
 
     /// Begin refreshing external market balances.
     ///
@@ -123,10 +121,7 @@ pub enum KernelAction {
     /// Complete an allocation operation.
     ///
     /// Transition: Allocating -> Idle or Withdrawing
-    FinishAllocating {
-        op_id: u64,
-        now_ns: TimestampNs,
-    },
+    FinishAllocating { op_id: u64, now_ns: TimestampNs },
 
     /// Sync external asset balances during an active operation.
     SyncExternalAssets {
@@ -136,6 +131,7 @@ pub enum KernelAction {
     },
 
     RebalanceWithdraw {
+        op_id: u64,
         amount: u128,
         now_ns: TimestampNs,
     },
@@ -143,51 +139,33 @@ pub enum KernelAction {
     /// Complete a refresh operation.
     ///
     /// Transition: Refreshing -> Idle
-    FinishRefreshing {
-        op_id: u64,
-        now_ns: TimestampNs,
-    },
+    FinishRefreshing { op_id: u64, now_ns: TimestampNs },
 
     /// Abort a refresh operation (e.g., on external call failure).
     ///
     /// Transition: Refreshing -> Idle
-    AbortRefreshing {
-        op_id: u64,
-    },
+    AbortRefreshing { op_id: u64 },
 
     /// Settle a payout after asset transfer attempt.
     ///
     /// Transition: Payout -> Idle
-    SettlePayout {
-        op_id: u64,
-        outcome: PayoutOutcome,
-    },
+    SettlePayout { op_id: u64, outcome: PayoutOutcome },
 
     /// Abort an allocation operation (e.g., on external call failure).
     ///
     /// Transition: Allocating -> Idle
-    AbortAllocating {
-        op_id: u64,
-        restore_idle: u128,
-    },
+    AbortAllocating { op_id: u64, restore_idle: u128 },
 
     /// Abort a withdrawal operation (e.g., on external call failure).
     ///
     /// Transition: Withdrawing -> Idle
-    AbortWithdrawing {
-        op_id: u64,
-        refund_shares: u128,
-    },
+    AbortWithdrawing { op_id: u64, refund_shares: u128 },
 
     /// Refresh fee calculations and mint fee shares.
-    RefreshFees {
-        now_ns: TimestampNs,
-    },
+    RefreshFees { now_ns: TimestampNs },
 
     /// Emit a pause-state update for executor-owned pause configuration.
-    Pause {
-        paused: bool,
-    },
+    Pause { paused: bool },
 
     /// Emergency reset: force the vault back to Idle from any non-Idle state.
     ///
@@ -312,8 +290,12 @@ impl KernelAction {
     }
 
     #[must_use]
-    pub fn rebalance_withdraw(amount: u128, now_ns: TimestampNs) -> Self {
-        Self::RebalanceWithdraw { amount, now_ns }
+    pub fn rebalance_withdraw(op_id: u64, amount: u128, now_ns: TimestampNs) -> Self {
+        Self::RebalanceWithdraw {
+            op_id,
+            amount,
+            now_ns,
+        }
     }
 
     #[must_use]
@@ -369,6 +351,7 @@ impl KernelAction {
             | Self::BeginRefreshing { op_id, .. }
             | Self::FinishAllocating { op_id, .. }
             | Self::SyncExternalAssets { op_id, .. }
+            | Self::RebalanceWithdraw { op_id, .. }
             | Self::FinishRefreshing { op_id, .. }
             | Self::AbortRefreshing { op_id }
             | Self::SettlePayout { op_id, .. }
@@ -377,7 +360,6 @@ impl KernelAction {
             Self::Deposit { .. }
             | Self::AtomicWithdraw { .. }
             | Self::RequestWithdraw { .. }
-            | Self::RebalanceWithdraw { .. }
             | Self::ExecuteWithdraw { .. }
             | Self::RefreshFees { .. }
             | Self::Pause { .. }
@@ -1162,12 +1144,23 @@ fn handle_sync_external_assets(
 #[cfg(any(feature = "action-sync-external", test))]
 fn handle_rebalance_withdraw(
     mut state: VaultState,
+    op_id: u64,
     amount: u128,
 ) -> Result<KernelResult, KernelError> {
-    if !state.is_idle() {
-        return Err(KernelError::invalid_state_code(
-            InvalidStateCode::RebalanceWithdrawRequiresIdle,
-        ));
+    match &state.op_state {
+        OpState::Idle => {}
+        OpState::Allocating(_) => {
+            require_active_op_id(
+                &state.op_state,
+                op_id,
+                InvalidStateCode::SyncExternalRequiresActiveOp,
+            )?;
+        }
+        _ => {
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::RebalanceWithdrawRequiresIdle,
+            ));
+        }
     }
 
     if amount > state.external_assets {
@@ -1188,7 +1181,7 @@ fn handle_rebalance_withdraw(
         state,
         vec![KernelEffect::EmitEvent {
             event: crate::effects::KernelEvent::ExternalAssetsSynced {
-                op_id: 0,
+                op_id,
                 new_external_assets,
                 total_assets,
             },
@@ -1630,7 +1623,9 @@ pub fn apply_action(
         KernelAction::SyncExternalAssets { .. } => Err(KernelError::NotImplemented),
 
         #[cfg(any(feature = "action-sync-external", test))]
-        KernelAction::RebalanceWithdraw { amount, .. } => handle_rebalance_withdraw(state, amount),
+        KernelAction::RebalanceWithdraw { op_id, amount, .. } => {
+            handle_rebalance_withdraw(state, op_id, amount)
+        }
         #[cfg(not(any(feature = "action-sync-external", test)))]
         KernelAction::RebalanceWithdraw { .. } => Err(KernelError::NotImplemented),
 
