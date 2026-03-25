@@ -500,7 +500,7 @@ fn validate_queue_head(
     escrow_shares: u128,
 ) -> Result<(), KernelError> {
     let Some((_, pending)) = queue.head() else {
-        return Err(KernelError::EmptyQueue);
+        return Err(KernelError::NoPendingWithdrawals);
     };
     if pending.owner != *owner
         || pending.receiver != *receiver
@@ -579,7 +579,7 @@ fn map_queue_error(err: QueueError) -> KernelError {
             KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueMissingEntry)
         }
         QueueError::QueueEmpty => {
-            KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueEmpty)
+            KernelError::invalid_state_code(InvalidStateCode::UnexpectedEmptyQueue)
         }
         QueueError::InvariantViolation { .. } => {
             KernelError::invalid_state_code(InvalidStateCode::WithdrawalQueueInvariantViolation)
@@ -734,7 +734,7 @@ fn dequeue_skipped_withdrawal(
     let (pending_id, pending) = state
         .withdraw_queue
         .dequeue()
-        .ok_or(KernelError::EmptyQueue)?;
+        .ok_or(KernelError::NoPendingWithdrawals)?;
     push_refund_shares(
         skipped_effects,
         *self_id,
@@ -915,7 +915,7 @@ fn handle_execute_withdraw(
     loop {
         let Some((_, pending_ref)) = state.withdraw_queue.head() else {
             return if skipped_effects.is_empty() {
-                Err(KernelError::EmptyQueue)
+                Err(KernelError::NoPendingWithdrawals)
             } else {
                 Ok(KernelResult::new(state, skipped_effects))
             };

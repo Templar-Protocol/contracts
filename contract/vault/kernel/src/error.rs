@@ -15,7 +15,7 @@ pub enum InvalidStateCode {
     FeeMintOverflowTotalSupply = 2,
     WithdrawalQueueCacheOverflow = 3,
     WithdrawalQueueMissingEntry = 4,
-    WithdrawalQueueEmpty = 5,
+    UnexpectedEmptyQueue = 5,
     WithdrawalQueueInvariantViolation = 6,
     DepositRequiresIdle = 7,
     DepositOverflowTotalAssets = 8,
@@ -66,7 +66,7 @@ impl InvalidStateCode {
             Self::FeeMintOverflowTotalSupply => "fee minting would overflow total_supply",
             Self::WithdrawalQueueCacheOverflow => "withdrawal queue cache overflow",
             Self::WithdrawalQueueMissingEntry => "withdrawal queue missing entry",
-            Self::WithdrawalQueueEmpty => "withdrawal queue empty",
+            Self::UnexpectedEmptyQueue => "withdrawal queue unexpectedly empty",
             Self::WithdrawalQueueInvariantViolation => "withdrawal queue invariant violation",
             Self::DepositRequiresIdle => "deposit requires Idle",
             Self::DepositOverflowTotalAssets => "deposit would overflow total_assets",
@@ -168,7 +168,7 @@ pub enum KernelErrorCode {
     Slippage = 1002,
     MinWithdrawal = 1003,
     QueueFull = 1004,
-    EmptyQueue = 1005,
+    NoPendingWithdrawals = 1005,
     Cooldown = 1006,
     Transition = 1007,
     NotImplemented = 1008,
@@ -245,7 +245,7 @@ pub enum KernelError {
         current: u32,
         max: u32,
     },
-    EmptyQueue,
+    NoPendingWithdrawals,
     Cooldown {
         requested_at: u64,
         now: u64,
@@ -282,7 +282,9 @@ impl KernelError {
                 StableKernelErrorCode::Base(KernelErrorCode::MinWithdrawal)
             }
             Self::QueueFull { .. } => StableKernelErrorCode::Base(KernelErrorCode::QueueFull),
-            Self::EmptyQueue => StableKernelErrorCode::Base(KernelErrorCode::EmptyQueue),
+            Self::NoPendingWithdrawals => {
+                StableKernelErrorCode::Base(KernelErrorCode::NoPendingWithdrawals)
+            }
             Self::Cooldown { .. } => StableKernelErrorCode::Base(KernelErrorCode::Cooldown),
             Self::Transition(_) => StableKernelErrorCode::Base(KernelErrorCode::Transition),
             Self::NotImplemented => StableKernelErrorCode::Base(KernelErrorCode::NotImplemented),
@@ -340,7 +342,7 @@ impl fmt::Display for KernelError {
             Self::QueueFull { current, max } => {
                 write!(f, "withdrawal queue full: current {current}, max {max}")
             }
-            Self::EmptyQueue => f.write_str("withdrawal queue empty"),
+            Self::NoPendingWithdrawals => f.write_str("no pending withdrawals"),
             Self::Cooldown {
                 requested_at,
                 now,

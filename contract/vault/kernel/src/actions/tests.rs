@@ -725,7 +725,7 @@ fn execute_withdraw_empty_queue_fails() {
         },
     );
 
-    assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    assert!(matches!(result, Err(KernelError::NoPendingWithdrawals)));
 }
 
 #[test]
@@ -1763,7 +1763,7 @@ fn abort_withdrawing_empty_queue_fails() {
         },
     );
 
-    assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    assert!(matches!(result, Err(KernelError::NoPendingWithdrawals)));
 }
 
 #[test]
@@ -2066,7 +2066,7 @@ fn settle_payout_empty_queue_fails() {
         },
     );
 
-    assert!(matches!(result, Err(KernelError::EmptyQueue)));
+    assert!(matches!(result, Err(KernelError::NoPendingWithdrawals)));
 }
 
 #[test]
