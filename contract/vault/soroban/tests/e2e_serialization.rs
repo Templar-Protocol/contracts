@@ -149,7 +149,7 @@ fn e2e_soroban_storage_postcard_roundtrip_lifecycle() {
         assert!(vault.state().unwrap().op_state.is_idle());
         assert_eq!(vault.state().unwrap().idle_assets, 10_000);
         assert_eq!(vault.state().unwrap().external_assets, 5_000);
-        assert_eq!(vault.state().unwrap().next_op_id, 2);
+        assert_eq!(vault.state().unwrap().next_op_id, 3);
 
         let request = vault.request_withdraw(user, user, 3_000, 0, 400).unwrap();
         drop(vault);
@@ -174,8 +174,8 @@ fn e2e_soroban_storage_postcard_roundtrip_lifecycle() {
         assert_state_roundtrip(&vault);
         assert_accounting_invariant(&vault);
         assert!(vault.state().unwrap().withdraw_queue.is_empty());
-        assert_eq!(vault.state().unwrap().idle_assets, 4_000);
-        assert_eq!(vault.state().unwrap().external_assets, 8_000);
+        assert_eq!(vault.state().unwrap().idle_assets, 7_000);
+        assert_eq!(vault.state().unwrap().external_assets, 5_000);
         assert_eq!(vault.state().unwrap().total_assets, 12_000);
     });
 }

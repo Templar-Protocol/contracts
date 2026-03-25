@@ -638,7 +638,10 @@ where
         now_ns: u64,
     ) -> Result<u64, RuntimeError> {
         self.authorize(ActionKind::BeginAllocating, caller)?;
-        let op_id = self.state()?.next_op_id;
+        let op_id = {
+            let state = self.state_mut()?;
+            Self::reserve_op_id(state)?
+        };
         self.apply_kernel_action(
             KernelAction::begin_allocating(op_id, plan.to_vec(), now_ns),
             now_ns,
@@ -653,7 +656,10 @@ where
         now_ns: u64,
     ) -> Result<u64, RuntimeError> {
         self.authorize(ActionKind::BeginAllocating, caller)?;
-        let op_id = self.state()?.next_op_id;
+        let op_id = {
+            let state = self.state_mut()?;
+            Self::reserve_op_id(state)?
+        };
         self.apply_kernel_action(
             KernelAction::begin_allocating(op_id, vec![(market, 0)], now_ns),
             now_ns,
@@ -763,7 +769,10 @@ where
             return Err(RuntimeError::invalid_input("empty refresh plan"));
         }
 
-        let op_id = self.state()?.next_op_id;
+        let op_id = {
+            let state = self.state_mut()?;
+            Self::reserve_op_id(state)?
+        };
         self.apply_kernel_action(
             KernelAction::begin_refreshing(op_id, filtered_plan, current_ns),
             current_ns,
