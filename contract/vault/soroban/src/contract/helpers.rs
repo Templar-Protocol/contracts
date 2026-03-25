@@ -67,6 +67,29 @@ pub(crate) fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeE
     Ok(())
 }
 
+pub(crate) fn load_virtual_offsets(env: &Env) -> (u128, u128) {
+    let virtual_shares = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::VirtualShares)
+        .unwrap_or(0u128);
+    let virtual_assets = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::VirtualAssets)
+        .unwrap_or(0u128);
+    (virtual_shares, virtual_assets)
+}
+
+pub(crate) fn store_virtual_offsets(env: &Env, virtual_shares: u128, virtual_assets: u128) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::VirtualShares, &virtual_shares);
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::VirtualAssets, &virtual_assets);
+}
+
 #[allow(deprecated)]
 #[inline(never)]
 pub(crate) fn emit_admin_event(env: &Env, action: soroban_sdk::Symbol) {
@@ -275,7 +298,10 @@ pub(crate) fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a
         asset_kernel,
         share_kernel,
     );
-    config = config.with_fees(load_fees_spec(env)?);
+    let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
+    config = config
+        .with_fees(load_fees_spec(env)?)
+        .with_virtual_offsets(virtual_shares, virtual_assets);
 
     let storage = SorobanStorage::new(env);
     let paused = storage.is_paused();

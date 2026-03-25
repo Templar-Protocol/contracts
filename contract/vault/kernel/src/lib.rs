@@ -43,7 +43,7 @@ pub use state::op_state::{
 };
 pub use state::queue::{
     can_enqueue, can_partially_satisfy, can_satisfy_withdrawal, compute_full_withdrawal,
-    compute_partial_withdrawal, compute_queue_status, compute_settlement,
+    compute_idle_settlement, compute_partial_withdrawal, compute_queue_status, compute_settlement,
     compute_settlement_by_price, count_satisfiable, find_request_status, is_past_cooldown,
     is_valid_withdrawal_amount, PendingWithdrawal, QueueError, QueueStatus, WithdrawQueue,
     WithdrawalRequestStatus, WithdrawalResult, DEFAULT_COOLDOWN_NS, MAX_PENDING, MAX_QUEUE_LENGTH,
@@ -53,8 +53,8 @@ pub use state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 pub use transitions::{
     allocation_step_callback, complete_allocation, complete_refresh, payout_complete,
     refresh_step_callback, start_allocation, start_refresh, start_withdrawal, stop_withdrawal,
-    withdrawal_collected, withdrawal_step_callback, TransitionError, TransitionRes,
-    TransitionResult, WithdrawalRequest,
+    withdrawal_collected, withdrawal_settled, withdrawal_step_callback, TransitionError,
+    TransitionRes, TransitionResult, WithdrawalRequest,
 };
 pub use types::{ActualIdx, Address, AssetId, ExpectedIdx, KernelVersion, TimestampNs};
 pub use utils::TimeGate;

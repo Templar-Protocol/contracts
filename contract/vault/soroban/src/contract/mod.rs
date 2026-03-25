@@ -49,11 +49,11 @@ use templar_vault_kernel::actions::AtomicPayoutKind;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
-    apply_action, complete_allocation, complete_refresh, convert_to_assets, convert_to_assets_ceil,
-    convert_to_shares, convert_to_shares_ceil, start_allocation, start_refresh,
-    withdrawal_collected, withdrawal_step_callback, Address, FeeAccrualAnchor, FeeSlot, FeesSpec,
-    KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig, VaultState, Wad,
-    MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
+    apply_action, complete_allocation, compute_idle_settlement, convert_to_assets,
+    convert_to_assets_ceil, convert_to_shares, convert_to_shares_ceil, start_allocation,
+    withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, OpState,
+    PayoutOutcome, Restrictions, TargetId, VaultConfig, VaultState, Wad, MAX_MANAGEMENT_FEE_WAD,
+    MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
 };
 
 const ESCROW_ADDRESS: Address = [0u8; 32];

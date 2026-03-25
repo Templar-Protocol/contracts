@@ -1,11 +1,11 @@
 use super::helpers::{
     adapter_for_market, apply_fee_change, current_supply_queue_len, emit_admin_event,
     emit_alloc_event, emit_pause_state_event, extend_storage_ttl, get_config_address,
-    governance_caller, kernel_address_from_sdk, max_deposit_or_mint, max_withdraw_or_redeem,
-    migrate_legacy_paused, migration_in_progress, query_vault_field, query_vault_snapshot,
-    require_allowed_adapter, require_contract_address, require_governance, require_signed,
+    governance_caller, kernel_address_from_sdk, load_virtual_offsets, max_deposit_or_mint,
+    max_withdraw_or_redeem, migrate_legacy_paused, migration_in_progress, query_vault_field,
+    query_vault_snapshot, require_contract_address, require_governance, require_signed,
     sdk_string_to_alloc, set_config_address, set_migration_in_progress, store_fees_spec,
-    with_contract_vault_contract_error,
+    store_virtual_offsets, with_contract_vault_contract_error,
 };
 use super::*;
 
@@ -21,15 +21,39 @@ impl SorobanVaultContract {
         asset_token: soroban_sdk::Address,
         share_token: soroban_sdk::Address,
     ) -> Result<(), ContractError> {
+        Self::initialize_with_virtual_offsets(
+            env,
+            curator,
+            governance,
+            asset_token,
+            share_token,
+            0,
+            0,
+        )
+    }
+
+    pub fn initialize_with_virtual_offsets(
+        env: Env,
+        curator: soroban_sdk::Address,
+        governance: soroban_sdk::Address,
+        asset_token: soroban_sdk::Address,
+        share_token: soroban_sdk::Address,
+        virtual_shares: i128,
+        virtual_assets: i128,
+    ) -> Result<(), ContractError> {
         if env.storage().instance().has(&VaultDataKey::Initialized) {
             return Err(ContractError::AlreadyInitialized);
         }
+
+        let virtual_shares = to_u128(virtual_shares)?;
+        let virtual_assets = to_u128(virtual_assets)?;
 
         set_config_address(&env, &VaultDataKey::Curator, &curator);
         set_config_address(&env, &VaultDataKey::Governance, &governance);
         set_config_address(&env, &VaultDataKey::AssetToken, &asset_token);
         set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
         set_config_address(&env, &VaultDataKey::SkimRecipient, &governance);
+        store_virtual_offsets(&env, virtual_shares, virtual_assets);
         env.storage()
             .instance()
             .set(&VaultDataKey::Initialized, &true);
@@ -39,6 +63,20 @@ impl SorobanVaultContract {
         let versioned = VersionedState::new(VaultState::default());
         runtime_to_contract(storage.save_state(&versioned))?;
         runtime_to_contract(storage.save_paused(false))?;
+        Ok(())
+    }
+
+    pub fn set_virtual_offsets(
+        env: Env,
+        caller: soroban_sdk::Address,
+        virtual_shares: i128,
+        virtual_assets: i128,
+    ) -> Result<(), ContractError> {
+        require_governance(&env, &caller)?;
+        let virtual_shares = to_u128(virtual_shares)?;
+        let virtual_assets = to_u128(virtual_assets)?;
+        store_virtual_offsets(&env, virtual_shares, virtual_assets);
+        emit_admin_event(&env, symbol_short!("s_voffs"));
         Ok(())
     }
 
@@ -133,40 +171,7 @@ impl SorobanVaultContract {
             return Err(ContractError::InvalidInput);
         }
         let amount_u128 = to_u128(amount)?;
-        let mut new_external: u128 = 0;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let caller_kernel = kernel_address_from_sdk(&env, &caller);
-            let plan = vec![(market.into(), amount_u128)];
-            let op_id = vault.begin_allocation_internal(caller_kernel, &plan)?;
-            {
-                let next_principal = vault
-                    .policy_state()
-                    .principal_for(market)
-                    .checked_add(amount_u128)
-                    .ok_or_else(|| RuntimeError::invalid_state("principal overflow on supply"))?;
-                let policy = vault.policy_state_mut();
-                policy.set_principal(market, next_principal);
-                policy.refresh_cap_group_principals();
-                let state = vault.state_mut()?;
-                state.external_assets =
-                    state
-                        .external_assets
-                        .checked_add(amount_u128)
-                        .ok_or_else(|| {
-                            RuntimeError::invalid_state("external_assets overflow on supply")
-                        })?;
-                state.sync_total_assets();
-            }
-            vault.finish_allocation_internal(op_id)?;
-            vault.save_state()?;
-            let policy_state = vault.policy_state().clone();
-            vault.storage.save_policy_state(&policy_state)?;
-            new_external = vault.state()?.external_assets;
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-
-        emit_alloc_event(&env, market, amount, true);
+        let now_ns = ledger_timestamp_ns(&env)?;
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
         soroban_sdk::token::Client::new(&env, &asset_token).transfer(
             &env.current_contract_address(),
@@ -174,7 +179,32 @@ impl SorobanVaultContract {
             &amount,
         );
         invoke_supply(&env, &adapter, &asset_token, amount);
+        let observed_total_assets = to_u128(invoke_total_assets(&env, &adapter, &asset_token))?;
 
+        let mut new_external: u128 = 0;
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            let caller_kernel = kernel_address_from_sdk(&env, &caller);
+            let plan = vec![(market.into(), amount_u128)];
+            let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
+            {
+                let policy = vault.policy_state_mut();
+                policy.set_principal(market, observed_total_assets);
+                policy.refresh_cap_group_principals();
+            }
+            new_external = vault.sync_external_assets(
+                caller_kernel,
+                op_id,
+                vault.policy_state().external_assets(),
+                now_ns,
+            )?;
+            vault.finish_allocation_internal(caller_kernel, op_id, now_ns)?;
+            let policy_state = vault.policy_state().clone();
+            vault.storage.save_policy_state(&policy_state)?;
+            Ok(())
+        };
+        with_contract_vault_contract_error(&env, &mut call)?;
+
+        emit_alloc_event(&env, market, amount, true);
         to_i128(new_external)
     }
 
@@ -193,11 +223,13 @@ impl SorobanVaultContract {
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
         let realized_amount = invoke_progress_withdrawal(&env, &adapter, &asset_token, amount);
         let realized_amount_u128 = to_u128(realized_amount)?;
+        let now_ns = ledger_timestamp_ns(&env)?;
 
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let caller_kernel = kernel_address_from_sdk(&env, &caller);
-            vault.authorize(ActionKind::BeginAllocating, caller_kernel)?;
+            let op_id =
+                vault.begin_allocation_withdraw_internal(caller_kernel, market.into(), now_ns)?;
             {
                 let next_principal = vault
                     .policy_state()
@@ -209,23 +241,23 @@ impl SorobanVaultContract {
                 let policy = vault.policy_state_mut();
                 policy.set_principal(market, next_principal);
                 policy.refresh_cap_group_principals();
+            }
+            {
                 let state = vault.state_mut()?;
-                state.external_assets = state
-                    .external_assets
-                    .checked_sub(realized_amount_u128)
-                    .ok_or_else(|| {
-                        RuntimeError::invalid_state("external_assets underflow on withdraw")
-                    })?;
                 state.idle_assets = state
                     .idle_assets
                     .checked_add(realized_amount_u128)
                     .ok_or_else(|| {
                         RuntimeError::invalid_state("idle_assets overflow on withdraw")
                     })?;
-                state.sync_total_assets();
-                new_external = state.external_assets;
             }
-            vault.save_state()?;
+            new_external = vault.sync_external_assets(
+                caller_kernel,
+                op_id,
+                vault.policy_state().external_assets(),
+                now_ns,
+            )?;
+            vault.finish_allocation_internal(caller_kernel, op_id, now_ns)?;
             let policy_state = vault.policy_state().clone();
             vault.storage.save_policy_state(&policy_state)?;
             Ok(())
@@ -272,12 +304,9 @@ impl SorobanVaultContract {
                 policy.refresh_cap_group_principals();
                 new_external = policy.external_assets();
             }
-            {
-                let state = vault.state_mut()?;
-                state.external_assets = new_external;
-                state.sync_total_assets();
-            }
-            let result = vault.finish_refreshing(caller_kernel, op_id)?;
+            new_external =
+                vault.sync_external_assets(caller_kernel, op_id, new_external, now_ns)?;
+            let result = vault.finish_refreshing(caller_kernel, op_id, now_ns)?;
             let policy_state = vault.policy_state().clone();
             vault.storage.save_policy_state(&policy_state)?;
             new_external = result.new_external_assets;
@@ -630,6 +659,40 @@ impl SorobanVaultContract {
         emit_admin_event(&env, symbol_short!("skim"));
         Ok(())
     }
+    pub fn resync_idle_balance(env: Env) -> Result<(), ContractError> {
+        let now_ns = ledger_timestamp_ns(&env)?;
+        let cooldown_ns = 120_000_000_000u64; // 120 seconds
+        let last_key = VaultDataKey::IdleResyncLastNs;
+        let last_ns = env.storage().instance().get(&last_key).unwrap_or(0u64);
+        if last_ns != 0 && now_ns.saturating_sub(last_ns) < cooldown_ns {
+            return Err(ContractError::InvalidState);
+        }
+        let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
+        let client = soroban_sdk::token::Client::new(&env, &asset_token);
+        let actual_balance = to_u128(client.balance(&env.current_contract_address()))?;
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            let state = vault.state_mut()?;
+            let before_idle = state.idle_assets;
+            if !state.op_state.is_idle() {
+                return Err(RuntimeError::invalid_state("only one op in flight"));
+            }
+
+            state.idle_assets = actual_balance;
+            state.sync_total_assets();
+
+            if actual_balance > before_idle {
+                let delta = actual_balance - before_idle;
+                state.fee_anchor.total_assets = state.fee_anchor.total_assets.saturating_add(delta);
+            }
+
+            vault.save_state()?;
+            Ok(())
+        };
+        with_contract_vault_contract_error(&env, &mut call)?;
+        env.storage().instance().set(&last_key, &now_ns);
+        emit_admin_event(&env, symbol_short!("resync"));
+        Ok(())
+    }
 
     pub fn cancel_migration(env: Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
         require_governance(&env, &caller)?;
@@ -659,6 +722,11 @@ impl SorobanVaultContract {
             get_config_address(&env, &VaultDataKey::AssetToken)?,
             get_config_address(&env, &VaultDataKey::ShareToken)?,
         ))
+    }
+
+    pub fn virtual_offsets(env: Env) -> Result<(i128, i128), ContractError> {
+        let (virtual_shares, virtual_assets) = load_virtual_offsets(&env);
+        Ok((to_i128(virtual_shares)?, to_i128(virtual_assets)?))
     }
 
     pub fn supply_queue(env: Env) -> Result<soroban_sdk::Vec<u32>, ContractError> {

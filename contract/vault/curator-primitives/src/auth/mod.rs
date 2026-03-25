@@ -36,6 +36,7 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
         | ActionKind::SyncExternalAssets
+        | ActionKind::RebalanceWithdraw
         | ActionKind::BeginRefreshing
         | ActionKind::FinishRefreshing
         | ActionKind::SettlePayout
@@ -62,6 +63,7 @@ pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
         | ActionKind::SyncExternalAssets
+        | ActionKind::RebalanceWithdraw
         | ActionKind::BeginRefreshing
         | ActionKind::FinishRefreshing
         | ActionKind::RefreshFees
@@ -98,6 +100,7 @@ pub enum ActionKind {
     FinishAllocating,
     /// Sync external assets.
     SyncExternalAssets,
+    RebalanceWithdraw,
     /// Begin refresh operation.
     BeginRefreshing,
     /// Finish refresh operation.
@@ -129,44 +132,37 @@ impl ActionKind {
     }
 }
 
-macro_rules! impl_action_kind_from_kernel_action {
-    ($($variant:ident),+ $(,)?) => {
-        impl From<&KernelAction> for ActionKind {
-            #[inline]
-            fn from(action: &KernelAction) -> Self {
-                match action {
-                    $(KernelAction::$variant { .. } => Self::$variant,)+
-                    KernelAction::EmergencyReset => Self::EmergencyReset,
-                }
-            }
+impl From<&KernelAction> for ActionKind {
+    #[inline]
+    fn from(action: &KernelAction) -> Self {
+        match action {
+            KernelAction::BeginAllocating { .. } => Self::BeginAllocating,
+            KernelAction::Deposit { .. } => Self::Deposit,
+            KernelAction::AtomicWithdraw { .. } => Self::AtomicWithdraw,
+            KernelAction::RequestWithdraw { .. } => Self::RequestWithdraw,
+            KernelAction::ExecuteWithdraw { .. } => Self::ExecuteWithdraw,
+            KernelAction::BeginRefreshing { .. } => Self::BeginRefreshing,
+            KernelAction::FinishAllocating { .. } => Self::FinishAllocating,
+            KernelAction::SyncExternalAssets { .. } => Self::SyncExternalAssets,
+            KernelAction::RebalanceWithdraw { .. } => Self::RebalanceWithdraw,
+            KernelAction::FinishRefreshing { .. } => Self::FinishRefreshing,
+            KernelAction::AbortRefreshing { .. } => Self::AbortRefreshing,
+            KernelAction::SettlePayout { .. } => Self::SettlePayout,
+            KernelAction::AbortAllocating { .. } => Self::AbortAllocating,
+            KernelAction::AbortWithdrawing { .. } => Self::AbortWithdrawing,
+            KernelAction::RefreshFees { .. } => Self::RefreshFees,
+            KernelAction::Pause { .. } => Self::Pause,
+            KernelAction::EmergencyReset => Self::EmergencyReset,
         }
-
-        impl From<KernelAction> for ActionKind {
-            #[inline]
-            fn from(action: KernelAction) -> Self {
-                Self::from(&action)
-            }
-        }
-    };
+    }
 }
 
-impl_action_kind_from_kernel_action!(
-    BeginAllocating,
-    Deposit,
-    RequestWithdraw,
-    ExecuteWithdraw,
-    BeginRefreshing,
-    FinishAllocating,
-    SyncExternalAssets,
-    FinishRefreshing,
-    AbortRefreshing,
-    SettlePayout,
-    AbortAllocating,
-    AbortWithdrawing,
-    RefreshFees,
-    Pause,
-    AtomicWithdraw,
-);
+impl From<KernelAction> for ActionKind {
+    #[inline]
+    fn from(action: KernelAction) -> Self {
+        Self::from(&action)
+    }
+}
 
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, PartialEq, Eq)]

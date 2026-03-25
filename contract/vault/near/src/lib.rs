@@ -57,7 +57,9 @@ use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
-use templar_vault_kernel::state::queue::{is_past_cooldown, DEFAULT_COOLDOWN_NS};
+use templar_vault_kernel::state::queue::{
+    compute_idle_settlement, is_past_cooldown, DEFAULT_COOLDOWN_NS,
+};
 use templar_vault_kernel::{Address, KernelAction, PayoutOutcome};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
@@ -1581,12 +1583,6 @@ impl Contract {
         (new_total_supply.into(), new_total_assets.into())
     }
 
-    // Pure helper to compute how many escrowed shares to burn on partial payout
-    fn compute_burn_shares(escrow_shares: u128, collected: u128, requested_total: u128) -> u128 {
-        let expected = requested_total.max(1);
-        templar_vault_kernel::compute_settlement(escrow_shares, expected, collected).to_burn
-    }
-
     pub fn compute_effective_totals(
         cur_assets: Number,
         last_total_assets: Number,
@@ -2061,7 +2057,8 @@ impl Contract {
             PromiseOrValue::Value(())
         } else {
             let requested = collected.saturating_add(remaining);
-            let burn_shares = Self::compute_burn_shares(escrow_shares, collected, requested);
+            let burn_shares = compute_idle_settlement(escrow_shares, requested, collected)
+                .map_or(0, |result| result.settlement.to_burn);
 
             self.pay_or_else(
                 op_id,

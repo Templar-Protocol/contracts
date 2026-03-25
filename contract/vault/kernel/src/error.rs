@@ -48,6 +48,9 @@ pub enum InvalidStateCode {
     AtomicWithdrawExceedsIdleAssets = 35,
     AtomicWithdrawBurnExceedsTotalShares = 36,
     AtomicWithdrawTotalAssetsUnderflow = 37,
+    RebalanceWithdrawRequiresIdle = 38,
+    RebalanceWithdrawExceedsExternalAssets = 39,
+    RebalanceWithdrawOverflowsIdleAssets = 40,
 }
 
 impl InvalidStateCode {
@@ -112,6 +115,13 @@ impl InvalidStateCode {
             }
             Self::AtomicWithdrawTotalAssetsUnderflow => {
                 "atomic_withdraw would underflow total_assets"
+            }
+            Self::RebalanceWithdrawRequiresIdle => "rebalance_withdraw requires Idle",
+            Self::RebalanceWithdrawExceedsExternalAssets => {
+                "rebalance_withdraw exceeds external_assets"
+            }
+            Self::RebalanceWithdrawOverflowsIdleAssets => {
+                "rebalance_withdraw would overflow idle_assets"
             }
         }
     }

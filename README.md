@@ -31,7 +31,7 @@ Templar Protocol is a chain-agnostic overcollateralized lending DeFi protocol.
 
 - The Soroban curator vault persists kernel↔Soroban address mappings in storage for effect execution; mappings are loaded automatically when executing effects.
 - The Soroban entrypoints register caller/receiver addresses automatically. Use the curator-only `register_address` entrypoint to persist mappings for fee recipients or any address not provided during a call.
-- The Soroban curator vault does not partially settle withdrawals in the executor. A withdrawal stays queued until idle assets cover the expected amount.
+- The Soroban curator vault now settles queued withdrawals against whatever idle assets are currently available, burning shares proportionally and refunding the remainder.
 - Legacy/dust withdrawals with `expected_assets == 0` are skipped and escrowed shares are refunded.
 
 ## Build and run tests

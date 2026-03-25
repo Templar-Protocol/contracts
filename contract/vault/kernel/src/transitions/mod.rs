@@ -466,6 +466,43 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
     ))
 }
 
+pub fn withdrawal_settled(
+    state: OpState,
+    op_id: u64,
+    amount_collected: u128,
+    burn_shares: u128,
+) -> TransitionRes {
+    let stepped = withdrawal_step_callback(state, op_id, amount_collected)?;
+    let withdraw = require_state!(stepped.new_state, Withdrawing);
+
+    if burn_shares > withdraw.escrow_shares {
+        return Err(TransitionError::BurnExceedsEscrow {
+            burn: burn_shares,
+            escrow: withdraw.escrow_shares,
+        });
+    }
+
+    let new_state = OpState::Payout(PayoutState {
+        op_id: withdraw.op_id,
+        receiver: withdraw.receiver,
+        amount: withdraw.collected,
+        owner: withdraw.owner,
+        escrow_shares: withdraw.escrow_shares,
+        burn_shares,
+    });
+
+    Ok(TransitionResult::with_effects(
+        new_state,
+        vec![KernelEffect::EmitEvent {
+            event: KernelEvent::WithdrawalCollected {
+                op_id,
+                burn_shares,
+                collected: withdraw.collected,
+            },
+        }],
+    ))
+}
+
 /// Stop withdrawal and refund escrow shares.
 ///
 /// # Arguments

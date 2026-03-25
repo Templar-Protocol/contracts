@@ -18,6 +18,7 @@ pub enum ContractError {
     ConversionOverflow = 10,
     VaultNotIdle = 11,
     InsufficientIdleAssets = 12,
+    Throttled = 13,
     EnforcedPause = 1000,
     ExpectedPause = 1001,
     MigrationNotAllowed = 1100,

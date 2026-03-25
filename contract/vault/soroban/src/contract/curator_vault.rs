@@ -146,8 +146,8 @@ where
             withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: self.paused,
-            virtual_shares: 0,
-            virtual_assets: 0,
+            virtual_shares: self.config.virtual_shares,
+            virtual_assets: self.config.virtual_assets,
         }
     }
 
@@ -477,24 +477,26 @@ where
         };
 
         let available_assets = self.state()?.idle_assets;
-        if available_assets == 0 || available_assets < pending_expected {
+        if available_assets < pending_expected && available_assets < MIN_WITHDRAWAL_ASSETS {
             return Ok(EffectSummary::new());
         }
-
-        let assets_out = pending_expected;
-        let burn_shares = pending_escrow;
-        let refund_shares = 0u128;
-        let op_id = withdraw_op_id;
-
-        let step = {
-            let op_state = mem::take(&mut self.state_mut()?.op_state);
-            transition_to_runtime(withdrawal_step_callback(op_state, op_id, assets_out))?
+        let Some(idle_settlement) =
+            compute_idle_settlement(pending_escrow, pending_expected, available_assets)
+        else {
+            return Ok(EffectSummary::new());
         };
-        self.state_mut()?.op_state = step.new_state;
+
+        let assets_out = idle_settlement.assets_out;
+        if assets_out == 0 {
+            return Ok(EffectSummary::new());
+        }
+        let burn_shares = idle_settlement.settlement.to_burn;
+        let refund_shares = idle_settlement.settlement.refund;
+        let op_id = withdraw_op_id;
 
         let collected = {
             let op_state = mem::take(&mut self.state_mut()?.op_state);
-            transition_to_runtime(withdrawal_collected(op_state, op_id, burn_shares))?
+            transition_to_runtime(withdrawal_settled(op_state, op_id, assets_out, burn_shares))?
         };
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&collected.effects, &ctx)?;
@@ -569,19 +571,20 @@ where
                 }
 
                 let plan = vec![(d.market.into(), d.amount)];
-                let op_id = self.begin_allocation_internal(caller, &plan)?;
-
+                let op_id = self.begin_allocation_internal(caller, &plan, 0)?;
                 {
-                    let state = self.state_mut()?;
-                    state.external_assets = state
-                        .external_assets
+                    let next_principal = self
+                        .policy_state()
+                        .principal_for(d.market)
                         .checked_add(d.amount)
-                        .ok_or_else(|| invalid_state_error("external_assets overflow on supply"))?;
-                    state.sync_total_assets();
+                        .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+                    let policy = self.policy_state_mut();
+                    policy.set_principal(d.market, next_principal);
+                    policy.refresh_cap_group_principals();
                 }
-
-                self.finish_allocation_internal(op_id)?;
-                self.save_state()?;
+                self.sync_external_assets(caller, op_id, self.policy_state().external_assets(), 0)?;
+                self.finish_allocation_internal(caller, op_id, 0)?;
+                self.storage.save_policy_state(&self.policy_state)?;
                 Ok(AllocationResult {
                     op_id,
                     new_external_assets: self.state()?.external_assets,
@@ -593,24 +596,34 @@ where
                     return Err(RuntimeError::invalid_input("amount must be > 0"));
                 }
 
-                self.authorize(ActionKind::BeginAllocating, caller)?;
-                let new_external = {
+                let op_id = self.begin_allocation_withdraw_internal(caller, d.market.into(), 0)?;
+                {
+                    let next_principal = self
+                        .policy_state()
+                        .principal_for(d.market)
+                        .checked_sub(d.amount)
+                        .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
+                    let policy = self.policy_state_mut();
+                    policy.set_principal(d.market, next_principal);
+                    policy.refresh_cap_group_principals();
+                }
+                {
                     let state = self.state_mut()?;
-                    state.external_assets =
-                        state.external_assets.checked_sub(d.amount).ok_or_else(|| {
-                            invalid_state_error("external_assets underflow on withdraw")
-                        })?;
                     state.idle_assets = state
                         .idle_assets
                         .checked_add(d.amount)
                         .ok_or_else(|| invalid_state_error("idle_assets overflow on withdraw"))?;
-                    state.sync_total_assets();
-                    state.external_assets
-                };
-
-                self.save_state()?;
+                }
+                let new_external = self.sync_external_assets(
+                    caller,
+                    op_id,
+                    self.policy_state().external_assets(),
+                    0,
+                )?;
+                self.finish_allocation_internal(caller, op_id, 0)?;
+                self.storage.save_policy_state(&self.policy_state)?;
                 Ok(AllocationResult {
-                    op_id: 0,
+                    op_id,
                     new_external_assets: new_external,
                     summary: EffectSummary::new(),
                 })
@@ -622,39 +635,40 @@ where
         &mut self,
         caller: Address,
         plan: &[(TargetId, u128)],
+        now_ns: u64,
     ) -> Result<u64, RuntimeError> {
         self.authorize(ActionKind::BeginAllocating, caller)?;
-        let state = self.state_mut()?;
-
-        let alloc_total: u128 = plan.iter().map(|(_, amt)| *amt).sum();
-        if alloc_total > state.idle_assets {
-            return Err(RuntimeError::insufficient_balance(
-                state.idle_assets,
-                alloc_total,
-            ));
-        }
-
-        let op_id = Self::reserve_op_id(state)?;
-        let result = transition_to_runtime(start_allocation(
-            mem::take(&mut state.op_state),
-            plan.to_vec(),
-            op_id,
-        ))?;
-
-        state.idle_assets -= alloc_total;
-        state.sync_total_assets();
-        state.op_state = result.new_state;
+        let op_id = self.state()?.next_op_id;
+        self.apply_kernel_action(
+            KernelAction::begin_allocating(op_id, plan.to_vec(), now_ns),
+            now_ns,
+        )?;
         Ok(op_id)
     }
 
-    pub(crate) fn finish_allocation_internal(&mut self, op_id: u64) -> Result<(), RuntimeError> {
-        let state = self.state_mut()?;
-        let result = transition_to_runtime(complete_allocation(
-            mem::take(&mut state.op_state),
-            op_id,
-            None,
-        ))?;
-        state.op_state = result.new_state;
+    pub(crate) fn begin_allocation_withdraw_internal(
+        &mut self,
+        caller: Address,
+        market: TargetId,
+        now_ns: u64,
+    ) -> Result<u64, RuntimeError> {
+        self.authorize(ActionKind::BeginAllocating, caller)?;
+        let op_id = self.state()?.next_op_id;
+        self.apply_kernel_action(
+            KernelAction::begin_allocating(op_id, vec![(market, 0)], now_ns),
+            now_ns,
+        )?;
+        Ok(op_id)
+    }
+
+    pub(crate) fn finish_allocation_internal(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<(), RuntimeError> {
+        self.authorize(ActionKind::FinishAllocating, caller)?;
+        self.apply_kernel_action(KernelAction::finish_allocating(op_id, now_ns), now_ns)?;
         Ok(())
     }
 
@@ -665,7 +679,7 @@ where
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
         let op_id = self.begin_refreshing(caller, markets, now_ns)?;
-        self.finish_refreshing(caller, op_id)
+        self.finish_refreshing(caller, op_id, now_ns)
     }
 
     #[cfg(any(test, feature = "testutils"))]
@@ -739,6 +753,7 @@ where
         plan: Vec<TargetId>,
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
+        self.authorize(ActionKind::BeginRefreshing, caller)?;
         let filtered_plan = self
             .policy_state
             .locks
@@ -748,19 +763,11 @@ where
             return Err(RuntimeError::invalid_input("empty refresh plan"));
         }
 
-        self.authorize(ActionKind::BeginRefreshing, caller)?;
-        let op_id = {
-            let state = self.state_mut()?;
-            let op_id = Self::reserve_op_id(state)?;
-            let transition_result = transition_to_runtime(start_refresh(
-                mem::take(&mut state.op_state),
-                filtered_plan,
-                op_id,
-            ))?;
-            state.op_state = transition_result.new_state;
-            op_id
-        };
-        self.save_state()?;
+        let op_id = self.state()?.next_op_id;
+        self.apply_kernel_action(
+            KernelAction::begin_refreshing(op_id, filtered_plan, current_ns),
+            current_ns,
+        )?;
         Ok(op_id)
     }
 
@@ -768,26 +775,49 @@ where
         &mut self,
         caller: Address,
         op_id: u64,
+        now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
         self.authorize(ActionKind::FinishRefreshing, caller)?;
         let result = {
-            let state = self.state_mut()?;
-            let markets_refreshed = match &state.op_state {
+            let markets_refreshed = match &self.state()?.op_state {
                 OpState::Refreshing(refresh) => refresh.plan.len() as u32,
                 _ => 0,
             };
-            let transition_result =
-                transition_to_runtime(complete_refresh(mem::take(&mut state.op_state), op_id))?;
-            state.op_state = transition_result.new_state;
+            self.apply_kernel_action(KernelAction::finish_refreshing(op_id, now_ns), now_ns)?;
 
             RefreshResult {
                 op_id,
                 markets_refreshed,
-                new_external_assets: state.external_assets,
+                new_external_assets: self.state()?.external_assets,
             }
         };
-        self.save_state()?;
         Ok(result)
+    }
+
+    pub(crate) fn sync_external_assets(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        new_external_assets: u128,
+        now_ns: u64,
+    ) -> Result<u128, RuntimeError> {
+        self.authorize(ActionKind::SyncExternalAssets, caller)?;
+        self.apply_kernel_action(
+            KernelAction::sync_external_assets(new_external_assets, op_id, now_ns),
+            now_ns,
+        )?;
+        Ok(self.state()?.external_assets)
+    }
+
+    pub(crate) fn rebalance_withdraw(
+        &mut self,
+        caller: Address,
+        amount: u128,
+        now_ns: u64,
+    ) -> Result<u128, RuntimeError> {
+        self.authorize(ActionKind::RebalanceWithdraw, caller)?;
+        self.apply_kernel_action(KernelAction::rebalance_withdraw(amount, now_ns), now_ns)?;
+        Ok(self.state()?.external_assets)
     }
 
     #[inline]

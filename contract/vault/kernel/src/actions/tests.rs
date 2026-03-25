@@ -3,7 +3,7 @@ use crate::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use crate::error::{InvalidConfigCode, InvalidStateCode};
 use crate::fee::{FeeSlot, FeesSpec};
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
-use crate::state::op_state::WithdrawingState;
+use crate::state::op_state::{AllocatingState, WithdrawingState};
 use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::Number;
@@ -1320,6 +1320,83 @@ fn sync_external_assets_allows_up_to_double() {
     assert!(result.is_ok());
     let result = result.unwrap();
     assert_eq!(result.state.total_assets, 2_000);
+}
+
+#[test]
+fn rebalance_withdraw_moves_assets_from_external_to_idle() {
+    let state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RebalanceWithdraw {
+            amount: 300,
+            now_ns: 0,
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.idle_assets, 500);
+    assert_eq!(result.state.external_assets, 500);
+    assert_eq!(result.state.total_assets, 1_000);
+}
+
+#[test]
+fn rebalance_withdraw_requires_idle() {
+    let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 7,
+        index: 0,
+        remaining: 100,
+        plan: vec![(1, 100)],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RebalanceWithdraw {
+            amount: 50,
+            now_ns: 0,
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::RebalanceWithdrawRequiresIdle
+        ))
+    ));
+}
+
+#[test]
+fn rebalance_withdraw_rejects_amount_above_external_assets() {
+    let state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RebalanceWithdraw {
+            amount: 801,
+            now_ns: 0,
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::RebalanceWithdrawExceedsExternalAssets
+        ))
+    ));
 }
 
 #[test]

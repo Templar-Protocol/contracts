@@ -66,6 +66,10 @@ pub struct ContractConfig {
     pub share_address: Address,
     /// Fee configuration.
     pub fees: FeesSpec,
+    /// Virtual share offset passed through to kernel conversion math.
+    pub virtual_shares: u128,
+    /// Virtual asset offset passed through to kernel conversion math.
+    pub virtual_assets: u128,
 }
 
 impl ContractConfig {
@@ -88,6 +92,8 @@ impl ContractConfig {
             asset_address,
             share_address,
             fees: FeesSpec::zero(),
+            virtual_shares: 0,
+            virtual_assets: 0,
         }
     }
 
@@ -96,6 +102,15 @@ impl ContractConfig {
     #[must_use]
     pub fn with_fees(mut self, fees: FeesSpec) -> Self {
         self.fees = fees;
+        self
+    }
+
+    /// Attach virtual conversion offsets.
+    #[inline]
+    #[must_use]
+    pub fn with_virtual_offsets(mut self, virtual_shares: u128, virtual_assets: u128) -> Self {
+        self.virtual_shares = virtual_shares;
+        self.virtual_assets = virtual_assets;
         self
     }
 
@@ -148,6 +163,9 @@ impl VaultDataKey {
     pub const Allocators: Symbol = soroban_sdk::symbol_short!("allctrs");
     pub const AllowedAdapters: Symbol = soroban_sdk::symbol_short!("adapters");
     pub const SkimRecipient: Symbol = soroban_sdk::symbol_short!("skimrcp");
+    pub const VirtualShares: Symbol = soroban_sdk::symbol_short!("vshares");
+    pub const VirtualAssets: Symbol = soroban_sdk::symbol_short!("vassets");
+    pub const IdleResyncLastNs: Symbol = soroban_sdk::symbol_short!("idlrsync");
 }
 
 pub struct VaultBootstrap<'a> {

@@ -131,6 +131,26 @@ fn e2e_soroban_storage_postcard_roundtrip_lifecycle() {
         assert_accounting_invariant(&vault);
         assert_eq!(vault.state().unwrap().external_assets, 8_000);
 
+        let withdraw_result = vault
+            .allocate(
+                allocator,
+                &AllocationDelta::Withdraw(Delta {
+                    market: 0,
+                    amount: 3_000,
+                }),
+            )
+            .unwrap();
+        assert_eq!(withdraw_result.op_id, 2);
+        drop(vault);
+
+        let mut vault = fresh_loaded_vault(&env);
+        assert_state_roundtrip(&vault);
+        assert_accounting_invariant(&vault);
+        assert!(vault.state().unwrap().op_state.is_idle());
+        assert_eq!(vault.state().unwrap().idle_assets, 10_000);
+        assert_eq!(vault.state().unwrap().external_assets, 5_000);
+        assert_eq!(vault.state().unwrap().next_op_id, 2);
+
         let request = vault.request_withdraw(user, user, 3_000, 0, 400).unwrap();
         drop(vault);
 

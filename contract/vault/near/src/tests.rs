@@ -730,9 +730,12 @@ fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, exp
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
 
+    let burn = templar_vault_kernel::compute_idle_settlement(escrow, requested, collected)
+        .map_or(0, |result| result.settlement.to_burn);
+
     assert_eq!(
-        Contract::compute_burn_shares(escrow, collected, requested),
-        expect
+        burn, expect,
+        "kernel idle settlement should drive proportional payout burn"
     );
 }
 

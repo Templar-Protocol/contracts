@@ -464,6 +464,36 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_sync_external_assets_requires_active_allocation_op_id() {
+        let mut vault = create_test_vault();
+        let caller = [3u8; 32]; // allocator
+
+        {
+            let state = vault.state_mut().unwrap();
+            state.idle_assets = 4_000;
+            state.external_assets = 6_000;
+            state.total_assets = 10_000;
+        }
+
+        let op_id = vault
+            .begin_allocation_withdraw_internal(caller, 0, 1_000)
+            .unwrap();
+
+        let synced_external = vault
+            .sync_external_assets(caller, op_id, 4_500, 1_000)
+            .unwrap();
+
+        assert_eq!(synced_external, 4_500);
+        assert!(vault.state().unwrap().op_state.is_allocating());
+        assert_eq!(vault.state().unwrap().external_assets, 4_500);
+        assert_eq!(vault.state().unwrap().idle_assets, 4_000);
+        assert_eq!(vault.state().unwrap().total_assets, 8_500);
+
+        let stale_sync = vault.sync_external_assets(caller, op_id + 1, 4_000, 1_000);
+        assert!(stale_sync.is_err());
+    }
+
+    #[test]
     fn test_begin_refreshing() {
         let mut vault = create_test_vault();
         let caller = [3u8; 32]; // allocator
@@ -492,7 +522,7 @@ mod contract_tests {
             .plan
             .len() as u32;
 
-        let result = vault.finish_refreshing(caller, op_id).unwrap();
+        let result = vault.finish_refreshing(caller, op_id, 1500).unwrap();
 
         assert_eq!(result.markets_refreshed, expected);
         assert!(vault.state().unwrap().op_state.is_idle());
@@ -539,20 +569,28 @@ mod contract_tests {
 
         assert_eq!(summary.assets_transferred, 0);
         assert_eq!(summary.shares_burned, 0);
-        assert!(vault.state().unwrap().op_state.is_withdrawing());
-        let (head_id_after, head_after) = vault
-            .state()
-            .unwrap()
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_withdrawing());
+        let (head_id_after, head_after) = state
             .withdraw_queue
             .head()
             .expect("withdrawal still queued");
         assert_eq!(head_id_after, head_id);
         assert_eq!(head_after.escrow_shares, head_escrow_before);
         assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_sub(1));
+        assert_eq!(
+            state.total_assets,
+            state.idle_assets.saturating_add(state.external_assets)
+        );
+        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
+        assert_eq!(summary.shares_transferred, 0);
+        assert_eq!(head_id, 0);
+        assert_eq!(head_expected_before, deposit_amount);
     }
 
     #[test]
-    fn test_execute_withdraw_insufficient_idle_no_partial() {
+    fn test_execute_withdraw_insufficient_idle_partially_settles() {
         let mut vault = create_test_vault();
         let allocator = [3u8; 32];
         let owner = [1u8; 32];
@@ -572,7 +610,7 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
-        let (head_id, head_escrow_before, head_expected_before) = {
+        let (_head_id, head_escrow_before, head_expected_before) = {
             let (id, head) = vault
                 .state()
                 .unwrap()
@@ -590,18 +628,25 @@ mod contract_tests {
 
         let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
 
-        assert_eq!(summary.assets_transferred, 0);
-        assert_eq!(summary.shares_burned, 0);
-        assert!(vault.state().unwrap().op_state.is_withdrawing());
-        let (head_id_after, head_after) = vault
-            .state()
-            .unwrap()
-            .withdraw_queue
-            .head()
-            .expect("withdrawal still queued");
-        assert_eq!(head_id_after, head_id);
-        assert_eq!(head_after.escrow_shares, head_escrow_before);
-        assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(
+            summary.assets_transferred,
+            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
+        );
+        assert_eq!(
+            summary.shares_burned,
+            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
+        );
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert!(state.withdraw_queue.is_empty());
+        assert_eq!(state.idle_assets, 0);
+        assert_eq!(state.total_assets, state.external_assets);
+        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
+        assert_eq!(
+            summary.shares_transferred,
+            head_escrow_before - summary.shares_burned
+        );
+        assert_eq!(head_expected_before, deposit_amount);
     }
 
     #[test]
@@ -644,11 +689,12 @@ mod contract_tests {
             let now_ns = 100u64;
             let assets = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
 
+            let (owner_kernel, receiver_kernel) = vault.map_pair(&env, &owner, &receiver).unwrap();
             vault
-                .deposit_mapped(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
+                .deposit(owner_kernel, receiver_kernel, assets, 0, now_ns)
                 .unwrap();
             vault
-                .request_withdraw_mapped(&env, owner.clone(), receiver.clone(), assets, 0, now_ns)
+                .request_withdraw(owner_kernel, receiver_kernel, assets, 0, now_ns)
                 .unwrap();
 
             let storage = vault.storage.clone();
@@ -675,8 +721,9 @@ mod contract_tests {
             let exec_time = now_ns
                 .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
                 .saturating_add(1);
+            let executor_kernel = next_vault.map_caller(&env, &executor).unwrap();
             let summary = next_vault
-                .execute_withdraw_mapped(&env, executor, exec_time)
+                .execute_withdraw(executor_kernel, exec_time)
                 .unwrap();
 
             assert!(summary.assets_transferred > 0);
@@ -700,6 +747,16 @@ mod contract_tests {
         assert!(config.is_privileged(&[1u8; 32])); // curator
         assert!(config.is_privileged(&[3u8; 32])); // allocator
         assert!(!config.is_privileged(&[2u8; 32])); // guardian only
+        assert_eq!(config.virtual_shares, 0);
+        assert_eq!(config.virtual_assets, 0);
+    }
+
+    #[test]
+    fn test_contract_config_with_virtual_offsets() {
+        let config = test_config().with_virtual_offsets(17, 29);
+
+        assert_eq!(config.virtual_shares, 17);
+        assert_eq!(config.virtual_assets, 29);
     }
 
     #[test]
@@ -741,6 +798,90 @@ mod contract_tests {
             };
             with_contract_vault(&env, &mut call).unwrap();
         });
+    }
+
+    #[test]
+    fn test_loads_virtual_offsets_from_storage() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_virtual_offsets(
+                env.clone(),
+                curator.clone(),
+                curator.clone(),
+                asset,
+                share,
+                17,
+                29,
+            )
+            .unwrap();
+
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                assert_eq!(vault.config.virtual_shares, 17);
+                assert_eq!(vault.config.virtual_assets, 29);
+                Ok(())
+            };
+            with_contract_vault(&env, &mut call).unwrap();
+        });
+    }
+
+    #[test]
+    fn test_set_virtual_offsets_updates_contract_storage() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+            )
+            .unwrap();
+
+            SorobanVaultContract::set_virtual_offsets(env.clone(), governance, 101, 202).unwrap();
+
+            assert_eq!(
+                SorobanVaultContract::virtual_offsets(env.clone()).unwrap(),
+                (101, 202)
+            );
+        });
+    }
+
+    #[test]
+    fn test_deposit_uses_configured_virtual_offsets() {
+        let mut vault = CuratorVault::new(
+            test_config().with_virtual_offsets(11, 7),
+            MemoryStorage::new(),
+            TestPermissiveAuth,
+            MockInterpreter::new(),
+        );
+        vault.load_state().unwrap();
+
+        let caller = [1u8; 32];
+        let receiver = [10u8; 32];
+        let result = vault.deposit(caller, receiver, 1_000, 0, 100).unwrap();
+
+        assert_eq!(result.shares_minted, 1_571);
+        assert_eq!(result.total_shares, 1_571);
+        assert_eq!(result.total_assets, 1_000);
     }
 
     #[test]

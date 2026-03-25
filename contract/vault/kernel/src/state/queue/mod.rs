@@ -67,6 +67,42 @@ pub struct WithdrawalResult {
     pub settlement: EscrowSettlement,
 }
 
+#[inline]
+#[must_use]
+pub fn compute_idle_settlement(
+    escrow_shares: u128,
+    expected_assets: u128,
+    available_assets: u128,
+) -> Option<WithdrawalResult> {
+    if expected_assets == 0 {
+        return Some(WithdrawalResult {
+            assets_out: 0,
+            settlement: if available_assets > 0 {
+                EscrowSettlement::burn_all(escrow_shares)
+            } else {
+                EscrowSettlement::refund_all(escrow_shares)
+            },
+        });
+    }
+
+    if available_assets >= expected_assets {
+        return Some(WithdrawalResult {
+            assets_out: expected_assets,
+            settlement: EscrowSettlement::burn_all(escrow_shares),
+        });
+    }
+
+    if available_assets == 0 {
+        return None;
+    }
+
+    let assets_out = available_assets;
+    Some(WithdrawalResult {
+        assets_out,
+        settlement: compute_settlement(escrow_shares, expected_assets, assets_out),
+    })
+}
+
 /// Status information for a single withdrawal request in the queue.
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
@@ -290,14 +326,12 @@ pub fn compute_full_withdrawal(
     withdrawal: &PendingWithdrawal,
     available_assets: u128,
 ) -> Option<WithdrawalResult> {
-    if !can_satisfy_withdrawal(withdrawal, available_assets) {
-        return None;
-    }
-
-    Some(WithdrawalResult {
-        assets_out: withdrawal.expected_assets,
-        settlement: EscrowSettlement::burn_all(withdrawal.escrow_shares),
-    })
+    compute_idle_settlement(
+        withdrawal.escrow_shares,
+        withdrawal.expected_assets,
+        available_assets,
+    )
+    .filter(|result| result.assets_out == withdrawal.expected_assets)
 }
 
 /// Compute the withdrawal result for a partial withdrawal.

@@ -391,7 +391,7 @@ proptest! {
         vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
 
         let soroban_op_id = vault.begin_refreshing(allocator, plan, 1000).unwrap();
-        vault.finish_refreshing(allocator, soroban_op_id).unwrap();
+    vault.finish_refreshing(allocator, soroban_op_id, 0).unwrap();
         prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 }

@@ -3,7 +3,11 @@
 //! These tests verify full flows: deposit -> allocate -> refresh -> withdraw.
 
 use rstest::{fixture, rstest};
-use soroban_sdk::{testutils::Address as _, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger, LedgerInfo},
+    token::StellarAssetClient,
+    Env,
+};
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
@@ -14,8 +18,10 @@ use templar_soroban_runtime::{
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
-    apply_action, effects::KernelEffect, Address, AllocatingState, FeesSpec, KernelAction, OpState,
-    VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
+    effects::KernelEffect, total_assets_for_fee_accrual, Address, AllocatingState,
+    FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, Number, OpState, VaultConfig, VaultState,
+    Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::{
     state::op_state::RefreshingState,
@@ -44,10 +50,6 @@ fn test_config() -> ContractConfig {
 
 fn curator_addr() -> Address {
     [1u8; 32]
-}
-
-fn guardian_addr() -> Address {
-    [2u8; 32]
 }
 
 fn sentinel_addr() -> Address {
@@ -101,23 +103,73 @@ fn soroban_contract_vault_snapshot_matches_fields(
     });
 }
 
-fn preview_kernel_config(paused: bool) -> VaultConfig {
+fn preview_kernel_config(paused: bool, virtual_shares: u128, virtual_assets: u128) -> VaultConfig {
     VaultConfig {
         fees: FeesSpec::zero(),
         min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
         withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
         max_pending_withdrawals: MAX_PENDING as u32,
         paused,
-        virtual_shares: 0,
-        virtual_assets: 0,
+        virtual_shares,
+        virtual_assets,
     }
 }
 
-fn mint_shares_from_deposit(state: VaultState, assets_in: u128) -> u128 {
+fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfig) -> VaultState {
+    let now_ns = env.ledger().timestamp().saturating_mul(1_000_000_000);
+    let anchor = state.fee_anchor;
+
+    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns {
+        return state;
+    }
+
+    let current_assets = state.total_assets;
+    let fee_assets_base = total_assets_for_fee_accrual(
+        current_assets,
+        anchor.total_assets,
+        anchor.timestamp_ns,
+        now_ns,
+        config.fees.max_total_assets_growth_rate,
+    );
+    let management_shares = compute_management_fee_shares(
+        fee_assets_base,
+        current_assets,
+        state.total_shares,
+        config.fees.management.fee_wad,
+        anchor.timestamp_ns,
+        now_ns,
+    );
+    let supply_after_management =
+        Number::from(state.total_shares).saturating_add(management_shares);
+    let profit = fee_assets_base.saturating_sub(anchor.total_assets);
+    let performance_fee_assets = config
+        .fees
+        .performance
+        .fee_wad
+        .apply_floored(Number::from(profit));
+    let performance_shares = compute_fee_shares_from_assets(
+        performance_fee_assets,
+        Number::from(current_assets),
+        supply_after_management,
+    );
+
+    state.total_shares = supply_after_management
+        .saturating_add(performance_shares)
+        .as_u128_saturating();
+    state.fee_anchor = FeeAccrualAnchor::new(current_assets, now_ns);
+    state
+}
+
+fn mint_shares_from_deposit(
+    state: VaultState,
+    assets_in: u128,
+    virtual_shares: u128,
+    virtual_assets: u128,
+) -> u128 {
     let owner = [1u8; 32];
     let receiver = [2u8; 32];
     let self_id = [9u8; 32];
-    let config = preview_kernel_config(false);
+    let config = preview_kernel_config(false, virtual_shares, virtual_assets);
     let result = apply_action(
         state,
         &config,
@@ -158,7 +210,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
 
         let preview =
             SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
-        let minted = mint_shares_from_deposit(empty_state, assets_in);
+        let minted = mint_shares_from_deposit(empty_state, assets_in, 0, 0);
         assert_eq!(preview as u128, minted);
     });
 
@@ -173,8 +225,113 @@ fn soroban_contract_preview_deposit_matches_kernel(
 
         let preview =
             SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
-        let minted = mint_shares_from_deposit(state, assets_in);
+        let minted = mint_shares_from_deposit(state, assets_in, 0, 0);
         assert_eq!(preview as u128, minted);
+    });
+}
+
+#[rstest]
+fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let assets_in = 500u128;
+    let virtual_shares = 123u128;
+    let virtual_assets = 456u128;
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::set_virtual_offsets(
+            env.clone(),
+            SorobanVaultContract::config(env.clone()).unwrap().1,
+            virtual_shares as i128,
+            virtual_assets as i128,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+        state.total_assets = 10_000;
+        state.total_shares = 8_000;
+        state.idle_assets = 10_000;
+        let versioned = VersionedState::new(state.clone());
+        storage.save_state(&versioned).unwrap();
+
+        let preview =
+            SorobanVaultContract::preview_deposit(env.clone(), assets_in as i128).unwrap();
+        let minted = mint_shares_from_deposit(state, assets_in, virtual_shares, virtual_assets);
+        assert_eq!(preview as u128, minted);
+
+        let stored_offsets = SorobanVaultContract::virtual_offsets(env.clone()).unwrap();
+        assert_eq!(
+            stored_offsets,
+            (virtual_shares as i128, virtual_assets as i128)
+        );
+    });
+}
+
+#[rstest]
+fn soroban_contract_previews_simulate_configured_fee_accrual(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, [1u8; 32]),
+            FeeSlot::new(Wad::one() / 5, [2u8; 32]),
+            None,
+        );
+        let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &bytes,
+        );
+
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+        state.total_assets = 1_500;
+        state.total_shares = 1_000;
+        state.idle_assets = 1_500;
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+        storage
+            .save_state(&VersionedState::new(state.clone()))
+            .unwrap();
+
+        let config = VaultConfig {
+            fees,
+            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+            max_pending_withdrawals: MAX_PENDING as u32,
+            paused: false,
+            virtual_shares: 0,
+            virtual_assets: 0,
+        };
+        let expected_state = fee_aware_preview_state(&env, state, &config);
+
+        let preview_deposit = SorobanVaultContract::preview_deposit(env.clone(), 500).unwrap();
+        let preview_withdraw = SorobanVaultContract::preview_withdraw(env.clone(), 1_000).unwrap();
+        let preview_redeem = SorobanVaultContract::preview_redeem(env.clone(), 800).unwrap();
+
+        assert_eq!(
+            preview_deposit as u128,
+            templar_vault_kernel::convert_to_shares(&expected_state, &config, 500)
+        );
+        assert_eq!(
+            preview_withdraw as u128,
+            templar_vault_kernel::convert_to_shares_ceil(&expected_state, &config, 1_000)
+        );
+        assert_eq!(
+            preview_redeem as u128,
+            templar_vault_kernel::convert_to_assets(&expected_state, &config, 800)
+        );
     });
 }
 
@@ -999,6 +1156,46 @@ fn test_allocation_multiple_markets(mut vault: TestVault) {
 }
 
 #[rstest]
+fn test_allocate_withdraw_uses_allocation_lifecycle(mut vault: TestVault) {
+    use templar_soroban_runtime::contract::{AllocationDelta, Delta};
+
+    let user = user_addr();
+    let allocator = allocator_addr();
+
+    vault.deposit(user, user, 10_000, 0, 100).unwrap();
+    let supply_result = vault
+        .allocate(
+            allocator,
+            &AllocationDelta::Supply(Delta {
+                market: 0,
+                amount: 6_000,
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(supply_result.op_id, 0);
+    assert_eq!(vault.state().unwrap().next_op_id, 1);
+
+    let withdraw_result = vault
+        .allocate(
+            allocator,
+            &AllocationDelta::Withdraw(Delta {
+                market: 0,
+                amount: 2_000,
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(withdraw_result.op_id, 1);
+    assert_eq!(withdraw_result.new_external_assets, 4_000);
+    assert!(vault.state().unwrap().op_state.is_idle());
+    assert_eq!(vault.state().unwrap().next_op_id, 2);
+    assert_eq!(vault.state().unwrap().idle_assets, 6_000);
+    assert_eq!(vault.state().unwrap().external_assets, 4_000);
+    assert_eq!(vault.state().unwrap().total_assets, 10_000);
+}
+
+#[rstest]
 fn test_refresh_multiple_markets(mut vault: TestVault) {
     use templar_soroban_runtime::contract::{AllocationDelta, Delta};
 
@@ -1210,4 +1407,91 @@ fn test_refresh_state_roundtrip() {
     });
     let result = refresh_step_callback(state, 9).unwrap();
     assert!(matches!(result.new_state, OpState::Refreshing(_)));
+}
+#[rstest]
+fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let governance = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = VaultState::default();
+        state.total_assets = 500;
+        state.total_shares = 500;
+        state.idle_assets = 500;
+        state.fee_anchor = FeeAccrualAnchor::new(500, 0);
+        storage
+            .save_state(&VersionedState::new(state))
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &500);
+
+    let (total_shares, idle_assets, external_assets) = env.as_contract(&contract_id, || {
+        SorobanVaultContract::vault_snapshot(env.clone()).unwrap()
+    });
+    assert_eq!(idle_assets, 500);
+    assert_eq!(total_shares, 500);
+    assert_eq!(external_assets, 0);
+
+    let total_assets_before = env.as_contract(&contract_id, || {
+        SorobanVaultContract::total_assets(env.clone()).unwrap()
+    });
+    assert_eq!(total_assets_before, 500);
+
+    asset_admin_client.mint(&contract_id, &300);
+
+    let actual_balance = soroban_sdk::token::Client::new(&env, &asset_token).balance(&contract_id);
+    assert_eq!(actual_balance, 800);
+
+    let total_assets_after_donation = env.as_contract(&contract_id, || {
+        SorobanVaultContract::total_assets(env.clone()).unwrap()
+    });
+    let (total_shares_after, idle_assets_after, external_assets_after) = env
+        .as_contract(&contract_id, || {
+            SorobanVaultContract::vault_snapshot(env.clone()).unwrap()
+        });
+    assert_eq!(total_assets_after_donation, total_assets_before);
+    assert_eq!(idle_assets_after, 500);
+    assert_eq!(total_shares_after, 500);
+    assert_eq!(external_assets_after, 0);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::resync_idle_balance(env.clone()).unwrap();
+    });
+
+    let total_assets_final = env.as_contract(&contract_id, || {
+        SorobanVaultContract::total_assets(env.clone()).unwrap()
+    });
+    let (total_shares_final, idle_assets_final, external_assets_final) = env
+        .as_contract(&contract_id, || {
+            SorobanVaultContract::vault_snapshot(env.clone()).unwrap()
+        });
+    assert_eq!(total_assets_final, 800);
+    assert_eq!(idle_assets_final, 800);
+    assert_eq!(total_shares_final, 500);
+    assert_eq!(external_assets_final, 0);
+
+    let (anchor_total_assets, _, _, _) = env.as_contract(&contract_id, || {
+        SorobanVaultContract::fee_info(env.clone()).unwrap()
+    });
+    assert_eq!(anchor_total_assets, 800);
 }

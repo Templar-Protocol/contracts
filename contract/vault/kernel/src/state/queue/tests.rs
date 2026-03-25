@@ -214,6 +214,42 @@ fn test_compute_partial_withdrawal() {
 }
 
 #[test]
+fn test_compute_idle_settlement() {
+    let w = make_withdrawal(1, 100, 1_000);
+
+    let full = compute_idle_settlement(w.escrow_shares, w.expected_assets, 1_000)
+        .expect("full idle settlement");
+    assert_eq!(full.assets_out, 1_000);
+    assert_eq!(full.settlement.to_burn, 100);
+    assert_eq!(full.settlement.refund, 0);
+
+    let partial = compute_idle_settlement(w.escrow_shares, 2_000, MIN_WITHDRAWAL_ASSETS)
+        .expect("partial idle settlement");
+    assert_eq!(partial.assets_out, MIN_WITHDRAWAL_ASSETS);
+    assert_eq!(partial.settlement.to_burn, 50);
+    assert_eq!(partial.settlement.refund, 50);
+
+    let too_small = compute_idle_settlement(
+        w.escrow_shares,
+        10_000,
+        MIN_WITHDRAWAL_ASSETS.saturating_sub(1),
+    )
+    .expect("sub-threshold idle settlement still computes settlement math");
+    assert_eq!(
+        too_small.assets_out,
+        MIN_WITHDRAWAL_ASSETS.saturating_sub(1)
+    );
+    assert_eq!(too_small.settlement.to_burn, 10);
+    assert_eq!(too_small.settlement.refund, 90);
+
+    let zero_expected =
+        compute_idle_settlement(w.escrow_shares, 0, 5_000).expect("zero expected settlement");
+    assert_eq!(zero_expected.assets_out, 0);
+    assert_eq!(zero_expected.settlement.to_burn, 100);
+    assert_eq!(zero_expected.settlement.refund, 0);
+}
+
+#[test]
 fn test_compute_queue_status() {
     let withdrawals: Vec<PendingWithdrawal> = vec![
         make_withdrawal(1, 100, 1000),
@@ -1016,6 +1052,44 @@ proptest! {
 
         prop_assert!(result.assets_out <= expected);
         prop_assert!(result.assets_out <= available);
+    }
+
+    #[test]
+    fn compute_idle_settlement_consistency(
+        shares in 1u128..=u64::MAX as u128,
+        expected in 0u128..=u64::MAX as u128,
+        available in 0u128..=u64::MAX as u128,
+    ) {
+        let result = compute_idle_settlement(shares, expected, available);
+
+        if expected == 0 {
+            let result = result.expect("zero-expected settlements should always resolve");
+            prop_assert_eq!(result.assets_out, 0);
+            if available > 0 {
+                prop_assert_eq!(result.settlement.to_burn, shares);
+                prop_assert_eq!(result.settlement.refund, 0);
+            } else {
+                prop_assert_eq!(result.settlement.to_burn, 0);
+                prop_assert_eq!(result.settlement.refund, shares);
+            }
+            return Ok(());
+        }
+
+        if available == 0 {
+            prop_assert!(result.is_none());
+            return Ok(());
+        }
+
+        let result = result.expect("eligible idle settlements should resolve");
+        prop_assert!(result.assets_out <= expected);
+        prop_assert!(result.assets_out <= available);
+        prop_assert_eq!(
+            result
+                .settlement
+                .to_burn
+                .saturating_add(result.settlement.refund),
+            shares
+        );
     }
 
     #[test]
