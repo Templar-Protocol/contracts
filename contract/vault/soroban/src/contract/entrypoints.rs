@@ -135,7 +135,6 @@ impl SorobanVaultContract {
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
         let adapter = adapter_for_market(&env, market)?;
-        require_allowed_adapter(&env, &adapter)?;
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
         }
@@ -193,7 +192,6 @@ impl SorobanVaultContract {
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
         let adapter = adapter_for_market(&env, market)?;
-        require_allowed_adapter(&env, &adapter)?;
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
         }
@@ -254,7 +252,6 @@ impl SorobanVaultContract {
         let mut refreshed_positions = Vec::with_capacity(markets.len() as usize);
         for market in markets.iter() {
             let adapter = adapter_for_market(&env, market)?;
-            require_allowed_adapter(&env, &adapter)?;
             let total_assets = invoke_total_assets(&env, &adapter, &asset_token);
             refreshed_positions.push((market, to_u128(total_assets)?));
         }
