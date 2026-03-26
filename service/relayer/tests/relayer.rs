@@ -583,6 +583,38 @@ pub async fn market_prices_returns_direct_market_prices(#[future(awt)] mut init_
 
 #[rstest]
 #[tokio::test]
+pub async fn market_prices_returns_none_for_missing_asset_price(
+    #[future(awt)] mut init_test: InitTest,
+) {
+    let (market, pyth_oracle) = init_test.market_with_pyth_oracle().await;
+    let InitTest { app, .. } = init_test;
+
+    let collateral_price = fresh_price(1_234_500);
+    set_pyth_price(
+        &pyth_oracle,
+        test_utils::DEFAULT_COLLATERAL_PRICE_ID,
+        collateral_price.clone(),
+    )
+    .await;
+
+    let response = templar_relayer::route::get_market_prices::get_market_prices(
+        State(app),
+        Json(GetMarketPricesRequest {
+            market_id: market.contract().id().clone(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Success(response) = response else {
+        panic!("market_prices should succeed");
+    };
+
+    assert_eq!(response.borrow, None);
+    assert_eq!(response.collateral, Some(collateral_price));
+}
+
+#[rstest]
+#[tokio::test]
 pub async fn market_prices_returns_proxy_intermediate_prices(
     #[future(awt)] mut init_test: InitTest,
 ) {
