@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashSet, str::FromStr, time::Duration};
 
 use axum::{extract::State, Json};
@@ -24,10 +25,16 @@ use p256::{
     elliptic_curve::rand_core::OsRng,
 };
 use rstest::{fixture, rstest};
+use templar_common::oracle::price_transformer::{self, ProxyPriceTransformer};
+use templar_common::oracle::proxy::Source;
 use tokio::sync::watch;
 
 use templar_common::{
-    oracle::{proxy::Proxy, pyth::PriceIdentifier, redstone, OracleRequest},
+    oracle::{
+        proxy::Proxy,
+        pyth::{self, PriceIdentifier, PythTimestamp},
+        redstone, OracleRequest,
+    },
     registry::DeployMode,
 };
 use templar_relayer::{
@@ -35,6 +42,7 @@ use templar_relayer::{
     cache::Cache,
     client::{near::Near, oracle},
     route::{
+        get_market_prices::GetMarketPricesRequest,
         relay::RelayRequest as SdaRelayRequest,
         universal_account::{
             create::{CreateRequest, CreateUniversalAccount},
@@ -64,10 +72,164 @@ const POW_DIFFICULTY: usize = 6;
 struct InitTest {
     worker: Worker<Sandbox>,
     app: App,
-    c: UnifiedMarketController,
-    ua_deployer: RegistryController,
+    borrow_asset: FtController,
+    collateral_asset: FtController,
+    ua_registry: RegistryController,
+    market_registry: RegistryController,
     borrow_user: Account,
     relay_user: Account,
+}
+
+impl InitTest {
+    async fn market_with_pyth_oracle(&mut self) -> (MarketController, MockOracleController) {
+        accounts!(self.worker, protocol_yield_user, pyth_oracle);
+
+        let config = market_configuration(
+            pyth_oracle.id().clone(),
+            self.borrow_asset.id().clone(),
+            self.collateral_asset.id().clone(),
+            protocol_yield_user.id().clone(),
+            templar_common::market::YieldWeights::new_with_supply_weight(8),
+        );
+
+        let pyth_oracle = MockOracleController::deploy(pyth_oracle);
+        let market = async {
+            let m = self
+                .market_registry
+                .deploy(
+                    self.market_registry.account(),
+                    "market_w_pyth",
+                    "market",
+                    serde_json::to_vec(&json!({"configuration": config})).unwrap(),
+                    vec![],
+                )
+                .await;
+            MarketController::attach(&self.worker, m).await
+        };
+        let (pyth_oracle, market) = tokio::join!(pyth_oracle, market);
+
+        self.app.load_markets().await;
+
+        (market, pyth_oracle)
+    }
+
+    async fn setup_proxy_oracle_with_redstone(
+        &self,
+        proxy_oracle: &ProxyOracleController,
+    ) -> RedStoneAdapterController {
+        accounts!(self.worker, redstone_adapter);
+        let redstone_adapter =
+            RedStoneAdapterController::deploy(redstone_adapter, redstone::config::prod()).await;
+
+        set_proxy(
+            proxy_oracle,
+            DEFAULT_COLLATERAL_PRICE_ID,
+            OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
+        )
+        .await;
+        set_proxy(
+            proxy_oracle,
+            DEFAULT_BORROW_PRICE_ID,
+            OracleRequest::redstone(redstone_adapter.id().clone(), "USDC"),
+        )
+        .await;
+
+        redstone_adapter
+    }
+
+    async fn setup_proxy_oracle_with_pyth(
+        &self,
+        proxy_oracle: &ProxyOracleController,
+    ) -> MockOracleController {
+        accounts!(self.worker, pyth_oracle);
+        let pyth_oracle = MockOracleController::deploy(pyth_oracle).await;
+
+        set_pyth_price(&pyth_oracle, DEFAULT_COLLATERAL_PRICE_ID, fresh_price(1)).await;
+        set_pyth_price(&pyth_oracle, DEFAULT_BORROW_PRICE_ID, fresh_price(1)).await;
+
+        set_proxy(
+            proxy_oracle,
+            DEFAULT_COLLATERAL_PRICE_ID,
+            OracleRequest::pyth(
+                pyth_oracle.id().clone(),
+                test_utils::DEFAULT_COLLATERAL_PRICE_ID,
+            ),
+        )
+        .await;
+        set_proxy(
+            proxy_oracle,
+            DEFAULT_BORROW_PRICE_ID,
+            ProxyPriceTransformer::lst(
+                OracleRequest::pyth(
+                    pyth_oracle.id().clone(),
+                    test_utils::DEFAULT_BORROW_PRICE_ID,
+                ),
+                24,
+                price_transformer::Call::new_simple(self.borrow_asset.id(), "redemption_rate"),
+            ),
+        )
+        .await;
+
+        pyth_oracle
+    }
+
+    async fn market_proxy(&mut self) -> (MarketController, ProxyOracleController) {
+        accounts!(self.worker, protocol_yield_user, proxy_oracle);
+
+        let config = market_configuration(
+            proxy_oracle.id().clone(),
+            self.borrow_asset.id().clone(),
+            self.collateral_asset.id().clone(),
+            protocol_yield_user.id().clone(),
+            templar_common::market::YieldWeights::new_with_supply_weight(8),
+        );
+
+        let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
+        let market = async {
+            let m = self
+                .market_registry
+                .deploy(
+                    self.market_registry.account(),
+                    "market_w_proxy",
+                    "market",
+                    serde_json::to_vec(&json!({"configuration": config})).unwrap(),
+                    vec![],
+                )
+                .await;
+            MarketController::attach(&self.worker, m).await
+        };
+        let (proxy_oracle, market) = tokio::join!(proxy_oracle, market);
+
+        self.app.load_markets().await;
+
+        (market, proxy_oracle)
+    }
+
+    pub async fn market_proxy_pyth(
+        &mut self,
+    ) -> (
+        MarketController,
+        ProxyOracleController,
+        MockOracleController,
+    ) {
+        let (market, proxy_oracle) = self.market_proxy().await;
+        let pyth_oracle = self.setup_proxy_oracle_with_pyth(&proxy_oracle).await;
+        self.app.load_markets().await;
+        (market, proxy_oracle, pyth_oracle)
+    }
+
+    pub async fn market_proxy_redstone(
+        &mut self,
+    ) -> (
+        MarketController,
+        ProxyOracleController,
+        RedStoneAdapterController,
+    ) {
+        let (market, proxy_oracle) = self.market_proxy().await;
+        let redstone_adapter = self.setup_proxy_oracle_with_redstone(&proxy_oracle).await;
+        self.app.load_markets().await;
+        (market, proxy_oracle, redstone_adapter)
+    }
 }
 
 fn create_message<T: near_sdk::serde::Serialize>(
@@ -109,67 +271,154 @@ fn create_execute_message(
     )
 }
 
+fn fresh_price(price: i64) -> pyth::Price {
+    #[allow(clippy::cast_possible_wrap)]
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    pyth::Price {
+        price: price.into(),
+        conf: 0_u64.into(),
+        expo: -4,
+        publish_time: PythTimestamp::from_secs(now),
+    }
+}
+
+async fn init_relayer_app(
+    worker: &Worker<Sandbox>,
+    registry_id: &AccountId,
+    relay_user: &Account,
+    ua_account: &Account,
+) -> App {
+    let app = App::new(
+        Configuration::parse_from([
+            "relayer",
+            "--rpc-url",
+            &worker.rpc_addr(),
+            "--database-url",
+            "postgres://relayeruser:password@0.0.0.0:5432/relayer",
+            "--monitor-registry-id",
+            registry_id.as_ref(),
+            "--relay-account-id",
+            relay_user.id().as_ref(),
+            "--relay-secret-key",
+            &relay_user.secret_key().to_string(),
+            "--ua-account-id",
+            ua_account.id().as_ref(),
+            "--ua-secret-key",
+            &ua_account.secret_key().to_string(),
+            "--ua-registry-id",
+            ua_account.id().as_ref(),
+            "--ua-version-key",
+            "latest",
+            "--ua-chain-id",
+            &NEAR_TESTNET_CHAIN_ID.to_string(),
+            "--ua-pow-difficulty",
+            &POW_DIFFICULTY.to_string(),
+            "--intents-id",
+            "intents.near",
+        ]),
+        watch::Sender::default(),
+    )
+    .unwrap();
+    app.database.migrate().await.unwrap();
+    app
+}
+
+async fn set_pyth_price(
+    price_oracle: &MockOracleController,
+    price_id: PriceIdentifier,
+    price: pyth::Price,
+) {
+    price_oracle
+        .set_pyth_price(price_oracle.contract.as_account(), price_id, Some(price))
+        .await;
+}
+
+async fn set_proxy(
+    proxy_oracle: &ProxyOracleController,
+    price_id: PriceIdentifier,
+    source: impl Into<Source>,
+) {
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            price_id,
+            Some(Proxy::median_low([source.into()])),
+        )
+        .await;
+}
+
 #[fixture]
 async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "templar_relayer=debug,warn",
+        ))
         .try_init();
 
-    setup_test!(worker extract(c) accounts(borrow_user, relay_user, ua_deployer));
-    let rpc_addr = worker.rpc_addr();
+    accounts!(
+        worker,
+        borrow_asset,
+        collateral_asset,
+        borrow_user,
+        relay_user,
+        ua_registry,
+        market_registry
+    );
 
-    let ua_deployer = RegistryController::new(ua_deployer).await;
-    ua_deployer
-        .add_version(
-            ua_deployer.contract().as_account(),
+    let market_registry = async {
+        let r = RegistryController::new(market_registry).await;
+        r.add_version(
+            r.account(),
+            NearToken::from_yoctonear(1),
+            "market",
+            DeployMode::Normal,
+            MarketController::wasm().await,
+        )
+        .await;
+        r
+    };
+
+    let ua_registry = async {
+        let r = RegistryController::new(ua_registry).await;
+        r.add_version(
+            r.contract().as_account(),
             NearToken::from_near(80),
             "latest",
             DeployMode::GlobalHash,
             UniversalAccountController::wasm().await,
         )
         .await;
+        r
+    };
 
-    let kill = watch::Sender::default();
-    #[allow(clippy::expect_used)]
-    let mut app = App::new(
-        Configuration::parse_from([
-            "relayer",
-            "--rpc-url",
-            &rpc_addr,
-            "--database-url",
-            "postgres://relayeruser:password@0.0.0.0:5432/relayer",
-            "--monitor-market-id",
-            c.market.contract().id().as_ref(),
-            "--relay-account-id",
-            relay_user.id().as_ref(),
-            "--relay-secret-key",
-            &relay_user.secret_key().to_string(),
-            "--ua-account-id",
-            ua_deployer.contract().id().as_ref(),
-            "--ua-secret-key",
-            &ua_deployer.contract().as_account().secret_key().to_string(),
-            "--ua-pow-difficulty",
-            &POW_DIFFICULTY.to_string(),
-            "--ua-registry-id",
-            ua_deployer.contract().id().as_ref(),
-            "--ua-version-key",
-            "latest",
-            "--ua-chain-id",
-            &NEAR_TESTNET_CHAIN_ID.to_string(),
-            "--intents-id",
-            "intents.near",
-        ]),
-        kill,
+    let borrow_asset = FtController::deploy(borrow_asset, "Borrow Asset", "BORROW");
+    let collateral_asset = FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL");
+    let (borrow_asset, collateral_asset, market_registry, ua_registry) =
+        tokio::join!(borrow_asset, collateral_asset, market_registry, ua_registry);
+
+    borrow_asset
+        .set_redemption_rate(borrow_asset.contract.as_account(), 2 * 10u128.pow(24))
+        .await;
+
+    let app = init_relayer_app(
+        &worker,
+        market_registry.contract().id(),
+        &relay_user,
+        ua_registry.account(),
     )
-    .expect("Failed to initialize app");
-    app.database.migrate().await.unwrap();
-    app.load_markets().await;
+    .await;
 
     InitTest {
         worker,
         app,
-        c,
-        ua_deployer,
+        market_registry,
+        borrow_asset,
+        collateral_asset,
+        ua_registry,
         borrow_user,
         relay_user,
     }
@@ -177,11 +426,11 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
 
 #[rstest]
 #[tokio::test]
-pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
+pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
+    let (market, _) = init_test.market_with_pyth_oracle().await;
     let InitTest {
         worker,
         app,
-        c,
         borrow_user,
         relay_user,
         ..
@@ -200,7 +449,7 @@ pub async fn delegate_action(#[future(awt)] init_test: InitTest) {
 
     let delegate_action = DelegateAction {
         sender_id: borrow_user.id().clone(),
-        receiver_id: c.market.contract().id().clone(),
+        receiver_id: market.contract().id().clone(),
         actions: vec![Action::from(FunctionCallAction {
             method_name: "apply_interest".to_string(),
             args: b"{}".to_vec(),
@@ -296,103 +545,98 @@ pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: Init
 
 #[rstest]
 #[tokio::test]
-pub async fn update_prices_updates_redstone_market(#[future(awt)] worker: Worker<Sandbox>) {
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
-        .try_init();
+pub async fn market_prices_returns_direct_market_prices(#[future(awt)] mut init_test: InitTest) {
+    let (market, pyth_oracle) = init_test.market_with_pyth_oracle().await;
+    let InitTest { app, .. } = init_test;
 
-    accounts!(
-        worker,
-        market,
-        proxy_oracle,
-        redstone_oracle,
-        borrow_asset,
-        collateral_asset,
-        protocol_yield_user,
-        relay_user,
-        ua_account
-    );
+    let borrow_price = fresh_price(345_600);
+    let collateral_price = fresh_price(1_234_500);
 
-    let config = market_configuration(
-        proxy_oracle.id().clone(),
-        borrow_asset.id().clone(),
-        collateral_asset.id().clone(),
-        protocol_yield_user.id().clone(),
-        templar_common::market::YieldWeights::new_with_supply_weight(8),
-    );
-
-    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
-    let redstone_oracle =
-        RedStoneAdapterController::deploy(redstone_oracle, redstone::config::prod());
-    let borrow_asset = FtController::deploy(borrow_asset, "Borrow Asset", "BORROW");
-    let collateral_asset = FtController::deploy(collateral_asset, "Collateral Asset", "COLLATERAL");
-    let market = MarketController::deploy(market, &config);
-    let (proxy_oracle, redstone_oracle, _borrow_asset, _collateral_asset, market) = tokio::join!(
-        proxy_oracle,
-        redstone_oracle,
-        borrow_asset,
-        collateral_asset,
-        market,
-    );
-
-    proxy_oracle
-        .set_proxy(
-            proxy_oracle.account(),
-            test_utils::DEFAULT_COLLATERAL_PRICE_ID,
-            Some(Proxy::median_low([OracleRequest::redstone(
-                redstone_oracle.id().clone(),
-                "ETH",
-            )
-            .into()])),
-        )
-        .await;
-    proxy_oracle
-        .set_proxy(
-            proxy_oracle.account(),
-            test_utils::DEFAULT_BORROW_PRICE_ID,
-            Some(Proxy::median_low([OracleRequest::redstone(
-                redstone_oracle.id().clone(),
-                "BTC",
-            )
-            .into()])),
-        )
-        .await;
-
-    let mut app = App::new(
-        Configuration::parse_from([
-            "relayer",
-            "--rpc-url",
-            &worker.rpc_addr(),
-            "--database-url",
-            "postgres://relayeruser:password@0.0.0.0:5432/relayer",
-            "--monitor-market-id",
-            market.id().as_ref(),
-            "--relay-account-id",
-            relay_user.id().as_ref(),
-            "--relay-secret-key",
-            &relay_user.secret_key().to_string(),
-            "--ua-account-id",
-            ua_account.id().as_ref(),
-            "--ua-secret-key",
-            &ua_account.secret_key().to_string(),
-            "--ua-registry-id",
-            ua_account.id().as_ref(),
-            "--ua-version-key",
-            "latest",
-            "--ua-chain-id",
-            &NEAR_TESTNET_CHAIN_ID.to_string(),
-        ]),
-        watch::Sender::default(),
+    set_pyth_price(
+        &pyth_oracle,
+        test_utils::DEFAULT_BORROW_PRICE_ID,
+        borrow_price.clone(),
     )
-    .unwrap();
-    app.database.migrate().await.unwrap();
-    app.load_markets().await;
+    .await;
+    set_pyth_price(
+        &pyth_oracle,
+        test_utils::DEFAULT_COLLATERAL_PRICE_ID,
+        collateral_price.clone(),
+    )
+    .await;
 
-    let eth = redstone::FeedId::from("ETH");
+    let response = templar_relayer::route::get_market_prices::get_market_prices(
+        State(app),
+        Json(GetMarketPricesRequest {
+            market_id: market.contract().id().clone(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Success(response) = response else {
+        panic!("market_prices should succeed");
+    };
+
+    assert_eq!(response.borrow, Some(borrow_price));
+    assert_eq!(response.collateral, Some(collateral_price));
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn market_prices_returns_proxy_intermediate_prices(
+    #[future(awt)] mut init_test: InitTest,
+) {
+    let (market, _proxy_oracle, pyth_oracle) = init_test.market_proxy_pyth().await;
+    let InitTest { app, .. } = init_test;
+
+    set_pyth_price(
+        &pyth_oracle,
+        DEFAULT_COLLATERAL_PRICE_ID,
+        fresh_price(2_500_000),
+    )
+    .await;
+    set_pyth_price(
+        &pyth_oracle,
+        DEFAULT_BORROW_PRICE_ID,
+        fresh_price(1_000_000),
+    )
+    .await;
+
+    let response = templar_relayer::route::get_market_prices::get_market_prices(
+        State(app),
+        Json(GetMarketPricesRequest {
+            market_id: market.id().clone(),
+        }),
+    )
+    .await;
+
+    let response = match response {
+        SimpleResponse::Success(response) => response,
+        e => {
+            panic!("market_prices should succeed: {e:#?}");
+        }
+    };
+
+    assert_eq!(response.collateral.as_ref().unwrap().price.0, 2_500_000);
+    assert_eq!(
+        response.borrow.as_ref().unwrap().price.0,
+        1_000_000 * 2 /* redemption rate */
+    );
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn requires_network_update_prices_updates_redstone_market(
+    #[future(awt)] mut init_test: InitTest,
+) {
+    let (market, _proxy_oracle, redstone_adapter) = init_test.market_proxy_redstone().await;
+    let InitTest { app, .. } = init_test;
+
+    let usdc = redstone::FeedId::from("USDC");
     let btc = redstone::FeedId::from("BTC");
 
-    let price_data_before = redstone_oracle
-        .read_price_data(vec![eth.clone(), btc.clone()])
+    let price_data_before = redstone_adapter
+        .read_price_data(vec![usdc.clone(), btc.clone()])
         .await;
     assert!(price_data_before.is_empty());
 
@@ -409,17 +653,18 @@ pub async fn update_prices_updates_redstone_market(#[future(awt)] worker: Worker
     };
     assert_eq!(response.market_ids, vec![market.id().clone()]);
 
-    let price_data_after = redstone_oracle
-        .read_price_data(vec![eth.clone(), btc.clone()])
+    let price_data_after = redstone_adapter
+        .read_price_data(vec![usdc.clone(), btc.clone()])
         .await;
-    assert!(price_data_after.contains_key(&eth));
+    assert!(price_data_after.contains_key(&usdc));
     assert!(price_data_after.contains_key(&btc));
 }
 
 #[rstest]
 #[tokio::test]
-pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTest) {
-    let InitTest { worker, app, c, .. } = init_test;
+pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: InitTest) {
+    let (market, _) = init_test.market_with_pyth_oracle().await;
+    let InitTest { worker, app, .. } = init_test;
 
     let secret_key = p256::SecretKey::from_bytes(&[0xa8; 32].into()).unwrap();
     let passkey = passkey::VerifyKey(PublicKey(secret_key.public_key()));
@@ -456,7 +701,7 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTe
         },
         "account_id": ua.id(),
         "payload": [{
-            "receiver_id": c.market.contract().id(),
+            "receiver_id": market.contract().id(),
             "actions": [{ "FunctionCall": {
                 "function_name": "apply_interest",
                 "arguments": Base64VecU8(b"{}".to_vec()),
@@ -546,12 +791,12 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] init_test: InitTe
 
 #[rstest]
 #[tokio::test]
-pub async fn universal_account(#[future(awt)] init_test: InitTest) {
+pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
+    let (market, _) = init_test.market_with_pyth_oracle().await;
     let InitTest {
         worker,
         app,
-        c,
-        ua_deployer,
+        ua_registry,
         borrow_user,
         ..
     } = init_test;
@@ -576,7 +821,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         &secret_key,
         PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
             .zero()
-            .verifying_contract(ua_deployer.contract().id().clone())
+            .verifying_contract(ua_registry.contract().id().clone())
             .build_salt(),
         Pow::mine(
             CreateUniversalAccount {
@@ -613,7 +858,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
         .tx_status(
             TransactionInfo::TransactionId {
                 tx_hash: response.transaction_hash,
-                sender_account_id: ua_deployer.contract().id().clone(),
+                sender_account_id: ua_registry.contract().id().clone(),
             },
             TxExecutionStatus::Final,
         )
@@ -643,7 +888,7 @@ pub async fn universal_account(#[future(awt)] init_test: InitTest) {
     let message = create_execute_message(
         &secret_key,
         parameters.next_nonce(),
-        c.contract().id().clone(),
+        market.contract().id().clone(),
         vec![transaction::FunctionCallAction {
             function_name: "apply_interest".to_string(),
             arguments: b"{}".to_vec().into(),
@@ -810,7 +1055,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
     let InitTest {
         worker,
         app,
-        ua_deployer,
+        ua_registry,
         borrow_user,
         ..
     } = init_test;
@@ -835,7 +1080,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         &secret_key,
         PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
             .zero()
-            .verifying_contract(ua_deployer.contract().id().clone())
+            .verifying_contract(ua_registry.contract().id().clone())
             .build_salt(),
         Pow::mine(
             CreateUniversalAccount {
@@ -872,7 +1117,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         .tx_status(
             TransactionInfo::TransactionId {
                 tx_hash: response.transaction_hash,
-                sender_account_id: ua_deployer.contract().id().clone(),
+                sender_account_id: ua_registry.contract().id().clone(),
             },
             TxExecutionStatus::Final,
         )

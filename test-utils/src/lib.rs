@@ -338,7 +338,7 @@ pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
 
     let r = RegistryController::new(registry).await;
 
-    let wasm = controller::market::load_wasm().await;
+    let wasm = controller::market::MarketController::wasm().await;
 
     let cost_per_byte = NearToken::from_near(1).saturating_div(10 * 1_000);
     let deployment_cost = cost_per_byte.saturating_mul(wasm.len() as u128);

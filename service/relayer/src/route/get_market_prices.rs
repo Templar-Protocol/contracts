@@ -17,14 +17,14 @@ pub async fn get_market_prices(
     State(app): State<App>,
     Json(GetMarketPricesRequest { market_id }): Json<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
-    let market = {
-        let accounts = app.accounts.read().await;
-        let Some(market) = accounts.market_data.get(&market_id).cloned() else {
-            return SimpleResponse::Rejected {
-                reason: format!("Unknown market: {market_id}"),
-            };
+    let accounts = app.accounts.read().await;
+    tracing::debug!(market_data = ?accounts.market_data, "Market data");
+
+    let Some(market) = accounts.market_data.get(&market_id).cloned() else {
+        tracing::debug!(%market_id, "Unknown market");
+        return SimpleResponse::Rejected {
+            reason: format!("Unknown market: {market_id}"),
         };
-        market
     };
 
     let market_prices = match app.relay_near.load_market_prices(&market).await {
