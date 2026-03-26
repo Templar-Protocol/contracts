@@ -6,7 +6,7 @@ use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
 
-use super::ContractController;
+use super::{migration::MigrationController, ContractController};
 
 #[derive(Clone)]
 pub struct UniversalAccountController {
@@ -17,6 +17,10 @@ impl ContractController for UniversalAccountController {
     fn contract(&self) -> &Contract {
         &self.contract
     }
+}
+
+impl MigrationController for UniversalAccountController {
+    type Migration = state::Migration;
 }
 
 impl UniversalAccountController {
@@ -62,21 +66,6 @@ impl UniversalAccountController {
         Self { contract }
     }
 
-    pub async fn migrate_stored_state_version(&self) -> u32 {
-        self.view("mig_stored_state_version", near_sdk::serde_json::json!({}))
-            .await
-    }
-
-    pub async fn migrate_target_state_version(&self) -> u32 {
-        self.view("mig_target_state_version", near_sdk::serde_json::json!({}))
-            .await
-    }
-
-    pub async fn migrate_needs_migration(&self) -> bool {
-        self.view("mig_needs_migration", near_sdk::serde_json::json!({}))
-            .await
-    }
-
     define! {
         #[view]
         pub fn get_key(key: KeyId) -> Option<PayloadExecutionParameters>;
@@ -85,7 +74,5 @@ impl UniversalAccountController {
 
         #[call(exec, tgas(300))]
         pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);
-        #[call(exec, tgas(300))]
-        pub fn migrate(args: state::Migration);
     }
 }

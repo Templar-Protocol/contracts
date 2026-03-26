@@ -2,16 +2,23 @@
 
 use std::collections::HashMap;
 
-use near_sdk::json_types::{U128, U64};
-use near_workspaces::{network::Sandbox, Worker};
-use templar_universal_account::{
-    authentication::{
-        ed25519::{eip191, raw, sep53},
-        passkey,
-    },
-    state, KeyId, NEAR_TESTNET_CHAIN_ID,
+use near_sdk::{
+    borsh,
+    json_types::{U128, U64},
+    serde_json::json,
+    NearToken,
 };
-use test_utils::{worker, ContractController, UniversalAccountController};
+use near_workspaces::{network::Sandbox, Account, Worker};
+use templar_universal_account::{
+    authentication::{with_raw_string::WithRawString, Payload},
+    state,
+    transaction::{FunctionCallAction, Transaction},
+    NEAR_TESTNET_CHAIN_ID,
+};
+use test_utils::{
+    assert_all_outcomes_success, controller::migration::MigrationController,
+    test_signer::TestSigner, worker, ContractController, FtController, UniversalAccountController,
+};
 
 type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
 
@@ -19,10 +26,10 @@ static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_p
 static WASM_0_4_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_4_0_state_patch.borsh");
 
 struct PatchKeys {
-    passkey: KeyId,
-    ed25519_raw: KeyId,
-    eip191: KeyId,
-    sep53: KeyId,
+    passkey: TestSigner,
+    ed25519_raw: TestSigner,
+    eip191: TestSigner,
+    sep53: TestSigner,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -44,11 +51,27 @@ async fn deploy_patched(
     wasm: &'static [u8],
     patch: &[u8],
 ) -> UniversalAccountController {
+    deploy_patched_with_version(worker, wasm, patch, None).await
+}
+
+async fn deploy_patched_with_version(
+    worker: &Worker<Sandbox>,
+    wasm: &'static [u8],
+    patch: &[u8],
+    version: Option<u32>,
+) -> UniversalAccountController {
     let ua = worker.dev_deploy(wasm).await.unwrap();
-    let state_patch: StatePatch = near_sdk::borsh::from_slice(patch).unwrap();
+    let state_patch: StatePatch = borsh::from_slice(patch).unwrap();
 
     for (key, value) in state_patch {
         worker.patch_state(ua.id(), &key, &value).await.unwrap();
+    }
+
+    if let Some(version) = version {
+        worker
+            .patch_state(ua.id(), b"__v", &version.to_le_bytes())
+            .await
+            .unwrap();
     }
 
     let contract = ua
@@ -62,16 +85,11 @@ async fn deploy_patched(
 }
 
 async fn deploy_current(worker: &Worker<Sandbox>) -> UniversalAccountController {
-    let passkey = passkey::VerifyKey(
-        p256::SecretKey::from_bytes(&[0x44_u8; 32].into())
-            .unwrap()
-            .public_key()
-            .into(),
-    );
+    let passkey = TestSigner::fixed_passkey([0x44_u8; 32]).id();
 
     UniversalAccountController::deploy(
         worker.dev_create_account().await.unwrap(),
-        passkey.into(),
+        passkey,
         NEAR_TESTNET_CHAIN_ID,
         None,
     )
@@ -106,49 +124,41 @@ async fn deploy_for_sequence(
 async fn run_migration_step(
     ua: &UniversalAccountController,
     step: MigrationStep,
-) -> (bool, String) {
-    let result = match step {
-        MigrationStep::V0 => ua
-            .contract()
-            .as_account()
-            .call(ua.contract().id(), "migrate")
-            .args_json(near_sdk::serde_json::json!({
-                "args": state::Migration::from(state::migration::V0 {
-                    chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-                }),
-            }))
-            .max_gas()
-            .transact()
-            .await
-            .unwrap(),
-        MigrationStep::V1 => ua
-            .contract()
-            .as_account()
-            .call(ua.contract().id(), "migrate")
-            .args_json(near_sdk::serde_json::json!({
-                "args": state::Migration::from(state::migration::V1),
-            }))
-            .max_gas()
-            .transact()
-            .await
-            .unwrap(),
-        MigrationStep::UnbrickV1 => ua
-            .contract()
-            .as_account()
-            .call(ua.contract().id(), "migrate")
-            .args_json(near_sdk::serde_json::json!({
-                "args": state::Migration::from(state::migration::UnbrickV1),
-            }))
-            .max_gas()
-            .transact()
-            .await
-            .unwrap(),
+) -> Result<(), String> {
+    let args = match step {
+        MigrationStep::V0 => state::Migration::from(state::migration::V0 {
+            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+        }),
+        MigrationStep::V1 => state::Migration::from(state::migration::V1),
+        MigrationStep::UnbrickV1 => state::Migration::from(state::migration::UnbrickV1),
     };
 
-    (
-        result.failures().is_empty(),
-        format!("{:#?}", result.failures()),
-    )
+    let result = ua
+        .contract()
+        .as_account()
+        .call(ua.contract().id(), "migrate")
+        .args_json(near_sdk::serde_json::json!({ "args": args }))
+        .max_gas()
+        .transact()
+        .await
+        .unwrap();
+
+    let errs = format!("{:#?}", result.failures());
+
+    if result.failures().is_empty() {
+        Ok(())
+    } else {
+        Err(errs)
+    }
+}
+
+fn increment() -> FunctionCallAction {
+    FunctionCallAction {
+        function_name: "increment".to_string(),
+        arguments: json!({}).to_string().into_bytes().into(),
+        amount: NearToken::from_near(0),
+        gas: near_sdk::Gas::from_tgas(30),
+    }
 }
 
 fn patch_secret_key() -> [u8; 32] {
@@ -156,17 +166,34 @@ fn patch_secret_key() -> [u8; 32] {
 }
 
 fn patch_keys() -> PatchKeys {
-    let passkey_secret = p256::SecretKey::from_bytes(&patch_secret_key().into()).unwrap();
-    let ed25519_secret = ed25519_dalek::SigningKey::from_bytes(&patch_secret_key());
-    let eip191_secret =
-        alloy::signers::local::PrivateKeySigner::from_bytes(&patch_secret_key().into()).unwrap();
-
     PatchKeys {
-        passkey: passkey::VerifyKey(passkey_secret.public_key().into()).into(),
-        ed25519_raw: raw::VerifyKey(ed25519_secret.verifying_key().to_bytes().into()).into(),
-        eip191: eip191::VerifyKey(eip191_secret.address().into()).into(),
-        sep53: sep53::VerifyKey(ed25519_secret.verifying_key().to_bytes().into()).into(),
+        passkey: TestSigner::fixed_passkey(patch_secret_key()),
+        ed25519_raw: TestSigner::fixed_ed25519_raw(patch_secret_key()),
+        eip191: TestSigner::fixed_eip191(patch_secret_key()),
+        sep53: TestSigner::fixed_sep53(patch_secret_key()),
     }
+}
+
+async fn assert_key_can_increment_counter(
+    ua: &UniversalAccountController,
+    ft: &FtController,
+    third_party: &Account,
+    signer: &TestSigner,
+) {
+    let key = signer.id();
+    let key_entry = ua.get_key(key).await.unwrap();
+    let payload = WithRawString::from_parsed(Payload::new(
+        key_entry.next_nonce(),
+        vec![Transaction {
+            receiver_id: ft.contract().id().clone(),
+            actions: vec![increment().into()].into(),
+        }]
+        .into(),
+    ));
+
+    let result = ua.execute(third_party, signer.execute_args(payload)).await;
+
+    assert_all_outcomes_success(&result);
 }
 
 #[rstest::rstest]
@@ -174,31 +201,35 @@ fn patch_keys() -> PatchKeys {
 pub async fn new_account_writes_current_state_version_on_init(
     #[future(awt)] worker: Worker<Sandbox>,
 ) {
-    let sk = p256::SecretKey::from_bytes(&[0x11u8; 32].into()).unwrap();
-    let passkey = passkey::VerifyKey(sk.public_key().into());
+    let passkey = TestSigner::fixed_passkey([0x11_u8; 32]).id();
 
     let ua = UniversalAccountController::deploy(
         worker.dev_create_account().await.unwrap(),
-        passkey.into(),
+        passkey,
         NEAR_TESTNET_CHAIN_ID,
         None,
     )
     .await;
 
-    assert_eq!(ua.migrate_target_state_version().await, 2);
-    assert_eq!(ua.migrate_stored_state_version().await, 2);
-    assert!(!ua.migrate_needs_migration().await);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert_eq!(ua.mig_stored_state_version().await, 2);
+    assert!(!ua.mig_needs_migration().await);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+pub async fn migration_views_are_exposed(#[future(awt)] worker: Worker<Sandbox>) {
+    let ua = deploy_current(&worker).await;
+
+    assert_eq!(ua.mig_stored_state_version().await, 2);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(!ua.mig_needs_migration().await);
 }
 
 #[rstest::rstest]
 #[tokio::test]
 pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
-    let passkey = passkey::VerifyKey(
-        p256::SecretKey::from_bytes(&patch_secret_key().into())
-            .unwrap()
-            .public_key()
-            .into(),
-    );
+    let passkey = patch_keys().passkey;
     let ua = deploy_patched(
         &worker,
         UniversalAccountController::wasm_0_2_0(),
@@ -206,9 +237,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
     )
     .await;
 
-    assert_eq!(ua.migrate_stored_state_version().await, 0);
-    assert_eq!(ua.migrate_target_state_version().await, 2);
-    assert!(ua.migrate_needs_migration().await);
+    assert_eq!(ua.mig_stored_state_version().await, 0);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(ua.mig_needs_migration().await);
 
     let r = ua
         .migrate(
@@ -219,15 +250,13 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
         )
         .await;
 
-    for o in r.outcomes() {
-        o.clone().into_result().unwrap();
-    }
+    assert_all_outcomes_success(&r);
 
-    assert_eq!(ua.migrate_stored_state_version().await, 1);
-    assert_eq!(ua.migrate_target_state_version().await, 2);
-    assert!(ua.migrate_needs_migration().await);
+    assert_eq!(ua.mig_stored_state_version().await, 1);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(ua.mig_needs_migration().await);
 
-    let get_key = ua.get_key(passkey.clone()).await.unwrap();
+    let get_key = ua.get_key(passkey.id()).await.unwrap();
 
     eprintln!("{get_key:?}");
 
@@ -241,13 +270,11 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
         .migrate(ua.contract().as_account(), state::migration::V1)
         .await;
 
-    for o in r.outcomes() {
-        o.clone().into_result().unwrap();
-    }
+    assert_all_outcomes_success(&r);
 
-    assert_eq!(ua.migrate_stored_state_version().await, 2);
-    assert_eq!(ua.migrate_target_state_version().await, 2);
-    assert!(!ua.migrate_needs_migration().await);
+    assert_eq!(ua.mig_stored_state_version().await, 2);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(!ua.mig_needs_migration().await);
 }
 
 #[rstest::rstest]
@@ -281,12 +308,11 @@ pub async fn from_0_2_0_fail_migrate_twice(#[future(awt)] worker: Worker<Sandbox
 #[tokio::test]
 #[should_panic = "Smart contract panicked: Failed to migrate V1: Stored state version 2 != args `from_version` 1"]
 pub async fn current_state_fail_reinitialize_version(#[future(awt)] worker: Worker<Sandbox>) {
-    let sk = p256::SecretKey::from_bytes(&[0x22u8; 32].into()).unwrap();
-    let passkey = passkey::VerifyKey(sk.public_key().into());
+    let passkey = TestSigner::fixed_passkey([0x22_u8; 32]).id();
 
     let ua = UniversalAccountController::deploy(
         worker.dev_create_account().await.unwrap(),
-        passkey.into(),
+        passkey,
         NEAR_TESTNET_CHAIN_ID,
         None,
     )
@@ -300,6 +326,7 @@ pub async fn current_state_fail_reinitialize_version(#[future(awt)] worker: Work
 #[tokio::test]
 pub async fn from_0_4_0_unbrick_v1(#[future(awt)] worker: Worker<Sandbox>) {
     let expected_keys = patch_keys();
+    test_utils::accounts!(worker, ft_account, third_party);
     let ua = deploy_patched(
         &worker,
         UniversalAccountController::wasm_0_4_0(),
@@ -307,29 +334,77 @@ pub async fn from_0_4_0_unbrick_v1(#[future(awt)] worker: Worker<Sandbox>) {
     )
     .await;
 
-    assert_eq!(ua.migrate_stored_state_version().await, 0);
-    assert_eq!(ua.migrate_target_state_version().await, 2);
-    assert!(ua.migrate_needs_migration().await);
+    assert_eq!(ua.mig_stored_state_version().await, 0);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(ua.mig_needs_migration().await);
 
     let result = ua
         .migrate(ua.contract().as_account(), state::migration::UnbrickV1)
         .await;
 
-    for outcome in result.outcomes() {
-        outcome.clone().into_result().unwrap();
-    }
+    assert_all_outcomes_success(&result);
 
-    assert_eq!(ua.migrate_stored_state_version().await, 2);
-    assert_eq!(ua.migrate_target_state_version().await, 2);
-    assert!(!ua.migrate_needs_migration().await);
+    assert_eq!(ua.mig_stored_state_version().await, 2);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(!ua.mig_needs_migration().await);
 
     let keys = ua.list_keys(None, None).await;
     assert_eq!(keys.len(), 4);
 
-    assert!(keys.contains(&expected_keys.passkey));
-    assert!(keys.contains(&expected_keys.ed25519_raw));
-    assert!(keys.contains(&expected_keys.eip191));
-    assert!(keys.contains(&expected_keys.sep53));
+    assert!(keys.contains(&expected_keys.passkey.id()));
+    assert!(keys.contains(&expected_keys.ed25519_raw.id()));
+    assert!(keys.contains(&expected_keys.eip191.id()));
+    assert!(keys.contains(&expected_keys.sep53.id()));
+
+    for key in [
+        &expected_keys.passkey,
+        &expected_keys.ed25519_raw,
+        &expected_keys.eip191,
+        &expected_keys.sep53,
+    ] {
+        let entry = ua.get_key(key.id()).await.unwrap();
+        assert_eq!(entry.chain_id, Some(U128(NEAR_TESTNET_CHAIN_ID)));
+        assert_eq!(entry.name, Some("Templar Universal Account".to_string()));
+        assert_eq!(&entry.verifying_contract, ua.contract().as_account().id());
+    }
+
+    let ft = FtController::deploy(ft_account, "Fungible Token", "FT").await;
+    for signer in [
+        &expected_keys.passkey,
+        &expected_keys.ed25519_raw,
+        &expected_keys.eip191,
+        &expected_keys.sep53,
+    ] {
+        assert_key_can_increment_counter(&ua, &ft, &third_party, signer).await;
+    }
+
+    assert_eq!(ft.get_counter(ua.contract().id()).await, 4);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+pub async fn from_0_4_0_with_stored_v1_migrates_via_v1(#[future(awt)] worker: Worker<Sandbox>) {
+    let ua = deploy_patched_with_version(
+        &worker,
+        UniversalAccountController::wasm_0_4_0(),
+        WASM_0_4_0_STATE_PATCH,
+        Some(1),
+    )
+    .await;
+
+    assert_eq!(ua.mig_stored_state_version().await, 1);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(ua.mig_needs_migration().await);
+
+    let result = ua
+        .migrate(ua.contract().as_account(), state::migration::V1)
+        .await;
+
+    assert_all_outcomes_success(&result);
+
+    assert_eq!(ua.mig_stored_state_version().await, 2);
+    assert_eq!(ua.mig_target_state_version().await, 2);
+    assert!(!ua.mig_needs_migration().await);
 }
 
 #[rstest::rstest]
@@ -426,9 +501,9 @@ pub async fn invalid_migration_sequences_fail(
 
     let failing = results
         .into_iter()
-        .find(|(ok, _)| !ok)
+        .find_map(|r| r.err())
         .expect("expected at least one migration failure");
 
-    let error = failing.1;
+    let error = failing;
     assert!(error.contains(expected_error), "unexpected error: {error}");
 }
