@@ -334,10 +334,10 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
             set!(
                 redstone.$id = Some(FeedData {
                     price: primitive_types::U256::from($val * 100_000_000_u128).into(),
-                    package_timestamp: templar_common::oracle::time::Milliseconds::from_ms(
+                    package_timestamp: templar_common::time::Nanoseconds::from_ms(
                         std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
                     ),
-                    write_timestamp: templar_common::oracle::time::Milliseconds::from_ms(
+                    write_timestamp: templar_common::time::Nanoseconds::from_ms(
                         std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
                     ),
                 })

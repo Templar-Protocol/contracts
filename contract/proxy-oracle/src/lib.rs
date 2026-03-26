@@ -17,10 +17,11 @@ use templar_common::{
         },
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
-        time::Milliseconds,
         OracleRequest,
     },
-    self_ext, UnwrapReject,
+    self_ext,
+    time::Nanoseconds,
+    UnwrapReject,
 };
 
 mod callback_handler;
@@ -92,7 +93,7 @@ impl Contract {
         }
         let price_ids = HashSet::<PriceIdentifier>::from_iter(price_ids);
 
-        let max_age = Milliseconds::from_secs(age);
+        let max_age = Nanoseconds::from_secs(age);
 
         let mut invoked = Vec::with_capacity(price_ids.len());
         let mut pyth_requests =
@@ -180,12 +181,12 @@ impl Contract {
         &self,
         oracle_order: Vec<OracleType>,
         invoked: Vec<(PriceIdentifier, Proxy)>,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> OracleResponse {
         let callback = CallbackHandler::new(&oracle_order, max_age);
         let mut result = OracleResponse::with_capacity(invoked.len());
 
-        let now = Milliseconds::now();
+        let now = Nanoseconds::now();
 
         let mut i = oracle_order.len() as u64;
         for (price_id, proxy) in invoked {

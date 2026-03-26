@@ -6,9 +6,9 @@ use near_sdk::{
     testing_env,
 };
 use primitive_types::U256;
-use templar_common::oracle::{
-    redstone::{config, FeedData, FeedId, RedStoneContractInterface},
-    time::Milliseconds,
+use templar_common::{
+    oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface},
+    time::Nanoseconds,
 };
 
 use templar_redstone_adapter_contract::*;
@@ -72,16 +72,16 @@ fn output() {
                 "ETH".into(),
                 FeedData {
                     price: U256::from(195_692_129_540_u128).into(),
-                    package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
-                    write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                    package_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
+                    write_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
                 }
             ),
             (
                 "BTC".into(),
                 FeedData {
                     price: U256::from(6_698_556_748_915_u128).into(),
-                    package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
-                    write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                    package_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
+                    write_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
                 }
             ),
         ])
@@ -90,7 +90,7 @@ fn output() {
     assert_eq!(
         test_utils::get_logs(),
         vec![
-            r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"write_prices","data":{"updater":"bob.near","updated_feeds":[["ETH",{"price":"195692129540","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}],["BTC",{"price":"6698556748915","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}]]}}"#,
+            r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"write_prices","data":{"updater":"bob.near","updated_feeds":[["ETH",{"price":"195692129540","package_timestamp":"1770985144000000000","write_timestamp":"1770985144000000000"}],["BTC",{"price":"6698556748915","package_timestamp":"1770985144000000000","write_timestamp":"1770985144000000000"}]]}}"#,
         ],
     );
 }

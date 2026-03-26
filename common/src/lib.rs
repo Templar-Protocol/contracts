@@ -14,6 +14,7 @@ pub mod price;
 pub mod registry;
 pub mod snapshot;
 pub mod supply;
+pub mod time;
 pub mod time_chunk;
 #[cfg(feature = "rpc")]
 pub mod utils;

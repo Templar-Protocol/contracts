@@ -22,7 +22,7 @@ pub use feed_id::*;
 mod serializable_u256;
 pub use serializable_u256::*;
 
-use super::time::Milliseconds;
+use crate::time::Nanoseconds;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
@@ -36,7 +36,7 @@ pub trait RedStoneContractInterface {
     fn unique_signer_threshold(&self) -> U64;
     fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices;
     fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
-    fn read_timestamp(&self, feed_id: FeedId) -> Option<Milliseconds>;
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<Nanoseconds>;
     fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData>;
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData>;
     fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8);
