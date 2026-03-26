@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use near_sdk::{
     borsh::BorshSerialize, collections::UnorderedMap, env, near, AccountId, BorshStorageKey, Gas,
-    PanicOnDefault, PromiseError, PromiseOrValue,
+    PanicOnDefault, PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -71,13 +71,6 @@ impl Contract {
 
     pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
         self.proxies.get(&price_identifier).is_some()
-    }
-
-    pub fn price_feed_exists_01_consume_result(
-        &self,
-        #[callback_result] result: Result<bool, PromiseError>,
-    ) -> bool {
-        result.unwrap_or(false)
     }
 
     pub const GAS_FOR_LIST_00_ENTRY: Gas = Gas::from_tgas(35).saturating_div(10);
