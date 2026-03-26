@@ -2,8 +2,7 @@ use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::{
-    oracle::proxy::governance::{Operation, Proposal},
-    time::Nanoseconds,
+    governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
 };
 
 use crate::CliContext;

@@ -8,10 +8,11 @@ use near_sdk::{
 use near_workspaces::{network::Sandbox, Worker};
 
 use templar_common::{
+    governance::Proposal,
     oracle::{
         price_transformer::{self, ProxyPriceTransformer},
         proxy::{
-            governance::{GovernanceInterface, Operation, Proposal},
+            governance::{Operation, ProxyGovernanceInterface},
             Proxy, Source,
         },
         pyth::{self, PriceIdentifier, PythTimestamp},

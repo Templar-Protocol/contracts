@@ -2,7 +2,8 @@ use near_sdk::{assert_one_yocto, env, near};
 use near_sdk_contract_tools::owner::Owner;
 use templar_common::{
     contract::list,
-    oracle::proxy::governance::{GovernanceInterface, Operation, Proposal},
+    governance::Proposal,
+    oracle::proxy::governance::{Operation, ProxyGovernanceInterface},
     time::Nanoseconds,
     UnwrapReject,
 };
@@ -10,7 +11,7 @@ use templar_common::{
 use crate::{Contract, ContractExt};
 
 #[near]
-impl GovernanceInterface for Contract {
+impl ProxyGovernanceInterface for Contract {
     fn gov_next_id(&self) -> u32 {
         self.governance.next_id
     }

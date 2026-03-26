@@ -9,12 +9,10 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
+    governance::Governance,
     number::Decimal,
     oracle::{
-        proxy::{
-            governance::{Governance, Operation},
-            Proxy, Source,
-        },
+        proxy::{governance::Operation, Proxy, Source},
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
         OracleRequest,
