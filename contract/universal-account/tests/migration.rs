@@ -227,6 +227,31 @@ pub async fn migration_views_are_exposed(#[future(awt)] worker: Worker<Sandbox>)
 }
 
 #[rstest::rstest]
+#[case::current(MigrationSequenceStart::Current)]
+#[case::from_0_2_0(MigrationSequenceStart::From0_2_0)]
+#[case::from_0_4_0(MigrationSequenceStart::From0_4_0)]
+#[tokio::test]
+#[should_panic = "Smart contract panicked: migrate function is private"]
+pub async fn migrate_can_only_be_called_reflexively(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] start: MigrationSequenceStart,
+) {
+    let ua = deploy_for_sequence(&worker, start).await;
+    let caller = worker.dev_create_account().await.unwrap();
+
+    caller
+        .call(ua.contract().id(), "migrate")
+        .args_json(state::migration::V0 {
+            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+        })
+        .max_gas()
+        .transact()
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[rstest::rstest]
 #[tokio::test]
 pub async fn migrate_accepts_legacy_direct_payload(#[future(awt)] worker: Worker<Sandbox>) {
     let ua = deploy_patched(
