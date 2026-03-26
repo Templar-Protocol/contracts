@@ -50,13 +50,24 @@ impl Contract {
     }
 
     #[payable]
-    pub fn set_role(&mut self, account_id: AccountId, role: Role, set: Option<bool>) {
+    pub fn set_role(
+        &mut self,
+        account_id: AccountId,
+        role: Role,
+        set: Option<bool>,
+        allow_removing_last_member: Option<bool>,
+    ) {
         assert_one_yocto();
         let set = set.unwrap_or(true);
         <Self as Rbac>::require_role(&Role::ModifyRoles);
         if set {
             <Self as Rbac>::add_role(self, &account_id, &role);
         } else {
+            let allow_removing_last_member = allow_removing_last_member.unwrap_or(false);
+            if !allow_removing_last_member {
+                let len = <Self as Rbac>::with_members_of(&role, |r| r.len());
+                near_sdk::require!(len > 1, "Cannot remove the last member of a role");
+            }
             <Self as Rbac>::remove_role(self, &account_id, &role);
         }
     }
