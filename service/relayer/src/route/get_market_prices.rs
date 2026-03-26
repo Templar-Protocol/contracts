@@ -17,8 +17,7 @@ pub async fn get_market_prices(
     State(app): State<App>,
     Json(GetMarketPricesRequest { market_id }): Json<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
-    let accounts = app.accounts.read().await;
-    tracing::debug!(market_data = ?accounts.market_data, "Market data");
+    let accounts = app.accounts.read().await.clone();
 
     let Some(market) = accounts.market_data.get(&market_id).cloned() else {
         tracing::debug!(%market_id, "Unknown market");

@@ -133,14 +133,6 @@ pub enum ResolvePriceIdentifierError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum LoadMarketPricesError {
-    #[error("View error: {0}")]
-    View(#[from] ViewError),
-    #[error(transparent)]
-    NotFound(#[from] NotFoundError),
-}
-
-#[derive(Debug, thiserror::Error)]
 #[error("Price identifier not defined on oracle {oracle_id}: {price_identifier}")]
 pub struct NotFoundError {
     pub oracle_id: AccountId,
@@ -155,20 +147,6 @@ pub enum SourcePriceError {
     InvalidPublishTime,
     #[error("Price is stale")]
     Stale,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum PriceResolutionError {
-    #[error("Missing price")]
-    Missing,
-    #[error(transparent)]
-    QueryOracleType(#[from] ViewError),
-}
-
-#[derive(Serialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct ResolvedPrice {
-    pub price: pyth::Price,
 }
 
 #[derive(Debug, Clone)]
