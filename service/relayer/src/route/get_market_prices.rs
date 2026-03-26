@@ -1,4 +1,4 @@
-use axum::{extract::State, Json};
+use axum::extract::{Query, State};
 use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId,
@@ -15,7 +15,7 @@ pub struct GetMarketPricesRequest {
 #[tracing::instrument(name = "get_market_prices", skip(app))]
 pub async fn get_market_prices(
     State(app): State<App>,
-    Json(GetMarketPricesRequest { market_id }): Json<GetMarketPricesRequest>,
+    Query(GetMarketPricesRequest { market_id }): Query<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
     let accounts = app.accounts.read().await.clone();
 
