@@ -56,6 +56,16 @@ impl Nanoseconds {
     pub fn now() -> Self {
         Self::from_ns(near_sdk::env::block_timestamp())
     }
+
+    #[must_use]
+    pub const fn saturating_add(self, rhs: Self) -> Self {
+        Self(U64(self.0 .0.saturating_add(rhs.0 .0)))
+    }
+
+    #[must_use]
+    pub const fn saturating_sub(self, rhs: Self) -> Self {
+        Self(U64(self.0 .0.saturating_sub(rhs.0 .0)))
+    }
 }
 
 impl std::fmt::Display for Nanoseconds {

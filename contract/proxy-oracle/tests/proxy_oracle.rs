@@ -19,6 +19,7 @@ use templar_common::{
         OracleRequest,
     },
     primitive_types,
+    time::Nanoseconds,
 };
 use templar_proxy_oracle_contract::Contract;
 use test_utils::{
@@ -99,20 +100,21 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_next_id(), 0);
     assert_eq!(c.gov_get(0), None);
     assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
-    assert_eq!(c.gov_ttl_ms(), U64(0));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::zero());
 
     let proposal = c.gov_create(
         0,
         Operation::SetActionTtl {
-            new_ttl_ms: U64(10 * 1000),
+            new_ttl: Nanoseconds::from_secs(10),
         },
     );
 
     let expected = Proposal {
         operation: Operation::SetActionTtl {
-            new_ttl_ms: U64(10 * 1000),
+            new_ttl: Nanoseconds::from_secs(10),
         },
-        created_at_ms: U64(1),
+        ttl: Nanoseconds::zero(),
+        created_at: Nanoseconds::from_ms(1),
         created_by: "owner.near".parse().unwrap(),
     };
 
@@ -122,7 +124,7 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_list(None, None), vec![0]);
     assert_eq!(c.gov_count(), 1);
     assert_eq!(c.gov_next_id(), 1);
-    assert_eq!(c.gov_ttl_ms(), U64(0));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::zero());
 
     c.gov_execute(0);
     assert_eq!(c.gov_get(0), None);
@@ -130,7 +132,7 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
     assert_eq!(c.gov_count(), 0);
     assert_eq!(c.gov_next_id(), 1);
-    assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::from_secs(10));
 
     let proxy_id = PriceIdentifier([0x01_u8; 32]);
     let proxy_def = Proxy::median_low([OracleRequest::pyth(
@@ -151,7 +153,8 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
             id: proxy_id,
             proxy: Some(proxy_def),
         },
-        created_at_ms: U64(1),
+        ttl: Nanoseconds::from_secs(10),
+        created_at: Nanoseconds::from_ms(1),
         created_by: "owner.near".parse().unwrap(),
     };
     assert_eq!(proposal, expected);
@@ -160,7 +163,7 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_list(None, None), vec![1]);
     assert_eq!(c.gov_count(), 1);
     assert_eq!(c.gov_next_id(), 2);
-    assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::from_secs(10));
 
     context.block_timestamp += delay_ms * 1_000_000;
     testing_env!(context.clone());

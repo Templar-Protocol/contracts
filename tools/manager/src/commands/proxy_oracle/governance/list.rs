@@ -1,8 +1,10 @@
 use console::style;
-use near_sdk::json_types::U64;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::oracle::proxy::governance::{Operation, Proposal};
+use templar_common::{
+    oracle::proxy::governance::{Operation, Proposal},
+    time::Nanoseconds,
+};
 
 use crate::CliContext;
 
@@ -15,7 +17,7 @@ pub struct ListProposals {
 impl ListProposals {
     #[tracing::instrument(skip_all, name = "governance_list", fields(oracle_id = %self.oracle_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let ttl_ms: U64 = ctx.near.view(&self.oracle_id, "gov_ttl_ms").await?.json()?;
+        let ttl: Nanoseconds = ctx.near.view(&self.oracle_id, "gov_ttl_ns").await?.json()?;
 
         let ids: Vec<u32> = ctx
             .near
@@ -29,14 +31,19 @@ impl ListProposals {
             return Ok(());
         }
 
-        println!("{}", style(format!("TTL: {}ms", ttl_ms.0)).dim());
+        println!(
+            "{}",
+            style(format!("TTL: {} ({}s)", ttl, ttl.as_secs())).dim()
+        );
         println!();
 
         #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = Nanoseconds::from_ms(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        );
 
         println!(
             "  {:>4}  {:<12}  {:<44}  {:>10}",
@@ -65,7 +72,7 @@ impl ListProposals {
                 Operation::SetActionTtl { .. } => "SetActionTtl",
             };
 
-            let executable = proposal.can_execute(now_ms, ttl_ms.0);
+            let executable = proposal.can_execute(now);
             let status = if executable {
                 style("ready").green()
             } else {
