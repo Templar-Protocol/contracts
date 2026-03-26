@@ -25,13 +25,12 @@ use p256::{
     elliptic_curve::rand_core::OsRng,
 };
 use rstest::{fixture, rstest};
-use templar_common::oracle::price_transformer::{self, ProxyPriceTransformer};
-use templar_common::oracle::proxy::Source;
 use tokio::sync::watch;
 
 use templar_common::{
     oracle::{
-        proxy::Proxy,
+        price_transformer::{self, ProxyPriceTransformer},
+        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone, OracleRequest,
     },
@@ -65,6 +64,7 @@ use templar_universal_account::{
     transaction::{self, Transaction},
     ExecuteArgsMessage, KeyId, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
+
 use test_utils::*;
 
 const POW_DIFFICULTY: usize = 6;
@@ -415,10 +415,10 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
     InitTest {
         worker,
         app,
-        market_registry,
         borrow_asset,
         collateral_asset,
         ua_registry,
+        market_registry,
         borrow_user,
         relay_user,
     }
