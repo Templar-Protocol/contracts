@@ -295,6 +295,12 @@ Options:
 
 ## Routes
 
+### `GET /healthz`
+
+Container liveness endpoint.
+
+Returns `200 OK` with body `ok` when the relayer HTTP server is running.
+
 ### `POST /relay`
 
 This route will relay a [signed delegate action](https://nomicon.io/RuntimeSpec/Actions#delegate-actions) to the NEAR blockchain, paying for the transaction fees in the process.

@@ -38,8 +38,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim AS production
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates libssl3 && \
+    apt-get install -y --no-install-recommends ca-certificates curl libssl3 && \
     rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system relayer && \
+    useradd --system --gid relayer --create-home --home-dir /home/relayer relayer
 
 # Runtime still needs `node` because the relayer spawns the bridge process.
 COPY --from=node-dist /opt/node /usr/local
@@ -47,5 +50,8 @@ COPY --from=rust-builder /usr/src/relayer/target/release/templar-relayer /usr/lo
 
 WORKDIR /app
 ENV NODE_ENV=production
+USER relayer
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["sh", "-c", "curl -fsS http://127.0.0.1:${PORT:-3000}/healthz || exit 1"]
 
 CMD ["templar-relayer"]
