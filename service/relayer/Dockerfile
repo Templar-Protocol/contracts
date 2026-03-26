@@ -14,11 +14,11 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_DIST}.tar.xz" -o /tmp/node.tar.xz && \
+RUN /bin/bash -o pipefail -ec 'curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_DIST}.tar.xz" -o /tmp/node.tar.xz && \
     echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - && \
     mkdir -p /opt/node && \
     tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1 && \
-    rm /tmp/node.tar.xz
+    rm /tmp/node.tar.xz'
 
 FROM rust:1.86.0 AS rust-builder
 COPY --from=node-dist /opt/node /usr/local
