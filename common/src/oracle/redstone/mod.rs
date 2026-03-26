@@ -27,7 +27,7 @@ use crate::time::Nanoseconds;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub struct GetPrices {
-    pub timestamp: U64,
+    pub timestamp: Nanoseconds,
     pub prices: HashMap<FeedId, SerializableU256>,
 }
 
