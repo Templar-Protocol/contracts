@@ -10,7 +10,11 @@ use near_sdk::{
 use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use templar_common::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
-    oracle::{pyth::PriceIdentifier, OracleRequest},
+    market::PriceOracleConfiguration,
+    oracle::{
+        pyth::{Price, PriceIdentifier},
+        OracleRequest,
+    },
 };
 
 pub mod app;
@@ -36,6 +40,7 @@ pub struct ContractData {
 pub struct MarketData {
     pub account_id: AccountId,
     pub oracle_id: AccountId,
+    pub price_oracle_configuration: PriceOracleConfiguration,
     pub collateral: AssetResolution<CollateralAsset>,
     pub borrow: AssetResolution<BorrowAsset>,
 }
@@ -140,4 +145,11 @@ pub struct MtTransferCallArgs {
     pub amount: U128,
     pub memo: Option<String>,
     pub msg: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ViewMarketPrices {
+    pub borrow: Option<Price>,
+    pub collateral: Option<Price>,
 }

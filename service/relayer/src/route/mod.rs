@@ -2,6 +2,7 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use near_sdk::serde::{Deserialize, Serialize};
 
 pub mod get_allowance;
+pub mod get_market_prices;
 pub mod relay;
 pub mod universal_account;
 pub mod update_prices;

@@ -784,6 +784,14 @@ mod tests {
             MarketData {
                 account_id: market_id.clone(),
                 oracle_id: account_id("oracle.test.near"),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: account_id("oracle.test.near"),
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
                 collateral: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("collateral.test.near")),
                     price_id: price_id(1),
@@ -828,6 +836,14 @@ mod tests {
             MarketData {
                 account_id: market_a.clone(),
                 oracle_id: pyth_oracle.clone(),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: pyth_oracle.clone(),
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
                 collateral: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("collateral-a.test.near")),
                     price_id: price_id(1),
@@ -851,6 +867,14 @@ mod tests {
             MarketData {
                 account_id: market_b.clone(),
                 oracle_id: redstone_oracle.clone(),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: redstone_oracle.clone(),
+                    collateral_asset_price_id: price_id(3),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(4),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
                 collateral: AssetResolution {
                     asset: FungibleAsset::nep141(account_id("collateral-b.test.near")),
                     price_id: price_id(3),
