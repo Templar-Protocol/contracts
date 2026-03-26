@@ -53,6 +53,10 @@ async fn main() {
             "/get_allowance",
             routing::get(route::get_allowance::get_allowance),
         )
+        .route(
+            "/market_prices",
+            routing::post(route::get_market_prices::get_market_prices),
+        )
         .nest("/universal_account", route::universal_account::router())
         .layer(ServiceBuilder::new().layer(CorsLayer::permissive()))
         .with_state(app);
