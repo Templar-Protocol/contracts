@@ -36,10 +36,51 @@ impl Validatable for Operation {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ValidationError {
     #[error("Empty proxy definition is not allowed")]
     EmptyProxyDefinition,
 }
 
 gen_ext_governance!(ext_proxy_governance, ProxyGovernanceInterface, Operation);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::oracle::OracleRequest;
+    use rstest::rstest;
+
+    fn invalid_operation() -> Operation {
+        Operation::SetProxy {
+            id: PriceIdentifier([0xaa; 32]),
+            proxy: Some(Proxy::median_low([])),
+        }
+    }
+
+    fn valid_operation() -> Operation {
+        Operation::SetProxy {
+            id: PriceIdentifier([0xff; 32]),
+            proxy: Some(Proxy::median_low([OracleRequest::pyth(
+                "pyth-oracle.near".parse().unwrap(),
+                PriceIdentifier([0xdd; 32]),
+            )
+            .into()])),
+        }
+    }
+
+    #[rstest]
+    #[case::valid(valid_operation())]
+    #[should_panic = "EmptyProxyDefinition"]
+    #[case::invalid(invalid_operation())]
+    fn on_create(#[case] operation: Operation) {
+        operation.on_create().unwrap();
+    }
+
+    #[rstest]
+    #[case::valid(valid_operation())]
+    #[should_panic = "EmptyProxyDefinition"]
+    #[case::invalid(invalid_operation())]
+    fn on_execute(#[case] operation: Operation) {
+        operation.on_execute().unwrap();
+    }
+}

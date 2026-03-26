@@ -172,6 +172,24 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     c.gov_execute(1);
 }
 
+#[test]
+#[should_panic = "Empty proxy definition is not allowed"]
+fn governance_rejects_empty_proxy_definition_on_create() {
+    let context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .build();
+    testing_env!(context);
+
+    let mut c = Contract::new();
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: PriceIdentifier([0xFF; 32]),
+            proxy: Some(Proxy::median_low([])),
+        },
+    );
+}
+
 #[allow(clippy::unwrap_used)]
 #[test]
 pub fn gas() {
