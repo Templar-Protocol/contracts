@@ -2,6 +2,8 @@
 
 This document explains how the vault works end-to-end: roles and permissions, data flow, deposits and withdrawals, and the async allocation/withdraw pipelines.
 
+Vault deployments will eventually be immutable (no contract upgrades). Until then, treat any deployment as potentially upgradeable and verify its controlling keys/roles.
+
 ## High-level overview
 
 - The vault issues shares over an underlying asset and allocates liquidity into configured markets.
@@ -16,11 +18,49 @@ This document explains how the vault works end-to-end: roles and permissions, da
 - Performance fees accrue by minting fee shares on growth only.
 - Strict invariants ensure safety and correct accounting.
 
+## Deviations from Morpho Vault V2
+
+- No force exits today: NEAR lacks flash loan rails and the audited market interface cannot hand off positions. A true `forceDeallocate` would need either (a) an externally funded backstop market that the vault can route withdrawals to, or (b) a future market primitive to transfer supply positions to the user (planned in our markets v2). Until then, exits depend on idle plus normal market withdrawal liquidity.
+- No separate “idle liquidity market”: `idle_balance` already serves as atomic liquidity that the allocator can grow/shrink via delta allocations. Introducing a pseudo-market for idle in an async pipeline would add complexity and state-surface without improving withdrawal liveness.
+- No dedicated liquidity adapter: NEAR has few maintained borrowing venues; Templar is already the primary venue we integrate. Keeping idle as the liquidity buffer plus allocator-driven routes avoids extra adapter indirection with little marginal benefit.
+- Liquidity adapters are an Ethereum-competition artifact: Morpho needs a generic adapter layer to juggle many venues on mainnet; on NEAR the venue set is small and curated, so we avoid that indirection.
+- Auto-AUM / realAssets: Morpho adapters push `realAssets`; here we expose `refresh_markets` (permissionless with a configurable throttle, defaults to ~30s, empty list = all markets) to pull live principals and update stored AUM. A pure `realAssets` view across markets isn’t feasible in NEAR’s async model without paid calls and increasing gas/promise complexity.
+- Policy gates (`Gate::enforce_policy`): privileged roles can set optional `Restrictions` (`Paused` / `BlackList` / `WhiteList`) via `set_restrictions`, and they are enforced on user-facing flows.
+  - Operational guidance: incident response should use `Restrictions::Paused` (fast, global, and unambiguous) rather than per-account blacklisting.
+  - `BlackList` / `WhiteList` are governance/policy controls and are censorship-sensitive (they can block deposits, withdrawals, and share transfers); treat them as deliberative configuration, not a rapid-response tool.
+  - Tightening restrictions (including emergency `Paused` and adding to `BlackList`) applies immediately (guardian/sentinel/owner).
+  - Unpause/relax actions (including removing from `BlackList`) are timelocked and must be finalized with `accept_restrictions` (cancel via `revoke_pending_restrictions`).
+  - `Gate::enforce_policy(account)` reads the current `restrictions` and panics if `restrictions.is_restricted(account)` returns a reason.
+  - It is called on deposits (the `sender_id` of `ft_transfer_call` / `mt_transfer_call`), on withdraw/redeem (both the caller and the withdrawal `receiver`), and on share-token transfers (`ft_transfer` / `ft_transfer_call`) for both sender and receiver.
+  - Share transfers are additionally blocked to any vault-managed market account, and internal settlement transfers can temporarily bypass the share-transfer gate so escrow/refunds can still be processed.
+  - In contrast, Morpho/MetaMorpho vaults are permissionless at the account level: there is no built-in allow/deny list for depositors, and vault shares are standard ERC20s (freely transferable).
+
 ## AUM model
 
 - The vault uses a BalanceSheet model by default.
 - Total assets = idle balance + sum of all market principals.
 - Accounting is independent of any withdraw order; price only changes when cash actually moves.
+
+## Donations and idle resync
+
+A "donation" is a plain NEP-141 `ft_transfer` of the underlying token directly to the vault account
+(i.e. not `ft_transfer_call`). Since `ft_transfer` does not invoke the vault receiver hook, the
+vault does not update `idle_balance` automatically.
+
+This can make AUM appear stale:
+- `get_total_assets()` remains unchanged even though the underlying token balance increased.
+- Later operations that read `ft_balance_of(vault)` may suddenly discover the extra funds.
+
+To make donations visible deterministically, the vault exposes a permissionless entrypoint:
+- `resync_idle_balance()`
+
+`resync_idle_balance()` reads `ft_balance_of(vault)` and reconciles the stored `idle_balance` to
+match. It is:
+- blocking (while in-flight, deposits/withdraw/redeem are blocked), and
+- rate-limited by a cooldown (default: 120 seconds).
+
+Fee semantics: if the resync increases idle (i.e. a donation was discovered), the vault bumps
+`fee_anchor.total_assets` by the same delta so the donation does not generate performance fees.
 
 ## Codebase map
 
@@ -53,6 +93,7 @@ Roles are enforced via RBAC. The Curator is also granted the Allocator role at i
 - Owner: full control; can act in place of any role.
 - Curator: manages markets and policy (caps/timelocks/enable/disable). Curator is also implicitly granted Allocator.
 - Guardian: can revoke/cancel pending governance actions (timelock/guardian changes, etc.).
+- Sentinel: emergency role distinct from the guardian. Sentinels can revoke any pending governance action, trigger market deallocation (`reallocate` withdraw legs or `execute_rebalance_withdrawal`), and invoke `unbrick` to cancel in-flight withdrawals/payouts. Rotating the sentinel is timelocked just like guardian changes.
 - Allocator (operational role): allowed to run allocation and withdrawal execution. This is the role your off-chain keeper bot should hold.
 
 Note
@@ -92,10 +133,11 @@ Note
 
 ## Key storage and concepts
 
-- MarketConfiguration per market: { cap, enabled, removable_at }
+- MarketConfiguration per market: { cap, enabled, removable_at, cap_group_id }
 - market_supply[market] = current principal supplied to that market
 - idle_balance = underlying tokens held by the vault
 - supply_queue (ordered list of market AccountIds) for allocation only
+- cap_groups[cap_group_id] = { cap (absolute), relative_cap (WAD fraction of total assets), principal (sum across member markets) }
 - pending_cap, pending_timelock, pending_guardian with timelock semantics
 - pending_withdrawals FIFO queue (id -> {owner, receiver, escrow_shares, expected_assets, requested_at})
 - Fee/virtual offsets for conversions:
@@ -108,18 +150,20 @@ Note
 - Views:
   - get_total_assets() = idle + sum(principal across all markets)
   - get_total_supply()
-  - get_max_deposit() aggregates per-market remaining caps in supply_queue order
+  - get_max_deposit() aggregates per-market remaining caps in supply_queue order (including cap-group relative-to-AUM caps)
   - convert_to_shares(assets), convert_to_assets(shares)
   - preview_deposit/mint/withdraw/redeem
 - Fees:
-  - internal_accrue_fee() mints fee shares only on growth (current_total_assets > last_total_assets).
-  - Conversions simulate fee accrual and include virtual offsets via compute_effective_totals.
+  - internal_accrue_fee() mints management fees pro-rata over time (annualized over YEAR_NS) and performance fees only on growth.
+  - Optional max_total_assets_growth_rate (WAD, annualized) caps the effective total_assets used for fee accrual to `min(cur, last * (1 + max_rate * dt / YEAR_NS))`, mitigating donation-style AUM spikes.
+  - Conversions simulate fee accrual (management first, then performance) and include virtual offsets via compute_effective_totals.
 
 - Effective totals
   - All previews and conversions simulate fee accrual first and apply virtual_shares and virtual_assets to stabilize edge cases at low supply/assets.
 - Accrual policy
   - internal_accrue_fee() mints fee shares only when get_total_assets() > last_total_assets (no fees on losses or flat performance).
-  - Fee rate is a WAD fraction and bounded; fee_recipient changes first accrue under the old recipient.
+  - If max_total_assets_growth_rate is set, fee accrual is rate-limited; growth above the cap within the elapsed interval is not charged as fees.
+  - Fee rate is a WAD fraction and bounded (management <= 5%, performance <= 50%); fee_recipient changes first accrue under the old recipient.
 
 ## Execution model at a glance
 
@@ -210,7 +254,7 @@ Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, 
 
 2. Execution by Allocator/keeper (Idle -> Withdrawing -> Payout -> Idle)
 
-- `execute_withdrawal(route: Vec<AccountId>)`:
+- `execute_withdrawal(route: Vec<MarketId>)`:
   - Peeks the next pending withdrawal by id and starts a `Withdrawing` op with the provided per-op route.
   - Idle-first: `collected = min(idle_balance, amount)`, `remaining = amount - collected`.
   - Sets `OpState::Withdrawing { index = 0, remaining, receiver, collected, owner, escrow_shares }` and records the route for this op.
@@ -219,7 +263,7 @@ Two phases: user requests (escrow) and keeper-routed execution (pull liquidity, 
   - If `remaining == 0`, the vault transitions to payout.
   - If market principal is zero, it skips to the next market.
   - The vault creates a market withdrawal request up to `min(remaining, principal)` via `create_supply_withdrawal_request(...)`.
-  - Requests are created with deferment by default; the keeper then calls `execute_market_withdrawal(op_id, index, batch_limit)` to execute created requests (possibly multiple times per market).
+  - Requests are created with deferment by default; the keeper then calls `execute_market_withdrawal(op_id, market, batch_limit)` to execute created requests (possibly multiple times per market).
   - After execution, the vault queries `get_supply_position(...)` and reconciles:
     - `credited = min(before - after, remaining)`
     - `remaining -= credited; collected += credited`
@@ -275,7 +319,7 @@ Important
 
 ## Fee policy
 
-- set_performance_fee(fee) sets the WAD fraction (capped; fees accrue only on profits).
+- set_fees(fees) updates performance/management rates and recipients atomically (capped; accrues under the prior configuration first). Fee decreases apply immediately; fee increases and any recipient change are timelocked and must be finalized via accept_fees (cancel via revoke_pending_fees).
 - internal_accrue_fee() mints fee shares to fee_recipient and updates last_total_assets.
 - Conversions use compute_effective_totals to simulate fee shares and apply virtual offsets.
 
@@ -288,17 +332,17 @@ Important
   - Allocator/Curator/Owner: `execute_rebalance_withdrawal(market, batch_limit)` for allocator-only rebalance flows
 - Withdrawals:
   - User: `redeem(shares, receiver)` or `withdraw(amount, receiver)`
-  - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, index, batch_limit)`, `unbrick()`
+  - Allocator/Curator/Owner: `execute_withdrawal(route)`, `execute_market_withdrawal(op_id, market, batch_limit)`, `unbrick()`
 - Governance:
-  - Owner/Curator/Guardian as listed above.
- 
+  - Owner: `set_fees`, `accept_fees`, `revoke_pending_fees`, plus market/timelock admin.
+  - Guardian/Sentinel/Owner: `set_restrictions` (tightening immediate) and `revoke_pending_restrictions`; Guardian/Owner: `accept_restrictions`.
+
 ## API notes (for integrators/keepers)
 
-- `execute_withdrawal` requires a per-op `route: Vec<AccountId>` (ordered preference for this withdrawal).
-- `execute_market_withdrawal(op_id, index, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
-- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault, locks the target market index in `market_execution_lock`, re-syncs `idle_balance` to the vault’s actual FT balance, and credits returned funds without touching the user queue. If the balance read fails, the rebalance operation halts and emits `RebalanceWithdrawStopped`.
+- `execute_withdrawal` requires a per-op `route: Vec<MarketId>` (ordered preference for this withdrawal).
+- `execute_market_withdrawal(op_id, market, batch_limit)` executes created market-side supply withdrawal requests for the given withdrawing op.
+- `execute_rebalance_withdrawal(market, batch_limit)` is allocator-only and performs a pure rebalance: it executes an existing supply withdrawal request for the vault, locks the target market in `market_execution_lock`, re-syncs `idle_balance` to the vault’s actual FT balance, and credits returned funds without touching the user queue. If the balance read fails, the rebalance operation halts and emits `RebalanceWithdrawStopped`.
 - Curator is granted Allocator by default at initialization; keepers must use an account that has the Allocator role (or be the Curator/Owner).
-
 
 ## Error handling and stop semantics
 

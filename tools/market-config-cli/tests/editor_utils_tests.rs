@@ -1,6 +1,4 @@
-use market_config_cli::editor::utils::{
-    fee_defaults, parse_asset_input, price_id_from_input, StrategyDefaults, StrategyKind,
-};
+use market_config_cli::ui::prompt::types::{StrategyDefaults, StrategyKind};
 use near_sdk::AccountId;
 use rstest::rstest;
 use std::str::FromStr;
@@ -12,6 +10,8 @@ use templar_common::{
 #[case("usdc.near")]
 #[case("wrap.near")]
 fn parse_asset_input_accepts_valid_accounts(#[case] account: &str) {
+    use market_config_cli::ui::prompt::parsers::parse_asset_input;
+
     let asset = parse_asset_input::<BorrowAsset>(account, "borrow asset")
         .expect("valid account should parse as asset");
     assert_eq!(asset.contract_id(), &AccountId::from_str(account).unwrap());
@@ -21,6 +21,8 @@ fn parse_asset_input_accepts_valid_accounts(#[case] account: &str) {
 #[case("")]
 #[case("not a valid account")]
 fn parse_asset_input_rejects_invalid_accounts(#[case] account: &str) {
+    use market_config_cli::ui::prompt::parsers::parse_asset_input;
+
     let err = parse_asset_input::<BorrowAsset>(account, "borrow asset").unwrap_err();
     assert!(
         err.to_string().contains("Invalid borrow asset"),
@@ -32,6 +34,8 @@ fn parse_asset_input_rejects_invalid_accounts(#[case] account: &str) {
 #[case("b7a8eba68a997cd0210c2e1e4ee811ad2d174b3611c22d9ebf16f4cb7e9ba850")]
 #[case("0x70f9b53410a4ec4b6d9eae77a0f9bb6b6f2b12ed063e51252b52376c0f9a0001")]
 fn price_id_from_input_accepts_valid_hex(#[case] hex: &str) {
+    use market_config_cli::ui::prompt::parsers::price_id_from_input;
+
     let parsed = price_id_from_input(hex).expect("valid price id should parse");
     assert_eq!(parsed.0.len(), 32);
 }
@@ -40,6 +44,8 @@ fn price_id_from_input_accepts_valid_hex(#[case] hex: &str) {
 #[case("too-short")]
 #[case("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")]
 fn price_id_from_input_rejects_bad_hex(#[case] hex: &str) {
+    use market_config_cli::ui::prompt::parsers::price_id_from_input;
+
     assert!(price_id_from_input(hex).is_err());
 }
 
@@ -53,6 +59,8 @@ fn fee_defaults_extracts_mode_and_value(
     #[case] fee: Fee<BorrowAsset>,
     #[case] expected: (usize, &str),
 ) {
+    use market_config_cli::ui::prompt::helpers::fee_defaults;
+
     let defaults = fee_defaults(&fee);
     assert_eq!(defaults.0, expected.0);
     assert_eq!(defaults.1, expected.1);

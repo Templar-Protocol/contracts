@@ -12,7 +12,9 @@ use near_workspaces::{
     network::Sandbox, result::ExecutionSuccess, types::SecretKey, Account, Contract, Worker,
 };
 use std::{env, ops::Deref};
-use templar_common::vault::{AllocationDelta, DepositMsg, VaultConfiguration};
+use templar_common::vault::{
+    AllocationDelta, DepositMsg, Fees, MarketId, Restrictions, VaultConfiguration,
+};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
@@ -56,7 +58,6 @@ impl VaultController {
     define! {
         /* -------- Views -------- */
         #[view] pub fn get_configuration() -> VaultConfiguration;
-        #[view] pub fn get_fee_recipient() -> AccountId;
         #[view] pub fn get_last_total_assets() -> U128;
         #[view] pub fn get_total_assets() -> U128;
         #[view] pub fn get_total_supply() -> U128;
@@ -65,7 +66,11 @@ impl VaultController {
         #[view] pub fn get_withdrawing_op_id() -> Option<U64>;
         #[view] pub fn get_current_withdraw_request_id() -> Option<U64>;
         #[view] pub fn has_pending_market_withdrawal() -> bool;
+        #[view] pub fn get_fee_anchor_timestamp() -> U64;
+        #[view] pub fn get_fees() -> Fees<U128>;
+        #[view] pub fn get_restrictions() -> Option<Restrictions>;
 
+        #[view] pub fn get_market_id_of_account(market: AccountId) -> Option<MarketId>;
 
         #[view] pub fn get_market_supply(market: &AccountId) -> U128;
         #[view] pub fn get_next_op_id() -> u64;
@@ -88,16 +93,23 @@ impl VaultController {
         // Allocator-only: executes an existing market-side supply withdrawal
         // request and credits any returned funds to the vault's idle balance.
         #[call(exec, tgas(300))]
-        pub fn execute_rebalance_withdrawal(market: AccountId, batch_limit: Option<u32>);
+        pub fn execute_rebalance_withdrawal(market_id: MarketId, batch_limit: Option<u32>);
+
+        #[call(exec, tgas(30))]
+        pub fn resync_idle_balance();
+
+        // Alias for `resync_idle_balance`, kept for SDK naming consistency.
+        #[call(exec, tgas(30))]
+        pub fn refresh_idle_balance["resync_idle_balance"]();
 
         #[call(exec, tgas(30), deposit(NearToken::from_yoctonear(2560000000000000000000)))]
         pub fn withdraw(amount: U128, receiver: AccountId);
 
         #[call(exec, tgas(300))]
-        pub fn execute_withdrawal(route: Vec<AccountId>);
+        pub fn execute_withdrawal(route: Vec<MarketId>);
 
         #[call(exec, tgas(300))]
-        pub fn execute_market_withdrawal(op_id: U64, market_index: u32, batch_limit: Option<u32>);
+        pub fn execute_market_withdrawal(op_id: U64, market: MarketId, batch_limit: Option<u32>);
 
         #[call(exec, tgas(300))]
         pub fn unbrick["unbrick"]();
@@ -139,13 +151,34 @@ impl VaultController {
         pub fn revoke_pending_guardian();
 
         #[call(exec, tgas(50))]
+        pub fn submit_sentinel(new_s: AccountId);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_sentinel();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_sentinel();
+
+        #[call(exec, tgas(50))]
         pub fn set_skim_recipient(account: AccountId);
 
         #[call(exec, tgas(50))]
-        pub fn set_fee_recipient(account: AccountId);
+        pub fn set_fees(fees: Fees<U128>);
 
         #[call(exec, tgas(50))]
-        pub fn set_performance_fee(fee: U128);
+        pub fn accept_fees();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_fees();
+
+        #[call(exec, tgas(50))]
+        pub fn set_restrictions(restrictions: Option<Restrictions>);
+
+        #[call(exec, tgas(50))]
+        pub fn accept_restrictions();
+
+        #[call(exec, tgas(50))]
+        pub fn revoke_pending_restrictions();
 
         #[call(exec, tgas(50))]
         pub fn submit_timelock(new_timelock_ns: U64);
@@ -157,7 +190,7 @@ impl VaultController {
         pub fn revoke_pending_timelock();
 
         #[call(exec, tgas(50), deposit(NearToken::from_yoctonear(840000000000000000000)))]
-        pub fn set_supply_queue(markets: Vec<AccountId>);
+        pub fn set_supply_queue(markets: Vec<MarketId>);
 
         #[call(exec, tgas(50))]
         pub fn set_withdraw_queue(queue: Vec<AccountId>);
@@ -250,6 +283,13 @@ impl UnifiedVaultController {
         self.market.storage_deposits(account).await;
     }
 
+    pub async fn market_id_of(&self, market: &AccountId) -> MarketId {
+        self.vault
+            .get_market_id_of_account(market.clone())
+            .await
+            .unwrap_or_else(|| panic!("Unknown market: {market}"))
+    }
+
     pub async fn supply(&self, supply_user: &Account, amount: u128) -> ExecutionSuccess {
         eprintln!(
             "{} transferring {amount} tokens for supply...",
@@ -294,9 +334,10 @@ impl UnifiedVaultController {
         market: AccountId,
         batch_limit: Option<u32>,
     ) -> ExecutionSuccess {
+        let market_id = self.market_id_of(&market).await;
         let e = self
             .vault
-            .execute_rebalance_withdrawal(allocator, market, batch_limit)
+            .execute_rebalance_withdrawal(allocator, market_id, batch_limit)
             .await;
         if self.debug {
             print_execution(&e);
@@ -329,7 +370,12 @@ impl UnifiedVaultController {
         allocator: &Account,
         route: Vec<AccountId>,
     ) -> ExecutionSuccess {
-        let e = self.vault.execute_withdrawal(allocator, route).await;
+        let mut route_ids = Vec::with_capacity(route.len());
+        for market in &route {
+            route_ids.push(self.market_id_of(market).await);
+        }
+
+        let e = self.vault.execute_withdrawal(allocator, route_ids).await;
         if self.debug {
             print_execution(&e);
         }
@@ -340,12 +386,12 @@ impl UnifiedVaultController {
         &self,
         allocator: &Account,
         op_id: U64,
-        market_index: u32,
+        market: MarketId,
         batch_limit: Option<u32>,
     ) -> ExecutionSuccess {
         let e = self
             .vault
-            .execute_market_withdrawal(allocator, op_id, market_index, batch_limit)
+            .execute_market_withdrawal(allocator, op_id, market, batch_limit)
             .await;
         if self.debug {
             print_execution(&e);
@@ -379,7 +425,12 @@ impl UnifiedVaultController {
         allocator: &Account,
         markets: &[AccountId],
     ) -> ExecutionSuccess {
-        let e = self.vault.set_supply_queue(allocator, markets).await;
+        let mut market_ids = Vec::with_capacity(markets.len());
+        for market in markets {
+            market_ids.push(self.market_id_of(market).await);
+        }
+
+        let e = self.vault.set_supply_queue(allocator, market_ids).await;
         if self.debug {
             print_execution(&e);
         }

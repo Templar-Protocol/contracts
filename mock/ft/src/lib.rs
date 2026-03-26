@@ -1,10 +1,13 @@
-use near_sdk::{env, json_types::U128, near, NearToken, PanicOnDefault};
+use std::collections::HashMap;
+
+use near_sdk::{env, json_types::U128, near, AccountId, NearToken, PanicOnDefault};
 use near_sdk_contract_tools::ft::*;
 
 #[derive(PanicOnDefault, FungibleToken)]
 #[near(contract_state)]
 pub struct Contract {
     pub redemption_rate: U128,
+    pub counter: HashMap<AccountId, u32>,
 }
 
 #[near]
@@ -13,6 +16,7 @@ impl Contract {
     pub fn new(name: String, symbol: String) -> Self {
         let mut contract = Self {
             redemption_rate: U128(NearToken::from_near(1).as_yoctonear()),
+            counter: HashMap::default(),
         };
 
         Nep148Controller::set_metadata(&mut contract, &ContractMetadata::new(name, symbol, 24));
@@ -34,6 +38,17 @@ impl Contract {
             &Nep141Mint::new(amount.0, env::predecessor_account_id()),
         )
         .unwrap();
+    }
+
+    pub fn increment(&mut self) {
+        *self
+            .counter
+            .entry(env::predecessor_account_id())
+            .or_insert(0) += 1;
+    }
+
+    pub fn get_counter(&self, account_id: AccountId) -> u32 {
+        *self.counter.get(&account_id).unwrap_or(&0)
     }
 
     #[payable]

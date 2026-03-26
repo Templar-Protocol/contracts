@@ -37,7 +37,7 @@ async fn main() {
         .await;
     let supply_gas = e.total_gas_burnt;
     let harvest_yield_0 = c
-        .harvest_yield_exec(&supply_user, None, Some(HarvestYieldMode::Compounding))
+        .harvest_yield_exec(&supply_user, None, Some(HarvestYieldMode::Default))
         .await;
     let snapshot_count_before = c.list_finalized_snapshots(None, None).await.len();
 
@@ -74,7 +74,7 @@ async fn main() {
 
     let apply_interest_max = c.apply_interest(&borrow_user_2, None, None).await;
     let harvest_yield_max = c
-        .harvest_yield_exec(&supply_user, None, Some(HarvestYieldMode::Compounding))
+        .harvest_yield_exec(&supply_user, None, Some(HarvestYieldMode::Default))
         .await;
 
     c.repay(&borrow_user_2, None, 1100).await;

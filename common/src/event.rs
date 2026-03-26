@@ -2,6 +2,7 @@ use near_sdk::{near, AccountId};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
+    borrow::LiabilityReduction,
     snapshot::Snapshot,
 };
 
@@ -49,12 +50,12 @@ pub enum MarketEvent {
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
     },
-    #[event_version("1.0.0")]
+    #[event_version("2.0.0")]
     BorrowRepaid {
         account_id: AccountId,
-        borrow_asset_fees_repaid: BorrowAssetAmount,
-        borrow_asset_principal_repaid: BorrowAssetAmount,
-        borrow_asset_principal_remaining: BorrowAssetAmount,
+        amount_sent: BorrowAssetAmount,
+        liability_reduction: LiabilityReduction,
+        liability_remaining: BorrowAssetAmount,
     },
     #[event_version("1.0.0")]
     Liquidation {

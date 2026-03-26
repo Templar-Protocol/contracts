@@ -8,7 +8,7 @@ use near_primitives::{
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
-use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::oracle::pyth::{OracleResponse, PriceIdentifier};
 
 use crate::{CliError, CliResult};
 
@@ -72,14 +72,51 @@ pub async fn price_feed_exists(
     }
 }
 
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct MultiTokenMetadata {
-    icon: String,
-    id: String,
-    name: String,
-    symbol: String,
-    decimals: u8,
+/// Fetch EMA prices for the given price IDs with a max age constraint.
+/// # Errors
+pub async fn list_ema_prices_no_older_than(
+    client: &JsonRpcClient,
+    oracle_contract_id: AccountId,
+    price_ids: Vec<PriceIdentifier>,
+    age: u64,
+) -> CliResult<OracleResponse> {
+    let args = json!({
+        "price_ids": price_ids,
+        "age": age,
+    });
+
+    let request = RpcQueryRequest {
+        block_reference: BlockReference::latest(),
+        request: QueryRequest::CallFunction {
+            account_id: oracle_contract_id.clone(),
+            method_name: "list_ema_prices_no_older_than".to_string(),
+            args: serialize_and_encode(args).into(),
+        },
+    };
+
+    let response = client
+        .call(request)
+        .await
+        .map_err(|e| CliError::NearRpc(format!("Failed to query oracle contract: {e}")))?;
+
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        let prices: OracleResponse = serde_json::from_slice(&result.result)
+            .map_err(|e| CliError::Oracle(format!("Failed to parse response: {e}")))?;
+        Ok(prices)
+    } else {
+        Err(CliError::Oracle(
+            "Unexpected response type from oracle".into(),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MultiTokenMetadata {
+    pub icon: Option<String>,
+    pub id: Option<String>,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
 }
 
 fn parse_multi_token_metadata(data: &[u8]) -> CliResult<MultiTokenMetadata> {
@@ -90,21 +127,15 @@ fn parse_multi_token_metadata(data: &[u8]) -> CliResult<MultiTokenMetadata> {
     })
 }
 
-/// Fetch decimals for a fungible asset (NEP-141 or NEP-245) via RPC
+/// Fetch metadata for a NEP-245 fungible asset via RPC
 /// # Errors
-pub async fn token_metadata(
+pub async fn multitoken_metadata(
     client: &JsonRpcClient,
     contract_id: AccountId,
-    token_id: Option<String>,
-) -> CliResult<u8> {
-    let (method_name, args) = if let Some(token_id) = token_id.as_ref() {
-        (
-            "mt_metadata_base_by_token_id".to_string(),
-            json!({ "token_ids": [token_id] }),
-        )
-    } else {
-        ("ft_metadata".to_string(), json!({}))
-    };
+    token_id: String,
+) -> CliResult<MultiTokenMetadata> {
+    let method_name = "mt_metadata_base_by_token_id".to_string();
+    let args = json!({ "token_ids": [token_id] });
 
     let request = RpcQueryRequest {
         block_reference: BlockReference::latest(),
@@ -127,21 +158,49 @@ pub async fn token_metadata(
         ));
     };
 
-    if method_name == "mt_metadata_base_by_token_id" {
-        let metadata: MultiTokenMetadata =
-            parse_multi_token_metadata(&result.result).map_err(|e| {
-                CliError::NearRpc(format!(
-                    "Failed to parse mt_metadata_base_by_token_id response: {e}"
-                ))
-            })?;
+    let metadata: MultiTokenMetadata = parse_multi_token_metadata(&result.result).map_err(|e| {
+        CliError::NearRpc(format!(
+            "Failed to parse mt_metadata_base_by_token_id response: {e}"
+        ))
+    })?;
 
-        Ok(metadata.decimals)
-    } else {
-        let metadata: FungibleTokenMetadata = serde_json::from_slice(&result.result)
-            .map_err(|e| CliError::NearRpc(format!("Failed to parse ft_metadata response: {e}")))?;
+    Ok(metadata)
+}
 
-        Ok(metadata.decimals)
-    }
+/// Fetch NEP-141 metadata via RPC.
+/// # Errors
+pub async fn ft_metadata(
+    client: &JsonRpcClient,
+    contract_id: AccountId,
+) -> CliResult<FungibleTokenMetadata> {
+    let method_name = "ft_metadata".to_string();
+    let args = json!({});
+
+    let request = RpcQueryRequest {
+        block_reference: BlockReference::latest(),
+        request: QueryRequest::CallFunction {
+            account_id: contract_id.clone(),
+            method_name: method_name.clone(),
+            args: serialize_and_encode(args).into(),
+        },
+    };
+
+    let response = client.call(request).await.map_err(|e| {
+        CliError::NearRpc(format!(
+            "Failed to query {method_name} for {contract_id}: {e}"
+        ))
+    })?;
+
+    let QueryResponseKind::CallResult(result) = response.kind else {
+        return Err(CliError::NearRpc(
+            "Unexpected response type from token metadata query".into(),
+        ));
+    };
+
+    let metadata: FungibleTokenMetadata = serde_json::from_slice(&result.result)
+        .map_err(|e| CliError::NearRpc(format!("Failed to parse ft_metadata response: {e}")))?;
+
+    Ok(metadata)
 }
 
 /// Generic function to call a view method on a NEAR contract via RPC

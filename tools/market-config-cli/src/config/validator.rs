@@ -1,10 +1,11 @@
 use crate::{
     oracle::PriceValidator,
-    rpc::{token_metadata, view_account},
+    rpc::{ft_metadata, multitoken_metadata, view_account, MultiTokenMetadata},
     CliError, CliResult,
 };
 use console::{style, Style};
 use indicatif::{ProgressBar, ProgressStyle};
+use near_contract_standards::fungible_token::metadata::FungibleTokenMetadata;
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
 use serde_json::Value;
@@ -156,6 +157,10 @@ impl ConfigValidator {
                 config.collateral_asset.contract_id().as_ref().to_string(),
             ),
         ];
+        let mut accounts = accounts;
+        for account in config.yield_weights.r#static.keys() {
+            accounts.push(("yield recipient", account.to_string()));
+        }
 
         let progress = ProgressBar::new(accounts.len() as u64);
 
@@ -220,7 +225,7 @@ impl ConfigValidator {
         progress.tick();
 
         progress.set_message("borrow asset");
-        let borrow_decimals = fetch_decimals(&client, &config.borrow_asset)
+        let borrow_metadata = fetch_metadata(&client, &config.borrow_asset)
             .await
             .map_err(|e| {
                 CliError::Validation(format!("Failed to fetch borrow asset metadata: {e}"))
@@ -228,12 +233,21 @@ impl ConfigValidator {
         progress.inc(1);
 
         progress.set_message("collateral asset");
-        let collateral_decimals = fetch_decimals(&client, &config.collateral_asset)
+        let collateral_metadata = fetch_metadata(&client, &config.collateral_asset)
             .await
             .map_err(|e| {
                 CliError::Validation(format!("Failed to fetch collateral asset metadata: {e}"))
             })?;
         progress.inc(1);
+
+        let borrow_decimals = match borrow_metadata {
+            TokenMetadata::Nep141(ref m) => m.decimals,
+            TokenMetadata::Nep245(ref m) => m.decimals,
+        };
+        let collateral_decimals = match collateral_metadata {
+            TokenMetadata::Nep141(ref m) => m.decimals,
+            TokenMetadata::Nep245(ref m) => m.decimals,
+        };
 
         progress.finish_with_message(
             Style::new()
@@ -246,25 +260,114 @@ impl ConfigValidator {
     }
 }
 
-async fn fetch_decimals<T: templar_common::asset::AssetClass>(
-    client: &JsonRpcClient,
-    asset: &FungibleAsset<T>,
-) -> CliResult<u8> {
-    if let Some((contract_id, token_id)) = asset.clone().into_nep245() {
-        let (resolved_contract, resolved_token_id) =
-            resolve_nep141_or_nep245_parts(contract_id, &token_id)?;
-        return token_metadata(client, resolved_contract, resolved_token_id).await;
-    }
-
-    #[allow(clippy::unwrap_used, reason = "Parsing should not fail here")]
-    let id: AccountId = asset.contract_id().as_ref().parse().unwrap();
-    token_metadata(client, id, None).await
+pub enum TokenMetadata {
+    Nep141(FungibleTokenMetadata),
+    Nep245(MultiTokenMetadata),
 }
 
-fn resolve_nep141_or_nep245_parts(
-    contract_id: AccountId,
-    token_id: &str,
-) -> CliResult<(AccountId, Option<String>)> {
+#[derive(Debug)]
+pub(crate) enum ResolvedAssetParts {
+    Nep141(AccountId),
+    Nep245 {
+        contract_id: AccountId,
+        token_id: String,
+    },
+}
+
+/// # Errors
+pub async fn fetch_metadata<T: templar_common::asset::AssetClass>(
+    client: &JsonRpcClient,
+    asset: &FungibleAsset<T>,
+) -> CliResult<TokenMetadata> {
+    if let Some((_, token_id)) = asset.clone().into_nep245() {
+        match resolve_nep141_or_nep245_parts(&token_id)? {
+            ResolvedAssetParts::Nep141(account_id) => {
+                let metadata = ft_metadata(client, account_id).await?;
+                return Ok(TokenMetadata::Nep141(metadata));
+            }
+            ResolvedAssetParts::Nep245 {
+                contract_id,
+                token_id,
+            } => {
+                let metadata = multitoken_metadata(client, contract_id, token_id).await?;
+                return Ok(TokenMetadata::Nep245(metadata));
+            }
+        }
+    }
+
+    let id: AccountId = asset.contract_id().as_ref().parse().map_err(|e| {
+        CliError::Other(format!(
+            "Unable to parse account_id '{}': {e}",
+            asset.contract_id().as_ref()
+        ))
+    })?;
+
+    let metadata = ft_metadata(client, id).await?;
+    Ok(TokenMetadata::Nep141(metadata))
+}
+
+/// # Errors
+pub async fn check_asset_existence<T: templar_common::asset::AssetClass>(
+    client: &JsonRpcClient,
+    asset: &FungibleAsset<T>,
+) -> CliResult {
+    if let Some((_, token_id)) = asset.clone().into_nep245() {
+        match resolve_nep141_or_nep245_parts(&token_id)? {
+            ResolvedAssetParts::Nep141(account_id) => {
+                view_account(client, account_id.clone())
+                    .await
+                    .map_err(|e| {
+                        CliError::Validation(format!(
+                            "Account check failed for '{account_id}': {e}"
+                        ))
+                    })?;
+            }
+            ResolvedAssetParts::Nep245 {
+                contract_id,
+                token_id,
+            } => {
+                // NEP-245 multi-token
+                view_account(client, contract_id.clone())
+                    .await
+                    .map_err(|e| {
+                        CliError::Validation(format!(
+                            "Account check failed for '{contract_id}': {e}"
+                        ))
+                    })?;
+
+                let metadata = multitoken_metadata(client, contract_id, token_id.clone())
+                    .await
+                    .map_err(|e| {
+                        CliError::Validation(format!("Failed to fetch NEP-245 metadata: {e}"))
+                    })?;
+                let metadata_id = metadata.id.as_deref().ok_or_else(|| {
+                    CliError::Validation("NEP-245 metadata missing id field".into())
+                })?;
+                if metadata_id != token_id {
+                    return Err(CliError::Validation(format!(
+                        "NEP-245 token id mismatch: expected '{token_id}', got '{metadata_id}'"
+                    )));
+                }
+            }
+        }
+    }
+
+    // NEP-141
+    let account_id: AccountId = asset.contract_id().as_ref().parse().map_err(|e| {
+        CliError::Other(format!(
+            "Unable to parse account_id '{}': {e}",
+            asset.contract_id().as_ref()
+        ))
+    })?;
+    view_account(client, account_id.clone())
+        .await
+        .map_err(|e| {
+            CliError::Validation(format!("Account check failed for '{account_id}': {e}"))
+        })?;
+    Ok(())
+}
+
+pub(crate) fn resolve_nep141_or_nep245_parts(token_id: &str) -> CliResult<ResolvedAssetParts> {
     if let Some(stripped) = token_id.strip_prefix("nep141:") {
         let mut parts = stripped.splitn(2, ':');
         let Some(ft_contract) = parts.next() else {
@@ -279,7 +382,7 @@ fn resolve_nep141_or_nep245_parts(
             ))
         })?;
 
-        return Ok((ft_contract, None));
+        return Ok(ResolvedAssetParts::Nep141(ft_contract));
     }
 
     if let Some(stripped) = token_id.strip_prefix("nep245:") {
@@ -300,10 +403,15 @@ fn resolve_nep141_or_nep245_parts(
                 "Invalid NEP-245 contract id in token '{token_id}': {e}"
             ))
         })?;
-        return Ok((mt_contract, Some(mt_token_id.to_string())));
+        return Ok(ResolvedAssetParts::Nep245 {
+            contract_id: mt_contract,
+            token_id: mt_token_id.to_string(),
+        });
     }
 
-    Ok((contract_id, Some(token_id.to_string())))
+    Err(CliError::Validation(format!(
+        "Token id '{token_id}' must be prefixed with 'nep141:' or 'nep245:'"
+    )))
 }
 
 /// Validate that decimals are within reasonable bounds (typically 0-24 for NEAR)
@@ -440,14 +548,16 @@ mod tests {
 
     #[test]
     fn resolve_nep141_or_nep245_parts_supports_nep141_prefix() {
-        let contract_id = AccountId::from_str("intents.near").unwrap();
         let token_id = "nep141:usdc.near:anything".to_string();
 
-        let (resolved_contract, resolved_token_id) =
-            resolve_nep141_or_nep245_parts(contract_id, &token_id).unwrap();
+        let resolved = resolve_nep141_or_nep245_parts(&token_id).unwrap();
 
-        assert_eq!(resolved_contract, AccountId::from_str("usdc.near").unwrap());
-        assert!(resolved_token_id.is_none());
+        match resolved {
+            ResolvedAssetParts::Nep141(account_id) => {
+                assert_eq!(account_id, AccountId::from_str("usdc.near").unwrap());
+            }
+            ResolvedAssetParts::Nep245 { .. } => panic!("expected nep141 resolution"),
+        }
     }
 
     #[test]
@@ -455,11 +565,18 @@ mod tests {
         let contract_id = AccountId::from_str("intents.near").unwrap();
         let token_id = "nep245:intents.near:foo".to_string();
 
-        let (resolved_contract, resolved_token_id) =
-            resolve_nep141_or_nep245_parts(contract_id.clone(), &token_id).unwrap();
+        let resolved = resolve_nep141_or_nep245_parts(&token_id).unwrap();
 
-        assert_eq!(resolved_contract, contract_id);
-        assert_eq!(resolved_token_id, Some("foo".to_string()));
+        match resolved {
+            ResolvedAssetParts::Nep245 {
+                contract_id: resolved_contract,
+                token_id: resolved_token_id,
+            } => {
+                assert_eq!(resolved_contract, contract_id);
+                assert_eq!(resolved_token_id, "foo".to_string());
+            }
+            ResolvedAssetParts::Nep141(_) => panic!("expected nep245 resolution"),
+        }
     }
 
     #[test]
@@ -467,22 +584,27 @@ mod tests {
         let contract_id = AccountId::from_str("intents.near").unwrap();
         let token_id = "nep245:intents.near:bar".to_string();
 
-        let (resolved_contract, resolved_token_id) =
-            resolve_nep141_or_nep245_parts(contract_id.clone(), &token_id).unwrap();
+        let resolved = resolve_nep141_or_nep245_parts(&token_id).unwrap();
 
-        assert_eq!(resolved_contract, contract_id);
-        assert_eq!(resolved_token_id, Some("bar".to_string()));
+        match resolved {
+            ResolvedAssetParts::Nep245 {
+                contract_id: resolved_contract,
+                token_id: resolved_token_id,
+            } => {
+                assert_eq!(resolved_contract, contract_id);
+                assert_eq!(resolved_token_id, "bar".to_string());
+            }
+            ResolvedAssetParts::Nep141(_) => panic!("expected nep245 resolution"),
+        }
     }
 
     #[test]
-    fn resolve_nep141_or_nep245_parts_passthrough_when_no_prefix() {
-        let contract_id = AccountId::from_str("intents.near").unwrap();
+    fn resolve_nep141_or_nep245_parts_rejects_missing_prefix() {
         let token_id = "plain-token".to_string();
 
-        let (resolved_contract, resolved_token_id) =
-            resolve_nep141_or_nep245_parts(contract_id.clone(), &token_id).unwrap();
-
-        assert_eq!(resolved_contract, contract_id);
-        assert_eq!(resolved_token_id, Some(token_id));
+        let err = resolve_nep141_or_nep245_parts(&token_id).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("must be prefixed with 'nep141:' or 'nep245:'"));
     }
 }
