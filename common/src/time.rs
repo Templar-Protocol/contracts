@@ -1,5 +1,3 @@
-use std::ops::{Add, AddAssign, Sub, SubAssign};
-
 use near_sdk::{json_types::U64, near};
 
 use crate::oracle::pyth::PythTimestamp;
@@ -83,39 +81,5 @@ impl From<redstone::TimestampMillis> for Nanoseconds {
 impl From<Nanoseconds> for redstone::TimestampMillis {
     fn from(value: Nanoseconds) -> Self {
         Self::from_millis(value.as_ms())
-    }
-}
-
-impl From<Nanoseconds> for u64 {
-    fn from(value: Nanoseconds) -> Self {
-        value.0.into()
-    }
-}
-
-impl Add for Nanoseconds {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(U64(self.0 .0 + rhs.0 .0))
-    }
-}
-
-impl AddAssign for Nanoseconds {
-    fn add_assign(&mut self, rhs: Self) {
-        self.0 .0 += rhs.0 .0;
-    }
-}
-
-impl Sub for Nanoseconds {
-    type Output = Self;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self(U64(self.0 .0 - rhs.0 .0))
-    }
-}
-
-impl SubAssign for Nanoseconds {
-    fn sub_assign(&mut self, rhs: Self) {
-        self.0 .0 -= rhs.0 .0;
     }
 }

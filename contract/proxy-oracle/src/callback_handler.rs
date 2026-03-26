@@ -100,7 +100,7 @@ impl<'a> CallbackHandler<'a> {
         };
 
         if self.now >= publish_time {
-            let age = self.now - publish_time;
+            let age = self.now.saturating_sub(publish_time);
             if age > self.max_age {
                 near_sdk::log!("Price is stale: age={}, max_age={}", age, self.max_age);
                 return None;

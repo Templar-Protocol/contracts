@@ -60,11 +60,13 @@ impl Aggregator {
                 };
 
                 if now >= published {
-                    self.filter.max_age.is_none_or(|max| now - published <= max)
+                    self.filter
+                        .max_age
+                        .is_none_or(|max| now.saturating_sub(published) <= max)
                 } else {
                     self.filter
                         .max_clock_drift
-                        .is_none_or(|max| published - now <= max)
+                        .is_none_or(|max| published.saturating_sub(now) <= max)
                 }
             })
             .collect::<Vec<_>>();
