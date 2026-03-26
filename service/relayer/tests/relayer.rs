@@ -3,6 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashSet, str::FromStr, time::Duration};
 
+use axum::extract::Query;
 use axum::{extract::State, Json};
 use clap::Parser;
 use near_jsonrpc_client::{methods::tx::TransactionInfo, JsonRpcClient};
@@ -567,7 +568,7 @@ pub async fn market_prices_returns_direct_market_prices(#[future(awt)] mut init_
 
     let response = templar_relayer::route::get_market_prices::get_market_prices(
         State(app),
-        Json(GetMarketPricesRequest {
+        Query(GetMarketPricesRequest {
             market_id: market.contract().id().clone(),
         }),
     )
@@ -599,7 +600,7 @@ pub async fn market_prices_returns_none_for_missing_asset_price(
 
     let response = templar_relayer::route::get_market_prices::get_market_prices(
         State(app),
-        Json(GetMarketPricesRequest {
+        Query(GetMarketPricesRequest {
             market_id: market.contract().id().clone(),
         }),
     )
@@ -636,7 +637,7 @@ pub async fn market_prices_returns_proxy_intermediate_prices(
 
     let response = templar_relayer::route::get_market_prices::get_market_prices(
         State(app),
-        Json(GetMarketPricesRequest {
+        Query(GetMarketPricesRequest {
             market_id: market.id().clone(),
         }),
     )
