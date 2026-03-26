@@ -137,7 +137,7 @@ async fn run_migration_step(
         .contract()
         .as_account()
         .call(ua.contract().id(), "migrate")
-        .args_json(near_sdk::serde_json::json!({ "args": args }))
+        .args_json(args)
         .max_gas()
         .transact()
         .await
@@ -211,9 +211,9 @@ pub async fn new_account_writes_current_state_version_on_init(
     )
     .await;
 
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert_eq!(ua.mig_stored_state_version().await, 2);
-    assert!(!ua.mig_needs_migration().await);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert_eq!(ua.get_stored_state_version().await, 2);
+    assert!(!ua.needs_migration().await);
 }
 
 #[rstest::rstest]
@@ -221,9 +221,37 @@ pub async fn new_account_writes_current_state_version_on_init(
 pub async fn migration_views_are_exposed(#[future(awt)] worker: Worker<Sandbox>) {
     let ua = deploy_current(&worker).await;
 
-    assert_eq!(ua.mig_stored_state_version().await, 2);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(!ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 2);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(!ua.needs_migration().await);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+pub async fn migrate_accepts_legacy_direct_payload(#[future(awt)] worker: Worker<Sandbox>) {
+    let ua = deploy_patched(
+        &worker,
+        UniversalAccountController::wasm_0_2_0(),
+        WASM_0_2_0_STATE_PATCH,
+    )
+    .await;
+
+    let result = ua
+        .contract()
+        .as_account()
+        .call(ua.contract().id(), "migrate")
+        .args_json(json!({
+            "from_version": "v0",
+            "chain_id": U128(NEAR_TESTNET_CHAIN_ID),
+        }))
+        .max_gas()
+        .transact()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_all_outcomes_success(&result);
+    assert_eq!(ua.get_stored_state_version().await, 1);
 }
 
 #[rstest::rstest]
@@ -237,9 +265,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
     )
     .await;
 
-    assert_eq!(ua.mig_stored_state_version().await, 0);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 0);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(ua.needs_migration().await);
 
     let r = ua
         .migrate(
@@ -252,9 +280,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_all_outcomes_success(&r);
 
-    assert_eq!(ua.mig_stored_state_version().await, 1);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 1);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(ua.needs_migration().await);
 
     let get_key = ua.get_key(passkey.id()).await.unwrap();
 
@@ -272,9 +300,9 @@ pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_all_outcomes_success(&r);
 
-    assert_eq!(ua.mig_stored_state_version().await, 2);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(!ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 2);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(!ua.needs_migration().await);
 }
 
 #[rstest::rstest]
@@ -334,9 +362,9 @@ pub async fn from_0_4_0_unbrick_v1(#[future(awt)] worker: Worker<Sandbox>) {
     )
     .await;
 
-    assert_eq!(ua.mig_stored_state_version().await, 0);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 0);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(ua.needs_migration().await);
 
     let result = ua
         .migrate(ua.contract().as_account(), state::migration::UnbrickV1)
@@ -344,9 +372,9 @@ pub async fn from_0_4_0_unbrick_v1(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_all_outcomes_success(&result);
 
-    assert_eq!(ua.mig_stored_state_version().await, 2);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(!ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 2);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(!ua.needs_migration().await);
 
     let keys = ua.list_keys(None, None).await;
     assert_eq!(keys.len(), 4);
@@ -392,9 +420,9 @@ pub async fn from_0_4_0_with_stored_v1_migrates_via_v1(#[future(awt)] worker: Wo
     )
     .await;
 
-    assert_eq!(ua.mig_stored_state_version().await, 1);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 1);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(ua.needs_migration().await);
 
     let result = ua
         .migrate(ua.contract().as_account(), state::migration::V1)
@@ -402,9 +430,9 @@ pub async fn from_0_4_0_with_stored_v1_migrates_via_v1(#[future(awt)] worker: Wo
 
     assert_all_outcomes_success(&result);
 
-    assert_eq!(ua.mig_stored_state_version().await, 2);
-    assert_eq!(ua.mig_target_state_version().await, 2);
-    assert!(!ua.mig_needs_migration().await);
+    assert_eq!(ua.get_stored_state_version().await, 2);
+    assert_eq!(ua.get_target_state_version().await, 2);
+    assert!(!ua.needs_migration().await);
 }
 
 #[rstest::rstest]
@@ -437,6 +465,52 @@ pub async fn from_0_4_0_fail_v1_migration_without_unbrick(#[future(awt)] worker:
 
     ua.migrate(ua.contract().as_account(), state::migration::V1)
         .await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+pub async fn malformed_stored_version_breaks_public_migration_views(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ua = deploy_current(&worker).await;
+
+    worker
+        .patch_state(ua.contract().id(), b"__v", &[1, 2, 3])
+        .await
+        .unwrap();
+
+    assert!(ua
+        .contract()
+        .view("get_stored_state_version")
+        .args_json(json!({}))
+        .await
+        .is_err());
+    assert!(ua
+        .contract()
+        .view("needs_migration")
+        .args_json(json!({}))
+        .await
+        .is_err());
+}
+
+#[rstest::rstest]
+#[tokio::test]
+pub async fn future_stored_version_breaks_public_migration_views(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ua = deploy_current(&worker).await;
+
+    worker
+        .patch_state(ua.contract().id(), b"__v", &9_u32.to_le_bytes())
+        .await
+        .unwrap();
+
+    assert!(ua
+        .contract()
+        .view("needs_migration")
+        .args_json(json!({}))
+        .await
+        .is_err());
 }
 
 #[rstest::rstest]

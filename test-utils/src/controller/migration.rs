@@ -1,3 +1,6 @@
+use near_sdk::{Gas, NearToken};
+use near_workspaces::{result::ExecutionSuccess, Account};
+
 use crate::define;
 
 use super::ContractController;
@@ -7,13 +10,25 @@ pub trait MigrationController: ContractController {
 
     define! {
         #[view]
-        fn mig_stored_state_version() -> u32;
+        fn get_stored_state_version() -> u32;
         #[view]
-        fn mig_target_state_version() -> u32;
+        fn get_target_state_version() -> u32;
         #[view]
-        fn mig_needs_migration() -> bool;
+        fn needs_migration() -> bool;
+    }
 
-        #[call(exec, tgas(300))]
-        fn migrate(args: Self::Migration);
+    async fn migrate(
+        &self,
+        executor: &Account,
+        args: impl Into<Self::Migration>,
+    ) -> ExecutionSuccess {
+        self.call_exec(
+            executor,
+            "migrate",
+            args.into(),
+            NearToken::from_yoctonear(0),
+            Gas::from_tgas(300),
+        )
+        .await
     }
 }

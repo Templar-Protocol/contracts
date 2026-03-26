@@ -1,3 +1,5 @@
+use std::io::{Error, ErrorKind};
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::{env, ext_contract, near};
 
@@ -55,7 +57,18 @@ pub trait StateVersion {
         Self: Sized;
 
     fn needs_migration() -> Result<bool, std::io::Error> {
-        Ok(read_state_version()? < Self::VERSION)
+        let stored = read_state_version()?;
+        if stored > Self::VERSION {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Stored state version {stored} is newer than supported version {}",
+                    Self::VERSION
+                ),
+            ));
+        }
+
+        Ok(stored < Self::VERSION)
     }
 }
 
@@ -103,20 +116,15 @@ pub enum MigrationError<E> {
     Transformation(E),
 }
 
-#[near(serializers = [json])]
-pub struct MigrationArgs<T> {
-    pub args: T,
-}
-
 pub trait Migrator {
     fn run(self);
 }
 
 #[ext_contract]
 pub trait MigrateExternalInterface {
-    fn mig_stored_state_version() -> u32;
-    fn mig_target_state_version() -> u32;
-    fn mig_needs_migration() -> bool;
+    fn get_stored_state_version() -> u32;
+    fn get_target_state_version() -> u32;
+    fn needs_migration() -> bool;
 }
 
 #[macro_export]
@@ -124,16 +132,16 @@ macro_rules! impl_versioned_state {
     ($contract: ident, $current_state: ty, $migrations: ty) => {
         #[::near_sdk::near]
         impl $crate::contract_state::MigrateExternalInterface for $contract {
-            fn mig_stored_state_version() -> u32 {
+            fn get_stored_state_version() -> u32 {
                 $crate::contract_state::read_state_version()
                     .unwrap_or_else(|e| ::near_sdk::env::panic_str(&e.to_string()))
             }
 
-            fn mig_target_state_version() -> u32 {
+            fn get_target_state_version() -> u32 {
                 <$current_state as $crate::contract_state::StateVersion>::VERSION
             }
 
-            fn mig_needs_migration() -> bool {
+            fn needs_migration() -> bool {
                 <$current_state as $crate::contract_state::StateVersion>::needs_migration()
                     .unwrap_or_else(|e| ::near_sdk::env::panic_str(&e.to_string()))
             }
@@ -152,11 +160,10 @@ macro_rules! impl_versioned_state {
 
             let input = env::input().unwrap_or_else(|| env::panic_str("no input"));
 
-            let args: $crate::contract_state::MigrationArgs<$migrations> =
-                ::near_sdk::serde_json::from_slice(&input)
-                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+            let args: $migrations = ::near_sdk::serde_json::from_slice(&input)
+                .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-            $crate::contract_state::Migrator::run(args.args);
+            $crate::contract_state::Migrator::run(args);
         }
     };
 }
@@ -184,5 +191,28 @@ mod tests {
         env::storage_write(VERSION_KEY, &[1, 2, 3]);
 
         assert!(read_state_version().is_err());
+    }
+
+    #[test]
+    fn future_stored_version_errors() {
+        context();
+        write_state_version(9);
+
+        let error = TestState::needs_migration().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(error
+            .to_string()
+            .contains("Stored state version 9 is newer"));
+    }
+
+    struct TestState;
+
+    impl StateVersion for TestState {
+        const VERSION: u32 = 2;
+        type NewArgs = ();
+
+        fn new((): Self::NewArgs) -> VersionedState<Self> {
+            VersionedState::new(Self)
+        }
     }
 }

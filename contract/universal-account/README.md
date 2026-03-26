@@ -93,7 +93,7 @@ If the universal account was deployed from a registry and you wish to upgrade to
 
 ## Migration
 
-Sometimes a version upgrade will require a migration, and sometimes it will not. Freshly initialized accounts store their current state version immediately. To determine if a migration is necessary after a code upgrade, perform a view call of `mig_needs_migration`. You can also inspect `mig_stored_state_version` and `mig_target_state_version`. If `mig_needs_migration` resolves to `false`, then no migration is required.
+Sometimes a version upgrade will require a migration, and sometimes it will not. Freshly initialized accounts store their current state version immediately. To determine if a migration is necessary after a code upgrade, perform a view call of `needs_migration`. You can also inspect `get_stored_state_version` and `get_target_state_version`. If `needs_migration` resolves to `false`, then no migration is required.
 
 If a migration _is_ required, we prepare a migration payload in order to properly parameterize the migration. Multiple migrations may be required (e.g. the code was upgraded from state version 0 &rarr; 2, so it must first migrate to version 1, then to version 2). Only one state migration can occur at a time.
 
