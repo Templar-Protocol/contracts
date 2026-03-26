@@ -27,6 +27,8 @@ WORKDIR /usr/src/relayer
 COPY . .
 
 ENV SQLX_OFFLINE=true
+# Ensure that the RedStone bridge build step installs dependencies with npm ci
+ENV CI=true
 
 # The RedStone bridge build script runs npm during cargo build.
 RUN node --version && npm --version
