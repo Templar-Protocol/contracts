@@ -44,8 +44,21 @@ impl ContractController for MarketController {
 impl StorageManagementController for MarketController {}
 
 impl MarketController {
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+
+        WASM.get_or_init(|| get_contract("templar_market_contract", "contract/market"))
+            .await
+    }
+
+    pub async fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
+        Self {
+            contract: contract_with_dummy_sk(worker, market_id),
+        }
+    }
+
     pub async fn deploy(account: Account, configuration: &MarketConfiguration) -> Self {
-        let wasm = load_wasm().await;
+        let wasm = Self::wasm().await;
         let contract = account.deploy(wasm).await.unwrap().unwrap();
 
         let init_call = contract
@@ -123,13 +136,6 @@ impl MarketController {
             eprintln!("\t\tDistribution:\t{}", snapshot.yield_distribution);
         }
     }
-}
-
-static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
-
-pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract("templar_market_contract", "contract/market"))
-        .await
 }
 
 #[derive(Clone)]

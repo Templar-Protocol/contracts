@@ -689,6 +689,7 @@ impl Near {
             .await
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn fetch_oracle_request(
         &self,
         request: OracleRequest,
@@ -723,6 +724,7 @@ impl Near {
         Ok(fetched_price)
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn resolve_price(
         &self,
         oracle_id: AccountId,
@@ -745,6 +747,7 @@ impl Near {
         }
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn resolve_price_with_pyth(
         &self,
         oracle_id: AccountId,
@@ -758,6 +761,7 @@ impl Near {
         Ok(final_price)
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn resolve_price_with_lst(
         &self,
         oracle_id: AccountId,
@@ -789,6 +793,7 @@ impl Near {
         Ok(price)
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn resolve_price_with_proxy(
         &self,
         oracle_id: AccountId,
@@ -811,6 +816,7 @@ impl Near {
         Ok(aggregated_price.map(Into::into))
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn resolve_proxy_entry_price(
         &self,
         entry: &templar_common::oracle::proxy::Entry,
@@ -832,6 +838,7 @@ impl Near {
         }
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     pub async fn load_market_prices(
         &self,
         market: &MarketData,
@@ -857,6 +864,7 @@ impl Near {
         })
     }
 
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn query_oracle_type(&self, oracle_id: AccountId) -> Result<OracleType, ViewError> {
         let test_proxy = self
             .view::<Vec<PriceIdentifier>>(oracle_id.clone(), "list_proxies", json!({ "count": 1 }))

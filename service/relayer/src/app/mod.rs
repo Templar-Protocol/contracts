@@ -141,6 +141,7 @@ impl App {
         // Load markets from registry...
         let mut set = JoinSet::new();
         for registry_id in &self.args.monitor.registry {
+            tracing::debug!(%registry_id, "Loading from registry");
             set.spawn({
                 let near = self.relay_near.clone();
                 let registry_id = registry_id.clone();
@@ -161,6 +162,7 @@ impl App {
         // ...and add any individual markets.
         let mut set = JoinSet::new();
         for market in markets {
+            tracing::debug!(%market, "Loading market");
             set.spawn({
                 let near = self.relay_near.clone();
                 async move {
