@@ -166,6 +166,11 @@ impl SorobanVaultContract {
         amount: i128,
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
+        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.authorize(ActionKind::BeginAllocating, caller_kernel)
+        };
+        with_contract_vault_contract_error(&env, &mut preauth)?;
         let adapter = adapter_for_market(&env, market)?;
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
@@ -183,23 +188,15 @@ impl SorobanVaultContract {
 
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let caller_kernel = kernel_address_from_sdk(&env, &caller);
             let plan = vec![(market.into(), amount_u128)];
             let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
-            {
-                let policy = vault.policy_state_mut();
-                policy.set_principal(market, observed_total_assets);
-                policy.refresh_cap_group_principals();
-            }
-            new_external = vault.sync_external_assets(
+            new_external = vault.complete_supply_allocation(
                 caller_kernel,
+                market,
+                observed_total_assets,
                 op_id,
-                vault.policy_state().external_assets(),
                 now_ns,
             )?;
-            vault.finish_allocation_internal(caller_kernel, op_id, now_ns)?;
-            let policy_state = vault.policy_state().clone();
-            vault.storage.save_policy_state(&policy_state)?;
             Ok(())
         };
         with_contract_vault_contract_error(&env, &mut call)?;
@@ -211,10 +208,15 @@ impl SorobanVaultContract {
     pub fn allocate_withdraw(
         env: Env,
         caller: soroban_sdk::Address,
-        #[allow(unused_variables)] market: u32,
+        market: u32,
         amount: i128,
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
+        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.authorize(ActionKind::BeginAllocating, caller_kernel)
+        };
+        with_contract_vault_contract_error(&env, &mut preauth)?;
         let adapter = adapter_for_market(&env, market)?;
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
@@ -227,26 +229,15 @@ impl SorobanVaultContract {
 
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let caller_kernel = kernel_address_from_sdk(&env, &caller);
             let op_id =
                 vault.begin_allocation_withdraw_internal(caller_kernel, market.into(), now_ns)?;
-            {
-                let next_principal = vault
-                    .policy_state()
-                    .principal_for(market)
-                    .checked_sub(realized_amount_u128)
-                    .ok_or_else(|| {
-                        RuntimeError::invalid_state("principal underflow on withdraw")
-                    })?;
-                let policy = vault.policy_state_mut();
-                policy.set_principal(market, next_principal);
-                policy.refresh_cap_group_principals();
-            }
-            new_external =
-                vault.rebalance_withdraw(caller_kernel, op_id, realized_amount_u128, now_ns)?;
-            vault.finish_allocation_internal(caller_kernel, op_id, now_ns)?;
-            let policy_state = vault.policy_state().clone();
-            vault.storage.save_policy_state(&policy_state)?;
+            new_external = vault.complete_withdraw_allocation(
+                caller_kernel,
+                market,
+                realized_amount_u128,
+                op_id,
+                now_ns,
+            )?;
             Ok(())
         };
         with_contract_vault_contract_error(&env, &mut call)?;
@@ -260,6 +251,11 @@ impl SorobanVaultContract {
         markets: soroban_sdk::Vec<u32>,
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
+        let caller_kernel = kernel_address_from_sdk(&env, &caller);
+        let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.authorize(ActionKind::BeginRefreshing, caller_kernel)
+        };
+        with_contract_vault_contract_error(&env, &mut preauth)?;
         let now_ns = ledger_timestamp_ns(&env)?;
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
         let mut refreshed_positions = Vec::with_capacity(markets.len() as usize);
@@ -278,24 +274,16 @@ impl SorobanVaultContract {
 
         let mut new_external: u128 = 0;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let caller_kernel = kernel_address_from_sdk(&env, &caller);
             let markets = markets_vec
                 .take()
                 .ok_or_else(|| RuntimeError::invalid_state("refresh plan already consumed"))?;
             let op_id = vault.begin_refreshing(caller_kernel, markets, now_ns)?;
-            {
-                let policy = vault.policy_state_mut();
-                for (market, total_assets) in refreshed_positions.iter() {
-                    policy.set_principal(*market, *total_assets);
-                }
-                policy.refresh_cap_group_principals();
-                new_external = policy.external_assets();
-            }
-            new_external =
-                vault.sync_external_assets(caller_kernel, op_id, new_external, now_ns)?;
-            let result = vault.finish_refreshing(caller_kernel, op_id, now_ns)?;
-            let policy_state = vault.policy_state().clone();
-            vault.storage.save_policy_state(&policy_state)?;
+            let result = vault.complete_refresh_with_positions(
+                caller_kernel,
+                &refreshed_positions,
+                op_id,
+                now_ns,
+            )?;
             new_external = result.new_external_assets;
             Ok(())
         };
@@ -343,15 +331,6 @@ impl SorobanVaultContract {
         set_config_address(&env, &VaultDataKey::Governance, &governance);
         emit_admin_event(&env, symbol_short!("s_gov"));
         Ok(())
-    }
-
-    pub fn set_share_token(
-        env: Env,
-        caller: soroban_sdk::Address,
-        _share_token: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        Err(ContractError::InvalidState)
     }
 
     pub fn set_supply_queue(

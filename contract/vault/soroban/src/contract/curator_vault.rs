@@ -561,22 +561,21 @@ where
 
                 let plan = vec![(d.market.into(), d.amount)];
                 let op_id = self.begin_allocation_internal(caller, &plan, 0)?;
-                {
-                    let next_principal = self
-                        .policy_state()
-                        .principal_for(d.market)
-                        .checked_add(d.amount)
-                        .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
-                    let policy = self.policy_state_mut();
-                    policy.set_principal(d.market, next_principal);
-                    policy.refresh_cap_group_principals();
-                }
-                self.sync_external_assets(caller, op_id, self.policy_state().external_assets(), 0)?;
-                self.finish_allocation_internal(caller, op_id, 0)?;
-                self.storage.save_policy_state(&self.policy_state)?;
+                let observed_total_assets = self
+                    .policy_state()
+                    .principal_for(d.market)
+                    .checked_add(d.amount)
+                    .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+                let new_external_assets = self.complete_supply_allocation(
+                    caller,
+                    d.market,
+                    observed_total_assets,
+                    op_id,
+                    0,
+                )?;
                 Ok(AllocationResult {
                     op_id,
-                    new_external_assets: self.state()?.external_assets,
+                    new_external_assets,
                     summary: EffectSummary::new(),
                 })
             }
@@ -586,19 +585,8 @@ where
                 }
 
                 let op_id = self.begin_allocation_withdraw_internal(caller, d.market.into(), 0)?;
-                {
-                    let next_principal = self
-                        .policy_state()
-                        .principal_for(d.market)
-                        .checked_sub(d.amount)
-                        .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
-                    let policy = self.policy_state_mut();
-                    policy.set_principal(d.market, next_principal);
-                    policy.refresh_cap_group_principals();
-                }
-                let new_external = self.rebalance_withdraw(caller, op_id, d.amount, 0)?;
-                self.finish_allocation_internal(caller, op_id, 0)?;
-                self.storage.save_policy_state(&self.policy_state)?;
+                let new_external =
+                    self.complete_withdraw_allocation(caller, d.market, d.amount, op_id, 0)?;
                 Ok(AllocationResult {
                     op_id,
                     new_external_assets: new_external,
@@ -642,6 +630,72 @@ where
             now_ns,
         )?;
         Ok(op_id)
+    }
+
+    fn update_market_principal(&mut self, market: TargetId, principal: u128) {
+        let policy = self.policy_state_mut();
+        policy.set_principal(market, principal);
+        policy.refresh_cap_group_principals();
+    }
+
+    pub(crate) fn complete_supply_allocation(
+        &mut self,
+        caller: Address,
+        market: TargetId,
+        observed_total_assets: u128,
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<u128, RuntimeError> {
+        self.update_market_principal(market, observed_total_assets);
+        let new_external = self.sync_external_assets(
+            caller,
+            op_id,
+            self.policy_state().external_assets(),
+            now_ns,
+        )?;
+        self.finish_allocation_internal(caller, op_id, now_ns)?;
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(new_external)
+    }
+
+    pub(crate) fn complete_withdraw_allocation(
+        &mut self,
+        caller: Address,
+        market: TargetId,
+        realized_amount: u128,
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<u128, RuntimeError> {
+        let next_principal = self
+            .policy_state()
+            .principal_for(market)
+            .checked_sub(realized_amount)
+            .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
+        self.update_market_principal(market, next_principal);
+        let new_external = self.rebalance_withdraw(caller, op_id, realized_amount, now_ns)?;
+        self.finish_allocation_internal(caller, op_id, now_ns)?;
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(new_external)
+    }
+
+    pub(crate) fn complete_refresh_with_positions(
+        &mut self,
+        caller: Address,
+        refreshed_positions: &[(TargetId, u128)],
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<RefreshResult, RuntimeError> {
+        {
+            let policy = self.policy_state_mut();
+            for (market, total_assets) in refreshed_positions {
+                policy.set_principal(*market, *total_assets);
+            }
+            policy.refresh_cap_group_principals();
+        }
+        self.sync_external_assets(caller, op_id, self.policy_state().external_assets(), now_ns)?;
+        let result = self.finish_refreshing(caller, op_id, now_ns)?;
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(result)
     }
 
     pub(crate) fn finish_allocation_internal(
