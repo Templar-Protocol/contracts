@@ -32,7 +32,7 @@ use crate::{
             Database,
         },
         near::{Near, ViewError, STORAGE_DEPOSIT_GAS},
-        pyth::Pyth,
+        oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
     AccountData, AssetTransfer, ContractData,
@@ -47,13 +47,17 @@ pub struct App {
     pub accounts: Arc<RwLock<AccountData>>,
     pub relay_near: Near,
     pub ua_near: Near,
-    pub pyth: Pyth,
+    pub pyth: oracle::Handle<oracle::PythSpec>,
+    pub redstone: oracle::Handle<oracle::RedStoneSpec>,
     pub cache: Arc<Cache>,
     pub database: Database,
 }
 
 impl App {
-    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> Self {
+    pub fn new(
+        args: args::Configuration,
+        kill: watch::Sender<()>,
+    ) -> Result<Self, templar_redstone_bridge::BridgeError> {
         let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             args.relay.account_id.clone(),
@@ -79,12 +83,19 @@ impl App {
 
         let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
 
-        let pyth = Pyth::new(
+        let pyth = oracle::PythSpec::handle(
             args.pyth.clone(),
             relay_near.clone(),
             cache.clone(),
             kill.clone(),
         );
+
+        let redstone = oracle::RedStoneSpec::handle(
+            args.redstone.clone(),
+            relay_near.clone(),
+            cache.clone(),
+            kill.clone(),
+        )?;
 
         tokio::spawn(broom::start(
             database.clone(),
@@ -94,15 +105,16 @@ impl App {
             kill,
         ));
 
-        Self {
+        Ok(Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             relay_near,
             ua_near,
             pyth,
+            redstone,
             cache: Arc::new(cache),
             database,
-        }
+        })
     }
 
     #[tracing::instrument(skip(self), fields(gas = %gas))]
@@ -182,11 +194,11 @@ impl App {
 
         for market_accounts in market_accounts_vec.into_iter().flatten() {
             tracing::info!(
-                "Loaded market {} with borrow asset {} and collateral asset {}, querying oracle {}",
-                market_accounts.account_id,
-                market_accounts.borrow_asset,
-                market_accounts.collateral_asset,
-                market_accounts.oracle_id,
+                market_id = %market_accounts.account_id,
+                borrow_asset = %market_accounts.borrow.asset,
+                collateral_asset = %market_accounts.collateral.asset,
+                oracle_id = %market_accounts.oracle_id,
+                "Loaded market",
             );
 
             for (contract_id, allowed_methods) in [
@@ -195,16 +207,18 @@ impl App {
                     self.args.relay.allowed_methods.as_slice(),
                 ),
                 (
-                    market_accounts.borrow_asset.contract_id(),
+                    market_accounts.borrow.asset.contract_id(),
                     &[market_accounts
-                        .borrow_asset
+                        .borrow
+                        .asset
                         .transfer_call_method_name()
                         .to_string()],
                 ),
                 (
-                    market_accounts.collateral_asset.contract_id(),
+                    market_accounts.collateral.asset.contract_id(),
                     &[market_accounts
-                        .collateral_asset
+                        .collateral
+                        .asset
                         .transfer_call_method_name()
                         .to_string()],
                 ),
@@ -299,19 +313,19 @@ impl App {
                 };
 
                 #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
-                if transfer.asset() == market_account_ids.borrow_asset {
+                if transfer.asset() == market_account_ids.borrow.asset {
                     if !msg.expects_borrow_asset() {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: market_account_ids.collateral_asset.to_string(),
+                            expected: market_account_ids.collateral.asset.to_string(),
                             received: transfer.asset::<BorrowAsset>().to_string(),
                         });
                     }
-                } else if transfer.asset() == market_account_ids.collateral_asset {
+                } else if transfer.asset() == market_account_ids.collateral.asset {
                     if msg.expects_borrow_asset() {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: market_account_ids.borrow_asset.to_string(),
+                            expected: market_account_ids.borrow.asset.to_string(),
                             received: transfer.asset::<CollateralAsset>().to_string(),
                         });
                     }

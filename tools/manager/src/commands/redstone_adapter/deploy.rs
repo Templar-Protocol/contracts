@@ -1,0 +1,39 @@
+use near_fetch::ops::Function;
+
+use crate::commands::{FixedContractWasm, SignerArgs};
+
+use super::create::ConfigSource;
+
+const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
+
+#[derive(clap::Args, Debug)]
+pub struct DeployRedStoneAdapter {
+    #[command(flatten)]
+    pub signer: SignerArgs,
+    #[command(flatten)]
+    pub contract_wasm: FixedContractWasm,
+    #[command(flatten)]
+    pub config_source: ConfigSource,
+}
+
+impl DeployRedStoneAdapter {
+    #[tracing::instrument(skip_all, name = "redstone_adapter_deploy", fields(account_id = %self.signer.account_id))]
+    pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
+        let init_args = self.config_source.init_args()?;
+        let loaded_contract = self
+            .contract_wasm
+            .load_contract::<()>(ctx, REDSTONE_ADAPTER_PACKAGE)?;
+        tracing::info!(version = %loaded_contract.version, "Deploying RedStone adapter");
+
+        let signer = self.signer.signer();
+
+        ctx.batch(&signer, &self.signer.account_id)
+            .deploy(&loaded_contract.wasm_bytes)
+            .call(Function::new("new").args(init_args).max_gas())
+            .transact()
+            .await?;
+
+        tracing::info!("RedStone adapter deployed");
+        Ok(())
+    }
+}

@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use near_sdk::json_types::{I64, U64};
 use templar_common::asset::{BorrowAssetAmount, CollateralAssetAmount};
-use templar_common::oracle::pyth;
+use templar_common::oracle::pyth::{self, PythTimestamp};
 use templar_common::price::{Appraise, Convert, PricePair};
 
 fuzz_target!(|data: (i64, u64, i64, u64, i32, i32, u128, u128)| {
@@ -23,14 +23,14 @@ fuzz_target!(|data: (i64, u64, i64, u64, i32, i32, u128, u128)| {
         price: I64(collateral_price_raw),
         conf: U64(collateral_conf),
         expo: -8, // typical exponent
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     };
 
     let borrow_pyth_price = pyth::Price {
         price: I64(borrow_price_raw),
         conf: U64(borrow_conf),
         expo: -8,
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     };
 
     // Fuzz PricePair creation
@@ -69,7 +69,7 @@ fuzz_target!(|data: (i64, u64, i64, u64, i32, i32, u128, u128)| {
         price: I64(collateral_price_raw),
         conf: U64(collateral_conf),
         expo: collateral_decimals.wrapping_sub(borrow_decimals),
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     };
 
     let _ = PricePair::new(

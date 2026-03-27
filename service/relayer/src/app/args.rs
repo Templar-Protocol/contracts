@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use std::time::Duration;
+use std::{path::PathBuf, str::FromStr};
 
 use clap::{Args, Parser};
 use near_crypto::SecretKey;
@@ -25,7 +25,9 @@ pub struct Configuration {
     #[clap(flatten)]
     pub ua: UniversalAccount,
     #[clap(flatten)]
-    pub pyth: Pyth,
+    pub redstone: RedStoneConfig,
+    #[clap(flatten)]
+    pub pyth: PythConfig,
     #[clap(flatten)]
     pub cache: Cache,
     /// Broom batch size.
@@ -41,7 +43,45 @@ fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct Pyth {
+pub struct RedStoneConfig {
+    /// Path to Node.js interpreter (or equivalent).
+    #[arg(
+        id = "redstone-node-path",
+        long = "redstone-node-path",
+        env = "REDSTONE_NODE_PATH",
+        default_value = "node"
+    )]
+    pub node_path: PathBuf,
+    /// Do not push price updates to Redstone oracle if the last push was less
+    /// than this long ago, even if requested.
+    #[arg(
+        id = "redstone-refresh-secs",
+        long = "redstone-refresh-secs",
+        env = "REDSTONE_REFRESH_SECS",
+        value_parser = duration_from_secs,
+        default_value = "3"
+    )]
+    pub refresh: Duration,
+    /// How much gas (in units of Tgas) to attach to oracle price update calls.
+    #[arg(
+        id = "redstone-update-gas",
+        long = "redstone-update-gas",
+        env = "REDSTONE_UPDATE_GAS",
+        default_value = "300 Tgas"
+    )]
+    pub update_gas: near_sdk::Gas,
+    /// How much NEAR to attach as a deposit to oracle price update calls.
+    #[arg(
+        id = "redstone-update-deposit",
+        long = "redstone-update-deposit",
+        env = "REDSTONE_UPDATE_DEPOSIT",
+        default_value = "0 NEAR"
+    )]
+    pub update_deposit: NearToken,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PythConfig {
     /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
     #[arg(
         long = "pyth-hermes-url",
@@ -59,14 +99,15 @@ pub struct Pyth {
         default_value = "3"
     )]
     pub refresh: Duration,
-    /// Oracle ID to push price updates to.
+    /// HTTP timeout for Hermes requests (in seconds).
     #[arg(
-        id = "pyth-oracle-id",
-        long = "pyth-oracle-id",
-        env = "PYTH_ORACLE_ID",
-        default_value_t = AccountId::from_str("pyth-oracle.testnet").unwrap()
+        id = "pyth-timeout-secs",
+        long = "pyth-timeout-secs",
+        env = "PYTH_TIMEOUT_SECS",
+        value_parser = duration_from_secs,
+        default_value = "10"
     )]
-    pub oracle_id: AccountId,
+    pub timeout: Duration,
     /// How much gas (in units of Tgas) to attach to oracle price update calls.
     #[arg(
         id = "pyth-update-gas",

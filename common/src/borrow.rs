@@ -775,6 +775,8 @@ mod tests {
         #[values(1000, 1005, 999_999)] borrow_price: i64,
         #[values(0, 10)] conf: u64,
     ) {
+        use crate::oracle::pyth::PythTimestamp;
+
         let c = VMContextBuilder::new()
             .block_timestamp(1_000_000_000_000_000)
             .build();
@@ -829,14 +831,14 @@ mod tests {
                 price: 5.into(),
                 conf: 0.into(),
                 expo: 24,
-                publish_time: 10,
+                publish_time: PythTimestamp::from_secs(10),
             },
             24,
             &pyth::Price {
                 price: 1.into(),
                 conf: 0.into(),
                 expo: 24,
-                publish_time: 10,
+                publish_time: PythTimestamp::from_secs(10),
             },
             24,
         )
@@ -866,14 +868,14 @@ mod tests {
                 price: collateral_price.into(),
                 conf: conf.into(),
                 expo: 24,
-                publish_time: 10,
+                publish_time: PythTimestamp::from_secs(10),
             },
             24,
             &pyth::Price {
                 price: borrow_price.into(),
                 conf: conf.into(),
                 expo: 24,
-                publish_time: 10,
+                publish_time: PythTimestamp::from_secs(10),
             },
             24,
         )

@@ -1,0 +1,43 @@
+[package]
+name = "templar-manager"
+version = "0.1.0"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tmplrmgr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+borsh.workspace = true
+chrono.workspace = true
+clap.workspace = true
+console.workspace = true
+dirs.workspace = true
+hex.workspace = true
+near-contract-standards.workspace = true
+near-crypto.workspace = true
+near-fetch.workspace = true
+near-primitives.workspace = true
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
+serde.workspace = true
+serde_json.workspace = true
+templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
+templar-redstone-bridge.workspace = true
+templar-tools-common.workspace = true
+tokio.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing.workspace = true
+
+[dev-dependencies]
+hex-literal.workspace = true
+near-workspaces.workspace = true
+rstest.workspace = true
+test-utils.workspace = true
+
+[lints]
+workspace = true

@@ -730,7 +730,9 @@ impl Liquidator {
                 oracle_response
                     .get(price_id)
                     .and_then(|opt| opt.as_ref())
-                    .is_none_or(|price| (now - price.publish_time) > i64::from(price_max_age))
+                    .is_none_or(|price| {
+                        (now - price.publish_time.as_secs()) > i64::from(price_max_age)
+                    })
             });
 
         // If prices are missing/stale and auto-update is enabled, try to update them
