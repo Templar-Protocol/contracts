@@ -1,7 +1,6 @@
-use anyhow::Context;
 use near_fetch::ops::Function;
 
-use crate::commands::{FixedContractWasm, SignerArgs};
+use crate::commands::{json_input::InitArgsSource, FixedContractWasm, SignerArgs};
 
 const MARKET_PACKAGE: &str = "templar-market-contract";
 
@@ -11,9 +10,8 @@ pub struct DeployMarket {
     pub signer: SignerArgs,
     #[command(flatten)]
     pub contract_wasm: FixedContractWasm,
-    /// JSON-encoded init args to pass to the market contract
-    #[arg(long)]
-    pub init_args: String,
+    #[command(flatten)]
+    pub init_args_source: InitArgsSource,
 }
 
 impl DeployMarket {
@@ -24,8 +22,7 @@ impl DeployMarket {
             .load_contract::<()>(ctx, MARKET_PACKAGE)?;
         tracing::info!(version = %loaded_contract.version, "Deploying market");
 
-        let init_args = serde_json::from_str::<serde_json::Value>(&self.init_args)
-            .context("parse init args as json")?;
+        let init_args = self.init_args_source.parse()?;
         let signer = self.signer.signer();
 
         ctx.batch(&signer, &self.signer.account_id)

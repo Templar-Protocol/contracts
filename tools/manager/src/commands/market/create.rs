@@ -2,7 +2,7 @@ use anyhow::Context;
 use serde_json::json;
 use templar_common::market::MarketConfiguration;
 
-use crate::commands::{DeployFromRegistry, SignerArgs};
+use crate::commands::{json_input::ConfigurationSource, DeployFromRegistry, SignerArgs};
 
 #[derive(clap::Args, Debug)]
 pub struct CreateMarket {
@@ -10,16 +10,17 @@ pub struct CreateMarket {
     pub signer: SignerArgs,
     #[command(flatten)]
     pub deploy: DeployFromRegistry,
-    /// JSON-encoded `MarketConfiguration`
-    #[arg(long)]
-    pub configuration: String,
+    #[command(flatten)]
+    pub configuration_source: ConfigurationSource,
 }
 
 impl CreateMarket {
     #[tracing::instrument(skip_all, name = "market_create")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        let configuration: MarketConfiguration =
-            serde_json::from_str(&self.configuration).context("invalid market configuration")?;
+        let configuration: MarketConfiguration = self
+            .configuration_source
+            .parse()
+            .context("load market configuration")?;
 
         configuration
             .validate()

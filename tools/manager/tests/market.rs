@@ -1,6 +1,6 @@
 mod common;
 
-use common::{setup_ctx, signer_args};
+use common::{setup_ctx, signer_args, write_json_file};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
@@ -9,6 +9,7 @@ use templar_common::{
     registry::DeployMode,
 };
 use templar_manager::commands::{
+    json_input::{ConfigurationSource, InitArgsSource},
     market::{create::CreateMarket, deploy::DeployMarket, remove::MarketRemove},
     registry::{
         deploy::DeployRegistry,
@@ -37,7 +38,10 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>) {
     DeployMarket {
         signer: signer_args(&market_account),
         contract_wasm: FixedContractWasm { no_build: true },
-        init_args: serde_json::to_string(&init_args).unwrap(),
+        init_args_source: InitArgsSource {
+            init_args: Some(serde_json::to_string(&init_args).unwrap()),
+            init_args_file: None,
+        },
     }
     .run(&ctx)
     .await
@@ -53,6 +57,48 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>) {
         .unwrap();
 
     assert_eq!(stored_config, config);
+}
+
+#[rstest]
+#[tokio::test]
+async fn market_deploy_from_init_args_file(#[future(awt)] worker: Worker<Sandbox>) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, market_account, oracle, borrow, collateral, protocol);
+
+    let config = market_configuration(
+        oracle.id().clone(),
+        borrow.id().clone(),
+        collateral.id().clone(),
+        protocol.id().clone(),
+        YieldWeights::new_with_supply_weight(1),
+    );
+
+    let init_args = json!({ "configuration": config });
+    let init_args_file = write_json_file("market-init-args", &init_args);
+
+    DeployMarket {
+        signer: signer_args(&market_account),
+        contract_wasm: FixedContractWasm { no_build: true },
+        init_args_source: InitArgsSource {
+            init_args: None,
+            init_args_file: Some(init_args_file.clone()),
+        },
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let stored_config: MarketConfiguration = ctx
+        .near
+        .view(market_account.id(), "get_configuration")
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+
+    assert_eq!(stored_config, config);
+
+    std::fs::remove_file(init_args_file).unwrap();
 }
 
 #[rstest]
@@ -113,7 +159,10 @@ async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<S
             no_signer_full_access_key: false,
             deposit: Some(NearToken::from_near(6)),
         },
-        configuration: serde_json::to_string(&config).unwrap(),
+        configuration_source: ConfigurationSource {
+            configuration: Some(serde_json::to_string(&config).unwrap()),
+            configuration_file: None,
+        },
     }
     .run(&ctx)
     .await
@@ -151,6 +200,87 @@ async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<S
         .unwrap()
         .to_string()
         .contains("does not exist while viewing"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn market_create_from_registry_with_configuration_file(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+
+    accounts!(worker, registry, oracle, borrow, collateral, protocol);
+
+    let registry_signer = signer_args(&registry);
+
+    DeployRegistry {
+        signer: registry_signer.clone(),
+        contract: FixedContractWasm { no_build: true },
+        no_init: false,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    AddVersion {
+        signer: registry_signer.clone(),
+        contract_wasm: FixedContractWasm { no_build: true },
+        package: Package {
+            market: true,
+            uac: false,
+            proxy_oracle: false,
+            redstone_adapter: false,
+            package: None,
+        },
+        registry_id: registry.id().clone(),
+        version_key: Some("market@test".to_string()),
+        deploy_mode: DeployMode::Normal,
+        deposit: None,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let config = market_configuration(
+        oracle.id().clone(),
+        borrow.id().clone(),
+        collateral.id().clone(),
+        protocol.id().clone(),
+        YieldWeights::new_with_supply_weight(1),
+    );
+    let configuration_file = write_json_file("market-configuration", &config);
+
+    CreateMarket {
+        signer: registry_signer.clone(),
+        deploy: DeployFromRegistry {
+            registry_id: registry.id().clone(),
+            version_key: "market@test".to_string(),
+            name: "mkt-file".to_string(),
+            with_full_access_key: vec![],
+            no_signer_full_access_key: false,
+            deposit: Some(NearToken::from_near(6)),
+        },
+        configuration_source: ConfigurationSource {
+            configuration: None,
+            configuration_file: Some(configuration_file.clone()),
+        },
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let market_id: AccountId = format!("mkt-file.{}", registry.id()).parse().unwrap();
+
+    let stored_config: MarketConfiguration = ctx
+        .near
+        .view(&market_id, "get_configuration")
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(stored_config, config);
+
+    std::fs::remove_file(configuration_file).unwrap();
 }
 
 #[rstest]

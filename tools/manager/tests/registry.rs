@@ -7,6 +7,7 @@ use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{market::YieldWeights, registry::DeployMode};
 use templar_manager::commands::{
+    json_input::ConfigurationSource,
     market::create::CreateMarket,
     registry::{
         deploy::DeployRegistry,
@@ -158,7 +159,10 @@ async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
             no_signer_full_access_key: false,
             deposit: Some(NearToken::from_near(6)),
         },
-        configuration: serde_json::to_string(&config).unwrap(),
+        configuration_source: ConfigurationSource {
+            configuration: Some(serde_json::to_string(&config).unwrap()),
+            configuration_file: None,
+        },
     }
     .run(&ctx)
     .await

@@ -1,7 +1,9 @@
+use std::path::PathBuf;
+
 use anyhow::Context;
 use templar_common::oracle::redstone::Config;
 
-use crate::commands::{DeployFromRegistry, SignerArgs};
+use crate::commands::{json_input::JsonSource, DeployFromRegistry, SignerArgs};
 
 #[derive(clap::Args, Debug)]
 #[group(required = true, multiple = false)]
@@ -12,9 +14,12 @@ pub struct ConfigSource {
     /// Use the test RedStone configuration
     #[arg(long)]
     pub test: bool,
-    /// JSON-encoded RedStone `Config`
+    /// JSON configuration
     #[arg(long)]
-    pub configuration: Option<serde_json::Value>,
+    pub configuration: Option<String>,
+    /// Path to a JSON configuration file
+    #[arg(long)]
+    pub configuration_file: Option<PathBuf>,
 }
 
 impl ConfigSource {
@@ -28,11 +33,12 @@ impl ConfigSource {
             Ok(templar_common::oracle::redstone::config::prod())
         } else if self.test {
             Ok(templar_common::oracle::redstone::config::test())
-        } else if let Some(configuration) = self.configuration.clone() {
-            serde_json::from_value(configuration).context("invalid RedStone configuration")
         } else {
-            // Guaranteed by #[group(...)] attribute on ConfigSource struct
-            unreachable!()
+            JsonSource::new(
+                self.configuration.as_deref(),
+                self.configuration_file.as_deref(),
+            )?
+            .parse()
         }
     }
 }

@@ -9,6 +9,7 @@ use templar_tools_common::{
     version::RegistryVersion,
 };
 
+pub mod json_input;
 pub mod market;
 pub mod proxy_oracle;
 pub mod recover_nep141;

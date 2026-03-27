@@ -4,7 +4,7 @@ mod common;
 use std::collections::HashMap;
 
 use base64::prelude::*;
-use common::{setup_ctx, signer_args};
+use common::{setup_ctx, signer_args, write_json_file};
 use hex_literal::hex;
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
@@ -41,6 +41,7 @@ fn test_config_source() -> ConfigSource {
         prod: false,
         test: true,
         configuration: None,
+        configuration_file: None,
     }
 }
 
@@ -54,7 +55,8 @@ fn prod_config_with_relaxed_timestamps() -> ConfigSource {
     ConfigSource {
         prod: false,
         test: false,
-        configuration: Some(serde_json::to_value(&config).unwrap()),
+        configuration: Some(serde_json::to_string(&config).unwrap()),
+        configuration_file: None,
     }
 }
 
@@ -95,6 +97,45 @@ async fn redstone_adapter_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // The test config should have some signers configured.
     assert!(!config.signers.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn redstone_adapter_deploy_from_configuration_file(#[future(awt)] worker: Worker<Sandbox>) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, adapter);
+
+    let config = templar_common::oracle::redstone::config::test();
+    let configuration_file = write_json_file("redstone-configuration", &config);
+
+    DeployRedStoneAdapter {
+        signer: signer_args(&adapter),
+        contract_wasm: FixedContractWasm { no_build: true },
+        config_source: ConfigSource {
+            prod: false,
+            test: false,
+            configuration: None,
+            configuration_file: Some(configuration_file.clone()),
+        },
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let stored_config: Config = ctx
+        .near
+        .view(adapter.id(), "get_config")
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+
+    assert_eq!(
+        serde_json::to_value(&stored_config).unwrap(),
+        serde_json::to_value(&config).unwrap()
+    );
+
+    std::fs::remove_file(configuration_file).unwrap();
 }
 
 #[rstest]
