@@ -119,7 +119,6 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | I8 | Governance → `set_fees` | Yes | `require_auth(caller)` + governance check | Governance contract ↔ Vault storage |
 | I9 | Governance → `set_curator` | Yes | `require_auth(caller)` + governance check | Governance ↔ Vault storage |
 | I10 | Governance → `set_governance` | Yes | `require_auth(caller)` + governance check | Governance ↔ Vault storage |
-| I11 | Governance → `set_share_token` (disabled / immutable post-init) | No (always reverts) | `require_auth(caller)` + governance check | Governance ↔ Vault storage |
 | I12 | Governance → `set_supply_queue` / `set_cap` / `set_group_*` / `set_restrictions` / `remove_market` / `set_allowed_adapters` | Yes | `require_auth(caller)` + governance check | Governance ↔ Vault storage |
 | I13 | Governance → `upgrade` | Yes | `require_auth(caller)` + governance check | Governance ↔ Soroban deployer |
 | I14 | Governance → `migrate` | Yes | `require_auth(caller)` + governance check | Governance ↔ Vault storage |

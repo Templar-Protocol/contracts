@@ -13,6 +13,7 @@ enum MockVaultKey {
     Paused,
     Guardian,
     Sentinel,
+    Fees,
 }
 
 #[contractimpl]
@@ -43,14 +44,28 @@ impl MockVault {
     pub fn set_supply_queue(_env: Env, _caller: Address, _target_ids: Vec<u32>) {}
 
     pub fn set_fees(
-        _env: Env,
+        env: Env,
         _caller: Address,
-        _performance_fee_wad: i128,
-        _performance_recipient: Address,
-        _management_fee_wad: i128,
-        _management_recipient: Address,
-        _max_growth_rate_wad: Option<i128>,
+        performance_fee_wad: i128,
+        performance_recipient: Address,
+        management_fee_wad: i128,
+        management_recipient: Address,
+        max_growth_rate_wad: Option<i128>,
     ) {
+        env.storage().instance().set(
+            &MockVaultKey::Fees,
+            &FeeParams {
+                performance_fee_wad,
+                performance_recipient,
+                management_fee_wad,
+                management_recipient,
+                max_growth_rate_wad,
+            },
+        );
+    }
+
+    pub fn fees(env: Env) -> Option<FeeParams> {
+        env.storage().instance().get(&MockVaultKey::Fees)
     }
 
     pub fn set_restrictions(_env: Env, _caller: Address, _mode: u32, _accounts: Vec<Address>) {}
@@ -448,4 +463,223 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
     env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
     });
+}
+
+#[test]
+fn fee_decrease_applies_immediately_when_recipients_are_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let perf_recipient = Address::generate(&env);
+    let mgmt_recipient = Address::generate(&env);
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            100_000_000_000_000_000,
+            perf_recipient.clone(),
+            50_000_000_000_000_000,
+            mgmt_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_fees(env.clone(), admin.clone()).unwrap();
+    });
+
+    let pending_before = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_fees_valid_at(env.clone())
+    });
+    assert_eq!(pending_before, None);
+
+    let on_vault_before = env
+        .as_contract(&vault, || MockVault::fees(env.clone()))
+        .unwrap();
+    assert_eq!(on_vault_before.performance_fee_wad, 100_000_000_000_000_000);
+    assert_eq!(on_vault_before.management_fee_wad, 50_000_000_000_000_000);
+
+    let immediate_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            0,
+            perf_recipient.clone(),
+            0,
+            mgmt_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal_id, 1);
+    assert_eq!(immediate_id, 2);
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_fees_valid_at(env.clone())
+    });
+    assert_eq!(pending, None);
+
+    let on_vault = env
+        .as_contract(&vault, || MockVault::fees(env.clone()))
+        .unwrap();
+    assert_eq!(on_vault.performance_fee_wad, 0);
+    assert_eq!(on_vault.management_fee_wad, 0);
+}
+
+#[test]
+fn fee_increase_uses_fee_specific_pending_accept_and_revoke() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let perf_recipient = Address::generate(&env);
+    let mgmt_recipient = Address::generate(&env);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            100_000_000_000_000_000,
+            perf_recipient.clone(),
+            0,
+            mgmt_recipient.clone(),
+            None,
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_fees(env.clone(), admin.clone()).unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 110,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            200_000_000_000_000_000,
+            perf_recipient.clone(),
+            0,
+            mgmt_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal_id, 2);
+
+    let valid_at = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_fees_valid_at(env.clone())
+    });
+    assert_eq!(valid_at, Some(115_000_000_000));
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_fees(env.clone(), admin.clone())
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    let revoked = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_pending_fees(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(revoked, 1);
+
+    let pending_after_revoke = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_fees_valid_at(env.clone())
+    });
+    assert_eq!(pending_after_revoke, None);
+
+    let not_found = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_fees(env.clone(), admin.clone())
+    });
+    assert_eq!(not_found, Err(GovernanceError::ProposalNotFound));
+
+    let reproposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            200_000_000_000_000_000,
+            perf_recipient.clone(),
+            0,
+            mgmt_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+    assert_eq!(reproposal_id, 3);
+
+    let duplicate = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            300_000_000_000_000_000,
+            perf_recipient.clone(),
+            0,
+            mgmt_recipient.clone(),
+            None,
+        )
+    });
+    assert_eq!(duplicate, Err(GovernanceError::DuplicatePending));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 116,
+        protocol_version: 23,
+        ..Default::default()
+    });
+
+    let accepted_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_fees(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(accepted_id, reproposal_id);
+
+    let pending_after_accept = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_fees_valid_at(env.clone())
+    });
+    assert_eq!(pending_after_accept, None);
+
+    let on_vault = env
+        .as_contract(&vault, || MockVault::fees(env.clone()))
+        .unwrap();
+    assert_eq!(on_vault.performance_fee_wad, 200_000_000_000_000_000);
+    assert_eq!(on_vault.management_fee_wad, 0);
 }

@@ -128,6 +128,19 @@ impl SorobanVaultGovernanceContract {
         Self::submit(env, caller, GovernanceAction::SetFees(params))
     }
 
+    pub fn accept_fees(env: Env, caller: Address) -> Result<u64, GovernanceError> {
+        Self::accept_kind(env, caller, GovernanceActionKind::Fees)
+    }
+
+    pub fn revoke_pending_fees(env: Env, caller: Address) -> Result<u32, GovernanceError> {
+        Self::revoke_kind(env, caller, GovernanceActionKind::Fees)
+    }
+
+    pub fn pending_fees_valid_at(env: Env) -> Option<u64> {
+        extend_instance_ttl(&env);
+        pending_valid_after_ns_for_kind(&env, GovernanceActionKind::Fees)
+    }
+
     pub fn submit_set_restrictions(
         env: Env,
         caller: Address,
@@ -449,6 +462,12 @@ impl SorobanVaultGovernanceContract {
             .publish(&env);
             ProposalAccepted { id }.publish(&env);
             return Ok(id);
+        }
+
+        if action_kind(&action) == GovernanceActionKind::Fees
+            && has_pending_kind(&env, GovernanceActionKind::Fees)
+        {
+            return Err(GovernanceError::DuplicatePending);
         }
 
         if has_pending_action(&env, &action) {
@@ -842,6 +861,21 @@ fn load_proposal(env: &Env, proposal_id: u64) -> Result<PendingProposal, Governa
 fn has_pending_action(env: &Env, action: &GovernanceAction) -> bool {
     let queue = load_queue(env);
     queue.has_pending(|pending| pending.action == *action)
+}
+
+fn has_pending_kind(env: &Env, kind: GovernanceActionKind) -> bool {
+    let queue = load_queue(env);
+    queue.has_pending(|pending| action_kind(&pending.action) == kind)
+}
+
+fn pending_valid_after_ns_for_kind(env: &Env, kind: GovernanceActionKind) -> Option<u64> {
+    let queue = load_queue(env);
+    for entry in queue.iter() {
+        if action_kind(&entry.value.action) == kind {
+            return Some(entry.valid_at_ns);
+        }
+    }
+    None
 }
 
 fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
