@@ -15,7 +15,7 @@
     }
   },
   "price_oracle_configuration": {
-    "account_id": "",
+    "account_id": "proxy-oracle-ixlmcetes-ixlmusdc.v1.tmplr.near",
     "collateral_asset_price_id": "4345544553000000000000000000000000000000000000000000000000000000",
     "collateral_asset_decimals": 7,
     "borrow_asset_price_id": "5553444300000000000000000000000000000000000000000000000000000000",
