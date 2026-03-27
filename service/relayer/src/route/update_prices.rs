@@ -36,7 +36,7 @@ pub async fn update_prices(
         };
     }
 
-    let accounts = app.accounts.read().await;
+    let accounts = app.accounts.read().await.clone();
     if let Some(market_id) = market_ids
         .iter()
         .find(|market_id| !accounts.market_data.contains_key(*market_id))
