@@ -1487,10 +1487,62 @@ mod effects_tests {
 
 mod market_tests {
     use crate::error::RuntimeError;
-    use crate::market::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address, Bytes, Env};
     use templar_vault_kernel::AssetId;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct SettlementReceipt {
+        op_id: u64,
+        attempt_id: u64,
+        new_external_assets: i128,
+    }
+
+    impl SettlementReceipt {
+        const fn new(op_id: u64, attempt_id: u64, new_external_assets: i128) -> Self {
+            Self {
+                op_id,
+                attempt_id,
+                new_external_assets,
+            }
+        }
+    }
+
+    type AttemptId = u64;
+
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    struct MarketRef {
+        market_id: u32,
+        asset_id: AssetId,
+    }
+
+    impl MarketRef {
+        const fn new(market_id: u32, asset_id: AssetId) -> Self {
+            Self {
+                market_id,
+                asset_id,
+            }
+        }
+    }
+
+    impl From<(u32, AssetId)> for MarketRef {
+        fn from(value: (u32, AssetId)) -> Self {
+            Self::new(value.0, value.1)
+        }
+    }
+
+    trait SorobanCrossChainMarketAdapter {
+        fn submit_intent(&self, env: &Env, plan_bytes: Bytes) -> Result<AttemptId, RuntimeError>;
+
+        fn settle(
+            &self,
+            env: &Env,
+            op_id: u64,
+            attempt_id: AttemptId,
+        ) -> Result<SettlementReceipt, RuntimeError>;
+
+        fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
+    }
 
     #[derive(Clone, Default)]
     struct TestMarketAdapter {
