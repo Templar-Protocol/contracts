@@ -317,13 +317,13 @@ impl App {
                         match request {
                             OracleRequest::Pyth(request) => {
                                 pyth.entry(request.oracle_id.clone())
-                                    .or_insert_with(HashSet::new)
+                                    .or_default()
                                     .insert(request.price_id);
                             }
                             OracleRequest::RedStone(request) => {
                                 redstone
                                     .entry(request.oracle_id.clone())
-                                    .or_insert_with(HashSet::new)
+                                    .or_default()
                                     .insert(request.price_id.clone());
                             }
                         }
