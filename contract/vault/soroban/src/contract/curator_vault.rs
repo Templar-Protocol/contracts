@@ -453,45 +453,24 @@ where
         &mut self,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let (pending_owner, pending_receiver, pending_escrow, pending_expected) = {
-            let (_, p) = self
-                .state()?
-                .withdraw_queue
-                .head()
-                .ok_or_else(|| contract_error("withdraw queue empty"))?;
-            (p.owner, p.receiver, p.escrow_shares, p.expected_assets)
-        };
-
-        let withdraw_op_id = match &self.state()?.op_state {
-            OpState::Withdrawing(w) => {
-                if pending_owner != w.owner
-                    || pending_receiver != w.receiver
-                    || pending_escrow != w.escrow_shares
-                {
-                    return Err(contract_error("withdrawal queue head mismatch"));
-                }
-                w.op_id
-            }
-            _ => return Err(contract_error("withdrawal not in progress")),
-        };
-
-        let available_assets = self.state()?.idle_assets;
-        if available_assets < pending_expected && available_assets < MIN_WITHDRAWAL_ASSETS {
-            return Ok(EffectSummary::new());
-        }
-        let Some(idle_settlement) =
-            compute_idle_settlement(pending_escrow, pending_expected, available_assets)
-        else {
+        let Some(idle_payout) = transition_to_runtime(plan_idle_payout(self.state()?))? else {
             return Ok(EffectSummary::new());
         };
 
-        let assets_out = idle_settlement.assets_out;
+        let assets_out = idle_payout.assets_out;
         if assets_out == 0 {
             return Ok(EffectSummary::new());
         }
-        let burn_shares = idle_settlement.settlement.to_burn;
-        let refund_shares = idle_settlement.settlement.refund;
-        let op_id = withdraw_op_id;
+        let burn_shares = match idle_payout.outcome {
+            PayoutOutcome::Success {
+                burn_shares,
+                refund_shares: _,
+            } => burn_shares,
+            PayoutOutcome::Failure { .. } => {
+                return Err(contract_error("idle payout planning must succeed"));
+            }
+        };
+        let op_id = idle_payout.op_id;
 
         let collected = {
             let op_state = mem::take(&mut self.state_mut()?.op_state);
@@ -502,13 +481,12 @@ where
         let mut summary = self.interpreter.execute_effects(&collected.effects, &ctx)?;
         self.state_mut()?.op_state = collected.new_state;
 
-        let payout = match &self.state()?.op_state {
-            OpState::Payout(state) => state,
-            _ => return Err(contract_error("expected payout state after withdrawal")),
-        };
+        if !matches!(self.state()?.op_state, OpState::Payout(_)) {
+            return Err(contract_error("expected payout state after withdrawal"));
+        }
 
         let transfer_effects = [KernelEffect::TransferAssets {
-            to: payout.receiver,
+            to: idle_payout.receiver,
             amount: assets_out,
         }];
         self.ensure_effect_addresses_mapped(&transfer_effects, &ctx)?;
@@ -516,13 +494,7 @@ where
         summary.merge(transfer_summary);
 
         let settle_summary = self.apply_kernel_action(
-            KernelAction::SettlePayout {
-                op_id,
-                outcome: PayoutOutcome::Success {
-                    burn_shares,
-                    refund_shares,
-                },
-            },
+            KernelAction::settle_payout(op_id, idle_payout.outcome),
             now_ns,
         )?;
         summary.merge(settle_summary);

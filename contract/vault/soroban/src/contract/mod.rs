@@ -49,8 +49,8 @@ use templar_vault_kernel::actions::AtomicPayoutKind;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
-    apply_action, compute_idle_settlement, convert_to_assets, convert_to_assets_ceil,
-    convert_to_shares, convert_to_shares_ceil, withdrawal_settled, Address, FeeAccrualAnchor,
+    apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
+    convert_to_shares_ceil, plan_idle_payout, withdrawal_settled, Address, FeeAccrualAnchor,
     FeeSlot, FeesSpec, KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
     VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
     MIN_WITHDRAWAL_ASSETS,

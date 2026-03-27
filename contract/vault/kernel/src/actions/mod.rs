@@ -17,7 +17,7 @@ use crate::math::wad::{compute_management_fee_shares, total_assets_for_fee_accru
 use crate::math::wad::{mul_div_ceil, mul_div_floor};
 use crate::restrictions::{RestrictionKind, Restrictions};
 use crate::state::op_state::{OpState, TargetId};
-use crate::state::queue::{is_past_cooldown, QueueError, WithdrawQueue};
+use crate::state::queue::{compute_idle_settlement, is_past_cooldown, QueueError, WithdrawQueue};
 #[cfg(any(feature = "action-refresh-fees", test))]
 use crate::state::vault::FeeAccrualAnchor;
 use crate::state::vault::{VaultConfig, VaultState};
@@ -59,6 +59,80 @@ pub enum PayoutOutcome {
         restore_idle: u128,
         refund_shares: u128,
     },
+}
+
+/// Planned payout details for satisfying a queued withdrawal from idle assets.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
+pub struct IdlePayoutPlan {
+    pub op_id: u64,
+    pub receiver: Address,
+    pub assets_out: u128,
+    pub outcome: PayoutOutcome,
+}
+
+/// Plan an idle-funded payout from the current vault state.
+///
+/// Returns `Ok(None)` when the vault is in a valid withdrawing state but there is
+/// not enough idle liquidity to satisfy the queue head yet.
+pub fn plan_idle_payout(state: &VaultState) -> Result<Option<IdlePayoutPlan>, KernelError> {
+    let (request_owner, request_receiver, request_escrow, request_expected) = state
+        .withdraw_queue
+        .head()
+        .map(|(_, request)| {
+            (
+                request.owner,
+                request.receiver,
+                request.escrow_shares,
+                request.expected_assets,
+            )
+        })
+        .ok_or_else(|| KernelError::invalid_state_code(InvalidStateCode::UnexpectedEmptyQueue))?;
+
+    let withdrawing = match &state.op_state {
+        OpState::Withdrawing(withdrawing) => withdrawing,
+        _ => {
+            return Err(KernelError::invalid_state_code(
+                InvalidStateCode::ExecuteWithdrawRequiresIdleUseCallbacks,
+            ))
+        }
+    };
+
+    if request_owner != withdrawing.owner
+        || request_receiver != withdrawing.receiver
+        || request_escrow != withdrawing.escrow_shares
+    {
+        return Err(KernelError::invalid_state_code(
+            InvalidStateCode::WithdrawalQueueHeadMismatch,
+        ));
+    }
+
+    let available_assets = state.idle_assets;
+    if available_assets < request_expected
+        && available_assets < crate::state::queue::MIN_WITHDRAWAL_ASSETS
+    {
+        return Ok(None);
+    }
+
+    let Some(settlement) =
+        compute_idle_settlement(request_escrow, request_expected, available_assets)
+    else {
+        return Ok(None);
+    };
+
+    if settlement.assets_out == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(IdlePayoutPlan {
+        op_id: withdrawing.op_id,
+        receiver: withdrawing.receiver,
+        assets_out: settlement.assets_out,
+        outcome: PayoutOutcome::Success {
+            burn_shares: settlement.settlement.to_burn,
+            refund_shares: settlement.settlement.refund,
+        },
+    }))
 }
 
 /// Kernel actions supported by the dispatcher.
