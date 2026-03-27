@@ -183,11 +183,12 @@ impl BorrowPosition {
 
 #[must_use]
 #[derive(Debug, Clone)]
+#[near(serializers = [json])]
 pub struct LiabilityReduction {
     pub to_fees: BorrowAssetAmount,
     pub to_interest: BorrowAssetAmount,
     pub to_principal: BorrowAssetAmount,
-    pub remaining: BorrowAssetAmount,
+    pub to_refund: BorrowAssetAmount,
 }
 
 #[must_use]
@@ -433,7 +434,7 @@ impl<'a> BorrowPositionGuard<'a> {
             to_fees,
             to_interest,
             to_principal,
-            remaining: amount,
+            to_refund: amount,
         }
     }
 
@@ -628,13 +629,15 @@ impl<'a> BorrowPositionGuard<'a> {
 
         MarketEvent::BorrowRepaid {
             account_id: self.account_id.clone(),
-            borrow_asset_fees_repaid: liability_reduction.to_fees,
-            borrow_asset_principal_repaid: liability_reduction.to_principal,
-            borrow_asset_principal_remaining: self.position.get_borrow_asset_principal(),
+            amount_sent: amount,
+            liability_reduction: liability_reduction.clone(),
+            liability_remaining: self.position.get_total_borrow_asset_liability(),
         }
         .emit();
 
-        liability_reduction.remaining
+        self.market.borrow_asset_balance -= liability_reduction.to_refund;
+
+        liability_reduction.to_refund
     }
 
     pub fn accumulate_interest_partial(&mut self, snapshot_limit: u32) {
@@ -728,7 +731,7 @@ impl<'a> BorrowPositionGuard<'a> {
 
         let liability_reduction = self.reduce_borrow_asset_liability(proof, recovered);
         self.market
-            .record_borrow_asset_yield_distribution(liability_reduction.remaining);
+            .record_borrow_asset_yield_distribution(liability_reduction.to_refund);
 
         self.market.borrow_asset_balance += recovered;
 
