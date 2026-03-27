@@ -5,7 +5,6 @@ pub mod price_transformer;
 pub mod proxy;
 pub mod pyth;
 pub mod redstone;
-pub mod time;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]

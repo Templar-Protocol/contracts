@@ -75,18 +75,24 @@ pub struct Price {
 pub struct PythTimestamp(i64);
 
 impl PythTimestamp {
+    /// Creates a `PythTimestamp` from a value in seconds.
     pub fn from_secs(secs: i64) -> Self {
         Self(secs)
     }
 
+    /// Converts milliseconds to a [`PythTimestamp`], stored in whole seconds,
+    /// truncating any fractional seconds.
     pub fn from_ms(ms: i64) -> Self {
         Self(ms / 1000)
     }
 
+    /// Returns the timestamp value in seconds.
     pub fn as_secs(&self) -> i64 {
         self.0
     }
 
+    /// Converts a [`PythTimestamp`] (stored in whole seconds) to milliseconds
+    /// by performing a checked multiplication by 1000.
     pub fn as_ms(&self) -> Option<i64> {
         self.0.checked_mul(1000)
     }

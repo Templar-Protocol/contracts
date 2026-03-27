@@ -44,7 +44,7 @@ pub struct MarketData {
 pub struct AssetResolution<A: AssetClass> {
     pub asset: FungibleAsset<A>,
     pub price_id: PriceIdentifier,
-    pub update_oracle: OracleRequest,
+    pub update_oracle: HashSet<OracleRequest>,
 }
 
 pub struct AssetTransfer {

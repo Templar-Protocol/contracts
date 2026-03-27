@@ -19,6 +19,10 @@ pub struct ClearDeployments {
     /// Where to send recovered funds (defaults to registry ID)
     #[arg(long)]
     pub beneficiary_id: Option<AccountId>,
+    /// Do not exit early if removing a market fails; sets --force on the
+    /// individual market removal command.
+    #[arg(long)]
+    pub force: bool,
 }
 
 impl ClearDeployments {
@@ -46,8 +50,12 @@ impl ClearDeployments {
                     secret_key: self.secret_key.clone(),
                 },
                 beneficiary_id: beneficiary_id.clone(),
+                force: self.force,
             };
             if let Err(error) = market_remove.run(ctx).await {
+                if !self.force {
+                    return Err(error);
+                }
                 tracing::warn!(%market_id, %error, "Failed to remove market");
             }
         }

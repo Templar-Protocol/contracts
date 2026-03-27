@@ -9,10 +9,10 @@ use templar_common::{
         proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
-        time::Milliseconds,
         OracleRequest,
     },
     primitive_types::U256,
+    time::Nanoseconds,
 };
 use test_utils::*;
 
@@ -36,7 +36,7 @@ pub fn redstone_price(price: f64) -> FeedData {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let now_ms = Milliseconds::from_ms(now_ms);
+    let now_ms = Nanoseconds::from_ms(now_ms);
     FeedData {
         price: U256::from((price * 1e8) as u128).into(),
         package_timestamp: now_ms,
@@ -173,20 +173,12 @@ async fn proxy_oracle(
             },
         );
 
-        dbg!(
-            pyth_borrow,
-            pyth_collateral,
-            redstone_borrow,
-            redstone_collateral
-        );
-
         let collateral_before = c
             .get_borrow_position(borrow_user.id())
             .await
             .map_or(0.into(), |p| p.get_total_collateral_amount());
 
-        let e = c.collateralize(&borrow_user, 1_000_000).await;
-        print_execution(&e);
+        c.collateralize(&borrow_user, 1_000_000).await;
         let expect_success =
             (pyth_borrow || redstone_borrow) && (pyth_collateral || redstone_collateral);
 

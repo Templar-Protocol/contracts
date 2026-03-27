@@ -6,9 +6,9 @@ use near_sdk::{
     testing_env,
 };
 use primitive_types::U256;
-use templar_common::oracle::{
-    redstone::{config, FeedData, FeedId, RedStoneContractInterface},
-    time::Milliseconds,
+use templar_common::{
+    oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface},
+    time::Nanoseconds,
 };
 
 use templar_redstone_adapter_contract::*;
@@ -28,7 +28,7 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
     let context = VMContextBuilder::new()
         .block_timestamp(timestamp * 1_000_000)
         .build();
-    testing_env!(context.clone());
+    testing_env!(context);
 
     let mut ra = Contract::new(config::prod());
 
@@ -38,10 +38,13 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
 
     let price_data = ra.read_price_data(prices.clone());
 
-    let _eth = price_data.get(&"ETH".into()).unwrap();
-    let _btc = price_data.get(&"BTC".into()).unwrap();
+    let eth = price_data.get(&"ETH".into()).unwrap();
+    let btc = price_data.get(&"BTC".into()).unwrap();
 
     eprintln!("{price_data:#?}");
+
+    assert_ne!(U256::from(eth.price), U256::zero());
+    assert_ne!(U256::from(btc.price), U256::zero());
 }
 
 #[rstest::rstest]
@@ -52,7 +55,7 @@ fn output() {
     let context = VMContextBuilder::new()
         .block_timestamp(timestamp * 1_000_000)
         .build();
-    testing_env!(context.clone());
+    testing_env!(context);
 
     let mut ra = Contract::new(config::prod());
 
@@ -69,16 +72,16 @@ fn output() {
                 "ETH".into(),
                 FeedData {
                     price: U256::from(195_692_129_540_u128).into(),
-                    package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
-                    write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                    package_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
+                    write_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
                 }
             ),
             (
                 "BTC".into(),
                 FeedData {
                     price: U256::from(6_698_556_748_915_u128).into(),
-                    package_timestamp: Milliseconds::from_ms(1_770_985_144_000),
-                    write_timestamp: Milliseconds::from_ms(1_770_985_144_000),
+                    package_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
+                    write_timestamp: Nanoseconds::from_ms(1_770_985_144_000),
                 }
             ),
         ])
@@ -87,7 +90,7 @@ fn output() {
     assert_eq!(
         test_utils::get_logs(),
         vec![
-            r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"write_prices","data":{"updater":"bob.near","updated_feeds":[["ETH",{"price":"195692129540","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}],["BTC",{"price":"6698556748915","package_timestamp":"1770985144000","write_timestamp":"1770985144000"}]]}}"#,
+            r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"write_prices","data":{"updater":"bob.near","updated_feeds":[["ETH",{"price":"195692129540","package_timestamp":"1770985144000000000","write_timestamp":"1770985144000000000"}],["BTC",{"price":"6698556748915","package_timestamp":"1770985144000000000","write_timestamp":"1770985144000000000"}]]}}"#,
         ],
     );
 }

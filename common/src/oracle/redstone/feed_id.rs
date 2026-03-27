@@ -53,6 +53,9 @@ impl From<redstone::FeedId> for FeedId {
             end -= 1;
         }
 
+        // Feed IDs from RedStone are expected to be valid UTF-8 (ASCII strings).
+        // Using lossy conversion here is intentional - invalid bytes would indicate
+        // a misconfigured or corrupted feed ID from the oracle.
         Self(Arc::from(String::from_utf8_lossy(&bytes[..end])))
     }
 }
@@ -82,5 +85,22 @@ mod tests {
         let convert_non_btc_feed_id_to_string = super::FeedId::from(non_btc_feed_id);
 
         assert_eq!(convert_non_btc_feed_id_to_string, "BTC\0C".into());
+    }
+
+    #[test]
+    fn test_feed_to_string_all_zero_bytes() {
+        let feed_id = redstone::FeedId::from([0u8; 32]);
+        let converted = super::FeedId::from(feed_id);
+        assert_eq!(converted, "".into());
+    }
+
+    #[test]
+    fn test_feed_to_string_invalid_utf8_is_lossy() {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0xFF;
+        bytes[1] = b'B';
+        let feed_id = redstone::FeedId::from(bytes);
+        let converted = super::FeedId::from(feed_id);
+        assert_eq!(converted.as_ref(), "�B");
     }
 }

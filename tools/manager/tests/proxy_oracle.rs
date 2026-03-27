@@ -5,7 +5,7 @@ use common::{setup_ctx, signer_args};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::registry::DeployMode;
+use templar_common::{registry::DeployMode, time::Nanoseconds};
 use templar_manager::commands::{
     proxy_oracle::{
         create::CreateProxyOracle,
@@ -62,7 +62,7 @@ async fn proxy_oracle_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify contract responds to view call.
     let proxies: Vec<serde_json::Value> = ctx
-        .near()
+        .near
         .view(oracle.id(), "list_proxies")
         .args_json(json!({}))
         .await
@@ -180,7 +180,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
         signer: signer_args(&oracle),
         oracle_id: oracle_id.clone(),
         id: Some(0),
-        operation: OperationCommand::SetTtl(SetTtlArgs { ttl_ms: 1000 }),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(1000)),
     }
     .run(&ctx)
     .await
@@ -188,7 +188,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
 
     // List proposals — should have 1.
     let ids: Vec<u32> = ctx
-        .near()
+        .near
         .view(&oracle_id, "gov_list")
         .args_json(json!({}))
         .await
@@ -226,7 +226,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
 
     // Verify proposal is gone.
     let ids: Vec<u32> = ctx
-        .near()
+        .near
         .view(&oracle_id, "gov_list")
         .args_json(json!({}))
         .await
@@ -273,7 +273,7 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         signer: signer_args(&oracle),
         oracle_id: oracle_id.clone(),
         id: Some(0),
-        operation: OperationCommand::SetTtl(SetTtlArgs { ttl_ms: 5000 }),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
     }
     .run(&ctx)
     .await
@@ -291,7 +291,7 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
 
     // Verify the proposal was executed (no longer in the list).
     let ids: Vec<u32> = ctx
-        .near()
+        .near
         .view(&oracle_id, "gov_list")
         .args_json(json!({}))
         .await
@@ -299,4 +299,14 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         .json()
         .unwrap();
     assert!(ids.is_empty());
+
+    let new_ttl = ctx
+        .near
+        .view(&oracle_id, "gov_ttl_ns")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<Nanoseconds>()
+        .unwrap();
+    assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
 }

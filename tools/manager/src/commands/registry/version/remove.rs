@@ -14,24 +14,28 @@ pub struct VersionRemove {
     #[arg(long)]
     pub registry_id: AccountId,
     /// Remove all registered versions
-    #[arg(long)]
+    #[arg(long, conflicts_with = "version_key")]
     pub all: bool,
     /// Version key to remove (required without --all)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "all")]
     pub version_key: Option<String>,
 }
 
 impl VersionRemove {
     #[tracing::instrument(skip_all, name = "version_remove", fields(registry_id = %self.registry_id, all = self.all))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        if self.all {
-            remove_all(ctx, &self.signer, &self.registry_id).await
-        } else {
-            let version_key = self
-                .version_key
-                .as_deref()
-                .context("--version-key is required when --all is not set")?;
-            remove_one(ctx, &self.signer, &self.registry_id, version_key).await
+        // Validate mutual exclusivity and requirement
+        match (self.all, &self.version_key) {
+            (true, Some(_)) => {
+                anyhow::bail!("Cannot specify both --all and --version-key");
+            }
+            (false, None) => {
+                anyhow::bail!("Please specify either --all or --version-key");
+            }
+            (true, None) => remove_all(ctx, &self.signer, &self.registry_id).await,
+            (false, Some(version_key)) => {
+                remove_one(ctx, &self.signer, &self.registry_id, version_key).await
+            }
         }
     }
 }
@@ -52,12 +56,26 @@ pub(crate) async fn remove_all(
         .context("deserialise versions")?;
 
     tracing::info!(count = versions.len(), %registry_id, "Removing versions");
+    let mut failures = Vec::new();
 
     for version_key in versions {
         tracing::info!(%version_key, "Removing version");
         if let Err(error) = remove_one(ctx, signer, registry_id, &version_key).await {
             tracing::warn!(%version_key, %error, "Failed to remove version");
+            failures.push((version_key, error));
         }
+    }
+
+    if !failures.is_empty() {
+        let mut e = String::new();
+        for (version_key, error) in &failures {
+            e.push_str("  ");
+            e.push_str(version_key);
+            e.push_str(": ");
+            e.push_str(&error.to_string());
+            e.push('\n');
+        }
+        anyhow::bail!("Failed to remove {} versions:\n{e}", failures.len());
     }
 
     Ok(())

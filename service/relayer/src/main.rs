@@ -43,7 +43,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
     let router = Router::new()
-        .route("/", routing::get(|| async { "Hello, World!" }))
+        .route("/healthz", routing::get(|| async { "ok" }))
         .route("/relay", routing::post(route::relay::relay))
         .route(
             "/get_allowance",

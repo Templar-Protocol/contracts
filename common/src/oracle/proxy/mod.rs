@@ -1,6 +1,8 @@
 use near_sdk::near;
 
-use super::{price_transformer::ProxyPriceTransformer, time::Milliseconds, OracleRequest};
+use crate::time::Nanoseconds;
+
+use super::{price_transformer::ProxyPriceTransformer, OracleRequest};
 
 pub mod aggregator;
 use aggregator::{Aggregator, Filter};
@@ -17,8 +19,8 @@ impl Proxy {
     pub fn median_low(entries: impl IntoIterator<Item = Source>) -> Self {
         Self {
             aggregator: Aggregator::median_low(Filter {
-                max_age: Some(Milliseconds::from_ms(60 * 1000)),
-                max_clock_drift: Some(Milliseconds::from_ms(10 * 1000)),
+                max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+                max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
                 min_sources: Some(1),
             }),
             entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),
@@ -28,8 +30,8 @@ impl Proxy {
     pub fn priority(entries: impl IntoIterator<Item = Source>) -> Self {
         Self {
             aggregator: Aggregator::priority(Filter {
-                max_age: Some(Milliseconds::from_ms(60 * 1000)),
-                max_clock_drift: Some(Milliseconds::from_ms(10 * 1000)),
+                max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+                max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
                 min_sources: Some(1),
             }),
             entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),

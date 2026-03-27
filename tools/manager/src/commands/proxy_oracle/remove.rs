@@ -6,6 +6,7 @@ use crate::commands::{self, SignerArgs};
 pub struct ProxyOracleRemove {
     #[command(flatten)]
     pub signer: SignerArgs,
+    /// Account to receive remaining funds when the proxy oracle account is deleted
     #[arg(long)]
     pub beneficiary_id: AccountId,
 }

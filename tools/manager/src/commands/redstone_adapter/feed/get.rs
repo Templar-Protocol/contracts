@@ -37,11 +37,13 @@ fn format_price(price: U256) -> String {
 }
 
 fn format_timestamp_ms(ms: u64) -> String {
-    #[allow(clippy::cast_possible_wrap)]
-    chrono::DateTime::from_timestamp_millis(ms as i64).map_or_else(
-        || format!("{ms}ms"),
-        |dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-    )
+    ms.try_into()
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(
+            || format!("{ms}ms"),
+            |dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        )
 }
 
 impl FeedGet {

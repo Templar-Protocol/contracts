@@ -37,7 +37,7 @@ fn get_contract_wasm_bytes(
         .join(name_in_path.as_str())
         .join(format!("{name_in_path}.wasm"));
 
-    Ok(std::fs::read(path)?)
+    std::fs::read(&path).with_context(|| format!("read contract WASM from {}", path.as_str()))
 }
 
 fn version<T>(package: &cargo_metadata::Package) -> Version<T> {

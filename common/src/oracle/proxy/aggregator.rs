@@ -1,10 +1,15 @@
 use near_sdk::near;
 
-use crate::oracle::{
-    pyth::{self, PythTimestamp},
-    time::Milliseconds,
+use crate::{
+    oracle::pyth::{self, PythTimestamp},
+    time::Nanoseconds,
 };
 
+/// Calculates the weighted median of a sorted list of weighted items.
+///
+/// If all of the weights are zero, returns the first item.
+///
+/// Only definitely correct for lists where `sum(weights)` does not overflow `u32`.
 fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
     if sorted_weighted_items.len() == 1 {
         return 0;
@@ -15,11 +20,11 @@ fn weighted_median_low<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
     let mut acc: u32 = 0;
 
     while lo < hi {
-        acc += sorted_weighted_items[lo].1;
+        acc = acc.saturating_add(sorted_weighted_items[lo].1);
         lo += 1;
 
         while acc >= sorted_weighted_items[hi].1 && hi != 0 {
-            acc -= sorted_weighted_items[hi].1;
+            acc = acc.saturating_sub(sorted_weighted_items[hi].1);
             hi -= 1;
         }
     }
@@ -52,27 +57,33 @@ impl Aggregator {
     pub fn aggregate(
         &self,
         prices: &[(pyth::Price, u32)],
-        now: Milliseconds,
+        now: Nanoseconds,
     ) -> Option<SpecificPrice> {
-        if prices.len() < self.filter.min_sources.unwrap_or(1).max(1) as usize {
-            return None;
-        }
-
-        let mut values = prices
+        let prices_filtered = prices
             .iter()
             .filter(|p| {
-                let Some(published) = Milliseconds::try_from_pyth(p.0.publish_time) else {
+                let Some(published) = Nanoseconds::try_from_pyth(p.0.publish_time) else {
                     return false;
                 };
 
                 if now >= published {
-                    self.filter.max_age.is_none_or(|max| now - published <= max)
+                    self.filter
+                        .max_age
+                        .is_none_or(|max| now.saturating_sub(published) <= max)
                 } else {
                     self.filter
                         .max_clock_drift
-                        .is_none_or(|max| published - now <= max)
+                        .is_none_or(|max| published.saturating_sub(now) <= max)
                 }
             })
+            .collect::<Vec<_>>();
+
+        if prices_filtered.len() < self.filter.min_sources.unwrap_or(1).max(1) as usize {
+            return None;
+        }
+
+        let mut values = prices_filtered
+            .into_iter()
             .flat_map(|(price, weight)| {
                 // Split apart prices so that we don't need to worry about confidence when sorting.
                 let [lower, upper] = SpecificPrice::split(price);
@@ -125,12 +136,12 @@ impl SpecificPrice {
         let conf = i64::try_from(price.conf.0).unwrap_or(i64::MAX);
         [
             Self {
-                value: price.price.0 - conf,
+                value: price.price.0.saturating_sub(conf),
                 exponent: price.expo,
                 publish_time: price.publish_time,
             },
             Self {
-                value: price.price.0 + conf,
+                value: price.price.0.saturating_add(conf),
                 exponent: price.expo,
                 publish_time: price.publish_time,
             },
@@ -152,23 +163,14 @@ impl PartialOrd for SpecificPrice {
 
 impl Ord for SpecificPrice {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let expo_diff = self.exponent - other.exponent;
-        let (lhs, rhs) = if expo_diff >= 0 {
-            let scale = if expo_diff < 39 {
-                10i128.pow(expo_diff.unsigned_abs())
-            } else {
-                i128::MAX
-            };
+        let expo_diff = self.exponent.abs_diff(other.exponent);
+        let scale = 10i128.saturating_pow(expo_diff);
+        let (lhs, rhs) = if self.exponent >= other.exponent {
             (
                 i128::from(self.value).saturating_mul(scale),
                 i128::from(other.value),
             )
         } else {
-            let scale = if -expo_diff < 39 {
-                10i128.pow((-expo_diff).unsigned_abs())
-            } else {
-                i128::MAX
-            };
             (
                 i128::from(self.value),
                 i128::from(other.value).saturating_mul(scale),
@@ -193,10 +195,10 @@ pub enum AggregationMethod {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[near(serializers = [json, borsh])]
 pub struct Filter {
-    /// Maximum age of a price in milliseconds. If a price is older than this, it will be excluded from the aggregation.
-    pub max_age: Option<Milliseconds>,
-    /// Maximum clock drift in milliseconds. This is the future-analog of `max_age`.
-    pub max_clock_drift: Option<Milliseconds>,
+    /// Maximum age of a price in nanoseconds. If a price is older than this, it will be excluded from the aggregation.
+    pub max_age: Option<Nanoseconds>,
+    /// Maximum clock drift in nanoseconds. This is the future-analog of `max_age`.
+    pub max_clock_drift: Option<Nanoseconds>,
     /// Minimum number of sources required for the aggregation to produce a result.
     ///
     /// For example, if the proxy has a Pyth source and a RedStone source, and `min_sources` is set to `Some(2)`,
@@ -271,7 +273,7 @@ mod tests {
     #[test]
     fn aggregate_empty_returns_none() {
         assert!(Aggregator::median_low(Filter::default())
-            .aggregate(&[], Milliseconds::zero())
+            .aggregate(&[], Nanoseconds::zero())
             .is_none());
     }
 
@@ -279,7 +281,7 @@ mod tests {
     fn aggregate_single_price_no_conf() {
         // conf=0 means lower==upper==value, so the median is exactly the price value.
         let result = Aggregator::median_low(Filter::default())
-            .aggregate(&[(price(1_000_000, 0, secs(0)), 1)], Milliseconds::zero());
+            .aggregate(&[(price(1_000_000, 0, secs(0)), 1)], Nanoseconds::zero());
         assert_eq!(result.unwrap().value, 1_000_000);
     }
 
@@ -292,7 +294,7 @@ mod tests {
             (price(3_000_000, 0, secs(0)), 1),
         ];
         let result =
-            Aggregator::median_low(Filter::default()).aggregate(&prices, Milliseconds::zero());
+            Aggregator::median_low(Filter::default()).aggregate(&prices, Nanoseconds::zero());
         assert_eq!(result.unwrap().value, 2_000_000);
     }
 
@@ -307,7 +309,7 @@ mod tests {
             (price(2_000_000, 0, secs(0)), 1),
         ];
         assert!(Aggregator::median_low(filter)
-            .aggregate(&prices, Milliseconds::zero())
+            .aggregate(&prices, Nanoseconds::zero())
             .is_none());
     }
 
@@ -322,8 +324,24 @@ mod tests {
             (price(2_000_000, 0, secs(0)), 1),
         ];
         assert!(Aggregator::median_low(filter)
-            .aggregate(&prices, Milliseconds::zero())
+            .aggregate(&prices, Nanoseconds::zero())
             .is_some());
+    }
+
+    #[test]
+    fn aggregate_min_sources_applies_after_time_filtering() {
+        let filter = Filter {
+            min_sources: Some(2),
+            max_age: Some(Nanoseconds::from_secs(500)),
+            ..Default::default()
+        };
+        let prices = [
+            (price(1_000_000, 0, secs(1_000)), 1),
+            (price(2_000_000, 0, secs(100)), 1),
+        ];
+        assert!(Aggregator::median_low(filter)
+            .aggregate(&prices, Nanoseconds::from_secs(1_000))
+            .is_none());
     }
 
     #[rstest::rstest]
@@ -341,11 +359,11 @@ mod tests {
         let anchor = (price(9_999_999, 0, secs(now_s)), 1);
         let under_test = (price(1_000_000, 0, secs(publish_time_s)), 1);
         let filter = Filter {
-            max_age: Some(Milliseconds::from_secs(max_age_s)),
+            max_age: Some(Nanoseconds::from_secs(max_age_s)),
             ..Default::default()
         };
         let result = Aggregator::median_low(filter)
-            .aggregate(&[under_test, anchor], Milliseconds::from_secs(now_s as u64))
+            .aggregate(&[under_test, anchor], Nanoseconds::from_secs(now_s as u64))
             .unwrap();
         if included {
             // Median of [1_000_000, 9_999_999] — the lower value wins median_low.
@@ -369,11 +387,11 @@ mod tests {
         let anchor = (price(9_999_999, 0, secs(now_s)), 1);
         let under_test = (price(1_000_000, 0, secs(publish_time_s)), 1);
         let filter = Filter {
-            max_clock_drift: Some(Milliseconds::from_secs(max_clock_drift_s)),
+            max_clock_drift: Some(Nanoseconds::from_secs(max_clock_drift_s)),
             ..Default::default()
         };
         let result = Aggregator::median_low(filter)
-            .aggregate(&[under_test, anchor], Milliseconds::from_secs(now_s as u64))
+            .aggregate(&[under_test, anchor], Nanoseconds::from_secs(now_s as u64))
             .unwrap();
         if included {
             assert_eq!(result.value, 1_000_000);
@@ -388,11 +406,11 @@ mod tests {
         let anchor = (price(9_999_999, 0, secs(1000)), 1);
         let negative_time = (price(1_000_000, 0, secs(-1)), 1);
         let filter = Filter {
-            max_age: Some(Milliseconds::from_ms(500)),
+            max_age: Some(Nanoseconds::from_ms(500)),
             ..Default::default()
         };
         let result = Aggregator::median_low(filter)
-            .aggregate(&[negative_time, anchor], Milliseconds::from_ms(1000))
+            .aggregate(&[negative_time, anchor], Nanoseconds::from_ms(1000))
             .unwrap();
         assert_eq!(result.value, 9_999_999);
     }
@@ -402,14 +420,14 @@ mod tests {
     #[test]
     fn priority_empty_returns_none() {
         assert!(Aggregator::priority(Filter::default())
-            .aggregate(&[], Milliseconds::zero())
+            .aggregate(&[], Nanoseconds::zero())
             .is_none());
     }
 
     #[test]
     fn priority_single_price() {
         let result = Aggregator::priority(Filter::default())
-            .aggregate(&[(price(1_000_000, 0, secs(0)), 1)], Milliseconds::zero());
+            .aggregate(&[(price(1_000_000, 0, secs(0)), 1)], Nanoseconds::zero());
         assert_eq!(result.unwrap().value, 1_000_000);
     }
 
@@ -421,7 +439,7 @@ mod tests {
             (price(3_000_000, 0, secs(0)), 5),
         ];
         let result = Aggregator::priority(Filter::default())
-            .aggregate(&prices, Milliseconds::zero())
+            .aggregate(&prices, Nanoseconds::zero())
             .unwrap();
         // Highest weight is 10 → price 2_000_000 (lower bound with conf=0).
         assert_eq!(result.value, 2_000_000);
@@ -435,7 +453,7 @@ mod tests {
             (price(3_000_000, 0, secs(0)), 5),
         ];
         let result = Aggregator::priority(Filter::default())
-            .aggregate(&prices, Milliseconds::zero())
+            .aggregate(&prices, Nanoseconds::zero())
             .unwrap();
         // All weights equal → first entry wins (lower bound of first price).
         assert_eq!(result.value, 1_000_000);
@@ -450,7 +468,7 @@ mod tests {
             (price(2_000, 0, secs(0)), 1),
         ];
         let result = Aggregator::priority(Filter::default())
-            .aggregate(&prices, Milliseconds::zero())
+            .aggregate(&prices, Nanoseconds::zero())
             .unwrap();
         assert_eq!(result.value, 1_000 - 100);
     }
@@ -458,7 +476,7 @@ mod tests {
     #[test]
     fn priority_respects_max_age_filter() {
         let filter = Filter {
-            max_age: Some(Milliseconds::from_secs(500)),
+            max_age: Some(Nanoseconds::from_secs(500)),
             ..Default::default()
         };
         // High-weight price is stale, low-weight price is fresh.
@@ -467,7 +485,7 @@ mod tests {
             (price(2_000_000, 0, secs(900)), 1), // fresh
         ];
         let result = Aggregator::priority(filter)
-            .aggregate(&prices, Milliseconds::from_secs(1000))
+            .aggregate(&prices, Nanoseconds::from_secs(1000))
             .unwrap();
         // Stale price filtered out, only fresh one remains.
         assert_eq!(result.value, 2_000_000);
@@ -484,7 +502,7 @@ mod tests {
             (price(2_000_000, 0, secs(0)), 1),
         ];
         assert!(Aggregator::priority(filter)
-            .aggregate(&prices, Milliseconds::zero())
+            .aggregate(&prices, Nanoseconds::zero())
             .is_none());
     }
 

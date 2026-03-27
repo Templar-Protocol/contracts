@@ -221,13 +221,17 @@ pub async fn relay(
     }
 
     // Send any requested price updates
-    let mut interacted_prices = Vec::with_capacity(2);
+    let mut interacted_prices = HashSet::with_capacity(2);
     for contract_id in &interacted_contract_ids {
         if let Some(market_data) = accounts.market_data.get(contract_id) {
             let c = &market_data.collateral;
-            interacted_prices.push((c.price_id, c.update_oracle.clone()));
+            for source in &c.update_oracle {
+                interacted_prices.insert((c.price_id, source.clone()));
+            }
             let b = &market_data.borrow;
-            interacted_prices.push((b.price_id, b.update_oracle.clone()));
+            for source in &b.update_oracle {
+                interacted_prices.insert((b.price_id, source.clone()));
+            }
         }
     }
 

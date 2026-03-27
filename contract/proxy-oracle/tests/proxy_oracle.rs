@@ -14,19 +14,20 @@ use near_sdk::{
 use near_workspaces::{network::Sandbox, Worker};
 
 use templar_common::{
+    governance::Proposal,
     oracle::{
         price_transformer::{self, ProxyPriceTransformer},
         proxy::{
             aggregator::{AggregationMethod, Aggregator, Filter},
-            governance::{GovernanceInterface, Operation, Proposal},
+            governance::{Operation, ProxyGovernanceInterface},
             Entry, Proxy, Source,
         },
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
-        time::Milliseconds,
         OracleRequest,
     },
     primitive_types,
+    time::Nanoseconds,
 };
 use templar_proxy_oracle_contract::Contract;
 use test_utils::{
@@ -106,20 +107,21 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_next_id(), 0);
     assert_eq!(c.gov_get(0), None);
     assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
-    assert_eq!(c.gov_ttl_ms(), U64(0));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::zero());
 
     let proposal = c.gov_create(
         0,
         Operation::SetActionTtl {
-            new_ttl_ms: U64(10 * 1000),
+            new_ttl: Nanoseconds::from_secs(10),
         },
     );
 
     let expected = Proposal {
         operation: Operation::SetActionTtl {
-            new_ttl_ms: U64(10 * 1000),
+            new_ttl: Nanoseconds::from_secs(10),
         },
-        created_at_ms: U64(1),
+        ttl: Nanoseconds::zero(),
+        created_at: Nanoseconds::from_ms(1),
         created_by: "owner.near".parse().unwrap(),
     };
 
@@ -129,7 +131,7 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_list(None, None), vec![0]);
     assert_eq!(c.gov_count(), 1);
     assert_eq!(c.gov_next_id(), 1);
-    assert_eq!(c.gov_ttl_ms(), U64(0));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::zero());
 
     c.gov_execute(0);
     assert_eq!(c.gov_get(0), None);
@@ -137,7 +139,7 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
     assert_eq!(c.gov_count(), 0);
     assert_eq!(c.gov_next_id(), 1);
-    assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::from_secs(10));
 
     let proxy_id = PriceIdentifier([0x01_u8; 32]);
     let proxy_def = Proxy::median_low([OracleRequest::pyth(
@@ -158,7 +160,8 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
             id: proxy_id,
             proxy: Some(proxy_def),
         },
-        created_at_ms: U64(1),
+        ttl: Nanoseconds::from_secs(10),
+        created_at: Nanoseconds::from_ms(1),
         created_by: "owner.near".parse().unwrap(),
     };
     assert_eq!(proposal, expected);
@@ -167,7 +170,7 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     assert_eq!(c.gov_list(None, None), vec![1]);
     assert_eq!(c.gov_count(), 1);
     assert_eq!(c.gov_next_id(), 2);
-    assert_eq!(c.gov_ttl_ms(), U64(10 * 1000));
+    assert_eq!(c.gov_ttl_ns(), Nanoseconds::from_secs(10));
 
     context.block_timestamp += delay_ms * 1_000_000;
     testing_env!(context.clone());
@@ -175,6 +178,25 @@ pub fn governance_ttl(#[case] delay_ms: u64) {
     c.gov_execute(1);
 }
 
+#[test]
+#[should_panic = "Empty proxy definition is not allowed"]
+fn governance_rejects_empty_proxy_definition_on_create() {
+    let context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .build();
+    testing_env!(context);
+
+    let mut c = Contract::new();
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: PriceIdentifier([0xFF; 32]),
+            proxy: Some(Proxy::median_low([])),
+        },
+    );
+}
+
+#[allow(clippy::unwrap_used)]
 #[test]
 pub fn gas() {
     let context = VMContextBuilder::new()
@@ -344,10 +366,10 @@ pub async fn proxy_oracle(
             set!(
                 redstone.$id = Some(FeedData {
                     price: primitive_types::U256::from($val * 100_000_000_u128).into(),
-                    package_timestamp: templar_common::oracle::time::Milliseconds::from_ms(
+                    package_timestamp: templar_common::time::Nanoseconds::from_ms(
                         std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
                     ),
-                    write_timestamp: templar_common::oracle::time::Milliseconds::from_ms(
+                    write_timestamp: templar_common::time::Nanoseconds::from_ms(
                         std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
                     ),
                 })
@@ -359,8 +381,8 @@ pub async fn proxy_oracle(
     }
 
     let default_filter = Filter {
-        max_age: Some(Milliseconds::from_ms(60 * 1000)),
-        max_clock_drift: Some(Milliseconds::from_ms(10 * 1000)),
+        max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+        max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
         min_sources: Some(1),
     };
 

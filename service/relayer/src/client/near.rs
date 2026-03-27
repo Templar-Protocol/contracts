@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::{
+    collections::HashSet,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use near_crypto::{PublicKey, Signer};
 use near_jsonrpc_client::{
@@ -104,7 +107,7 @@ impl ViewError {
             self,
             ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
                 RpcQueryError::ContractExecutionError { vm_error, .. }
-            ))) if vm_error.contains("MethodResolveError(MethodNotFound)")
+            ))) if vm_error.contains("MethodNotFound")
         )
     }
 }
@@ -652,11 +655,15 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-    ) -> Result<OracleRequest, ResolvePriceIdentifierError> {
+    ) -> Result<HashSet<OracleRequest>, ResolvePriceIdentifierError> {
+        fn one_pyth(oracle_id: AccountId, price_id: PriceIdentifier) -> HashSet<OracleRequest> {
+            HashSet::from_iter([OracleRequest::pyth(oracle_id, price_id)])
+        }
+
         match self.query_oracle_type(oracle_id.clone()).await? {
             OracleType::PythDirect => {
                 tracing::debug!("Price ID resolved: direct Pyth oracle contract");
-                return Ok(OracleRequest::pyth(oracle_id.clone(), price_identifier));
+                Ok(one_pyth(oracle_id, price_identifier))
             }
             OracleType::PythLst { pyth_id } => {
                 if let Some(transformer) = self
@@ -668,10 +675,10 @@ impl Near {
                     .await?
                 {
                     tracing::debug!("Price ID resolved: LST oracle contract: transformed");
-                    Ok(OracleRequest::pyth(pyth_id, transformer.price_id))
+                    Ok(one_pyth(pyth_id, transformer.price_id))
                 } else {
                     tracing::debug!("Price ID resolved: LST oracle contract: passthrough");
-                    Ok(OracleRequest::pyth(pyth_id, price_identifier))
+                    Ok(one_pyth(pyth_id, price_identifier))
                 }
             }
             OracleType::Proxy => {
@@ -685,18 +692,22 @@ impl Near {
                     )
                     .await?
                 {
-                    let Some(first) = proxy.entries.first() else {
+                    let requests = proxy
+                        .entries
+                        .into_iter()
+                        .map(|entry| match entry.source {
+                            Source::Transformer(transformer) => transformer.request,
+                            Source::Request(request) => request,
+                        })
+                        .collect::<HashSet<_>>();
+                    if requests.is_empty() {
                         tracing::error!("Proxy oracle contract returned empty proxy definition");
                         return Err(ResolvePriceIdentifierError::NotFound {
                             oracle_id,
                             price_identifier,
                         });
-                    };
-                    let r = match &first.source {
-                        Source::Transformer(transformer) => &transformer.request,
-                        Source::Request(ref request) => request,
-                    };
-                    Ok(r.clone())
+                    }
+                    Ok(requests)
                 } else {
                     tracing::debug!("Price ID not found on proxy oracle contract");
                     Err(ResolvePriceIdentifierError::NotFound {
@@ -743,6 +754,7 @@ pub enum VersionedKeyParameters {
     V0(KeyParameters),
 }
 
+#[derive(Debug)]
 pub enum OracleType {
     PythDirect,
     PythLst { pyth_id: AccountId },

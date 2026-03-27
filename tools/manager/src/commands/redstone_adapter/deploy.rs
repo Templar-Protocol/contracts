@@ -1,4 +1,3 @@
-use anyhow::Context;
 use near_fetch::ops::Function;
 
 use crate::commands::{FixedContractWasm, SignerArgs};
@@ -20,14 +19,12 @@ pub struct DeployRedStoneAdapter {
 impl DeployRedStoneAdapter {
     #[tracing::instrument(skip_all, name = "redstone_adapter_deploy", fields(account_id = %self.signer.account_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        let config = self.config_source.resolve()?;
+        let init_args = self.config_source.init_args()?;
         let loaded_contract = self
             .contract_wasm
             .load_contract::<()>(ctx, REDSTONE_ADAPTER_PACKAGE)?;
         tracing::info!(version = %loaded_contract.version, "Deploying RedStone adapter");
 
-        let init_args = serde_json::to_vec(&serde_json::json!({ "config": config }))
-            .context("serialise init args")?;
         let signer = self.signer.signer();
 
         ctx.batch(&signer, &self.signer.account_id)

@@ -15,13 +15,19 @@ pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
 pub struct StorageDeposit {
     #[command(flatten)]
     pub signer: super::SignerArgs,
+    /// The contract to deposit storage on.
     #[arg(long)]
     pub contract_id: AccountId,
     /// Deposit a specific amount of NEAR tokens.
-    #[arg(long)]
+    ///
+    /// If neither --deposit nor --registration-only are provided, the default
+    /// storage amount of 0.00125 NEAR will be used.
+    #[arg(long, conflicts_with = "registration_only")]
     pub deposit: Option<NearToken>,
     /// Deposit only the minimum storage deposit required by the contract.
-    #[arg(long)]
+    ///
+    /// Conflicts with `--deposit`.
+    #[arg(long, conflicts_with = "deposit")]
     pub registration_only: bool,
 }
 
@@ -33,7 +39,7 @@ impl StorageDeposit {
             let bounds = ctx
                 .near
                 .view(&self.contract_id, "storage_balance_bounds")
-                .args_json(b"{}".to_vec())
+                .args_json(json!({}))
                 .await?
                 .json::<StorageBalanceBounds>()?;
             bounds.min
@@ -47,7 +53,7 @@ impl StorageDeposit {
             .call(
                 Function::new("storage_deposit")
                     .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
-                    .deposit(STORAGE_DEPOSIT_AMOUNT),
+                    .deposit(deposit),
             )
             .transact()
             .await

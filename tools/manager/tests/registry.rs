@@ -2,11 +2,12 @@
 mod common;
 
 use common::{setup_ctx, signer_args};
-use near_sdk::serde_json::json;
+use near_sdk::{serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::registry::DeployMode;
+use templar_common::{market::YieldWeights, registry::DeployMode};
 use templar_manager::commands::{
+    market::create::CreateMarket,
     registry::{
         deploy::DeployRegistry,
         deployment::{clear::ClearDeployments, list::ListDeployments},
@@ -17,9 +18,9 @@ use templar_manager::commands::{
             remove::VersionRemove,
         },
     },
-    FixedContractWasm, SignerArgs,
+    DeployFromRegistry, FixedContractWasm, SignerArgs,
 };
-use test_utils::{accounts, worker};
+use test_utils::{accounts, market_configuration, worker};
 
 fn no_build() -> FixedContractWasm {
     FixedContractWasm { no_build: true }
@@ -73,7 +74,7 @@ async fn view_versions(
     ctx: &templar_manager::CliContext,
     registry_id: &near_sdk::AccountId,
 ) -> Vec<String> {
-    ctx.near()
+    ctx.near
         .view(registry_id, "list_versions")
         .args_json(json!({}))
         .await
@@ -106,7 +107,7 @@ async fn registry_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 #[tokio::test]
 async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
     let ctx = setup_ctx(&worker);
-    accounts!(worker, registry);
+    accounts!(worker, registry, oracle, borrow, collateral, protocol);
     let signer = signer_args(&registry);
     let registry_id = registry.id().clone();
 
@@ -137,6 +138,36 @@ async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
         versions,
         vec!["market@v1"],
         "entry remains but code is cleared"
+    );
+
+    let config = market_configuration(
+        oracle.id().clone(),
+        borrow.id().clone(),
+        collateral.id().clone(),
+        protocol.id().clone(),
+        YieldWeights::new_with_supply_weight(1),
+    );
+
+    let deploy_err = CreateMarket {
+        signer: signer.clone(),
+        deploy: DeployFromRegistry {
+            registry_id: registry_id.clone(),
+            version_key: "market@v1".to_string(),
+            name: "removed-version".to_string(),
+            with_full_access_key: vec![],
+            no_signer_full_access_key: false,
+            deposit: Some(NearToken::from_near(6)),
+        },
+        configuration: serde_json::to_string(&config).unwrap(),
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        deploy_err.contains("Version code has been deleted"),
+        "expected deploy to fail because the removed version code was deleted, got: {deploy_err}"
     );
 }
 
@@ -237,7 +268,10 @@ async fn registry_remove(#[future(awt)] worker: Worker<Sandbox>) {
 
 #[rstest]
 #[tokio::test]
-async fn registry_clear_deployments_empty(#[future(awt)] worker: Worker<Sandbox>) {
+async fn registry_clear_deployments_empty(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(true, false)] force: bool,
+) {
     let ctx = setup_ctx(&worker);
     accounts!(worker, registry);
     let signer = signer_args(&registry);
@@ -250,8 +284,59 @@ async fn registry_clear_deployments_empty(#[future(awt)] worker: Worker<Sandbox>
         secret_key: registry.secret_key().to_string().parse().unwrap(),
         registry_id: registry_id.clone(),
         beneficiary_id: None,
+        force,
     }
     .run(&ctx)
     .await
     .unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn registry_version_remove_mutual_exclusivity_conflict(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, registry);
+    let signer = signer_args(&registry);
+    let registry_id = registry.id().clone();
+
+    deploy_registry(&ctx, signer.clone()).await;
+
+    let err_msg = VersionRemove {
+        signer: signer.clone(),
+        registry_id: registry_id.clone(),
+        all: true,
+        version_key: Some("market@v1".to_string()),
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(err_msg, "Cannot specify both --all and --version-key");
+}
+
+#[rstest]
+#[tokio::test]
+async fn registry_version_remove_neither_specified(#[future(awt)] worker: Worker<Sandbox>) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, registry);
+    let signer = signer_args(&registry);
+    let registry_id = registry.id().clone();
+
+    deploy_registry(&ctx, signer.clone()).await;
+
+    let err_msg = VersionRemove {
+        signer: signer.clone(),
+        registry_id: registry_id.clone(),
+        all: false,
+        version_key: None,
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(err_msg, "Please specify either --all or --version-key");
 }

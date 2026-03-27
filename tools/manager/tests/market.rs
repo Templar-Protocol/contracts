@@ -45,7 +45,7 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify the contract is deployed by querying its configuration.
     let stored_config: MarketConfiguration = ctx
-        .near()
+        .near
         .view(market_account.id(), "get_configuration")
         .await
         .unwrap()
@@ -123,7 +123,7 @@ async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<S
 
     // Verify market exists by querying configuration
     let stored_config: MarketConfiguration = ctx
-        .near()
+        .near
         .view(&market_id, "get_configuration")
         .await
         .unwrap()
@@ -138,18 +138,27 @@ async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<S
             secret_key: registry.secret_key().to_string().parse().unwrap(),
         },
         beneficiary_id: registry.id().clone(),
+        force: true,
     }
     .run(&ctx)
     .await
     .unwrap();
 
     // Verify the account no longer exists
-    worker.view_account(&market_id).await.unwrap_err();
+    let e = worker.view_account(&market_id).await.unwrap_err();
+    assert!(e
+        .into_inner()
+        .unwrap()
+        .to_string()
+        .contains("does not exist while viewing"));
 }
 
 #[rstest]
 #[tokio::test]
-async fn market_remove_nonexistent(#[future(awt)] worker: Worker<Sandbox>) {
+async fn market_remove_nonexistent(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[values(true, false)] force: bool,
+) {
     let ctx = setup_ctx(&worker);
     accounts!(worker, beneficiary);
 
@@ -167,6 +176,7 @@ async fn market_remove_nonexistent(#[future(awt)] worker: Worker<Sandbox>) {
     MarketRemove {
         signer: fake_signer,
         beneficiary_id: beneficiary.id().clone(),
+        force,
     }
     .run(&ctx)
     .await

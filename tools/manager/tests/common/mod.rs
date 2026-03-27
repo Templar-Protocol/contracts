@@ -12,10 +12,11 @@ use templar_manager::{commands::SignerArgs, CliContext};
 /// [`FixedContractWasm::no_build()`] can load pre-built WASMs from
 /// `target/near/`.
 pub fn setup_ctx(worker: &Worker<Sandbox>) -> CliContext {
-    CliContext::new(
-        &worker.rpc_addr(),
-        PathBuf::from(env!("CARGO_WORKSPACE_DIR")),
-    )
+    CliContext {
+        workspace_path: PathBuf::from(env!("CARGO_WORKSPACE_DIR")),
+        transaction_url_prefix: String::new(),
+        near: near_fetch::Client::new(&worker.rpc_addr()),
+    }
 }
 
 /// Build [`SignerArgs`] from a sandbox [`Account`].
