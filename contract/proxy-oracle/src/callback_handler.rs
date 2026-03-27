@@ -5,9 +5,9 @@ use templar_common::{
     oracle::{
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
-        time::Milliseconds,
         OracleRequest, PythRequest, RedStoneRequest,
     },
+    time::Nanoseconds,
     UnwrapReject,
 };
 
@@ -24,12 +24,12 @@ pub struct CallbackHandler<'a> {
     oracle_order: &'a [OracleType],
     pyth_results: HashMap<AccountId, OnceLock<Option<OracleResponse>>>,
     redstone_results: HashMap<AccountId, OnceLock<Option<HashMap<redstone::FeedId, FeedData>>>>,
-    now: Milliseconds,
-    max_age: Milliseconds,
+    now: Nanoseconds,
+    max_age: Nanoseconds,
 }
 
 impl<'a> CallbackHandler<'a> {
-    pub fn new(oracle_order: &'a [OracleType], max_age: Milliseconds) -> Self {
+    pub fn new(oracle_order: &'a [OracleType], max_age: Nanoseconds) -> Self {
         let (pyth_results, redstone_results) = oracle_order.iter().fold(
             (HashMap::new(), HashMap::new()),
             |(mut pyth_results, mut redstone_results), oracle| {
@@ -48,7 +48,7 @@ impl<'a> CallbackHandler<'a> {
             oracle_order,
             pyth_results,
             redstone_results,
-            now: Milliseconds::now(),
+            now: Nanoseconds::now(),
             max_age,
         }
     }
@@ -94,13 +94,13 @@ impl<'a> CallbackHandler<'a> {
         }?;
 
         // Filter for staleness
-        let Some(publish_time) = Milliseconds::try_from_pyth(price.publish_time) else {
+        let Some(publish_time) = Nanoseconds::try_from_pyth(price.publish_time) else {
             near_sdk::log!("Failed to convert publish_time");
             return None;
         };
 
         if self.now >= publish_time {
-            let age = self.now - publish_time;
+            let age = self.now.saturating_sub(publish_time);
             if age > self.max_age {
                 near_sdk::log!("Price is stale: age={}, max_age={}", age, self.max_age);
                 return None;

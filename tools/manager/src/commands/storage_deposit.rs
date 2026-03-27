@@ -22,10 +22,12 @@ pub struct StorageDeposit {
     ///
     /// If neither --deposit nor --registration-only are provided, the default
     /// storage amount of 0.00125 NEAR will be used.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "registration_only")]
     pub deposit: Option<NearToken>,
     /// Deposit only the minimum storage deposit required by the contract.
-    #[arg(long)]
+    ///
+    /// Conflicts with `--deposit`.
+    #[arg(long, conflicts_with = "deposit")]
     pub registration_only: bool,
 }
 

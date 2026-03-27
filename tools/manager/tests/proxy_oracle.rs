@@ -2,10 +2,10 @@
 mod common;
 
 use common::{setup_ctx, signer_args};
-use near_sdk::{json_types::U64, serde_json::json, AccountId, NearToken};
+use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::registry::DeployMode;
+use templar_common::{registry::DeployMode, time::Nanoseconds};
 use templar_manager::commands::{
     proxy_oracle::{
         create::CreateProxyOracle,
@@ -180,7 +180,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
         signer: signer_args(&oracle),
         oracle_id: oracle_id.clone(),
         id: Some(0),
-        operation: OperationCommand::SetTtl(SetTtlArgs { ttl_ms: 1000 }),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(1000)),
     }
     .run(&ctx)
     .await
@@ -273,7 +273,7 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         signer: signer_args(&oracle),
         oracle_id: oracle_id.clone(),
         id: Some(0),
-        operation: OperationCommand::SetTtl(SetTtlArgs { ttl_ms: 5000 }),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
     }
     .run(&ctx)
     .await
@@ -302,12 +302,11 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
 
     let new_ttl = ctx
         .near
-        .view(&oracle_id, "gov_ttl_ms")
+        .view(&oracle_id, "gov_ttl_ns")
         .args_json(json!({}))
         .await
         .unwrap()
-        .json::<U64>()
-        .unwrap()
-        .0;
-    assert_eq!(new_ttl, 5000);
+        .json::<Nanoseconds>()
+        .unwrap();
+    assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
 }

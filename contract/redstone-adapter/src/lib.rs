@@ -10,13 +10,11 @@ use near_sdk::{
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::{
     contract::list,
-    oracle::{
-        redstone::{
-            Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-            RedStoneEvent, Role, SerializableU256,
-        },
-        time::Milliseconds,
+    oracle::redstone::{
+        Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
+        RedStoneEvent, Role, SerializableU256,
     },
+    time::Nanoseconds,
     UnwrapReject,
 };
 
@@ -52,13 +50,24 @@ impl Contract {
     }
 
     #[payable]
-    pub fn set_role(&mut self, account_id: AccountId, role: Role, set: Option<bool>) {
+    pub fn set_role(
+        &mut self,
+        account_id: AccountId,
+        role: Role,
+        set: Option<bool>,
+        allow_removing_last_member: Option<bool>,
+    ) {
         assert_one_yocto();
         let set = set.unwrap_or(true);
         <Self as Rbac>::require_role(&Role::ModifyRoles);
         if set {
             <Self as Rbac>::add_role(self, &account_id, &role);
         } else {
+            let allow_removing_last_member = allow_removing_last_member.unwrap_or(false);
+            if !allow_removing_last_member {
+                let len = <Self as Rbac>::with_members_of(&role, |r| r.len());
+                near_sdk::require!(len > 1, "Cannot remove the last member of a role");
+            }
             <Self as Rbac>::remove_role(self, &account_id, &role);
         }
     }
@@ -76,12 +85,12 @@ impl RedStoneContractInterface for Contract {
 
     fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices {
         self.adapter
-            .get_prices(&feed_ids, &payload.0, Milliseconds::now())
+            .get_prices(&feed_ids, &payload.0, Nanoseconds::now())
             .unwrap_or_reject()
     }
 
     fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
-        let now = Milliseconds::now();
+        let now = Nanoseconds::now();
         feed_ids
             .into_iter()
             .filter_map(|feed_id| {
@@ -91,10 +100,10 @@ impl RedStoneContractInterface for Contract {
             .collect::<HashMap<_, _>>()
     }
 
-    fn read_timestamp(&self, feed_id: FeedId) -> Option<Milliseconds> {
+    fn read_timestamp(&self, feed_id: FeedId) -> Option<Nanoseconds> {
         let data = self
             .adapter
-            .feed_data(&feed_id, Milliseconds::now())?
+            .feed_data(&feed_id, Nanoseconds::now())?
             .unwrap_or_reject();
         Some(data.package_timestamp)
     }
@@ -102,13 +111,13 @@ impl RedStoneContractInterface for Contract {
     fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData> {
         let data = self
             .adapter
-            .feed_data(&feed_id, Milliseconds::now())?
+            .feed_data(&feed_id, Nanoseconds::now())?
             .unwrap_or_reject();
         Some(data.clone())
     }
 
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
-        let now = Milliseconds::now();
+        let now = Nanoseconds::now();
         feed_ids
             .into_iter()
             .filter_map(|feed_id| {
@@ -123,7 +132,7 @@ impl RedStoneContractInterface for Contract {
 
         let is_trusted = <Self as Rbac>::has_role(&updater, &Role::TrustedUpdater);
 
-        let now = Milliseconds::now();
+        let now = Nanoseconds::now();
 
         let payload = self
             .adapter

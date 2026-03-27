@@ -4,6 +4,7 @@ pub mod borrow;
 pub mod chunked_append_only_list;
 pub mod event;
 pub mod fee;
+pub mod governance;
 pub mod guard;
 pub mod incoming_deposit;
 pub mod interest_rate_strategy;
@@ -14,6 +15,7 @@ pub mod price;
 pub mod registry;
 pub mod snapshot;
 pub mod supply;
+pub mod time;
 pub mod time_chunk;
 #[cfg(feature = "rpc")]
 pub mod utils;

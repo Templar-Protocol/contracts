@@ -1,21 +1,23 @@
-use near_sdk::{assert_one_yocto, env, json_types::U64, near};
+use near_sdk::{assert_one_yocto, env, near};
 use near_sdk_contract_tools::owner::Owner;
 use templar_common::{
     contract::list,
-    oracle::proxy::governance::{GovernanceInterface, Operation, Proposal},
+    governance::Proposal,
+    oracle::proxy::governance::{Operation, ProxyGovernanceInterface},
+    time::Nanoseconds,
     UnwrapReject,
 };
 
 use crate::{Contract, ContractExt};
 
 #[near]
-impl GovernanceInterface for Contract {
+impl ProxyGovernanceInterface for Contract {
     fn gov_next_id(&self) -> u32 {
         self.governance.next_id
     }
 
-    fn gov_ttl_ms(&self) -> U64 {
-        self.governance.ttl_ms.into()
+    fn gov_ttl_ns(&self) -> Nanoseconds {
+        self.governance.ttl
     }
 
     fn gov_count(&self) -> u32 {
@@ -39,7 +41,7 @@ impl GovernanceInterface for Contract {
             .create(
                 id,
                 operation,
-                env::block_timestamp_ms(),
+                Nanoseconds::now(),
                 env::predecessor_account_id(),
             )
             .unwrap_or_reject()
@@ -60,7 +62,7 @@ impl GovernanceInterface for Contract {
 
         match self
             .governance
-            .execute(id, env::block_timestamp_ms())
+            .execute(id, Nanoseconds::now())
             .unwrap_or_reject()
         {
             Operation::SetProxy { id, proxy } => {
@@ -70,8 +72,8 @@ impl GovernanceInterface for Contract {
                     self.proxies.remove(&id);
                 }
             }
-            Operation::SetActionTtl { new_ttl_ms } => {
-                self.governance.ttl_ms = new_ttl_ms.0;
+            Operation::SetActionTtl { new_ttl } => {
+                self.governance.ttl = new_ttl;
             }
         }
     }

@@ -1,8 +1,9 @@
 use console::style;
-use near_sdk::json_types::U64;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::oracle::proxy::governance::{Operation, Proposal};
+use templar_common::{
+    governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
+};
 
 use crate::CliContext;
 
@@ -18,7 +19,7 @@ pub struct GetProposal {
 impl GetProposal {
     #[tracing::instrument(skip_all, name = "governance_get", fields(oracle_id = %self.oracle_id, id = self.id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let ttl_ms: U64 = ctx.near.view(&self.oracle_id, "gov_ttl_ms").await?.json()?;
+        let ttl: Nanoseconds = ctx.near.view(&self.oracle_id, "gov_ttl_ns").await?.json()?;
 
         let proposal: Option<Proposal<Operation>> = ctx
             .near
@@ -33,32 +34,30 @@ impl GetProposal {
         };
 
         #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = Nanoseconds::from_ms(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        );
 
-        let executable = proposal.can_execute(now_ms, ttl_ms.0);
+        let executable = proposal.can_execute(now);
 
         println!("{}: {}", style("Proposal").bold(), self.id);
         println!("{}: {}", style("Created by").bold(), proposal.created_by);
-        println!(
-            "{}: {}ms",
-            style("Created at").bold(),
-            proposal.created_at_ms.0
-        );
-        println!("{}: {}ms", style("TTL").bold(), ttl_ms.0);
+        println!("{}: {}", style("Created at").bold(), proposal.created_at);
+        println!("{}: {}s", style("TTL").bold(), ttl.as_secs());
 
         if executable {
             println!("{}: {}", style("Status").bold(), style("ready").green());
         } else {
-            let ready_at = proposal.created_at_ms.0.saturating_add(ttl_ms.0);
-            let remaining = ready_at.saturating_sub(now_ms);
+            let ready_at = proposal.created_at.saturating_add(ttl);
+            let remaining = ready_at.saturating_sub(now);
             println!(
-                "{}: {} ({}ms remaining)",
+                "{}: {} ({}s remaining)",
                 style("Status").bold(),
                 style("pending").yellow(),
-                remaining,
+                remaining.as_secs(),
             );
         }
 
@@ -81,9 +80,9 @@ impl GetProposal {
                     }
                 }
             }
-            Operation::SetActionTtl { new_ttl_ms } => {
+            Operation::SetActionTtl { new_ttl } => {
                 println!("  SetActionTtl");
-                println!("    new_ttl_ms: {}", new_ttl_ms.0);
+                println!("    new_ttl: {} ({}s)", new_ttl, new_ttl.as_secs());
             }
         }
 

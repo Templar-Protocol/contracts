@@ -1,7 +1,7 @@
 use near_sdk::json_types::{I64, U64};
 use primitive_types::U256;
 
-use crate::oracle::{pyth, time::Milliseconds};
+use crate::{oracle::pyth, time::Nanoseconds};
 
 use super::SerializableU256;
 
@@ -9,10 +9,10 @@ use super::SerializableU256;
 #[near_sdk::near(serializers = [json, borsh])]
 pub struct FeedData {
     pub price: SerializableU256,
-    /// Package timestamp in milliseconds since Unix epoch.
-    pub package_timestamp: Milliseconds,
-    /// Write timestamp in milliseconds since Unix epoch.
-    pub write_timestamp: Milliseconds,
+    /// Package timestamp in nanoseconds since Unix epoch.
+    pub package_timestamp: Nanoseconds,
+    /// Write timestamp in nanoseconds since Unix epoch.
+    pub write_timestamp: Nanoseconds,
 }
 
 impl FeedData {
@@ -24,7 +24,7 @@ impl FeedData {
             price: I64(price),
             conf: U64(0),
             expo: exponent.checked_sub(super::DECIMALS)?,
-            // Publish time is in seconds, but the RedStone data uses milliseconds.
+            // Publish time is in seconds, but the RedStone data uses nanoseconds.
             publish_time: self.package_timestamp.try_to_pyth()?,
         })
     }
@@ -114,8 +114,8 @@ mod tests {
     fn json() {
         let fd = FeedData {
             price: U256::from(3333).into(),
-            package_timestamp: Milliseconds::from_ms(5555),
-            write_timestamp: Milliseconds::from_ms(6666),
+            package_timestamp: Nanoseconds::from_ms(5555),
+            write_timestamp: Nanoseconds::from_ms(6666),
         };
 
         let serialized = serde_json::to_string(&fd).unwrap();
@@ -124,7 +124,7 @@ mod tests {
 
         assert_eq!(
             serialized,
-            r#"{"price":"3333","package_timestamp":"5555","write_timestamp":"6666"}"#,
+            r#"{"price":"3333","package_timestamp":"5555000000","write_timestamp":"6666000000"}"#,
         );
 
         let deserialized: FeedData = serde_json::from_str(&serialized).unwrap();

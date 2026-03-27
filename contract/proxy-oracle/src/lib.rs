@@ -4,23 +4,22 @@ use std::collections::{HashMap, HashSet};
 
 use near_sdk::{
     borsh::BorshSerialize, collections::UnorderedMap, env, near, AccountId, BorshStorageKey, Gas,
-    PanicOnDefault, PromiseError, PromiseOrValue,
+    PanicOnDefault, PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
+    governance::Governance,
     number::Decimal,
     oracle::{
-        proxy::{
-            governance::{Governance, Operation},
-            Proxy, Source,
-        },
+        proxy::{governance::Operation, Proxy, Source},
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
-        time::Milliseconds,
         OracleRequest,
     },
-    self_ext, UnwrapReject,
+    self_ext,
+    time::Nanoseconds,
+    UnwrapReject,
 };
 
 mod callback_handler;
@@ -74,13 +73,6 @@ impl Contract {
         self.proxies.get(&price_identifier).is_some()
     }
 
-    pub fn price_feed_exists_01_consume_result(
-        &self,
-        #[callback_result] result: Result<bool, PromiseError>,
-    ) -> bool {
-        result.unwrap_or(false)
-    }
-
     pub const GAS_FOR_LIST_00_ENTRY: Gas = Gas::from_tgas(35).saturating_div(10);
     pub fn list_ema_prices_no_older_than(
         &self,
@@ -92,7 +84,7 @@ impl Contract {
         }
         let price_ids = HashSet::<PriceIdentifier>::from_iter(price_ids);
 
-        let max_age = Milliseconds::from_secs(age);
+        let max_age = Nanoseconds::from_secs(age);
 
         let mut invoked = Vec::with_capacity(price_ids.len());
         let mut pyth_requests =
@@ -180,12 +172,12 @@ impl Contract {
         &self,
         oracle_order: Vec<OracleType>,
         invoked: Vec<(PriceIdentifier, Proxy)>,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> OracleResponse {
         let callback = CallbackHandler::new(&oracle_order, max_age);
         let mut result = OracleResponse::with_capacity(invoked.len());
 
-        let now = Milliseconds::now();
+        let now = Nanoseconds::now();
 
         let mut i = oracle_order.len() as u64;
         for (price_id, proxy) in invoked {

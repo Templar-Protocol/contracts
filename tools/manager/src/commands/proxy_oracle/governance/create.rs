@@ -1,10 +1,10 @@
 use near_fetch::ops::Function;
-use near_sdk::json_types::U64;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
 use templar_common::oracle::proxy::governance::Operation;
 use templar_common::oracle::proxy::Proxy;
+use templar_common::time::Nanoseconds;
 
 use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
 use crate::commands::SignerArgs;
@@ -42,10 +42,51 @@ pub struct SetProxyArgs {
 }
 
 #[derive(clap::Args, Debug)]
+#[group(required = true, multiple = false)]
 pub struct SetTtlArgs {
     /// New TTL in milliseconds
-    #[arg(long)]
-    pub ttl_ms: u64,
+    #[arg(long, alias = "nanos", alias = "nanoseconds")]
+    pub ns: Option<u64>,
+    /// New TTL in milliseconds
+    #[arg(long, alias = "millis", alias = "milliseconds")]
+    pub ms: Option<u64>,
+    /// New TTL in seconds
+    #[arg(long, alias = "seconds")]
+    pub secs: Option<u64>,
+}
+
+impl SetTtlArgs {
+    pub fn from_ns(ns: u64) -> Self {
+        Self {
+            ns: Some(ns),
+            ms: None,
+            secs: None,
+        }
+    }
+
+    pub fn from_ms(ms: u64) -> Self {
+        Self {
+            ns: None,
+            ms: Some(ms),
+            secs: None,
+        }
+    }
+
+    pub fn from_secs(secs: u64) -> Self {
+        Self {
+            ns: None,
+            ms: None,
+            secs: Some(secs),
+        }
+    }
+
+    pub fn ttl(&self) -> Nanoseconds {
+        self.ns
+            .map(Nanoseconds::from_ns)
+            .or_else(|| self.ms.map(Nanoseconds::from_ms))
+            .or_else(|| self.secs.map(Nanoseconds::from_secs))
+            .unwrap_or(Nanoseconds::zero())
+    }
 }
 
 impl CreateProposal {
@@ -76,7 +117,7 @@ impl CreateProposal {
                 }
             }
             OperationCommand::SetTtl(args) => Operation::SetActionTtl {
-                new_ttl_ms: U64(args.ttl_ms),
+                new_ttl: args.ttl(),
             },
         };
 

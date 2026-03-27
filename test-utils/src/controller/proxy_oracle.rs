@@ -1,12 +1,15 @@
 use near_sdk::{
-    json_types::U64,
     serde::{de::DeserializeOwned, Serialize},
     serde_json::json,
 };
 use near_workspaces::{Account, Contract};
-use templar_common::oracle::{
-    proxy::{self, governance::Operation, Proxy},
-    pyth::{OracleResponse, PriceIdentifier},
+use templar_common::{
+    governance,
+    oracle::{
+        proxy::{self, governance::Operation, Proxy},
+        pyth::{OracleResponse, PriceIdentifier},
+    },
+    time::Nanoseconds,
 };
 use tokio::sync::OnceCell;
 
@@ -71,13 +74,13 @@ impl GovernanceController<proxy::governance::Operation> for ProxyOracleControlle
 pub trait GovernanceController<T: DeserializeOwned + Serialize>: ContractController {
     define! {
         #[view] fn gov_next_id() -> u32;
-        #[view] fn gov_ttl_ms() -> U64;
+        #[view] fn gov_ttl_ns() -> Nanoseconds;
         #[view] fn gov_count() -> u32;
         #[view] fn gov_list(offset: Option<u32>, count: Option<u32>) -> Vec<u32>;
-        #[view] fn gov_get(id: u32) -> Option<proxy::governance::Proposal<T>>;
+        #[view] fn gov_get(id: u32) -> Option<governance::Proposal<T>>;
 
         #[call(yocto(1))]
-        fn gov_create(id: u32, operation: T) -> proxy::governance::Proposal<T>;
+        fn gov_create(id: u32, operation: T) -> governance::Proposal<T>;
         #[call(exec, yocto(1))]
         fn gov_cancel(id: u32);
         #[call(exec, yocto(1))]
