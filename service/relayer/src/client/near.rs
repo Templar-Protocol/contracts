@@ -39,10 +39,9 @@ use templar_common::{
         price_transformer::{Call, PriceTransformer},
         proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier},
-        redstone,
-        time::Milliseconds,
-        OracleRequest,
+        redstone, OracleRequest,
     },
+    time::Nanoseconds,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
@@ -637,12 +636,12 @@ impl Near {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    fn current_time_ms() -> Milliseconds {
+    fn current_time_ms() -> Nanoseconds {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        Milliseconds::from_ms(u64::try_from(now).unwrap_or(u64::MAX))
+        Nanoseconds::from_ms(u64::try_from(now).unwrap_or(u64::MAX))
     }
 
     async fn get_transformer(
@@ -671,7 +670,7 @@ impl Near {
     async fn fetch_oracle_request(
         &self,
         request: OracleRequest,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         let fetched_price = match &request {
             OracleRequest::Pyth(request) => self
@@ -707,7 +706,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         match self.query_oracle_type(oracle_id.clone()).await? {
             OracleType::PythDirect => {
@@ -730,7 +729,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         let final_price = self
             .fetch_oracle_request(OracleRequest::pyth(oracle_id, price_identifier), max_age)
@@ -745,7 +744,7 @@ impl Near {
         oracle_id: AccountId,
         pyth_id: AccountId,
         price_identifier: PriceIdentifier,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         let transformer = self.get_transformer(oracle_id, price_identifier).await?;
 
@@ -776,7 +775,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? else {
             return Ok(None);
@@ -798,7 +797,7 @@ impl Near {
     async fn resolve_proxy_entry_price(
         &self,
         entry: &templar_common::oracle::proxy::Entry,
-        max_age: Milliseconds,
+        max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         match &entry.source {
             Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
@@ -822,7 +821,7 @@ impl Near {
         market: &MarketData,
     ) -> Result<ViewMarketPrices, ViewError> {
         let oracle_config = &market.price_oracle_configuration;
-        let max_age = Milliseconds::from_secs(u64::from(oracle_config.price_maximum_age_s));
+        let max_age = Nanoseconds::from_secs(u64::from(oracle_config.price_maximum_age_s));
 
         let borrow = self.resolve_price(
             oracle_config.account_id.clone(),
