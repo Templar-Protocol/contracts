@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Args;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 
 pub enum JsonSource<'a> {
     String(&'a str),
@@ -31,40 +31,24 @@ impl<'a> JsonSource<'a> {
     }
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
-pub struct InitArgsSource {
+pub struct ArgsSource {
     /// JSON-encoded value
     #[arg(long)]
-    pub init_args: Option<String>,
+    pub args: Option<String>,
     /// Path to a file containing JSON-encoded value
     #[arg(long)]
-    pub init_args_file: Option<PathBuf>,
+    pub args_file: Option<PathBuf>,
 }
 
-impl InitArgsSource {
-    pub fn parse(&self) -> anyhow::Result<serde_json::Value> {
-        JsonSource::new(self.init_args.as_deref(), self.init_args_file.as_deref())?.parse()
-    }
-}
-
-#[derive(Args, Debug, Clone)]
-#[group(required = true, multiple = false)]
-pub struct ConfigurationSource {
-    /// JSON configuration
-    #[arg(long)]
-    pub configuration: Option<String>,
-    /// Path to a JSON configuration file
-    #[arg(long)]
-    pub configuration_file: Option<PathBuf>,
-}
-
-impl ConfigurationSource {
+impl ArgsSource {
     pub fn parse<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
-        JsonSource::new(
-            self.configuration.as_deref(),
-            self.configuration_file.as_deref(),
-        )?
-        .parse()
+        JsonSource::new(self.args.as_deref(), self.args_file.as_deref())?.parse()
+    }
+
+    pub fn load_vec<T: DeserializeOwned + Serialize>(&self) -> anyhow::Result<Vec<u8>> {
+        let parsed = self.parse::<T>().context("args deserialization")?;
+        serde_json::to_vec(&parsed).context("args serialization")
     }
 }
