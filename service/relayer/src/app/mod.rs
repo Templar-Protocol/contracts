@@ -10,6 +10,7 @@ use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
 use near_primitives::{
     action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
+    hash::CryptoHash,
     transaction::SignedTransaction,
     views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
@@ -333,6 +334,57 @@ impl App {
             )
     }
 
+    async fn dispatch_grouped_price_updates<
+        PythUpdate,
+        PythFuture,
+        RedstoneUpdate,
+        RedstoneFuture,
+    >(
+        pyth_updates: HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
+        redstone_updates: HashMap<AccountId, HashSet<redstone::FeedId>>,
+        mut pyth_update: PythUpdate,
+        mut redstone_update: RedstoneUpdate,
+    ) -> Result<(), PriceUpdateError>
+    where
+        PythUpdate: FnMut(AccountId, Box<[pyth::PriceIdentifier]>) -> PythFuture,
+        PythFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
+        RedstoneUpdate: FnMut(AccountId, Box<[redstone::FeedId]>) -> RedstoneFuture,
+        RedstoneFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
+    {
+        for (oracle_id, feed_ids) in pyth_updates {
+            match pyth_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await {
+                Ok(Some(hash)) => {
+                    tracing::debug!(%hash, "Oracle update transaction succeeded");
+                }
+                Ok(None) => {
+                    tracing::debug!("No price updates needed");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Oracle update failed");
+                    return Err(PriceUpdateError::Oracle(error));
+                }
+            }
+        }
+
+        for (oracle_id, feed_ids) in redstone_updates {
+            match redstone_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await
+            {
+                Ok(Some(hash)) => {
+                    tracing::debug!(%hash, "Oracle update transaction succeeded");
+                }
+                Ok(None) => {
+                    tracing::debug!("No price updates needed");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Oracle update failed");
+                    return Err(PriceUpdateError::Oracle(error));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn update_market_prices(
         &self,
         market_ids: &HashSet<AccountId>,
@@ -342,46 +394,22 @@ impl App {
             Self::grouped_price_updates(&accounts, market_ids)
         };
 
-        let mut oracle_update_set = JoinSet::new();
+        let pyth = self.pyth.clone();
+        let redstone = self.redstone.clone();
 
-        for (oracle_id, feed_ids) in pyth_updates {
-            let app = self.clone();
-            oracle_update_set.spawn(async move {
-                app.pyth
-                    .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-                    .await
-            });
-        }
-
-        for (oracle_id, feed_ids) in redstone_updates {
-            let app = self.clone();
-            oracle_update_set.spawn(async move {
-                app.redstone
-                    .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-                    .await
-            });
-        }
-
-        while let Some(result) = oracle_update_set.join_next().await {
-            match result {
-                Ok(Ok(Some(hash))) => {
-                    tracing::debug!(%hash, "Oracle update transaction succeeded");
-                }
-                Ok(Ok(None)) => {
-                    tracing::debug!("No price updates needed");
-                }
-                Ok(Err(error)) => {
-                    tracing::error!(%error, "Oracle update failed");
-                    return Err(PriceUpdateError::Oracle(error));
-                }
-                Err(error) => {
-                    tracing::error!(%error, "Oracle update task failed");
-                    return Err(PriceUpdateError::Task(error));
-                }
-            }
-        }
-
-        Ok(())
+        Self::dispatch_grouped_price_updates(
+            pyth_updates,
+            redstone_updates,
+            move |oracle_id, feed_ids| {
+                let pyth = pyth.clone();
+                async move { pyth.update(oracle_id, feed_ids).await }
+            },
+            move |oracle_id, feed_ids| {
+                let redstone = redstone.clone();
+                async move { redstone.update(oracle_id, feed_ids).await }
+            },
+        )
+        .await
     }
 
     /// Checks that the all of the function call actions are allowed for the specific receiver.
@@ -723,17 +751,18 @@ pub enum ResolveTransactionError {
 pub enum PriceUpdateError {
     #[error("Oracle update failed: {0}")]
     Oracle(Arc<oracle::UpdateError>),
-    #[error("Oracle update task failed: {0}")]
-    Task(#[from] tokio::task::JoinError),
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use near_sdk::AccountId;
     use templar_common::{
         asset::FungibleAsset,
         oracle::{pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
     };
+    use tokio::{sync::Notify, time::timeout};
 
     use super::*;
     use crate::{AccountData, AssetResolution, MarketData};
@@ -853,6 +882,64 @@ mod tests {
         assert_eq!(
             redstone_updates[&redstone_oracle],
             HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_grouped_price_updates_waits_for_pyth_before_redstone() {
+        let pyth_updates =
+            HashMap::from([(account_id("pyth.test.near"), HashSet::from([price_id(1)]))]);
+        let redstone_updates = HashMap::from([(
+            account_id("redstone.test.near"),
+            HashSet::from([FeedId::from("BTC")]),
+        )]);
+
+        let pyth_started = Arc::new(Notify::new());
+        let pyth_release = Arc::new(Notify::new());
+        let redstone_started = Arc::new(Notify::new());
+
+        let task = tokio::spawn({
+            let pyth_started = pyth_started.clone();
+            let pyth_release = pyth_release.clone();
+            let redstone_started = redstone_started.clone();
+
+            App::dispatch_grouped_price_updates(
+                pyth_updates,
+                redstone_updates,
+                move |_, _| {
+                    let pyth_started = pyth_started.clone();
+                    let pyth_release = pyth_release.clone();
+                    async move {
+                        pyth_started.notify_one();
+                        pyth_release.notified().await;
+                        Ok(None)
+                    }
+                },
+                move |_, _| {
+                    let redstone_started = redstone_started.clone();
+                    async move {
+                        redstone_started.notify_one();
+                        Ok(None)
+                    }
+                },
+            )
+        });
+
+        timeout(Duration::from_secs(1), pyth_started.notified())
+            .await
+            .unwrap();
+        let redstone_started_while_pyth_blocked =
+            timeout(Duration::from_millis(100), redstone_started.notified())
+                .await
+                .is_ok();
+
+        pyth_release.notify_one();
+
+        task.await.unwrap().unwrap();
+
+        assert!(
+            !redstone_started_while_pyth_blocked,
+            "redstone update started before blocked pyth update completed"
         );
     }
 }
