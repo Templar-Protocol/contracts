@@ -30,6 +30,48 @@ pub struct ConfigSource {
 }
 
 impl ConfigSource {
+    pub fn prod() -> Self {
+        Self {
+            prod: true,
+            test: false,
+            args: None,
+            args_file: None,
+        }
+    }
+
+    pub fn test() -> Self {
+        Self {
+            prod: false,
+            test: true,
+            args: None,
+            args_file: None,
+        }
+    }
+
+    pub fn inline(args: String) -> Self {
+        Self {
+            prod: false,
+            test: false,
+            args: Some(args),
+            args_file: None,
+        }
+    }
+
+    pub fn from_file(args_file: PathBuf) -> Self {
+        Self {
+            prod: false,
+            test: false,
+            args: None,
+            args_file: Some(args_file),
+        }
+    }
+
+    pub fn from_config(config: Config) -> anyhow::Result<Self> {
+        Ok(Self::inline(serde_json::to_string(
+            &RedstoneAdapterInitArgs { config },
+        )?))
+    }
+
     pub fn load_vec(&self) -> anyhow::Result<Vec<u8>> {
         serde_json::to_vec(&self.resolve()?).context("serialise init args")
     }

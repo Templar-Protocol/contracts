@@ -7,8 +7,9 @@ use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{market::YieldWeights, registry::DeployMode};
 use templar_manager::commands::{
-    json_input::ConfigurationSource,
-    market::create::CreateMarket,
+    deployment::{FromRegistry, StandardDeploy},
+    json_input::ArgsSource,
+    market::deploy::{DeployMarket, MarketInitArgs},
     registry::{
         deploy::DeployRegistry,
         deployment::{clear::ClearDeployments, list::ListDeployments},
@@ -19,7 +20,7 @@ use templar_manager::commands::{
             remove::VersionRemove,
         },
     },
-    DeployFromRegistry, FixedContractWasm, SignerArgs,
+    ContractWasm, FixedContractWasm, SignerArgs,
 };
 use test_utils::{accounts, market_configuration, worker};
 
@@ -40,9 +41,11 @@ fn market_package() -> Package {
 /// Helper: deploy a registry contract on the given account.
 async fn deploy_registry(ctx: &templar_manager::CliContext, signer: SignerArgs) {
     DeployRegistry {
-        signer,
-        contract: no_build(),
-        no_init: false,
+        deploy: StandardDeploy::native(
+            signer,
+            ContractWasm::fixed(no_build()),
+            ArgsSource::inline("{}".to_string()),
+        ),
     }
     .run(ctx)
     .await
@@ -149,20 +152,22 @@ async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
         YieldWeights::new_with_supply_weight(1),
     );
 
-    let deploy_err = CreateMarket {
-        signer: signer.clone(),
-        deploy: DeployFromRegistry {
-            registry_id: registry_id.clone(),
-            version_key: "market@v1".to_string(),
-            name: "removed-version".to_string(),
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: Some(NearToken::from_near(6)),
-        },
-        configuration_source: ConfigurationSource {
-            configuration: Some(serde_json::to_string(&config).unwrap()),
-            configuration_file: None,
-        },
+    let deploy_err = DeployMarket {
+        deploy: StandardDeploy::from_registry(
+            signer.clone(),
+            FromRegistry::new(
+                registry_id.clone(),
+                "market@v1".to_string(),
+                "removed-version".to_string(),
+            )
+            .with_deposit(NearToken::from_near(6)),
+            ArgsSource::inline(
+                serde_json::to_string(&MarketInitArgs {
+                    configuration: config,
+                })
+                .unwrap(),
+            ),
+        ),
     }
     .run(&ctx)
     .await

@@ -48,6 +48,30 @@ pub struct StandardDeploy {
 }
 
 impl StandardDeploy {
+    pub fn native(
+        signer: SignerArgs,
+        contract_wasm: super::ContractWasm,
+        args: ArgsSource,
+    ) -> Self {
+        Self {
+            signer,
+            channel: Channel::Native(Native::new(contract_wasm)),
+            args,
+        }
+    }
+
+    pub fn from_registry(
+        signer: SignerArgs,
+        from_registry: FromRegistry,
+        args: ArgsSource,
+    ) -> Self {
+        Self {
+            signer,
+            channel: Channel::FromRegistry(from_registry),
+            args,
+        }
+    }
+
     #[tracing::instrument(skip_all, name = "deploy", fields(account_id = %self.signer.account_id))]
     pub async fn run<InitArgs: Serialize + DeserializeOwned>(
         &self,

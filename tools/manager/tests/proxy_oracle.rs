@@ -7,9 +7,10 @@ use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{registry::DeployMode, time::Nanoseconds};
 use templar_manager::commands::{
+    deployment::{FromRegistry, StandardDeploy},
+    json_input::ArgsSource,
     proxy_oracle::{
-        create::CreateProxyOracle,
-        deploy::DeployProxyOracle,
+        deploy::{DeployProxyOracle, ProxyOracleInitArgs},
         governance::{
             cancel::CancelProposal,
             create::{CreateProposal, OperationCommand, SetTtlArgs},
@@ -24,7 +25,7 @@ use templar_manager::commands::{
         deploy::DeployRegistry,
         version::add::{AddVersion, Package},
     },
-    DeployFromRegistry, FixedContractWasm,
+    ContractWasm, FixedContractWasm,
 };
 use test_utils::{accounts, worker};
 
@@ -38,8 +39,11 @@ async fn deploy_proxy_oracle(
     account: &near_workspaces::Account,
 ) {
     DeployProxyOracle {
-        signer: signer_args(account),
-        contract_wasm: no_build(),
+        deploy: StandardDeploy::native(
+            signer_args(account),
+            ContractWasm::fixed(no_build()),
+            ArgsSource::inline(serde_json::to_string(&ProxyOracleInitArgs {}).unwrap()),
+        ),
     }
     .run(ctx)
     .await
@@ -81,9 +85,11 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
     let registry_signer = signer_args(&registry);
 
     DeployRegistry {
-        signer: registry_signer.clone(),
-        contract: no_build(),
-        no_init: false,
+        deploy: StandardDeploy::native(
+            registry_signer.clone(),
+            ContractWasm::fixed(no_build()),
+            ArgsSource::inline("{}".to_string()),
+        ),
     }
     .run(&ctx)
     .await
@@ -109,16 +115,17 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
     .unwrap();
 
     // Create proxy oracle from registry. The registry's deploy is owner-only.
-    CreateProxyOracle {
-        signer: registry_signer.clone(),
-        deploy: DeployFromRegistry {
-            registry_id: registry_id.clone(),
-            version_key: "proxy-oracle@test".to_string(),
-            name: "po".to_string(),
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: Some(NearToken::from_near(6)),
-        },
+    DeployProxyOracle {
+        deploy: StandardDeploy::from_registry(
+            registry_signer.clone(),
+            FromRegistry::new(
+                registry_id.clone(),
+                "proxy-oracle@test".to_string(),
+                "po".to_string(),
+            )
+            .with_deposit(NearToken::from_near(6)),
+            ArgsSource::inline(serde_json::to_string(&ProxyOracleInitArgs {}).unwrap()),
+        ),
     }
     .run(&ctx)
     .await

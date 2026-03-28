@@ -1,7 +1,7 @@
 mod common;
 
 use common::{setup_ctx, signer_args, write_json_file};
-use near_sdk::{serde_json::json, AccountId, NearToken};
+use near_sdk::{AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{
@@ -9,13 +9,17 @@ use templar_common::{
     registry::DeployMode,
 };
 use templar_manager::commands::{
-    json_input::{ConfigurationSource, InitArgsSource},
-    market::{create::CreateMarket, deploy::DeployMarket, remove::MarketRemove},
+    deployment::{FromRegistry, StandardDeploy},
+    json_input::ArgsSource,
+    market::{
+        deploy::{DeployMarket, MarketInitArgs},
+        remove::MarketRemove,
+    },
     registry::{
         deploy::DeployRegistry,
         version::add::{AddVersion, Package},
     },
-    DeployFromRegistry, FixedContractWasm, SignerArgs,
+    ContractWasm, FixedContractWasm, SignerArgs,
 };
 use test_utils::{accounts, market_configuration, worker};
 
@@ -33,15 +37,16 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>) {
         YieldWeights::new_with_supply_weight(1),
     );
 
-    let init_args = json!({ "configuration": config });
+    let init_args = MarketInitArgs {
+        configuration: config.clone(),
+    };
 
     DeployMarket {
-        signer: signer_args(&market_account),
-        contract_wasm: FixedContractWasm { no_build: true },
-        init_args_source: InitArgsSource {
-            init_args: Some(serde_json::to_string(&init_args).unwrap()),
-            init_args_file: None,
-        },
+        deploy: StandardDeploy::native(
+            signer_args(&market_account),
+            ContractWasm::fixed(FixedContractWasm { no_build: true }),
+            ArgsSource::inline(serde_json::to_string(&init_args).unwrap()),
+        ),
     }
     .run(&ctx)
     .await
@@ -73,16 +78,17 @@ async fn market_deploy_from_init_args_file(#[future(awt)] worker: Worker<Sandbox
         YieldWeights::new_with_supply_weight(1),
     );
 
-    let init_args = json!({ "configuration": config });
+    let init_args = MarketInitArgs {
+        configuration: config.clone(),
+    };
     let init_args_file = write_json_file("market-init-args", &init_args);
 
     DeployMarket {
-        signer: signer_args(&market_account),
-        contract_wasm: FixedContractWasm { no_build: true },
-        init_args_source: InitArgsSource {
-            init_args: None,
-            init_args_file: Some(init_args_file.clone()),
-        },
+        deploy: StandardDeploy::native(
+            signer_args(&market_account),
+            ContractWasm::fixed(FixedContractWasm { no_build: true }),
+            ArgsSource::from_file(init_args_file.clone()),
+        ),
     }
     .run(&ctx)
     .await
@@ -111,9 +117,11 @@ async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<S
     let registry_signer = signer_args(&registry);
 
     DeployRegistry {
-        signer: registry_signer.clone(),
-        contract: FixedContractWasm { no_build: true },
-        no_init: false,
+        deploy: StandardDeploy::native(
+            registry_signer.clone(),
+            ContractWasm::fixed(FixedContractWasm { no_build: true }),
+            ArgsSource::inline("{}".to_string()),
+        ),
     }
     .run(&ctx)
     .await
@@ -149,20 +157,22 @@ async fn market_create_from_registry_and_removal(#[future(awt)] worker: Worker<S
         YieldWeights::new_with_supply_weight(1),
     );
 
-    CreateMarket {
-        signer: registry_signer.clone(),
-        deploy: DeployFromRegistry {
-            registry_id: registry.id().clone(),
-            version_key: "market@test".to_string(),
-            name: "mkt".to_string(),
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: Some(NearToken::from_near(6)),
-        },
-        configuration_source: ConfigurationSource {
-            configuration: Some(serde_json::to_string(&config).unwrap()),
-            configuration_file: None,
-        },
+    DeployMarket {
+        deploy: StandardDeploy::from_registry(
+            registry_signer.clone(),
+            FromRegistry::new(
+                registry.id().clone(),
+                "market@test".to_string(),
+                "mkt".to_string(),
+            )
+            .with_deposit(NearToken::from_near(6)),
+            ArgsSource::inline(
+                serde_json::to_string(&MarketInitArgs {
+                    configuration: config.clone(),
+                })
+                .unwrap(),
+            ),
+        ),
     }
     .run(&ctx)
     .await
@@ -214,9 +224,11 @@ async fn market_create_from_registry_with_configuration_file(
     let registry_signer = signer_args(&registry);
 
     DeployRegistry {
-        signer: registry_signer.clone(),
-        contract: FixedContractWasm { no_build: true },
-        no_init: false,
+        deploy: StandardDeploy::native(
+            registry_signer.clone(),
+            ContractWasm::fixed(FixedContractWasm { no_build: true }),
+            ArgsSource::inline("{}".to_string()),
+        ),
     }
     .run(&ctx)
     .await
@@ -248,22 +260,24 @@ async fn market_create_from_registry_with_configuration_file(
         protocol.id().clone(),
         YieldWeights::new_with_supply_weight(1),
     );
-    let configuration_file = write_json_file("market-configuration", &config);
+    let init_args_file = write_json_file(
+        "market-configuration",
+        &MarketInitArgs {
+            configuration: config.clone(),
+        },
+    );
 
-    CreateMarket {
-        signer: registry_signer.clone(),
-        deploy: DeployFromRegistry {
-            registry_id: registry.id().clone(),
-            version_key: "market@test".to_string(),
-            name: "mkt-file".to_string(),
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: Some(NearToken::from_near(6)),
-        },
-        configuration_source: ConfigurationSource {
-            configuration: None,
-            configuration_file: Some(configuration_file.clone()),
-        },
+    DeployMarket {
+        deploy: StandardDeploy::from_registry(
+            registry_signer.clone(),
+            FromRegistry::new(
+                registry.id().clone(),
+                "market@test".to_string(),
+                "mkt-file".to_string(),
+            )
+            .with_deposit(NearToken::from_near(6)),
+            ArgsSource::from_file(init_args_file.clone()),
+        ),
     }
     .run(&ctx)
     .await
@@ -280,7 +294,7 @@ async fn market_create_from_registry_with_configuration_file(
         .unwrap();
     assert_eq!(stored_config, config);
 
-    std::fs::remove_file(configuration_file).unwrap();
+    std::fs::remove_file(init_args_file).unwrap();
 }
 
 #[rstest]

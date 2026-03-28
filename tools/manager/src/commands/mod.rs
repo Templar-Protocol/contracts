@@ -42,6 +42,13 @@ pub struct ContractWasm {
 }
 
 impl ContractWasm {
+    pub fn fixed(fixed: FixedContractWasm) -> Self {
+        Self {
+            fixed,
+            package: None,
+        }
+    }
+
     pub fn load_contract<T>(
         &self,
         context: &crate::CliContext,

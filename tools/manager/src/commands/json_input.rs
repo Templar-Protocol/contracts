@@ -43,6 +43,20 @@ pub struct ArgsSource {
 }
 
 impl ArgsSource {
+    pub fn inline(args: String) -> Self {
+        Self {
+            args: Some(args),
+            args_file: None,
+        }
+    }
+
+    pub fn from_file(args_file: PathBuf) -> Self {
+        Self {
+            args: None,
+            args_file: Some(args_file),
+        }
+    }
+
     pub fn parse<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
         JsonSource::new(self.args.as_deref(), self.args_file.as_deref())?.parse()
     }

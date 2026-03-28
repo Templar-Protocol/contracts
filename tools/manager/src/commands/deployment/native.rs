@@ -9,6 +9,10 @@ pub struct Native {
 }
 
 impl Native {
+    pub fn new(contract_wasm: ContractWasm) -> Self {
+        Self { contract_wasm }
+    }
+
     #[tracing::instrument(name = "deploy_standalone", skip_all, fields(%default_package))]
     pub async fn run(
         &self,

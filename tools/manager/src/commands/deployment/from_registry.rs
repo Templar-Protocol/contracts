@@ -33,6 +33,22 @@ pub struct FromRegistry {
 }
 
 impl FromRegistry {
+    pub fn new(registry_id: AccountId, version_key: String, name: String) -> Self {
+        Self {
+            registry_id,
+            version_key,
+            name,
+            with_full_access_key: vec![],
+            no_signer_full_access_key: false,
+            deposit: None,
+        }
+    }
+
+    pub fn with_deposit(mut self, deposit: NearToken) -> Self {
+        self.deposit = Some(deposit);
+        self
+    }
+
     pub async fn run(
         &self,
         ctx: &crate::CliContext,
