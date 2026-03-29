@@ -15,24 +15,24 @@ systemctl enable --now docker
 mkdir -p /opt/templar
 
 env_path="/opt/templar/${container_name}.env"
-install -o root -g root -m 600 /dev/null "${env_path}"
+install -o root -g root -m 600 /dev/null "$env_path"
 cat >"$env_path" <<'ENVFILE'
 ${env_file}
 ENVFILE
 
-chown root:root "${env_path}"
-chmod 600 "${env_path}"
+chown root:root "$env_path"
+chmod 600 "$env_path"
 
 secret_env_path="/opt/templar/${container_name}.secret-env"
 install -o root -g root -m 600 /dev/null "$secret_env_path"
 
-cat >"${secret_env_path}" <<'SECRETENVFILE'
+cat >"$secret_env_path" <<'SECRETENVFILE'
 
 ${secret_env_file}
 SECRETENVFILE
 
-chown root:root "${secret_env_path}"
-chmod 600 "${secret_env_path}"
+chown root:root "$secret_env_path"
+chmod 600 "$secret_env_path"
 
 TOKEN="$(curl -fsS --connect-timeout 1 --max-time 2 --retry 5 \
   --retry-connrefused --retry-max-time 15 \

@@ -38,6 +38,7 @@ use near_sdk::{
     Gas,
 };
 use templar_common::borrow::BorrowPosition;
+use templar_common::market::MarketConfiguration;
 use tokio::time::Instant;
 use tracing::instrument;
 
@@ -199,6 +200,22 @@ pub async fn account_exists(client: &JsonRpcClient, account_id: &AccountId) -> R
             }
         }
     }
+}
+
+/// Check whether an account is a Templar market contract.
+///
+/// A valid market must expose `get_configuration` and return a payload that
+/// deserializes into `MarketConfiguration`.
+#[instrument(skip(client), level = "debug")]
+pub async fn is_market_contract(client: &JsonRpcClient, account_id: &AccountId) -> bool {
+    view::<MarketConfiguration>(
+        client,
+        account_id.clone(),
+        "get_configuration",
+        near_sdk::serde_json::json!({}),
+    )
+    .await
+    .is_ok()
 }
 
 /// Serialize and encode data for NEAR contract calls.
@@ -468,7 +485,10 @@ pub async fn list_all_deployments(
         .filter(|market_id| {
             let client = client.clone();
             let market_id = market_id.clone();
-            async move { account_exists(&client, &market_id).await.unwrap_or(false) }
+            async move {
+                account_exists(&client, &market_id).await.unwrap_or(false)
+                    && is_market_contract(&client, &market_id).await
+            }
         })
         .collect::<Vec<AccountId>>()
         .await;
@@ -487,7 +507,16 @@ mod tests {
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use wiremock::matchers::body_string_contains;
+    use templar_common::{
+        asset::FungibleAsset,
+        dec,
+        fee::{Fee, TimeBasedFee},
+        interest_rate_strategy::InterestRateStrategy,
+        market::{PriceOracleConfiguration, YieldWeights},
+        number::Decimal,
+        oracle::pyth::PriceIdentifier,
+        time_chunk::TimeChunkConfiguration,
+    };
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, Request, ResponseTemplate,
@@ -534,6 +563,41 @@ mod tests {
         let id = body.get("id").cloned().unwrap_or_else(|| json!("1"));
 
         (params, id)
+    }
+
+    fn sample_market_configuration() -> MarketConfiguration {
+        MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::new(1),
+            borrow_asset: FungibleAsset::nep141("borrow.testnet".parse().unwrap()),
+            collateral_asset: FungibleAsset::nep141("collateral.testnet".parse().unwrap()),
+            price_oracle_configuration: PriceOracleConfiguration {
+                account_id: "oracle.testnet".parse().unwrap(),
+                collateral_asset_price_id: PriceIdentifier([1; 32]),
+                collateral_asset_decimals: 24,
+                borrow_asset_price_id: PriceIdentifier([2; 32]),
+                borrow_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
+            borrow_mcr_maintenance: Decimal::from_str("1.25").unwrap(),
+            borrow_mcr_liquidation: Decimal::from_str("1.2").unwrap(),
+            borrow_asset_maximum_usage_ratio: Decimal::from_str("0.9").unwrap(),
+            borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.01").unwrap()),
+            borrow_interest_rate_strategy: InterestRateStrategy::piecewise(
+                Decimal::ZERO,
+                dec!("0.8"),
+                dec!("0.02"),
+                dec!("0.5"),
+            )
+            .unwrap(),
+            borrow_maximum_duration_ms: None,
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_fee: TimeBasedFee::zero(),
+            yield_weights: YieldWeights::new_with_supply_weight(100),
+            protocol_account_id: "protocol.testnet".parse().unwrap(),
+            liquidation_maximum_spread: Decimal::from_str("0.05").unwrap(),
+        }
     }
 
     #[tokio::test]
@@ -591,51 +655,71 @@ mod tests {
         let client = JsonRpcClient::connect(server.uri());
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_clone = Arc::clone(&calls);
+        let market_configuration = sample_market_configuration();
 
         Mock::given(method("POST"))
             .and(path("/"))
-            .and(body_string_contains("list_deployments"))
             .respond_with(move |req: &Request| {
                 let (params, id) = parse_query_request(req);
-                assert_eq!(
-                    params.get("method_name").and_then(JsonValue::as_str),
-                    Some("list_deployments")
-                );
-                calls_clone.fetch_add(1, Ordering::SeqCst);
+                match params.get("request_type").and_then(JsonValue::as_str) {
+                    Some("call_function") => {
+                        match params.get("method_name").and_then(JsonValue::as_str) {
+                            Some("list_deployments") => {
+                                calls_clone.fetch_add(1, Ordering::SeqCst);
 
-                let registry_id = params
-                    .get("account_id")
-                    .and_then(JsonValue::as_str)
-                    .expect("registry id");
-                let markets: Vec<AccountId> = match registry_id {
-                    "registry-a.testnet" => vec!["ma.testnet".parse().unwrap()],
-                    "registry-b.testnet" => vec![
-                        "mb1.testnet".parse().unwrap(),
-                        "mb2.testnet".parse().unwrap(),
-                    ],
-                    other => panic!("unexpected registry {other}"),
-                };
-                let payload = call_result_response(near_sdk::serde_json::to_vec(&markets).unwrap());
-                ResponseTemplate::new(200).set_body_json(rpc_success_response(&json!(payload), &id))
-            })
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/"))
-            .and(body_string_contains("view_account"))
-            .respond_with(move |req: &Request| {
-                let (_params, id) = parse_query_request(req);
-                let response = json!({
-                    "amount": "4686230356236922693424338633",
-                    "block_hash": "5dFRkorSHHyeMc77auarw2jJ67CAnBiExh3bbhNStfC9",
-                    "block_height": 175_548_555,
-                    "code_hash": "11111111111111111111111111111111",
-                    "locked": "0",
-                    "storage_paid_at": 0,
-                    "storage_usage": 28677,
-                });
-                ResponseTemplate::new(200).set_body_json(rpc_success_response(&response, &id))
+                                let registry_id = params
+                                    .get("account_id")
+                                    .and_then(JsonValue::as_str)
+                                    .expect("registry id");
+                                let markets: Vec<AccountId> = match registry_id {
+                                    "registry-a.testnet" => vec!["ma.testnet".parse().unwrap()],
+                                    "registry-b.testnet" => vec![
+                                        "mb1.testnet".parse().unwrap(),
+                                        "mb2.testnet".parse().unwrap(),
+                                        "not-a-market.testnet".parse().unwrap(),
+                                    ],
+                                    other => panic!("unexpected registry {other}"),
+                                };
+                                let payload = call_result_response(
+                                    near_sdk::serde_json::to_vec(&markets).unwrap(),
+                                );
+                                ResponseTemplate::new(200)
+                                    .set_body_json(rpc_success_response(&json!(payload), &id))
+                            }
+                            Some("get_configuration") => {
+                                let account_id = params
+                                    .get("account_id")
+                                    .and_then(JsonValue::as_str)
+                                    .expect("account id");
+                                let payload = if account_id == "not-a-market.testnet" {
+                                    call_result_response(b"{".to_vec())
+                                } else {
+                                    call_result_response(
+                                        near_sdk::serde_json::to_vec(&market_configuration)
+                                            .unwrap(),
+                                    )
+                                };
+                                ResponseTemplate::new(200)
+                                    .set_body_json(rpc_success_response(&json!(payload), &id))
+                            }
+                            other => panic!("unexpected method name {other:?}"),
+                        }
+                    }
+                    Some("view_account") => {
+                        let response = json!({
+                            "amount": "4686230356236922693424338633",
+                            "block_hash": "5dFRkorSHHyeMc77auarw2jJ67CAnBiExh3bbhNStfC9",
+                            "block_height": 175_548_555,
+                            "code_hash": "11111111111111111111111111111111",
+                            "locked": "0",
+                            "storage_paid_at": 0,
+                            "storage_usage": 28677,
+                        });
+                        ResponseTemplate::new(200)
+                            .set_body_json(rpc_success_response(&response, &id))
+                    }
+                    other => panic!("unexpected request type {other:?}"),
+                }
             })
             .mount(&server)
             .await;
@@ -652,6 +736,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let mut deployments = deployments;
+        deployments.sort();
+
         assert_eq!(
             deployments,
             vec![
