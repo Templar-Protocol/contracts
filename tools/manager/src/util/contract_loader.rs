@@ -14,7 +14,7 @@ pub struct ContractLoader {
 }
 
 impl ContractLoader {
-    pub fn load_contract<V>(&self, package_id: &str) -> anyhow::Result<LoadedContract<V>> {
+    pub fn load<V>(&self, package_id: &str) -> anyhow::Result<LoadedContract<V>> {
         if self.no_build {
             load_contract(&self.workspace_path, package_id)
         } else {

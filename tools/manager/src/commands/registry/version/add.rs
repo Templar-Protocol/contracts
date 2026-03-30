@@ -82,9 +82,7 @@ pub struct AddVersion {
 impl AddVersion {
     #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package(), registry_id = %self.registry_id, deploy_mode = %self.deploy_mode))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let loaded_contract = self
-            .contract_wasm
-            .load_contract::<()>(self.package.package())?;
+        let loaded_contract = self.contract_wasm.load::<()>(self.package.package())?;
         tracing::debug!(loaded_contract_version = %loaded_contract.version, "Loaded contract");
         let registry_version: RegistryVersion =
             near::contract_version(&ctx.near, &self.registry_id).await?;

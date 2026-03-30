@@ -8,18 +8,28 @@ use std::{
 
 use near_workspaces::{network::Sandbox, Account, Worker};
 use serde::Serialize;
-use templar_manager::{commands::SignerArgs, CliContext};
+use templar_manager::{
+    util::{ContractLoader, SignerArgs},
+    CliContext,
+};
 
 /// Create a [`CliContext`] pointing at the sandbox RPC.
 ///
-/// `workspace_path` is set to `CARGO_WORKSPACE_DIR` so that
-/// [`FixedContractWasm::no_build()`] can load pre-built WASMs from
-/// `target/near/`.
 pub fn setup_ctx(worker: &Worker<Sandbox>) -> CliContext {
     CliContext {
-        workspace_path: PathBuf::from(env!("CARGO_WORKSPACE_DIR")),
         transaction_url_prefix: String::new(),
         near: near_fetch::Client::new(&worker.rpc_addr()),
+    }
+}
+
+pub fn workspace_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_WORKSPACE_DIR"))
+}
+
+pub fn no_build_loader() -> ContractLoader {
+    ContractLoader {
+        no_build: true,
+        workspace_path: workspace_path(),
     }
 }
 

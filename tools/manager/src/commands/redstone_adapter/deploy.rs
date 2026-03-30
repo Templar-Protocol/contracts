@@ -5,7 +5,7 @@ use templar_common::oracle::redstone::Config;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},
-    util::ArgsProvider,
+    util::LoadArgs,
     Runner,
 };
 
@@ -16,7 +16,7 @@ pub struct RedStoneAdapterInitArgs {
 
 #[derive(clap::Args, Debug)]
 #[group(required = true, multiple = false)]
-pub struct ConfigSource {
+pub struct RedStoneArgsLoader {
     /// Use the production RedStone configuration
     #[arg(long)]
     pub prod: bool,
@@ -31,8 +31,8 @@ pub struct ConfigSource {
     pub args_file: Option<PathBuf>,
 }
 
-impl ArgsProvider<RedStoneAdapterInitArgs> for ConfigSource {
-    fn parse(&self) -> anyhow::Result<RedStoneAdapterInitArgs> {
+impl LoadArgs<RedStoneAdapterInitArgs> for RedStoneArgsLoader {
+    fn load(&self) -> anyhow::Result<RedStoneAdapterInitArgs> {
         if self.prod {
             return Ok(RedStoneAdapterInitArgs {
                 config: templar_common::oracle::redstone::config::prod(),
@@ -54,7 +54,7 @@ impl ArgsProvider<RedStoneAdapterInitArgs> for ConfigSource {
     }
 }
 
-impl ConfigSource {
+impl RedStoneArgsLoader {
     pub fn prod() -> Self {
         Self {
             prod: true,
@@ -100,7 +100,7 @@ pub struct DeployRedStoneAdapter {
 
 impl DeploymentSpec for DeployRedStoneAdapter {
     type Args = RedStoneAdapterInitArgs;
-    type ArgsArgs = ConfigSource;
+    type ArgsLoader = RedStoneArgsLoader;
     type Version = ();
 
     const PACKAGE_ID: &'static str = "templar-redstone-adapter-contract";

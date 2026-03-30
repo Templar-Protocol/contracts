@@ -3,7 +3,7 @@ use templar_tools_common::version::MarketVersion;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},
-    util::StandardArgsProvider,
+    util::GeneralArgsLoader,
     Runner,
 };
 
@@ -20,7 +20,7 @@ pub struct DeployMarket {
 
 impl DeploymentSpec for DeployMarket {
     type Args = MarketInitArgs;
-    type ArgsArgs = StandardArgsProvider;
+    type ArgsLoader = GeneralArgsLoader;
     type Version = MarketVersion;
 
     const PACKAGE_ID: &'static str = "templar-market-contract";

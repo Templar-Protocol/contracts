@@ -5,7 +5,7 @@ use serde_json::json;
 use templar_tools_common::{near::contract_version, version::RegistryVersion};
 
 use crate::{
-    util::{ArgsProvider, SignerArgs},
+    util::{LoadArgs, SignerArgs},
     Runner,
 };
 
@@ -37,7 +37,7 @@ pub struct FromRegistry<C: DeploymentSpec> {
     pub deposit: Option<NearToken>,
 
     #[command(flatten)]
-    pub args: C::ArgsArgs,
+    pub args: C::ArgsLoader,
 
     #[command(flatten)]
     pub signer: SignerArgs,
@@ -91,5 +91,32 @@ impl<C: DeploymentSpec> Runner<()> for FromRegistry<C> {
             )
             .transact()
             .await
+    }
+}
+
+impl<C: DeploymentSpec> FromRegistry<C> {
+    pub fn new(
+        registry_id: AccountId,
+        version_key: String,
+        name: String,
+        args: C::ArgsLoader,
+        signer: SignerArgs,
+    ) -> Self {
+        Self {
+            registry_id,
+            version_key,
+            name,
+            with_full_access_key: vec![],
+            no_signer_full_access_key: false,
+            deposit: None,
+            args,
+            signer,
+        }
+    }
+
+    #[must_use]
+    pub fn with_deposit(mut self, deposit: NearToken) -> Self {
+        self.deposit = Some(deposit);
+        self
     }
 }

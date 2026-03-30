@@ -1,16 +1,15 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{setup_ctx, signer_args};
+use common::{no_build_loader, setup_ctx, signer_args};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{registry::DeployMode, time::Nanoseconds};
 use templar_manager::commands::{
-    deployment::{FromRegistry, StandardDeploy},
-    json_input::ArgsSource,
+    deployment::{Deploy, FromRegistry},
     proxy_oracle::{
-        deploy::{DeployProxyOracle, ProxyOracleInitArgs},
+        deploy::DeployProxyOracle,
         governance::{
             cancel::CancelProposal,
             create::{CreateProposal, OperationCommand, SetTtlArgs},
@@ -25,13 +24,9 @@ use templar_manager::commands::{
         deploy::DeployRegistry,
         version::add::{AddVersion, Package},
     },
-    ContractWasm, FixedContractWasm,
 };
+use templar_manager::util::EmptyArgsLoader;
 use test_utils::{accounts, worker};
-
-fn no_build() -> FixedContractWasm {
-    FixedContractWasm { no_build: true }
-}
 
 /// Helper: deploy a proxy oracle on the given account.
 async fn deploy_proxy_oracle(
@@ -39,10 +34,10 @@ async fn deploy_proxy_oracle(
     account: &near_workspaces::Account,
 ) {
     DeployProxyOracle {
-        deploy: StandardDeploy::native(
+        deploy: Deploy::native(
             signer_args(account),
-            ContractWasm::fixed(no_build()),
-            ArgsSource::inline(serde_json::to_string(&ProxyOracleInitArgs {}).unwrap()),
+            no_build_loader(),
+            EmptyArgsLoader::default(),
         ),
     }
     .run(ctx)
@@ -85,10 +80,10 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
     let registry_signer = signer_args(&registry);
 
     DeployRegistry {
-        deploy: StandardDeploy::native(
+        deploy: Deploy::native(
             registry_signer.clone(),
-            ContractWasm::fixed(no_build()),
-            ArgsSource::inline("{}".to_string()),
+            no_build_loader(),
+            EmptyArgsLoader::default(),
         ),
     }
     .run(&ctx)
@@ -97,7 +92,7 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
 
     AddVersion {
         signer: registry_signer.clone(),
-        contract_wasm: no_build(),
+        contract_wasm: no_build_loader(),
         package: Package {
             market: false,
             uac: false,
@@ -116,15 +111,15 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
 
     // Create proxy oracle from registry. The registry's deploy is owner-only.
     DeployProxyOracle {
-        deploy: StandardDeploy::from_registry(
-            registry_signer.clone(),
+        deploy: Deploy::from_registry(
             FromRegistry::new(
                 registry_id.clone(),
                 "proxy-oracle@test".to_string(),
                 "po".to_string(),
+                EmptyArgsLoader::default(),
+                registry_signer.clone(),
             )
             .with_deposit(NearToken::from_near(6)),
-            ArgsSource::inline(serde_json::to_string(&ProxyOracleInitArgs {}).unwrap()),
         ),
     }
     .run(&ctx)

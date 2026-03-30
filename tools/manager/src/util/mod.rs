@@ -1,6 +1,6 @@
 mod contract_loader;
 pub use contract_loader::*;
-mod json_input;
-pub use json_input::*;
+mod load_args;
+pub use load_args::*;
 mod signer_args;
 pub use signer_args::*;

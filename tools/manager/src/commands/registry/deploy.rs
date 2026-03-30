@@ -2,7 +2,7 @@ use templar_tools_common::version::RegistryVersion;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},
-    util::EmptyArgsProvider,
+    util::EmptyArgsLoader,
     Runner,
 };
 
@@ -14,7 +14,7 @@ pub struct DeployRegistry {
 
 impl DeploymentSpec for DeployRegistry {
     type Args = ();
-    type ArgsArgs = EmptyArgsProvider;
+    type ArgsLoader = EmptyArgsLoader;
     type Version = RegistryVersion;
 
     const PACKAGE_ID: &'static str = "templar-registry-contract";

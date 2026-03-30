@@ -1,6 +1,6 @@
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},
-    util::EmptyArgsProvider,
+    util::EmptyArgsLoader,
     Runner,
 };
 
@@ -12,7 +12,7 @@ pub struct DeployProxyOracle {
 
 impl DeploymentSpec for DeployProxyOracle {
     type Args = ();
-    type ArgsArgs = EmptyArgsProvider;
+    type ArgsLoader = EmptyArgsLoader;
     type Version = ();
 
     const PACKAGE_ID: &'static str = "templar-proxy-oracle-contract";

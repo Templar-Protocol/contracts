@@ -1,14 +1,13 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{setup_ctx, signer_args};
+use common::{no_build_loader, setup_ctx, signer_args};
 use near_sdk::{serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{market::YieldWeights, registry::DeployMode};
 use templar_manager::commands::{
-    deployment::{FromRegistry, StandardDeploy},
-    json_input::ArgsSource,
+    deployment::{Deploy, FromRegistry},
     market::deploy::{DeployMarket, MarketInitArgs},
     registry::{
         deploy::DeployRegistry,
@@ -20,13 +19,9 @@ use templar_manager::commands::{
             remove::VersionRemove,
         },
     },
-    ContractWasm, FixedContractWasm, SignerArgs,
 };
+use templar_manager::util::{EmptyArgsLoader, GeneralArgsLoader, SignerArgs};
 use test_utils::{accounts, market_configuration, worker};
-
-fn no_build() -> FixedContractWasm {
-    FixedContractWasm { no_build: true }
-}
 
 fn market_package() -> Package {
     Package {
@@ -41,11 +36,7 @@ fn market_package() -> Package {
 /// Helper: deploy a registry contract on the given account.
 async fn deploy_registry(ctx: &templar_manager::CliContext, signer: SignerArgs) {
     DeployRegistry {
-        deploy: StandardDeploy::native(
-            signer,
-            ContractWasm::fixed(no_build()),
-            ArgsSource::inline("{}".to_string()),
-        ),
+        deploy: Deploy::native(signer, no_build_loader(), EmptyArgsLoader::default()),
     }
     .run(ctx)
     .await
@@ -61,7 +52,7 @@ async fn add_market_version(
 ) {
     AddVersion {
         signer: signer.clone(),
-        contract_wasm: no_build(),
+        contract_wasm: no_build_loader(),
         package: market_package(),
         registry_id: registry_id.clone(),
         version_key: Some(version_key.to_string()),
@@ -153,20 +144,20 @@ async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     let deploy_err = DeployMarket {
-        deploy: StandardDeploy::from_registry(
-            signer.clone(),
+        deploy: Deploy::from_registry(
             FromRegistry::new(
                 registry_id.clone(),
                 "market@v1".to_string(),
                 "removed-version".to_string(),
+                GeneralArgsLoader::from_json_string(
+                    serde_json::to_string(&MarketInitArgs {
+                        configuration: config,
+                    })
+                    .unwrap(),
+                ),
+                signer.clone(),
             )
             .with_deposit(NearToken::from_near(6)),
-            ArgsSource::inline(
-                serde_json::to_string(&MarketInitArgs {
-                    configuration: config,
-                })
-                .unwrap(),
-            ),
         ),
     }
     .run(&ctx)
