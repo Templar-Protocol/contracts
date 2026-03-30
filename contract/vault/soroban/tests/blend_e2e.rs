@@ -9,6 +9,44 @@ use soroban_sdk::{
 };
 use templar_soroban_blend_adapter::BlendAdapterContract;
 use templar_soroban_runtime::contract::SorobanVaultContract;
+use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
+
+struct VaultProxy<'a> {
+    env: &'a Env,
+}
+
+impl<'a> VaultProxy<'a> {
+    const fn new(env: &'a Env) -> Self {
+        Self { env }
+    }
+
+    fn snapshot(&self, vault: &Address) -> (i128, i128, i128) {
+        self.env.as_contract(vault, || {
+            let core = SorobanVaultContract::proxy_view(
+                self.env.clone(),
+                Address::generate(self.env),
+                0,
+                0,
+            )
+            .unwrap()
+            .0;
+            (core.2 .0, core.2 .1, core.2 .2)
+        })
+    }
+
+    fn initialize(&self, governance: &Address, asset: &Address, share: &Address) {
+        SorobanVaultContract::initialize(
+            self.env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset.clone(),
+            share.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+    }
+}
 
 fn setup_blend_pool(
     env: &Env,
@@ -60,9 +98,7 @@ fn setup_blend_pool(
 }
 
 fn vault_snapshot(env: &Env, vault: &Address) -> (i128, i128, i128) {
-    env.as_contract(vault, || {
-        SorobanVaultContract::vault_snapshot(env.clone()).unwrap()
-    })
+    VaultProxy::new(env).snapshot(vault)
 }
 
 #[test]
@@ -82,38 +118,48 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     let adapter_admin = Address::generate(&env);
     let adapter = env.register(BlendAdapterContract, (&adapter_admin, &vault, &pool));
     let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&vault, || {
-        SorobanVaultContract::initialize(
+        proxy.initialize(&governance, &asset, &share);
+    });
+    env.as_contract(&vault, || {
+        SorobanVaultContract::set_governance_config(
             env.clone(),
             governance.clone(),
-            governance.clone(),
-            asset.clone(),
-            share,
+            GovernanceConfigKind::Allocators,
+            None,
+            Some(soroban_sdk::Vec::from_array(&env, [allocator.clone()])),
+            None,
+            None,
         )
         .unwrap();
     });
     env.as_contract(&vault, || {
-        SorobanVaultContract::set_allocators(
+        SorobanVaultContract::set_governance_policy(
             env.clone(),
             governance.clone(),
-            soroban_sdk::Vec::from_array(&env, [allocator.clone()]),
+            GovernancePolicyKind::SupplyQueue,
+            Some(soroban_sdk::Vec::from_array(&env, [0u32])),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
     });
     env.as_contract(&vault, || {
-        SorobanVaultContract::set_supply_queue(
+        SorobanVaultContract::set_governance_config(
             env.clone(),
             governance.clone(),
-            soroban_sdk::Vec::from_array(&env, [0u32]),
-        )
-        .unwrap();
-    });
-    env.as_contract(&vault, || {
-        SorobanVaultContract::set_allowed_adapters(
-            env.clone(),
-            governance.clone(),
-            soroban_sdk::Vec::from_array(&env, [adapter.clone()]),
+            GovernanceConfigKind::AllowedAdapters,
+            None,
+            Some(soroban_sdk::Vec::from_array(&env, [adapter.clone()])),
+            None,
+            None,
         )
         .unwrap();
     });
@@ -143,7 +189,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
 
     let new_external = env
         .as_contract(&vault, || {
-            SorobanVaultContract::allocate_supply(env.clone(), allocator.clone(), 0, supply_amount)
+            SorobanVaultContract::allocate(env.clone(), allocator.clone(), 0, supply_amount, true)
         })
         .unwrap();
     assert_eq!(new_external, supply_amount);
@@ -182,11 +228,12 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
 
     let remaining_external = env
         .as_contract(&vault, || {
-            SorobanVaultContract::allocate_withdraw(
+            SorobanVaultContract::allocate(
                 env.clone(),
                 allocator.clone(),
                 0,
                 withdraw_amount,
+                false,
             )
         })
         .unwrap();

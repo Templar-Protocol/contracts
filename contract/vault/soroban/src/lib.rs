@@ -54,12 +54,15 @@ pub use {
         EffectSummary, SdkTokenAdapter, Sep41Token, SorobanEffectInterpreter,
     },
     error::{ContractError, RuntimeError},
-    market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets},
+    market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets, SorobanMarketMethod},
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
     storage::{SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState},
     templar_curator_primitives::policy::market_lock::{MarketLock, MarketLockSet},
 };
+
+#[cfg(any(test, feature = "testutils"))]
+pub use market::{AttemptId, MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter};
 
 #[cfg(test)]
 mod tests;

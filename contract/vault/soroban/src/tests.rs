@@ -774,8 +774,16 @@ mod contract_tests {
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-                .unwrap();
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator,
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
         });
 
         let fees = FeesSpec::new(
@@ -813,7 +821,7 @@ mod contract_tests {
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize_with_virtual_offsets(
+            SorobanVaultContract::initialize(
                 env.clone(),
                 curator.clone(),
                 curator.clone(),
@@ -853,15 +861,23 @@ mod contract_tests {
                 governance.clone(),
                 asset,
                 share,
+                0,
+                0,
             )
             .unwrap();
 
-            SorobanVaultContract::set_virtual_offsets(env.clone(), governance, 101, 202).unwrap();
+            SorobanVaultContract::set_governance_config(
+                env.clone(),
+                governance,
+                GovernanceConfigKind::VirtualOffsets,
+                None,
+                None,
+                Some(101),
+                Some(202),
+            )
+            .unwrap();
 
-            assert_eq!(
-                SorobanVaultContract::virtual_offsets(env.clone()).unwrap(),
-                (101, 202)
-            );
+            assert_eq!(VaultProxy::new(&env).virtual_offsets().unwrap(), (101, 202));
         });
     }
 
@@ -882,6 +898,89 @@ mod contract_tests {
         assert_eq!(result.shares_minted, 1_571);
         assert_eq!(result.total_shares, 1_571);
         assert_eq!(result.total_assets, 1_000);
+    }
+
+    struct VaultProxy<'a> {
+        env: &'a Env,
+    }
+
+    impl<'a> VaultProxy<'a> {
+        const fn new(env: &'a Env) -> Self {
+            Self { env }
+        }
+
+        fn initialize(
+            &self,
+            curator: soroban_sdk::Address,
+            governance: soroban_sdk::Address,
+            asset: soroban_sdk::Address,
+            share: soroban_sdk::Address,
+        ) -> Result<(), crate::error::ContractError> {
+            SorobanVaultContract::initialize(
+                self.env.clone(),
+                curator,
+                governance,
+                asset,
+                share,
+                0,
+                0,
+            )
+        }
+
+        fn withdraw(
+            &self,
+            receiver: &soroban_sdk::Address,
+            owner: &soroban_sdk::Address,
+            operator: &soroban_sdk::Address,
+            assets: i128,
+        ) -> Result<i128, RuntimeError> {
+            let mut result = None;
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                result = Some(vault.atomic_withdraw(
+                    self.env,
+                    assets,
+                    receiver.clone(),
+                    owner.clone(),
+                    operator.clone(),
+                )?);
+                Ok(())
+            };
+            with_contract_vault(self.env, &mut call).map(|()| result.unwrap_or(0))
+        }
+
+        fn view(
+            &self,
+            owner: soroban_sdk::Address,
+            assets: i128,
+            shares: i128,
+        ) -> Result<
+            (
+                (
+                    (
+                        soroban_sdk::Address,
+                        soroban_sdk::Address,
+                        soroban_sdk::Address,
+                        soroban_sdk::Address,
+                    ),
+                    (i128, i128, bool),
+                    (i128, i128, i128, i128),
+                    (i128, u64, i128, i128),
+                ),
+                (
+                    soroban_sdk::Vec<u32>,
+                    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
+                ),
+                (i128, i128, i128, i128, i128, i128, i128, i128),
+            ),
+            crate::error::ContractError,
+        > {
+            SorobanVaultContract::proxy_view(self.env.clone(), owner, assets, shares)
+        }
+
+        fn virtual_offsets(&self) -> Result<(i128, i128), crate::error::ContractError> {
+            let core = self.view(soroban_sdk::Address::generate(self.env), 0, 0)?.0;
+            Ok((core.1 .0, core.1 .1))
+        }
     }
 
     #[test]
@@ -910,6 +1009,7 @@ mod contract_tests {
         let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
         let share = share_sac.address();
         let share_admin_client = StellarAssetClient::new(&env, &share);
+        let proxy = VaultProxy::new(&env);
 
         let owner = soroban_sdk::Address::generate(&env);
         let receiver = soroban_sdk::Address::generate(&env);
@@ -918,14 +1018,9 @@ mod contract_tests {
         let perf_recipient = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(
-                env.clone(),
-                curator.clone(),
-                curator,
-                asset.clone(),
-                share.clone(),
-            )
-            .unwrap();
+            proxy
+                .initialize(curator.clone(), curator, asset.clone(), share.clone())
+                .unwrap();
 
             let fees = FeesSpec::new(
                 FeeSlot::new(
@@ -968,7 +1063,7 @@ mod contract_tests {
 
         let burned = env
             .as_contract(&contract_id, || {
-                SorobanVaultContract::withdraw(env.clone(), 500, receiver, owner.clone(), operator)
+                proxy.withdraw(&receiver, &owner, &operator, 500)
             })
             .expect("withdraw should succeed");
         assert!(burned > 0);
@@ -1007,20 +1102,16 @@ mod contract_tests {
         let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
         let share = share_sac.address();
         let share_admin_client = StellarAssetClient::new(&env, &share);
+        let proxy = VaultProxy::new(&env);
 
         let owner = soroban_sdk::Address::generate(&env);
         let receiver = soroban_sdk::Address::generate(&env);
         let operator = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(
-                env.clone(),
-                curator.clone(),
-                curator,
-                asset.clone(),
-                share.clone(),
-            )
-            .unwrap();
+            proxy
+                .initialize(curator.clone(), curator, asset.clone(), share.clone())
+                .unwrap();
 
             let mut storage = SorobanStorage::new(&env);
             let mut state = VaultState::default();
@@ -1037,13 +1128,7 @@ mod contract_tests {
 
         let without_approval = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             env.as_contract(&contract_id, || {
-                SorobanVaultContract::withdraw(
-                    env.clone(),
-                    500,
-                    receiver.clone(),
-                    owner.clone(),
-                    operator.clone(),
-                )
+                proxy.withdraw(&receiver, &owner, &operator, 500)
             })
         }));
         assert!(without_approval.is_err());
@@ -1056,13 +1141,7 @@ mod contract_tests {
 
         let burned = env
             .as_contract(&contract_id, || {
-                SorobanVaultContract::withdraw(
-                    env.clone(),
-                    500,
-                    receiver.clone(),
-                    owner.clone(),
-                    operator.clone(),
-                )
+                proxy.withdraw(&receiver, &owner, &operator, 500)
             })
             .expect("delegated withdraw should succeed with approval");
         assert!(burned > 0);
@@ -1105,6 +1184,8 @@ mod contract_tests {
                 curator.clone(),
                 asset.clone(),
                 share.clone(),
+                0,
+                0,
             )
             .unwrap();
         });
@@ -1172,8 +1253,16 @@ mod contract_tests {
         let share = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share)
-                .unwrap();
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator,
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
 
             let mut storage = SorobanStorage::new(&env);
             let versioned = VersionedState::new(VaultState::default());
@@ -1487,62 +1576,10 @@ mod effects_tests {
 
 mod market_tests {
     use crate::error::RuntimeError;
+    use crate::market::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address, Bytes, Env};
     use templar_vault_kernel::AssetId;
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct SettlementReceipt {
-        op_id: u64,
-        attempt_id: u64,
-        new_external_assets: i128,
-    }
-
-    impl SettlementReceipt {
-        const fn new(op_id: u64, attempt_id: u64, new_external_assets: i128) -> Self {
-            Self {
-                op_id,
-                attempt_id,
-                new_external_assets,
-            }
-        }
-    }
-
-    type AttemptId = u64;
-
-    #[derive(Clone, PartialEq, Eq, Hash)]
-    struct MarketRef {
-        market_id: u32,
-        asset_id: AssetId,
-    }
-
-    impl MarketRef {
-        const fn new(market_id: u32, asset_id: AssetId) -> Self {
-            Self {
-                market_id,
-                asset_id,
-            }
-        }
-    }
-
-    impl From<(u32, AssetId)> for MarketRef {
-        fn from(value: (u32, AssetId)) -> Self {
-            Self::new(value.0, value.1)
-        }
-    }
-
-    trait SorobanCrossChainMarketAdapter {
-        fn submit_intent(&self, env: &Env, plan_bytes: Bytes) -> Result<AttemptId, RuntimeError>;
-
-        fn settle(
-            &self,
-            env: &Env,
-            op_id: u64,
-            attempt_id: AttemptId,
-        ) -> Result<SettlementReceipt, RuntimeError>;
-
-        fn total_assets(&self, env: &Env, asset: &Address) -> Result<i128, RuntimeError>;
-    }
 
     #[derive(Clone, Default)]
     struct TestMarketAdapter {
@@ -1739,10 +1776,14 @@ mod market_tests {
 }
 
 mod storage_tests {
+    use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
+    use crate::helpers::set_config_address;
     use crate::storage::*;
     use rstest::{fixture, rstest};
-    use soroban_sdk::{Address as SdkAddress, Env, Symbol};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address as SdkAddress, Env, Symbol, Vec as SdkVec};
+    use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
     use templar_vault_kernel::VaultState;
 
     #[test]
@@ -2169,5 +2210,72 @@ mod storage_tests {
         #[case] expected: bool,
     ) {
         assert_eq!(version.is_compatible(), expected);
+    }
+
+    #[rstest]
+    fn test_governance_config_rejects_allowed_adapters_length_mismatch(
+        contract_env: (Env, soroban_sdk::Address),
+    ) {
+        let (env, contract_id) = contract_env;
+        let governance = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+            env.storage().instance().set(
+                &crate::contract::VaultDataKey::AllowedAdapters,
+                &SdkVec::from_array(
+                    &env,
+                    [SdkAddress::generate(&env), SdkAddress::generate(&env)],
+                ),
+            );
+
+            let err = SorobanVaultContract::set_governance_config(
+                env.clone(),
+                governance.clone(),
+                GovernanceConfigKind::AllowedAdapters,
+                None,
+                Some(SdkVec::from_array(&env, [SdkAddress::generate(&env)])),
+                None,
+                None,
+            )
+            .unwrap_err();
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+        });
+    }
+
+    #[rstest]
+    fn test_governance_policy_rejects_fee_account_count(contract_env: (Env, soroban_sdk::Address)) {
+        let (env, contract_id) = contract_env;
+        let governance = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let err = SorobanVaultContract::set_governance_policy(
+                env.clone(),
+                governance.clone(),
+                GovernancePolicyKind::Fees,
+                None,
+                None,
+                Some(SdkVec::from_array(&env, [SdkAddress::generate(&env)])),
+                None,
+                None,
+                Some(1),
+                Some(2),
+                None,
+            )
+            .unwrap_err();
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+        });
     }
 }
