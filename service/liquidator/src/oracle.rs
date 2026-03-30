@@ -293,9 +293,9 @@ impl OracleFetcher {
         self.fetch_pyth_prices_from_hermes(price_ids)
             .await
             .ok_or_else(|| {
-                LiquidatorError::PriceFetchError(crate::rpc::RpcError::WrongResponseKind(
-                    format!("Failed to fetch Pyth prices from Hermes for oracle {oracle}"),
-                ))
+                LiquidatorError::PriceFetchError(crate::rpc::RpcError::WrongResponseKind(format!(
+                    "Failed to fetch Pyth prices from Hermes for oracle {oracle}"
+                )))
             })
     }
 
