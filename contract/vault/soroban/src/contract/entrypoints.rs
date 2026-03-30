@@ -1,38 +1,273 @@
 use super::helpers::{
     adapter_for_market, apply_fee_change, current_supply_queue_len, emit_admin_event,
     emit_alloc_event, emit_pause_state_event, extend_storage_ttl, get_config_address,
-    governance_caller, kernel_address_from_sdk, load_virtual_offsets, max_deposit_or_mint,
-    max_withdraw_or_redeem, migrate_legacy_paused, migration_in_progress, query_vault_field,
-    query_vault_snapshot, require_contract_address, require_governance, require_signed,
-    sdk_string_to_alloc, set_config_address, set_migration_in_progress, store_fees_spec,
-    store_virtual_offsets, with_contract_vault_contract_error,
+    governance_caller, kernel_address_from_sdk, load_virtual_offsets, migrate_legacy_paused,
+    migration_in_progress, query_vault_field, query_vault_snapshot, require_contract_address,
+    require_governance, require_signed, sdk_string_to_alloc, set_config_address,
+    set_migration_in_progress, store_fees_spec, store_virtual_offsets,
+    with_contract_vault_contract_error,
 };
 use super::*;
+use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
 
+fn required_address(
+    value: Option<soroban_sdk::Address>,
+) -> Result<soroban_sdk::Address, ContractError> {
+    value.ok_or(ContractError::InvalidInput)
+}
+
+fn required_addresses(
+    value: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
+) -> Result<soroban_sdk::Vec<soroban_sdk::Address>, ContractError> {
+    value.ok_or(ContractError::InvalidInput)
+}
+
+fn required_i128(value: Option<i128>) -> Result<i128, ContractError> {
+    value.ok_or(ContractError::InvalidInput)
+}
+
+fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) {
+    set_config_address(env, &VaultDataKey::Curator, &new_curator);
+    emit_admin_event(env, symbol_short!("s_curatr"));
+}
+
+fn apply_governance_config(
+    env: &Env,
+    governance: soroban_sdk::Address,
+) -> Result<(), ContractError> {
+    require_contract_address(&governance)?;
+    set_config_address(env, &VaultDataKey::Governance, &governance);
+    emit_admin_event(env, symbol_short!("s_gov"));
+    Ok(())
+}
+
+fn apply_sentinel_config(env: &Env, sentinel: soroban_sdk::Address) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::Sentinel, &sentinel);
+    emit_admin_event(env, symbol_short!("s_sntnl"));
+}
+
+fn apply_guardians_config(env: &Env, guardians: soroban_sdk::Vec<soroban_sdk::Address>) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::Guardians, &guardians);
+    emit_admin_event(env, symbol_short!("s_guards"));
+}
+
+fn apply_allocators_config(env: &Env, allocators: soroban_sdk::Vec<soroban_sdk::Address>) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::Allocators, &allocators);
+    emit_admin_event(env, symbol_short!("s_allctr"));
+}
+
+fn apply_allowed_adapters_config(
+    env: &Env,
+    adapters: soroban_sdk::Vec<soroban_sdk::Address>,
+) -> Result<(), ContractError> {
+    let queue_len = current_supply_queue_len(env)?;
+    if queue_len > 0 && adapters.len() != queue_len {
+        return Err(ContractError::InvalidInput);
+    }
+    if adapters.is_empty() {
+        env.storage()
+            .instance()
+            .remove(&VaultDataKey::AllowedAdapters);
+    } else {
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::AllowedAdapters, &adapters);
+    }
+    emit_admin_event(env, symbol_short!("s_adaptr"));
+    Ok(())
+}
+
+fn apply_skim_recipient_config(env: &Env, recipient: soroban_sdk::Address) {
+    set_config_address(env, &VaultDataKey::SkimRecipient, &recipient);
+    emit_admin_event(env, symbol_short!("s_skimr"));
+}
+
+fn apply_virtual_offsets_config(
+    env: &Env,
+    virtual_shares: i128,
+    virtual_assets: i128,
+) -> Result<(), ContractError> {
+    let virtual_shares = to_u128(virtual_shares)?;
+    let virtual_assets = to_u128(virtual_assets)?;
+    store_virtual_offsets(env, virtual_shares, virtual_assets);
+    emit_admin_event(env, symbol_short!("s_voffs"));
+    Ok(())
+}
+
+fn apply_supply_queue_policy(
+    env: &Env,
+    caller_kernel: Address,
+    target_ids: soroban_sdk::Vec<u32>,
+) -> Result<(), ContractError> {
+    if let Some(adapters) = env
+        .storage()
+        .instance()
+        .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
+    {
+        if adapters.len() != target_ids.len() {
+            return Err(ContractError::InvalidInput);
+        }
+    }
+    let mut queue_targets: Option<Vec<TargetId>> = {
+        let mut v = Vec::with_capacity(target_ids.len() as usize);
+        for target_id in target_ids.iter() {
+            v.push(target_id);
+        }
+        Some(v)
+    };
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        let targets = queue_targets
+            .take()
+            .ok_or_else(|| RuntimeError::invalid_state("supply queue already consumed"))?;
+        vault.set_supply_queue(caller_kernel, targets)
+    };
+    with_contract_vault_contract_error(env, &mut call)
+}
+
+fn apply_cap_policy(
+    env: &Env,
+    caller_kernel: Address,
+    market_id: u32,
+    new_cap: i128,
+) -> Result<(), ContractError> {
+    let new_cap_u128 = to_u128(new_cap)?;
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        vault.set_cap(caller_kernel, market_id, new_cap_u128)
+    };
+    with_contract_vault_contract_error(env, &mut call)
+}
+
+fn apply_remove_market_policy(
+    env: &Env,
+    caller_kernel: Address,
+    market_id: u32,
+) -> Result<(), ContractError> {
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        vault.remove_market(caller_kernel, market_id)
+    };
+    with_contract_vault_contract_error(env, &mut call)
+}
+
+fn apply_restrictions_policy(
+    env: &Env,
+    caller_kernel: Address,
+    mode: u32,
+    accounts: soroban_sdk::Vec<soroban_sdk::Address>,
+) -> Result<(), ContractError> {
+    let mut kernel_accounts = Vec::with_capacity(accounts.len() as usize);
+    for account in accounts.iter() {
+        kernel_accounts.push(kernel_address_from_sdk(env, &account));
+    }
+    let mut restrictions = Some(match mode {
+        0 => None,
+        1 => Some(Restrictions::Paused),
+        2 => Some(Restrictions::Blacklist(kernel_accounts)),
+        3 => Some(Restrictions::Whitelist(kernel_accounts)),
+        _ => return Err(ContractError::InvalidInput),
+    });
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        let next_restrictions = restrictions
+            .take()
+            .ok_or_else(|| RuntimeError::invalid_state("restrictions already consumed"))?;
+        vault.set_restrictions(caller_kernel, next_restrictions)?;
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+    emit_admin_event(env, symbol_short!("s_rstrct"));
+    Ok(())
+}
+
+fn apply_group_policy(
+    env: &Env,
+    caller_kernel: Address,
+    mode: u32,
+    market_id: Option<u32>,
+    cap_group_id: Option<soroban_sdk::String>,
+    value: Option<i128>,
+) -> Result<(), ContractError> {
+    let market_id = market_id.unwrap_or(0);
+    let cap_group_id = cap_group_id.unwrap_or_else(|| soroban_sdk::String::from_str(env, ""));
+    let internal = match mode {
+        0 => CapGroupUpdate::SetCap {
+            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
+            new_cap: to_u128(required_i128(value)?)?,
+        },
+        1 => CapGroupUpdate::SetRelativeCap {
+            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
+            new_relative_cap_wad: to_u128(required_i128(value)?)?,
+        },
+        2 => {
+            let s = sdk_string_to_alloc(cap_group_id)?;
+            let group = if s.is_empty() { None } else { Some(s.into()) };
+            CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id: group,
+            }
+        }
+        _ => return Err(ContractError::InvalidInput),
+    };
+    let mut internal = Some(internal);
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        let update = internal
+            .take()
+            .ok_or_else(|| RuntimeError::invalid_state("cap group update already consumed"))?;
+        vault.update_cap_group(caller_kernel, update)
+    };
+    with_contract_vault_contract_error(env, &mut call)
+}
+
+fn apply_paused_policy(
+    env: &Env,
+    caller_kernel: Address,
+    paused: bool,
+) -> Result<(), ContractError> {
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        vault.pause(caller_kernel, paused)
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+    emit_pause_state_event(env, paused);
+    runtime_to_contract(crate::effects::publish_kernel_event(
+        env,
+        &templar_vault_kernel::effects::KernelEvent::PauseUpdated { paused },
+    ))?;
+    Ok(())
+}
+
+fn apply_fees_policy(
+    env: &Env,
+    accounts: soroban_sdk::Vec<soroban_sdk::Address>,
+    performance_fee_wad: i128,
+    management_fee_wad: i128,
+    max_growth_rate_wad: Option<i128>,
+) -> Result<(), ContractError> {
+    if accounts.len() != 2 {
+        return Err(ContractError::InvalidInput);
+    }
+    let performance_recipient = accounts.get_unchecked(0);
+    let management_recipient = accounts.get_unchecked(1);
+    apply_fee_change(
+        env,
+        performance_fee_wad,
+        performance_recipient,
+        management_fee_wad,
+        management_recipient,
+        max_growth_rate_wad,
+    )?;
+    emit_admin_event(env, symbol_short!("s_fees"));
+    Ok(())
+}
 #[contract]
 pub struct SorobanVaultContract;
 
 #[contractimpl]
 impl SorobanVaultContract {
     pub fn initialize(
-        env: Env,
-        curator: soroban_sdk::Address,
-        governance: soroban_sdk::Address,
-        asset_token: soroban_sdk::Address,
-        share_token: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        Self::initialize_with_virtual_offsets(
-            env,
-            curator,
-            governance,
-            asset_token,
-            share_token,
-            0,
-            0,
-        )
-    }
-
-    pub fn initialize_with_virtual_offsets(
         env: Env,
         curator: soroban_sdk::Address,
         governance: soroban_sdk::Address,
@@ -66,17 +301,42 @@ impl SorobanVaultContract {
         Ok(())
     }
 
-    pub fn set_virtual_offsets(
+    pub fn set_governance_config(
         env: Env,
         caller: soroban_sdk::Address,
-        virtual_shares: i128,
-        virtual_assets: i128,
+        kind: GovernanceConfigKind,
+        primary: Option<soroban_sdk::Address>,
+        many: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
+        value_a: Option<i128>,
+        value_b: Option<i128>,
     ) -> Result<(), ContractError> {
         require_governance(&env, &caller)?;
-        let virtual_shares = to_u128(virtual_shares)?;
-        let virtual_assets = to_u128(virtual_assets)?;
-        store_virtual_offsets(&env, virtual_shares, virtual_assets);
-        emit_admin_event(&env, symbol_short!("s_voffs"));
+        match kind {
+            GovernanceConfigKind::Curator => apply_curator_config(&env, required_address(primary)?),
+            GovernanceConfigKind::Governance => {
+                apply_governance_config(&env, required_address(primary)?)?
+            }
+            GovernanceConfigKind::Sentinel => {
+                apply_sentinel_config(&env, required_address(primary)?)
+            }
+            GovernanceConfigKind::Guardians => {
+                apply_guardians_config(&env, required_addresses(many)?)
+            }
+            GovernanceConfigKind::Allocators => {
+                apply_allocators_config(&env, required_addresses(many)?)
+            }
+            GovernanceConfigKind::AllowedAdapters => {
+                apply_allowed_adapters_config(&env, required_addresses(many)?)?
+            }
+            GovernanceConfigKind::SkimRecipient => {
+                apply_skim_recipient_config(&env, required_address(primary)?)
+            }
+            GovernanceConfigKind::VirtualOffsets => apply_virtual_offsets_config(
+                &env,
+                required_i128(value_a)?,
+                required_i128(value_b)?,
+            )?,
+        }
         Ok(())
     }
 
@@ -159,11 +419,12 @@ impl SorobanVaultContract {
         with_contract_vault_contract_error(&env, &mut call)
     }
 
-    pub fn allocate_supply(
+    pub fn allocate(
         env: Env,
         caller: soroban_sdk::Address,
         market: u32,
         amount: i128,
+        supply: bool,
     ) -> Result<i128, ContractError> {
         require_signed(&caller);
         let caller_kernel = kernel_address_from_sdk(&env, &caller);
@@ -175,73 +436,56 @@ impl SorobanVaultContract {
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
         }
-        let amount_u128 = to_u128(amount)?;
         let now_ns = ledger_timestamp_ns(&env)?;
         let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
-        soroban_sdk::token::Client::new(&env, &asset_token).transfer(
-            &env.current_contract_address(),
-            &adapter,
-            &amount,
-        );
-        invoke_supply(&env, &adapter, &asset_token, amount);
-        let observed_total_assets = to_u128(invoke_total_assets(&env, &adapter, &asset_token))?;
-
         let mut new_external: u128 = 0;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let plan = vec![(market.into(), amount_u128)];
-            let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
-            new_external = vault.complete_supply_allocation(
-                caller_kernel,
-                market,
-                observed_total_assets,
-                op_id,
-                now_ns,
-            )?;
-            Ok(())
+        let emitted_amount = if supply {
+            let amount_u128 = to_u128(amount)?;
+            soroban_sdk::token::Client::new(&env, &asset_token).transfer(
+                &env.current_contract_address(),
+                &adapter,
+                &amount,
+            );
+            invoke_supply(&env, &adapter, &asset_token, amount);
+            let observed_total_assets = to_u128(invoke_total_assets(&env, &adapter, &asset_token))?;
+
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                let plan = vec![(market.into(), amount_u128)];
+                let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
+                new_external = vault.complete_supply_allocation(
+                    caller_kernel,
+                    market,
+                    observed_total_assets,
+                    op_id,
+                    now_ns,
+                )?;
+                Ok(())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
+            amount
+        } else {
+            let realized_amount = invoke_progress_withdrawal(&env, &adapter, &asset_token, amount);
+            let realized_amount_u128 = to_u128(realized_amount)?;
+
+            let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+                let op_id = vault.begin_allocation_withdraw_internal(
+                    caller_kernel,
+                    market.into(),
+                    now_ns,
+                )?;
+                new_external = vault.complete_withdraw_allocation(
+                    caller_kernel,
+                    market,
+                    realized_amount_u128,
+                    op_id,
+                    now_ns,
+                )?;
+                Ok(())
+            };
+            with_contract_vault_contract_error(&env, &mut call)?;
+            realized_amount
         };
-        with_contract_vault_contract_error(&env, &mut call)?;
-
-        emit_alloc_event(&env, market, amount, true);
-        to_i128(new_external)
-    }
-
-    pub fn allocate_withdraw(
-        env: Env,
-        caller: soroban_sdk::Address,
-        market: u32,
-        amount: i128,
-    ) -> Result<i128, ContractError> {
-        require_signed(&caller);
-        let caller_kernel = kernel_address_from_sdk(&env, &caller);
-        let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.authorize(ActionKind::BeginAllocating, caller_kernel)
-        };
-        with_contract_vault_contract_error(&env, &mut preauth)?;
-        let adapter = adapter_for_market(&env, market)?;
-        if amount <= 0 {
-            return Err(ContractError::InvalidInput);
-        }
-
-        let asset_token = get_config_address(&env, &VaultDataKey::AssetToken)?;
-        let realized_amount = invoke_progress_withdrawal(&env, &adapter, &asset_token, amount);
-        let realized_amount_u128 = to_u128(realized_amount)?;
-        let now_ns = ledger_timestamp_ns(&env)?;
-
-        let mut new_external: u128 = 0;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let op_id =
-                vault.begin_allocation_withdraw_internal(caller_kernel, market.into(), now_ns)?;
-            new_external = vault.complete_withdraw_allocation(
-                caller_kernel,
-                market,
-                realized_amount_u128,
-                op_id,
-                now_ns,
-            )?;
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        emit_alloc_event(&env, market, realized_amount, false);
+        emit_alloc_event(&env, market, emitted_amount, supply);
         to_i128(new_external)
     }
 
@@ -291,315 +535,64 @@ impl SorobanVaultContract {
         to_i128(new_external)
     }
 
-    pub fn set_paused(
+    pub fn set_governance_policy(
         env: Env,
         caller: soroban_sdk::Address,
-        paused: bool,
+        kind: GovernancePolicyKind,
+        target_ids: Option<soroban_sdk::Vec<u32>>,
+        mode: Option<u32>,
+        accounts: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
+        market_id: Option<u32>,
+        cap_group_id: Option<soroban_sdk::String>,
+        value: Option<i128>,
+        value_b: Option<i128>,
+        value_c: Option<i128>,
     ) -> Result<(), ContractError> {
         let caller_kernel = governance_caller(&env, &caller)?;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.pause(caller_kernel, paused)
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-
-        emit_pause_state_event(&env, paused);
-        runtime_to_contract(crate::effects::publish_kernel_event(
-            &env,
-            &templar_vault_kernel::effects::KernelEvent::PauseUpdated { paused },
-        ))?;
-        Ok(())
-    }
-
-    pub fn set_curator(
-        env: Env,
-        caller: soroban_sdk::Address,
-        new_curator: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        set_config_address(&env, &VaultDataKey::Curator, &new_curator);
-        emit_admin_event(&env, symbol_short!("s_curatr"));
-        Ok(())
-    }
-
-    pub fn set_governance(
-        env: Env,
-        caller: soroban_sdk::Address,
-        governance: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        require_contract_address(&governance)?;
-        set_config_address(&env, &VaultDataKey::Governance, &governance);
-        emit_admin_event(&env, symbol_short!("s_gov"));
-        Ok(())
-    }
-
-    pub fn set_supply_queue(
-        env: Env,
-        caller: soroban_sdk::Address,
-        target_ids: soroban_sdk::Vec<u32>,
-    ) -> Result<(), ContractError> {
-        if let Some(adapters) = env
-            .storage()
-            .instance()
-            .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
-        {
-            if adapters.len() != target_ids.len() {
-                return Err(ContractError::InvalidInput);
-            }
+        match kind {
+            GovernancePolicyKind::SupplyQueue => apply_supply_queue_policy(
+                &env,
+                caller_kernel,
+                target_ids.ok_or(ContractError::InvalidInput)?,
+            ),
+            GovernancePolicyKind::Cap => apply_cap_policy(
+                &env,
+                caller_kernel,
+                market_id.ok_or(ContractError::InvalidInput)?,
+                required_i128(value)?,
+            ),
+            GovernancePolicyKind::RemoveMarket => apply_remove_market_policy(
+                &env,
+                caller_kernel,
+                market_id.ok_or(ContractError::InvalidInput)?,
+            ),
+            GovernancePolicyKind::Restrictions => apply_restrictions_policy(
+                &env,
+                caller_kernel,
+                mode.ok_or(ContractError::InvalidInput)?,
+                accounts.ok_or(ContractError::InvalidInput)?,
+            ),
+            GovernancePolicyKind::Group => apply_group_policy(
+                &env,
+                caller_kernel,
+                mode.ok_or(ContractError::InvalidInput)?,
+                market_id,
+                cap_group_id,
+                value,
+            ),
+            GovernancePolicyKind::Paused => apply_paused_policy(
+                &env,
+                caller_kernel,
+                mode.ok_or(ContractError::InvalidInput)? != 0,
+            ),
+            GovernancePolicyKind::Fees => apply_fees_policy(
+                &env,
+                accounts.ok_or(ContractError::InvalidInput)?,
+                required_i128(value)?,
+                required_i128(value_b)?,
+                value_c,
+            ),
         }
-        let caller_kernel = governance_caller(&env, &caller)?;
-        let mut queue_targets: Option<Vec<TargetId>> = {
-            let mut v = Vec::with_capacity(target_ids.len() as usize);
-            for target_id in target_ids.iter() {
-                v.push(target_id);
-            }
-            Some(v)
-        };
-
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let targets = queue_targets
-                .take()
-                .ok_or_else(|| RuntimeError::invalid_state("supply queue already consumed"))?;
-            vault.set_supply_queue(caller_kernel, targets)
-        };
-        with_contract_vault_contract_error(&env, &mut call)
-    }
-
-    pub fn set_cap(
-        env: Env,
-        caller: soroban_sdk::Address,
-        market_id: u32,
-        new_cap: i128,
-    ) -> Result<(), ContractError> {
-        let caller_kernel = governance_caller(&env, &caller)?;
-        let new_cap_u128 = to_u128(new_cap)?;
-
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.set_cap(caller_kernel, market_id, new_cap_u128)
-        };
-        with_contract_vault_contract_error(&env, &mut call)
-    }
-
-    pub fn remove_market(
-        env: Env,
-        caller: soroban_sdk::Address,
-        market_id: u32,
-    ) -> Result<(), ContractError> {
-        let caller_kernel = governance_caller(&env, &caller)?;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            vault.remove_market(caller_kernel, market_id)
-        };
-        with_contract_vault_contract_error(&env, &mut call)
-    }
-
-    pub fn set_group_cap(
-        env: Env,
-        caller: soroban_sdk::Address,
-        cap_group_id: soroban_sdk::String,
-        new_cap: i128,
-    ) -> Result<(), ContractError> {
-        let caller_kernel = governance_caller(&env, &caller)?;
-        let internal = CapGroupUpdate::SetCap {
-            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
-            new_cap: to_u128(new_cap)?,
-        };
-        let mut internal = Some(internal);
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let update = internal
-                .take()
-                .ok_or_else(|| RuntimeError::invalid_state("cap group update already consumed"))?;
-            vault.update_cap_group(caller_kernel, update)
-        };
-        with_contract_vault_contract_error(&env, &mut call)
-    }
-
-    pub fn set_group_rel_cap(
-        env: Env,
-        caller: soroban_sdk::Address,
-        cap_group_id: soroban_sdk::String,
-        new_relative_cap_wad: i128,
-    ) -> Result<(), ContractError> {
-        let caller_kernel = governance_caller(&env, &caller)?;
-        let internal = CapGroupUpdate::SetRelativeCap {
-            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
-            new_relative_cap_wad: to_u128(new_relative_cap_wad)?,
-        };
-        let mut internal = Some(internal);
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let update = internal
-                .take()
-                .ok_or_else(|| RuntimeError::invalid_state("cap group update already consumed"))?;
-            vault.update_cap_group(caller_kernel, update)
-        };
-        with_contract_vault_contract_error(&env, &mut call)
-    }
-
-    pub fn set_group_member(
-        env: Env,
-        caller: soroban_sdk::Address,
-        market_id: u32,
-        cap_group_id: soroban_sdk::String,
-    ) -> Result<(), ContractError> {
-        let caller_kernel = governance_caller(&env, &caller)?;
-        let s = sdk_string_to_alloc(cap_group_id)?;
-        let group = if s.is_empty() { None } else { Some(s.into()) };
-        let internal = CapGroupUpdate::SetMembership {
-            market_id,
-            cap_group_id: group,
-        };
-        let mut internal = Some(internal);
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let update = internal
-                .take()
-                .ok_or_else(|| RuntimeError::invalid_state("cap group update already consumed"))?;
-            vault.update_cap_group(caller_kernel, update)
-        };
-        with_contract_vault_contract_error(&env, &mut call)
-    }
-
-    pub fn set_fees(
-        env: Env,
-        caller: soroban_sdk::Address,
-        performance_fee_wad: i128,
-        performance_recipient: soroban_sdk::Address,
-        management_fee_wad: i128,
-        management_recipient: soroban_sdk::Address,
-        max_growth_rate_wad: Option<i128>,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        apply_fee_change(
-            &env,
-            performance_fee_wad,
-            performance_recipient,
-            management_fee_wad,
-            management_recipient,
-            max_growth_rate_wad,
-        )?;
-        emit_admin_event(&env, symbol_short!("s_fees"));
-        Ok(())
-    }
-
-    pub fn accept_fees(env: Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        Err(ContractError::InvalidState)
-    }
-
-    pub fn revoke_pending_fees(
-        env: Env,
-        caller: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        Err(ContractError::InvalidState)
-    }
-
-    pub fn pending_fees_valid_at(_env: Env) -> Result<Option<u64>, ContractError> {
-        Ok(None)
-    }
-
-    pub fn set_restrictions(
-        env: Env,
-        caller: soroban_sdk::Address,
-        mode: u32,
-        accounts: soroban_sdk::Vec<soroban_sdk::Address>,
-    ) -> Result<(), ContractError> {
-        let caller_kernel = governance_caller(&env, &caller)?;
-
-        let mut kernel_accounts = Vec::with_capacity(accounts.len() as usize);
-        for account in accounts.iter() {
-            kernel_accounts.push(kernel_address_from_sdk(&env, &account));
-        }
-
-        let mut restrictions = Some(match mode {
-            0 => None,
-            1 => Some(Restrictions::Paused),
-            2 => Some(Restrictions::Blacklist(kernel_accounts)),
-            3 => Some(Restrictions::Whitelist(kernel_accounts)),
-            _ => return Err(ContractError::InvalidInput),
-        });
-
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let next_restrictions = restrictions
-                .take()
-                .ok_or_else(|| RuntimeError::invalid_state("restrictions already consumed"))?;
-            vault.set_restrictions(caller_kernel, next_restrictions)?;
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        emit_admin_event(&env, symbol_short!("s_rstrct"));
-        Ok(())
-    }
-
-    pub fn set_sentinel(
-        env: Env,
-        caller: soroban_sdk::Address,
-        sentinel: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Sentinel, &sentinel);
-        emit_admin_event(&env, symbol_short!("s_sntnl"));
-        Ok(())
-    }
-
-    pub fn set_guardians(
-        env: Env,
-        caller: soroban_sdk::Address,
-        guardians: soroban_sdk::Vec<soroban_sdk::Address>,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Guardians, &guardians);
-        emit_admin_event(&env, symbol_short!("s_guards"));
-        Ok(())
-    }
-
-    pub fn set_allocators(
-        env: Env,
-        caller: soroban_sdk::Address,
-        allocators: soroban_sdk::Vec<soroban_sdk::Address>,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Allocators, &allocators);
-        emit_admin_event(&env, symbol_short!("s_allctr"));
-        Ok(())
-    }
-
-    pub fn set_allowed_adapters(
-        env: Env,
-        caller: soroban_sdk::Address,
-        adapters: soroban_sdk::Vec<soroban_sdk::Address>,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        let queue_len = current_supply_queue_len(&env)?;
-        if queue_len > 0 && adapters.len() != queue_len {
-            return Err(ContractError::InvalidInput);
-        }
-        if adapters.is_empty() {
-            env.storage()
-                .instance()
-                .remove(&VaultDataKey::AllowedAdapters);
-        } else {
-            env.storage()
-                .instance()
-                .set(&VaultDataKey::AllowedAdapters, &adapters);
-        }
-        emit_admin_event(&env, symbol_short!("s_adaptr"));
-        Ok(())
-    }
-
-    pub fn set_skim_recipient(
-        env: Env,
-        caller: soroban_sdk::Address,
-        recipient: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &caller)?;
-        set_config_address(&env, &VaultDataKey::SkimRecipient, &recipient);
-        emit_admin_event(&env, symbol_short!("s_skimr"));
-        Ok(())
     }
 
     pub fn skim(
@@ -671,73 +664,52 @@ impl SorobanVaultContract {
         Ok(())
     }
 
-    pub fn config(
+    pub fn proxy_view(
         env: Env,
+        owner: soroban_sdk::Address,
+        assets: i128,
+        shares: i128,
     ) -> Result<
         (
-            soroban_sdk::Address,
-            soroban_sdk::Address,
-            soroban_sdk::Address,
-            soroban_sdk::Address,
+            (
+                (
+                    soroban_sdk::Address,
+                    soroban_sdk::Address,
+                    soroban_sdk::Address,
+                    soroban_sdk::Address,
+                ),
+                (i128, i128, bool),
+                (i128, i128, i128, i128),
+                (i128, u64, i128, i128),
+            ),
+            (
+                soroban_sdk::Vec<u32>,
+                soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
+            ),
+            (i128, i128, i128, i128, i128, i128, i128, i128),
         ),
         ContractError,
     > {
-        Ok((
-            get_config_address(&env, &VaultDataKey::Curator)?,
-            get_config_address(&env, &VaultDataKey::Governance)?,
-            get_config_address(&env, &VaultDataKey::AssetToken)?,
-            get_config_address(&env, &VaultDataKey::ShareToken)?,
-        ))
-    }
-
-    pub fn virtual_offsets(env: Env) -> Result<(i128, i128), ContractError> {
         let (virtual_shares, virtual_assets) = load_virtual_offsets(&env);
-        Ok((to_i128(virtual_shares)?, to_i128(virtual_assets)?))
-    }
-
-    pub fn supply_queue(env: Env) -> Result<soroban_sdk::Vec<u32>, ContractError> {
-        let mut queue = soroban_sdk::Vec::new(&env);
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            for target_id in vault.supply_queue_targets() {
-                queue.push_back(target_id);
-            }
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(queue)
-    }
-
-    pub fn is_paused(env: Env) -> Result<bool, ContractError> {
         let storage = SorobanStorage::new(&env);
-        Ok(storage.is_paused())
-    }
-
-    pub fn vault_snapshot(env: Env) -> Result<(i128, i128, i128), ContractError> {
-        Ok(query_vault_snapshot(&env))
-    }
-
-    pub fn fee_info(env: Env) -> Result<(i128, u64, i128, i128), ContractError> {
-        let mut result: (i128, u64, i128, i128) = (0, 0, 0, 0);
+        let (total_shares, idle_assets, external_assets) = query_vault_snapshot(&env);
+        let total_assets = query_vault_field(&env, |s| s.total_assets);
+        let mut fee_info: (i128, u64, i128, i128) = (0, 0, 0, 0);
+        let mut queue = soroban_sdk::Vec::new(&env);
+        let mut groups = soroban_sdk::Vec::new(&env);
+        let (state, config) = load_state_and_config(&env)?;
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let anchor = vault.get_fee_anchor()?;
             let fees = vault.get_fees();
-            result = (
+            fee_info = (
                 anchor.total_assets as i128,
                 anchor.timestamp_ns,
                 u128::from(fees.management.fee_wad) as i128,
                 u128::from(fees.performance.fee_wad) as i128,
             );
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(result)
-    }
-
-    pub fn cap_groups(
-        env: Env,
-    ) -> Result<soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>, ContractError> {
-        let mut groups = soroban_sdk::Vec::new(&env);
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            for target_id in vault.supply_queue_targets() {
+                queue.push_back(target_id);
+            }
             for (id, rec) in vault.policy_state().cap_groups.iter() {
                 let sdk_id = soroban_sdk::String::from_str(&env, &id.0);
                 let abs_cap = rec.cap.absolute_cap.map(|c| c.get() as i128).unwrap_or(0);
@@ -746,38 +718,85 @@ impl SorobanVaultContract {
             Ok(())
         };
         with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(groups)
-    }
-
-    pub fn queue_tail(env: Env) -> Result<u64, ContractError> {
-        let mut result = 0u64;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            result = vault.queue_tail()?;
-            Ok(())
+        let convert_to_shares_value = if assets <= 0 {
+            0
+        } else {
+            let assets_u128 = to_u128(assets)?;
+            to_i128(convert_to_shares(&state, &config, assets_u128))?
         };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(result)
-    }
 
-    pub fn withdraw_status(env: Env) -> Result<(i64, i64, i64), ContractError> {
-        let mut result: (i64, i64, i64) = (-1, -1, -1);
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            result.0 = vault
-                .peek_next_pending_withdrawal_id()?
-                .map(|id| id as i64)
-                .unwrap_or(-1);
-            result.1 = vault
-                .get_withdrawing_op_id()?
-                .map(|id| id as i64)
-                .unwrap_or(-1);
-            result.2 = vault
-                .get_current_withdraw_request_id()?
-                .map(|id| id as i64)
-                .unwrap_or(-1);
-            Ok(())
+        let convert_to_assets_value = if shares <= 0 {
+            0
+        } else {
+            let shares_u128 = to_u128(shares)?;
+            to_i128(convert_to_assets(&state, &config, shares_u128))?
         };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(result)
+
+        let (max_deposit_value, max_mint_value) = if state.op_state.is_idle() && !config.paused {
+            let max_assets = u128::MAX
+                .saturating_sub(state.total_assets)
+                .min(i128::MAX as u128) as i128;
+            let max_shares = u128::MAX
+                .saturating_sub(state.total_shares)
+                .min(i128::MAX as u128) as i128;
+            (max_assets, max_shares)
+        } else {
+            (0, 0)
+        };
+
+        let owner_shares = share_balance(&env, &owner).max(0) as u128;
+        let (max_withdraw_value, max_redeem_value) = if state.op_state.is_idle() {
+            let max_redeem_u128 =
+                owner_shares.min(convert_to_shares(&state, &config, state.idle_assets));
+            let max_withdraw_u128 =
+                convert_to_assets(&state, &config, owner_shares).min(state.idle_assets);
+            (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
+        } else {
+            (0, 0)
+        };
+
+        let preview_mint_value = if shares <= 0 {
+            0
+        } else {
+            let shares_u128 = to_u128(shares)?;
+            to_i128(convert_to_assets_ceil(&state, &config, shares_u128))?
+        };
+
+        let preview_withdraw_value = if assets <= 0 {
+            0
+        } else {
+            let assets_u128 = to_u128(assets)?;
+            to_i128(convert_to_shares_ceil(&state, &config, assets_u128))?
+        };
+
+        Ok((
+            (
+                (
+                    get_config_address(&env, &VaultDataKey::Curator)?,
+                    get_config_address(&env, &VaultDataKey::Governance)?,
+                    get_config_address(&env, &VaultDataKey::AssetToken)?,
+                    get_config_address(&env, &VaultDataKey::ShareToken)?,
+                ),
+                (
+                    to_i128(virtual_shares)?,
+                    to_i128(virtual_assets)?,
+                    storage.is_paused(),
+                ),
+                (total_shares, idle_assets, external_assets, total_assets),
+                fee_info,
+            ),
+            (queue, groups),
+            (
+                convert_to_shares_value,
+                convert_to_assets_value,
+                max_deposit_value,
+                max_mint_value,
+                max_withdraw_value,
+                max_redeem_value,
+                preview_mint_value,
+                preview_withdraw_value,
+            ),
+        ))
     }
 
     pub fn extend_ttl(env: Env) -> Result<(), ContractError> {
@@ -808,154 +827,5 @@ impl SorobanVaultContract {
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));
         Ok(())
-    }
-
-    pub fn is_migrating(env: Env) -> Result<bool, ContractError> {
-        Ok(migration_in_progress(&env))
-    }
-
-    pub fn query_asset(env: Env) -> Result<soroban_sdk::Address, ContractError> {
-        get_config_address(&env, &VaultDataKey::AssetToken)
-    }
-
-    pub fn total_assets(env: Env) -> Result<i128, ContractError> {
-        Ok(query_vault_field(&env, |s| s.total_assets))
-    }
-
-    pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, ContractError> {
-        if assets <= 0 {
-            return Ok(0);
-        }
-        let (state, config) = load_state_and_config(&env)?;
-        let assets_u128 = to_u128(assets)?;
-        to_i128(convert_to_shares(&state, &config, assets_u128))
-    }
-
-    pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, ContractError> {
-        if shares <= 0 {
-            return Ok(0);
-        }
-        let (state, config) = load_state_and_config(&env)?;
-        let shares_u128 = to_u128(shares)?;
-        to_i128(convert_to_assets(&state, &config, shares_u128))
-    }
-
-    pub fn max_deposit(env: Env, _receiver: soroban_sdk::Address) -> Result<i128, ContractError> {
-        max_deposit_or_mint(&env, false)
-    }
-
-    pub fn max_mint(env: Env, _receiver: soroban_sdk::Address) -> Result<i128, ContractError> {
-        max_deposit_or_mint(&env, true)
-    }
-
-    pub fn max_withdraw(env: Env, owner: soroban_sdk::Address) -> Result<i128, ContractError> {
-        max_withdraw_or_redeem(&env, &owner, false)
-    }
-
-    pub fn max_redeem(env: Env, owner: soroban_sdk::Address) -> Result<i128, ContractError> {
-        max_withdraw_or_redeem(&env, &owner, true)
-    }
-
-    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
-        Self::convert_to_shares(env, assets)
-    }
-
-    pub fn preview_mint(env: Env, shares: i128) -> Result<i128, ContractError> {
-        if shares <= 0 {
-            return Ok(0);
-        }
-        let (state, config) = load_state_and_config(&env)?;
-        let shares_u128 = to_u128(shares)?;
-        to_i128(convert_to_assets_ceil(&state, &config, shares_u128))
-    }
-
-    pub fn preview_withdraw(env: Env, assets: i128) -> Result<i128, ContractError> {
-        if assets <= 0 {
-            return Ok(0);
-        }
-        let (state, config) = load_state_and_config(&env)?;
-        let assets_u128 = to_u128(assets)?;
-        to_i128(convert_to_shares_ceil(&state, &config, assets_u128))
-    }
-
-    pub fn preview_redeem(env: Env, shares: i128) -> Result<i128, ContractError> {
-        Self::convert_to_assets(env, shares)
-    }
-
-    pub fn deposit(
-        env: Env,
-        assets: i128,
-        receiver: soroban_sdk::Address,
-        from: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> Result<i128, ContractError> {
-        require_signed(&operator);
-        if assets <= 0 {
-            return Err(ContractError::InvalidInput);
-        }
-        Self::deposit_with_min(env, from, receiver, assets, 0)
-    }
-
-    pub fn mint(
-        env: Env,
-        shares: i128,
-        receiver: soroban_sdk::Address,
-        from: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> Result<i128, ContractError> {
-        require_signed(&operator);
-        if shares <= 0 {
-            return Err(ContractError::InvalidInput);
-        }
-        let (state, config) = load_state_and_config(&env)?;
-        let shares_u128 = to_u128(shares)?;
-        let assets_needed = convert_to_assets_ceil(&state, &config, shares_u128);
-        let assets_i128 = to_i128(assets_needed)?;
-        Self::deposit_with_min(env, from, receiver, assets_i128, shares)?;
-        Ok(assets_i128)
-    }
-
-    pub fn withdraw(
-        env: Env,
-        assets: i128,
-        receiver: soroban_sdk::Address,
-        owner: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> Result<i128, ContractError> {
-        let mut result: Option<i128> = None;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            result = Some(vault.atomic_withdraw(
-                &env,
-                assets,
-                receiver.clone(),
-                owner.clone(),
-                operator.clone(),
-            )?);
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(result.unwrap_or(0))
-    }
-
-    pub fn redeem(
-        env: Env,
-        shares: i128,
-        receiver: soroban_sdk::Address,
-        owner: soroban_sdk::Address,
-        operator: soroban_sdk::Address,
-    ) -> Result<i128, ContractError> {
-        let mut result: Option<i128> = None;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            result = Some(vault.atomic_redeem(
-                &env,
-                shares,
-                receiver.clone(),
-                owner.clone(),
-                operator.clone(),
-            )?);
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
-        Ok(result.unwrap_or(0))
     }
 }

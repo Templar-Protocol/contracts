@@ -103,23 +103,6 @@ pub(crate) fn emit_alloc_event(env: &Env, market: u32, amount: i128, supply: boo
         .publish((symbol_short!("alloc"), supply), (market, amount));
 }
 
-pub(crate) fn require_allowed_adapter(
-    env: &Env,
-    adapter: &SdkAddress,
-) -> Result<(), ContractError> {
-    let Some(list) = allowed_adapters(env) else {
-        return Err(ContractError::Unauthorized);
-    };
-
-    for a in list.iter() {
-        if a == *adapter {
-            return Ok(());
-        }
-    }
-
-    Err(ContractError::Unauthorized)
-}
-
 pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, ContractError> {
     let adapters = allowed_adapters(env);
     let Some(adapters) = adapters else {
@@ -425,41 +408,6 @@ pub(crate) fn emit_pause_state_event(env: &Env, paused: bool) {
         symbol_short!("unpause")
     };
     env.events().publish((event,), ());
-}
-
-pub(crate) fn max_deposit_or_mint(env: &Env, use_shares: bool) -> Result<i128, ContractError> {
-    let (state, config) = load_state_and_config(env)?;
-    if state.op_state.is_idle() && !config.paused {
-        let total = if use_shares {
-            state.total_shares
-        } else {
-            state.total_assets
-        };
-        let remaining = u128::MAX.saturating_sub(total);
-        Ok(remaining.min(i128::MAX as u128) as i128)
-    } else {
-        Ok(0)
-    }
-}
-
-pub(crate) fn max_withdraw_or_redeem(
-    env: &Env,
-    owner: &SdkAddress,
-    is_redeem: bool,
-) -> Result<i128, ContractError> {
-    let (state, config) = load_state_and_config(env)?;
-    if !state.op_state.is_idle() {
-        return Ok(0);
-    }
-    let owner_shares = share_balance(env, owner).max(0) as u128;
-    let max = if is_redeem {
-        let shares_from_idle = convert_to_shares(&state, &config, state.idle_assets);
-        owner_shares.min(shares_from_idle)
-    } else {
-        let assets_from_shares = convert_to_assets(&state, &config, owner_shares);
-        assets_from_shares.min(state.idle_assets)
-    };
-    Ok(i128::try_from(max).unwrap_or(0))
 }
 
 pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
