@@ -5,14 +5,18 @@ use common::{no_build_loader, setup_ctx, signer_args};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::{registry::DeployMode, time::Nanoseconds};
+use templar_common::{
+    oracle::{proxy::Proxy, pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
+    registry::DeployMode,
+    time::Nanoseconds,
+};
 use templar_manager::commands::{
     deployment::{Deploy, FromRegistry},
     proxy_oracle::{
         deploy::DeployProxyOracle,
         governance::{
             cancel::CancelProposal,
-            create::{CreateProposal, OperationCommand, SetTtlArgs},
+            create::{CreateProposal, OperationCommand, ProxyArgs, SetTtlArgs},
             execute::ExecuteProposal,
             get::GetProposal,
             list::ListProposals,
@@ -27,6 +31,16 @@ use templar_manager::commands::{
 };
 use templar_manager::util::EmptyArgsLoader;
 use test_utils::{accounts, worker};
+
+fn sample_price_id() -> CliPriceIdentifier {
+    "0000000000000000000000000000000000000000000000000000000000000001"
+        .parse()
+        .unwrap()
+}
+
+fn sample_proxy(oracle_id: AccountId) -> Proxy {
+    Proxy::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()])
+}
 
 /// Helper: deploy a proxy oracle on the given account.
 async fn deploy_proxy_oracle(
@@ -414,4 +428,65 @@ async fn proxy_oracle_governance_create_and_execute_immediately_requires_zero_tt
         .json::<Nanoseconds>()
         .unwrap();
     assert_eq!(ttl, Nanoseconds::from_ms(5000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn proxy_oracle_governance_proxy_action_flags(#[future(awt)] worker: Worker<Sandbox>) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, oracle);
+    let oracle_id = oracle.id().clone();
+    let price_id = sample_price_id();
+
+    deploy_proxy_oracle(&ctx, &oracle).await;
+
+    let proxy = sample_proxy(oracle_id.clone());
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(0),
+        operation: OperationCommand::Proxy(ProxyArgs::insert(
+            price_id,
+            serde_json::to_string(&proxy).unwrap(),
+        )),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let get_proxy = ctx
+        .near
+        .view(&oracle_id, "get_proxy")
+        .args_json(json!({ "id": PriceIdentifier::from(price_id) }))
+        .await
+        .unwrap()
+        .json::<Option<Proxy>>()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(get_proxy, proxy);
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(1),
+        operation: OperationCommand::Proxy(ProxyArgs::remove(price_id)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let get_proxy = ctx
+        .near
+        .view(&oracle_id, "get_proxy")
+        .args_json(json!({ "id": PriceIdentifier::from(price_id) }))
+        .await
+        .unwrap()
+        .json::<Option<Proxy>>()
+        .unwrap();
+
+    assert_eq!(get_proxy, None);
 }

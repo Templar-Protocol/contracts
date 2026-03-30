@@ -3,6 +3,7 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::{
     proxy::{Entry, Proxy, Source},
+    pyth::PriceIdentifier,
     OracleRequest,
 };
 
@@ -24,7 +25,7 @@ pub struct GetProxy {
 impl GetProxy {
     #[tracing::instrument(skip_all, name = "proxy_get", fields(oracle_id = %self.oracle_id, price_id = %self.price_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let price_id = self.price_id.into_inner();
+        let price_id: PriceIdentifier = self.price_id.into();
 
         let proxy: Option<Proxy> = ctx
             .near

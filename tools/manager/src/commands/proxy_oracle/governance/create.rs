@@ -28,25 +28,72 @@ pub struct CreateProposal {
     pub execute_immediately: bool,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OperationCommand {
     /// Set or remove a proxy for a price identifier
-    SetProxy(SetProxyArgs),
+    Proxy(ProxyArgs),
     /// Set the governance action TTL
     SetTtl(SetTtlArgs),
 }
 
-#[derive(clap::Args, Debug)]
-pub struct SetProxyArgs {
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProxyArgs {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
     price_id: CliPriceIdentifier,
-    /// JSON-encoded Proxy value. Omit to remove the proxy for this price ID.
-    #[arg(long)]
-    proxy: Option<String>,
+
+    #[command(flatten)]
+    action: ProxyActionArgs,
 }
 
-#[derive(clap::Args, Debug)]
+impl ProxyArgs {
+    pub fn insert(price_id: CliPriceIdentifier, proxy: String) -> Self {
+        Self {
+            price_id,
+            action: ProxyActionArgs::insert(proxy),
+        }
+    }
+
+    pub fn remove(price_id: CliPriceIdentifier) -> Self {
+        Self {
+            price_id,
+            action: ProxyActionArgs::remove(),
+        }
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[group(required = true, multiple = false)]
+pub struct ProxyActionArgs {
+    /// JSON-encoded Proxy value to insert for this price ID.
+    #[arg(long)]
+    insert: Option<String>,
+    /// Remove the proxy for this price ID.
+    #[arg(long)]
+    remove: bool,
+}
+
+impl ProxyActionArgs {
+    pub fn insert(proxy: String) -> Self {
+        Self {
+            insert: Some(proxy),
+            remove: false,
+        }
+    }
+
+    pub fn remove() -> Self {
+        Self {
+            insert: None,
+            remove: true,
+        }
+    }
+
+    pub fn resolve(&self) -> Option<&str> {
+        self.insert.as_deref()
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[group(required = true, multiple = false)]
 pub struct SetTtlArgs {
     /// New TTL in milliseconds
@@ -110,14 +157,14 @@ impl CreateProposal {
         };
 
         let operation = match &self.operation {
-            OperationCommand::SetProxy(args) => {
+            OperationCommand::Proxy(args) => {
                 let proxy: Option<Proxy> = args
-                    .proxy
-                    .as_ref()
-                    .map(|v| serde_json::from_str(v))
+                    .action
+                    .resolve()
+                    .map(serde_json::from_str)
                     .transpose()?;
                 Operation::SetProxy {
-                    id: args.price_id.into_inner(),
+                    id: args.price_id.into(),
                     proxy,
                 }
             }
