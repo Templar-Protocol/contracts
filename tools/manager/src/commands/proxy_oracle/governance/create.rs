@@ -2,10 +2,12 @@ use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
+use templar_common::governance::Proposal;
 use templar_common::oracle::proxy::governance::Operation;
 use templar_common::oracle::proxy::Proxy;
 use templar_common::time::Nanoseconds;
 
+use super::execute::execute_proposal;
 use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
 use crate::util::SignerArgs;
 use crate::CliContext;
@@ -21,6 +23,9 @@ pub struct CreateProposal {
     pub id: Option<u32>,
     #[command(subcommand)]
     pub operation: OperationCommand,
+    /// Execute the proposal immediately after creation. Requires the created proposal TTL to be zero.
+    #[arg(long)]
+    pub execute_immediately: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -136,7 +141,29 @@ impl CreateProposal {
             .transact()
             .await?;
 
-        tracing::info!(id, "Proposal created");
+        if self.execute_immediately {
+            let proposal: Option<Proposal<Operation>> = ctx
+                .near
+                .view(&self.oracle_id, "gov_get")
+                .args_json(json!({ "id": id }))
+                .await?
+                .json()?;
+
+            let proposal =
+                proposal.ok_or_else(|| anyhow::anyhow!("created proposal {id} not found"))?;
+
+            anyhow::ensure!(
+                proposal.ttl == Nanoseconds::zero(),
+                "cannot immediately execute proposal {id}: proposal TTL is {}",
+                proposal.ttl,
+            );
+
+            execute_proposal(ctx, &self.signer, &self.oracle_id, id).await?;
+            tracing::info!(id, "Proposal created and executed immediately");
+        } else {
+            tracing::info!(id, "Proposal created");
+        }
+
         Ok(())
     }
 }

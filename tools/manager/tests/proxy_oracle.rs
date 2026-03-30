@@ -183,6 +183,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
         oracle_id: oracle_id.clone(),
         id: Some(0),
         operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(1000)),
+        execute_immediately: false,
     }
     .run(&ctx)
     .await
@@ -276,6 +277,7 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         oracle_id: oracle_id.clone(),
         id: Some(0),
         operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
+        execute_immediately: false,
     }
     .run(&ctx)
     .await
@@ -311,4 +313,105 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         .json::<Nanoseconds>()
         .unwrap();
     assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn proxy_oracle_governance_create_and_execute_immediately(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, oracle);
+    let oracle_id = oracle.id().clone();
+
+    deploy_proxy_oracle(&ctx, &oracle).await;
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(0),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let ids: Vec<u32> = ctx
+        .near
+        .view(&oracle_id, "gov_list")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(ids.is_empty());
+
+    let new_ttl = ctx
+        .near
+        .view(&oracle_id, "gov_ttl_ns")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<Nanoseconds>()
+        .unwrap();
+    assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn proxy_oracle_governance_create_and_execute_immediately_requires_zero_ttl(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, oracle);
+    let oracle_id = oracle.id().clone();
+
+    deploy_proxy_oracle(&ctx, &oracle).await;
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(0),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let err = CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(1),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(1000)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err();
+
+    assert!(err
+        .to_string()
+        .contains("cannot immediately execute proposal 1"));
+
+    let ids: Vec<u32> = ctx
+        .near
+        .view(&oracle_id, "gov_list")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(ids, vec![1]);
+
+    let ttl = ctx
+        .near
+        .view(&oracle_id, "gov_ttl_ns")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<Nanoseconds>()
+        .unwrap();
+    assert_eq!(ttl, Nanoseconds::from_ms(5000));
 }
