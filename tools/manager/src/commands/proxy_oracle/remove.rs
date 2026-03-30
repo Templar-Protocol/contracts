@@ -1,6 +1,7 @@
 use near_sdk::AccountId;
 
-use crate::commands::{self, SignerArgs};
+use crate::commands;
+use crate::util::SignerArgs;
 
 #[derive(clap::Args, Debug)]
 pub struct ProxyOracleRemove {

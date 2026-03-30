@@ -3,12 +3,14 @@ use std::path::PathBuf;
 use anyhow::Context;
 use templar_common::oracle::redstone::Config;
 
-use crate::commands::{deployment::Channel, json_input::JsonSource, SignerArgs};
-
-const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
+use crate::{
+    commands::deployment::{Deploy, DeploymentSpec},
+    util::ArgsProvider,
+    Runner,
+};
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct RedstoneAdapterInitArgs {
+pub struct RedStoneAdapterInitArgs {
     pub config: Config,
 }
 
@@ -27,6 +29,29 @@ pub struct ConfigSource {
     /// Path to a JSON configuration file
     #[arg(long)]
     pub args_file: Option<PathBuf>,
+}
+
+impl ArgsProvider<RedStoneAdapterInitArgs> for ConfigSource {
+    fn parse(&self) -> anyhow::Result<RedStoneAdapterInitArgs> {
+        if self.prod {
+            return Ok(RedStoneAdapterInitArgs {
+                config: templar_common::oracle::redstone::config::prod(),
+            });
+        }
+        if self.test {
+            return Ok(RedStoneAdapterInitArgs {
+                config: templar_common::oracle::redstone::config::test(),
+            });
+        }
+        if let Some(args) = &self.args {
+            return serde_json::from_str(args).context("args deserialization");
+        }
+        if let Some(args_file) = &self.args_file {
+            return serde_json::from_reader(std::fs::File::open(args_file)?)
+                .context("args deserialization");
+        }
+        anyhow::bail!("no configuration provided");
+    }
 }
 
 impl ConfigSource {
@@ -48,7 +73,7 @@ impl ConfigSource {
         }
     }
 
-    pub fn inline(args: String) -> Self {
+    pub fn from_json_string(args: String) -> Self {
         Self {
             prod: false,
             test: false,
@@ -65,52 +90,25 @@ impl ConfigSource {
             args_file: Some(args_file),
         }
     }
-
-    pub fn from_config(config: Config) -> anyhow::Result<Self> {
-        Ok(Self::inline(serde_json::to_string(
-            &RedstoneAdapterInitArgs { config },
-        )?))
-    }
-
-    pub fn load_vec(&self) -> anyhow::Result<Vec<u8>> {
-        serde_json::to_vec(&self.resolve()?).context("serialise init args")
-    }
-
-    fn resolve(&self) -> anyhow::Result<RedstoneAdapterInitArgs> {
-        if self.prod {
-            let config = templar_common::oracle::redstone::config::prod();
-            Ok(RedstoneAdapterInitArgs { config })
-        } else if self.test {
-            let config = templar_common::oracle::redstone::config::test();
-            Ok(RedstoneAdapterInitArgs { config })
-        } else {
-            JsonSource::new(self.args.as_deref(), self.args_file.as_deref())?.parse()
-        }
-    }
 }
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct DeployRedStoneAdapter {
-    #[command(flatten)]
-    pub signer: SignerArgs,
-
     #[command(subcommand)]
-    pub channel: Channel,
+    pub deploy: Deploy<Self>,
+}
 
-    #[command(flatten)]
-    pub config_source: ConfigSource,
+impl DeploymentSpec for DeployRedStoneAdapter {
+    type Args = RedStoneAdapterInitArgs;
+    type ArgsArgs = ConfigSource;
+    type Version = ();
+
+    const PACKAGE_ID: &'static str = "templar-redstone-adapter-contract";
 }
 
 impl DeployRedStoneAdapter {
     #[tracing::instrument(skip_all, name = "deploy_redstone_adapter")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        self.channel
-            .run(
-                ctx,
-                &self.signer,
-                REDSTONE_ADAPTER_PACKAGE,
-                self.config_source.load_vec()?,
-            )
-            .await
+        self.deploy.run(ctx, &()).await
     }
 }

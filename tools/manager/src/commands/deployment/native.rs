@@ -1,40 +1,58 @@
-use near_fetch::ops::Function;
+use std::fmt::Debug;
 
-use crate::commands::{ContractWasm, SignerArgs};
+use clap::{Args, ValueEnum};
 
-#[derive(clap::Args, Debug)]
-pub struct Native {
-    #[command(flatten)]
-    pub contract_wasm: ContractWasm,
+use crate::{
+    util::{ContractLoader, SignerArgs},
+    Runner,
+};
+
+use super::DeploymentSpec;
+
+#[derive(ValueEnum, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Package {
+    Registry,
+    Market,
+    ProxyOracle,
+    RedStoneAdapter,
 }
 
-impl Native {
-    pub fn new(contract_wasm: ContractWasm) -> Self {
-        Self { contract_wasm }
+impl Package {
+    pub fn package_id(self) -> &'static str {
+        match self {
+            Self::Registry => "templar-registry-contract",
+            Self::Market => "templar-market-contract",
+            Self::ProxyOracle => "templar-proxy-oracle-contract",
+            Self::RedStoneAdapter => "templar-redstone-adapter-contract",
+        }
     }
+}
 
-    #[tracing::instrument(name = "deploy_standalone", skip_all, fields(%default_package))]
-    pub async fn run(
-        &self,
-        ctx: &crate::CliContext,
-        signer_args: &SignerArgs,
-        init_args: Vec<u8>,
-        default_package: &str,
-    ) -> anyhow::Result<()> {
-        let loaded_contract = self
-            .contract_wasm
-            .load_contract::<()>(ctx, default_package)?;
-        tracing::info!(version = %loaded_contract.version, "Deploying standalone contract");
+#[derive(Args)]
+pub struct Direct<C: DeploymentSpec> {
+    #[command(flatten)]
+    pub loader: ContractLoader,
+    // /// Name of the contract to deploy
+    // #[arg(value_enum, index = 1)]
+    // pub package: Package,
+    #[command(flatten)]
+    pub args: C::ArgsArgs,
+    #[command(flatten)]
+    pub signer: SignerArgs,
+}
 
-        let signer = signer_args.signer();
+impl<C: DeploymentSpec> Runner<()> for Direct<C> {
+    type Output = ();
 
-        ctx.batch(&signer, &signer_args.account_id)
-            .deploy(&loaded_contract.wasm_bytes)
-            .call(Function::new("new").args(init_args).max_gas())
+    async fn run(&self, ctx: &crate::CliContext, _input: &()) -> anyhow::Result<Self::Output> {
+        ctx.batch(&self.signer.signer(), &self.signer.account_id)
+            .deploy(
+                &self
+                    .loader
+                    .load_contract::<C::Version>(C::PACKAGE_ID)?
+                    .wasm_bytes,
+            )
             .transact()
-            .await?;
-
-        tracing::info!("Contract deployed");
-        Ok(())
+            .await
     }
 }

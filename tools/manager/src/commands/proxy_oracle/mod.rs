@@ -5,13 +5,13 @@ pub mod remove;
 
 use crate::CliContext;
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct ProxyOracleArgs {
     #[command(subcommand)]
     command: ProxyOracleCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum ProxyOracleCommand {
     /// Deploy a proxy oracle contract
     Deploy(deploy::DeployProxyOracle),

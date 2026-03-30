@@ -1,6 +1,6 @@
 use near_sdk::AccountId;
 
-use crate::commands::{self, SignerArgs};
+use crate::{commands, util::SignerArgs};
 
 /// Remove all versions from a registry then delete its account.
 #[derive(clap::Args, Debug)]

@@ -3,7 +3,7 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
 
-use crate::commands::SignerArgs;
+use crate::util::SignerArgs;
 use crate::CliContext;
 
 #[derive(clap::Args, Debug)]

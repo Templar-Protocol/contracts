@@ -1,7 +1,6 @@
 pub mod batch;
 pub mod commands;
-
-use std::path::PathBuf;
+pub mod util;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use commands::{
@@ -12,6 +11,13 @@ use templar_common::utils::Network;
 use tracing::level_filters::LevelFilter;
 
 pub use templar_tools_common::near;
+
+#[allow(async_fn_in_trait)]
+pub trait Runner<Input> {
+    type Output;
+
+    async fn run(&self, ctx: &crate::CliContext, input: &Input) -> anyhow::Result<Self::Output>;
+}
 
 #[derive(Parser)]
 #[command(group(ArgGroup::new("verbosity").multiple(false).args(["quiet", "verbose"])))]
@@ -29,10 +35,6 @@ struct Cli {
     /// the Nearblocks explorer for the selected network.
     #[arg(long)]
     transaction_url_prefix: Option<String>,
-
-    /// Path to the workspace root (defaults to current directory)
-    #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
-    workspace_dir: PathBuf,
 
     #[command(flatten)]
     verbosity: VerbosityArgs,
@@ -92,7 +94,6 @@ impl Cli {
                     Network::Testnet => "https://testnet.nearblocks.io/txns/".to_string(),
                 });
         CliContext {
-            workspace_path: self.workspace_dir.clone(),
             transaction_url_prefix,
             near,
         }
@@ -100,7 +101,6 @@ impl Cli {
 }
 
 pub struct CliContext {
-    pub workspace_path: PathBuf,
     pub transaction_url_prefix: String,
     pub near: near_fetch::Client,
 }

@@ -4,7 +4,8 @@ use near_fetch::ops::Function;
 use near_sdk::{json_types::Base64VecU8, serde_json::json, AccountId, NearToken};
 use templar_common::oracle::redstone::FeedId;
 
-use crate::{commands::SignerArgs, CliContext};
+use crate::util::SignerArgs;
+use crate::CliContext;
 
 #[derive(clap::Args, Debug)]
 pub struct WritePrices {

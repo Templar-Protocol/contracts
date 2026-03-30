@@ -7,7 +7,7 @@ use templar_common::oracle::proxy::Proxy;
 use templar_common::time::Nanoseconds;
 
 use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
-use crate::commands::SignerArgs;
+use crate::util::SignerArgs;
 use crate::CliContext;
 
 #[derive(clap::Args, Debug)]

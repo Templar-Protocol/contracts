@@ -3,13 +3,13 @@ pub mod remove;
 
 use crate::CliContext;
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct MarketArgs {
     #[command(subcommand)]
     command: MarketCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum MarketCommand {
     /// Deploy a market contract
     Deploy(deploy::DeployMarket),

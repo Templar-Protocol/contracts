@@ -51,13 +51,13 @@ impl From<CliRole> for Role {
     }
 }
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct RedStoneAdapterArgs {
     #[command(subcommand)]
     command: RedStoneAdapterCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum RedStoneAdapterCommand {
     /// Deploy a RedStone adapter contract
     Deploy(deploy::DeployRedStoneAdapter),

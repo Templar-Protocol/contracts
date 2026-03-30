@@ -1,21 +1,28 @@
-use crate::commands::deployment::StandardDeploy;
+use templar_tools_common::version::RegistryVersion;
 
-const REGISTRY_PACKAGE: &str = "templar-registry-contract";
+use crate::{
+    commands::deployment::{Deploy, DeploymentSpec},
+    util::EmptyArgsProvider,
+    Runner,
+};
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct RegistryInitArgs {}
-
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct DeployRegistry {
-    #[command(flatten)]
-    pub deploy: StandardDeploy,
+    #[command(subcommand)]
+    pub deploy: Deploy<Self>,
+}
+
+impl DeploymentSpec for DeployRegistry {
+    type Args = ();
+    type ArgsArgs = EmptyArgsProvider;
+    type Version = RegistryVersion;
+
+    const PACKAGE_ID: &'static str = "templar-registry-contract";
 }
 
 impl DeployRegistry {
     #[tracing::instrument(skip_all, name = "deploy_registry")]
     pub async fn run(self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        self.deploy
-            .run::<RegistryInitArgs>(ctx, REGISTRY_PACKAGE)
-            .await
+        self.deploy.run(ctx, &()).await
     }
 }

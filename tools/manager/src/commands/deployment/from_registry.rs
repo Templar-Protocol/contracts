@@ -1,16 +1,21 @@
-use clap::Args;
 use near_crypto::PublicKey;
 use near_fetch::ops::Function;
 use near_sdk::{json_types::Base64VecU8, AccountId, NearToken};
 use serde_json::json;
 use templar_tools_common::{near::contract_version, version::RegistryVersion};
 
-use crate::commands::SignerArgs;
+use crate::{
+    util::{ArgsProvider, SignerArgs},
+    Runner,
+};
+
+use super::DeploymentSpec;
 
 /// Shared arguments for deploying a contract from a registry.
-#[derive(Args, Debug)]
-pub struct FromRegistry {
-    #[arg(long)]
+#[derive(clap::Args)]
+pub struct FromRegistry<C: DeploymentSpec> {
+    /// Registry account ID to deploy from
+    #[arg(index = 1)]
     pub registry_id: AccountId,
     /// Version key to deploy from the registry
     #[arg(long)]
@@ -30,34 +35,24 @@ pub struct FromRegistry {
     /// Deposit to send with the deployment
     #[arg(long)]
     pub deposit: Option<NearToken>,
+
+    #[command(flatten)]
+    pub args: C::ArgsArgs,
+
+    #[command(flatten)]
+    pub signer: SignerArgs,
 }
 
-impl FromRegistry {
-    pub fn new(registry_id: AccountId, version_key: String, name: String) -> Self {
-        Self {
-            registry_id,
-            version_key,
-            name,
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: None,
-        }
-    }
+impl<C: DeploymentSpec> Runner<()> for FromRegistry<C> {
+    type Output = ();
 
-    pub fn with_deposit(mut self, deposit: NearToken) -> Self {
-        self.deposit = Some(deposit);
-        self
-    }
-
-    pub async fn run(
-        &self,
-        ctx: &crate::CliContext,
-        signer_args: &SignerArgs,
-        init_args: Vec<u8>,
-    ) -> anyhow::Result<()> {
+    async fn run(&self, ctx: &crate::CliContext, (): &()) -> anyhow::Result<Self::Output> {
+        let signer = self.signer.signer();
         let registry_version: RegistryVersion =
             contract_version(&ctx.near, &self.registry_id).await?;
         tracing::debug!(%registry_version);
+
+        let args = self.args.load_vec()?;
 
         let deposit = self.deposit.unwrap_or_else(|| {
             if registry_version.supports_global_contracts() {
@@ -71,7 +66,7 @@ impl FromRegistry {
         let full_access_keys = {
             let mut keys = self.with_full_access_key.clone();
             if !self.no_signer_full_access_key {
-                let signer_key = signer_args.secret_key.public_key();
+                let signer_key = signer.public_key();
                 if !keys.contains(&signer_key) {
                     keys.push(signer_key);
                 }
@@ -82,7 +77,7 @@ impl FromRegistry {
 
         let method = registry_version.deploy_method_name();
 
-        ctx.batch(&signer_args.signer(), &self.registry_id)
+        ctx.batch(&signer, &self.registry_id)
             .call(
                 Function::new(method)
                     .deposit(deposit)
@@ -90,7 +85,7 @@ impl FromRegistry {
                     .args_json(json!({
                         "name": self.name,
                         "version_key": self.version_key,
-                        "init_args": Base64VecU8(init_args),
+                        "init_args": Base64VecU8(args),
                         "full_access_keys": full_access_keys,
                     })),
             )

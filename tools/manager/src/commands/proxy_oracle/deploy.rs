@@ -1,21 +1,26 @@
-use crate::commands::deployment::StandardDeploy;
+use crate::{
+    commands::deployment::{Deploy, DeploymentSpec},
+    util::EmptyArgsProvider,
+    Runner,
+};
 
-const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-contract";
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct ProxyOracleInitArgs {}
-
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct DeployProxyOracle {
-    #[command(flatten)]
-    pub deploy: StandardDeploy,
+    #[command(subcommand)]
+    pub deploy: Deploy<Self>,
+}
+
+impl DeploymentSpec for DeployProxyOracle {
+    type Args = ();
+    type ArgsArgs = EmptyArgsProvider;
+    type Version = ();
+
+    const PACKAGE_ID: &'static str = "templar-proxy-oracle-contract";
 }
 
 impl DeployProxyOracle {
     #[tracing::instrument(skip_all, name = "deploy_proxy_oracle")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        self.deploy
-            .run::<ProxyOracleInitArgs>(ctx, PROXY_ORACLE_PACKAGE)
-            .await
+        self.deploy.run(ctx, &()).await
     }
 }

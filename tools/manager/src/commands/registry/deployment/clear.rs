@@ -4,7 +4,7 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 
 use crate::commands::market::remove::MarketRemove;
-use crate::commands::SignerArgs;
+use crate::util::SignerArgs;
 use crate::CliContext;
 
 /// Remove all markets listed in a registry's deployments.
