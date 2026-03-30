@@ -18,8 +18,8 @@ testutils = ["soroban-sdk/testutils"]
 # Core dependency - vault kernel types
 templar-vault-kernel = { path = "../kernel", features = ["postcard", "soroban", "action-refresh-fees", "action-allocation-lifecycle", "action-refresh-lifecycle", "action-sync-external"] }
 
-# Curator primitives for policy and recovery
-templar-curator-primitives = { path = "../curator-primitives", features = ["postcard", "recovery"] }
+templar-curator-primitives = { path = "../curator-primitives", features = ["postcard"] }
+templar-soroban-shared-types = { path = "./shared-types" }
 derive_more.workspace = true
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

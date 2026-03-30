@@ -11,6 +11,7 @@ members = [
     "contract/vault/kernel",
     "contract/vault/near",
     "contract/vault/soroban",
+    "contract/vault/soroban/shared-types",
     "contract/vault/soroban/blend-adapter",
     "contract/vault/soroban/governance",
     "contract/vault/soroban/share-token",

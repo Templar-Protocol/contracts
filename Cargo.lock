@@ -13254,8 +13254,9 @@ dependencies = [
 name = "templar-soroban-governance"
 version = "0.1.0"
 dependencies = [
- "soroban-sdk 23.5.2",
+ "soroban-sdk 25.1.1",
  "templar-curator-primitives",
+ "templar-soroban-shared-types",
  "templar-vault-kernel",
 ]
 
@@ -13273,6 +13274,7 @@ dependencies = [
  "templar-curator-primitives",
  "templar-soroban-blend-adapter",
  "templar-soroban-runtime",
+ "templar-soroban-shared-types",
  "templar-vault-kernel",
 ]
 
@@ -13282,6 +13284,13 @@ version = "0.1.0"
 dependencies = [
  "soroban-sdk 23.5.2",
  "stellar-tokens",
+]
+
+[[package]]
+name = "templar-soroban-shared-types"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.1.1",
 ]
 
 [[package]]
