@@ -9,7 +9,7 @@ use std::{
 use near_workspaces::{network::Sandbox, Account, Worker};
 use serde::Serialize;
 use templar_manager::{
-    util::{ContractLoader, SignerArgs},
+    util::{ContractLoader, GeneralArgsLoader, SignerArgs},
     CliContext,
 };
 
@@ -49,4 +49,47 @@ pub fn write_json_file<T: Serialize>(prefix: &str, value: &T) -> PathBuf {
     let path = std::env::temp_dir().join(format!("templar-manager-{prefix}-{unique}.json"));
     std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
     path
+}
+
+#[derive(Clone, Copy)]
+pub enum TestArgsKind {
+    Inline,
+    File,
+}
+
+impl TestArgsKind {
+    pub fn into_fixture<T: Serialize>(self, prefix: &str, init_args: T) -> TestArgs<T> {
+        match self {
+            Self::Inline => TestArgs::Inline(init_args),
+            Self::File => {
+                let file = write_json_file(prefix, &init_args);
+                TestArgs::File(file)
+            }
+        }
+    }
+}
+
+pub enum TestArgs<T> {
+    Inline(T),
+    File(PathBuf),
+}
+
+impl<T> Drop for TestArgs<T> {
+    fn drop(&mut self) {
+        if let Self::File(ref file) = self {
+            std::fs::remove_file(file).ok();
+        }
+    }
+}
+
+impl<T: Serialize> TestArgs<T> {
+    pub fn loader(&self) -> GeneralArgsLoader {
+        match self {
+            Self::Inline(args) => GeneralArgsLoader::from_json_string(
+                serde_json::to_string(&args)
+                    .unwrap_or_else(|err| panic!("failed to serialise init args: {err}")),
+            ),
+            Self::File(path) => GeneralArgsLoader::from_file(path.clone()),
+        }
+    }
 }
