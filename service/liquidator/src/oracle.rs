@@ -223,11 +223,11 @@ impl OracleFetcher {
 
         for feed in &parsed {
             // Parse the hex ID back to a PriceIdentifier
-            let id_bytes = hex::decode(&feed.id)
-                .map_err(|e| {
-                    tracing::warn!(id = %feed.id, error = %e, "Invalid hex price ID from Hermes");
-                })
-                .ok()?;
+            let Ok(id_bytes) = hex::decode(&feed.id).map_err(|e| {
+                tracing::warn!(id = %feed.id, error = %e, "Invalid hex price ID from Hermes");
+            }) else {
+                continue;
+            };
             if id_bytes.len() != 32 {
                 continue;
             }
@@ -235,8 +235,13 @@ impl OracleFetcher {
             arr.copy_from_slice(&id_bytes);
             let price_id = PriceIdentifier(arr);
 
-            let price_val: i64 = feed.ema_price.price.parse().ok()?;
-            let conf_val: u64 = feed.ema_price.conf.parse().ok()?;
+            let (Ok(price_val), Ok(conf_val)) = (
+                feed.ema_price.price.parse::<i64>(),
+                feed.ema_price.conf.parse::<u64>(),
+            ) else {
+                tracing::warn!(id = %feed.id, "Invalid Hermes price payload, skipping feed");
+                continue;
+            };
 
             result.insert(
                 price_id,
@@ -375,10 +380,7 @@ impl OracleFetcher {
         for (&original_price_id, transformer) in &transformers {
             if let Some(Some(underlying_price)) = underlying_prices.remove(&transformer.price_id) {
                 // Fetch the input value for transformation
-                match self
-                    .fetch_transformer_input(&transformer.call, &lst_oracle)
-                    .await
-                {
+                match self.fetch_transformer_input(&transformer.call).await {
                     Ok(input) => {
                         if let Some(transformed_price) =
                             transformer.action.apply(underlying_price, input)
@@ -663,11 +665,8 @@ impl OracleFetcher {
             .await?;
 
         // Fetch the transformer input (e.g., LST redemption rate).
-        // The dummy account is needed for the trait method signature but unused in practice.
-        #[allow(deprecated)]
-        let dummy_account = AccountId::new_unvalidated(String::new());
         let input = self
-            .fetch_transformer_input(&transformer.call, &dummy_account)
+            .fetch_transformer_input(&transformer.call)
             .await
             .map_err(|e| {
                 tracing::warn!(
@@ -684,7 +683,6 @@ impl OracleFetcher {
     async fn fetch_transformer_input(
         &self,
         call: &templar_common::oracle::price_transformer::Call,
-        _oracle: &AccountId,
     ) -> Result<Decimal, RpcError> {
         // Use the rpc_call() method to create a view query
         let query = call.rpc_call();

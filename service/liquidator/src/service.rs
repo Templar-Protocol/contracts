@@ -495,7 +495,7 @@ impl LiquidatorService {
                     continue;
                 }
 
-                // Step 3: Detect proxy oracle upfront via list_proxies probe
+                // Step 3: Detect proxy oracle via account name prefix convention
                 let oracle_account = &config.price_oracle_configuration.account_id;
                 self.oracle_fetcher
                     .detect_and_register_proxy_oracle(oracle_account)

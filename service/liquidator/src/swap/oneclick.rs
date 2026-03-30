@@ -339,7 +339,19 @@ impl OneClickSwap {
     /// registry refresh to keep the cache up to date.
     pub async fn load_supported_tokens(&self) {
         let url = format!("{ONECLICK_API_BASE}/v0/tokens");
-        match self.http_client.get(&url).send().await {
+        match self
+            .http_client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(response) if !response.status().is_success() => {
+                tracing::warn!(
+                    status = %response.status(),
+                    "1-Click /v0/tokens returned error status"
+                );
+            }
             Ok(response) => match response.json::<Vec<TokenInfo>>().await {
                 Ok(tokens) => {
                     let mut cache = self
