@@ -1,7 +1,5 @@
 //! Kernel error types.
 
-use core::fmt;
-
 use crate::restrictions::RestrictionKind;
 use crate::transitions::TransitionError;
 

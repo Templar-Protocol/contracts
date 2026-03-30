@@ -2,10 +2,7 @@
 //!
 //! Adapters abstract over local Soroban markets and cross-chain Templar markets.
 //!
-use soroban_sdk::{Address, Bytes, Env, IntoVal, Symbol, Val};
-use templar_vault_kernel::{AssetId, TargetId};
-
-use crate::error::RuntimeError;
+use soroban_sdk::{Address, Env, IntoVal, Symbol, Val};
 
 /// Settlement receipt for a cross-chain allocation attempt.
 #[cfg(any(test, feature = "testutils"))]

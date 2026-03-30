@@ -401,6 +401,7 @@ pub(crate) fn set_migration_in_progress(env: &Env, migrating: bool) {
 }
 
 #[inline]
+#[allow(deprecated)]
 pub(crate) fn emit_pause_state_event(env: &Env, paused: bool) {
     let event = if paused {
         symbol_short!("paused")
