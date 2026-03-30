@@ -88,10 +88,10 @@ pub struct ServiceConfig {
     pub loop_liquidation: bool,
     /// Maximum iterations for loop liquidation (safety limit)
     pub max_loop_iterations: u32,
-    /// Pyth Hermes API URL for price updates
+    /// Pyth Hermes API URL for fetching price data
     pub hermes_url: String,
-    /// Enable automatic Pyth price updates before liquidations
-    pub auto_update_prices: bool,
+    /// RedStone gateway URL for fetching fresh prices
+    pub redstone_gateway_url: String,
     /// Minimum USD value to attempt a swap (JIT or batch)
     pub min_swap_value_usd: f64,
     /// Enable batch swap of accumulated collateral at round start
@@ -148,18 +148,11 @@ impl LiquidatorService {
             Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
 
         // Create oracle fetcher for batch swap price checks
-        let signer_for_oracle = if config.auto_update_prices {
-            Some((config.signer_account.clone(), config.signer_key.clone()))
-        } else {
-            None
-        };
         let oracle_fetcher = crate::OracleFetcher::new(
             client.clone(),
             Some(config.hermes_url.clone()),
-            signer_for_oracle
-                .as_ref()
-                .map(|(account, _)| account.clone()),
-            signer_for_oracle.map(|(_, key)| key),
+            Some(config.redstone_gateway_url.clone()),
+            None,
         );
 
         // Log swap configuration
@@ -262,6 +255,11 @@ impl LiquidatorService {
             self.config.liquidation_scan_interval,
         ));
         liquidation_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        // Load 1-Click supported tokens cache
+        if let Some(ref provider) = self.oneclick_provider {
+            provider.load_supported_tokens().await;
+        }
 
         // Run initial registry refresh immediately
         match self.refresh_registry().await {
@@ -419,14 +417,53 @@ impl LiquidatorService {
                 "Found deployments from registries"
             );
 
-            // Fetch configurations for all markets
+            // Filter deployments using registry metadata, then fetch market configs
             let mut market_configs = Vec::new();
             for market in &all_markets {
-                // Check contract version using NEP-330
+                // Step 1: Fetch market configuration — this is the definitive check
+                // for whether a deployment is a market contract. Non-market contracts
+                // (proxy-oracles, redstone-adapters) won't have this method.
+                let config = match view::<templar_common::market::MarketConfiguration>(
+                    &self.client,
+                    market.clone(),
+                    "get_configuration",
+                    near_sdk::serde_json::json!({}),
+                )
+                .await
+                {
+                    Ok(config) => {
+                        tracing::debug!(
+                            market = %market,
+                            borrow_asset = %config.borrow_asset,
+                            collateral_asset = %config.collateral_asset,
+                            "Fetched market configuration"
+                        );
+                        config
+                    }
+                    Err(e) => {
+                        let err_msg = format!("{e:?}");
+                        if err_msg.contains("MethodNotFound")
+                            || err_msg.contains("MethodResolveError")
+                        {
+                            tracing::info!(
+                                deployment = %market,
+                                "Skipping non-market deployment (no get_configuration method)"
+                            );
+                        } else {
+                            tracing::warn!(
+                                market = %market,
+                                error = ?e,
+                                "Failed to fetch market configuration, skipping"
+                            );
+                        }
+                        continue;
+                    }
+                };
+
+                // Step 2: Check contract version using NEP-330
                 let version_result = crate::rpc::get_contract_version(&self.client, market).await;
 
                 if let Some(version) = version_result {
-                    // Parse semver and verify compatibility
                     let parts: Vec<&str> = version.split('.').collect();
                     let is_supported = if let [maj, min, _patch] = parts.as_slice() {
                         let major = maj.parse::<u32>().unwrap_or(0);
@@ -458,44 +495,24 @@ impl LiquidatorService {
                     continue;
                 }
 
-                // Fetch market configuration
-                match view::<templar_common::market::MarketConfiguration>(
-                    &self.client,
-                    market.clone(),
-                    "get_configuration",
-                    near_sdk::serde_json::json!({}),
-                )
-                .await
-                {
-                    Ok(config) => {
-                        tracing::debug!(
-                            market = %market,
-                            borrow_asset = %config.borrow_asset,
-                            collateral_asset = %config.collateral_asset,
-                            "Fetched market configuration"
-                        );
+                // Step 3: Detect proxy oracle upfront via list_proxies probe
+                let oracle_account = &config.price_oracle_configuration.account_id;
+                self.oracle_fetcher
+                    .detect_and_register_proxy_oracle(oracle_account)
+                    .await;
 
-                        // Apply market filtering rules
-                        let (should_process, filter_reason) = self.should_process_market(&config);
+                // Step 4: Apply market filtering rules (collateral asset allow/ignore lists)
+                let (should_process, filter_reason) = self.should_process_market(&config);
 
-                        if should_process {
-                            market_configs.push((market.clone(), config));
-                        } else {
-                            tracing::info!(
-                                market = %market,
-                                collateral_asset = %config.collateral_asset,
-                                reason = filter_reason.unwrap_or_default(),
-                                "Market filtered out"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            market = %market,
-                            error = ?e,
-                            "Failed to fetch market configuration, skipping"
-                        );
-                    }
+                if should_process {
+                    market_configs.push((market.clone(), config));
+                } else {
+                    tracing::info!(
+                        market = %market,
+                        collateral_asset = %config.collateral_asset,
+                        reason = filter_reason.unwrap_or_default(),
+                        "Market filtered out"
+                    );
                 }
             }
 
@@ -517,16 +534,6 @@ impl LiquidatorService {
                 // Clone Signer enum
                 let signer = Arc::new(self.signer.clone());
 
-                let signer_for_oracle = if self.config.auto_update_prices {
-                    // Use config which has account and key
-                    Some((
-                        self.config.signer_account.clone(),
-                        self.config.signer_key.clone(),
-                    ))
-                } else {
-                    None
-                };
-
                 let mut liquidator = Liquidator::new(
                     &self.client,
                     signer,
@@ -541,10 +548,10 @@ impl LiquidatorService {
                     self.config.loop_liquidation,
                     self.config.max_loop_iterations,
                     Some(self.config.hermes_url.clone()),
-                    self.config.auto_update_prices,
-                    &signer_for_oracle,
+                    Some(self.config.redstone_gateway_url.clone()),
                     self.config.swap_retry_config.clone(),
                     self.config.min_swap_value_usd,
+                    Some(self.oracle_fetcher.proxy_oracle_cache()),
                 );
 
                 // Fetch market version for version-specific liquidation logic
@@ -577,6 +584,11 @@ impl LiquidatorService {
                 collateral_assets = self.collateral_price_map.len(),
                 "Built collateral price map"
             );
+
+            // Refresh 1-Click supported tokens cache
+            if let Some(ref provider) = self.oneclick_provider {
+                provider.load_supported_tokens().await;
+            }
 
             Ok(())
         }
@@ -755,6 +767,20 @@ impl LiquidatorService {
                 continue;
             };
 
+            // Skip if swap provider doesn't support this asset pair
+            if let Some(ref provider) = self.oneclick_provider {
+                use crate::swap::SwapProvider;
+                if !provider.supports_assets(collateral_asset, &info.target_borrow_asset) {
+                    tracing::info!(
+                        from = %asset_key,
+                        to = %info.target_borrow_asset,
+                        "Swap provider does not support asset pair, skipping batch swap"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+            }
+
             // Dry run: log what would happen, skip actual swap
             if dry_run {
                 tracing::info!(
@@ -831,6 +857,11 @@ impl LiquidatorService {
                             from = %asset_key,
                             error = %e,
                             "Batch swap skipped - amount too low for provider"
+                        );
+                    } else if msg.contains("Quote failed") {
+                        tracing::debug!(
+                            from = %asset_key,
+                            "No swap route available for asset, skipping batch swap"
                         );
                     } else {
                         tracing::info!(

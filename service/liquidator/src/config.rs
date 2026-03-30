@@ -118,7 +118,7 @@ pub struct Args {
     #[arg(long, env = "MAX_LOOP_ITERATIONS", default_value_t = 10)]
     pub max_loop_iterations: u32,
 
-    /// Pyth Hermes API URL for price updates
+    /// Pyth Hermes API URL for fetching price data
     #[arg(
         long,
         env = "PYTH_HERMES_URL",
@@ -126,9 +126,13 @@ pub struct Args {
     )]
     pub hermes_url: String,
 
-    /// Enable automatic Pyth price updates before liquidations
-    #[arg(long, env = "AUTO_UPDATE_PRICES", default_value_t = false)]
-    pub auto_update_prices: bool,
+    /// RedStone gateway URL for fetching fresh prices
+    #[arg(
+        long,
+        env = "REDSTONE_GATEWAY_URL",
+        default_value = "https://oracle-gateway-1.a.redstone.vip"
+    )]
+    pub redstone_gateway_url: String,
 
     /// Minimum USD value to attempt a swap (JIT or batch).
     /// Amounts below this threshold are skipped and left for batch swap.
@@ -290,7 +294,7 @@ impl Args {
             loop_liquidation: self.loop_liquidation,
             max_loop_iterations: self.max_loop_iterations,
             hermes_url: self.hermes_url.clone(),
-            auto_update_prices: self.auto_update_prices,
+            redstone_gateway_url: self.redstone_gateway_url.clone(),
             min_swap_value_usd: self.min_swap_value_usd,
             batch_swap_on_cycle_start: self.batch_swap_on_cycle_start,
             swap_retry_config: SwapRetryConfig {
@@ -346,7 +350,7 @@ mod tests {
             loop_liquidation: false,
             max_loop_iterations: 10,
             hermes_url: "https://hermes.pyth.network".to_string(),
-            auto_update_prices: false,
+            redstone_gateway_url: "https://oracle-gateway-1.a.redstone.vip".to_string(),
             min_swap_value_usd: 10.0,
             batch_swap_on_cycle_start: true,
             swap_retry_attempts: 3,
