@@ -16,7 +16,7 @@ pub(crate) fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     raw.extend_from_slice(KERNEL_ADDRESS_DOMAIN);
     raw.extend_from_slice(&strkey_bytes);
     let bytes = Bytes::from_slice(env, &raw);
-    env.crypto().sha256(&bytes).to_bytes().to_array()
+    Address(env.crypto().sha256(&bytes).to_bytes().to_array())
 }
 
 fn is_contract_address(addr: &SdkAddress) -> bool {

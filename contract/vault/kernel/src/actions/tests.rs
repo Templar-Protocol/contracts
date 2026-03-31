@@ -29,33 +29,33 @@ fn test_config() -> VaultConfig {
 }
 
 fn idle_state(total_assets: u128, total_shares: u128) -> VaultState {
-    VaultState::with_initial(total_assets, total_shares, total_assets, 0, 0)
+    VaultState::with_initial(total_assets, total_shares, total_assets, 0, TimestampNs(0))
 }
 
 fn balanced_state() -> VaultState {
-    VaultState::with_initial(1_000, 1_000, 500, 500, 0)
+    VaultState::with_initial(1_000, 1_000, 500, 500, TimestampNs(0))
 }
 
 fn external_heavy_state() -> VaultState {
-    VaultState::with_initial(1_000, 1_000, 200, 800, 0)
+    VaultState::with_initial(1_000, 1_000, 200, 800, TimestampNs(0))
 }
 
 #[test]
 fn action_builder_and_metadata_helpers() {
-    let action = KernelAction::finish_allocating(42, 1_000);
+    let action = KernelAction::finish_allocating(42, TimestampNs(1_000));
     assert!(matches!(action, KernelAction::FinishAllocating { .. }));
     assert_eq!(action.op_id(), Some(42));
-    assert_eq!(action.timestamp_ns(), Some(1_000));
+    assert_eq!(action.timestamp_ns(), Some(TimestampNs(1_000)));
 
     let pause = KernelAction::pause(true);
     assert!(matches!(pause, KernelAction::Pause { .. }));
     assert_eq!(pause.op_id(), None);
     assert_eq!(pause.timestamp_ns(), None);
 
-    let atomic = KernelAction::atomic_withdraw(addr(1), addr(2), addr(3), 11, 1_000);
+    let atomic = KernelAction::atomic_withdraw(addr(1), addr(2), addr(3), 11, TimestampNs(1_000));
     assert!(matches!(atomic, KernelAction::AtomicWithdraw { .. }));
     assert_eq!(atomic.op_id(), None);
-    assert_eq!(atomic.timestamp_ns(), Some(1_000));
+    assert_eq!(atomic.timestamp_ns(), Some(TimestampNs(1_000)));
 
     let settle = KernelAction::settle_payout(
         7,
@@ -133,7 +133,14 @@ fn execute_withdraw_idle_starts_withdrawal() {
 
     let _ = state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     let result = apply_action(
@@ -164,7 +171,14 @@ fn execute_withdraw_withdrawing_advances_index() {
 
     let _ = state
         .withdraw_queue
-        .enqueue(owner, receiver, 200, 200, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            200,
+            200,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -507,7 +521,7 @@ fn atomic_withdraw_not_idle_fails() {
 
 #[test]
 fn atomic_withdraw_exceeding_idle_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 250, 750, 0);
+    let state = VaultState::with_initial(1_000, 1_000, 250, 750, TimestampNs(0));
     let config = test_config();
 
     let result = apply_action(
@@ -536,7 +550,7 @@ fn atomic_withdraw_exceeding_idle_fails() {
 #[test]
 fn refresh_fees_then_atomic_withdraw_succeeds() {
     let mut state = idle_state(1_500, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
     let config = VaultConfig {
         fees: FeesSpec::new(
             FeeSlot::new(Wad::one() / 10, addr(7)),
@@ -681,7 +695,7 @@ fn request_withdraw_not_idle_fails() {
 
 #[test]
 fn request_withdraw_queue_full_fails() {
-    let mut state = VaultState::with_initial(10_000, 10_000, 10_000, 0, 0);
+    let mut state = VaultState::with_initial(10_000, 10_000, 10_000, 0, TimestampNs(0));
     let mut config = test_config();
     config.max_pending_withdrawals = 2;
 
@@ -693,7 +707,7 @@ fn request_withdraw_queue_full_fails() {
             addr(1),
             100,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -704,7 +718,7 @@ fn request_withdraw_queue_full_fails() {
             addr(2),
             100,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -756,7 +770,7 @@ fn execute_withdraw_cooldown_fails() {
             addr(2),
             100,
             100,
-            1_000_000,
+            TimestampNs(1_000_000),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -817,7 +831,7 @@ fn execute_withdraw_queue_head_mismatch_fails() {
             addr(99),
             200,
             200,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -933,7 +947,14 @@ fn finish_allocating_with_pending_withdrawal() {
     // Add a pending withdrawal that's past cooldown
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Allocating(AllocatingState {
@@ -977,7 +998,7 @@ fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
             receiver,
             100,
             100,
-            DEFAULT_COOLDOWN_NS,
+            TimestampNs(DEFAULT_COOLDOWN_NS),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -1557,7 +1578,7 @@ fn abort_refreshing_wrong_op_type_fails() {
 fn abort_allocating_success() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(800, 1_000, 300, 500, 0);
+    let mut state = VaultState::with_initial(800, 1_000, 300, 500, TimestampNs(0));
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 8,
         index: 0,
@@ -1681,7 +1702,14 @@ fn abort_withdrawing_success() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1743,7 +1771,14 @@ fn abort_withdrawing_op_id_mismatch_fails() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1785,7 +1820,14 @@ fn abort_withdrawing_refund_mismatch_fails() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1830,7 +1872,7 @@ fn abort_withdrawing_queue_head_mismatch_fails() {
             addr(99),
             100,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -1904,7 +1946,14 @@ fn settle_payout_success_burn_only() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -1976,7 +2025,14 @@ fn settle_payout_success_partial_refund() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2031,14 +2087,21 @@ fn settle_payout_success_partial_refund() {
 fn settle_payout_failure() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(900, 1_000, 400, 500, 0);
+    let mut state = VaultState::with_initial(900, 1_000, 400, 500, TimestampNs(0));
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2130,7 +2193,14 @@ fn settle_payout_op_id_mismatch_fails() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2212,7 +2282,7 @@ fn settle_payout_queue_head_mismatch_fails() {
             addr(99),
             100,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -2259,7 +2329,14 @@ fn settle_payout_success_settlement_mismatch_fails() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2297,7 +2374,7 @@ fn settle_payout_success_settlement_mismatch_fails() {
 fn settle_payout_success_settlement_overflow_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1, u128::MAX, 1, 0, 0);
+    let mut state = VaultState::with_initial(1, u128::MAX, 1, 0, TimestampNs(0));
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -2309,7 +2386,7 @@ fn settle_payout_success_settlement_overflow_fails() {
             receiver,
             u128::MAX,
             1,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .unwrap();
@@ -2356,7 +2433,14 @@ fn settle_payout_failure_settlement_mismatch_fails() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2401,7 +2485,14 @@ fn settle_payout_failure_restore_idle_mismatch_fails() {
 
     state
         .withdraw_queue
-        .enqueue(owner, receiver, 100, 100, 0, config.max_pending_withdrawals)
+        .enqueue(
+            owner,
+            receiver,
+            100,
+            100,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2476,18 +2567,23 @@ fn refresh_fees_action_zero_fees() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: 12345 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(12_345),
+        },
     )
     .unwrap();
 
     assert_eq!(result.state.fee_anchor.total_assets, 1_000);
-    assert_eq!(result.state.fee_anchor.timestamp_ns, 12345);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(12_345));
     assert_eq!(result.state.total_shares, 1_000); // No fee shares minted
     assert_eq!(result.effects.len(), 1); // Only FeesRefreshed event
     assert!(matches!(
         result.effects.first(),
         Some(KernelEffect::EmitEvent {
-            event: KernelEvent::FeesRefreshed { now_ns: 12345, .. }
+            event: KernelEvent::FeesRefreshed {
+                now_ns: TimestampNs(12_345),
+                ..
+            }
         })
     ));
 }
@@ -2497,7 +2593,7 @@ fn refresh_fees_mints_performance_fee_shares() {
     use crate::math::wad::YEAR_NS;
     // Setup: vault started with 1000 assets/shares, now has 1500 assets (profit)
     let mut state = idle_state(1_500, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0); // anchor at 1000 assets, time 0
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0)); // anchor at 1000 assets, time 0
 
     let perf_recipient = addr(0xAA);
     let mut config = test_config();
@@ -2536,7 +2632,7 @@ fn refresh_fees_mints_management_fee_shares() {
     use crate::math::wad::YEAR_NS;
     // Setup: 1000 assets/shares, no profit, full year elapsed
     let mut state = idle_state(1_000, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
 
     let mgmt_recipient = addr(0xBB);
     let mut config = test_config();
@@ -2577,7 +2673,7 @@ fn refresh_fees_mints_both_management_and_performance() {
     use crate::math::wad::YEAR_NS;
 
     let mut state = idle_state(1_500, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
 
     let perf_recipient = addr(0xAA);
     let mgmt_recipient = addr(0xBB);
@@ -2637,7 +2733,7 @@ fn refresh_fees_no_profit_skips_performance() {
     use crate::math::wad::YEAR_NS;
     // No profit (assets unchanged from anchor)
     let mut state = idle_state(1_000, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
 
     let perf_recipient = addr(0xAA);
     let mut config = test_config();
@@ -2669,8 +2765,8 @@ fn refresh_fees_no_profit_skips_performance() {
 fn refresh_fees_max_rate_caps_fee_accrual() {
     use crate::math::wad::YEAR_NS;
     // 1000 -> 2000 (100% profit), but max_rate = 20% per year
-    let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, 0);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
 
     let perf_recipient = addr(0xAA);
     let mut config = test_config();
@@ -2901,7 +2997,7 @@ fn emergency_reset_from_withdrawing_refunds_shares() {
     let receiver = addr(2);
     let _ = state
         .withdraw_queue
-        .enqueue(owner, receiver, 200, 200, 0, 10)
+        .enqueue(owner, receiver, 200, 200, TimestampNs(0), 10)
         .unwrap();
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -2936,12 +3032,12 @@ fn emergency_reset_from_withdrawing_refunds_shares() {
 fn emergency_reset_from_payout_refunds_and_restores() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 400, 600, 0);
+    let mut state = VaultState::with_initial(1_000, 1_000, 400, 600, TimestampNs(0));
     let owner = addr(3);
     let receiver = addr(4);
     let _ = state
         .withdraw_queue
-        .enqueue(owner, receiver, 300, 300, 0, 10)
+        .enqueue(owner, receiver, 300, 300, TimestampNs(0), 10)
         .unwrap();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -3080,13 +3176,13 @@ fn deposit_overflow_total_assets_rejected() {
         state,
         &config,
         None,
-        &[0u8; 32],
+        &Address([0u8; 32]),
         KernelAction::Deposit {
-            owner: [1u8; 32],
-            receiver: [2u8; 32],
+            owner: Address([1u8; 32]),
+            receiver: Address([2u8; 32]),
             assets_in: 10,
             min_shares_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
     assert!(matches!(
@@ -3106,13 +3202,13 @@ fn deposit_overflow_total_shares_rejected() {
         state,
         &config,
         None,
-        &[0u8; 32],
+        &Address([0u8; 32]),
         KernelAction::Deposit {
-            owner: [1u8; 32],
-            receiver: [2u8; 32],
+            owner: Address([1u8; 32]),
+            receiver: Address([2u8; 32]),
             assets_in: 1,
             min_shares_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
     assert!(matches!(
@@ -3127,19 +3223,21 @@ fn deposit_overflow_total_shares_rejected() {
 fn refresh_fees_overflow_total_supply_rejected() {
     let mut config = base_config();
     config.fees = FeesSpec::new(
-        FeeSlot::new(Wad::one() / 2, [9u8; 32]),
-        FeeSlot::new(Wad::zero(), [8u8; 32]),
+        FeeSlot::new(Wad::one() / 2, Address([9u8; 32])),
+        FeeSlot::new(Wad::zero(), Address([8u8; 32])),
         None,
     );
     let mut state = base_state(1_000, u128::MAX - 1);
-    state.fee_anchor = FeeAccrualAnchor::new(0, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
 
     let result = apply_action(
         state,
         &config,
         None,
-        &[0u8; 32],
-        KernelAction::RefreshFees { now_ns: 1 },
+        &Address([0u8; 32]),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(1),
+        },
     );
     assert!(matches!(
         result,
@@ -3153,8 +3251,8 @@ fn refresh_fees_overflow_total_supply_rejected() {
 fn execute_withdraw_skips_zero_expected_assets() {
     let config = base_config();
     let mut state = base_state(1_000, 1_000);
-    let owner = [3u8; 32];
-    let receiver = [4u8; 32];
+    let owner = Address([3u8; 32]);
+    let receiver = Address([4u8; 32]);
     let escrow_shares = 500;
 
     state
@@ -3164,7 +3262,7 @@ fn execute_withdraw_skips_zero_expected_assets() {
             receiver,
             escrow_shares,
             0,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue");
@@ -3223,7 +3321,7 @@ fn execute_withdraw_skips_restricted_head_and_processes_next() {
             first_receiver,
             500,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue first");
@@ -3234,7 +3332,7 @@ fn execute_withdraw_skips_restricted_head_and_processes_next() {
             next_receiver,
             250,
             150,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue second");
@@ -3288,7 +3386,7 @@ fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
             skipped_receiver,
             500,
             0,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue skipped head");
@@ -3299,7 +3397,7 @@ fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
             waiting_receiver,
             250,
             150,
-            1,
+            TimestampNs(1),
             config.max_pending_withdrawals,
         )
         .expect("enqueue cooling-down head");
@@ -3354,7 +3452,7 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
             first_receiver,
             500,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue first");
@@ -3365,7 +3463,7 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
             next_receiver,
             250,
             150,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue second");
@@ -3425,7 +3523,7 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
             first_receiver,
             500,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue restricted head");
@@ -3436,7 +3534,7 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
             waiting_receiver,
             250,
             150,
-            1,
+            TimestampNs(1),
             config.max_pending_withdrawals,
         )
         .expect("enqueue cooling-down head");
@@ -3492,7 +3590,7 @@ fn execute_withdraw_respects_paused_restrictions() {
             [2u8; 32],
             100,
             100,
-            0,
+            TimestampNs(0),
             config.max_pending_withdrawals,
         )
         .expect("enqueue");
@@ -3536,7 +3634,7 @@ fn refresh_fees_respects_growth_rate_cap_with_both_fee_types() {
     );
 
     let mut state = base_state(2_000, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
 
     let result = apply_action(
         state,
@@ -3594,7 +3692,7 @@ fn refresh_fees_rejects_non_advancing_timestamp() {
     let mut config = base_config();
     config.fees = FeesSpec::zero();
     let mut state = base_state(1_000, 1_000);
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 500);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
 
     let result = apply_action(
         state,

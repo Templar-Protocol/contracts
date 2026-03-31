@@ -2,7 +2,7 @@
 
 use soroban_sdk::{symbol_short, token::StellarAssetClient, Address, Bytes, Env};
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
-use templar_vault_kernel::AddressBook;
+use templar_vault_kernel::{AddressBook, TimestampNs};
 
 use crate::convert::u128_to_i128_effect;
 use crate::error::RuntimeError;
@@ -39,7 +39,7 @@ pub type EffectResult<T> = Result<T, RuntimeError>;
 #[derive(Clone)]
 pub struct EffectContext {
     /// Current timestamp in nanoseconds.
-    pub now_ns: u64,
+    pub now_ns: TimestampNs,
     /// The vault contract address (kernel format).
     pub vault_address: templar_vault_kernel::Address,
     /// The underlying asset contract address (kernel format).
@@ -59,7 +59,7 @@ impl EffectContext {
         share_address: templar_vault_kernel::Address,
     ) -> Self {
         Self {
-            now_ns,
+            now_ns: TimestampNs(now_ns),
             vault_address,
             asset_address,
             share_address,
@@ -232,10 +232,14 @@ pub trait EffectInterpreter {
 /// Address mapping support for effect interpreters.
 pub trait AddressRegistrar {
     /// Register a kernel address with its corresponding Soroban address.
-    fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: Address);
+    fn register_address(
+        &mut self,
+        kernel_addr: templar_vault_kernel::Address,
+        soroban_addr: Address,
+    );
 
     /// Return true if the kernel address is registered.
-    fn has_address(&self, kernel_addr: &[u8; 32]) -> bool;
+    fn has_address(&self, kernel_addr: &templar_vault_kernel::Address) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +379,7 @@ impl AddressMap {
 
     /// Register a kernel address with its corresponding Soroban address.
     #[inline]
-    pub fn register(&mut self, kernel_addr: [u8; 32], soroban_addr: Address) {
+    pub fn register(&mut self, kernel_addr: templar_vault_kernel::Address, soroban_addr: Address) {
         self.addresses.insert(kernel_addr, soroban_addr);
     }
 
@@ -384,7 +388,7 @@ impl AddressMap {
     /// Returns `None` if the address is not registered.
     #[inline]
     #[must_use]
-    pub fn resolve(&self, kernel_addr: &[u8; 32]) -> Option<&Address> {
+    pub fn resolve(&self, kernel_addr: &templar_vault_kernel::Address) -> Option<&Address> {
         self.addresses.resolve(kernel_addr)
     }
 }
@@ -431,12 +435,19 @@ where
 
     /// Register an address mapping.
     #[inline]
-    pub fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: Address) {
+    pub fn register_address(
+        &mut self,
+        kernel_addr: templar_vault_kernel::Address,
+        soroban_addr: Address,
+    ) {
         self.address_map.register(kernel_addr, soroban_addr);
     }
 
     /// Resolve a kernel address to a Soroban address.
-    fn resolve_address(&self, kernel_addr: &[u8; 32]) -> EffectResult<&Address> {
+    fn resolve_address(
+        &self,
+        kernel_addr: &templar_vault_kernel::Address,
+    ) -> EffectResult<&Address> {
         match self.address_map.resolve(kernel_addr) {
             Some(address) => Ok(address),
             None => Err(RuntimeError::effect_failed("unknown address")),
@@ -449,11 +460,15 @@ where
     S: Sep41Token,
     A: Sep41Token,
 {
-    fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: Address) {
+    fn register_address(
+        &mut self,
+        kernel_addr: templar_vault_kernel::Address,
+        soroban_addr: Address,
+    ) {
         self.address_map.register(kernel_addr, soroban_addr);
     }
 
-    fn has_address(&self, kernel_addr: &[u8; 32]) -> bool {
+    fn has_address(&self, kernel_addr: &templar_vault_kernel::Address) -> bool {
         self.address_map.resolve(kernel_addr).is_some()
     }
 }

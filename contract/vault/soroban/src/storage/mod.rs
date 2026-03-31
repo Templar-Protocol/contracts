@@ -109,7 +109,10 @@ impl<'a> SorobanStorage<'a> {
     const SK_ADDRBOOK: Symbol = symbol_short!("addrbook");
 
     fn address_key(&self, kernel_addr: &Address) -> (Symbol, BytesN<32>) {
-        (Self::SK_ADDRBOOK, BytesN::from_array(self.env, kernel_addr))
+        (
+            Self::SK_ADDRBOOK,
+            BytesN::from_array(self.env, kernel_addr.as_bytes()),
+        )
     }
 
     fn load_blob(&self, key: &Symbol) -> Option<Vec<u8>> {

@@ -704,7 +704,7 @@ impl SorobanVaultContract {
             let fees = vault.get_fees();
             fee_info = (
                 anchor.total_assets as i128,
-                anchor.timestamp_ns,
+                anchor.timestamp_ns.as_u64(),
                 u128::from(fees.management.fee_wad) as i128,
                 u128::from(fees.performance.fee_wad) as i128,
             );

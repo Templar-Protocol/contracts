@@ -292,7 +292,7 @@ where
                 receiver,
                 assets_in: assets,
                 min_shares_out,
-                now_ns,
+                now_ns: TimestampNs(now_ns),
             },
             now_ns,
         )?;
@@ -341,7 +341,7 @@ where
                 receiver,
                 shares,
                 min_assets_out,
-                now_ns,
+                now_ns: TimestampNs(now_ns),
             },
             now_ns,
         )?;
@@ -371,8 +371,12 @@ where
             }
         }
         if self.state()?.op_state.is_idle() {
-            let step_summary =
-                self.apply_kernel_action(KernelAction::ExecuteWithdraw { now_ns }, now_ns)?;
+            let step_summary = self.apply_kernel_action(
+                KernelAction::ExecuteWithdraw {
+                    now_ns: TimestampNs(now_ns),
+                },
+                now_ns,
+            )?;
             summary.merge(step_summary);
         }
 
@@ -407,8 +411,13 @@ where
 
         let fees_active = !self.config.fees.management.fee_wad.is_zero()
             || !self.config.fees.performance.fee_wad.is_zero();
-        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns {
-            let _ = self.apply_kernel_action(KernelAction::RefreshFees { now_ns }, now_ns)?;
+        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns.as_u64() {
+            let _ = self.apply_kernel_action(
+                KernelAction::RefreshFees {
+                    now_ns: TimestampNs(now_ns),
+                },
+                now_ns,
+            )?;
         }
 
         Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
@@ -430,7 +439,7 @@ where
                 operator,
                 amount,
                 kind,
-                now_ns,
+                now_ns: TimestampNs(now_ns),
             },
             now_ns,
         )
@@ -736,7 +745,7 @@ where
     ) -> Result<u64, RuntimeError> {
         let op_id = self.reserve_authorized_op_id(caller, ActionKind::BeginAllocating)?;
         self.apply_kernel_action(
-            KernelAction::begin_allocating(op_id, plan.to_vec(), now_ns),
+            KernelAction::begin_allocating(op_id, plan.to_vec(), TimestampNs(now_ns)),
             now_ns,
         )?;
         Ok(op_id)
@@ -753,7 +762,7 @@ where
             KernelAction::begin_allocating(
                 op_id,
                 vec![AllocationPlanEntry::new(market, 0)],
-                now_ns,
+                TimestampNs(now_ns),
             ),
             now_ns,
         )?;
@@ -829,7 +838,10 @@ where
         now_ns: u64,
     ) -> Result<(), RuntimeError> {
         self.authorize(ActionKind::FinishAllocating, caller)?;
-        self.apply_kernel_action(KernelAction::finish_allocating(op_id, now_ns), now_ns)?;
+        self.apply_kernel_action(
+            KernelAction::finish_allocating(op_id, TimestampNs(now_ns)),
+            now_ns,
+        )?;
         Ok(())
     }
 
@@ -852,7 +864,7 @@ where
         let decision = self.classify_refresh_plan(&plan, current_ns)?;
         let op_id = self.reserve_authorized_op_id(caller, ActionKind::BeginRefreshing)?;
         self.apply_kernel_action(
-            KernelAction::begin_refreshing(op_id, decision.markets, current_ns),
+            KernelAction::begin_refreshing(op_id, decision.markets, TimestampNs(current_ns)),
             current_ns,
         )?;
         Ok(op_id)
@@ -866,7 +878,10 @@ where
     ) -> Result<RefreshResult, RuntimeError> {
         self.authorize(ActionKind::FinishRefreshing, caller)?;
         let snapshot = Self::snapshot_refresh_completion(self.state()?);
-        self.apply_kernel_action(KernelAction::finish_refreshing(op_id, now_ns), now_ns)?;
+        self.apply_kernel_action(
+            KernelAction::finish_refreshing(op_id, TimestampNs(now_ns)),
+            now_ns,
+        )?;
         Ok(Self::refresh_result(
             op_id,
             snapshot.markets_refreshed,
@@ -883,7 +898,7 @@ where
     ) -> Result<u128, RuntimeError> {
         self.authorize(ActionKind::SyncExternalAssets, caller)?;
         self.apply_kernel_action(
-            KernelAction::sync_external_assets(new_external_assets, op_id, now_ns),
+            KernelAction::sync_external_assets(new_external_assets, op_id, TimestampNs(now_ns)),
             now_ns,
         )?;
         Ok(self.state()?.external_assets)
@@ -898,7 +913,7 @@ where
     ) -> Result<u128, RuntimeError> {
         self.authorize(ActionKind::RebalanceWithdraw, caller)?;
         self.apply_kernel_action(
-            KernelAction::rebalance_withdraw(op_id, amount, now_ns),
+            KernelAction::rebalance_withdraw(op_id, amount, TimestampNs(now_ns)),
             now_ns,
         )?;
         Ok(self.state()?.external_assets)

@@ -694,7 +694,7 @@ fn test_withdraw_queue_invariant_violation_head_missing() {
     let mut pending = BTreeMap::new();
     pending.insert(
         5,
-        PendingWithdrawal::new(owner_addr(1), owner_addr(1), 100, 1000, 1_000_000_000_000),
+        PendingWithdrawal::new(owner_addr(1), owner_addr(1), 100, 1000, TimestampNs(1_000_000_000_000)),
     );
 
     let queue = WithdrawQueue::with_state(
@@ -748,7 +748,7 @@ fn test_withdraw_queue_enqueue_withdrawal() {
     let mut queue = WithdrawQueue::new();
     let max_pending = 100u32;
 
-    let w = PendingWithdrawal::new(owner_addr(1), owner_addr(2), 100, 1000, 1_000_000_000_000);
+    let w = PendingWithdrawal::new(owner_addr(1), owner_addr(2), 100, 1000, TimestampNs(1_000_000_000_000));
 
     let id = queue.enqueue_withdrawal(w.clone(), max_pending).unwrap();
     assert_eq!(id, 0);
@@ -786,13 +786,7 @@ fn arb_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
         0u64..u64::MAX,
     )
         .prop_map(|(owner_idx, shares, expected, ts)| {
-            PendingWithdrawal::new(
-                owner_addr(owner_idx as u64),
-                owner_addr(owner_idx as u64),
-                shares,
-                expected,
-                ts,
-            )
+            PendingWithdrawal::new(owner_addr(owner_idx as u64), owner_addr(owner_idx as u64), shares, expected, TimestampNs(ts))
         })
 }
 
@@ -1375,7 +1369,7 @@ proptest! {
 fn dequeue_panics_on_cached_escrow_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();
-    pending.insert(0, PendingWithdrawal::new([1u8; 32], [2u8; 32], 100, 200, 0));
+    pending.insert(0, PendingWithdrawal::new([1u8; 32], [2u8; 32], 100, 200, TimestampNs(0)));
     let mut queue = WithdrawQueue::with_state(pending, 0, 1);
     queue.cached_total_escrow = 0;
     queue.dequeue();
@@ -1386,7 +1380,7 @@ fn dequeue_panics_on_cached_escrow_underflow() {
 fn dequeue_panics_on_cached_expected_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();
-    pending.insert(0, PendingWithdrawal::new([1u8; 32], [2u8; 32], 100, 200, 0));
+    pending.insert(0, PendingWithdrawal::new([1u8; 32], [2u8; 32], 100, 200, TimestampNs(0)));
     let mut queue = WithdrawQueue::with_state(pending, 0, 1);
     queue.cached_total_expected = 0;
     queue.dequeue();

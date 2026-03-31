@@ -51,6 +51,7 @@ impl TimeGate {
 #[cfg(test)]
 mod tests {
     use super::TimeGate;
+    use crate::types::TimestampNs;
 
     #[test]
     fn time_gate_ready_now_is_always_ready() {

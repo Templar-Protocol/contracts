@@ -222,7 +222,7 @@ fn arb_entry() -> impl Strategy<Value = EscrowEntry> {
         0u128..=u64::MAX as u128,
     )
         .prop_map(|(owner_idx, shares, ts, expected)| {
-            EscrowEntry::new(owner_addr(owner_idx as u64), shares, ts, expected)
+            EscrowEntry::new(owner_addr(owner_idx as u64), shares, TimestampNs(ts), expected)
         })
 }
 

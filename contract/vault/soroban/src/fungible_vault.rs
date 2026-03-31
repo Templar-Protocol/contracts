@@ -17,7 +17,8 @@ use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
-    FeeAccrualAnchor, Number, VaultConfig, VaultState, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    FeeAccrualAnchor, Number, TimestampNs, VaultConfig, VaultState, MAX_PENDING,
+    MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::contract::{load_fees_spec, load_virtual_offsets, VaultDataKey};
@@ -33,7 +34,7 @@ fn preview_state_with_fee_accrual(
     let now_ns = ledger_timestamp_ns(env)?;
     let anchor = state.fee_anchor;
 
-    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns {
+    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns.as_u64() {
         return Ok(state);
     }
 
@@ -41,7 +42,7 @@ fn preview_state_with_fee_accrual(
     let fee_assets_base = total_assets_for_fee_accrual(
         current_assets,
         anchor.total_assets,
-        anchor.timestamp_ns,
+        anchor.timestamp_ns.as_u64(),
         now_ns,
         config.fees.max_total_assets_growth_rate,
     );
@@ -51,7 +52,7 @@ fn preview_state_with_fee_accrual(
         current_assets,
         state.total_shares,
         config.fees.management.fee_wad,
-        anchor.timestamp_ns,
+        anchor.timestamp_ns.as_u64(),
         now_ns,
     );
     let supply_after_management =
@@ -72,7 +73,7 @@ fn preview_state_with_fee_accrual(
     state.total_shares = supply_after_management
         .saturating_add(performance_shares)
         .as_u128_saturating();
-    state.fee_anchor = FeeAccrualAnchor::new(current_assets, now_ns);
+    state.fee_anchor = FeeAccrualAnchor::new(current_assets, TimestampNs(now_ns));
 
     Ok(state)
 }

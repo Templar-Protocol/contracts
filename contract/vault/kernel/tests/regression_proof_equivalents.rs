@@ -6,6 +6,7 @@ use templar_vault_kernel::{
         queue::{compute_settlement, WithdrawQueue},
         vault::MAX_PENDING,
     },
+    TimestampNs,
 };
 
 #[test]
@@ -18,7 +19,7 @@ fn queue_len_bounded() {
                 receiver_addr(u64::from(i)),
                 100,
                 1000,
-                u64::from(i),
+                TimestampNs(u64::from(i)),
                 max.min(MAX_PENDING as u32),
             );
         }
@@ -32,7 +33,14 @@ fn queue_ids_ordered() {
     let mut queue = WithdrawQueue::new();
 
     for i in 0..10_u64 {
-        let _ = queue.enqueue(owner_addr(i), receiver_addr(i), 100, 1000, i, 100);
+        let _ = queue.enqueue(
+            owner_addr(i),
+            receiver_addr(i),
+            100,
+            1000,
+            TimestampNs(i),
+            100,
+        );
         assert!(queue.next_withdraw_to_execute <= queue.next_pending_withdrawal_id);
     }
 
@@ -46,7 +54,14 @@ fn queue_contains_head_when_non_empty() {
     let mut queue = WithdrawQueue::new();
 
     for i in 0..5_u64 {
-        let _ = queue.enqueue(owner_addr(i), receiver_addr(i), 100, 1000, i, 100);
+        let _ = queue.enqueue(
+            owner_addr(i),
+            receiver_addr(i),
+            100,
+            1000,
+            TimestampNs(i),
+            100,
+        );
     }
 
     while !queue.is_empty() {
@@ -62,7 +77,14 @@ fn fifo_does_not_skip_head() {
     let mut queue = WithdrawQueue::new();
 
     for i in 0..10_u64 {
-        let _ = queue.enqueue(owner_addr(i), receiver_addr(i), 100, 1000, i, 100);
+        let _ = queue.enqueue(
+            owner_addr(i),
+            receiver_addr(i),
+            100,
+            1000,
+            TimestampNs(i),
+            100,
+        );
     }
 
     let mut prev_id = 0_u64;
@@ -163,7 +185,7 @@ fn settlement_over_collection_burns_all_shares() {
 
 #[test]
 fn escrow_settlement_proportional() {
-    let entry = EscrowEntry::new(owner_addr(1), 100, 0, 1000);
+    let entry = EscrowEntry::new(owner_addr(1), 100, TimestampNs(0), 1000);
 
     let half = settle_proportional(&entry, 500);
     assert_eq!(half.to_burn + half.refund, 100);

@@ -22,7 +22,6 @@ use super::{BorrowAssetMetrics, MarketConfiguration};
 pub enum HarvestYieldMode {
     #[default]
     Default,
-    Compounding,
     SnapshotLimit(u32),
 }
 

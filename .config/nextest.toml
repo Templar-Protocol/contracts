@@ -12,7 +12,7 @@ max-fail = 10
 # CI-specific profile balancing disk space and performance
 test-threads = 6
 retries = 1
-default-filter = "not package(templar-soroban-runtime)"
+default-filter = "not package(templar-soroban-runtime) and not test(/^requires_network_/)"
 
 # Fail fast to avoid wasting resources
 fail-fast = false
@@ -22,9 +22,6 @@ status-level = "fail"
 
 # Set slower timeout for CI runners
 slow-timeout = { period = "120s", terminate-after = 3 }
-
-# Exclude tests that use the network
-default-filter = "not test(/^requires_network_/)"
 
 [store]
 # Reduce disk usage by not storing test output

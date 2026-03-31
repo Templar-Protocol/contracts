@@ -59,7 +59,7 @@ use templar_vault_kernel::{
         withdrawal_step_callback, TransitionError, WithdrawalRequest,
     },
     types::EscrowSettlement,
-    FeesSpec, KernelAction,
+    Address, FeesSpec, KernelAction, TimestampNs,
 };
 
 // Arbitrary Strategies
@@ -115,7 +115,7 @@ fn arb_pending_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
                 receiver_addr(1),
                 escrow_shares,
                 expected_assets,
-                requested_at_ns,
+                TimestampNs(requested_at_ns),
             )
         })
 }
@@ -128,7 +128,9 @@ fn arb_escrow_entry() -> impl Strategy<Value = EscrowEntry> {
         0u64..u64::MAX,           // created_at
         0u128..=u64::MAX as u128, // expected_assets
     )
-        .prop_map(|(shares, ts, expected)| EscrowEntry::new(owner_addr(1), shares, ts, expected))
+        .prop_map(|(shares, ts, expected)| {
+            EscrowEntry::new(owner_addr(1), shares, TimestampNs(ts), expected)
+        })
 }
 
 /// Generate a vault state with valid invariants
@@ -142,7 +144,7 @@ fn arb_vault_state() -> impl Strategy<Value = VaultState> {
     )
         .prop_map(|(idle, external, shares, ts)| {
             let total = idle.saturating_add(external);
-            VaultState::with_initial(total, shares, idle, external, ts)
+            VaultState::with_initial(total, shares, idle, external, TimestampNs(ts))
         })
 }
 
@@ -155,7 +157,7 @@ proptest! {
         external in 0u128..=u64::MAX as u128 / 2,
     ) {
         let total = idle.saturating_add(external);
-        let state = VaultState::with_initial(total, 0, idle, external, 0);
+        let state = VaultState::with_initial(total, 0, idle, external, TimestampNs(0));
         prop_assert!(state.check_invariant(), "total_assets != idle + external");
     }
 
@@ -173,7 +175,7 @@ proptest! {
         state.total_shares = 0;
         state.idle_assets = idle;
         state.external_assets = external;
-        state.fee_anchor = FeeAccrualAnchor::new(total, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(total, TimestampNs(0));
         prop_assert!(!state.check_invariant(), "should detect invariant violation");
     }
 
@@ -196,12 +198,12 @@ proptest! {
         ts in 0u64..u64::MAX,
     ) {
         let total = idle.saturating_add(external);
-        let state = VaultState::with_initial(total, shares, idle, external, ts);
+        let state = VaultState::with_initial(total, shares, idle, external, TimestampNs(ts));
         prop_assert!(state.check_invariant());
         prop_assert_eq!(state.total_assets, total);
         prop_assert_eq!(state.total_shares, shares);
         prop_assert_eq!(state.fee_anchor.total_assets, total);
-        prop_assert_eq!(state.fee_anchor.timestamp_ns, ts);
+        prop_assert_eq!(state.fee_anchor.timestamp_ns, TimestampNs(ts));
     }
 
     /// Property 5: op_id allocation is monotonic
@@ -235,10 +237,10 @@ proptest! {
         new_assets in 0u128..=u64::MAX as u128,
         new_ts in u64::MAX / 2..u64::MAX,
     ) {
-        let mut anchor = FeeAccrualAnchor::new(old_assets, old_ts);
-        anchor.update(new_assets, new_ts);
+        let mut anchor = FeeAccrualAnchor::new(old_assets, TimestampNs(old_ts));
+        anchor.update(new_assets, TimestampNs(new_ts));
         prop_assert_eq!(anchor.total_assets, new_assets);
-        prop_assert_eq!(anchor.timestamp_ns, new_ts);
+        prop_assert_eq!(anchor.timestamp_ns, TimestampNs(new_ts));
     }
 
     /// Property 8: zero fee anchor is valid
@@ -246,7 +248,7 @@ proptest! {
     fn prop_fee_anchor_zero(_seed in 0u64..100u64) {
         let anchor = FeeAccrualAnchor::zero();
         prop_assert_eq!(anchor.total_assets, 0);
-        prop_assert_eq!(anchor.timestamp_ns, 0);
+        prop_assert_eq!(anchor.timestamp_ns, TimestampNs(0));
     }
 
     /// Property 9: idle state detection works
@@ -280,7 +282,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64 * 1_000_000_000,
+                TimestampNs(i as u64 * 1_000_000_000),
                 max_pending,
             );
         }
@@ -298,7 +300,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             );
         }
@@ -316,7 +318,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             );
         }
@@ -336,7 +338,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             ).unwrap();
             ids.push(id);
@@ -359,7 +361,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             );
         }
@@ -383,7 +385,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             );
             prop_assert!(result.is_ok());
@@ -395,7 +397,7 @@ proptest! {
             receiver_addr(9),
             100,
             1000,
-            max_pending as u64,
+            TimestampNs(max_pending as u64),
             max_pending,
         );
         prop_assert!(result.is_err());
@@ -423,7 +425,7 @@ proptest! {
                 receiver_addr(i as u64),
                 shares,
                 assets,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             );
             expected_shares += shares;
@@ -447,7 +449,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             ).unwrap();
             ids.push(id);
@@ -469,7 +471,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100 + i as u128,
                 1000 + i as u128,
-                i as u64,
+                TimestampNs(i as u64),
                 100,
             );
         }
@@ -504,7 +506,7 @@ proptest! {
     ) {
         let now = requested_at.saturating_add(delta);
         let threshold = requested_at.saturating_add(cooldown);
-        let past = is_past_cooldown(requested_at, now, cooldown);
+        let past = is_past_cooldown(TimestampNs(requested_at), TimestampNs(now), cooldown);
         prop_assert_eq!(past, now >= threshold);
     }
 
@@ -520,7 +522,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
             ))
             .collect();
 
@@ -543,7 +545,7 @@ proptest! {
                 receiver_addr(i as u64),
                 (i as u128 + 1) * 100,
                 (i as u128 + 1) * 1000,
-                i as u64,
+                TimestampNs(i as u64),
             ))
             .collect();
 
@@ -955,10 +957,10 @@ proptest! {
         state.total_assets = cur_total_assets;
         state.total_shares = total_supply;
         state.idle_assets = cur_total_assets;
-        state.fee_anchor = FeeAccrualAnchor::new(0, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
 
         let mut config = default_config();
-        let performance = FeeSlot::new(Wad::from(fee_wad), [9u8; 32]);
+        let performance = FeeSlot::new(Wad::from(fee_wad), Address([9u8; 32]));
         let management = FeeSlot::zero();
         config.fees = FeesSpec::new(performance, management, None);
 
@@ -966,8 +968,10 @@ proptest! {
             state,
             &config,
             None,
-            &[0u8; 32],
-            KernelAction::RefreshFees { now_ns: 1 },
+            &Address([0u8; 32]),
+            KernelAction::RefreshFees {
+                now_ns: TimestampNs(1),
+            },
         );
 
         let fee_assets =
@@ -990,7 +994,9 @@ proptest! {
                     .effects
                     .iter()
                     .filter_map(|effect| match effect {
-                        KernelEffect::MintShares { owner, shares } if *owner == [9u8; 32] => {
+                        KernelEffect::MintShares { owner, shares }
+                            if *owner == Address([9u8; 32]) =>
+                        {
                             Some(*shares)
                         }
                         _ => None,
@@ -1301,7 +1307,7 @@ proptest! {
         expected_assets in 1u128..=u64::MAX as u128,
         actual_assets in 0u128..=u64::MAX as u128,
     ) {
-        let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected_assets);
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0), expected_assets);
         let settlement = settle_proportional(&entry, actual_assets);
         let total = settlement.to_burn.saturating_add(settlement.refund);
         prop_assert_eq!(total, shares);
@@ -1313,7 +1319,7 @@ proptest! {
         shares in 0u128..=u64::MAX as u128,
         expected in 0u128..=u64::MAX as u128,
     ) {
-        let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected);
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0), expected);
         let settlement = EscrowSettlement::burn_all(entry.shares);
         prop_assert_eq!(settlement.to_burn, shares);
         prop_assert_eq!(settlement.refund, 0);
@@ -1325,7 +1331,7 @@ proptest! {
         shares in 0u128..=u64::MAX as u128,
         expected in 0u128..=u64::MAX as u128,
     ) {
-        let entry = EscrowEntry::new(owner_addr(1), shares, 0, expected);
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0), expected);
         let settlement = EscrowSettlement::refund_all(entry.shares);
         prop_assert_eq!(settlement.to_burn, 0);
         prop_assert_eq!(settlement.refund, shares);
@@ -1337,7 +1343,7 @@ proptest! {
         shares in 1u128..=u64::MAX as u128 - 1,
         excess in 1u128..=1_000_000u128,
     ) {
-        let entry = EscrowEntry::new(owner_addr(1), shares, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0), 1000);
         let settlement = EscrowSettlement::partial(shares, excess);
         let result = apply_settlement(&entry, &settlement);
         prop_assert!(result.is_none());
@@ -1350,7 +1356,7 @@ proptest! {
         to_burn in 0u128..=u64::MAX as u128 / 2,
         refund in 0u128..=u64::MAX as u128 / 2,
     ) {
-        let entry = EscrowEntry::new(owner_addr(1), shares, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0), 1000);
         let settlement = EscrowSettlement::partial(to_burn, refund);
         let total = to_burn.saturating_add(refund);
         let can = can_apply_settlement(&entry, &settlement);
@@ -1407,7 +1413,7 @@ proptest! {
             .map(|i| EscrowEntry::new(
                 owner_addr(i as u64),
                 (i as u128 + 1) * 100,
-                i as u64,
+                TimestampNs(i as u64),
                 (i as u128 + 1) * 1000,
             ))
             .collect();
@@ -1427,7 +1433,7 @@ proptest! {
     /// Property 70: EscrowEntry::is_empty consistency
     #[test]
     fn prop_escrow_entry_is_empty(shares in 0u128..=u64::MAX as u128) {
-        let entry = EscrowEntry::new(owner_addr(1), shares, 0, 1000);
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0), 1000);
         prop_assert_eq!(entry.is_empty(), shares == 0);
     }
 }
@@ -1477,7 +1483,7 @@ fn deposit_zero_assets_returns_zero_amount() {
             receiver: receiver_addr(1),
             assets_in: 0,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     assert!(
@@ -1504,7 +1510,7 @@ fn deposit_one_wei_mints_shares() {
             receiver: receiver_addr(1),
             assets_in: 1,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     let result = result.expect("1 wei deposit should succeed");
@@ -1576,7 +1582,7 @@ fn withdraw_below_min_withdrawal_rejected() {
             receiver: receiver_addr(1),
             shares,
             min_assets_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     assert!(
@@ -1616,7 +1622,7 @@ fn withdraw_at_min_withdrawal_succeeds() {
             receiver: receiver_addr(1),
             shares: MIN_WITHDRAWAL_ASSETS,
             min_assets_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     assert!(
@@ -1643,7 +1649,7 @@ fn withdraw_zero_shares_returns_zero_amount() {
             receiver: receiver_addr(1),
             shares: 0,
             min_assets_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     assert!(
@@ -1750,7 +1756,7 @@ fn queue_fills_to_capacity_then_rejects() {
             receiver_addr(i as u64),
             1000,
             MIN_WITHDRAWAL_ASSETS,
-            i as u64,
+            TimestampNs(i as u64),
             max,
         );
         assert!(result.is_ok(), "Enqueue {i} should succeed");
@@ -1762,7 +1768,7 @@ fn queue_fills_to_capacity_then_rejects() {
         receiver_addr(max as u64),
         1000,
         MIN_WITHDRAWAL_ASSETS,
-        max as u64,
+        TimestampNs(max as u64),
         max,
     );
     assert!(result.is_err(), "Enqueue beyond capacity should fail",);
@@ -1776,17 +1782,29 @@ fn cooldown_exact_boundary() {
 
     // Just before cooldown
     assert!(
-        !is_past_cooldown(requested_at, requested_at + cooldown_ns - 1, cooldown_ns),
+        !is_past_cooldown(
+            TimestampNs(requested_at),
+            TimestampNs(requested_at + cooldown_ns - 1),
+            cooldown_ns,
+        ),
         "Should NOT be past cooldown 1ns before",
     );
     // Exactly at cooldown
     assert!(
-        is_past_cooldown(requested_at, requested_at + cooldown_ns, cooldown_ns),
+        is_past_cooldown(
+            TimestampNs(requested_at),
+            TimestampNs(requested_at + cooldown_ns),
+            cooldown_ns,
+        ),
         "Should be past cooldown at exact boundary",
     );
     // Just after cooldown
     assert!(
-        is_past_cooldown(requested_at, requested_at + cooldown_ns + 1, cooldown_ns),
+        is_past_cooldown(
+            TimestampNs(requested_at),
+            TimestampNs(requested_at + cooldown_ns + 1),
+            cooldown_ns,
+        ),
         "Should be past cooldown 1ns after",
     );
 }
@@ -1794,17 +1812,20 @@ fn cooldown_exact_boundary() {
 /// Boundary 16: Zero cooldown means immediately ready when now >= requested_at.
 #[test]
 fn zero_cooldown_passes_when_now_gte_requested() {
-    assert!(is_past_cooldown(0, 0, 0), "Zero cooldown, same time → past");
     assert!(
-        is_past_cooldown(100, 100, 0),
+        is_past_cooldown(TimestampNs(0), TimestampNs(0), 0),
         "Zero cooldown, same time → past"
     );
     assert!(
-        is_past_cooldown(100, 101, 0),
+        is_past_cooldown(TimestampNs(100), TimestampNs(100), 0),
+        "Zero cooldown, same time → past"
+    );
+    assert!(
+        is_past_cooldown(TimestampNs(100), TimestampNs(101), 0),
         "Zero cooldown, later now → past"
     );
     assert!(
-        !is_past_cooldown(100, 99, 0),
+        !is_past_cooldown(TimestampNs(100), TimestampNs(99), 0),
         "Zero cooldown, earlier now → not past (request not yet made)"
     );
 }
@@ -1830,7 +1851,7 @@ fn deposit_near_max_rejected() {
             receiver: receiver_addr(1),
             assets_in: 100, // Would overflow total_assets
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     assert!(matches!(
@@ -1893,7 +1914,7 @@ fn sync_external_near_max_saturates() {
         KernelAction::SyncExternalAssets {
             new_external_assets: u128::MAX, // Would overflow with idle_assets
             op_id: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     );
     // Should fail: idle + MAX would overflow u128
@@ -1978,20 +1999,20 @@ fn mul_div_floor_large_values_no_panic() {
 fn cooldown_u64_max_no_panic() {
     // requested_at=MAX, cooldown=1 → saturates to MAX; now=MAX >= MAX → true
     assert!(
-        is_past_cooldown(u64::MAX, u64::MAX, 1),
+        is_past_cooldown(TimestampNs(u64::MAX), TimestampNs(u64::MAX), 1),
         "Saturating add clamps to MAX, so passes"
     );
     assert!(
-        is_past_cooldown(u64::MAX, u64::MAX, 0),
+        is_past_cooldown(TimestampNs(u64::MAX), TimestampNs(u64::MAX), 0),
         "Zero cooldown at MAX should pass"
     );
     assert!(
-        is_past_cooldown(0, u64::MAX, u64::MAX),
+        is_past_cooldown(TimestampNs(0), TimestampNs(u64::MAX), u64::MAX),
         "Should be past when now=MAX, cooldown=MAX"
     );
     // now=0 is before requested_at=MAX, so not past cooldown
     assert!(
-        !is_past_cooldown(u64::MAX, 0, 1),
+        !is_past_cooldown(TimestampNs(u64::MAX), TimestampNs(0), 1),
         "now=0 before requested_at=MAX"
     );
 }
@@ -2004,11 +2025,11 @@ fn address_book_insert_resolve() {
     let addr_a: [u8; 32] = [1u8; 32];
     let addr_b: [u8; 32] = [2u8; 32];
 
-    book.insert(addr_a, "alice");
-    book.insert(addr_b, "bob");
+    book.insert(Address(addr_a), "alice");
+    book.insert(Address(addr_b), "bob");
 
-    assert_eq!(book.resolve(&addr_a), Some(&"alice"));
-    assert_eq!(book.resolve(&addr_b), Some(&"bob"));
+    assert_eq!(book.resolve(&Address(addr_a)), Some(&"alice"));
+    assert_eq!(book.resolve(&Address(addr_b)), Some(&"bob"));
     assert_eq!(book.len(), 2);
 }
 
@@ -2019,10 +2040,14 @@ fn address_book_overwrite_same_key() {
     let mut book = AddressBook::<&str>::new();
     let addr: [u8; 32] = [1u8; 32];
 
-    book.insert(addr, "alice");
-    book.insert(addr, "bob");
+    book.insert(Address(addr), "alice");
+    book.insert(Address(addr), "bob");
 
-    assert_eq!(book.resolve(&addr), Some(&"bob"), "Last insert wins");
+    assert_eq!(
+        book.resolve(&Address(addr)),
+        Some(&"bob"),
+        "Last insert wins"
+    );
     assert_eq!(book.len(), 1, "No duplicate entries");
 }
 
@@ -2035,7 +2060,7 @@ fn address_book_distinct_addresses_no_collision() {
     for i in 0u8..=255 {
         let mut addr = [0u8; 32];
         addr[0] = i;
-        book.insert(addr, i as u32);
+        book.insert(Address(addr), i as u32);
     }
 
     assert_eq!(book.len(), 256, "256 distinct single-byte-varied addresses");
@@ -2043,7 +2068,7 @@ fn address_book_distinct_addresses_no_collision() {
     for i in 0u8..=255 {
         let mut addr = [0u8; 32];
         addr[0] = i;
-        assert_eq!(book.resolve(&addr), Some(&(i as u32)));
+        assert_eq!(book.resolve(&Address(addr)), Some(&(i as u32)));
     }
 }
 
@@ -2052,7 +2077,7 @@ fn address_book_distinct_addresses_no_collision() {
 fn address_book_missing_returns_none() {
     use templar_vault_kernel::AddressBook;
     let book = AddressBook::<&str>::new();
-    assert_eq!(book.resolve(&[42u8; 32]), None);
+    assert_eq!(book.resolve(&Address([42u8; 32])), None);
     assert!(book.is_empty());
 }
 
@@ -2200,14 +2225,16 @@ fn fee_zero_on_zero_supply() {
 fn fee_refresh_rejects_backwards_timestamp() {
     let config = default_config();
     let mut state = default_state();
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 10_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(10_000));
 
     let result = apply_action(
         state,
         &config,
         None,
         &self_addr(),
-        KernelAction::RefreshFees { now_ns: 5_000 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(5_000),
+        },
     );
     assert!(result.is_err(), "Backwards timestamp must be rejected");
 }
@@ -2218,19 +2245,21 @@ fn fee_refresh_updates_anchor() {
     let config = default_config();
     let mut state = default_state();
     state.total_assets = 5_000;
-    state.fee_anchor = FeeAccrualAnchor::new(1_000, 100);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(100));
 
     let result = apply_action(
         state,
         &config,
         None,
         &self_addr(),
-        KernelAction::RefreshFees { now_ns: 200 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(200),
+        },
     )
     .expect("Forward timestamp should succeed");
 
     assert_eq!(result.state.fee_anchor.total_assets, 5_000);
-    assert_eq!(result.state.fee_anchor.timestamp_ns, 200);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(200));
 }
 
 /// Fee anchor at timestamp 0 → RefreshFees at 0 is rejected (must advance).
@@ -2244,7 +2273,9 @@ fn fee_refresh_at_zero_timestamp() {
         &config,
         None,
         &self_addr(),
-        KernelAction::RefreshFees { now_ns: 0 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(0),
+        },
     );
     assert!(
         result.is_err(),
@@ -2280,11 +2311,11 @@ fn build_large_queue(n: u32, assets_per: u128) -> WithdrawQueue {
         owner[..4].copy_from_slice(&i.to_le_bytes());
         queue
             .enqueue(
-                owner,
-                owner,
-                assets_per, // escrow_shares
-                assets_per, // expected_assets
-                i as u64,   // requested_at_ns
+                Address(owner),
+                Address(owner),
+                assets_per,            // escrow_shares
+                assets_per,            // expected_assets
+                TimestampNs(i as u64), // requested_at_ns
                 MAX_PENDING as u32,
             )
             .unwrap_or_else(|e| panic!("enqueue {i} failed: {e:?}"));
@@ -2304,11 +2335,11 @@ fn queue_fills_to_max_pending_then_rejects() {
     // Next enqueue should fail
     let mut queue = queue;
     let result = queue.enqueue(
-        [255u8; 32],
-        [255u8; 32],
+        Address([255u8; 32]),
+        Address([255u8; 32]),
         1_000,
         1_000,
-        9999,
+        TimestampNs(9999),
         MAX_PENDING as u32,
     );
     assert!(
@@ -2386,7 +2417,7 @@ fn find_request_status_worst_case_at_max_pending() {
     let mut last_owner = [0u8; 32];
     last_owner[..4].copy_from_slice(&(n - 1).to_le_bytes());
 
-    let status = find_request_status(items.iter().copied(), &last_owner);
+    let status = find_request_status(items.iter().copied(), &Address(last_owner));
     assert!(status.is_some(), "Last owner should be found");
     let status = status.unwrap();
     assert_eq!(status.index, n - 1, "Should be at the last position");
@@ -2407,7 +2438,7 @@ fn find_request_status_miss_at_max_pending() {
 
     // Owner that doesn't exist
     let missing_owner = [255u8; 32];
-    let status = find_request_status(items.iter().copied(), &missing_owner);
+    let status = find_request_status(items.iter().copied(), &Address(missing_owner));
     assert!(status.is_none(), "Non-existent owner should return None");
 }
 
@@ -2431,7 +2462,14 @@ fn queue_churn_at_high_depth() {
         let mut owner = [128u8; 32];
         owner[..4].copy_from_slice(&i.to_le_bytes());
         queue
-            .enqueue(owner, owner, assets_per, assets_per, 10_000 + i as u64, n)
+            .enqueue(
+                Address(owner),
+                Address(owner),
+                assets_per,
+                assets_per,
+                TimestampNs(10_000 + i as u64),
+                n,
+            )
             .unwrap_or_else(|e| panic!("re-enqueue {i} failed: {e:?}"));
     }
     assert_eq!(
@@ -2732,7 +2770,7 @@ fn abort_allocating_restores_state() {
         KernelAction::BeginAllocating {
             op_id: 1,
             plan: vec![alloc_step(0, 500), alloc_step(1, 500), alloc_step(2, 500)],
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -2866,8 +2904,8 @@ fn regression_withdrawal_amount_one_single_step() {
     let request = WithdrawalRequest {
         op_id: 1,
         amount: 1,
-        receiver: [34; 32],
-        owner: [17; 32],
+        receiver: Address([34; 32]),
+        owner: Address([17; 32]),
         escrow_shares: 1,
     };
     let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
@@ -2893,8 +2931,8 @@ fn regression_minimal_withdrawal_full_flow() {
     let request = WithdrawalRequest {
         op_id: 1,
         amount: 1,
-        receiver: [34; 32],
-        owner: [17; 32],
+        receiver: Address([34; 32]),
+        owner: Address([17; 32]),
         escrow_shares: 1,
     };
     let result = start_withdrawal(OpState::Idle, request).unwrap();
@@ -2925,7 +2963,7 @@ fn regression_invariant_check_minimal_delta() {
     state.total_shares = 0;
     state.idle_assets = idle; // 1
     state.external_assets = external; // 1
-    state.fee_anchor = FeeAccrualAnchor::new(total, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(total, TimestampNs(0));
     // total_assets(3) != idle(1) + external(1) = invariant violation
     assert!(
         !state.check_invariant(),
@@ -2951,7 +2989,7 @@ fn parity_kernel_deterministic_deposit() {
         receiver: owner_addr(1),
         assets_in: 1_000_000,
         min_shares_out: 0,
-        now_ns: 100,
+        now_ns: TimestampNs(100),
     };
 
     let result_a =
@@ -2987,7 +3025,7 @@ fn parity_deposit_shares_ratio_stable() {
             receiver: owner_addr(1),
             assets_in: 10_000,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3003,7 +3041,7 @@ fn parity_deposit_shares_ratio_stable() {
             receiver: owner_addr(2),
             assets_in: 5_000,
             min_shares_out: 0,
-            now_ns: 2,
+            now_ns: TimestampNs(2),
         },
     )
     .unwrap();
@@ -3044,7 +3082,7 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
         KernelAction::BeginAllocating {
             op_id: 1,
             plan: plan.clone(),
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3090,7 +3128,7 @@ fn parity_executor_full_allocation_cycle() {
     state.idle_assets = 8_000;
     state.external_assets = 2_000;
     state.total_assets = 10_000;
-    state.fee_anchor = FeeAccrualAnchor::new(10_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
 
     let plan = vec![alloc_step(0, 2_000), alloc_step(1, 1_000)];
 
@@ -3103,7 +3141,7 @@ fn parity_executor_full_allocation_cycle() {
         KernelAction::BeginAllocating {
             op_id: 1,
             plan,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3121,7 +3159,7 @@ fn parity_executor_full_allocation_cycle() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 5_000,
             op_id: 1,
-            now_ns: 2,
+            now_ns: TimestampNs(2),
         },
     )
     .unwrap();
@@ -3136,7 +3174,7 @@ fn parity_executor_full_allocation_cycle() {
         &self_addr(),
         KernelAction::FinishAllocating {
             op_id: 1,
-            now_ns: 3,
+            now_ns: TimestampNs(3),
         },
     )
     .unwrap();
@@ -3174,7 +3212,7 @@ fn parity_deposit_withdraw_settle_roundtrip() {
             receiver: user,
             assets_in: 10_000,
             min_shares_out: 0,
-            now_ns: 100,
+            now_ns: TimestampNs(100),
         },
     )
     .unwrap();
@@ -3191,7 +3229,7 @@ fn parity_deposit_withdraw_settle_roundtrip() {
             receiver: user,
             shares: 10_000,
             min_assets_out: 0,
-            now_ns: 200,
+            now_ns: TimestampNs(200),
         },
     )
     .unwrap();
@@ -3203,7 +3241,9 @@ fn parity_deposit_withdraw_settle_roundtrip() {
         &config,
         None,
         &vault,
-        KernelAction::ExecuteWithdraw { now_ns: 300 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(300),
+        },
     )
     .unwrap();
     assert!(result.state.op_state.is_withdrawing());
@@ -3275,7 +3315,7 @@ fn parity_preview_matches_actual() {
             receiver: owner_addr(1),
             assets_in: 10_000,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3298,7 +3338,7 @@ fn parity_preview_matches_actual() {
             receiver: owner_addr(1),
             shares: 5_000,
             min_assets_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3325,7 +3365,7 @@ fn parity_refresh_external_growth() {
     state.external_assets = 5_000;
     state.total_assets = 10_000;
     state.total_shares = 10_000;
-    state.fee_anchor = FeeAccrualAnchor::new(10_000, 0);
+    state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
 
     let vault = self_addr();
 
@@ -3338,7 +3378,7 @@ fn parity_refresh_external_growth() {
         KernelAction::BeginRefreshing {
             op_id: 1,
             plan: vec![0, 1],
-            now_ns: 100,
+            now_ns: TimestampNs(100),
         },
     )
     .unwrap();
@@ -3352,7 +3392,7 @@ fn parity_refresh_external_growth() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 7_000,
             op_id: 1,
-            now_ns: 200,
+            now_ns: TimestampNs(200),
         },
     )
     .unwrap();
@@ -3365,7 +3405,7 @@ fn parity_refresh_external_growth() {
         &vault,
         KernelAction::FinishRefreshing {
             op_id: 1,
-            now_ns: 300,
+            now_ns: TimestampNs(300),
         },
     )
     .unwrap();
@@ -3406,11 +3446,11 @@ fn parity_effects_identical_for_deposit() {
         None,
         &self_addr(),
         KernelAction::Deposit {
-            owner: near_addr,
-            receiver: near_addr,
+            owner: Address(near_addr),
+            receiver: Address(near_addr),
             assets_in: 5_000,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3423,11 +3463,11 @@ fn parity_effects_identical_for_deposit() {
         None,
         &self_addr(),
         KernelAction::Deposit {
-            owner: soroban_addr,
-            receiver: soroban_addr,
+            owner: Address(soroban_addr),
+            receiver: Address(soroban_addr),
             assets_in: 5_000,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3458,7 +3498,7 @@ fn parity_abort_withdrawing_refund() {
             receiver: user,
             assets_in: 10_000,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3474,7 +3514,7 @@ fn parity_abort_withdrawing_refund() {
             receiver: user,
             shares: 5_000,
             min_assets_out: 0,
-            now_ns: 2,
+            now_ns: TimestampNs(2),
         },
     )
     .unwrap();
@@ -3486,7 +3526,9 @@ fn parity_abort_withdrawing_refund() {
         &config,
         None,
         &vault,
-        KernelAction::ExecuteWithdraw { now_ns: 3 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(3),
+        },
     )
     .unwrap();
     let op_id = result.state.op_state.op_id().unwrap();
@@ -3531,7 +3573,7 @@ fn parity_concurrent_deposits_share_consistency() {
             receiver: owner_addr(1),
             assets_in: 10_000,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         },
     )
     .unwrap();
@@ -3547,7 +3589,7 @@ fn parity_concurrent_deposits_share_consistency() {
             receiver: owner_addr(2),
             assets_in: 20_000,
             min_shares_out: 0,
-            now_ns: 2,
+            now_ns: TimestampNs(2),
         },
     )
     .unwrap();
@@ -3563,7 +3605,7 @@ fn parity_concurrent_deposits_share_consistency() {
             receiver: owner_addr(3),
             assets_in: 5_000,
             min_shares_out: 0,
-            now_ns: 3,
+            now_ns: TimestampNs(3),
         },
     )
     .unwrap();
@@ -3587,13 +3629,19 @@ proptest! {
         initial_shares in 0u128..=1_000_000_000u128,
     ) {
         let config = default_config();
-        let state = VaultState::with_initial(initial_idle, initial_shares, initial_idle, 0, 0);
+        let state = VaultState::with_initial(
+            initial_idle,
+            initial_shares,
+            initial_idle,
+            0,
+            TimestampNs(0),
+        );
         let action = KernelAction::Deposit {
             owner: owner_addr(1),
             receiver: owner_addr(1),
             assets_in: assets,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: TimestampNs(1),
         };
 
         let r1 = apply_action(state.clone(), &config, None, &self_addr(), action.clone());
@@ -3620,7 +3668,7 @@ proptest! {
         let alloc_amount = idle * alloc_frac / 100;
         if alloc_amount == 0 { return Ok(()); }
 
-        let state = VaultState::with_initial(idle, 0, idle, 0, 0);
+        let state = VaultState::with_initial(idle, 0, idle, 0, TimestampNs(0));
 
         // Kernel handles idle_assets decrement in BeginAllocating
         let result = apply_action(
@@ -3631,7 +3679,7 @@ proptest! {
             KernelAction::BeginAllocating {
                 op_id: 1,
                 plan: vec![alloc_step(0, alloc_amount)],
-                now_ns: 1,
+                now_ns: TimestampNs(1),
             },
         );
         prop_assert!(result.is_ok());
@@ -3677,7 +3725,7 @@ proptest! {
                 receiver: user,
                 assets_in: amount,
                 min_shares_out: 0,
-                now_ns: 1,
+                now_ns: TimestampNs(1),
             },
         ).unwrap();
 
@@ -3691,7 +3739,7 @@ proptest! {
                 receiver: user,
                 shares: amount,
                 min_assets_out: 0,
-                now_ns: 2,
+                now_ns: TimestampNs(2),
             },
         ).unwrap();
 
@@ -3714,8 +3762,8 @@ fn spec_addr(tag: u8, index: u64) -> [u8; 32] {
     address
 }
 
-fn spec_vault_addr() -> [u8; 32] {
-    spec_addr(0xAA, 0)
+fn spec_vault_addr() -> Address {
+    Address(spec_addr(0xAA, 0))
 }
 
 proptest! {
@@ -3729,11 +3777,11 @@ proptest! {
             None,
             &spec_vault_addr(),
             KernelAction::Deposit {
-                owner: spec_addr(0x11, 1),
-                receiver: spec_addr(0x22, 2),
+                owner: Address(spec_addr(0x11, 1)),
+                receiver: Address(spec_addr(0x22, 2)),
                 assets_in: assets as u128,
                 min_shares_out: 0,
-                now_ns: 0,
+                now_ns: TimestampNs(0),
             },
         )
         .unwrap();
@@ -3750,7 +3798,14 @@ proptest! {
         let mut ids = Vec::new();
         for i in 0..n {
             let id = queue
-                .enqueue(spec_addr(0x33, i as u64), spec_addr(0x44, i as u64), 10, 10, i as u64, 1024)
+                .enqueue(
+                    Address(spec_addr(0x33, i as u64)),
+                    Address(spec_addr(0x44, i as u64)),
+                    10,
+                    10,
+                    TimestampNs(i as u64),
+                    1024,
+                )
                 .unwrap();
             ids.push(id);
         }
@@ -3791,7 +3846,7 @@ proptest! {
             KernelAction::SyncExternalAssets {
                 new_external_assets: external as u128,
                 op_id: 7,
-                now_ns: 0,
+                now_ns: TimestampNs(0),
             },
         )
         .unwrap();

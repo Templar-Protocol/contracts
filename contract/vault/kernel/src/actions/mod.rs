@@ -987,6 +987,7 @@ fn next_withdrawal_queue_outcome(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_atomic_withdraw(
     mut state: VaultState,
     config: &VaultConfig,
