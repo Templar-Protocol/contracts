@@ -98,6 +98,8 @@ pub struct ServiceConfig {
     pub batch_swap_on_cycle_start: bool,
     /// Retry configuration for transient swap errors
     pub swap_retry_config: crate::swap::SwapRetryConfig,
+    /// Shared notifier for Telegram alerts
+    pub notifier: crate::notifier::SharedNotifier,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -154,6 +156,7 @@ impl LiquidatorService {
             Some(config.redstone_gateway_url.clone()),
             None,
             None,
+            crate::rpc::NonceTracker::default(),
         );
 
         // Log swap configuration
@@ -557,6 +560,7 @@ impl LiquidatorService {
                         self.config.signer_account.clone(),
                         self.config.signer_key.clone(),
                     )),
+                    self.config.notifier.clone(),
                 );
 
                 // Fetch market version for version-specific liquidation logic

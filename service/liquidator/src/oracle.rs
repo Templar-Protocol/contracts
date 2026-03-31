@@ -25,7 +25,7 @@ use templar_common::{
 };
 
 use crate::{
-    rpc::{view, RpcError},
+    rpc::{view, NonceTracker, RpcError},
     LiquidatorError, LiquidatorResult,
 };
 
@@ -114,6 +114,8 @@ pub struct OracleFetcher {
     signer_id: Option<AccountId>,
     /// Signer key for on-chain oracle price updates
     signer_key: Option<near_crypto::SecretKey>,
+    /// Shared nonce tracker to prevent nonce collisions with other transactions
+    nonce_tracker: NonceTracker,
 }
 
 impl OracleFetcher {
@@ -127,6 +129,7 @@ impl OracleFetcher {
         redstone_gateway_url: Option<String>,
         proxy_oracle_cache: Option<ProxyOracleCache>,
         signer_for_oracle: Option<(AccountId, near_crypto::SecretKey)>,
+        nonce_tracker: NonceTracker,
     ) -> Self {
         let (signer_id, signer_key) = match signer_for_oracle {
             Some((id, key)) => (Some(id), Some(key)),
@@ -144,6 +147,7 @@ impl OracleFetcher {
                 .unwrap_or_else(|| DEFAULT_REDSTONE_GATEWAY_URL.to_string()),
             signer_id,
             signer_key,
+            nonce_tracker,
         }
     }
 
@@ -493,7 +497,7 @@ impl OracleFetcher {
                 LiquidatorError::OracleUpdateError(format!("Failed to query access key: {e}"))
             })?;
 
-        let current_nonce = match access_key_query_response.kind {
+        let rpc_nonce = match access_key_query_response.kind {
             near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
                 access_key.nonce
             }
@@ -505,12 +509,13 @@ impl OracleFetcher {
         };
 
         let block_hash = access_key_query_response.block_hash;
+        let nonce = self.nonce_tracker.next_nonce(rpc_nonce);
 
         // Construct and send update transaction
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: signer_id.clone(),
             public_key: signer_key.public_key(),
-            nonce: current_nonce + 1,
+            nonce,
             receiver_id: oracle.clone(),
             block_hash,
             actions: vec![near_primitives::action::FunctionCallAction {

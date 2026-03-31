@@ -4,6 +4,163 @@
 //! for clear, concise logging using actual asset IDs and decimals from
 //! market configuration.
 
+/// Derive a short human-readable ticker from a full asset ID.
+///
+/// Recognizes common patterns:
+/// - `nep141:btc.omft.near` → `BTC`
+/// - `nep141:eth-0xa0b8...omft.near` (ERC-20 USDC) → `USDC`
+/// - `nep141:eth-0x2260...omft.near` (ERC-20 WBTC) → `WBTC`
+/// - `nep141:wrap.near` → `wNEAR`
+/// - `nep141:meta-pool.near` → `stNEAR`
+/// - `17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` → `USDC`
+/// - Stellar OMNI tokens via known suffix fragments
+/// - Falls back to the raw ID (truncated) if unknown.
+pub fn short_asset_name(asset_id: &str) -> String {
+    // Known full asset IDs
+    static KNOWN: &[(&str, &str)] = &[
+        // NEP-141 OMNI bridge tokens
+        ("nep141:btc.omft.near", "BTC"),
+        ("nep141:zec.omft.near", "ZEC"),
+        (
+            "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near",
+            "USDC",
+        ),
+        (
+            "nep141:eth-0x2260fac5e5542a773aa44fbcfedf7c193bc2c599.omft.near",
+            "WBTC",
+        ),
+        (
+            "nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near",
+            "USDC",
+        ),
+        // Native NEAR tokens
+        ("nep141:wrap.near", "wNEAR"),
+        ("nep141:meta-pool.near", "stNEAR"),
+        ("nep141:linear-protocol.near", "LiNEAR"),
+        (
+            "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+            "USDC",
+        ),
+    ];
+
+    // Stellar OMNI tokens — match by known base58 suffix fragments
+    static STELLAR_TOKENS: &[(&str, &str)] = &[
+        (
+            "111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu",
+            "USDC",
+        ),
+        (
+            "111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz",
+            "XLM",
+        ),
+        (
+            "111bzQBB62XZkuam1hPr5wsG54FvwhYaPvecKwgZo1ZoKMWEXcE2n",
+            "PYUSD",
+        ),
+        (
+            "111bzQBB5uBD3Wrr7pthp8XhJsreEcwTVnmjQ1wpbzkvHLEQf3ygS",
+            "CETES",
+        ),
+        (
+            "111bzQBB5yT2A5maKJqJQsuNg7BA6VG4S4ZATpqmKYLwYBsfEfh6e",
+            "USTRY",
+        ),
+        (
+            "111bzQBB5y5yhcUCbDKaCx4zNjEHQbwLAdvwucCecVzC5Ub7uNKEb",
+            "DEJTRSY",
+        ),
+        (
+            "111bzQBB66Lr9d7WU1sDna78SqG5x1ZraFjkpPdiYXjHFRnZJUhuV",
+            "DEJAAA",
+        ),
+        (
+            "111bzQBB5xzU1EsXby4ckez2qjWFTBiPoqHzZpPkq1Gr9gB7FQpeZ",
+            "SolvBTC",
+        ),
+    ];
+
+    // Strip outer nep245:intents.near: wrapper if present
+    let inner = asset_id
+        .strip_prefix("nep245:intents.near:")
+        .unwrap_or(asset_id);
+
+    // Check exact matches
+    for &(pattern, name) in KNOWN {
+        if inner == pattern {
+            return name.to_string();
+        }
+    }
+
+    // Check Stellar OMNI token suffixes
+    for &(suffix, name) in STELLAR_TOKENS {
+        if inner.contains(suffix) {
+            return name.to_string();
+        }
+    }
+
+    // Fallback: try to extract something readable
+    // nep141:something.near → SOMETHING
+    if let Some(rest) = inner.strip_prefix("nep141:") {
+        if let Some(name) = rest.strip_suffix(".near") {
+            return name.to_uppercase();
+        }
+        // nep141:something.omft.near already handled above
+        return rest.to_string();
+    }
+
+    // Last resort: truncate
+    if inner.len() > 20 {
+        format!("{}…", &inner[..17])
+    } else {
+        inner.to_string()
+    }
+}
+
+/// Format token amount with short asset name for notifications.
+///
+/// Produces compact output like `66.25 XLM` instead of the verbose log format.
+#[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+pub fn format_amount_short(amount: u128, decimals: i32, asset_id: &str) -> String {
+    let divisor = 10f64.powi(decimals);
+    let value = amount as f64 / divisor;
+    let name = short_asset_name(asset_id);
+
+    // Use fewer decimal places for readability
+    let precision = match decimals {
+        0..=2 => 2,
+        3..=6 => decimals as usize,
+        _ => 6,
+    };
+
+    format!("{value:.precision$} {name}")
+}
+
+/// Format profit/loss with short asset name for notifications.
+#[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+pub fn format_profit_short(
+    net_profit: i128,
+    liquidation_amount: u128,
+    decimals: i32,
+    asset_id: &str,
+) -> String {
+    let divisor = 10f64.powi(decimals);
+    let profit_value = net_profit as f64 / divisor;
+    let profit_pct = if liquidation_amount > 0 {
+        (net_profit as f64 / liquidation_amount as f64) * 100.0
+    } else {
+        0.0
+    };
+    let name = short_asset_name(asset_id);
+
+    let precision = match decimals {
+        0..=2 => 2,
+        3..=6 => decimals as usize,
+        _ => 6,
+    };
+
+    format!("{profit_value:+.precision$} {name} ({profit_pct:+.1}%)")
+}
+
 /// Format token amount with asset ID.
 ///
 /// The decimals parameter MUST come from the market's price oracle configuration,

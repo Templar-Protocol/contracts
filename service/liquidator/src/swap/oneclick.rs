@@ -602,7 +602,7 @@ impl OneClickSwap {
             "Storage deposit minimum from contract"
         );
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
 
         let storage_deposit_action = FunctionCallAction {
             method_name: "storage_deposit".to_string(),
@@ -683,7 +683,7 @@ impl OneClickSwap {
                 "Creating implicit account"
             );
 
-            let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+            let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
 
             // Send 1 yoctoNEAR to create the implicit account (minimum amount needed)
             let create_account_tx = Transaction::V0(TransactionV0 {
@@ -730,7 +730,7 @@ impl OneClickSwap {
         }
 
         // Get transaction parameters
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
 
         // Create deposit transaction
         // Use simple ft_transfer (not ft_transfer_call) for INTENTS depositType

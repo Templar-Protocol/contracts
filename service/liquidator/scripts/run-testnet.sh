@@ -178,6 +178,11 @@ fi
 CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
 CMD_ARGS+=("--redstone-gateway-url" "$REDSTONE_GATEWAY_URL")
 
+# Add Telegram notification arguments (use = syntax because chat IDs start with -)
+[ -n "$TELEGRAM_BOT_TOKEN" ] && CMD_ARGS+=("--telegram-bot-token=$TELEGRAM_BOT_TOKEN")
+[ -n "$TELEGRAM_CHAT_ID" ] && CMD_ARGS+=("--telegram-chat-id=$TELEGRAM_CHAT_ID")
+[ -n "$TELEGRAM_THREAD_ID" ] && CMD_ARGS+=("--telegram-thread-id=$TELEGRAM_THREAD_ID")
+
 info "Starting liquidator..."
 echo ""
 exec "$BINARY_PATH" "${CMD_ARGS[@]}"

@@ -473,7 +473,7 @@ impl SwapProvider for RefSwap {
                 .await?;
         }
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
 
         // Execute swap via ft_transfer_call
         let tx = Transaction::V0(TransactionV0 {
@@ -544,7 +544,7 @@ impl SwapProvider for RefSwap {
             "Using storage deposit minimum from contract"
         );
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
 
         let storage_deposit_action = near_primitives::action::FunctionCallAction {
             method_name: "storage_deposit".to_string(),

@@ -11,7 +11,11 @@
 //! All RPC operations return `RpcResult<T>` which wraps various RPC-level errors.
 //! These are converted to `LiquidatorError` at the application level.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicU64, Arc},
+    time::Duration,
+};
 
 use futures::{StreamExt, TryStreamExt};
 use near_crypto::Signer;
@@ -87,6 +91,36 @@ pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 /// Default gas for transactions. 300 `TGas`.
 pub const DEFAULT_GAS: u64 = Gas::from_tgas(300).as_gas();
 
+/// Shared nonce tracker to prevent nonce collisions between concurrent transactions
+/// (e.g., oracle price updates and liquidation transactions).
+///
+/// Tracks the last nonce used by any transaction. When fetching a new nonce,
+/// returns `max(rpc_nonce, tracked_nonce) + 1` to avoid stale-nonce races
+/// where an RPC node hasn't indexed the latest transaction yet.
+#[derive(Debug, Clone, Default)]
+pub struct NonceTracker(Arc<AtomicU64>);
+
+impl NonceTracker {
+    /// Record a nonce that was just used in a transaction.
+    pub fn record_used(&self, nonce: u64) {
+        self.0.fetch_max(nonce, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Given an RPC-reported access key nonce, return the next safe nonce to use.
+    ///
+    /// Takes the max of the RPC nonce and our tracked nonce, then adds 1.
+    pub fn next_nonce(&self, rpc_access_key_nonce: u64) -> u64 {
+        let tracked = self.0.load(std::sync::atomic::Ordering::SeqCst);
+        let base = rpc_access_key_nonce.max(tracked);
+        let next = base + 1;
+        self.0.fetch_max(next, std::sync::atomic::Ordering::SeqCst);
+        next
+    }
+}
+
+/// Shared nonce tracker handle.
+pub type SharedNonceTracker = NonceTracker;
+
 /// Default timeout for view call requests (seconds)
 const VIEW_CALL_TIMEOUT_SECS: u64 = 30;
 
@@ -135,18 +169,24 @@ pub async fn get_contract_version(
 
 /// Get access key data (nonce and block hash) for transaction signing.
 ///
+/// When a `NonceTracker` is provided, the returned nonce is guaranteed to be
+/// higher than any previously used nonce, even if the RPC node hasn't indexed
+/// recent transactions yet.
+///
 /// # Arguments
 ///
 /// * `client` - JSON-RPC client instance
 /// * `signer` - Signer with the account and key to query
+/// * `nonce_tracker` - Optional shared nonce tracker for collision prevention
 ///
 /// # Returns
 ///
 /// Tuple of (nonce, block_hash) to use when constructing a transaction
-#[tracing::instrument(skip(client), level = "debug")]
+#[tracing::instrument(skip(client, nonce_tracker), level = "debug")]
 pub async fn get_access_key_data(
     client: &JsonRpcClient,
     signer: &Signer,
+    nonce_tracker: Option<&NonceTracker>,
 ) -> RpcResult<(u64, CryptoHash)> {
     let access_key_query_response = client
         .call(RpcQueryRequest {
@@ -159,8 +199,8 @@ pub async fn get_access_key_data(
         .await
         .map_err(RpcError::AccessKeyDataError)?;
 
-    let nonce = match access_key_query_response.kind {
-        QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
+    let rpc_nonce = match access_key_query_response.kind {
+        QueryResponseKind::AccessKey(access_key) => access_key.nonce,
         _ => {
             return Err(RpcError::WrongResponseKind(format!(
                 "Expected AccessKey got {:?}",
@@ -169,6 +209,12 @@ pub async fn get_access_key_data(
         }
     };
     let block_hash = access_key_query_response.block_hash;
+
+    let nonce = if let Some(tracker) = nonce_tracker {
+        tracker.next_nonce(rpc_nonce)
+    } else {
+        rpc_nonce + 1
+    };
 
     Ok((nonce, block_hash))
 }

@@ -35,6 +35,7 @@ pub mod executor;
 pub mod format;
 pub mod inventory;
 pub mod liquidation_strategy;
+pub mod notifier;
 pub mod oracle;
 pub mod profitability;
 pub mod rpc;
@@ -155,6 +156,8 @@ pub struct Liquidator {
     max_loop_iterations: u32,
     /// Market version (major, minor, patch) - used for version-specific liquidation logic
     market_version: Option<(u32, u32, u32)>,
+    /// Shared notifier for Telegram alerts
+    notifier: crate::notifier::SharedNotifier,
 }
 
 impl Liquidator {
@@ -194,7 +197,9 @@ impl Liquidator {
         min_swap_value_usd: f64,
         proxy_oracle_cache: Option<oracle::ProxyOracleCache>,
         signer_for_oracle: Option<(AccountId, near_crypto::SecretKey)>,
+        notifier: crate::notifier::SharedNotifier,
     ) -> Self {
+        let nonce_tracker = crate::rpc::NonceTracker::default();
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(
             client.clone(),
@@ -202,6 +207,7 @@ impl Liquidator {
             redstone_gateway_url,
             proxy_oracle_cache,
             signer_for_oracle,
+            nonce_tracker.clone(),
         );
         let executor = executor::LiquidationExecutor::new(
             client.clone(),
@@ -214,6 +220,10 @@ impl Liquidator {
             swap_provider,
             swap_retry_config,
             min_swap_value_usd,
+            market_config
+                .price_oracle_configuration
+                .collateral_asset_decimals,
+            nonce_tracker,
         );
 
         Self {
@@ -226,6 +236,7 @@ impl Liquidator {
             loop_liquidation,
             max_loop_iterations,
             market_version: None,
+            notifier,
         }
     }
 
@@ -652,7 +663,7 @@ impl Liquidator {
             }
 
             // Execute liquidation (contract determines optimal collateral amount)
-            let outcome = self
+            let (outcome, swap_issue) = self
                 .executor
                 .execute_liquidation(
                     &borrow_account,
@@ -663,6 +674,59 @@ impl Liquidator {
                     templar_common::asset::BorrowAssetAmount::from(expected_collateral_value.0),
                 )
                 .await?;
+
+            // Notify about successful liquidation (sent first, before any swap issues)
+            if outcome == LiquidationOutcome::Liquidated {
+                let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
+                let signed_profit = if expected_collateral_value.0 >= liquidation_amount.0 {
+                    i128::try_from(expected_collateral_value.0 - liquidation_amount.0)
+                        .unwrap_or(i128::MAX)
+                } else {
+                    -(i128::try_from(liquidation_amount.0 - expected_collateral_value.0)
+                        .unwrap_or(i128::MAX))
+                };
+                self.notifier
+                    .notify_liquidation(
+                        self.market.as_ref(),
+                        borrow_account.as_ref(),
+                        &format::format_amount_short(
+                            liquidation_amount.0,
+                            borrow_dec,
+                            &borrow_asset,
+                        ),
+                        &format::format_amount_short(collateral_amount.0, coll_dec, &coll_asset),
+                        &format::format_profit_short(
+                            signed_profit,
+                            liquidation_amount.0,
+                            borrow_dec,
+                            &borrow_asset,
+                        ),
+                        None,
+                        dry_run,
+                    )
+                    .await;
+            }
+
+            // Notify about swap issues (sent after liquidation notification)
+            if let Some(issue) = swap_issue {
+                match issue {
+                    executor::SwapIssue::Unsupported { from, to, amount } => {
+                        self.notifier
+                            .notify_swap_unsupported(self.market.as_ref(), &from, &to, &amount)
+                            .await;
+                    }
+                    executor::SwapIssue::Failed {
+                        from,
+                        to,
+                        amount,
+                        error,
+                    } => {
+                        self.notifier
+                            .notify_swap_failed(self.market.as_ref(), &from, &to, &amount, &error)
+                            .await;
+                    }
+                }
+            }
 
             // Track cumulative amounts
             total_liquidated_amount += liquidation_amount.0;
@@ -773,6 +837,13 @@ impl Liquidator {
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
                     tracing::warn!(borrower = %account, error = %e, "Liquidation failed");
+                    self.notifier
+                        .notify_liquidation_failed(
+                            self.market.as_ref(),
+                            account.as_ref(),
+                            &e.to_string(),
+                        )
+                        .await;
                     failed += 1;
                 }
             }

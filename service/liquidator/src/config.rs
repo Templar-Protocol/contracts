@@ -8,7 +8,12 @@ use clap::Parser;
 use near_sdk::AccountId;
 use templar_common::utils::Network;
 
-use crate::{service::ServiceConfig, swap::SwapRetryConfig, CollateralStrategy};
+use crate::{
+    notifier::{Notifier, TelegramConfig},
+    service::ServiceConfig,
+    swap::SwapRetryConfig,
+    CollateralStrategy,
+};
 
 /// Validator function for `partial_percentage` range
 fn validate_percentage(s: &str) -> Result<u8, String> {
@@ -150,6 +155,18 @@ pub struct Args {
     /// Base delay in milliseconds for swap retry exponential backoff (2s, 4s, 8s …)
     #[arg(long, env = "SWAP_RETRY_BASE_DELAY_MS", default_value_t = 2000)]
     pub swap_retry_base_delay_ms: u64,
+
+    /// Telegram bot token for notifications (leave empty to disable)
+    #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
+    pub telegram_bot_token: String,
+
+    /// Telegram chat/channel ID for notifications
+    #[arg(long, env = "TELEGRAM_CHAT_ID", default_value = "")]
+    pub telegram_chat_id: String,
+
+    /// Telegram thread/topic ID for sending to specific threads in supergroups
+    #[arg(long, env = "TELEGRAM_THREAD_ID")]
+    pub telegram_thread_id: Option<i64>,
 }
 
 impl Args {
@@ -273,6 +290,20 @@ impl Args {
             );
         }
 
+        // Build notifier
+        let telegram_config = if self.telegram_bot_token.is_empty() {
+            tracing::info!("Telegram notifications disabled (no bot token)");
+            None
+        } else {
+            tracing::info!("Telegram notifications enabled");
+            Some(TelegramConfig {
+                bot_token: self.telegram_bot_token.clone(),
+                chat_id: self.telegram_chat_id.clone(),
+                thread_id: self.telegram_thread_id,
+            })
+        };
+        let notifier = Arc::new(Notifier::new(telegram_config));
+
         ServiceConfig {
             registries: self.registries.clone(),
             signer_key: self.signer_key.clone(),
@@ -301,6 +332,7 @@ impl Args {
                 max_attempts: self.swap_retry_attempts,
                 base_delay_ms: self.swap_retry_base_delay_ms,
             },
+            notifier,
         }
     }
 
@@ -355,6 +387,9 @@ mod tests {
             batch_swap_on_cycle_start: true,
             swap_retry_attempts: 3,
             swap_retry_base_delay_ms: 2000,
+            telegram_bot_token: String::new(),
+            telegram_chat_id: String::new(),
+            telegram_thread_id: None,
         }
     }
 
