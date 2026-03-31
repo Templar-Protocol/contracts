@@ -119,9 +119,10 @@ pub fn short_asset_name(asset_id: &str) -> String {
         return rest.to_string();
     }
 
-    // Last resort: truncate
+    // Last resort: truncate (char-safe to avoid panics on multi-byte UTF-8)
     if inner.len() > 20 {
-        format!("{}…", &inner[..17])
+        let truncated: String = inner.chars().take(17).collect();
+        format!("{truncated}…")
     } else {
         inner.to_string()
     }
@@ -399,6 +400,24 @@ mod tests {
         assert_eq!(
             format_profit_short(-500_000, 12_000_000, 6, "nep141:wrap.near"),
             "-0.500000 wNEAR (-4.2%)"
+        );
+    }
+
+    #[test]
+    fn test_short_asset_name_recursive_nep245_with_nep141() {
+        // nep245 wrapping nep141 should recurse and resolve
+        assert_eq!(
+            short_asset_name("nep245:some.contract:nep141:btc.omft.near"),
+            "BTC"
+        );
+    }
+
+    #[test]
+    fn test_format_profit_short_zero_liquidation_amount() {
+        // Division by zero guard — should produce 0.0%
+        assert_eq!(
+            format_profit_short(0, 0, 6, "nep141:usdc.near"),
+            "+0.000000 USDC (+0.0%)"
         );
     }
 }

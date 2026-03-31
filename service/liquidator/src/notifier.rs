@@ -13,10 +13,33 @@ use std::sync::Arc;
 use near_sdk::serde_json::json;
 use reqwest::Client;
 
+/// A string wrapper that redacts its value in Debug output.
+#[derive(Clone)]
+pub struct SecretString(String);
+
+impl SecretString {
+    /// Access the inner value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for SecretString {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 /// Telegram notification configuration.
 #[derive(Debug, Clone)]
 pub struct TelegramConfig {
-    pub bot_token: String,
+    pub bot_token: SecretString,
     pub chat_id: String,
     pub thread_id: Option<i64>,
 }
@@ -228,7 +251,7 @@ impl Notifier {
 
         let url = format!(
             "https://api.telegram.org/bot{}/sendMessage",
-            config.bot_token
+            config.bot_token.as_str()
         );
 
         let mut payload = json!({
@@ -289,7 +312,7 @@ mod tests {
     #[test]
     fn test_notifier_enabled_with_config() {
         let config = TelegramConfig {
-            bot_token: "123:ABC".to_string(),
+            bot_token: "123:ABC".to_string().into(),
             chat_id: "-100123".to_string(),
             thread_id: None,
         };
@@ -300,13 +323,32 @@ mod tests {
     #[test]
     fn test_notifier_with_thread_id() {
         let config = TelegramConfig {
-            bot_token: "123:ABC".to_string(),
+            bot_token: "123:ABC".to_string().into(),
             chat_id: "-100123".to_string(),
             thread_id: Some(42),
         };
         let notifier = Notifier::new(Some(config.clone()));
         assert!(notifier.is_enabled());
         assert_eq!(config.thread_id, Some(42));
+    }
+
+    #[test]
+    fn test_secret_string_redacts_debug() {
+        let secret = SecretString::from("my-secret-token".to_string());
+        assert_eq!(format!("{secret:?}"), "<redacted>");
+        assert_eq!(secret.as_str(), "my-secret-token");
+    }
+
+    #[test]
+    fn test_telegram_config_debug_redacts_token() {
+        let config = TelegramConfig {
+            bot_token: "super-secret".to_string().into(),
+            chat_id: "-100123".to_string(),
+            thread_id: None,
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("super-secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

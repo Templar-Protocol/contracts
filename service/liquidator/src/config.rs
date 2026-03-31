@@ -301,7 +301,7 @@ impl Args {
             (false, false) => {
                 tracing::info!("Telegram notifications enabled");
                 Some(TelegramConfig {
-                    bot_token: bot_token.to_owned(),
+                    bot_token: bot_token.to_owned().into(),
                     chat_id: chat_id.to_owned(),
                     thread_id: self.telegram_thread_id,
                 })

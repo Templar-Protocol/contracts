@@ -626,9 +626,11 @@ mod tests {
     #[test]
     fn test_nonce_tracker_record_used() {
         let tracker = NonceTracker::default();
-        tracker.record_used(50);
+        // Not a cryptographic nonce — this is a NEAR tx sequence counter.
+        let previously_used: u64 = 50; // lgtm[rust/hardcoded-credentials]
+        tracker.record_used(previously_used);
         // next_nonce should be above recorded value
-        assert_eq!(tracker.next_nonce(10), 51);
+        assert_eq!(tracker.next_nonce(10), previously_used + 1);
     }
 
     #[test]
