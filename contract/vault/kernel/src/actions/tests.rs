@@ -3,13 +3,17 @@ use crate::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use crate::error::{InvalidConfigCode, InvalidStateCode};
 use crate::fee::{FeeSlot, FeesSpec};
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
-use crate::state::op_state::{AllocatingState, WithdrawingState};
+use crate::state::op_state::{AllocatingState, AllocationPlanEntry, WithdrawingState};
 use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::Number;
 
 fn addr(tag: u8) -> Address {
     [tag; 32]
+}
+
+fn alloc_step(target_id: u32, amount: u128) -> AllocationPlanEntry {
+    AllocationPlanEntry::new(target_id, amount)
 }
 
 fn test_config() -> VaultConfig {
@@ -22,6 +26,18 @@ fn test_config() -> VaultConfig {
         virtual_shares: 0,
         virtual_assets: 0,
     }
+}
+
+fn idle_state(total_assets: u128, total_shares: u128) -> VaultState {
+    VaultState::with_initial(total_assets, total_shares, total_assets, 0, 0)
+}
+
+fn balanced_state() -> VaultState {
+    VaultState::with_initial(1_000, 1_000, 500, 500, 0)
+}
+
+fn external_heavy_state() -> VaultState {
+    VaultState::with_initial(1_000, 1_000, 200, 800, 0)
 }
 
 #[test]
@@ -55,7 +71,7 @@ fn action_builder_and_metadata_helpers() {
 
 #[test]
 fn invalid_max_pending_rejected() {
-    let state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let state = balanced_state();
     let mut config = test_config();
     config.max_pending_withdrawals = (MAX_PENDING as u32).saturating_add(1);
 
@@ -77,7 +93,7 @@ fn invalid_max_pending_rejected() {
 
 #[test]
 fn request_withdraw_enqueues_and_emits_event() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -110,7 +126,7 @@ fn request_withdraw_enqueues_and_emits_event() {
 
 #[test]
 fn execute_withdraw_idle_starts_withdrawal() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     let config = test_config();
     let owner = addr(3);
     let receiver = addr(4);
@@ -141,7 +157,7 @@ fn execute_withdraw_idle_starts_withdrawal() {
 
 #[test]
 fn execute_withdraw_withdrawing_advances_index() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     let config = test_config();
     let owner = addr(5);
     let receiver = addr(6);
@@ -205,7 +221,7 @@ fn deposit_blocked_when_paused() {
 
 #[test]
 fn request_withdraw_blocked_by_blacklist() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
     let restrictions = Restrictions::Blacklist(alloc::vec![addr(9)]);
 
@@ -231,7 +247,7 @@ fn request_withdraw_blocked_by_blacklist() {
 
 #[test]
 fn deposit_success() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -270,7 +286,7 @@ fn deposit_success() {
 
 #[test]
 fn deposit_emits_transfer_assets_from_owner() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
     let self_id = addr(0xAB);
     let owner = addr(1);
@@ -300,7 +316,7 @@ fn deposit_emits_transfer_assets_from_owner() {
 
 #[test]
 fn deposit_zero_assets_fails_slippage() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -322,7 +338,7 @@ fn deposit_zero_assets_fails_slippage() {
 
 #[test]
 fn deposit_slippage_check_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -346,12 +362,12 @@ fn deposit_slippage_check_fails() {
 fn deposit_not_idle_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 500,
-        plan: vec![(0, 500)],
+        plan: vec![alloc_step(0, 500)],
     });
     let config = test_config();
 
@@ -379,7 +395,7 @@ fn deposit_not_idle_fails() {
 
 #[test]
 fn atomic_withdraw_success_emits_burn_and_transfer() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -421,7 +437,7 @@ fn atomic_withdraw_success_emits_burn_and_transfer() {
 
 #[test]
 fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -457,12 +473,12 @@ fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
 fn atomic_withdraw_not_idle_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 500,
-        plan: vec![(0, 500)],
+        plan: vec![alloc_step(0, 500)],
     });
     let config = test_config();
 
@@ -519,7 +535,7 @@ fn atomic_withdraw_exceeding_idle_fails() {
 
 #[test]
 fn refresh_fees_then_atomic_withdraw_succeeds() {
-    let mut state = VaultState::with_initial(1_500, 1_000, 1_500, 0, 0);
+    let mut state = idle_state(1_500, 1_000);
     state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
     let config = VaultConfig {
         fees: FeesSpec::new(
@@ -563,7 +579,7 @@ fn refresh_fees_then_atomic_withdraw_succeeds() {
 
 #[test]
 fn request_withdraw_zero_shares_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -585,7 +601,7 @@ fn request_withdraw_zero_shares_fails() {
 
 #[test]
 fn request_withdraw_slippage_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -607,7 +623,7 @@ fn request_withdraw_slippage_fails() {
 
 #[test]
 fn request_withdraw_min_withdrawal_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let mut config = test_config();
     config.min_withdrawal_assets = 1_000;
 
@@ -632,12 +648,12 @@ fn request_withdraw_min_withdrawal_fails() {
 fn request_withdraw_not_idle_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 500,
-        plan: vec![(0, 500)],
+        plan: vec![alloc_step(0, 500)],
     });
     let config = test_config();
 
@@ -712,7 +728,7 @@ fn request_withdraw_queue_full_fails() {
 
 #[test]
 fn execute_withdraw_empty_queue_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -730,7 +746,7 @@ fn execute_withdraw_empty_queue_fails() {
 
 #[test]
 fn execute_withdraw_cooldown_fails() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     let config = test_config();
 
     state
@@ -761,12 +777,12 @@ fn execute_withdraw_cooldown_fails() {
 fn execute_withdraw_wrong_state_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 500,
-        plan: vec![(0, 500)],
+        plan: vec![alloc_step(0, 500)],
     });
     let config = test_config();
 
@@ -788,7 +804,7 @@ fn execute_withdraw_wrong_state_fails() {
 
 #[test]
 fn execute_withdraw_queue_head_mismatch_fails() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     let config = test_config();
     let owner = addr(5);
     let receiver = addr(6);
@@ -834,7 +850,7 @@ fn execute_withdraw_queue_head_mismatch_fails() {
 
 #[test]
 fn begin_allocating_success() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -844,7 +860,7 @@ fn begin_allocating_success() {
         &addr(0xFF),
         KernelAction::BeginAllocating {
             op_id: 1,
-            plan: vec![(1, 500)],
+            plan: vec![alloc_step(1, 500)],
             now_ns: 0,
         },
     )
@@ -859,7 +875,7 @@ fn begin_allocating_success() {
 
 #[test]
 fn begin_allocating_exceeds_idle() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -869,7 +885,7 @@ fn begin_allocating_exceeds_idle() {
         &addr(0xFF),
         KernelAction::BeginAllocating {
             op_id: 1,
-            plan: vec![(1, 1_500)], // exceeds idle_assets of 1_000
+            plan: vec![alloc_step(1, 1_500)], // exceeds idle_assets of 1_000
             now_ns: 0,
         },
     );
@@ -881,12 +897,12 @@ fn begin_allocating_exceeds_idle() {
 fn finish_allocating_success() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 1,
         remaining: 0,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
     let config = test_config();
 
@@ -909,7 +925,7 @@ fn finish_allocating_success() {
 fn finish_allocating_with_pending_withdrawal() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let owner = addr(10);
     let receiver = addr(11);
     let config = test_config();
@@ -924,7 +940,7 @@ fn finish_allocating_with_pending_withdrawal() {
         op_id: 5,
         index: 1,
         remaining: 0,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
 
     // now_ns is past cooldown (DEFAULT_COOLDOWN_NS + request time of 0)
@@ -948,7 +964,7 @@ fn finish_allocating_with_pending_withdrawal() {
 fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let owner = addr(10);
     let receiver = addr(11);
     let config = test_config();
@@ -970,7 +986,7 @@ fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
         op_id: 6,
         index: 1,
         remaining: 0,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
 
     // now_ns is not past cooldown
@@ -992,7 +1008,7 @@ fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
 
 #[test]
 fn execute_withdraw_withdrawing_empty_queue() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
 
     // State is Withdrawing but queue is empty (shouldn't happen in practice)
@@ -1024,7 +1040,7 @@ fn execute_withdraw_withdrawing_empty_queue() {
 
 #[test]
 fn begin_refreshing_success() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -1047,7 +1063,7 @@ fn begin_refreshing_success() {
 fn finish_refreshing_success() {
     use crate::state::op_state::RefreshingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Refreshing(RefreshingState {
         op_id: 2,
         index: 1,
@@ -1074,12 +1090,12 @@ fn finish_refreshing_success() {
 fn sync_external_assets_allocating() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 3,
         index: 0,
         remaining: 500,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
     let config = test_config();
 
@@ -1108,7 +1124,7 @@ fn sync_external_assets_allocating() {
 
 #[test]
 fn sync_external_assets_withdrawing() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 4,
         index: 0,
@@ -1141,7 +1157,7 @@ fn sync_external_assets_withdrawing() {
 fn sync_external_assets_refreshing() {
     use crate::state::op_state::RefreshingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Refreshing(RefreshingState {
         op_id: 5,
         index: 0,
@@ -1167,7 +1183,7 @@ fn sync_external_assets_refreshing() {
 
 #[test]
 fn sync_external_assets_idle_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -1194,12 +1210,12 @@ fn sync_external_assets_idle_fails() {
 fn sync_external_assets_op_id_mismatch_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 10,
         index: 0,
         remaining: 500,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
     let config = test_config();
 
@@ -1228,7 +1244,7 @@ fn sync_external_assets_op_id_mismatch_fails() {
 fn sync_external_assets_payout_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Payout(PayoutState {
         op_id: 6,
         owner: addr(1),
@@ -1263,12 +1279,12 @@ fn sync_external_assets_payout_fails() {
 fn sync_external_assets_rejects_doubling() {
     use crate::state::op_state::AllocatingState;
     // total_assets = 1000; trying to set external to 2001 would make new total > 2x
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 500,
-        plan: vec![(0, 500)],
+        plan: vec![alloc_step(0, 500)],
     });
     let config = test_config();
 
@@ -1296,12 +1312,12 @@ fn sync_external_assets_rejects_doubling() {
 fn sync_external_assets_allows_up_to_double() {
     use crate::state::op_state::AllocatingState;
     // total_assets = 1000; setting external to 1000 with idle=1000 => new total=2000 = 2x, OK
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
         index: 0,
         remaining: 500,
-        plan: vec![(0, 500)],
+        plan: vec![alloc_step(0, 500)],
     });
     let config = test_config();
 
@@ -1324,7 +1340,7 @@ fn sync_external_assets_allows_up_to_double() {
 
 #[test]
 fn rebalance_withdraw_moves_assets_from_external_to_idle() {
-    let state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let state = external_heavy_state();
     let config = test_config();
 
     let result = apply_action(
@@ -1348,12 +1364,12 @@ fn rebalance_withdraw_moves_assets_from_external_to_idle() {
 
 #[test]
 fn rebalance_withdraw_allows_allocating_with_matching_op_id() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let mut state = external_heavy_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 7,
         index: 0,
         remaining: 100,
-        plan: vec![(1, 100)],
+        plan: vec![alloc_step(1, 100)],
     });
     let config = test_config();
 
@@ -1378,7 +1394,7 @@ fn rebalance_withdraw_allows_allocating_with_matching_op_id() {
 
 #[test]
 fn rebalance_withdraw_rejects_amount_above_external_assets() {
-    let state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let state = external_heavy_state();
     let config = test_config();
 
     let result = apply_action(
@@ -1403,12 +1419,12 @@ fn rebalance_withdraw_rejects_amount_above_external_assets() {
 
 #[test]
 fn rebalance_withdraw_requires_matching_op_id_when_allocating() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let mut state = external_heavy_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 7,
         index: 0,
         remaining: 100,
-        plan: vec![(1, 100)],
+        plan: vec![alloc_step(1, 100)],
     });
     let config = test_config();
 
@@ -1437,7 +1453,7 @@ fn rebalance_withdraw_requires_matching_op_id_when_allocating() {
 fn abort_refreshing_success() {
     use crate::state::op_state::RefreshingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Refreshing(RefreshingState {
         op_id: 7,
         index: 0,
@@ -1460,7 +1476,7 @@ fn abort_refreshing_success() {
 
 #[test]
 fn abort_refreshing_wrong_state_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -1483,7 +1499,7 @@ fn abort_refreshing_wrong_state_fails() {
 fn abort_refreshing_op_id_mismatch_fails() {
     use crate::state::op_state::RefreshingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Refreshing(RefreshingState {
         op_id: 10,
         index: 0,
@@ -1512,12 +1528,12 @@ fn abort_refreshing_op_id_mismatch_fails() {
 fn abort_refreshing_wrong_op_type_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 10,
         index: 0,
         remaining: 500,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
     let config = test_config();
 
@@ -1546,7 +1562,7 @@ fn abort_allocating_success() {
         op_id: 8,
         index: 0,
         remaining: 200,
-        plan: vec![(1, 200)],
+        plan: vec![alloc_step(1, 200)],
     });
     let config = test_config();
 
@@ -1569,7 +1585,7 @@ fn abort_allocating_success() {
 
 #[test]
 fn abort_allocating_wrong_state_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -1595,12 +1611,12 @@ fn abort_allocating_wrong_state_fails() {
 fn abort_allocating_op_id_mismatch_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 10,
         index: 0,
         remaining: 500,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
     let config = test_config();
 
@@ -1628,12 +1644,12 @@ fn abort_allocating_op_id_mismatch_fails() {
 fn abort_allocating_restore_mismatch_fails() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 10,
         index: 0,
         remaining: 500,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
     let config = test_config();
 
@@ -1658,7 +1674,7 @@ fn abort_allocating_restore_mismatch_fails() {
 
 #[test]
 fn abort_withdrawing_success() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -1696,7 +1712,7 @@ fn abort_withdrawing_success() {
 
 #[test]
 fn abort_withdrawing_wrong_state_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -1720,7 +1736,7 @@ fn abort_withdrawing_wrong_state_fails() {
 
 #[test]
 fn abort_withdrawing_op_id_mismatch_fails() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -1762,7 +1778,7 @@ fn abort_withdrawing_op_id_mismatch_fails() {
 
 #[test]
 fn abort_withdrawing_refund_mismatch_fails() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -1803,7 +1819,7 @@ fn abort_withdrawing_refund_mismatch_fails() {
 
 #[test]
 fn abort_withdrawing_queue_head_mismatch_fails() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
 
     // Queue has different user
@@ -1850,7 +1866,7 @@ fn abort_withdrawing_queue_head_mismatch_fails() {
 
 #[test]
 fn abort_withdrawing_empty_queue_fails() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
@@ -1881,7 +1897,7 @@ fn abort_withdrawing_empty_queue_fails() {
 fn settle_payout_success_burn_only() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -1953,7 +1969,7 @@ fn settle_payout_success_burn_only() {
 fn settle_payout_success_partial_refund() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -2078,7 +2094,7 @@ fn settle_payout_failure() {
 
 #[test]
 fn settle_payout_wrong_state_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -2107,7 +2123,7 @@ fn settle_payout_wrong_state_fails() {
 fn settle_payout_op_id_mismatch_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -2153,7 +2169,7 @@ fn settle_payout_op_id_mismatch_fails() {
 fn settle_payout_empty_queue_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
 
     state.op_state = OpState::Payout(PayoutState {
@@ -2186,7 +2202,7 @@ fn settle_payout_empty_queue_fails() {
 fn settle_payout_queue_head_mismatch_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
 
     state
@@ -2236,7 +2252,7 @@ fn settle_payout_queue_head_mismatch_fails() {
 fn settle_payout_success_settlement_mismatch_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -2333,7 +2349,7 @@ fn settle_payout_success_settlement_overflow_fails() {
 fn settle_payout_failure_settlement_mismatch_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -2378,7 +2394,7 @@ fn settle_payout_failure_settlement_mismatch_fails() {
 fn settle_payout_failure_restore_idle_mismatch_fails() {
     use crate::state::op_state::PayoutState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let config = test_config();
     let owner = addr(1);
     let receiver = addr(2);
@@ -2426,7 +2442,7 @@ fn settle_payout_failure_restore_idle_mismatch_fails() {
 
 #[test]
 fn pause_action() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -2452,7 +2468,7 @@ fn pause_action() {
 
 #[test]
 fn refresh_fees_action_zero_fees() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config(); // fees: FeesSpec::zero()
 
     let result = apply_action(
@@ -2480,7 +2496,7 @@ fn refresh_fees_action_zero_fees() {
 fn refresh_fees_mints_performance_fee_shares() {
     use crate::math::wad::YEAR_NS;
     // Setup: vault started with 1000 assets/shares, now has 1500 assets (profit)
-    let mut state = VaultState::with_initial(1_500, 1_000, 1_500, 0, 0);
+    let mut state = idle_state(1_500, 1_000);
     state.fee_anchor = FeeAccrualAnchor::new(1_000, 0); // anchor at 1000 assets, time 0
 
     let perf_recipient = addr(0xAA);
@@ -2519,7 +2535,7 @@ fn refresh_fees_mints_performance_fee_shares() {
 fn refresh_fees_mints_management_fee_shares() {
     use crate::math::wad::YEAR_NS;
     // Setup: 1000 assets/shares, no profit, full year elapsed
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
 
     let mgmt_recipient = addr(0xBB);
@@ -2560,7 +2576,7 @@ fn refresh_fees_mints_both_management_and_performance() {
     use crate::math::wad::compute_fee_shares_from_assets;
     use crate::math::wad::YEAR_NS;
 
-    let mut state = VaultState::with_initial(1_500, 1_000, 1_500, 0, 0);
+    let mut state = idle_state(1_500, 1_000);
     state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
 
     let perf_recipient = addr(0xAA);
@@ -2620,7 +2636,7 @@ fn refresh_fees_mints_both_management_and_performance() {
 fn refresh_fees_no_profit_skips_performance() {
     use crate::math::wad::YEAR_NS;
     // No profit (assets unchanged from anchor)
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
 
     let perf_recipient = addr(0xAA);
@@ -2692,7 +2708,7 @@ fn refresh_fees_max_rate_caps_fee_accrual() {
 
 #[test]
 fn refresh_fees_rejects_backwards_time() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.fee_anchor.timestamp_ns = 10000; // Current anchor at 10000
     let config = test_config();
 
@@ -2717,7 +2733,7 @@ fn refresh_fees_rejects_backwards_time() {
 fn refresh_fees_requires_idle_state() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 7,
         index: 0,
@@ -2748,7 +2764,7 @@ fn refresh_fees_requires_idle_state() {
 
 #[test]
 fn effective_totals_adds_virtual() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let mut config = test_config();
     config.virtual_shares = 100;
     config.virtual_assets = 200;
@@ -2760,7 +2776,7 @@ fn effective_totals_adds_virtual() {
 
 #[test]
 fn convert_to_shares_works() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     // With 1:1 ratio (plus virtual adjustments)
@@ -2771,7 +2787,7 @@ fn convert_to_shares_works() {
 
 #[test]
 fn convert_to_assets_works() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let assets = convert_to_assets(&state, &config, 500);
@@ -2794,7 +2810,7 @@ fn kernel_result_new() {
 
 #[test]
 fn emergency_reset_from_idle_fails() {
-    let state = VaultState::with_initial(1_000, 1_000, 1_000, 0, 0);
+    let state = idle_state(1_000, 1_000);
     let config = test_config();
 
     let result = apply_action(
@@ -2811,7 +2827,7 @@ fn emergency_reset_from_idle_fails() {
 fn emergency_reset_from_refreshing() {
     use crate::state::op_state::RefreshingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     state.op_state = OpState::Refreshing(RefreshingState {
         op_id: 7,
         index: 1,
@@ -2846,12 +2862,12 @@ fn emergency_reset_from_refreshing() {
 fn emergency_reset_from_allocating_restores_idle() {
     use crate::state::op_state::AllocatingState;
 
-    let mut state = VaultState::with_initial(1_000, 1_000, 200, 800, 0);
+    let mut state = external_heavy_state();
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 10,
         index: 1,
         remaining: 300,
-        plan: vec![(1, 500), (2, 500)],
+        plan: vec![alloc_step(1, 500), alloc_step(2, 500)],
     });
     let config = test_config();
 
@@ -2880,7 +2896,7 @@ fn emergency_reset_from_allocating_restores_idle() {
 
 #[test]
 fn emergency_reset_from_withdrawing_refunds_shares() {
-    let mut state = VaultState::with_initial(1_000, 1_000, 500, 500, 0);
+    let mut state = balanced_state();
     let owner = addr(1);
     let receiver = addr(2);
     let _ = state
@@ -3357,7 +3373,7 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
         op_id: 77,
         index: 1,
         remaining: 0,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
 
     let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
@@ -3428,7 +3444,7 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
         op_id: 77,
         index: 1,
         remaining: 0,
-        plan: vec![(1, 500)],
+        plan: vec![alloc_step(1, 500)],
     });
 
     let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
