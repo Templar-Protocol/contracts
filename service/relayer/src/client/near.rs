@@ -768,10 +768,6 @@ impl Near {
                 self.fetch_oracle_request(OracleRequest::pyth(pyth_id, price_identifier), max_age)
                     .await?
             }
-            None => {
-                self.fetch_oracle_request(OracleRequest::pyth(pyth_id, price_identifier), max_age)
-                    .await?
-            }
         };
 
         Ok(price)

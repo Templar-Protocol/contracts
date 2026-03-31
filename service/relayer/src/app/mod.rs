@@ -303,8 +303,9 @@ impl App {
         receiver_id: &AccountId,
         additional_interactions: Vec<AccountId>,
     ) -> (HashSet<AccountId>, HashSet<AccountId>) {
-        let interacted_contract_ids =
-            HashSet::from_iter(std::iter::once(receiver_id.clone()).chain(additional_interactions));
+        let interacted_contract_ids: HashSet<_> = std::iter::once(receiver_id.clone())
+            .chain(additional_interactions)
+            .collect();
         let market_ids = Self::resolve_market_ids(accounts, &interacted_contract_ids);
         (interacted_contract_ids, market_ids)
     }

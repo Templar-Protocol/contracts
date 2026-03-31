@@ -105,7 +105,7 @@ impl InitTest {
                     vec![],
                 )
                 .await;
-            MarketController::attach(&self.worker, m).await
+            MarketController::attach(&self.worker, m)
         };
         let (pyth_oracle, market) = tokio::join!(pyth_oracle, market);
 
@@ -197,7 +197,7 @@ impl InitTest {
                     vec![],
                 )
                 .await;
-            MarketController::attach(&self.worker, m).await
+            MarketController::attach(&self.worker, m)
         };
         let (proxy_oracle, market) = tokio::join!(proxy_oracle, market);
 
