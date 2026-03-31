@@ -170,8 +170,13 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
 
     let contract_id = env.register(SorobanVaultContract, ());
     let curator = soroban_sdk::Address::generate(&env);
-    let asset = soroban_sdk::Address::generate(&env);
-    let share = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset = env
+        .register_stellar_asset_contract_v2(asset_admin)
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(contract_id.clone())
+        .address();
 
     env.as_contract(&contract_id, || {
         SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share, 0, 0)
@@ -421,7 +426,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
 
         assert_eq!(
             preview_deposit as u128,
-            templar_vault_kernel::convert_to_shares(&expected_state, &config, 500)
+            templar_vault_kernel::convert_to_shares(&expected_state, &config, 1_000)
         );
         assert_eq!(
             preview_withdraw as u128,
