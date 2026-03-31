@@ -7,7 +7,7 @@ fn make_entry(owner: u64, shares: u128, expected: u128) -> EscrowEntry {
     EscrowEntry::new(
         owner_addr(owner),
         shares,
-        1_000_000_000_000, // 1 second in ns
+        TimestampNs(1_000_000_000_000), // 1 second in ns
         expected,
     )
 }
@@ -166,12 +166,12 @@ fn test_is_stale() {
     let max_age = 60_000_000_000u64; // 60 seconds
 
     // Not stale
-    assert!(!is_stale(&entry, 1_000_000_000_000, max_age));
-    assert!(!is_stale(&entry, 1_060_000_000_000, max_age));
+    assert!(!is_stale(&entry, TimestampNs(1_000_000_000_000), max_age));
+    assert!(!is_stale(&entry, TimestampNs(1_060_000_000_000), max_age));
 
     // Stale
-    assert!(is_stale(&entry, 1_060_000_000_001, max_age));
-    assert!(is_stale(&entry, 2_000_000_000_000, max_age));
+    assert!(is_stale(&entry, TimestampNs(1_060_000_000_001), max_age));
+    assert!(is_stale(&entry, TimestampNs(2_000_000_000_000), max_age));
 }
 
 #[test]
@@ -222,7 +222,12 @@ fn arb_entry() -> impl Strategy<Value = EscrowEntry> {
         0u128..=u64::MAX as u128,
     )
         .prop_map(|(owner_idx, shares, ts, expected)| {
-            EscrowEntry::new(owner_addr(owner_idx as u64), shares, TimestampNs(ts), expected)
+            EscrowEntry::new(
+                owner_addr(owner_idx as u64),
+                shares,
+                TimestampNs(ts),
+                expected,
+            )
         })
 }
 
@@ -240,7 +245,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             expected_assets,
         );
         let settlement = settle_proportional(&entry, actual_assets);
@@ -258,7 +263,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             expected_assets,
         );
         let settlement = settle_proportional(&entry, actual_assets);
@@ -275,7 +280,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             expected_assets,
         );
         let settlement = settle_proportional(&entry, 0);
@@ -292,7 +297,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             expected_assets,
         );
         let settlement = EscrowSettlement::burn_all(entry.shares);
@@ -309,7 +314,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             expected_assets,
         );
         let settlement = EscrowSettlement::refund_all(entry.shares);
@@ -326,10 +331,10 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             1000,
         );
-        let to_burn = (shares as u128 * burn_ratio as u128) / 100;
+        let to_burn = (shares * burn_ratio as u128) / 100;
         let refund = shares - to_burn;
         let settlement = EscrowSettlement::partial(to_burn, refund);
 
@@ -350,7 +355,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             1000,
         );
         let settlement = EscrowSettlement::partial(shares, excess);
@@ -368,7 +373,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             1000,
         );
         let settlement = EscrowSettlement::partial(to_burn, refund);
@@ -387,13 +392,13 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             100,
-            created_at,
+            TimestampNs(created_at),
             1000,
         );
         let now = created_at.saturating_add(delta);
         let threshold = created_at.saturating_add(max_age);
 
-        let stale = is_stale(&entry, now, max_age);
+        let stale = is_stale(&entry, TimestampNs(now), max_age);
         prop_assert_eq!(stale, now > threshold);
     }
 
@@ -445,7 +450,7 @@ proptest! {
         let entry = EscrowEntry::new(
             owner_addr(1),
             shares,
-            0,
+            TimestampNs(0),
             1000,
         );
         prop_assert_eq!(entry.is_empty(), shares == 0);

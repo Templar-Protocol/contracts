@@ -227,6 +227,7 @@ mod contract_tests {
     use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
     use templar_vault_kernel::effects::KernelEffect;
@@ -241,7 +242,7 @@ mod contract_tests {
         fn authorize(
             &self,
             _action: ActionKind,
-            _caller: [u8; 32],
+            _caller: templar_vault_kernel::Address,
             _proof: Option<&[u8]>,
         ) -> AuthResult<()> {
             Ok(())
@@ -282,16 +283,21 @@ mod contract_tests {
     }
 
     impl AddressRegistrar for MockInterpreter {
-        fn register_address(&mut self, _kernel_addr: [u8; 32], _soroban_addr: SdkAddress) {}
+        fn register_address(
+            &mut self,
+            _kernel_addr: templar_vault_kernel::Address,
+            _soroban_addr: SdkAddress,
+        ) {
+        }
 
-        fn has_address(&self, _kernel_addr: &[u8; 32]) -> bool {
+        fn has_address(&self, _kernel_addr: &templar_vault_kernel::Address) -> bool {
             true
         }
     }
 
     #[derive(Clone, Debug, Default)]
     struct TrackingInterpreter {
-        addresses: BTreeMap<[u8; 32], SdkAddress>,
+        addresses: BTreeMap<templar_vault_kernel::Address, SdkAddress>,
         effects: Vec<KernelEffect>,
     }
 
@@ -316,23 +322,27 @@ mod contract_tests {
     }
 
     impl AddressRegistrar for TrackingInterpreter {
-        fn register_address(&mut self, kernel_addr: [u8; 32], soroban_addr: SdkAddress) {
+        fn register_address(
+            &mut self,
+            kernel_addr: templar_vault_kernel::Address,
+            soroban_addr: SdkAddress,
+        ) {
             self.addresses.insert(kernel_addr, soroban_addr);
         }
 
-        fn has_address(&self, kernel_addr: &[u8; 32]) -> bool {
+        fn has_address(&self, kernel_addr: &templar_vault_kernel::Address) -> bool {
             self.addresses.contains_key(kernel_addr)
         }
     }
 
     fn test_config() -> ContractConfig {
         ContractConfig::new(
-            [1u8; 32],
-            [9u8; 32],
-            vec![[2u8; 32]],
-            vec![[3u8; 32]],
-            [4u8; 32],
-            [5u8; 32],
+            templar_vault_kernel::Address([1u8; 32]),
+            templar_vault_kernel::Address([9u8; 32]),
+            vec![templar_vault_kernel::Address([2u8; 32])],
+            vec![templar_vault_kernel::Address([3u8; 32])],
+            templar_vault_kernel::Address([4u8; 32]),
+            templar_vault_kernel::Address([5u8; 32]),
         )
     }
 
@@ -371,15 +381,15 @@ mod contract_tests {
             .to_bytes()
             .to_array();
 
-        assert_eq!(derived, expected);
-        assert_ne!(derived, raw_hash);
+        assert_eq!(derived, templar_vault_kernel::Address(expected));
+        assert_ne!(derived, templar_vault_kernel::Address(raw_hash));
     }
 
     #[test]
     fn test_deposit_first() {
         let mut vault = create_test_vault();
-        let caller = [1u8; 32];
-        let receiver = [10u8; 32];
+        let caller = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([10u8; 32]);
 
         let result = vault.deposit(caller, receiver, 1000, 0, 100).unwrap();
 
@@ -391,8 +401,8 @@ mod contract_tests {
     #[test]
     fn test_deposit_subsequent() {
         let mut vault = create_test_vault();
-        let caller = [1u8; 32];
-        let receiver = [10u8; 32];
+        let caller = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([10u8; 32]);
 
         // First deposit
         vault.deposit(caller, receiver, 1000, 0, 100).unwrap();
@@ -408,8 +418,8 @@ mod contract_tests {
     #[test]
     fn test_deposit_zero_fails() {
         let mut vault = create_test_vault();
-        let caller = [1u8; 32];
-        let receiver = [10u8; 32];
+        let caller = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([10u8; 32]);
 
         let result = vault.deposit(caller, receiver, 0, 0, 100);
 
@@ -419,8 +429,8 @@ mod contract_tests {
     #[test]
     fn test_deposit_slippage_fails() {
         let mut vault = create_test_vault();
-        let caller = [1u8; 32];
-        let receiver = [10u8; 32];
+        let caller = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([10u8; 32]);
 
         // Deposit with min_shares_out higher than actual
         let result = vault.deposit(caller, receiver, 1000, 2000, 100);
@@ -431,7 +441,7 @@ mod contract_tests {
     #[test]
     fn test_begin_allocating() {
         let mut vault = create_test_vault();
-        let caller = [3u8; 32]; // allocator
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
 
         let state = vault.state_mut().unwrap();
         state.idle_assets = 2_000;
@@ -446,7 +456,7 @@ mod contract_tests {
     #[test]
     fn test_finish_allocating() {
         let mut vault = create_test_vault();
-        let caller = [3u8; 32]; // allocator
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
 
         let state = vault.state_mut().unwrap();
         state.idle_assets = 2_000;
@@ -463,7 +473,7 @@ mod contract_tests {
     #[test]
     fn test_sync_external_assets_requires_active_allocation_op_id() {
         let mut vault = create_test_vault();
-        let caller = [3u8; 32]; // allocator
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
 
         {
             let state = vault.state_mut().unwrap();
@@ -493,7 +503,7 @@ mod contract_tests {
     #[test]
     fn test_begin_refreshing() {
         let mut vault = create_test_vault();
-        let caller = [3u8; 32]; // allocator
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
 
         let op_id = vault.begin_refreshing(caller, vec![0, 1], 1000).unwrap();
 
@@ -504,7 +514,7 @@ mod contract_tests {
     #[test]
     fn test_finish_refreshing_reports_markets_refreshed() {
         let mut vault = create_test_vault();
-        let caller = [3u8; 32]; // allocator
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
 
         let op_id = vault
             .begin_refreshing(caller, vec![0, 1, 2], 1500)
@@ -528,9 +538,9 @@ mod contract_tests {
     #[test]
     fn test_execute_withdraw_respects_min_withdrawal_assets() {
         let mut vault = create_test_vault();
-        let allocator = [3u8; 32];
-        let owner = [1u8; 32];
-        let receiver = [2u8; 32];
+        let allocator = templar_vault_kernel::Address([3u8; 32]);
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
 
         let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
         let request_time: u64 = 200;
@@ -589,9 +599,9 @@ mod contract_tests {
     #[test]
     fn test_execute_withdraw_insufficient_idle_partially_settles() {
         let mut vault = create_test_vault();
-        let allocator = [3u8; 32];
-        let owner = [1u8; 32];
-        let receiver = [2u8; 32];
+        let allocator = templar_vault_kernel::Address([3u8; 32]);
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
 
         let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(3);
         let request_time: u64 = 200;
@@ -732,18 +742,18 @@ mod contract_tests {
     fn test_contract_config() {
         let config = test_config();
 
-        assert!(config.is_curator(&[1u8; 32]));
-        assert!(!config.is_curator(&[2u8; 32]));
+        assert!(config.is_curator(&templar_vault_kernel::Address([1u8; 32])));
+        assert!(!config.is_curator(&templar_vault_kernel::Address([2u8; 32])));
 
-        assert!(config.is_guardian(&[2u8; 32]));
-        assert!(!config.is_guardian(&[1u8; 32]));
+        assert!(config.is_guardian(&templar_vault_kernel::Address([2u8; 32])));
+        assert!(!config.is_guardian(&templar_vault_kernel::Address([1u8; 32])));
 
-        assert!(config.is_allocator(&[3u8; 32]));
-        assert!(!config.is_allocator(&[1u8; 32]));
+        assert!(config.is_allocator(&templar_vault_kernel::Address([3u8; 32])));
+        assert!(!config.is_allocator(&templar_vault_kernel::Address([1u8; 32])));
 
-        assert!(config.is_privileged(&[1u8; 32])); // curator
-        assert!(config.is_privileged(&[3u8; 32])); // allocator
-        assert!(!config.is_privileged(&[2u8; 32])); // guardian only
+        assert!(config.is_privileged(&templar_vault_kernel::Address([1u8; 32]))); // curator
+        assert!(config.is_privileged(&templar_vault_kernel::Address([3u8; 32]))); // allocator
+        assert!(!config.is_privileged(&templar_vault_kernel::Address([2u8; 32]))); // guardian only
         assert_eq!(config.virtual_shares, 0);
         assert_eq!(config.virtual_assets, 0);
     }
@@ -784,8 +794,8 @@ mod contract_tests {
         });
 
         let fees = FeesSpec::new(
-            FeeSlot::new(Wad::one() / 10, [1u8; 32]),
-            FeeSlot::new(Wad::one() / 20, [2u8; 32]),
+            FeeSlot::new(Wad::one() / 10, templar_vault_kernel::Address([1u8; 32])),
+            FeeSlot::new(Wad::one() / 20, templar_vault_kernel::Address([2u8; 32])),
             None,
         );
 
@@ -866,7 +876,7 @@ mod contract_tests {
             SorobanVaultContract::set_governance_config(
                 env.clone(),
                 governance,
-                GovernanceConfigKind::VirtualOffsets,
+                templar_soroban_shared_types::GovernanceConfigKind::VirtualOffsets,
                 None,
                 None,
                 Some(101),
@@ -888,8 +898,8 @@ mod contract_tests {
         );
         vault.load_state().unwrap();
 
-        let caller = [1u8; 32];
-        let receiver = [10u8; 32];
+        let caller = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([10u8; 32]);
         let result = vault.deposit(caller, receiver, 1_000, 0, 100).unwrap();
 
         assert_eq!(result.shares_minted, 1_571);
@@ -1049,7 +1059,7 @@ mod contract_tests {
             state.total_assets = 1_500;
             state.total_shares = 1_000;
             state.idle_assets = 1_500;
-            state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+            state.fee_anchor = FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0));
             storage
                 .save_state(&VersionedState::new(state))
                 .expect("save state");
@@ -1074,7 +1084,7 @@ mod contract_tests {
             assert_eq!(versioned.state.fee_anchor.total_assets, 1_500);
             assert_eq!(
                 versioned.state.fee_anchor.timestamp_ns,
-                ledger_timestamp_ns(&env).expect("timestamp")
+                templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
             );
         });
     }
@@ -1268,7 +1278,8 @@ mod contract_tests {
 
             Storage::save_policy_state(&mut storage, &PolicyState::default()).unwrap();
 
-            let restrictions = Restrictions::Blacklist(alloc::vec![[9u8; 32]]);
+            let restrictions =
+                Restrictions::Blacklist(alloc::vec![templar_vault_kernel::Address([9u8; 32])]);
             Storage::save_restrictions(&mut storage, &Some(restrictions.clone())).unwrap();
 
             let mut vault = CuratorVault::new(
@@ -1423,7 +1434,12 @@ mod effects_tests {
     }
 
     fn test_context() -> EffectContext {
-        EffectContext::new(1_000_000_000_000, [1u8; 32], [2u8; 32], [3u8; 32])
+        EffectContext::new(
+            1_000_000_000_000,
+            templar_vault_kernel::Address([1u8; 32]),
+            templar_vault_kernel::Address([2u8; 32]),
+            templar_vault_kernel::Address([3u8; 32]),
+        )
     }
 
     #[test]
@@ -1460,10 +1476,13 @@ mod effects_tests {
     #[test]
     fn test_effect_context_new() {
         let ctx = test_context();
-        assert_eq!(ctx.now_ns, 1_000_000_000_000);
-        assert_eq!(ctx.vault_address, [1u8; 32]);
-        assert_eq!(ctx.asset_address, [2u8; 32]);
-        assert_eq!(ctx.share_address, [3u8; 32]);
+        assert_eq!(
+            ctx.now_ns,
+            templar_vault_kernel::TimestampNs(1_000_000_000_000)
+        );
+        assert_eq!(ctx.vault_address, templar_vault_kernel::Address([1u8; 32]));
+        assert_eq!(ctx.asset_address, templar_vault_kernel::Address([2u8; 32]));
+        assert_eq!(ctx.share_address, templar_vault_kernel::Address([3u8; 32]));
     }
 
     #[test]
@@ -1534,7 +1553,7 @@ mod effects_tests {
         let env = test_env();
         let mut map = AddressMap::new(&env);
 
-        let kernel_addr = [1u8; 32];
+        let kernel_addr = templar_vault_kernel::Address([1u8; 32]);
         let soroban_addr = Address::generate(&env);
 
         map.register(kernel_addr, soroban_addr.clone());
@@ -1544,7 +1563,7 @@ mod effects_tests {
         assert_eq!(resolved.unwrap(), &soroban_addr);
 
         // Unknown address
-        let unknown = [2u8; 32];
+        let unknown = templar_vault_kernel::Address([2u8; 32]);
         assert!(map.resolve(&unknown).is_none());
     }
 
@@ -1560,8 +1579,8 @@ mod effects_tests {
 
         let effect = KernelEffect::EmitEvent {
             event: KernelEvent::DepositProcessed {
-                owner: [1u8; 32],
-                receiver: [2u8; 32],
+                owner: templar_vault_kernel::Address([1u8; 32]),
+                receiver: templar_vault_kernel::Address([2u8; 32]),
                 assets_in: 1,
                 shares_out: 1,
             },
@@ -1773,14 +1792,13 @@ mod market_tests {
 }
 
 mod storage_tests {
+    use crate::contract::helpers::set_config_address;
     use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
-    use crate::helpers::set_config_address;
     use crate::storage::{
         SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
     };
     use crate::test_utils::MemoryStorage;
-    use crate::Address;
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Env, Symbol, Vec as SdkVec};
@@ -1850,7 +1868,7 @@ mod storage_tests {
 
         let env = Env::default();
         let mut storage = MemoryStorage::new();
-        let kernel_addr = [9u8; 32];
+        let kernel_addr = templar_vault_kernel::Address([9u8; 32]);
         let soroban_addr = SdkAddress::generate(&env);
 
         storage.save_address(&kernel_addr, &soroban_addr).unwrap();
@@ -1860,11 +1878,11 @@ mod storage_tests {
 
     #[test]
     fn test_storage_key_variants() {
-        let key1 = StorageKey::VaultState;
-        let key2 = StorageKey::Version;
-        let key3 = StorageKey::PendingWithdrawal(42);
-        let key4 = StorageKey::ShareBalance([0u8; 32]);
-        let key5 = StorageKey::TotalSupply;
+        let key1 = SorobanStorageKey::StateBlob;
+        let key2 = SorobanStorageKey::Version;
+        let key3 = SorobanStorageKey::Paused;
+        let key4 = SorobanStorageKey::PausedState;
+        let key5 = SorobanStorageKey::Restrictions;
 
         assert_ne!(key1, key2);
         assert_ne!(key3, key4);
@@ -1983,8 +2001,8 @@ mod storage_tests {
             let mut storage = SorobanStorage::new(&env);
             let mut state = VaultState::default();
 
-            let owner = [1u8; 32];
-            let receiver = [2u8; 32];
+            let owner = templar_vault_kernel::Address([1u8; 32]);
+            let receiver = templar_vault_kernel::Address([2u8; 32]);
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id: 7,
                 index: 1,
@@ -1996,7 +2014,16 @@ mod storage_tests {
             });
 
             let mut pending = BTreeMap::new();
-            pending.insert(3, PendingWithdrawal::new(owner, receiver, 700, 800, 123));
+            pending.insert(
+                3,
+                PendingWithdrawal::new(
+                    owner,
+                    receiver,
+                    700,
+                    800,
+                    templar_vault_kernel::TimestampNs(123),
+                ),
+            );
             state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
             state.total_assets = 1000;
             state.total_shares = 900;
@@ -2165,8 +2192,8 @@ mod storage_tests {
             let mut storage = SorobanStorage::new(&env);
             let mut state = VaultState::default();
 
-            let owner = [1u8; 32];
-            let receiver = [2u8; 32];
+            let owner = templar_vault_kernel::Address([1u8; 32]);
+            let receiver = templar_vault_kernel::Address([2u8; 32]);
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id: 11,
                 index: 1,
@@ -2178,7 +2205,16 @@ mod storage_tests {
             });
 
             let mut pending = BTreeMap::new();
-            pending.insert(3, PendingWithdrawal::new(owner, receiver, 700, 800, 123));
+            pending.insert(
+                3,
+                PendingWithdrawal::new(
+                    owner,
+                    receiver,
+                    700,
+                    800,
+                    templar_vault_kernel::TimestampNs(123),
+                ),
+            );
             state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
             state.total_assets = 1000;
             state.total_shares = 900;

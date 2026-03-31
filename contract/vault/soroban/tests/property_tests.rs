@@ -29,6 +29,7 @@ use templar_soroban_runtime::{
 };
 use templar_vault_kernel::{
     math::{number::Number, wad::mul_div_floor},
+    state::op_state::AllocationPlanEntry,
     state::op_state::OpState,
     transitions::{
         complete_allocation, complete_refresh, start_allocation, start_refresh, TransitionError,
@@ -43,12 +44,12 @@ use common::{MockInterpreter, TestPermissiveAuth};
 
 fn prop_test_config() -> ContractConfig {
     ContractConfig::new(
-        [1u8; 32],       // curator
-        [9u8; 32],       // vault_address
-        vec![[2u8; 32]], // guardians
-        vec![[3u8; 32]], // allocators
-        [4u8; 32],       // asset_address
-        [5u8; 32],       // share_address
+        Address([1u8; 32]),       // curator
+        Address([9u8; 32]),       // vault_address
+        vec![Address([2u8; 32])], // guardians
+        vec![Address([3u8; 32])], // allocators
+        Address([4u8; 32]),       // asset_address
+        Address([5u8; 32]),       // share_address
     )
 }
 
@@ -66,11 +67,11 @@ fn create_prop_test_vault() -> PropTestVault {
 }
 
 fn user_addr() -> Address {
-    [10u8; 32]
+    Address([10u8; 32])
 }
 
 fn allocator_addr() -> Address {
-    [3u8; 32]
+    Address([3u8; 32])
 }
 
 // Arbitrary Strategies
@@ -81,8 +82,21 @@ fn arb_deposit_amount() -> impl Strategy<Value = u128> {
 }
 
 /// Generate an allocation plan.
-fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<(u32, u128)>> {
-    proptest::collection::vec((0u32..100u32, 1u128..=100_000_000u128), 1..=max_len)
+fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<AllocationPlanEntry>> {
+    proptest::collection::vec((0u32..100u32, 1u128..=100_000_000u128), 1..=max_len).prop_map(
+        |entries| {
+            entries
+                .into_iter()
+                .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
+                .collect()
+        },
+    )
+}
+
+fn tuple_plan(plan: &[AllocationPlanEntry]) -> Vec<(u32, u128)> {
+    plan.iter()
+        .map(|entry| (entry.target_id, entry.amount))
+        .collect()
 }
 
 /// Generate a refresh plan (list of target IDs).
@@ -279,7 +293,7 @@ proptest! {
         prop_assert_eq!(kernel_alloc.op_id, op_id);
         prop_assert_eq!(kernel_alloc.index, 0);
 
-        let expected_remaining: u128 = plan.iter().map(|(_, amt)| amt).sum();
+        let expected_remaining: u128 = plan.iter().map(|entry| entry.amount).sum();
         prop_assert_eq!(kernel_alloc.remaining, expected_remaining);
     }
 
@@ -360,14 +374,14 @@ proptest! {
         prop_assert!(complete_result.new_state.is_idle());
 
         // Soroban: start and complete — plan total must fit within idle_assets
-        let plan_total: u128 = plan.iter().map(|(_, amt)| amt).sum();
+        let plan_total: u128 = plan.iter().map(|entry| entry.amount).sum();
         prop_assume!(plan_total <= deposit_amount);
 
         let mut vault = create_prop_test_vault();
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), deposit_amount, 0, 100).unwrap();
 
-        let soroban_op_id = begin_allocating(&mut vault, allocator, plan, 1000).unwrap();
+        let soroban_op_id = begin_allocating(&mut vault, allocator, tuple_plan(&plan), 1000).unwrap();
         finish_allocating(&mut vault, allocator, soroban_op_id).unwrap();
         prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
@@ -601,14 +615,14 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // First plan must fit within idle_assets
-        let plan1_total: u128 = plan1.iter().map(|(_, amt)| amt).sum();
+        let plan1_total: u128 = plan1.iter().map(|entry| entry.amount).sum();
         prop_assume!(plan1_total <= deposit_amount);
 
         // Start first allocation
-        begin_allocating(&mut vault, allocator, plan1, 1000).unwrap();
+        begin_allocating(&mut vault, allocator, tuple_plan(&plan1), 1000).unwrap();
 
         // Try to start second allocation - should fail
-        let result = begin_allocating(&mut vault, allocator, plan2, 1000);
+        let result = begin_allocating(&mut vault, allocator, tuple_plan(&plan2), 1000);
         prop_assert!(result.is_err());
     }
 
@@ -628,11 +642,11 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         // Allocation plan must fit within idle_assets
-        let plan_total: u128 = alloc_plan.iter().map(|(_, amt)| amt).sum();
+        let plan_total: u128 = alloc_plan.iter().map(|entry| entry.amount).sum();
         prop_assume!(plan_total <= deposit_amount);
 
         // Start allocation
-        begin_allocating(&mut vault, allocator, alloc_plan, 1000).unwrap();
+        begin_allocating(&mut vault, allocator, tuple_plan(&alloc_plan), 1000).unwrap();
 
         // Try to start refresh - should fail
         let result = vault.begin_refreshing(allocator, refresh_plan, 1000);
@@ -658,7 +672,7 @@ proptest! {
         vault.begin_refreshing(allocator, refresh_plan, 1000).unwrap();
 
         // Try to start allocation - should fail
-        let result = begin_allocating(&mut vault, allocator, alloc_plan, 1000);
+        let result = begin_allocating(&mut vault, allocator, tuple_plan(&alloc_plan), 1000);
         prop_assert!(result.is_err());
     }
 }

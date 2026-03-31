@@ -22,8 +22,8 @@ use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
     effects::KernelEffect, total_assets_for_fee_accrual, Address, AllocatingState,
-    FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, Number, OpState, VaultConfig, VaultState,
-    Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    AllocationPlanEntry, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, Number, OpState,
+    VaultConfig, VaultState, Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::{
     state::op_state::RefreshingState,
@@ -41,29 +41,29 @@ use common::{MockInterpreter, TestPermissiveAuth};
 
 fn test_config() -> ContractConfig {
     ContractConfig::new(
-        [1u8; 32],       // curator
-        [9u8; 32],       // vault_address
-        vec![[2u8; 32]], // guardians
-        vec![[3u8; 32]], // allocators
-        [4u8; 32],       // asset_address
-        [5u8; 32],       // share_address
+        Address([1u8; 32]),       // curator
+        Address([9u8; 32]),       // vault_address
+        vec![Address([2u8; 32])], // guardians
+        vec![Address([3u8; 32])], // allocators
+        Address([4u8; 32]),       // asset_address
+        Address([5u8; 32]),       // share_address
     )
 }
 
 fn curator_addr() -> Address {
-    [1u8; 32]
+    Address([1u8; 32])
 }
 
 fn sentinel_addr() -> Address {
-    [11u8; 32]
+    Address([11u8; 32])
 }
 
 fn allocator_addr() -> Address {
-    [3u8; 32]
+    Address([3u8; 32])
 }
 
 fn user_addr() -> Address {
-    [10u8; 32]
+    Address([10u8; 32])
 }
 
 struct SorobanContractFixture {
@@ -213,7 +213,7 @@ fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfi
     let now_ns = env.ledger().timestamp().saturating_mul(1_000_000_000);
     let anchor = state.fee_anchor;
 
-    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns {
+    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns.as_u64() {
         return state;
     }
 
@@ -221,7 +221,7 @@ fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfi
     let fee_assets_base = total_assets_for_fee_accrual(
         current_assets,
         anchor.total_assets,
-        anchor.timestamp_ns,
+        anchor.timestamp_ns.as_u64(),
         now_ns,
         config.fees.max_total_assets_growth_rate,
     );
@@ -230,7 +230,7 @@ fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfi
         current_assets,
         state.total_shares,
         config.fees.management.fee_wad,
-        anchor.timestamp_ns,
+        anchor.timestamp_ns.as_u64(),
         now_ns,
     );
     let supply_after_management =
@@ -250,7 +250,8 @@ fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfi
     state.total_shares = supply_after_management
         .saturating_add(performance_shares)
         .as_u128_saturating();
-    state.fee_anchor = FeeAccrualAnchor::new(current_assets, now_ns);
+    state.fee_anchor =
+        FeeAccrualAnchor::new(current_assets, templar_vault_kernel::TimestampNs(now_ns));
     state
 }
 
@@ -260,9 +261,9 @@ fn mint_shares_from_deposit(
     virtual_shares: u128,
     virtual_assets: u128,
 ) -> u128 {
-    let owner = [1u8; 32];
-    let receiver = [2u8; 32];
-    let self_id = [9u8; 32];
+    let owner = Address([1u8; 32]);
+    let receiver = Address([2u8; 32]);
+    let self_id = Address([9u8; 32]);
     let config = preview_kernel_config(false, virtual_shares, virtual_assets);
     let result = apply_action(
         state,
@@ -274,7 +275,7 @@ fn mint_shares_from_deposit(
             receiver,
             assets_in,
             min_shares_out: 0,
-            now_ns: 1,
+            now_ns: templar_vault_kernel::TimestampNs(1),
         },
     )
     .expect("kernel deposit");
@@ -383,8 +384,8 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
 
     env.as_contract(&contract_id, || {
         let fees = FeesSpec::new(
-            FeeSlot::new(Wad::one() / 10, [1u8; 32]),
-            FeeSlot::new(Wad::one() / 5, [2u8; 32]),
+            FeeSlot::new(Wad::one() / 10, Address([1u8; 32])),
+            FeeSlot::new(Wad::one() / 5, Address([2u8; 32])),
             None,
         );
         let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
@@ -398,7 +399,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
         state.total_assets = 1_500;
         state.total_shares = 1_000;
         state.idle_assets = 1_500;
-        state.fee_anchor = FeeAccrualAnchor::new(1_000, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0));
         storage
             .save_state(&VersionedState::new(state.clone()))
             .unwrap();
@@ -547,7 +548,7 @@ fn rbac_vault() -> RbacVault {
 #[rstest]
 fn test_deposit_flow_single(mut vault: TestVault) {
     let user = user_addr();
-    let receiver = [11u8; 32];
+    let receiver = Address([11u8; 32]);
 
     let result = vault.deposit(user, receiver, 1000, 0, 100).unwrap();
 
@@ -565,7 +566,7 @@ fn test_deposit_flow_single(mut vault: TestVault) {
 #[rstest]
 fn test_deposit_flow_multiple(mut vault: TestVault) {
     let user = user_addr();
-    let receiver = [11u8; 32];
+    let receiver = Address([11u8; 32]);
 
     // First deposit
     vault.deposit(user, receiver, 1000, 0, 100).unwrap();
@@ -581,7 +582,7 @@ fn test_deposit_flow_multiple(mut vault: TestVault) {
 #[rstest]
 fn test_deposit_flow_with_slippage_protection(mut vault: TestVault) {
     let user = user_addr();
-    let receiver = [11u8; 32];
+    let receiver = Address([11u8; 32]);
 
     // First deposit to establish ratio
     vault.deposit(user, receiver, 1000, 0, 100).unwrap();
@@ -598,7 +599,7 @@ fn test_deposit_flow_with_slippage_protection(mut vault: TestVault) {
 #[rstest]
 fn test_deposit_flow_zero_amount_fails(mut vault: TestVault) {
     let user = user_addr();
-    let receiver = [11u8; 32];
+    let receiver = Address([11u8; 32]);
 
     let result = vault.deposit(user, receiver, 0, 0, 100);
     assert!(result.is_err());
@@ -832,7 +833,7 @@ fn test_state_persists_after_allocation(mut vault: TestVault) {
 #[rstest]
 fn test_deposit_emits_mint_effect(mut vault: TestVault) {
     let user = user_addr();
-    let receiver = [11u8; 32];
+    let receiver = Address([11u8; 32]);
 
     vault.deposit(user, receiver, 1000, 0, 100).unwrap();
 
@@ -1163,7 +1164,7 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
 #[rstest]
 fn test_multiple_deposits_share_calculation(mut vault: TestVault) {
     let user1 = user_addr();
-    let user2 = [20u8; 32];
+    let user2 = Address([20u8; 32]);
 
     // First deposit - 1:1 ratio
     vault.deposit(user1, user1, 1000, 0, 100).unwrap();
@@ -1181,7 +1182,7 @@ fn test_share_dilution_after_yield(mut vault: TestVault) {
     use templar_soroban_runtime::contract::{AllocationDelta, Delta};
 
     let user1 = user_addr();
-    let user2 = [20u8; 32];
+    let user2 = Address([20u8; 32]);
     let allocator = allocator_addr();
 
     vault.deposit(user1, user1, 1000, 0, 100).unwrap();
@@ -1364,7 +1365,12 @@ fn test_cannot_allocate_while_refreshing(mut vault: TestVault) {
 
 #[fixture]
 fn dummy_ctx() -> EffectContext {
-    EffectContext::new(0, [1u8; 32], [2u8; 32], [3u8; 32])
+    EffectContext::new(
+        0,
+        Address([1u8; 32]),
+        Address([2u8; 32]),
+        Address([3u8; 32]),
+    )
 }
 
 #[fixture]
@@ -1376,13 +1382,13 @@ fn mock_interpreter() -> MockInterpreter {
 fn test_deposit_effects_execute(mut mock_interpreter: MockInterpreter, dummy_ctx: EffectContext) {
     let effects = vec![
         KernelEffect::MintShares {
-            owner: [9u8; 32],
+            owner: Address([9u8; 32]),
             shares: 100,
         },
         KernelEffect::EmitEvent {
             event: templar_vault_kernel::effects::KernelEvent::DepositProcessed {
-                owner: [8u8; 32],
-                receiver: [9u8; 32],
+                owner: Address([8u8; 32]),
+                receiver: Address([9u8; 32]),
                 assets_in: 1000,
                 shares_out: 100,
             },
@@ -1403,7 +1409,10 @@ fn test_allocation_transition_flow_reaches_idle(
     dummy_ctx: EffectContext,
 ) {
     let op_id = 7u64;
-    let plan = vec![(0u32, 100u128), (1u32, 200u128)];
+    let plan = vec![
+        AllocationPlanEntry::new(0u32, 100u128),
+        AllocationPlanEntry::new(1u32, 200u128),
+    ];
 
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
     mock_interpreter
@@ -1460,8 +1469,8 @@ fn test_withdrawal_transition_flow_reaches_idle(
     let request = WithdrawalRequest {
         op_id,
         amount: 150,
-        receiver: [6u8; 32],
-        owner: [5u8; 32],
+        receiver: Address([6u8; 32]),
+        owner: Address([5u8; 32]),
         escrow_shares: 150,
     };
 
@@ -1528,7 +1537,7 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
         state.total_assets = 500;
         state.total_shares = 500;
         state.idle_assets = 500;
-        state.fee_anchor = FeeAccrualAnchor::new(500, 0);
+        state.fee_anchor = FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0));
         storage
             .save_state(&VersionedState::new(state))
             .expect("save state");

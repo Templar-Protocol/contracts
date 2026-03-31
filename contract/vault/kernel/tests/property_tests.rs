@@ -953,11 +953,13 @@ proptest! {
         cur_total_assets in 1u128..=1_000_000u128,
         fee_wad in (Wad::SCALE / 10)..=Wad::SCALE,
     ) {
-        let mut state = VaultState::default();
-        state.total_assets = cur_total_assets;
-        state.total_shares = total_supply;
-        state.idle_assets = cur_total_assets;
-        state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+        let state = VaultState {
+            total_assets: cur_total_assets,
+            total_shares: total_supply,
+            idle_assets: cur_total_assets,
+            fee_anchor: FeeAccrualAnchor::new(0, TimestampNs(0)),
+            ..VaultState::default()
+        };
 
         let mut config = default_config();
         let performance = FeeSlot::new(Wad::from(fee_wad), Address([9u8; 32]));
@@ -1028,7 +1030,7 @@ proptest! {
         });
         let result = start_allocation(non_idle, plan, op_id);
         prop_assert!(
-            matches!(result, Err(TransitionError::WrongState { .. })),
+            matches!(result, Err(TransitionError::WrongState)),
             "expected WrongState when starting allocation from non-idle"
         );
     }
@@ -1050,7 +1052,7 @@ proptest! {
         });
         let result = start_withdrawal(non_idle, request);
         prop_assert!(
-            matches!(result, Err(TransitionError::WrongState { .. })),
+            matches!(result, Err(TransitionError::WrongState)),
             "expected WrongState when starting withdrawal from non-idle"
         );
     }
@@ -1074,7 +1076,7 @@ proptest! {
         });
         let result = start_refresh(non_idle, plan, op_id);
         prop_assert!(
-            matches!(result, Err(TransitionError::WrongState { .. })),
+            matches!(result, Err(TransitionError::WrongState)),
             "expected WrongState when starting refresh from non-idle"
         );
     }
@@ -1236,8 +1238,8 @@ proptest! {
             index: 1,
             remaining: 0,
             collected: request.amount,
-            receiver: request.receiver.clone(),
-            owner: request.owner.clone(),
+            receiver: request.receiver,
+            owner: request.owner,
             escrow_shares: request.escrow_shares,
         });
         let burn_shares = request.escrow_shares.saturating_add(excess);
@@ -2329,7 +2331,7 @@ fn queue_fills_to_max_pending_then_rejects() {
     let queue = build_large_queue(MAX_PENDING as u32, 1_000);
     assert_eq!(
         queue.pending_withdrawals().len(),
-        MAX_PENDING as usize,
+        MAX_PENDING,
         "Queue should hold exactly MAX_PENDING items"
     );
     // Next enqueue should fail
@@ -2830,7 +2832,7 @@ fn allocation_from_non_idle_rejected() {
     });
     let err = start_allocation(alloc_state, vec![alloc_step(0, 100)], 2);
     assert!(
-        matches!(err, Err(TransitionError::WrongState { .. })),
+        matches!(err, Err(TransitionError::WrongState)),
         "Allocation from non-Idle should be rejected, got: {err:?}"
     );
 }
@@ -3424,7 +3426,7 @@ fn parity_refresh_external_growth() {
     let preview = preview_withdraw_assets(&result.state, &config, 1_000);
     // Approximate check: growth is reflected (value > 1000)
     assert!(
-        preview >= 1_199 && preview <= 1_200,
+        (1_199..=1_200).contains(&preview),
         "share price reflects growth, got {preview}"
     );
 }

@@ -106,7 +106,7 @@ fn request_withdraw_enqueues_and_emits_event() {
             receiver: addr(2),
             shares: 100,
             min_assets_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -149,7 +149,7 @@ fn execute_withdraw_idle_starts_withdrawal() {
         None,
         &addr(0xFF),
         KernelAction::ExecuteWithdraw {
-            now_ns: DEFAULT_COOLDOWN_NS + 1,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
     )
     .unwrap();
@@ -196,7 +196,9 @@ fn execute_withdraw_withdrawing_advances_index() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::ExecuteWithdraw { now_ns: 0 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
     );
 
     assert!(matches!(
@@ -223,7 +225,7 @@ fn deposit_blocked_when_paused() {
             receiver: addr(2),
             assets_in: 10,
             min_shares_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -249,7 +251,7 @@ fn request_withdraw_blocked_by_blacklist() {
             receiver: addr(3),
             shares: 10,
             min_assets_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -274,7 +276,7 @@ fn deposit_success() {
             receiver: addr(2),
             assets_in: 500,
             min_shares_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -315,7 +317,7 @@ fn deposit_emits_transfer_assets_from_owner() {
             receiver: addr(2),
             assets_in: 250,
             min_shares_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -343,7 +345,7 @@ fn deposit_zero_assets_fails_slippage() {
             receiver: addr(2),
             assets_in: 0,
             min_shares_out: 1,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -364,8 +366,8 @@ fn deposit_slippage_check_fails() {
             owner: addr(1),
             receiver: addr(2),
             assets_in: 100,
-            min_shares_out: 1_000_000, // Way more than we can get
-            now_ns: 0,
+            min_shares_out: 1_000_000,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -395,7 +397,7 @@ fn deposit_not_idle_fails() {
             receiver: addr(2),
             assets_in: 100,
             min_shares_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -425,7 +427,7 @@ fn atomic_withdraw_success_emits_burn_and_transfer() {
             operator: owner,
             amount: 100,
             kind: AtomicPayoutKind::Withdraw,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -468,7 +470,7 @@ fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
             operator,
             amount: 100,
             kind: AtomicPayoutKind::Redeem,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -507,7 +509,7 @@ fn atomic_withdraw_not_idle_fails() {
             operator: addr(1),
             amount: 100,
             kind: AtomicPayoutKind::Withdraw,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -535,7 +537,7 @@ fn atomic_withdraw_exceeding_idle_fails() {
             operator: addr(1),
             amount: 300,
             kind: AtomicPayoutKind::Withdraw,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -565,7 +567,9 @@ fn refresh_fees_then_atomic_withdraw_succeeds() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: 100 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(100),
+        },
     )
     .unwrap();
     let refreshed_total_shares = refreshed.state.total_shares;
@@ -581,7 +585,7 @@ fn refresh_fees_then_atomic_withdraw_succeeds() {
             operator: addr(1),
             amount: 500,
             kind: AtomicPayoutKind::Withdraw,
-            now_ns: 100,
+            now_ns: TimestampNs(100),
         },
     )
     .unwrap();
@@ -606,7 +610,7 @@ fn request_withdraw_zero_shares_fails() {
             receiver: addr(2),
             shares: 0,
             min_assets_out: 1,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -627,8 +631,8 @@ fn request_withdraw_slippage_fails() {
             owner: addr(1),
             receiver: addr(2),
             shares: 10,
-            min_assets_out: 1_000_000, // Way more than we can get
-            now_ns: 0,
+            min_assets_out: 1_000_000,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -651,7 +655,7 @@ fn request_withdraw_min_withdrawal_fails() {
             receiver: addr(2),
             shares: 10,
             min_assets_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -681,7 +685,7 @@ fn request_withdraw_not_idle_fails() {
             receiver: addr(2),
             shares: 100,
             min_assets_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -733,7 +737,7 @@ fn request_withdraw_queue_full_fails() {
             receiver: addr(3),
             shares: 100,
             min_assets_out: 0,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -751,7 +755,7 @@ fn execute_withdraw_empty_queue_fails() {
         None,
         &addr(0xFF),
         KernelAction::ExecuteWithdraw {
-            now_ns: DEFAULT_COOLDOWN_NS + 1,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
     );
 
@@ -781,7 +785,9 @@ fn execute_withdraw_cooldown_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::ExecuteWithdraw { now_ns: 1_000_000 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(1_000_000),
+        },
     );
 
     assert!(matches!(result, Err(KernelError::Cooldown { .. })));
@@ -805,7 +811,9 @@ fn execute_withdraw_wrong_state_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::ExecuteWithdraw { now_ns: 0 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
     );
 
     assert!(matches!(
@@ -851,7 +859,9 @@ fn execute_withdraw_queue_head_mismatch_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::ExecuteWithdraw { now_ns: 0 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
     );
 
     assert!(matches!(
@@ -875,7 +885,7 @@ fn begin_allocating_success() {
         KernelAction::BeginAllocating {
             op_id: 1,
             plan: vec![alloc_step(1, 500)],
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -900,7 +910,7 @@ fn begin_allocating_exceeds_idle() {
         KernelAction::BeginAllocating {
             op_id: 1,
             plan: vec![alloc_step(1, 1_500)], // exceeds idle_assets of 1_000
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -927,7 +937,7 @@ fn finish_allocating_success() {
         &addr(0xFF),
         KernelAction::FinishAllocating {
             op_id: 1,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -972,7 +982,7 @@ fn finish_allocating_with_pending_withdrawal() {
         &addr(0xFF),
         KernelAction::FinishAllocating {
             op_id: 5,
-            now_ns: DEFAULT_COOLDOWN_NS + 1,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
     )
     .unwrap();
@@ -1018,7 +1028,7 @@ fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
         &addr(0xFF),
         KernelAction::FinishAllocating {
             op_id: 6,
-            now_ns: DEFAULT_COOLDOWN_NS,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS),
         },
     )
     .unwrap();
@@ -1048,7 +1058,9 @@ fn execute_withdraw_withdrawing_empty_queue() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::ExecuteWithdraw { now_ns: 0 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
     );
 
     assert!(matches!(
@@ -1072,7 +1084,7 @@ fn begin_refreshing_success() {
         KernelAction::BeginRefreshing {
             op_id: 1,
             plan: vec![1],
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1099,7 +1111,7 @@ fn finish_refreshing_success() {
         &addr(0xFF),
         KernelAction::FinishRefreshing {
             op_id: 2,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1128,7 +1140,7 @@ fn sync_external_assets_allocating() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 700,
             op_id: 3,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1165,7 +1177,7 @@ fn sync_external_assets_withdrawing() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 400,
             op_id: 4,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1194,7 +1206,7 @@ fn sync_external_assets_refreshing() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 600,
             op_id: 5,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1215,7 +1227,7 @@ fn sync_external_assets_idle_fails() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 500,
             op_id: 1,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -1248,7 +1260,7 @@ fn sync_external_assets_op_id_mismatch_fails() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 500,
             op_id: 99, // Wrong op_id
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -1284,7 +1296,7 @@ fn sync_external_assets_payout_fails() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 500,
             op_id: 6,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -1317,7 +1329,7 @@ fn sync_external_assets_rejects_doubling() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 2_001,
             op_id: 1,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -1350,7 +1362,7 @@ fn sync_external_assets_allows_up_to_double() {
         KernelAction::SyncExternalAssets {
             new_external_assets: 1_000,
             op_id: 1,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -1372,7 +1384,7 @@ fn rebalance_withdraw_moves_assets_from_external_to_idle() {
         KernelAction::RebalanceWithdraw {
             op_id: 0,
             amount: 300,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1402,7 +1414,7 @@ fn rebalance_withdraw_allows_allocating_with_matching_op_id() {
         KernelAction::RebalanceWithdraw {
             op_id: 7,
             amount: 50,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .unwrap();
@@ -1426,7 +1438,7 @@ fn rebalance_withdraw_rejects_amount_above_external_assets() {
         KernelAction::RebalanceWithdraw {
             op_id: 0,
             amount: 801,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -1457,7 +1469,7 @@ fn rebalance_withdraw_requires_matching_op_id_when_allocating() {
         KernelAction::RebalanceWithdraw {
             op_id: 8,
             amount: 50,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     );
 
@@ -2580,10 +2592,7 @@ fn refresh_fees_action_zero_fees() {
     assert!(matches!(
         result.effects.first(),
         Some(KernelEffect::EmitEvent {
-            event: KernelEvent::FeesRefreshed {
-                now_ns: TimestampNs(12_345),
-                ..
-            }
+            event: KernelEvent::FeesRefreshed { now_ns: 12_345, .. }
         })
     ));
 }
@@ -2608,7 +2617,9 @@ fn refresh_fees_mints_performance_fee_shares() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: YEAR_NS },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
     )
     .unwrap();
 
@@ -2647,7 +2658,9 @@ fn refresh_fees_mints_management_fee_shares() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: YEAR_NS },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
     )
     .unwrap();
 
@@ -2689,7 +2702,9 @@ fn refresh_fees_mints_both_management_and_performance() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: YEAR_NS },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
     )
     .unwrap();
 
@@ -2748,7 +2763,9 @@ fn refresh_fees_no_profit_skips_performance() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: YEAR_NS },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
     )
     .unwrap();
 
@@ -2783,7 +2800,9 @@ fn refresh_fees_max_rate_caps_fee_accrual() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: half_year },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(half_year),
+        },
     )
     .unwrap();
 
@@ -2805,7 +2824,7 @@ fn refresh_fees_max_rate_caps_fee_accrual() {
 #[test]
 fn refresh_fees_rejects_backwards_time() {
     let mut state = idle_state(1_000, 1_000);
-    state.fee_anchor.timestamp_ns = 10000; // Current anchor at 10000
+    state.fee_anchor.timestamp_ns = TimestampNs(10_000); // Current anchor at 10000
     let config = test_config();
 
     // Try to refresh with earlier timestamp
@@ -2814,7 +2833,9 @@ fn refresh_fees_rejects_backwards_time() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: 5000 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(5000),
+        },
     );
 
     assert!(matches!(
@@ -2843,7 +2864,9 @@ fn refresh_fees_requires_idle_state() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::RefreshFees { now_ns: 12_345 },
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(12_345),
+        },
     );
 
     assert!(matches!(
@@ -3267,13 +3290,15 @@ fn execute_withdraw_skips_zero_expected_assets() {
         )
         .expect("enqueue");
 
-    let self_id = [9u8; 32];
+    let self_id = Address([9u8; 32]);
     let result = apply_action(
         state,
         &config,
         None,
         &self_id,
-        KernelAction::ExecuteWithdraw { now_ns: 0 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
     )
     .expect("execute_withdraw");
 
@@ -3308,11 +3333,11 @@ fn execute_withdraw_skips_zero_expected_assets() {
 fn execute_withdraw_skips_restricted_head_and_processes_next() {
     let config = base_config();
     let mut state = base_state(1_000, 1_000);
-    let restricted_owner = [3u8; 32];
-    let first_receiver = [4u8; 32];
-    let next_owner = [5u8; 32];
-    let next_receiver = [6u8; 32];
-    let self_id = [9u8; 32];
+    let restricted_owner = Address([3u8; 32]);
+    let first_receiver = Address([4u8; 32]);
+    let next_owner = Address([5u8; 32]);
+    let next_receiver = Address([6u8; 32]);
+    let self_id = Address([9u8; 32]);
 
     state
         .withdraw_queue
@@ -3344,7 +3369,7 @@ fn execute_withdraw_skips_restricted_head_and_processes_next() {
         Some(&restrictions),
         &self_id,
         KernelAction::ExecuteWithdraw {
-            now_ns: DEFAULT_COOLDOWN_NS + 1,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
     )
     .expect("execute_withdraw");
@@ -3373,11 +3398,11 @@ fn execute_withdraw_skips_restricted_head_and_processes_next() {
 fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
     let config = base_config();
     let mut state = base_state(1_000, 1_000);
-    let skipped_owner = [3u8; 32];
-    let skipped_receiver = [4u8; 32];
-    let waiting_owner = [5u8; 32];
-    let waiting_receiver = [6u8; 32];
-    let self_id = [9u8; 32];
+    let skipped_owner = Address([3u8; 32]);
+    let skipped_receiver = Address([4u8; 32]);
+    let waiting_owner = Address([5u8; 32]);
+    let waiting_receiver = Address([6u8; 32]);
+    let self_id = Address([9u8; 32]);
 
     state
         .withdraw_queue
@@ -3407,7 +3432,9 @@ fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
         &config,
         None,
         &self_id,
-        KernelAction::ExecuteWithdraw { now_ns: 0 },
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
     )
     .expect("execute_withdraw");
 
@@ -3439,11 +3466,11 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
 
     let config = base_config();
     let mut state = base_state(1_000, 1_000);
-    let restricted_owner = [3u8; 32];
-    let first_receiver = [4u8; 32];
-    let next_owner = [5u8; 32];
-    let next_receiver = [6u8; 32];
-    let self_id = [9u8; 32];
+    let restricted_owner = Address([3u8; 32]);
+    let first_receiver = Address([4u8; 32]);
+    let next_owner = Address([5u8; 32]);
+    let next_receiver = Address([6u8; 32]);
+    let self_id = Address([9u8; 32]);
 
     state
         .withdraw_queue
@@ -3482,7 +3509,7 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
         &self_id,
         KernelAction::FinishAllocating {
             op_id: 77,
-            now_ns: DEFAULT_COOLDOWN_NS + 1,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
     )
     .expect("finish_allocating");
@@ -3510,11 +3537,11 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
 
     let config = base_config();
     let mut state = base_state(1_000, 1_000);
-    let restricted_owner = [3u8; 32];
-    let first_receiver = [4u8; 32];
-    let waiting_owner = [5u8; 32];
-    let waiting_receiver = [6u8; 32];
-    let self_id = [9u8; 32];
+    let restricted_owner = Address([3u8; 32]);
+    let first_receiver = Address([4u8; 32]);
+    let waiting_owner = Address([5u8; 32]);
+    let waiting_receiver = Address([6u8; 32]);
+    let self_id = Address([9u8; 32]);
 
     state
         .withdraw_queue
@@ -3553,7 +3580,7 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
         &self_id,
         KernelAction::FinishAllocating {
             op_id: 77,
-            now_ns: 0,
+            now_ns: TimestampNs(0),
         },
     )
     .expect("finish_allocating");
@@ -3586,8 +3613,8 @@ fn execute_withdraw_respects_paused_restrictions() {
     state
         .withdraw_queue
         .enqueue(
-            [1u8; 32],
-            [2u8; 32],
+            Address([1u8; 32]),
+            Address([2u8; 32]),
             100,
             100,
             TimestampNs(0),
@@ -3599,9 +3626,9 @@ fn execute_withdraw_respects_paused_restrictions() {
         state,
         &config,
         Some(&Restrictions::Paused),
-        &[9u8; 32],
+        &Address([9u8; 32]),
         KernelAction::ExecuteWithdraw {
-            now_ns: DEFAULT_COOLDOWN_NS + 1,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
     );
 
@@ -3611,7 +3638,7 @@ fn execute_withdraw_respects_paused_restrictions() {
     ));
 }
 
-fn minted_shares_for(effects: &[KernelEffect], owner: [u8; 32]) -> u128 {
+fn minted_shares_for(effects: &[KernelEffect], owner: Address) -> u128 {
     effects
         .iter()
         .filter_map(|effect| match effect {
@@ -3623,8 +3650,8 @@ fn minted_shares_for(effects: &[KernelEffect], owner: [u8; 32]) -> u128 {
 
 #[test]
 fn refresh_fees_respects_growth_rate_cap_with_both_fee_types() {
-    let management_recipient = [9u8; 32];
-    let performance_recipient = [8u8; 32];
+    let management_recipient = Address([9u8; 32]);
+    let performance_recipient = Address([8u8; 32]);
 
     let mut config = base_config();
     config.fees = FeesSpec::new(
@@ -3640,8 +3667,10 @@ fn refresh_fees_respects_growth_rate_cap_with_both_fee_types() {
         state,
         &config,
         None,
-        &[0u8; 32],
-        KernelAction::RefreshFees { now_ns: YEAR_NS },
+        &Address([0u8; 32]),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
     )
     .unwrap();
 
@@ -3698,8 +3727,10 @@ fn refresh_fees_rejects_non_advancing_timestamp() {
         state,
         &config,
         None,
-        &[0u8; 32],
-        KernelAction::RefreshFees { now_ns: 500 },
+        &Address([0u8; 32]),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(500),
+        },
     );
 
     assert!(matches!(

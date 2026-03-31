@@ -272,9 +272,9 @@ mod tests {
 
     #[test]
     fn effect_required_addresses_cover_transfer_shapes() {
-        let owner = address(1);
-        let from = address(2);
-        let to = address(3);
+        let owner = crate::Address(address(1));
+        let from = crate::Address(address(2));
+        let to = crate::Address(address(3));
 
         assert_eq!(
             KernelEffect::MintShares { owner, shares: 10 }.required_addresses(),
@@ -311,8 +311,8 @@ mod tests {
 
     #[test]
     fn event_required_addresses_cover_account_events() {
-        let owner = address(4);
-        let receiver = address(5);
+        let owner = crate::Address(address(4));
+        let receiver = crate::Address(address(5));
 
         assert_eq!(
             KernelEvent::WithdrawalStarted {

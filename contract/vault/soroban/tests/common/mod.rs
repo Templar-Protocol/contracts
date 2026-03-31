@@ -5,7 +5,7 @@ use templar_soroban_runtime::{
     auth::AuthResult, ActionKind, AddressRegistrar, AuthAdapter, EffectContext, EffectInterpreter,
     EffectResult,
 };
-use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::{effects::KernelEffect, Address as KernelAddress};
 
 #[derive(Clone, Debug, Default)]
 pub struct MockInterpreter {
@@ -35,9 +35,9 @@ impl EffectInterpreter for MockInterpreter {
 }
 
 impl AddressRegistrar for MockInterpreter {
-    fn register_address(&mut self, _kernel_addr: [u8; 32], _soroban_addr: Address) {}
+    fn register_address(&mut self, _kernel_addr: KernelAddress, _soroban_addr: Address) {}
 
-    fn has_address(&self, _kernel_addr: &[u8; 32]) -> bool {
+    fn has_address(&self, _kernel_addr: &KernelAddress) -> bool {
         true
     }
 }
@@ -49,7 +49,7 @@ impl AuthAdapter for TestPermissiveAuth {
     fn authorize(
         &self,
         _action: ActionKind,
-        _caller: [u8; 32],
+        _caller: KernelAddress,
         _proof: Option<&[u8]>,
     ) -> AuthResult<()> {
         Ok(())

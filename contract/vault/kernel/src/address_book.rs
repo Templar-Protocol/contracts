@@ -95,8 +95,8 @@ mod tests {
     use super::AddressBook;
     use alloc::vec;
 
-    fn address(byte: u8) -> [u8; 32] {
-        [byte; 32]
+    fn address(byte: u8) -> crate::Address {
+        crate::Address([byte; 32])
     }
 
     #[test]

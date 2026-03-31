@@ -220,7 +220,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "total_assets invariant overflow: idle + external")]
     fn with_initial_panics_on_overflowed_component_sum() {
-        let _ = VaultState::with_initial(u128::MAX, 0, u128::MAX, 1, 0);
+        let _ = VaultState::with_initial(u128::MAX, 0, u128::MAX, 1, crate::TimestampNs(0));
     }
 
     #[test]

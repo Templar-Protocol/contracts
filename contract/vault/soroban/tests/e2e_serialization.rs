@@ -5,6 +5,7 @@ use templar_soroban_runtime::{
     Storage,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
+use templar_vault_kernel::Address;
 
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
@@ -13,21 +14,21 @@ type SorobanTestVault<'a> = CuratorVault<SorobanStorage<'a>, TestPermissiveAuth,
 
 fn test_config() -> ContractConfig {
     ContractConfig::new(
-        [1u8; 32],
-        [9u8; 32],
-        vec![[2u8; 32]],
-        vec![[3u8; 32]],
-        [4u8; 32],
-        [5u8; 32],
+        Address([1u8; 32]),
+        Address([9u8; 32]),
+        vec![Address([2u8; 32])],
+        vec![Address([3u8; 32])],
+        Address([4u8; 32]),
+        Address([5u8; 32]),
     )
 }
 
-fn user_addr() -> [u8; 32] {
-    [10u8; 32]
+fn user_addr() -> Address {
+    Address([10u8; 32])
 }
 
-fn allocator_addr() -> [u8; 32] {
-    [3u8; 32]
+fn allocator_addr() -> Address {
+    Address([3u8; 32])
 }
 
 fn fresh_loaded_vault<'a>(env: &'a Env) -> SorobanTestVault<'a> {

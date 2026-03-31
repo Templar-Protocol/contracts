@@ -10,7 +10,7 @@ fn make_withdrawal(owner: u8, shares: u128, expected: u128) -> PendingWithdrawal
         owner_addr(owner as u64),
         shares,
         expected,
-        1_000_000_000_000, // 1 second in ns
+        TimestampNs(1_000_000_000_000), // 1 second in ns
     )
 }
 
@@ -22,7 +22,7 @@ fn enqueue_simple(queue: &mut WithdrawQueue, index: u64, shares: u128, expected:
             owner_addr(index),
             shares,
             expected,
-            index.saturating_mul(1_000_000_000_000),
+            TimestampNs(index.saturating_mul(1_000_000_000_000)),
             100, // max_pending
         )
         .unwrap();
@@ -50,18 +50,26 @@ fn test_is_past_cooldown() {
     let cooldown = 60_000_000_000u64; // 60 seconds
 
     // Not yet past cooldown
-    assert!(!is_past_cooldown(requested, requested, cooldown));
     assert!(!is_past_cooldown(
-        requested,
-        requested + cooldown - 1,
+        TimestampNs(requested),
+        TimestampNs(requested),
+        cooldown
+    ));
+    assert!(!is_past_cooldown(
+        TimestampNs(requested),
+        TimestampNs(requested + cooldown - 1),
         cooldown
     ));
 
     // Past cooldown
-    assert!(is_past_cooldown(requested, requested + cooldown, cooldown));
     assert!(is_past_cooldown(
-        requested,
-        requested + cooldown + 1,
+        TimestampNs(requested),
+        TimestampNs(requested + cooldown),
+        cooldown
+    ));
+    assert!(is_past_cooldown(
+        TimestampNs(requested),
+        TimestampNs(requested + cooldown + 1),
         cooldown
     ));
 }
@@ -305,7 +313,7 @@ fn test_pending_withdrawal_is_past_cooldown() {
         owner_addr(1),
         100,
         1000,
-        1_000_000_000_000, // 1 second
+        TimestampNs(1_000_000_000_000), // 1 second
     );
 
     let cooldown = 60_000_000_000u64; // 60 seconds
@@ -313,24 +321,24 @@ fn test_pending_withdrawal_is_past_cooldown() {
     // Not past cooldown
     assert!(!is_past_cooldown(
         w.requested_at_ns,
-        1_000_000_000_000,
+        TimestampNs(1_000_000_000_000),
         cooldown
     ));
     assert!(!is_past_cooldown(
         w.requested_at_ns,
-        1_059_999_999_999,
+        TimestampNs(1_059_999_999_999),
         cooldown
     ));
 
     // Past cooldown
     assert!(is_past_cooldown(
         w.requested_at_ns,
-        1_060_000_000_000,
+        TimestampNs(1_060_000_000_000),
         cooldown
     ));
     assert!(is_past_cooldown(
         w.requested_at_ns,
-        2_000_000_000_000,
+        TimestampNs(2_000_000_000_000),
         cooldown
     ));
 }
@@ -396,7 +404,7 @@ fn test_withdraw_queue_enqueue() {
             owner_addr(1),
             100,
             1000,
-            1_000_000_000_000,
+            TimestampNs(1_000_000_000_000),
             max_pending,
         )
         .unwrap();
@@ -419,7 +427,7 @@ fn test_withdraw_queue_enqueue_multiple() {
             owner_addr(1),
             100,
             1000,
-            1_000_000_000_000,
+            TimestampNs(1_000_000_000_000),
             max_pending,
         )
         .unwrap();
@@ -429,7 +437,7 @@ fn test_withdraw_queue_enqueue_multiple() {
             owner_addr(2),
             200,
             2000,
-            2_000_000_000_000,
+            TimestampNs(2_000_000_000_000),
             max_pending,
         )
         .unwrap();
@@ -439,7 +447,7 @@ fn test_withdraw_queue_enqueue_multiple() {
             owner_addr(3),
             300,
             3000,
-            3_000_000_000_000,
+            TimestampNs(3_000_000_000_000),
             max_pending,
         )
         .unwrap();
@@ -465,7 +473,7 @@ fn test_withdraw_queue_enqueue_full() {
             owner_addr(1),
             100,
             1000,
-            1_000_000_000_000,
+            TimestampNs(1_000_000_000_000),
             max_pending,
         )
         .unwrap();
@@ -475,7 +483,7 @@ fn test_withdraw_queue_enqueue_full() {
             owner_addr(2),
             200,
             2000,
-            2_000_000_000_000,
+            TimestampNs(2_000_000_000_000),
             max_pending,
         )
         .unwrap();
@@ -486,7 +494,7 @@ fn test_withdraw_queue_enqueue_full() {
         owner_addr(3),
         300,
         3000,
-        3_000_000_000_000,
+        TimestampNs(3_000_000_000_000),
         max_pending,
     );
     assert!(result.is_err());
@@ -504,7 +512,7 @@ fn test_withdraw_queue_enqueue_id_overflow_fails() {
     let mut queue = WithdrawQueue::new();
     queue.next_pending_withdrawal_id = u64::MAX;
 
-    let result = queue.enqueue(owner_addr(1), owner_addr(1), 100, 1000, 0, 10);
+    let result = queue.enqueue(owner_addr(1), owner_addr(1), 100, 1000, TimestampNs(0), 10);
 
     assert!(matches!(
         result,
@@ -694,7 +702,13 @@ fn test_withdraw_queue_invariant_violation_head_missing() {
     let mut pending = BTreeMap::new();
     pending.insert(
         5,
-        PendingWithdrawal::new(owner_addr(1), owner_addr(1), 100, 1000, TimestampNs(1_000_000_000_000)),
+        PendingWithdrawal::new(
+            owner_addr(1),
+            owner_addr(1),
+            100,
+            1000,
+            TimestampNs(1_000_000_000_000),
+        ),
     );
 
     let queue = WithdrawQueue::with_state(
@@ -729,7 +743,7 @@ fn test_withdraw_queue_fifo_ordering() {
     for i in 0..5 {
         let (id, w) = queue.dequeue().unwrap();
         assert_eq!(id, i);
-        assert_eq!(w.owner, owner_addr(i as u64));
+        assert_eq!(w.owner, owner_addr(i));
     }
 }
 
@@ -748,7 +762,13 @@ fn test_withdraw_queue_enqueue_withdrawal() {
     let mut queue = WithdrawQueue::new();
     let max_pending = 100u32;
 
-    let w = PendingWithdrawal::new(owner_addr(1), owner_addr(2), 100, 1000, TimestampNs(1_000_000_000_000));
+    let w = PendingWithdrawal::new(
+        owner_addr(1),
+        owner_addr(2),
+        100,
+        1000,
+        TimestampNs(1_000_000_000_000),
+    );
 
     let id = queue.enqueue_withdrawal(w.clone(), max_pending).unwrap();
     assert_eq!(id, 0);
@@ -786,7 +806,13 @@ fn arb_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
         0u64..u64::MAX,
     )
         .prop_map(|(owner_idx, shares, expected, ts)| {
-            PendingWithdrawal::new(owner_addr(owner_idx as u64), owner_addr(owner_idx as u64), shares, expected, TimestampNs(ts))
+            PendingWithdrawal::new(
+                owner_addr(owner_idx as u64),
+                owner_addr(owner_idx as u64),
+                shares,
+                expected,
+                TimestampNs(ts),
+            )
         })
 }
 
@@ -878,14 +904,14 @@ proptest! {
         expected_assets in 1u128..=1_000_000_000u128,
         actual_ratio_pct in 1u8..100u8,
     ) {
-        let actual_assets = (expected_assets as u128 * actual_ratio_pct as u128) / 100;
+        let actual_assets = (expected_assets * actual_ratio_pct as u128) / 100;
         if actual_assets == 0 || actual_assets >= expected_assets {
             return Ok(());
         }
 
         let settlement = compute_settlement(escrow_shares, expected_assets, actual_assets);
 
-        let expected_burn = (escrow_shares as u128 * actual_assets) / expected_assets;
+        let expected_burn = (escrow_shares * actual_assets) / expected_assets;
         let diff = if settlement.to_burn > expected_burn {
             settlement.to_burn - expected_burn
         } else {
@@ -973,7 +999,7 @@ proptest! {
     ) {
         let now = requested_at.saturating_add(delta);
         let threshold = requested_at.saturating_add(cooldown);
-        let past = is_past_cooldown(requested_at, now, cooldown);
+        let past = is_past_cooldown(TimestampNs(requested_at), TimestampNs(now), cooldown);
         prop_assert_eq!(past, now >= threshold);
     }
 
@@ -987,7 +1013,7 @@ proptest! {
             receiver_addr(1),
             1000,
             expected,
-            0,
+            TimestampNs(0),
         );
         let can = can_satisfy_withdrawal(&w, available);
         prop_assert_eq!(can, available >= expected);
@@ -1003,7 +1029,7 @@ proptest! {
             receiver_addr(1),
             1000,
             expected,
-            0,
+            TimestampNs(0),
         );
         let can = can_partially_satisfy(&w, available);
         let should = available > 0 && available < expected && available >= MIN_WITHDRAWAL_ASSETS;
@@ -1021,7 +1047,7 @@ proptest! {
             receiver_addr(1),
             shares,
             expected,
-            0,
+            TimestampNs(0),
         );
         let result = compute_full_withdrawal(&w, available);
         let can = can_satisfy_withdrawal(&w, available);
@@ -1040,7 +1066,7 @@ proptest! {
             receiver_addr(1),
             shares,
             expected,
-            0,
+            TimestampNs(0),
         );
         let result = compute_partial_withdrawal(&w, available);
 
@@ -1100,7 +1126,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             ).unwrap();
             prop_assert_eq!(queue.len(), len_before + 1);
@@ -1120,7 +1146,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             ).unwrap();
         }
@@ -1143,11 +1169,11 @@ proptest! {
         for op in operations {
             if op == 0 && queue.len() < max_pending as usize {
                 queue.enqueue(
-                    owner_addr(counter as u64),
-                    receiver_addr(counter as u64),
+                    owner_addr(counter),
+                    receiver_addr(counter),
                     100,
                     1000,
-                    counter,
+                    TimestampNs(counter),
                     max_pending,
                 ).unwrap();
                 counter += 1;
@@ -1171,7 +1197,7 @@ proptest! {
                 receiver_addr(i as u64),
                 (i as u128) + 1,
                 (i as u128 + 1) * 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             ).unwrap();
         }
@@ -1197,7 +1223,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             ).unwrap();
 
@@ -1219,11 +1245,11 @@ proptest! {
         for op in operations {
             if op == 0 && queue.len() < max_pending as usize {
                 queue.enqueue(
-                    owner_addr(counter as u64),
-                    receiver_addr(counter as u64),
+                    owner_addr(counter),
+                    receiver_addr(counter),
                     100,
                     1000,
-                    counter,
+                    TimestampNs(counter),
                     max_pending,
                 ).unwrap();
                 counter += 1;
@@ -1282,7 +1308,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             );
         }
@@ -1308,7 +1334,7 @@ proptest! {
                 receiver_addr(i as u64),
                 100,
                 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             ).unwrap();
         }
@@ -1333,7 +1359,7 @@ proptest! {
                 receiver_addr(i as u64),
                 (i as u128) + 1,
                 (i as u128 + 1) * 1000,
-                i as u64,
+                TimestampNs(i as u64),
                 max_pending,
             ).unwrap();
             ids.push(id);
@@ -1369,7 +1395,16 @@ proptest! {
 fn dequeue_panics_on_cached_escrow_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();
-    pending.insert(0, PendingWithdrawal::new([1u8; 32], [2u8; 32], 100, 200, TimestampNs(0)));
+    pending.insert(
+        0,
+        PendingWithdrawal::new(
+            Address([1u8; 32]),
+            Address([2u8; 32]),
+            100,
+            200,
+            TimestampNs(0),
+        ),
+    );
     let mut queue = WithdrawQueue::with_state(pending, 0, 1);
     queue.cached_total_escrow = 0;
     queue.dequeue();
@@ -1380,7 +1415,16 @@ fn dequeue_panics_on_cached_escrow_underflow() {
 fn dequeue_panics_on_cached_expected_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();
-    pending.insert(0, PendingWithdrawal::new([1u8; 32], [2u8; 32], 100, 200, TimestampNs(0)));
+    pending.insert(
+        0,
+        PendingWithdrawal::new(
+            Address([1u8; 32]),
+            Address([2u8; 32]),
+            100,
+            200,
+            TimestampNs(0),
+        ),
+    );
     let mut queue = WithdrawQueue::with_state(pending, 0, 1);
     queue.cached_total_expected = 0;
     queue.dequeue();
