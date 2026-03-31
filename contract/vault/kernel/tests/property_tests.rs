@@ -42,7 +42,10 @@ use templar_vault_kernel::{
             apply_settlement, can_apply_settlement, compute_escrow_stats, settle_proportional,
             EscrowEntry,
         },
-        op_state::{AllocatingState, OpState, PayoutState, RefreshingState, WithdrawingState},
+        op_state::{
+            AllocatingState, AllocationPlanEntry, OpState, PayoutState, RefreshingState,
+            WithdrawingState,
+        },
         queue::{
             can_enqueue, compute_queue_status, compute_settlement, count_satisfiable,
             is_past_cooldown, is_valid_withdrawal_amount, PendingWithdrawal, WithdrawQueue,
@@ -62,8 +65,19 @@ use templar_vault_kernel::{
 // Arbitrary Strategies
 
 /// Generate a valid allocation plan
-fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<(u32, u128)>> {
-    proptest::collection::vec((0u32..100u32, 1u128..=1_000_000_000u128), 1..=max_len)
+fn alloc_step(target_id: u32, amount: u128) -> AllocationPlanEntry {
+    AllocationPlanEntry::new(target_id, amount)
+}
+
+fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<AllocationPlanEntry>> {
+    proptest::collection::vec((0u32..100u32, 1u128..=1_000_000_000u128), 1..=max_len).prop_map(
+        |steps| {
+            steps
+                .into_iter()
+                .map(|(target_id, amount)| alloc_step(target_id, amount))
+                .collect()
+        },
+    )
 }
 
 /// Generate a refresh plan (list of target IDs)
@@ -1050,7 +1064,7 @@ proptest! {
             op_id: 1,
             index: 0,
             remaining: 100,
-            plan: vec![(0, 100)],
+            plan: vec![alloc_step(0, 100)],
         });
         let result = start_refresh(non_idle, plan, op_id);
         prop_assert!(
@@ -1862,8 +1876,12 @@ fn sync_external_near_max_saturates() {
     state.total_shares = 1_000_000;
 
     // Start an allocation to get into a state where sync is allowed
-    let alloc_result = start_allocation(state.op_state.clone(), vec![(0, 1000)], state.next_op_id)
-        .expect("allocation should start");
+    let alloc_result = start_allocation(
+        state.op_state.clone(),
+        vec![alloc_step(0, 1000)],
+        state.next_op_id,
+    )
+    .expect("allocation should start");
     state.op_state = alloc_result.new_state;
 
     let config = default_config();
@@ -2614,7 +2632,13 @@ fn mul_div_floor_cancellation_paths() {
 /// Allocation step failure at step 2 of 5: returns to Idle with correct total_allocated.
 #[test]
 fn allocation_step_failure_mid_plan() {
-    let plan = vec![(0, 100), (1, 200), (2, 300), (3, 400), (4, 500)];
+    let plan = vec![
+        alloc_step(0, 100),
+        alloc_step(1, 200),
+        alloc_step(2, 300),
+        alloc_step(3, 400),
+        alloc_step(4, 500),
+    ];
     let op_id = 1;
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
 
@@ -2657,7 +2681,7 @@ fn allocation_step_failure_mid_plan() {
 /// Allocation step with amount = 0 on success is rejected.
 #[test]
 fn allocation_step_zero_amount_rejected() {
-    let plan = vec![(0, 100), (1, 200)];
+    let plan = vec![alloc_step(0, 100), alloc_step(1, 200)];
     let op_id = 1;
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
 
@@ -2671,7 +2695,7 @@ fn allocation_step_zero_amount_rejected() {
 /// Allocation step with amount exceeding remaining is rejected.
 #[test]
 fn allocation_step_overflow_rejected() {
-    let plan = vec![(0, 100)];
+    let plan = vec![alloc_step(0, 100)];
     let op_id = 1;
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
 
@@ -2707,7 +2731,7 @@ fn abort_allocating_restores_state() {
         &self_addr(),
         KernelAction::BeginAllocating {
             op_id: 1,
-            plan: vec![(0, 500), (1, 500), (2, 500)],
+            plan: vec![alloc_step(0, 500), alloc_step(1, 500), alloc_step(2, 500)],
             now_ns: 0,
         },
     )
@@ -2764,9 +2788,9 @@ fn allocation_from_non_idle_rejected() {
         op_id: 1,
         index: 0,
         remaining: 100,
-        plan: vec![(0, 100)],
+        plan: vec![alloc_step(0, 100)],
     });
-    let err = start_allocation(alloc_state, vec![(0, 100)], 2);
+    let err = start_allocation(alloc_state, vec![alloc_step(0, 100)], 2);
     assert!(
         matches!(err, Err(TransitionError::WrongState { .. })),
         "Allocation from non-Idle should be rejected, got: {err:?}"
@@ -2776,7 +2800,7 @@ fn allocation_from_non_idle_rejected() {
 /// Allocation step failure at first step (step 0): total_allocated = 0.
 #[test]
 fn allocation_failure_at_first_step() {
-    let plan = vec![(0, 1000), (1, 2000)];
+    let plan = vec![alloc_step(0, 1000), alloc_step(1, 2000)];
     let op_id = 1;
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
 
@@ -2803,7 +2827,7 @@ fn allocation_failure_at_first_step() {
 /// Allocation step with wrong op_id is rejected.
 #[test]
 fn allocation_step_wrong_op_id_rejected() {
-    let plan = vec![(0, 100)];
+    let plan = vec![alloc_step(0, 100)];
     let result = start_allocation(OpState::Idle, plan, 1).unwrap();
     let err = allocation_step_callback(result.new_state, true, 100, 999);
     assert!(
@@ -2815,7 +2839,7 @@ fn allocation_step_wrong_op_id_rejected() {
 /// Full allocation completes all steps and transitions to Idle.
 #[test]
 fn allocation_full_completion() {
-    let plan = vec![(0, 100), (1, 200), (2, 300)];
+    let plan = vec![alloc_step(0, 100), alloc_step(1, 200), alloc_step(2, 300)];
     let op_id = 1;
     let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
 
@@ -3008,8 +3032,8 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
     state.idle_assets = 10_000;
     state.total_assets = 10_000;
 
-    let plan = vec![(0, 3_000), (1, 2_000)];
-    let alloc_total: u128 = plan.iter().map(|(_, a)| *a).sum();
+    let plan = vec![alloc_step(0, 3_000), alloc_step(1, 2_000)];
+    let alloc_total: u128 = plan.iter().map(|step| step.amount).sum();
 
     // --- Kernel: BeginAllocating decrements idle_assets ---
     let result = apply_action(
@@ -3068,7 +3092,7 @@ fn parity_executor_full_allocation_cycle() {
     state.total_assets = 10_000;
     state.fee_anchor = FeeAccrualAnchor::new(10_000, 0);
 
-    let plan = vec![(0, 2_000), (1, 1_000)];
+    let plan = vec![alloc_step(0, 2_000), alloc_step(1, 1_000)];
 
     // BeginAllocating — kernel decrements idle_assets by alloc_total (3_000)
     let result = apply_action(
@@ -3606,7 +3630,7 @@ proptest! {
             &self_addr(),
             KernelAction::BeginAllocating {
                 op_id: 1,
-                plan: vec![(0, alloc_amount)],
+                plan: vec![alloc_step(0, alloc_amount)],
                 now_ns: 1,
             },
         );
@@ -3755,7 +3779,7 @@ proptest! {
             op_id: 7,
             index: 0,
             remaining: 0,
-            plan: vec![(0, 0)],
+            plan: vec![alloc_step(0, 0)],
         });
 
         let config = default_config();

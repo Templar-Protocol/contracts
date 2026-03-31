@@ -116,11 +116,17 @@ impl FeeSlot {
         Self::ZERO
     }
 
+    #[inline]
+    #[must_use]
+    pub fn has_rate(&self) -> bool {
+        !self.fee_wad.is_zero()
+    }
+
     /// Check if this fee slot has a zero rate.
     #[inline]
     #[must_use]
     pub fn is_zero_rate(&self) -> bool {
-        self.fee_wad.is_zero()
+        !self.has_rate()
     }
 }
 
@@ -163,13 +169,23 @@ impl FeesSpec {
         }
     }
 
+    #[inline]
+    #[must_use]
+    pub fn has_active_slot_fees(&self) -> bool {
+        self.performance.has_rate() || self.management.has_rate()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn has_growth_cap(&self) -> bool {
+        self.max_total_assets_growth_rate.is_some()
+    }
+
     /// Returns true when all fee fields are unset/zeroed.
     #[inline]
     #[must_use]
     pub fn is_zero(&self) -> bool {
-        self.performance.is_zero_rate()
-            && self.management.is_zero_rate()
-            && self.max_total_assets_growth_rate.is_none()
+        !self.has_active_slot_fees() && !self.has_growth_cap()
     }
 
     pub const ZERO: Self = Self {

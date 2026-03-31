@@ -16,7 +16,10 @@ fn test_allocating_state() {
         op_id: 42,
         index: 0,
         remaining: 1000,
-        plan: vec![(1, 500), (2, 500)],
+        plan: vec![
+            AllocationPlanEntry::new(1, 500),
+            AllocationPlanEntry::new(2, 500),
+        ],
     };
     let state: OpState = alloc.clone().into();
 
@@ -97,7 +100,7 @@ fn test_from_impls() {
         op_id: 1,
         index: 0,
         remaining: 100,
-        plan: vec![(0, 100)],
+        plan: vec![AllocationPlanEntry::new(0, 100)],
     };
     let state: OpState = alloc.into();
     assert!(state.is_allocating());

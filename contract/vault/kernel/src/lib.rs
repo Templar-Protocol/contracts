@@ -40,7 +40,8 @@ pub use state::escrow::{
     SettlementResult,
 };
 pub use state::op_state::{
-    AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
+    AllocatingState, AllocationPlanEntry, IdleState, OpState, PayoutState, RefreshingState,
+    TargetId, WithdrawingState,
 };
 pub use state::queue::{
     can_enqueue, can_partially_satisfy, can_satisfy_withdrawal, compute_full_withdrawal,

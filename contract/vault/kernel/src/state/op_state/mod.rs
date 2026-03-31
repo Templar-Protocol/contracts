@@ -38,6 +38,21 @@ use crate::types::Address;
 
 pub type TargetId = u32;
 
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AllocationPlanEntry {
+    pub target_id: TargetId,
+    pub amount: u128,
+}
+
+impl AllocationPlanEntry {
+    #[inline]
+    #[must_use]
+    pub const fn new(target_id: TargetId, amount: u128) -> Self {
+        Self { target_id, amount }
+    }
+}
+
 /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
@@ -54,7 +69,7 @@ pub struct AllocatingState {
     pub op_id: u64,
     pub index: u32,
     pub remaining: u128,
-    pub plan: Vec<(TargetId, u128)>,
+    pub plan: Vec<AllocationPlanEntry>,
 }
 
 /// Collecting liquidity from targets to satisfy a user withdrawal/redeem request.

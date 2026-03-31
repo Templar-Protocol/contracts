@@ -12,7 +12,8 @@ fn first_event(result: &TransitionResult) -> Option<&KernelEvent> {
 
 #[test]
 fn complete_allocation_skips_zero_amount_pending_withdrawal() {
-    let alloc = start_allocation(OpState::Idle, vec![(1, 100)], 10).unwrap();
+    let alloc =
+        start_allocation(OpState::Idle, vec![AllocationPlanEntry::new(1, 100)], 10).unwrap();
     let alloc = allocation_step_callback(alloc.new_state, true, 100, 10).unwrap();
 
     let result = complete_allocation(
@@ -40,7 +41,8 @@ fn complete_allocation_skips_zero_amount_pending_withdrawal() {
 
 #[test]
 fn complete_allocation_rejects_nonzero_withdrawal_with_zero_escrow() {
-    let alloc = start_allocation(OpState::Idle, vec![(1, 100)], 20).unwrap();
+    let alloc =
+        start_allocation(OpState::Idle, vec![AllocationPlanEntry::new(1, 100)], 20).unwrap();
     let alloc = allocation_step_callback(alloc.new_state, true, 100, 20).unwrap();
 
     let err = complete_allocation(

@@ -31,7 +31,8 @@ use alloc::vec::Vec;
 
 use crate::effects::{KernelEffect, KernelEvent};
 use crate::state::op_state::{
-    AllocatingState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
+    AllocatingState, AllocationPlanEntry, OpState, PayoutState, RefreshingState, TargetId,
+    WithdrawingState,
 };
 use crate::types::Address;
 
@@ -131,14 +132,18 @@ macro_rules! require_idle {
 ///
 /// # Arguments
 /// * `state` - Current state (must be Idle)
-/// * `plan` - List of (target_id, amount) pairs specifying where to allocate
+/// * `plan` - Allocation steps specifying where to allocate
 /// * `op_id` - Unique operation ID for correlation
 ///
 /// # Returns
 /// * `Ok(TransitionResult)` with new Allocating state
 /// * `Err(TransitionError::WrongState)` if not in Idle state
 /// * `Err(TransitionError::EmptyAllocationPlan)` if plan is empty
-pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64) -> TransitionRes {
+pub fn start_allocation(
+    state: OpState,
+    plan: Vec<AllocationPlanEntry>,
+    op_id: u64,
+) -> TransitionRes {
     require_idle!(state);
 
     if plan.is_empty() {
@@ -146,8 +151,8 @@ pub fn start_allocation(state: OpState, plan: Vec<(TargetId, u128)>, op_id: u64)
     }
 
     let mut total = 0u128;
-    for &(_, amount) in &plan {
-        total = total.saturating_add(amount);
+    for step in &plan {
+        total = total.saturating_add(step.amount);
     }
 
     let plan_len = plan.len() as u32;
@@ -210,8 +215,8 @@ pub fn allocation_step_callback(
         // On failure, return to Idle.
         // Compute total_allocated so caller can restore idle_assets correctly.
         let mut original_total = 0u128;
-        for &(_, amount) in &alloc.plan {
-            original_total = original_total.saturating_add(amount);
+        for step in &alloc.plan {
+            original_total = original_total.saturating_add(step.amount);
         }
         let total_allocated = original_total.saturating_sub(alloc.remaining);
 
