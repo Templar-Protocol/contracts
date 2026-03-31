@@ -135,11 +135,6 @@ impl TryFrom<u64> for MarketId {
     }
 }
 
-pub(crate) fn market_id_from_u64_checked(value: u64) -> Result<MarketId, ErrorWrapper> {
-    MarketId::try_from(value)
-        .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))
-}
-
 /// Generate a UniFFI-compatible builder for a simple struct.
 ///
 /// This macro generates:
@@ -1261,8 +1256,10 @@ mod tests {
     }
 
     #[test]
-    fn market_id_checked_rejects_out_of_range() {
-        let err = market_id_from_u64_checked(u64::from(u32::MAX) + 1).unwrap_err();
+    fn market_id_error_wrapper_mapping_rejects_out_of_range() {
+        let err = MarketId::try_from(u64::from(u32::MAX) + 1)
+            .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))
+            .unwrap_err();
         assert_eq!(err.to_string(), "market id out of u32 range".to_string());
     }
 

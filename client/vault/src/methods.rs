@@ -125,7 +125,9 @@ macro_rules! impl_vault_view_methods {
                     return Ok(None);
                 };
 
-                let id = $crate::market_id_from_u64_checked(u.0)?;
+                let id = $crate::MarketId::try_from(u.0).map_err(|_| {
+                    $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
+                })?;
 
                 Ok(Some(id))
             }
@@ -163,7 +165,9 @@ macro_rules! impl_vault_view_methods {
                 let mapped = res
                     .into_iter()
                     .map(|(id, account)| {
-                        let market_id = $crate::market_id_from_u64_checked(id.0)?;
+                        let market_id = $crate::MarketId::try_from(id.0).map_err(|_| {
+                            $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
+                        })?;
                         Ok($crate::MarketWithId {
                             market_id,
                             account: $crate::AccountId::from(account.to_string()),
