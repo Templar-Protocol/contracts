@@ -37,9 +37,6 @@ pub mod fungible_vault;
 pub mod market;
 pub mod storage;
 
-#[cfg(any(test, feature = "testutils"))]
-pub use storage::MemoryStorage;
-
 pub mod rbac {
     pub use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 }
@@ -62,7 +59,7 @@ pub use {
 };
 
 #[cfg(any(test, feature = "testutils"))]
-pub use market::{AttemptId, MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter};
+pub mod test_utils;
 
 #[cfg(test)]
 mod tests;

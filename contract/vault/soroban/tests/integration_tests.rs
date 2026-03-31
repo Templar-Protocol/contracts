@@ -11,7 +11,8 @@ use soroban_sdk::{
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
-    storage::{MemoryStorage, SorobanStorage, VersionedState},
+    storage::{SorobanStorage, VersionedState},
+    test_utils::{begin_allocating, finish_allocating, MemoryStorage},
     EffectContext,
     EffectInterpreter,
     Storage, // Import the trait
@@ -648,9 +649,7 @@ fn test_begin_allocating_decrements_idle_assets(mut vault: TestVault) {
     let initial_idle = vault.state().unwrap().idle_assets;
 
     let alloc_total = 4000;
-    let _op_id = vault
-        .begin_allocating(allocator, vec![(0, alloc_total)], 1000)
-        .unwrap();
+    let _op_id = begin_allocating(&mut vault, allocator, vec![(0, alloc_total)], 1000).unwrap();
 
     assert!(vault.state().unwrap().op_state.is_allocating());
     assert_eq!(
@@ -670,12 +669,10 @@ fn test_allocation_flow_wrong_op_id_fails(mut vault: TestVault) {
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
-    let op_id = vault
-        .begin_allocating(allocator, vec![(0, 5000)], 1000)
-        .unwrap();
+    let op_id = begin_allocating(&mut vault, allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Try to finish with wrong op_id
-    let result = vault.finish_allocating(allocator, op_id + 999);
+    let result = finish_allocating(&mut vault, allocator, op_id + 999);
     assert!(result.is_err());
 }
 
@@ -720,7 +717,7 @@ fn test_rbac_user_cannot_allocate(mut rbac_vault: RbacVault) {
         .unwrap();
 
     // User should not be able to begin allocation
-    let result = rbac_vault.begin_allocating(user, vec![(0, 5000)], 1000);
+    let result = begin_allocating(&mut rbac_vault, user, vec![(0, 5000)], 1000);
     assert!(result.is_err());
 }
 
@@ -734,7 +731,7 @@ fn test_rbac_allocator_can_allocate(mut rbac_vault: RbacVault) {
         .unwrap();
 
     // Allocator should be able to begin allocation
-    let result = rbac_vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
+    let result = begin_allocating(&mut rbac_vault, allocator, vec![(0, 5000)], 1000);
     assert!(result.is_ok());
 }
 
@@ -978,9 +975,7 @@ fn test_execute_withdraw_requires_idle(mut vault: TestVault) {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start allocation (vault not idle)
-    vault
-        .begin_allocating(allocator, vec![(0, 5000)], 1000)
-        .unwrap();
+    begin_allocating(&mut vault, allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Execute withdraw should fail when not idle
     let result = vault.execute_withdraw(user, 200);
@@ -1330,12 +1325,10 @@ fn test_cannot_allocate_while_allocating(mut vault: TestVault) {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start first allocation
-    vault
-        .begin_allocating(allocator, vec![(0, 5000)], 1000)
-        .unwrap();
+    begin_allocating(&mut vault, allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Try to start second allocation - should fail
-    let result = vault.begin_allocating(allocator, vec![(1, 3000)], 1000);
+    let result = begin_allocating(&mut vault, allocator, vec![(1, 3000)], 1000);
     assert!(result.is_err());
 }
 
@@ -1347,9 +1340,7 @@ fn test_cannot_refresh_while_allocating(mut vault: TestVault) {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     // Start allocation
-    vault
-        .begin_allocating(allocator, vec![(0, 5000)], 1000)
-        .unwrap();
+    begin_allocating(&mut vault, allocator, vec![(0, 5000)], 1000).unwrap();
 
     // Try to start refresh - should fail
     let result = vault.begin_refreshing(allocator, vec![0, 1], 1000);
@@ -1367,7 +1358,7 @@ fn test_cannot_allocate_while_refreshing(mut vault: TestVault) {
     vault.begin_refreshing(allocator, vec![0, 1], 1000).unwrap();
 
     // Try to start allocation - should fail
-    let result = vault.begin_allocating(allocator, vec![(0, 5000)], 1000);
+    let result = begin_allocating(&mut vault, allocator, vec![(0, 5000)], 1000);
     assert!(result.is_err());
 }
 

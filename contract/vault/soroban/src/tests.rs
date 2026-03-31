@@ -222,7 +222,8 @@ mod contract_tests {
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
     use crate::error::RuntimeError;
-    use crate::storage::{MemoryStorage, SorobanStorage, Storage, VersionedState};
+    use crate::storage::{SorobanStorage, Storage, VersionedState};
+    use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
     use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -436,9 +437,7 @@ mod contract_tests {
         state.idle_assets = 2_000;
         state.total_assets = 2_000;
 
-        let op_id = vault
-            .begin_allocating(caller, vec![(0, 500), (1, 500)], 1000)
-            .unwrap();
+        let op_id = begin_allocating(&mut vault, caller, vec![(0, 500), (1, 500)], 1000).unwrap();
 
         assert_eq!(op_id, 0);
         assert!(vault.state().unwrap().op_state.is_allocating());
@@ -453,11 +452,9 @@ mod contract_tests {
         state.idle_assets = 2_000;
         state.total_assets = 2_000;
 
-        let op_id = vault
-            .begin_allocating(caller, vec![(0, 500)], 1000)
-            .unwrap();
+        let op_id = begin_allocating(&mut vault, caller, vec![(0, 500)], 1000).unwrap();
 
-        let result = vault.finish_allocating(caller, op_id).unwrap();
+        let result = finish_allocating(&mut vault, caller, op_id).unwrap();
 
         assert_eq!(result.op_id, op_id);
         assert!(vault.state().unwrap().op_state.is_idle());
@@ -1576,7 +1573,7 @@ mod effects_tests {
 
 mod market_tests {
     use crate::error::RuntimeError;
-    use crate::market::*;
+    use crate::test_utils::{MarketRef, SettlementReceipt, SorobanCrossChainMarketAdapter};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address, Bytes, Env};
     use templar_vault_kernel::AssetId;
@@ -1779,7 +1776,11 @@ mod storage_tests {
     use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
     use crate::helpers::set_config_address;
-    use crate::storage::*;
+    use crate::storage::{
+        SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
+    };
+    use crate::test_utils::MemoryStorage;
+    use crate::Address;
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Env, Symbol, Vec as SdkVec};

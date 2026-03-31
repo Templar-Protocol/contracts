@@ -12,7 +12,7 @@
 
 mod curator_vault;
 mod entrypoints;
-mod helpers;
+pub(crate) mod helpers;
 mod types;
 
 pub use curator_vault::CuratorVault;
@@ -55,8 +55,6 @@ use templar_vault_kernel::{
     VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
     MIN_WITHDRAWAL_ASSETS,
 };
-#[cfg(any(test, feature = "testutils"))]
-use templar_vault_kernel::{complete_allocation, start_allocation};
 
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");

@@ -25,7 +25,7 @@ use proptest::prelude::*;
 
 use templar_soroban_runtime::{
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
-    storage::MemoryStorage,
+    test_utils::{begin_allocating, finish_allocating, MemoryStorage},
 };
 use templar_vault_kernel::{
     math::{number::Number, wad::mul_div_floor},
@@ -321,7 +321,7 @@ proptest! {
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), 10000, 0, 100).unwrap();
 
-        let result = vault.begin_allocating(allocator, vec![], 1000);
+        let result = begin_allocating(&mut vault, allocator, vec![], 1000);
         prop_assert!(result.is_err());
     }
 
@@ -367,8 +367,8 @@ proptest! {
         let allocator = allocator_addr();
         vault.deposit(user_addr(), user_addr(), deposit_amount, 0, 100).unwrap();
 
-        let soroban_op_id = vault.begin_allocating(allocator, plan, 1000).unwrap();
-        vault.finish_allocating(allocator, soroban_op_id).unwrap();
+        let soroban_op_id = begin_allocating(&mut vault, allocator, plan, 1000).unwrap();
+        finish_allocating(&mut vault, allocator, soroban_op_id).unwrap();
         prop_assert!(vault.state().unwrap().op_state.is_idle());
     }
 
@@ -470,14 +470,14 @@ proptest! {
 
         for _ in 0..num_ops {
             // Start and finish an allocation
-            let op_id = vault.begin_allocating(allocator, vec![(0, 100)], 1000).unwrap();
+            let op_id = begin_allocating(&mut vault, allocator, vec![(0, 100)], 1000).unwrap();
 
             if let Some(prev) = prev_op_id {
                 prop_assert!(op_id > prev, "op_id should be monotonically increasing");
             }
             prev_op_id = Some(op_id);
 
-            vault.finish_allocating(allocator, op_id).unwrap();
+            finish_allocating(&mut vault, allocator, op_id).unwrap();
         }
     }
 }
@@ -605,10 +605,10 @@ proptest! {
         prop_assume!(plan1_total <= deposit_amount);
 
         // Start first allocation
-        vault.begin_allocating(allocator, plan1, 1000).unwrap();
+        begin_allocating(&mut vault, allocator, plan1, 1000).unwrap();
 
         // Try to start second allocation - should fail
-        let result = vault.begin_allocating(allocator, plan2, 1000);
+        let result = begin_allocating(&mut vault, allocator, plan2, 1000);
         prop_assert!(result.is_err());
     }
 
@@ -632,7 +632,7 @@ proptest! {
         prop_assume!(plan_total <= deposit_amount);
 
         // Start allocation
-        vault.begin_allocating(allocator, alloc_plan, 1000).unwrap();
+        begin_allocating(&mut vault, allocator, alloc_plan, 1000).unwrap();
 
         // Try to start refresh - should fail
         let result = vault.begin_refreshing(allocator, refresh_plan, 1000);
@@ -658,7 +658,7 @@ proptest! {
         vault.begin_refreshing(allocator, refresh_plan, 1000).unwrap();
 
         // Try to start allocation - should fail
-        let result = vault.begin_allocating(allocator, alloc_plan, 1000);
+        let result = begin_allocating(&mut vault, allocator, alloc_plan, 1000);
         prop_assert!(result.is_err());
     }
 }

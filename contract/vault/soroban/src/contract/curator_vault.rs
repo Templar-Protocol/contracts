@@ -1,6 +1,5 @@
 use super::helpers::{
     contract_error, invalid_state_error, kernel_address_from_sdk, require_signed,
-    transition_to_runtime,
 };
 use super::*;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
@@ -25,12 +24,6 @@ enum AllocationDecision {
 
 struct RefreshPlanDecision {
     markets: Vec<TargetId>,
-}
-
-#[cfg(any(test, feature = "testutils"))]
-struct TestAllocationDecision {
-    filtered_plan: Vec<AllocationPlanEntry>,
-    total_allocated: u128,
 }
 
 #[derive(Clone, Copy)]
@@ -133,7 +126,7 @@ where
         Ok(())
     }
 
-    fn reserve_op_id(state: &mut VaultState) -> Result<u64, RuntimeError> {
+    pub(crate) fn reserve_op_id(state: &mut VaultState) -> Result<u64, RuntimeError> {
         let op_id = state.next_op_id;
         state.next_op_id = state
             .next_op_id
@@ -848,86 +841,6 @@ where
     ) -> Result<RefreshResult, RuntimeError> {
         let op_id = self.begin_refreshing(caller, markets, now_ns)?;
         self.finish_refreshing(caller, op_id, now_ns)
-    }
-
-    #[cfg(any(test, feature = "testutils"))]
-    pub fn begin_allocating(
-        &mut self,
-        caller: Address,
-        plan: Vec<(TargetId, u128)>,
-        current_ns: u64,
-    ) -> Result<u64, RuntimeError> {
-        let decision = self.classify_test_allocation(&plan, current_ns);
-        self.authorize(ActionKind::BeginAllocating, caller)?;
-        let op_id = {
-            let state = self.state_mut()?;
-            if decision.total_allocated > state.idle_assets {
-                return Err(RuntimeError::insufficient_balance(
-                    state.idle_assets,
-                    decision.total_allocated,
-                ));
-            }
-
-            let op_id = Self::reserve_op_id(state)?;
-            state.idle_assets -= decision.total_allocated;
-            state.sync_total_assets();
-
-            let result = transition_to_runtime(start_allocation(
-                mem::take(&mut state.op_state),
-                decision.filtered_plan,
-                op_id,
-            ))?;
-            state.op_state = result.new_state;
-            op_id
-        };
-        self.save_state()?;
-        Ok(op_id)
-    }
-
-    #[cfg(any(test, feature = "testutils"))]
-    fn classify_test_allocation(
-        &self,
-        plan: &[(TargetId, u128)],
-        current_ns: u64,
-    ) -> TestAllocationDecision {
-        let filtered_plan = self
-            .policy_state
-            .locks
-            .filter_allocation_plan(plan, current_ns)
-            .into_iter()
-            .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
-            .collect::<Vec<_>>();
-        let total_allocated = filtered_plan.iter().map(|entry| entry.amount).sum();
-
-        TestAllocationDecision {
-            filtered_plan,
-            total_allocated,
-        }
-    }
-
-    #[cfg(any(test, feature = "testutils"))]
-    pub fn finish_allocating(
-        &mut self,
-        caller: Address,
-        op_id: u64,
-    ) -> Result<AllocationResult, RuntimeError> {
-        self.authorize(ActionKind::FinishAllocating, caller)?;
-        let result = {
-            let state = self.state_mut()?;
-            let transition_result = transition_to_runtime(complete_allocation(
-                mem::take(&mut state.op_state),
-                op_id,
-                None,
-            ))?;
-            state.op_state = transition_result.new_state;
-            AllocationResult {
-                op_id,
-                new_external_assets: state.external_assets,
-                summary: EffectSummary::new(),
-            }
-        };
-        self.save_state()?;
-        Ok(result)
     }
 
     pub fn begin_refreshing(

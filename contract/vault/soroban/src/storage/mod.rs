@@ -11,8 +11,6 @@ use templar_curator_primitives::policy::market_lock::MarketLockSet;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
-#[cfg(any(test, feature = "testutils"))]
-use templar_vault_kernel::AddressBook;
 use templar_vault_kernel::{Address, Restrictions, TargetId, VaultState};
 
 use crate::error::RuntimeError;
@@ -57,7 +55,7 @@ fn pc_deserialize<'a, T: serde::Deserialize<'a>>(
     postcard::from_bytes(bytes).map_err(|_| RuntimeError::storage_error(msg))
 }
 
-fn compose_policy_state(
+pub(crate) fn compose_policy_state(
     markets: Option<OrderedMap<TargetId, MarketConfig>>,
     principals: Option<OrderedMap<TargetId, u128>>,
     cap_groups: Option<OrderedMap<CapGroupId, CapGroupRecord>>,
@@ -630,147 +628,4 @@ pub trait Storage {
         kernel_addr: &Address,
         soroban_addr: &SdkAddress,
     ) -> Result<(), RuntimeError>;
-}
-
-/// In-memory storage implementation for testing.
-#[cfg(any(test, feature = "testutils"))]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(Clone, Default)]
-pub struct MemoryStorage {
-    state: Option<VersionedState>,
-    initialized: bool,
-    paused: bool,
-    policy_locks: Option<MarketLockSet>,
-    policy_supply_queue: Option<SupplyQueue>,
-    policy_markets: Option<OrderedMap<TargetId, MarketConfig>>,
-    policy_principals: Option<OrderedMap<TargetId, u128>>,
-    policy_cap_groups: Option<OrderedMap<CapGroupId, CapGroupRecord>>,
-    restrictions: Option<Restrictions>,
-    address_book: AddressBook<SdkAddress>,
-}
-
-#[cfg(any(test, feature = "testutils"))]
-impl MemoryStorage {
-    /// Create a new empty memory storage.
-    #[inline]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create a memory storage with initial state.
-    #[inline]
-    #[must_use]
-    pub fn with_state(state: VersionedState) -> Self {
-        Self {
-            state: Some(state),
-            initialized: true,
-            paused: false,
-            policy_locks: None,
-            policy_supply_queue: None,
-            policy_markets: None,
-            policy_principals: None,
-            policy_cap_groups: None,
-            restrictions: None,
-            address_book: AddressBook::new(),
-        }
-    }
-
-    /// Get a reference to the stored state.
-    #[inline]
-    #[must_use]
-    pub fn get_state(&self) -> Option<&VersionedState> {
-        self.state.as_ref()
-    }
-
-    /// Clear the storage.
-    #[inline]
-    pub fn clear(&mut self) {
-        self.state = None;
-        self.initialized = false;
-        self.policy_locks = None;
-        self.policy_supply_queue = None;
-        self.policy_markets = None;
-        self.policy_principals = None;
-        self.policy_cap_groups = None;
-        self.restrictions = None;
-        self.address_book.clear();
-    }
-}
-
-#[cfg(any(test, feature = "testutils"))]
-impl Storage for MemoryStorage {
-    fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
-        Ok(self.state.clone())
-    }
-
-    fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
-        self.state = Some(state.clone());
-        self.initialized = true;
-        Ok(())
-    }
-
-    fn is_initialized(&self) -> bool {
-        self.initialized
-    }
-
-    fn get_version(&self) -> Result<StorageVersion, RuntimeError> {
-        self.state
-            .as_ref()
-            .map(|s| s.version)
-            .ok_or_else(|| RuntimeError::storage_error("state not initialized"))
-    }
-
-    fn load_paused(&self) -> Result<bool, RuntimeError> {
-        Ok(self.paused)
-    }
-
-    fn save_paused(&mut self, paused: bool) -> Result<(), RuntimeError> {
-        self.paused = paused;
-        Ok(())
-    }
-
-    fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        Ok(compose_policy_state(
-            self.policy_markets.clone(),
-            self.policy_principals.clone(),
-            self.policy_cap_groups.clone(),
-            self.policy_locks.clone(),
-            self.policy_supply_queue.clone(),
-        ))
-    }
-
-    fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        self.policy_locks = Some(state.locks.clone());
-        self.policy_supply_queue = Some(state.supply_queue.clone());
-        self.policy_markets = Some(state.markets.clone());
-        self.policy_principals = Some(state.principals.clone());
-        self.policy_cap_groups = Some(state.cap_groups.clone());
-        Ok(())
-    }
-
-    fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        Ok(self.restrictions.clone())
-    }
-
-    fn save_restrictions(
-        &mut self,
-        restrictions: &Option<Restrictions>,
-    ) -> Result<(), RuntimeError> {
-        self.restrictions = restrictions.clone();
-        Ok(())
-    }
-
-    fn load_address(&self, kernel_addr: &Address) -> Result<Option<SdkAddress>, RuntimeError> {
-        Ok(self.address_book.resolve(kernel_addr).cloned())
-    }
-
-    fn save_address(
-        &mut self,
-        kernel_addr: &Address,
-        soroban_addr: &SdkAddress,
-    ) -> Result<(), RuntimeError> {
-        self.address_book.insert(*kernel_addr, soroban_addr.clone());
-        Ok(())
-    }
 }
