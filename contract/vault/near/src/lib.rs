@@ -57,6 +57,7 @@ use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
+use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::state::queue::{
     compute_idle_settlement, is_past_cooldown, DEFAULT_COOLDOWN_NS,
 };
@@ -395,12 +396,8 @@ impl Contract {
         )
         .unwrap_or_else(|_| panic_with_message("Kernel request_withdraw failed"));
 
-        self.address_book
-            .entry(owner_addr)
-            .or_insert_with(|| sender.clone());
-        self.address_book
-            .entry(receiver_addr)
-            .or_insert_with(|| receiver.clone());
+        self.remember_account_mapping(owner_addr, sender.clone());
+        self.remember_account_mapping(receiver_addr, receiver.clone());
 
         let mut ctx = KernelEffectContext::default();
         ctx.insert(owner_addr, sender.clone());
@@ -411,6 +408,7 @@ impl Contract {
             .unwrap_or_else(|_| panic_with_message("Failed to apply kernel withdraw effects"));
 
         self.withdraw_queue = result.state.withdraw_queue;
+        self.rebuild_live_address_book();
 
         Event::RedeemRequested {
             shares: U128(shares),
@@ -521,10 +519,10 @@ impl Contract {
         };
 
         if ctx.index != route_index {
-            self.op_state = OpState::Withdrawing(WithdrawingState {
+            self.set_op_state(OpState::Withdrawing(WithdrawingState {
                 index: route_index,
                 ..ctx
-            });
+            }));
         }
 
         self.market_execution_lock.lock(market);
@@ -596,12 +594,12 @@ impl Contract {
 
         // Use Allocating as a generic in-flight guard for this rebalancing op.
         self.next_op_id = op_id.saturating_add(1);
-        self.op_state = OpState::Allocating(AllocatingState {
+        self.set_op_state(OpState::Allocating(AllocatingState {
             op_id,
             index: 0,
             remaining: 0,
             plan: Vec::new(),
-        });
+        }));
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
@@ -712,12 +710,12 @@ impl Contract {
         let before_idle = self.idle_balance;
         let caller = env::predecessor_account_id();
 
-        self.op_state = OpState::Allocating(AllocatingState {
+        self.set_op_state(OpState::Allocating(AllocatingState {
             op_id,
             index: 0,
             remaining: 0,
             plan: Vec::new(),
-        });
+        }));
 
         Event::IdleResyncStarted {
             op_id: op_id.into(),
@@ -1193,8 +1191,13 @@ impl Contract {
             .unwrap_or_else(|| panic_with_message(ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS))
     }
 
+    pub(crate) fn set_op_state(&mut self, state: OpState) {
+        self.op_state = state;
+        self.rebuild_live_address_book();
+    }
+
     fn apply_kernel_op_state(&mut self, state: &OpState) {
-        self.op_state = state.clone();
+        self.set_op_state(state.clone());
     }
 
     pub fn build_real_assets_report(&self) -> RealAssetsReport {
@@ -1242,6 +1245,42 @@ struct SupplyQueueMarketInfo {
 }
 
 impl Contract {
+    fn remember_account_mapping(&mut self, address: Address, account: AccountId) {
+        self.address_book.entry(address).or_insert(account);
+    }
+
+    fn rebuild_live_address_book(&mut self) {
+        let existing = std::mem::take(&mut self.address_book);
+        let mut live = BTreeMap::new();
+
+        let mut retain = |address: Address| {
+            let account = existing
+                .get(&address)
+                .cloned()
+                .unwrap_or_else(|| panic_with_message(ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS));
+            live.entry(address).or_insert(account);
+        };
+
+        for pending in self.withdraw_queue.pending_withdrawals().values() {
+            retain(pending.owner);
+            retain(pending.receiver);
+        }
+
+        match &self.op_state {
+            OpState::Withdrawing(state) => {
+                retain(state.owner);
+                retain(state.receiver);
+            }
+            OpState::Payout(state) => {
+                retain(state.owner);
+                retain(state.receiver);
+            }
+            _ => {}
+        }
+
+        self.address_book = live;
+    }
+
     fn default_cap_group_record() -> CapGroupRecord {
         CapGroupRecord {
             cap: templar_curator_primitives::CapGroup::builder()
@@ -1507,13 +1546,9 @@ impl Contract {
         entry: PendingWithdrawal,
     ) {
         let owner_addr = account_id_to_address(&entry.owner);
-        self.address_book
-            .entry(owner_addr)
-            .or_insert_with(|| entry.owner.clone());
+        self.remember_account_mapping(owner_addr, entry.owner.clone());
         let receiver_addr = account_id_to_address(&entry.receiver);
-        self.address_book
-            .entry(receiver_addr)
-            .or_insert_with(|| entry.receiver.clone());
+        self.remember_account_mapping(receiver_addr, entry.receiver.clone());
 
         let mut pending = self.withdraw_queue.pending_withdrawals().clone();
         pending.insert(
@@ -1542,6 +1577,7 @@ impl Contract {
             next_withdraw_to_execute,
             next_pending_withdrawal_id,
         );
+        self.rebuild_live_address_book();
     }
 
     #[cfg(test)]
@@ -1799,7 +1835,7 @@ impl Contract {
 
         let kernel_plan = plan
             .iter()
-            .map(|(market, amount)| (market.into_target_id(), *amount))
+            .map(|(market, amount)| AllocationPlanEntry::new(market.into_target_id(), *amount))
             .collect();
         let kernel_state = self.kernel_state_mirror();
         let kernel_config = self.kernel_config_mirror();
@@ -1888,17 +1924,17 @@ impl Contract {
         }
 
         let idx = index as usize;
-        if let Some((target, amount)) = plan.get(idx) {
-            let market_id = MarketId::from(*target);
+        if let Some(step) = plan.get(idx) {
+            let market_id = MarketId::from(step.target_id);
 
             let room = self.room_of(market_id);
-            let to_supply = room.min(*amount);
+            let to_supply = room.min(step.amount);
 
             Event::AllocationStepPlan {
                 op_id: op_id.into(),
                 index,
                 market: market_id,
-                target: U128(*amount),
+                target: U128(step.amount),
                 room: U128(room),
                 to_supply: U128(to_supply),
                 remaining_before: U128(remaining),
@@ -1912,7 +1948,7 @@ impl Contract {
                     op_id: op_id.into(),
                     index,
                     market: market_id,
-                    target: U128(*amount),
+                    target: U128(step.amount),
                     room: U128(room),
                     to_supply: U128(0),
                     remaining_before: U128(remaining),
@@ -2152,6 +2188,7 @@ impl Contract {
             id: id.into(),
         }
         .emit();
+        self.rebuild_live_address_book();
     }
 
     fn park_head_for_retry(&mut self, failed_route: WithdrawRoute) {
@@ -2197,7 +2234,7 @@ impl Contract {
                 refreshed_at: report.refreshed_at,
             }
             .emit();
-            self.op_state = OpState::Idle;
+            self.set_op_state(OpState::Idle);
             return PromiseOrValue::Value(report);
         }
 

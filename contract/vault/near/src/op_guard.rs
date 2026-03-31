@@ -30,11 +30,11 @@ macro_rules! impl_op_guard_spec {
             }
 
             fn set_state(target: &mut Contract, state: Self::State) {
-                target.op_state = OpState::$variant(state);
+                target.set_op_state(OpState::$variant(state));
             }
 
             fn into_idle(target: &mut Contract) {
-                target.op_state = OpState::Idle;
+                target.set_op_state(OpState::Idle);
             }
         }
     };
@@ -96,11 +96,11 @@ impl GuardSpec<Contract> for IdleSpec {
     }
 
     fn set_state(target: &mut Contract, _state: Self::State) {
-        target.op_state = OpState::Idle;
+        target.set_op_state(OpState::Idle);
     }
 
     fn into_idle(target: &mut Contract) {
-        target.op_state = OpState::Idle;
+        target.set_op_state(OpState::Idle);
     }
 }
 

@@ -924,7 +924,7 @@ impl Contract {
             }
             .emit();
             self.idle_resync_inflight_op_id = 0;
-            self.op_state = OpState::Idle;
+            self.set_op_state(OpState::Idle);
             return ResyncIdleReport {
                 outcome: IdleResyncOutcome::UnexpectedState,
                 before_idle,
@@ -947,7 +947,7 @@ impl Contract {
             }
             .emit();
             self.idle_resync_inflight_op_id = 0;
-            self.op_state = OpState::Idle;
+            self.set_op_state(OpState::Idle);
             return ResyncIdleReport {
                 outcome: IdleResyncOutcome::BalanceReadFailed,
                 before_idle,
@@ -983,7 +983,7 @@ impl Contract {
         .emit();
 
         self.idle_resync_inflight_op_id = 0;
-        self.op_state = OpState::Idle;
+        self.set_op_state(OpState::Idle);
 
         ResyncIdleReport {
             outcome: IdleResyncOutcome::Ok,
@@ -1029,7 +1029,7 @@ impl Contract {
         // The flag blocks withdraw/redeem, so it must be cleared on any allocation abort.
         self.idle_resync_inflight_op_id = 0;
 
-        self.op_state = OpState::Idle;
+        self.set_op_state(OpState::Idle);
     }
 
     pub fn stop_and_exit_withdrawing<T: Display + core::fmt::Debug + ?Sized>(
@@ -1099,7 +1099,7 @@ impl Contract {
 
         self.pop_head();
         self.withdraw_route.clear();
-        self.op_state = OpState::Idle;
+        self.set_op_state(OpState::Idle);
     }
 
     pub(crate) fn stop_and_exit<T: Display + core::fmt::Debug + ?Sized>(

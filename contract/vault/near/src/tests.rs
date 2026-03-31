@@ -263,6 +263,113 @@ proptest! {
             prop_assert_eq!(out, Some(RestrictionReason::NotWhitelisted));
         }
     }
+
+}
+
+#[test]
+fn prop_address_book_rebuilds_to_live_queue_and_op_state() {
+    let strategy = (
+        prop::collection::vec(
+            (
+                100u32..200u32,
+                200u32..300u32,
+                1u128..1_000u128,
+                0u64..1_000u64,
+            ),
+            0..8,
+        ),
+        prop::option::of((400u32..500u32, 500u32..600u32, 1u128..1_000u128)),
+    );
+
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    });
+
+    let vault_id = mk(10_000);
+    let contract = std::cell::RefCell::new(new_test_contract(&vault_id));
+    let contract_owner = contract.borrow().own_get_owner().unwrap();
+
+    runner
+        .run(&strategy, |(queued, inflight)| {
+            setup_env(&vault_id, &contract_owner, vec![]);
+
+            let mut c = contract.borrow_mut();
+            c.withdraw_queue = templar_vault_kernel::WithdrawQueue::default();
+            c.address_book.clear();
+            c.withdraw_route.clear();
+            c.set_op_state(OpState::Idle);
+
+            let mut expected = BTreeSet::new();
+
+            for (owner_n, receiver_n, expected_assets, requested_at) in queued {
+                let queued_owner = mk(owner_n);
+                let queued_receiver = mk(receiver_n);
+                let id = c.queue_tail();
+                c.insert_pending_withdrawal_for_tests(
+                    id,
+                    PendingWithdrawal {
+                        owner: queued_owner.clone(),
+                        receiver: queued_receiver.clone(),
+                        escrow_shares: 1,
+                        expected_assets,
+                        requested_at,
+                    },
+                );
+
+                expected.insert(account_id_to_address(&queued_owner));
+                expected.insert(account_id_to_address(&queued_receiver));
+            }
+
+            let stale_owner = mk(900_001);
+            let stale_receiver = mk(900_002);
+            c.address_book
+                .insert(account_id_to_address(&stale_owner), stale_owner.clone());
+            c.address_book.insert(
+                account_id_to_address(&stale_receiver),
+                stale_receiver.clone(),
+            );
+
+            if let Some((owner_n, receiver_n, remaining)) = inflight {
+                let inflight_owner = mk(owner_n);
+                let inflight_receiver = mk(receiver_n);
+                let inflight_owner_addr = account_id_to_address(&inflight_owner);
+                let inflight_receiver_addr = account_id_to_address(&inflight_receiver);
+
+                c.address_book
+                    .insert(inflight_owner_addr, inflight_owner.clone());
+                c.address_book
+                    .insert(inflight_receiver_addr, inflight_receiver.clone());
+
+                expected.insert(inflight_owner_addr);
+                expected.insert(inflight_receiver_addr);
+
+                c.set_op_state(OpState::Withdrawing(WithdrawingState {
+                    op_id: 7,
+                    index: 0,
+                    remaining,
+                    collected: 0,
+                    receiver: inflight_receiver_addr,
+                    owner: inflight_owner_addr,
+                    escrow_shares: 1,
+                }));
+            } else {
+                c.set_op_state(OpState::Idle);
+            }
+
+            let actual = c.address_book.keys().copied().collect::<BTreeSet<_>>();
+            prop_assert_eq!(actual, expected);
+            prop_assert!(!c
+                .address_book
+                .contains_key(&account_id_to_address(&stale_owner)));
+            prop_assert!(!c
+                .address_book
+                .contains_key(&account_id_to_address(&stale_receiver)));
+
+            Ok(())
+        })
+        .unwrap_or_else(|e| panic!("property test failed: {e}"));
 }
 
 #[test]
@@ -5479,6 +5586,76 @@ fn execute_withdrawal_only_dust_drains_queue() {
         "head should advance by two"
     );
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
+}
+
+#[test]
+fn address_book_prunes_completed_withdrawal_addresses() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let receiver = mk(9);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let id = c.queue_tail();
+    c.insert_pending_withdrawal_for_tests(
+        id,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: 1,
+            expected_assets: 0,
+            requested_at: 0,
+        },
+    );
+
+    assert_eq!(c.resolve_account(&account_id_to_address(&owner)), owner);
+    assert_eq!(
+        c.resolve_account(&account_id_to_address(&receiver)),
+        receiver
+    );
+
+    c.pop_head();
+    assert_eq!(c.pending_withdrawals_len(), 0, "queue should be empty");
+    assert!(!c.address_book.contains_key(&account_id_to_address(&owner)));
+    assert!(!c
+        .address_book
+        .contains_key(&account_id_to_address(&receiver)));
+}
+
+#[test]
+fn address_book_keeps_live_withdrawing_addresses_off_queue() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let receiver = mk(9);
+    let stale_owner = mk(10);
+    let stale_receiver = mk(11);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let owner_addr = account_id_to_address(&owner);
+    let receiver_addr = account_id_to_address(&receiver);
+    let stale_owner_addr = account_id_to_address(&stale_owner);
+    let stale_receiver_addr = account_id_to_address(&stale_receiver);
+
+    c.address_book.insert(stale_owner_addr, stale_owner);
+    c.address_book.insert(stale_receiver_addr, stale_receiver);
+    c.address_book.insert(owner_addr, owner.clone());
+    c.address_book.insert(receiver_addr, receiver.clone());
+
+    c.set_op_state(OpState::Withdrawing(WithdrawingState {
+        op_id: 42,
+        index: 0,
+        remaining: 5,
+        collected: 0,
+        receiver: receiver_addr,
+        owner: owner_addr,
+        escrow_shares: 7,
+    }));
+
+    assert_eq!(c.resolve_account(&owner_addr), owner);
+    assert_eq!(c.resolve_account(&receiver_addr), receiver);
+    assert!(!c.address_book.contains_key(&stale_owner_addr));
+    assert!(!c.address_book.contains_key(&stale_receiver_addr));
 }
 
 /// Same AccountId always produces the same kernel Address (deterministic).
