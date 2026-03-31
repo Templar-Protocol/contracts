@@ -298,6 +298,17 @@ impl App {
             .collect()
     }
 
+    fn derive_sda_interactions(
+        accounts: &AccountData,
+        receiver_id: &AccountId,
+        additional_interactions: Vec<AccountId>,
+    ) -> (HashSet<AccountId>, HashSet<AccountId>) {
+        let interacted_contract_ids =
+            HashSet::from_iter(std::iter::once(receiver_id.clone()).chain(additional_interactions));
+        let market_ids = Self::resolve_market_ids(accounts, &interacted_contract_ids);
+        (interacted_contract_ids, market_ids)
+    }
+
     fn grouped_price_updates(
         accounts: &AccountData,
         market_ids: &HashSet<AccountId>,
@@ -548,10 +559,8 @@ impl App {
             )
             .map_err(PayloadRejectionReason::FunctionCallRejection)?;
 
-        let mut interacted_contract_ids = HashSet::from([receiver_id.clone()]);
-        interacted_contract_ids.extend(additional_interactions);
-        Self::expand_market_related_contracts(&accounts, &mut interacted_contract_ids);
-        let market_ids = Self::resolve_market_ids(&accounts, &interacted_contract_ids);
+        let (interacted_contract_ids, market_ids) =
+            Self::derive_sda_interactions(&accounts, receiver_id, additional_interactions);
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 
@@ -909,6 +918,46 @@ mod tests {
             redstone_updates[&redstone_oracle],
             HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
         );
+    }
+
+    #[test]
+    fn derive_sda_interactions_keeps_only_contracts_the_sda_touches() {
+        let market_id = account_id("market.test.near");
+        let oracle_id = account_id("oracle.test.near");
+        let borrow_asset_id = account_id("borrow.test.near");
+        let collateral_asset_id = account_id("collateral.test.near");
+        let mut accounts = AccountData::default();
+        accounts.market_data.insert(
+            market_id.clone(),
+            MarketData {
+                account_id: market_id.clone(),
+                oracle_id: oracle_id.clone(),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: oracle_id,
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
+                collateral: AssetResolution {
+                    asset: FungibleAsset::nep141(collateral_asset_id.clone()),
+                    price_id: price_id(1),
+                    update_oracle: HashSet::new(),
+                },
+                borrow: AssetResolution {
+                    asset: FungibleAsset::nep141(borrow_asset_id),
+                    price_id: price_id(2),
+                    update_oracle: HashSet::new(),
+                },
+            },
+        );
+
+        let (interacted_contract_ids, market_ids) =
+            App::derive_sda_interactions(&accounts, &market_id, vec![]);
+
+        assert_eq!(interacted_contract_ids, HashSet::from([market_id.clone()]));
+        assert_eq!(market_ids, HashSet::from([market_id]));
     }
 
     #[tokio::test]
