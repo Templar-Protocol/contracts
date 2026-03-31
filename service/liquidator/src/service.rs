@@ -147,11 +147,12 @@ impl LiquidatorService {
         let (_, oneclick_provider) =
             Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
 
-        // Create oracle fetcher for batch swap price checks
+        // Create oracle fetcher for batch swap price checks (no signer needed for reads)
         let oracle_fetcher = crate::OracleFetcher::new(
             client.clone(),
             Some(config.hermes_url.clone()),
             Some(config.redstone_gateway_url.clone()),
+            None,
             None,
         );
 
@@ -552,6 +553,10 @@ impl LiquidatorService {
                     self.config.swap_retry_config.clone(),
                     self.config.min_swap_value_usd,
                     Some(self.oracle_fetcher.proxy_oracle_cache()),
+                    Some((
+                        self.config.signer_account.clone(),
+                        self.config.signer_key.clone(),
+                    )),
                 );
 
                 // Fetch market version for version-specific liquidation logic

@@ -97,6 +97,8 @@ pub enum LiquidatorError {
     GetConfigurationError(rpc::RpcError),
     #[error("Failed to fetch oracle prices: {0}")]
     PriceFetchError(rpc::RpcError),
+    #[error("Failed to update on-chain oracle prices: {0}")]
+    OracleUpdateError(String),
     #[error("Failed to get access key data: {0}")]
     AccessKeyDataError(rpc::RpcError),
     #[error("Liquidation transaction error: {0}")]
@@ -191,6 +193,7 @@ impl Liquidator {
         swap_retry_config: crate::swap::SwapRetryConfig,
         min_swap_value_usd: f64,
         proxy_oracle_cache: Option<oracle::ProxyOracleCache>,
+        signer_for_oracle: Option<(AccountId, near_crypto::SecretKey)>,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(
@@ -198,6 +201,7 @@ impl Liquidator {
             hermes_url,
             redstone_gateway_url,
             proxy_oracle_cache,
+            signer_for_oracle,
         );
         let executor = executor::LiquidationExecutor::new(
             client.clone(),
@@ -303,6 +307,7 @@ impl Liquidator {
         let loop_enabled = self.loop_liquidation && !dry_run;
         let mut loop_iteration = 0;
         let max_iterations = if dry_run { 1 } else { self.max_loop_iterations };
+        let mut prices_pushed_onchain = false;
         let mut total_liquidated_amount = 0u128;
         let mut total_collateral_received = 0u128;
         let mut position = position;
@@ -616,7 +621,31 @@ impl Liquidator {
                 return Ok(LiquidationOutcome::Unprofitable);
             }
 
-            // Step 6: Execute liquidation (contract determines optimal collateral amount)
+            // Step 6: Push fresh prices to on-chain oracle before first execution.
+            // The market contract reads from the on-chain oracle during liquidation,
+            // so prices must be fresh there — not just in our HTTP-fetched view.
+            // Only push once per liquidate() call (covers loop iterations too).
+            if !prices_pushed_onchain && !dry_run {
+                let oracle_account = &self.market_config.price_oracle_configuration.account_id;
+                let price_ids = &[
+                    self.market_config
+                        .price_oracle_configuration
+                        .borrow_asset_price_id,
+                    self.market_config
+                        .price_oracle_configuration
+                        .collateral_asset_price_id,
+                ];
+                if let Err(e) = self
+                    .oracle_fetcher
+                    .update_pyth_prices(oracle_account, price_ids)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to update on-chain prices, proceeding with existing");
+                }
+                prices_pushed_onchain = true;
+            }
+
+            // Execute liquidation (contract determines optimal collateral amount)
             let outcome = self
                 .executor
                 .execute_liquidation(

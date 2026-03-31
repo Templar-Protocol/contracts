@@ -217,6 +217,12 @@ impl LiquidationExecutor {
                             "Liquidation executed successfully (all receipts succeeded)"
                         );
 
+                        // Release the reservation — tokens have left our account
+                        self.inventory
+                            .write()
+                            .await
+                            .release(borrow_asset, liquidation_amount);
+
                         // Handle collateral based on strategy
                         let swap_succeeded = match &self.collateral_strategy {
                             CollateralStrategy::Hold => false, // No swap performed
