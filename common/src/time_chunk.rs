@@ -1,4 +1,3 @@
-use derive_more::{From, Into};
 use near_sdk::{env, json_types::U64, near};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,7 +56,7 @@ impl TimeChunkConfiguration {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct TimeChunk(pub U64);
 
