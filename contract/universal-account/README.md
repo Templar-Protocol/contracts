@@ -97,7 +97,7 @@ Sometimes a version upgrade will require a migration, and sometimes it will not.
 
 If a migration _is_ required, we prepare a migration payload in order to properly parameterize the migration. Multiple migrations may be required (e.g. the code was upgraded from state version 0 &rarr; 2, so it must first migrate to version 1, then to version 2). Only one state migration can occur at a time.
 
-1. Choose the state migration to perform. The list of state migrations can be found [here](https://docs.templarfi.org/doc/templar_universal_account/state/migration/enum.Migration.html). For example, if the contract is being upgraded from state version 0 to state version 1, we choose `V0`. If it is then upgraded from state version 1 to state version 2, we choose `V1`.
+1. Choose the state migration to perform. See the [list of state migrations](https://docs.templarfi.org/doc/templar_universal_account/state/migration/enum.Migration.html). For example, if the contract is being upgraded from state version 0 to state version 1, we choose `V0`. If it is then upgraded from state version 1 to state version 2, we choose `V1`.
 2. Parameterize (if necessary). Some migrations require new information, some do not. In our example, the `V0` migration requires a `chain_id` parameter, so we choose `397` (NEAR Mainnet). The `V1` migration has no additional arguments.
 3. Call `migrate` with the migration payload. For example: `migrate({"from_version":"v0","chain_id":"397"})`, then `migrate({"from_version":"v1"})` if another migration step is still required. `migrate` is private: only the universal account itself may call it, typically via a signed `FunctionCall` action.
 
