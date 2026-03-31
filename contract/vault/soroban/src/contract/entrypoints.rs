@@ -9,6 +9,7 @@ use super::helpers::{
 };
 use super::*;
 use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
+use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 fn required_address(
     value: Option<soroban_sdk::Address>,
@@ -450,7 +451,7 @@ impl SorobanVaultContract {
             let observed_total_assets = to_u128(invoke_total_assets(&env, &adapter, &asset_token))?;
 
             let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-                let plan = vec![(market.into(), amount_u128)];
+                let plan = vec![AllocationPlanEntry::new(market.into(), amount_u128)];
                 let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
                 new_external = vault.complete_supply_allocation(
                     caller_kernel,

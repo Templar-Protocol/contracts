@@ -5,6 +5,47 @@ use super::helpers::{
 use super::*;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
+#[derive(Clone, Copy)]
+struct SupplyAllocationDecision {
+    market: TargetId,
+    amount: u128,
+    observed_total_assets: u128,
+}
+
+#[derive(Clone, Copy)]
+struct WithdrawAllocationDecision {
+    market: TargetId,
+    amount: u128,
+}
+
+enum AllocationDecision {
+    Supply(SupplyAllocationDecision),
+    Withdraw(WithdrawAllocationDecision),
+}
+
+#[cfg(any(test, feature = "testutils"))]
+struct TestAllocationDecision {
+    filtered_plan: Vec<AllocationPlanEntry>,
+    total_allocated: u128,
+}
+
+#[derive(Clone, Copy)]
+struct RefreshedPosition {
+    market: TargetId,
+    total_assets: u128,
+}
+
+impl RefreshedPosition {
+    #[inline]
+    #[must_use]
+    const fn new(market: TargetId, total_assets: u128) -> Self {
+        Self {
+            market,
+            total_assets,
+        }
+    }
+}
+
 pub struct CuratorVault<S, A, E>
 where
     S: Storage,
@@ -526,69 +567,116 @@ where
         caller: Address,
         delta: &AllocationDelta,
     ) -> Result<AllocationResult, RuntimeError> {
-        match delta {
-            AllocationDelta::Supply(d) => {
-                if d.amount == 0 {
-                    return Err(RuntimeError::invalid_input("amount must be > 0"));
-                }
-
-                let plan = vec![(d.market.into(), d.amount)];
-                let op_id = self.begin_allocation_internal(caller, &plan, 0)?;
-                let observed_total_assets = self
-                    .policy_state()
-                    .principal_for(d.market)
-                    .checked_add(d.amount)
-                    .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
-                let new_external_assets = self.complete_supply_allocation(
-                    caller,
-                    d.market,
-                    observed_total_assets,
-                    op_id,
-                    0,
-                )?;
-                Ok(AllocationResult {
-                    op_id,
-                    new_external_assets,
-                    summary: EffectSummary::new(),
-                })
+        match self.classify_allocation(delta)? {
+            AllocationDecision::Supply(decision) => {
+                self.execute_supply_allocation(caller, decision)
             }
-            AllocationDelta::Withdraw(d) => {
-                if d.amount == 0 {
-                    return Err(RuntimeError::invalid_input("amount must be > 0"));
-                }
-
-                let op_id = self.begin_allocation_withdraw_internal(caller, d.market.into(), 0)?;
-                let new_external =
-                    self.complete_withdraw_allocation(caller, d.market, d.amount, op_id, 0)?;
-                Ok(AllocationResult {
-                    op_id,
-                    new_external_assets: new_external,
-                    summary: EffectSummary::new(),
-                })
+            AllocationDecision::Withdraw(decision) => {
+                self.execute_withdraw_allocation(caller, decision)
             }
         }
+    }
+
+    fn classify_allocation(
+        &self,
+        delta: &AllocationDelta,
+    ) -> Result<AllocationDecision, RuntimeError> {
+        match delta {
+            AllocationDelta::Supply(delta) => {
+                Self::require_positive_allocation_amount(delta.amount)?;
+
+                let observed_total_assets = self
+                    .policy_state()
+                    .principal_for(delta.market)
+                    .checked_add(delta.amount)
+                    .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+
+                Ok(AllocationDecision::Supply(SupplyAllocationDecision {
+                    market: delta.market,
+                    amount: delta.amount,
+                    observed_total_assets,
+                }))
+            }
+            AllocationDelta::Withdraw(delta) => {
+                Self::require_positive_allocation_amount(delta.amount)?;
+
+                Ok(AllocationDecision::Withdraw(WithdrawAllocationDecision {
+                    market: delta.market,
+                    amount: delta.amount,
+                }))
+            }
+        }
+    }
+
+    fn execute_supply_allocation(
+        &mut self,
+        caller: Address,
+        decision: SupplyAllocationDecision,
+    ) -> Result<AllocationResult, RuntimeError> {
+        let op_id = self.begin_allocation_internal(
+            caller,
+            &[AllocationPlanEntry::new(decision.market, decision.amount)],
+            0,
+        )?;
+        let new_external_assets = self.complete_supply_allocation(
+            caller,
+            decision.market,
+            decision.observed_total_assets,
+            op_id,
+            0,
+        )?;
+        Ok(Self::allocation_result(op_id, new_external_assets))
+    }
+
+    fn execute_withdraw_allocation(
+        &mut self,
+        caller: Address,
+        decision: WithdrawAllocationDecision,
+    ) -> Result<AllocationResult, RuntimeError> {
+        let op_id = self.begin_allocation_withdraw_internal(caller, decision.market, 0)?;
+        let new_external_assets =
+            self.complete_withdraw_allocation(caller, decision.market, decision.amount, op_id, 0)?;
+        Ok(Self::allocation_result(op_id, new_external_assets))
+    }
+
+    #[inline]
+    fn require_positive_allocation_amount(amount: u128) -> Result<(), RuntimeError> {
+        if amount == 0 {
+            return Err(RuntimeError::invalid_input("amount must be > 0"));
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn allocation_result(op_id: u64, new_external_assets: u128) -> AllocationResult {
+        AllocationResult {
+            op_id,
+            new_external_assets,
+            summary: EffectSummary::new(),
+        }
+    }
+
+    #[inline]
+    fn reserve_authorized_op_id(
+        &mut self,
+        caller: Address,
+        action: ActionKind,
+    ) -> Result<u64, RuntimeError> {
+        self.authorize(action, caller)?;
+        let state = self.state_mut()?;
+        Self::reserve_op_id(state)
     }
 
     pub(crate) fn begin_allocation_internal(
         &mut self,
         caller: Address,
-        plan: &[(TargetId, u128)],
+        plan: &[AllocationPlanEntry],
         now_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        self.authorize(ActionKind::BeginAllocating, caller)?;
-        let op_id = {
-            let state = self.state_mut()?;
-            Self::reserve_op_id(state)?
-        };
+        let op_id = self.reserve_authorized_op_id(caller, ActionKind::BeginAllocating)?;
         self.apply_kernel_action(
-            KernelAction::begin_allocating(
-                op_id,
-                plan.iter()
-                    .copied()
-                    .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
-                    .collect(),
-                now_ns,
-            ),
+            KernelAction::begin_allocating(op_id, plan.to_vec(), now_ns),
             now_ns,
         )?;
         Ok(op_id)
@@ -600,11 +688,7 @@ where
         market: TargetId,
         now_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        self.authorize(ActionKind::BeginAllocating, caller)?;
-        let op_id = {
-            let state = self.state_mut()?;
-            Self::reserve_op_id(state)?
-        };
+        let op_id = self.reserve_authorized_op_id(caller, ActionKind::BeginAllocating)?;
         self.apply_kernel_action(
             KernelAction::begin_allocating(
                 op_id,
@@ -669,10 +753,15 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
+        let refreshed_positions = refreshed_positions
+            .iter()
+            .map(|&(market, total_assets)| RefreshedPosition::new(market, total_assets))
+            .collect::<Vec<_>>();
+
         {
             let policy = self.policy_state_mut();
-            for (market, total_assets) in refreshed_positions {
-                policy.set_principal(*market, *total_assets);
+            for position in &refreshed_positions {
+                policy.set_principal(position.market, position.total_assets);
             }
             policy.refresh_cap_group_principals();
         }
@@ -710,30 +799,24 @@ where
         plan: Vec<(TargetId, u128)>,
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        let filtered_plan = self
-            .policy_state
-            .locks
-            .filter_allocation_plan(&plan, current_ns);
-
+        let decision = self.classify_test_allocation(&plan, current_ns);
         self.authorize(ActionKind::BeginAllocating, caller)?;
         let op_id = {
             let state = self.state_mut()?;
-
-            let alloc_total: u128 = filtered_plan.iter().map(|(_, amt)| *amt).sum();
-            if alloc_total > state.idle_assets {
+            if decision.total_allocated > state.idle_assets {
                 return Err(RuntimeError::insufficient_balance(
                     state.idle_assets,
-                    alloc_total,
+                    decision.total_allocated,
                 ));
             }
 
             let op_id = Self::reserve_op_id(state)?;
-            state.idle_assets -= alloc_total;
+            state.idle_assets -= decision.total_allocated;
             state.sync_total_assets();
 
             let result = transition_to_runtime(start_allocation(
                 mem::take(&mut state.op_state),
-                filtered_plan,
+                decision.filtered_plan,
                 op_id,
             ))?;
             state.op_state = result.new_state;
@@ -741,6 +824,27 @@ where
         };
         self.save_state()?;
         Ok(op_id)
+    }
+
+    #[cfg(any(test, feature = "testutils"))]
+    fn classify_test_allocation(
+        &self,
+        plan: &[(TargetId, u128)],
+        current_ns: u64,
+    ) -> TestAllocationDecision {
+        let filtered_plan = self
+            .policy_state
+            .locks
+            .filter_allocation_plan(plan, current_ns)
+            .into_iter()
+            .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
+            .collect::<Vec<_>>();
+        let total_allocated = filtered_plan.iter().map(|entry| entry.amount).sum();
+
+        TestAllocationDecision {
+            filtered_plan,
+            total_allocated,
+        }
     }
 
     #[cfg(any(test, feature = "testutils"))]
