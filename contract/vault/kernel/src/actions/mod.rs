@@ -18,7 +18,7 @@ use crate::{
 };
 use crate::{
     state::{
-        op_state::{AllocationPlanEntry, OpState, TargetId},
+        op_state::{AllocationPlanEntry, OpState, PayoutState, TargetId},
         queue::{compute_idle_settlement, is_past_cooldown, QueueError, WithdrawQueue},
         vault::{VaultConfig, VaultState},
     },
@@ -109,6 +109,16 @@ enum WithdrawalHeadOutcome {
     Skip(WithdrawalSkipReason),
     CoolingDown { requested_at_ns: TimestampNs },
     Ready,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PayoutSettlement {
+    burn_shares: u128,
+    refund_shares: u128,
+    completed_amount: u128,
+    success: bool,
+    restore_idle: u128,
 }
 
 /// Plan an idle-funded payout from the current vault state.
@@ -1344,6 +1354,99 @@ fn handle_abort_withdrawing(
     state.op_state = result.new_state;
     state.withdraw_queue.dequeue();
     Ok(KernelResult::new(state, result.effects))
+}
+
+#[inline]
+fn plan_payout_settlement(
+    payout: &PayoutState,
+    outcome: PayoutOutcome,
+) -> Result<PayoutSettlement, KernelError> {
+    match outcome {
+        PayoutOutcome::Success {
+            burn_shares,
+            refund_shares,
+        } => {
+            let settled_shares = burn_shares.checked_add(refund_shares).ok_or_else(|| {
+                KernelError::from(InvalidStateCode::PayoutSuccessSettlementMismatch)
+            })?;
+
+            if settled_shares != payout.escrow_shares {
+                return Err(KernelError::from(
+                    InvalidStateCode::PayoutSuccessSettlementMismatch,
+                ));
+            }
+
+            Ok(PayoutSettlement {
+                burn_shares,
+                refund_shares,
+                completed_amount: payout.amount,
+                success: true,
+                restore_idle: 0,
+            })
+        }
+        PayoutOutcome::Failure {
+            restore_idle,
+            refund_shares,
+        } => {
+            if refund_shares != payout.escrow_shares {
+                return Err(KernelError::from(
+                    InvalidStateCode::PayoutFailureSettlementMismatch,
+                ));
+            }
+            if restore_idle != payout.amount {
+                return Err(KernelError::from(
+                    InvalidStateCode::PayoutFailureRestoreIdleMismatch,
+                ));
+            }
+
+            Ok(PayoutSettlement {
+                burn_shares: 0,
+                refund_shares,
+                completed_amount: 0,
+                success: false,
+                restore_idle,
+            })
+        }
+    }
+}
+
+fn apply_payout_settlement(
+    state: &mut VaultState,
+    payout: &PayoutState,
+    settlement: PayoutSettlement,
+    escrow_address: Address,
+    effects: &mut Vec<KernelEffect>,
+) -> Result<(), KernelError> {
+    if settlement.burn_shares > 0 {
+        effects.push(KernelEffect::BurnShares {
+            owner: escrow_address,
+            shares: settlement.burn_shares,
+        });
+        state.total_shares = state
+            .total_shares
+            .checked_sub(settlement.burn_shares)
+            .ok_or_else(|| KernelError::from(InvalidStateCode::PayoutBurnExceedsTotalShares))?;
+    }
+
+    push_refund_shares(
+        effects,
+        escrow_address,
+        payout.owner,
+        settlement.refund_shares,
+    );
+
+    if settlement.success {
+        state.idle_assets = state
+            .idle_assets
+            .checked_sub(payout.amount)
+            .ok_or_else(|| KernelError::from(InvalidStateCode::PayoutFailureRestoreIdleMismatch))?;
+        state.sync_total_assets();
+    } else {
+        state.restore_to_idle(settlement.restore_idle);
+    }
+
+    state.op_state = OpState::Idle;
+    Ok(())
 }
 
 /// Settle a payout after asset transfer attempt (success or failure).
