@@ -11,6 +11,7 @@ pub fn load_text(
         (Some(text), None) => Ok(text.to_owned()),
         (None, Some(path)) => std::fs::read_to_string(path)
             .with_context(|| format!("read {kind} file `{}`", path.display())),
-        _ => anyhow::bail!("one of --{kind} or --{kind}-file must be provided"),
+        (Some(_), Some(_)) => anyhow::bail!("--{kind} and --{kind}-file are mutually exclusive"),
+        (None, None) => anyhow::bail!("one of --{kind} or --{kind}-file must be provided"),
     }
 }
