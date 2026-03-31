@@ -50,11 +50,14 @@ pub enum SwapErrorKind {
 
 impl SwapErrorKind {
     /// Returns true if this error type should be retried.
+    ///
+    /// `QuoteFailed` is not retried — "Failed to get quote" from the 1-Click API means no
+    /// swap route exists for the asset pair, which is a permanent condition, not transient.
+    /// Transient API failures are captured by `NetworkError` and `ServerError` instead.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            Self::QuoteFailed { .. }
-                | Self::NetworkError { .. }
+            Self::NetworkError { .. }
                 | Self::ServerError { .. }
                 | Self::RateLimited
                 | Self::Timeout { .. }
@@ -218,7 +221,8 @@ mod tests {
 
     #[test]
     fn test_retryable_classification() {
-        assert!(SwapErrorKind::QuoteFailed {
+        // QuoteFailed is not retryable — permanent "no route" condition
+        assert!(!SwapErrorKind::QuoteFailed {
             message: String::new()
         }
         .is_retryable());
@@ -266,7 +270,8 @@ mod tests {
     fn test_quote_failed_classification() {
         let kind =
             SwapErrorKind::from_oneclick_response(400, r#"{"message":"Failed to get quote"}"#);
-        assert!(kind.is_retryable());
+        // QuoteFailed is not retryable — "no route" is a permanent condition
+        assert!(!kind.is_retryable());
         assert!(!kind.is_amount_too_low());
     }
 

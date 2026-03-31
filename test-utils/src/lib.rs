@@ -4,7 +4,9 @@ use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
     ft::FtController,
     market::{MarketController, UnifiedMarketController},
-    oracle::OracleController,
+    mock_oracle::MockOracleController,
+    proxy_oracle::{GovernanceController, ProxyOracleController},
+    redstone_adapter::{RedStoneAdapterController, RedStoneAdapterInterface},
     registry::RegistryController,
     storage_management::StorageManagementController,
     universal_account::UniversalAccountController,
@@ -27,7 +29,7 @@ use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     number::Decimal,
-    oracle::pyth::{self, PriceIdentifier},
+    oracle::pyth::{self, PriceIdentifier, PythTimestamp},
     registry::DeployMode,
     vault::{
         prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
@@ -62,7 +64,7 @@ pub fn to_price(price: f64) -> pyth::Price {
         price: I64((price * 10000.0) as i64),
         conf: U64(0),
         expo: -4,
-        publish_time: 0,
+        publish_time: PythTimestamp::from_secs(0),
     }
 }
 
@@ -266,7 +268,7 @@ pub async fn setup_everything(
 
     let (market, price_oracle, borrow_asset, collateral_asset, vault) = tokio::join!(
         MarketController::deploy(market, &config),
-        OracleController::deploy(price_oracle),
+        MockOracleController::deploy(price_oracle),
         async {
             if config.borrow_asset.is_nep141(borrow_asset.id()) {
                 TokenController::Ft {

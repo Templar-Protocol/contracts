@@ -14,6 +14,7 @@ near-fetch.workspace = true
 near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 templar-common = { workspace = true, features = ["rpc"] }
+templar-tools-common.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }

@@ -35,3 +35,4 @@ client/vault/dist/
 .codex/
 
 .aider*
+.claude/

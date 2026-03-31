@@ -2,7 +2,8 @@
 set -ex
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
-source "$SCRIPT_DIR/./prebuild-test-contracts.sh"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/prebuild-test-contracts.sh"
 
 # start database for relayer tests
 docker compose \

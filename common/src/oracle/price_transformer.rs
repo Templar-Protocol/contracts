@@ -5,7 +5,10 @@ use near_sdk::{
 
 use crate::number::Decimal;
 
-use super::pyth::{self, PriceIdentifier};
+use super::{
+    pyth::{self, PriceIdentifier},
+    OracleRequest,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -104,9 +107,27 @@ impl PriceTransformer {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct ProxyPriceTransformer {
+    pub request: OracleRequest,
+    pub call: Call,
+    pub action: Action,
+}
+
+impl ProxyPriceTransformer {
+    pub fn lst(price_id: OracleRequest, decimals: u32, call: Call) -> Self {
+        Self {
+            request: price_id,
+            call,
+            action: Action::NormalizeNativeLstPrice { decimals },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::dec;
+    use crate::{dec, oracle::pyth::PythTimestamp};
 
     use super::*;
 
@@ -117,7 +138,7 @@ mod tests {
             price: 1234.into(),
             conf: 4.into(),
             expo: 5,
-            publish_time: 0.into(),
+            publish_time: PythTimestamp::from_secs(0),
         };
 
         let price_after = transformation
@@ -130,7 +151,7 @@ mod tests {
                 price: 1480.into(),
                 conf: 5.into(),
                 expo: 5,
-                publish_time: 0.into(),
+                publish_time: PythTimestamp::from_secs(0),
             },
         );
     }

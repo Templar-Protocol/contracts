@@ -23,6 +23,9 @@ status-level = "fail"
 # Set slower timeout for CI runners
 slow-timeout = { period = "120s", terminate-after = 3 }
 
+# Exclude tests that use the network
+default-filter = "not test(/^requires_network_/)"
+
 [store]
 # Reduce disk usage by not storing test output
 dir = "target/nextest"
