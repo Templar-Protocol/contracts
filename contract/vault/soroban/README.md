@@ -2,6 +2,95 @@
 
 This crate hosts the Soroban executor/runtime for the Templar vault kernel.
 
+## Runtime Architecture
+
+This crate is the Soroban executor layer for the shared vault kernel. It owns:
+
+- Soroban entrypoints and contract wiring
+- address mapping from Soroban addresses to kernel addresses
+- persistent state storage and migration gating
+- RBAC/auth enforcement via `require_auth()` + shared `ActionKind`
+- execution of `KernelEffect`s against Soroban token contracts
+
+```mermaid
+graph TB
+    subgraph Contract["contract/vault/soroban"]
+        ENTRY["SorobanVaultContract\nentrypoints"]
+        CVAULT["CuratorVault<S, A, E>\nload state, authorize, apply kernel action"]
+        AUTH["RbacAuth / Soroban auth\nrequire_auth() + ActionKind policy"]
+        STORAGE["SorobanStorage\nversioned state blob\nTTL extension + migrate gate"]
+        ADDR["kernel_address_from_sdk()\nSHA256(domain || strkey)"]
+        EFFECTS["SorobanEffectInterpreter\nshare + asset token effects\npostcard kernel events"]
+
+        ENTRY --> CVAULT
+        CVAULT --> AUTH
+        CVAULT --> STORAGE
+        CVAULT --> ADDR
+        CVAULT --> EFFECTS
+    end
+
+    KERNEL["templar-vault-kernel\npure state machine"] --> CVAULT
+    PRIMS["templar-curator-primitives\npolicy + RBAC classes"] --> AUTH
+    PRIMS --> CVAULT
+    EFFECTS --> SHARE["SEP-41 share token"]
+    EFFECTS --> ASSET["underlying asset token"]
+```
+
+### Main Execution Loop
+
+```mermaid
+sequenceDiagram
+    actor Caller
+    participant Entry as contract entrypoint
+    participant Vault as CuratorVault
+    participant Kernel as apply_action()
+    participant Interp as SorobanEffectInterpreter
+    participant Storage as SorobanStorage
+
+    Caller->>Entry: invoke deposit / withdraw / admin action
+    Entry->>Entry: require_auth()
+    Entry->>Vault: load bootstrap + map addresses
+    Vault->>Storage: load versioned state / config
+    Vault->>Vault: authorize(ActionKind, caller)
+    Vault->>Kernel: apply_action(...)
+    Kernel-->>Vault: new state + KernelEffect[]
+    Vault->>Interp: execute_effects(...)
+    Vault->>Storage: save state / policy / mappings
+    Entry-->>Caller: return result
+```
+
+### Soroban-Specific Withdrawal Path
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Contract as SorobanVaultContract
+    participant Vault as CuratorVault
+    participant Kernel as apply_action()
+    participant Share as share token
+    participant Asset as asset token
+
+    User->>Contract: request_withdraw(owner, receiver, shares, min_assets_out)
+    Contract->>Vault: request_withdraw(...)
+    Vault->>Kernel: RequestWithdraw
+    Kernel-->>Vault: queue update + escrow-share transfer effect
+    Vault->>Share: transfer owner shares into escrow
+    Contract-->>User: request_id
+
+    User->>Contract: execute_withdraw(caller)
+    Contract->>Vault: execute_withdraw(...)
+    Vault->>Kernel: ExecuteWithdraw
+    alt idle assets are sufficient
+        Vault->>Vault: complete_withdrawal_from_idle()
+        Vault->>Asset: transfer assets to receiver
+        Vault->>Kernel: SettlePayout
+        Vault->>Share: burn escrow shares / refund remainder
+    else more liquidity must be freed
+        Note over Vault: allocator path updates market principals\nvia allocation + rebalance actions
+    end
+    Contract-->>User: ok
+```
+
 ## Prerequisites
 
 ### Stellar CLI
