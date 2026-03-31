@@ -15,7 +15,7 @@ near-workspaces.workspace = true
 p256.workspace = true
 rstest.workspace = true
 templar-common.workspace = true
-templar-universal-account.workspace = true
+templar-universal-account = { workspace = true, features = ["signing"] }
 tokio.workspace = true
 
 [[example]]
