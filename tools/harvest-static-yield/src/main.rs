@@ -18,9 +18,8 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     market::MarketConfiguration,
 };
+use templar_tools_common::version::MarketVersion;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-use harvest_static_yield::market_version::MarketVersion;
 
 #[derive(Clone, Debug)]
 enum Network {

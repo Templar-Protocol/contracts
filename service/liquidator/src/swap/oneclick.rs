@@ -278,6 +278,13 @@ struct TxHashWithExplorer {
     explorer_url: String,
 }
 
+/// Response structure for `/v0/tokens` endpoint.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenInfo {
+    asset_id: String,
+}
+
 /// 1-Click API swap provider
 #[derive(Debug, Clone)]
 pub struct OneClickSwap {
@@ -293,6 +300,8 @@ pub struct OneClickSwap {
     http_client: reqwest::Client,
     /// Optional API token for fee reduction
     api_token: Option<String>,
+    /// Cached set of 1-Click supported token `assetId` values
+    supported_tokens: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
 }
 
 impl OneClickSwap {
@@ -317,6 +326,60 @@ impl OneClickSwap {
             timeout: DEFAULT_TIMEOUT,
             http_client: reqwest::Client::new(),
             api_token,
+            supported_tokens: std::sync::Arc::new(std::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
+        }
+    }
+
+    /// Fetches the list of supported tokens from the 1-Click API `/v0/tokens`
+    /// endpoint and populates the local cache.
+    ///
+    /// Should be called during service initialization and periodically during
+    /// registry refresh to keep the cache up to date.
+    pub async fn load_supported_tokens(&self) {
+        let url = format!("{ONECLICK_API_BASE}/v0/tokens");
+        match self
+            .http_client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(response) if !response.status().is_success() => {
+                tracing::warn!(
+                    status = %response.status(),
+                    "1-Click /v0/tokens returned error status"
+                );
+            }
+            Ok(response) => match response.json::<Vec<TokenInfo>>().await {
+                Ok(tokens) => {
+                    let mut cache = self
+                        .supported_tokens
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    cache.clear();
+                    for token in &tokens {
+                        cache.insert(token.asset_id.clone());
+                    }
+                    tracing::info!(
+                        token_count = cache.len(),
+                        "1-Click supported tokens cache loaded"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = ?e,
+                        "Failed to parse 1-Click /v0/tokens response"
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "Failed to fetch 1-Click supported tokens"
+                );
+            }
         }
     }
 
@@ -1216,8 +1279,37 @@ impl SwapProvider for OneClickSwap {
         let from_is_nep245 = from_asset.clone().into_nep245().is_some();
         let to_is_nep245 = to_asset.clone().into_nep245().is_some();
 
-        // Support if at least one is Intent token
-        from_is_nep245 || to_is_nep245
+        if !(from_is_nep245 || to_is_nep245) {
+            return false;
+        }
+
+        // Check against the cached supported tokens list from /v0/tokens.
+        // If the cache is empty (not yet loaded), allow the swap to proceed —
+        // a quote failure will surface the issue at runtime.
+        let cache = self
+            .supported_tokens
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        if cache.is_empty() {
+            return true;
+        }
+
+        let from_id = Self::to_oneclick_asset_id(from_asset);
+        let to_id = Self::to_oneclick_asset_id(to_asset);
+        let from_ok = cache.contains(&from_id);
+        let to_ok = cache.contains(&to_id);
+
+        if !from_ok || !to_ok {
+            tracing::debug!(
+                from = %from_id,
+                to = %to_id,
+                from_supported = from_ok,
+                to_supported = to_ok,
+                "1-Click does not support one or both tokens"
+            );
+        }
+
+        from_ok && to_ok
     }
 
     async fn ensure_storage_registration<F: AssetClass>(

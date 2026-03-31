@@ -21,7 +21,6 @@ services:
       "--signer-account", "${SIGNER_ACCOUNT_ID}",
       "--signer-key", "${SIGNER_KEY}",
       "--registries", "${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}",
-      "--liquidation-strategy", "${LIQUIDATION_STRATEGY:-partial}",
       "--partial-percentage", "${PARTIAL_LIQUIDATION_PERCENTAGE:-50}",
       "--min-profit-bps", "${MIN_PROFIT_BPS:-50}",
       "--liquidation-scan-interval", "${LIQUIDATION_SCAN_INTERVAL:-600}",
@@ -31,6 +30,7 @@ services:
       "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
       "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}",
       "--hermes-url", "${PYTH_HERMES_URL:-https://hermes.pyth.network}",
+      "--redstone-gateway-url", "${REDSTONE_GATEWAY_URL:-https://oracle-gateway-1.a.redstone.vip}",
       # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
       # "--loop-liquidation",
       # "--fixed-liquidation-amount-usd", "${FIXED_LIQUIDATION_AMOUNT_USD}",

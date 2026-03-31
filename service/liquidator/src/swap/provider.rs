@@ -34,6 +34,13 @@ impl SwapProviderImpl {
     pub fn oneclick(provider: OneClickSwap) -> Self {
         Self::OneClick(provider)
     }
+
+    /// Loads supported tokens for the 1-Click provider (no-op for others).
+    pub async fn load_supported_tokens(&self) {
+        if let Self::OneClick(provider) = self {
+            provider.load_supported_tokens().await;
+        }
+    }
 }
 
 #[async_trait::async_trait]

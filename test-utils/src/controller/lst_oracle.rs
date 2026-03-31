@@ -21,7 +21,7 @@ impl ContractController for LstOracleController {
 }
 
 impl LstOracleController {
-    pub async fn deploy(account: Account, oracle_id: &AccountId) -> Self {
+    pub async fn deploy(account: Account, oracle_id: AccountId) -> Self {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
         let wasm = WASM

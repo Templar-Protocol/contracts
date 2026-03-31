@@ -30,7 +30,7 @@ use templar_common::{oracle::pyth::PriceIdentifier, registry::DeployMode};
 use templar_relayer::{
     app::{args, App, Configuration},
     cache::Cache,
-    client::{near::Near, pyth::Pyth},
+    client::{near::Near, oracle},
     route::{
         relay::RelayRequest as SdaRelayRequest,
         universal_account::{
@@ -126,6 +126,7 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
         .await;
 
     let kill = watch::Sender::default();
+    #[allow(clippy::expect_used)]
     let mut app = App::new(
         Configuration::parse_from([
             "relayer",
@@ -155,7 +156,8 @@ async fn init_test(#[future(awt)] worker: Worker<Sandbox>) -> InitTest {
             "intents.near",
         ]),
         kill,
-    );
+    )
+    .expect("Failed to initialize app");
     app.database.migrate().await.unwrap();
     app.load_markets().await;
 
@@ -592,12 +594,12 @@ pub async fn pyth_updates() {
     let account_id: AccountId = std::env::var("ACCOUNT_ID").unwrap().parse().unwrap();
     let secret_key: near_crypto::SecretKey = std::env::var("SECRET_KEY").unwrap().parse().unwrap();
 
-    let pyth_args = args::Pyth {
+    let pyth_args = args::PythConfig {
         hermes_url: "https://hermes-beta.pyth.network".to_string(),
         refresh: Duration::from_secs(25),
-        oracle_id: "pyth-oracle.testnet".parse().unwrap(),
         update_gas: near_sdk::Gas::from_tgas(300),
         update_deposit: NearToken::from_near(1).saturating_div(100),
+        timeout: Duration::from_secs(10),
     };
 
     let near = Near::new(
@@ -617,7 +619,8 @@ pub async fn pyth_updates() {
 
     let cache = Cache::new(near.clone(), cache_args, kill.clone());
 
-    let pyth = Pyth::new(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
+    let pyth =
+        oracle::PythSpec::handle(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
 
     let price_id = PriceIdentifier(
         hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
@@ -626,7 +629,10 @@ pub async fn pyth_updates() {
             .unwrap(),
     );
 
-    let txid = pyth.update(Box::new([price_id])).await.unwrap();
+    let txid = pyth
+        .update("pyth-oracle.testnet".parse().unwrap(), Box::new([price_id]))
+        .await
+        .unwrap();
 
     eprintln!("Transaction hash: {txid:?}");
 

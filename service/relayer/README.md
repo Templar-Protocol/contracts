@@ -19,6 +19,19 @@ docker compose -f compose.dev.yaml up
 >
 > Be sure to run `cargo sqlx prepare` after changing SQL queries, otherwise the CI/CD will not be able to build the project.
 
+#### RedStone Adapter
+
+The relayer interfaces with a small JavaScript child process that runs the RedStone SDK.
+
+Install dependencies:
+
+```bash
+cd ./redstone-bridge
+npm install
+```
+
+To run the JavaScript tests, you _can_ run `npm test` from the `redstone-bridge` directory, however, the Rust test `test/bridge.rs` wraps this, so the JavaScript tests are also automatically run when you simply run `cargo test` in the crate.
+
 #### SQL formatting
 
 Install [sleek](https://sleek.dev) to format SQL queries, including queries inline in Rust source files:
@@ -59,136 +72,19 @@ make sql-fmt # from project root
    docker compose up -d
    ```
 
-## Help
+## Usage
 
 ```text
 Usage: templar-relayer [OPTIONS] --database-url <DATABASE_URL> --relay-account-id <relay-account-id> --ua-account-id <ua-account-id> --ua-registry-id <ua-registry-id> --ua-version-key <ua-version-key> <--monitor-registry-id <monitor-registry-id>|--monitor-market-id <monitor-market-id>>
-
-Options:
-  -p, --port <PORT>
-          Run the relayer on this port
-
-          [env: PORT=]
-          [default: 3000]
-
-      --database-url <DATABASE_URL>
-          Postgres database connection URL
-
-          [env: DATABASE_URL=]
-
-      --rpc-url <RPC_URL>
-          NEAR RPC connection URL
-
-          [env: RPC_URL=]
-          [default: https://rpc.testnet.near.org]
-
-      --monitor-registry-id <monitor-registry-id>
-          Comma-separated list of registries to query for markets to monitor
-
-          [env: MONITOR_REGISTRY_ID=]
-
-      --monitor-market-id <monitor-market-id>
-          Comma-separated list of markets to monitor
-
-          [env: MONITOR_MARKET_ID=]
-
-      --relay-account-id <relay-account-id>
-          Account ID of the NEAR account that the relayer controls
-
-          [env: RELAY_ACCOUNT_ID=]
-
-      --relay-secret-key <relay-secret-key>
-          Comma-separated list of private keys to use to sign transactions for the account that the relayer controls
-
-          [env: RELAY_SECRET_KEY=]
-
-      --allowed-methods <ALLOWED_METHODS>
-          Comma-separated list of allowed methods
-
-          [env: ALLOWED_METHODS=]
-          [default: borrow apply_interest harvest_yield withdraw_static_yield withdraw_collateral create_supply_withdrawal_request cancel_supply_withdrawal_request execute_next_supply_withdrawal_request storage_deposit]
-
-      --starting-allowance-yocto <STARTING_ALLOWANCE_YOCTO>
-          Starting allowance in yoctoNEAR
-
-          [env: STARTING_ALLOWANCE_YOCTO=]
-          [default: "0.250 NEAR"]
-
-      --ua-account-id <ua-account-id>
-          Account ID of the NEAR account that the relayer controls for universal account creation
-
-          [env: UA_ACCOUNT_ID=]
-
-      --ua-secret-key <ua-secret-key>
-          Comma-separated list of private keys to use to sign universal account creation transactions
-
-          [env: UA_SECRET_KEY=]
-
-      --ua-pow-difficulty <ua-pow-difficulty>
-          How difficult should the proof-of-work for universal account creation be?
-
-          iterations ~ 2^difficulty
-
-          [env: UA_POW_DIFFICULTY=]
-          [default: 17]
-
-      --ua-blockref-max-age-secs <ua-blockref-max-age-secs>
-          How fresh must the universal account creation signature be?
-
-          Based on the block hash referenced in the creation request.
-
-          [env: UA_BLOCKREF_MAX_AGE_SECS=]
-          [default: 600]
-
-      --ua-registry-id <ua-registry-id>
-          Account ID of the registry from which to deploy universal accounts
-
-          [env: UA_REGISTRY_ID=]
-
-      --ua-version-key <ua-version-key>
-          Version key of the universal account contract to deploy from the registry
-
-          [env: UA_VERSION_KEY=]
-
-      --ua-execute-tgas <ua-execute-tgas>
-          [env: UA_EXECUTE_TGAS=]
-          [default: 35]
-
-      --cache-gase-price-secs <cache-gase-price-secs>
-          Refresh the cached gas price after X seconds
-
-          [env: CACHE_GAS_PRICE_SECS=]
-          [default: 600]
-
-      --cache-nonce-secs <cache-nonce-secs>
-          Refresh a cached nonce after X seconds
-
-          [env: CACHE_NONCE_SECS=]
-          [default: 60]
-
-      --cache-protocol-config-secs <cache-protocol-config-secs>
-          Refresh the cached protocol configuration after X seconds
-
-          [env: CACHE_PROTOCOL_CONFIG_SECS=]
-          [default: 3600]
-
-      --broom-batch-size <BROOM_BATCH_SIZE>
-          Broom batch size
-
-          [env: BROOM_BATCH_SIZE=]
-          [default: 16]
-
-      --broom-interval-secs <BROOM_INTERVAL_SECS>
-          Broom interval in seconds
-
-          [env: BROOM_INTERVAL_SECS=]
-          [default: 300]
-
-  -h, --help
-          Print help (see a summary with '-h')
 ```
 
 ## Routes
+
+### `GET /healthz`
+
+Container liveness endpoint.
+
+Returns `200 OK` with body `ok` when the relayer HTTP server is running.
 
 ### `POST /relay`
 

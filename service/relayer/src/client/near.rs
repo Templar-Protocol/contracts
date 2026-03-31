@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::{
+    collections::HashSet,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use near_crypto::{PublicKey, Signer};
 use near_jsonrpc_client::{
@@ -30,11 +33,16 @@ use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBo
 
 use templar_common::{
     market::MarketConfiguration,
-    oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier},
+    oracle::{
+        price_transformer::PriceTransformer,
+        proxy::{Proxy, Source},
+        pyth::PriceIdentifier,
+        OracleRequest,
+    },
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
-use crate::{cache::Cache, MarketData};
+use crate::{cache::Cache, AssetResolution, MarketData};
 
 pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
 pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
@@ -91,6 +99,36 @@ pub enum ViewError {
     Rpc(#[from] JsonRpcError<RpcQueryError>),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+impl ViewError {
+    pub fn is_method_not_found(&self) -> bool {
+        matches!(
+            self,
+            ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+                RpcQueryError::ContractExecutionError { vm_error, .. }
+            ))) if vm_error.contains("MethodNotFound")
+        )
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LoadMarketAccountsError {
+    #[error("View error: {0}")]
+    View(#[from] ViewError),
+    #[error(transparent)]
+    ResolvePriceIdentifier(#[from] ResolvePriceIdentifierError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolvePriceIdentifierError {
+    #[error("View error: {0}")]
+    View(#[from] ViewError),
+    #[error("Price identifier not defined on oracle {oracle_id}: {price_identifier}")]
+    NotFound {
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -390,13 +428,11 @@ impl Near {
     }
 
     #[must_use]
-    pub async fn construct_pyth_update_transaction(
+    pub async fn sign_transaction(
         &self,
         cache: &Cache,
-        pyth_account_id: AccountId,
-        vaa: Vec<u8>,
-        gas: near_sdk::Gas,
-        deposit: near_sdk::NearToken,
+        receiver_id: AccountId,
+        actions: Vec<near_primitives::action::Action>,
     ) -> SignedTransaction {
         let signer = self.next_signer();
         let public_key = signer.public_key();
@@ -405,20 +441,13 @@ impl Near {
             .nonce(self.account_id.clone(), public_key.clone())
             .await;
 
-        let action = FunctionCallAction {
-            method_name: "update_price_feeds".to_string(),
-            args: serde_json::to_vec(&json!({ "data": hex::encode(vaa) })).unwrap(),
-            gas: gas.as_gas(),
-            deposit: deposit.as_yoctonear(),
-        };
-
         Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
             public_key,
             nonce,
-            receiver_id: pyth_account_id,
+            receiver_id,
             block_hash,
-            actions: vec![action.into()],
+            actions,
         })
         .sign(signer)
     }
@@ -533,21 +562,21 @@ impl Near {
     pub async fn load_market_accounts(
         &self,
         market_id: AccountId,
-    ) -> Result<MarketData, ViewError> {
+    ) -> Result<MarketData, LoadMarketAccountsError> {
         let config = self
             .view::<MarketConfiguration>(market_id.clone(), "get_configuration", json!({}))
             .await?;
 
         let oracle_id = config.price_oracle_configuration.account_id;
 
-        let borrow_asset_price_id = self
-            .try_resolve_price_identifier(
+        let borrow_request = self
+            .resolve_price_identifier(
                 oracle_id.clone(),
                 config.price_oracle_configuration.borrow_asset_price_id,
             )
             .await?;
-        let collateral_asset_price_id = self
-            .try_resolve_price_identifier(
+        let collateral_request = self
+            .resolve_price_identifier(
                 oracle_id.clone(),
                 config.price_oracle_configuration.collateral_asset_price_id,
             )
@@ -556,44 +585,136 @@ impl Near {
         Ok(MarketData {
             account_id: market_id.clone(),
             oracle_id,
-            borrow_asset: config.borrow_asset,
-            borrow_asset_price_id,
-            collateral_asset: config.collateral_asset,
-            collateral_asset_price_id,
+            collateral: AssetResolution {
+                asset: config.collateral_asset.clone(),
+                price_id: config.price_oracle_configuration.collateral_asset_price_id,
+                update_oracle: collateral_request,
+            },
+            borrow: AssetResolution {
+                asset: config.borrow_asset.clone(),
+                price_id: config.price_oracle_configuration.borrow_asset_price_id,
+                update_oracle: borrow_request,
+            },
         })
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn try_resolve_price_identifier(
+    async fn query_oracle_type(&self, oracle_id: AccountId) -> Result<OracleType, ViewError> {
+        let test_proxy = self
+            .view::<Vec<PriceIdentifier>>(oracle_id.clone(), "list_proxies", json!({ "count": 1 }))
+            .await;
+
+        match test_proxy {
+            Ok(_) => {
+                tracing::debug!("Oracle supports proxy interface, treating as proxy oracle");
+
+                return Ok(OracleType::Proxy);
+            }
+            Err(e) if e.is_method_not_found() => {
+                tracing::debug!("Not a proxy oracle");
+            }
+            Err(error) => {
+                tracing::debug!(%error, "RPC error when querying for proxy interface");
+                return Err(error);
+            }
+        }
+
+        let test_lst = self
+            .view::<Vec<PriceIdentifier>>(
+                oracle_id.clone(),
+                "list_transformers",
+                json!({ "count": 1 }),
+            )
+            .await;
+
+        match test_lst {
+            Ok(_) => {
+                tracing::debug!("Oracle supports transformer interface, treating as LST oracle");
+
+                let pyth_id = self
+                    .view::<AccountId>(oracle_id.clone(), "oracle_id", json!({}))
+                    .await?;
+
+                return Ok(OracleType::PythLst { pyth_id });
+            }
+            Err(e) if e.is_method_not_found() => {
+                tracing::debug!("Not an LST oracle");
+            }
+            Err(error) => {
+                tracing::debug!(%error, "RPC error when querying for LST interface");
+                return Err(error);
+            }
+        }
+
+        Ok(OracleType::PythDirect)
+    }
+
+    /// Returns the oracle and price ID that should be updated in order to
+    /// update the given price identifier for the given oracle contract.
+    #[tracing::instrument(level = "debug", skip_all, fields(oracle_id = %oracle_id, price_identifier = %price_identifier))]
+    pub async fn resolve_price_identifier(
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-    ) -> Result<PriceIdentifier, ViewError> {
-        match self
-            .view::<Option<PriceTransformer>>(
-                oracle_id,
-                "get_transformer",
-                json!({ "price_identifier": price_identifier }),
-            )
-            .await
-        {
-            Ok(None) => {
-                tracing::debug!(%price_identifier, "Price ID resolved: LST oracle contract: passthrough");
-                Ok(price_identifier)
+    ) -> Result<HashSet<OracleRequest>, ResolvePriceIdentifierError> {
+        fn one_pyth(oracle_id: AccountId, price_id: PriceIdentifier) -> HashSet<OracleRequest> {
+            HashSet::from_iter([OracleRequest::pyth(oracle_id, price_id)])
+        }
+
+        match self.query_oracle_type(oracle_id.clone()).await? {
+            OracleType::PythDirect => {
+                tracing::debug!("Price ID resolved: direct Pyth oracle contract");
+                Ok(one_pyth(oracle_id, price_identifier))
             }
-            Ok(Some(transformer)) => {
-                tracing::debug!(%price_identifier, "Price ID resolved: LST oracle contract: transformed");
-                Ok(transformer.price_id)
+            OracleType::PythLst { pyth_id } => {
+                if let Some(transformer) = self
+                    .view::<Option<PriceTransformer>>(
+                        oracle_id.clone(),
+                        "get_transformer",
+                        json!({ "price_identifier": price_identifier }),
+                    )
+                    .await?
+                {
+                    tracing::debug!("Price ID resolved: LST oracle contract: transformed");
+                    Ok(one_pyth(pyth_id, transformer.price_id))
+                } else {
+                    tracing::debug!("Price ID resolved: LST oracle contract: passthrough");
+                    Ok(one_pyth(pyth_id, price_identifier))
+                }
             }
-            Err(ViewError::Rpc(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
-                RpcQueryError::ContractExecutionError { vm_error, .. },
-            )))) if vm_error.contains("MethodResolveError(MethodNotFound)") => {
-                tracing::debug!(%price_identifier, "Price ID resolved: not an LST oracle contract");
-                Ok(price_identifier)
-            }
-            Err(error) => {
-                tracing::error!(%price_identifier, ?error, "Failed to resolve price ID");
-                Err(error)
+            OracleType::Proxy => {
+                tracing::debug!("Price ID resolved: Proxy oracle contract");
+
+                if let Some(proxy) = self
+                    .view::<Option<Proxy>>(
+                        oracle_id.clone(),
+                        "get_proxy",
+                        json!({ "id": price_identifier }),
+                    )
+                    .await?
+                {
+                    let requests = proxy
+                        .entries
+                        .into_iter()
+                        .map(|entry| match entry.source {
+                            Source::Transformer(transformer) => transformer.request,
+                            Source::Request(request) => request,
+                        })
+                        .collect::<HashSet<_>>();
+                    if requests.is_empty() {
+                        tracing::error!("Proxy oracle contract returned empty proxy definition");
+                        return Err(ResolvePriceIdentifierError::NotFound {
+                            oracle_id,
+                            price_identifier,
+                        });
+                    }
+                    Ok(requests)
+                } else {
+                    tracing::debug!("Price ID not found on proxy oracle contract");
+                    Err(ResolvePriceIdentifierError::NotFound {
+                        oracle_id,
+                        price_identifier,
+                    })
+                }
             }
         }
     }
@@ -631,4 +752,11 @@ pub enum VersionedKeyParameters {
     V1(PayloadExecutionParameters),
     #[serde(untagged)]
     V0(KeyParameters),
+}
+
+#[derive(Debug)]
+pub enum OracleType {
+    PythDirect,
+    PythLst { pyth_id: AccountId },
+    Proxy,
 }
