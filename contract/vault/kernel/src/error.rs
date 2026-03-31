@@ -2,6 +2,7 @@
 
 use crate::restrictions::RestrictionKind;
 use crate::transitions::TransitionError;
+use alloc::fmt;
 
 /// Indexed invalid-state reasons for stable wasm diagnostics.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -188,7 +189,7 @@ pub enum KernelErrorCode {
 impl KernelErrorCode {
     #[inline]
     #[must_use]
-    pub const fn value(self) -> u32 {
+    pub const fn index(self) -> u32 {
         self as u32
     }
 }
@@ -198,13 +199,13 @@ const INVALID_CONFIG_INDEXED_BASE: u32 = 101_000;
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum StableKernelErrorCode {
+pub enum KernelDiagnosticCode {
     Base(KernelErrorCode),
     InvalidState(InvalidStateCode),
     InvalidConfig(InvalidConfigCode),
 }
 
-impl StableKernelErrorCode {
+impl KernelDiagnosticCode {
     #[inline]
     #[must_use]
     pub const fn family(self) -> KernelErrorCode {
@@ -217,19 +218,53 @@ impl StableKernelErrorCode {
 
     #[inline]
     #[must_use]
-    pub const fn code(self) -> u32 {
-        self.family().value()
+    pub const fn family_code(self) -> u32 {
+        self.family().index()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn detailed_code(self) -> u32 {
+        match self {
+            Self::Base(code) => code.index(),
+            Self::InvalidState(code) => INVALID_STATE_INDEXED_BASE + code.index() as u32,
+            Self::InvalidConfig(code) => INVALID_CONFIG_INDEXED_BASE + code.index() as u32,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.family_code()
     }
 
     #[inline]
     #[must_use]
     pub const fn indexed_code(self) -> u32 {
-        match self {
-            Self::Base(code) => code.value(),
-            Self::InvalidState(code) => INVALID_STATE_INDEXED_BASE + code.index() as u32,
-            Self::InvalidConfig(code) => INVALID_CONFIG_INDEXED_BASE + code.index() as u32,
-        }
+        self.detailed_code()
     }
+}
+
+impl From<KernelErrorCode> for KernelDiagnosticCode {
+    fn from(code: KernelErrorCode) -> Self {
+        Self::Base(code)
+    }
+}
+
+impl From<InvalidStateCode> for KernelDiagnosticCode {
+    fn from(code: InvalidStateCode) -> Self {
+        Self::InvalidState(code)
+    }
+}
+
+impl From<InvalidConfigCode> for KernelDiagnosticCode {
+    fn from(code: InvalidConfigCode) -> Self {
+        Self::InvalidConfig(code)
+    }
+}
+
+pub trait HasKernelDiagnosticCode {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode;
 }
 
 /// Errors that can occur when applying kernel actions.
@@ -269,49 +304,85 @@ pub enum KernelError {
 impl KernelError {
     #[inline]
     #[must_use]
-    pub const fn invalid_state_code(code: InvalidStateCode) -> Self {
-        Self::InvalidState(code)
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn invalid_config_code(code: InvalidConfigCode) -> Self {
-        Self::InvalidConfig(code)
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn stable_code(&self) -> StableKernelErrorCode {
+    pub const fn diagnostic_code(&self) -> KernelDiagnosticCode {
         match self {
-            Self::InvalidState(code) => StableKernelErrorCode::InvalidState(*code),
-            Self::OpIdMismatch { .. } => StableKernelErrorCode::Base(KernelErrorCode::OpIdMismatch),
-            Self::Slippage { .. } => StableKernelErrorCode::Base(KernelErrorCode::Slippage),
+            Self::InvalidState(code) => KernelDiagnosticCode::InvalidState(*code),
+            Self::OpIdMismatch { .. } => KernelDiagnosticCode::Base(KernelErrorCode::OpIdMismatch),
+            Self::Slippage { .. } => KernelDiagnosticCode::Base(KernelErrorCode::Slippage),
             Self::MinWithdrawal { .. } => {
-                StableKernelErrorCode::Base(KernelErrorCode::MinWithdrawal)
+                KernelDiagnosticCode::Base(KernelErrorCode::MinWithdrawal)
             }
-            Self::QueueFull { .. } => StableKernelErrorCode::Base(KernelErrorCode::QueueFull),
+            Self::QueueFull { .. } => KernelDiagnosticCode::Base(KernelErrorCode::QueueFull),
             Self::NoPendingWithdrawals => {
-                StableKernelErrorCode::Base(KernelErrorCode::NoPendingWithdrawals)
+                KernelDiagnosticCode::Base(KernelErrorCode::NoPendingWithdrawals)
             }
-            Self::Cooldown { .. } => StableKernelErrorCode::Base(KernelErrorCode::Cooldown),
-            Self::Transition(_) => StableKernelErrorCode::Base(KernelErrorCode::Transition),
-            Self::NotImplemented => StableKernelErrorCode::Base(KernelErrorCode::NotImplemented),
-            Self::Restricted(_) => StableKernelErrorCode::Base(KernelErrorCode::Restricted),
-            Self::InvalidConfig(code) => StableKernelErrorCode::InvalidConfig(*code),
-            Self::ZeroAmount => StableKernelErrorCode::Base(KernelErrorCode::ZeroAmount),
+            Self::Cooldown { .. } => KernelDiagnosticCode::Base(KernelErrorCode::Cooldown),
+            Self::Transition(_) => KernelDiagnosticCode::Base(KernelErrorCode::Transition),
+            Self::NotImplemented => KernelDiagnosticCode::Base(KernelErrorCode::NotImplemented),
+            Self::Restricted(_) => KernelDiagnosticCode::Base(KernelErrorCode::Restricted),
+            Self::InvalidConfig(code) => KernelDiagnosticCode::InvalidConfig(*code),
+            Self::ZeroAmount => KernelDiagnosticCode::Base(KernelErrorCode::ZeroAmount),
         }
     }
 
-    /// Stable numeric code for on-chain debugging and indexing.
+    #[inline]
     #[must_use]
-    pub fn code(&self) -> u32 {
-        self.stable_code().code()
+    pub const fn family(&self) -> KernelErrorCode {
+        self.diagnostic_code().family()
     }
 
-    /// Stable indexed code with finer-grained invalid-state/config reason.
+    #[inline]
     #[must_use]
-    pub fn indexed_code(&self) -> u32 {
-        self.stable_code().indexed_code()
+    pub const fn family_code(&self) -> u32 {
+        self.diagnostic_code().family_code()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn detailed_code(&self) -> u32 {
+        self.diagnostic_code().detailed_code()
+    }
+}
+
+impl From<&KernelError> for KernelDiagnosticCode {
+    fn from(error: &KernelError) -> Self {
+        error.diagnostic_code()
+    }
+}
+
+impl HasKernelDiagnosticCode for KernelDiagnosticCode {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode {
+        *self
+    }
+}
+
+impl HasKernelDiagnosticCode for KernelError {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode {
+        KernelError::diagnostic_code(self)
+    }
+}
+
+impl HasKernelDiagnosticCode for &KernelError {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode {
+        KernelError::diagnostic_code(self)
+    }
+}
+
+impl HasKernelDiagnosticCode for KernelErrorCode {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode {
+        (*self).into()
+    }
+}
+
+impl HasKernelDiagnosticCode for InvalidStateCode {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode {
+        (*self).into()
+    }
+}
+
+impl HasKernelDiagnosticCode for InvalidConfigCode {
+    fn diagnostic_code(&self) -> KernelDiagnosticCode {
+        (*self).into()
     }
 }
 
@@ -337,7 +408,7 @@ impl From<TransitionError> for KernelError {
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidState(code) => write!(f, "{code} (code {})", self.indexed_code()),
+            Self::InvalidState(code) => write!(f, "{code} (code {})", self.detailed_code()),
             Self::OpIdMismatch { expected, actual } => {
                 write!(f, "op id mismatch: expected {expected}, actual {actual}")
             }
@@ -415,8 +486,67 @@ impl fmt::Display for KernelError {
                 RestrictionKind::Blacklisted => f.write_str("restricted: blacklisted"),
                 RestrictionKind::NotWhitelisted => f.write_str("restricted: not whitelisted"),
             },
-            Self::InvalidConfig(code) => write!(f, "{code} (code {})", self.indexed_code()),
+            Self::InvalidConfig(code) => write!(f, "{code} (code {})", self.detailed_code()),
             Self::ZeroAmount => f.write_str("amount must be greater than zero"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HasKernelDiagnosticCode, InvalidConfigCode, InvalidStateCode, KernelDiagnosticCode,
+        KernelError, KernelErrorCode,
+    };
+
+    #[test]
+    fn kernel_diagnostic_code_from_impls_map_to_expected_variants() {
+        assert_eq!(
+            KernelDiagnosticCode::from(KernelErrorCode::Slippage),
+            KernelDiagnosticCode::Base(KernelErrorCode::Slippage)
+        );
+        assert_eq!(
+            KernelDiagnosticCode::from(InvalidStateCode::DepositRequiresIdle),
+            KernelDiagnosticCode::InvalidState(InvalidStateCode::DepositRequiresIdle)
+        );
+        assert_eq!(
+            KernelDiagnosticCode::from(InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit),
+            KernelDiagnosticCode::InvalidConfig(
+                InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit,
+            )
+        );
+    }
+
+    #[test]
+    fn kernel_error_diagnostic_naming_aliases_match_existing_behavior() {
+        let error: KernelError = InvalidStateCode::DepositRequiresIdle.into();
+        let diagnostic = error.diagnostic_code();
+
+        assert_eq!(diagnostic.family(), KernelErrorCode::InvalidState);
+        assert_eq!(diagnostic.family(), error.family());
+        assert_eq!(diagnostic.family_code(), error.family_code());
+        assert_eq!(diagnostic.detailed_code(), error.detailed_code());
+    }
+
+    #[test]
+    fn has_kernel_diagnostic_code_trait_is_ergonomic_across_supported_types() {
+        let error: KernelError = InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit.into();
+
+        assert_eq!(
+            KernelDiagnosticCode::from(&error),
+            HasKernelDiagnosticCode::diagnostic_code(&error)
+        );
+        assert_eq!(
+            HasKernelDiagnosticCode::diagnostic_code(&KernelErrorCode::InvalidConfig),
+            KernelDiagnosticCode::Base(KernelErrorCode::InvalidConfig)
+        );
+        assert_eq!(
+            HasKernelDiagnosticCode::diagnostic_code(
+                &InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit,
+            ),
+            KernelDiagnosticCode::InvalidConfig(
+                InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit,
+            )
+        );
     }
 }
