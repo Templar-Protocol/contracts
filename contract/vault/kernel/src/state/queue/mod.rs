@@ -140,7 +140,7 @@ pub fn is_past_cooldown(
     now_ns: TimestampNs,
     cooldown_ns: u64,
 ) -> bool {
-    now_ns >= requested_at_ns.saturating_add(cooldown_ns)
+    now_ns >= requested_at_ns.saturating_add_u64(cooldown_ns)
 }
 
 /// Check if a withdrawal can be satisfied given available assets.

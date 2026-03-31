@@ -1,15 +1,15 @@
 //! Market locks for preventing concurrent operations on the same market.
 
 use alloc::vec::Vec;
-use templar_vault_kernel::TargetId;
-use templar_vault_kernel::TimeGate;
+use templar_vault_kernel::{TargetId, TimeGate, TimestampNs};
 use typed_builder::TypedBuilder;
 
 pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u64) -> bool {
-    let max_expiry_ns = TimeGate::schedule_from(current_ns, max_duration_ns)
-        .ready_at_ns()
-        .unwrap_or(current_ns);
-    expiry_ns > current_ns && expiry_ns <= max_expiry_ns
+    let max_expiry_ns =
+        TimeGate::schedule_from(TimestampNs(current_ns), TimestampNs(max_duration_ns))
+            .ready_at_ns()
+            .unwrap_or(TimestampNs(current_ns));
+    expiry_ns > current_ns && expiry_ns <= u64::from(max_expiry_ns)
 }
 
 /// A lock on a specific market/target.
@@ -28,7 +28,8 @@ pub struct MarketLock {
 
 impl MarketLock {
     fn expiry_gate(&self) -> Option<TimeGate> {
-        self.expires_at_ns.map(TimeGate::from_ready_at)
+        self.expires_at_ns
+            .map(|expiry_ns| TimeGate::from_ready_at(TimestampNs(expiry_ns)))
     }
 
     #[must_use]
@@ -45,19 +46,23 @@ impl MarketLock {
     /// This computes `expires_at_ns = locked_at_ns + ttl_ns`.
     #[must_use]
     pub fn with_ttl(mut self, ttl_ns: u64) -> Self {
-        self.expires_at_ns = TimeGate::schedule_from(self.locked_at_ns, ttl_ns).ready_at_ns();
+        self.expires_at_ns =
+            TimeGate::schedule_from(TimestampNs(self.locked_at_ns), TimestampNs(ttl_ns))
+                .ready_at_ns()
+                .map(Into::into);
         self
     }
 
     #[must_use]
     pub fn is_expired(&self, current_ns: u64) -> bool {
         self.expiry_gate()
-            .is_some_and(|gate| gate.is_ready(current_ns))
+            .is_some_and(|gate| gate.is_ready(TimestampNs(current_ns)))
     }
 
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> Option<u64> {
-        self.expiry_gate().map(|gate| gate.remaining(current_ns))
+        self.expiry_gate()
+            .map(|gate| u64::from(gate.remaining(TimestampNs(current_ns))))
     }
 }
 

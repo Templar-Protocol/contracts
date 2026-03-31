@@ -4,7 +4,7 @@
 //! rate limits. It's used by both [`RefreshPlan`](super::refresh_plan::RefreshPlan)
 //! and [`MarketLock`](super::market_lock::MarketLock) for expiry semantics.
 
-use templar_vault_kernel::TimeGate;
+use templar_vault_kernel::{TimeGate, TimestampNs};
 
 /// Tracks cooldown state for rate-limited operations.
 ///
@@ -28,7 +28,7 @@ impl Cooldown {
         }
 
         match self.last_event_ns {
-            Some(last) => TimeGate::schedule_from(last, self.interval_ns),
+            Some(last) => TimeGate::schedule_from(TimestampNs(last), TimestampNs(self.interval_ns)),
             None => TimeGate::ready_now(),
         }
     }
@@ -62,7 +62,7 @@ impl Cooldown {
     /// - Sufficient time has elapsed since the last operation
     #[must_use]
     pub fn is_ready(&self, current_ns: u64) -> bool {
-        self.gate().is_ready(current_ns)
+        self.gate().is_ready(TimestampNs(current_ns))
     }
 
     /// Check cooldown and return an error if not ready.
@@ -88,12 +88,12 @@ impl Cooldown {
 
     #[must_use]
     pub fn ready_at(&self) -> Option<u64> {
-        self.gate().ready_at_ns()
+        self.gate().ready_at_ns().map(Into::into)
     }
 
     #[must_use]
     pub fn remaining(&self, current_ns: u64) -> u64 {
-        self.gate().remaining(current_ns)
+        self.gate().remaining(TimestampNs(current_ns)).into()
     }
 }
 

@@ -632,7 +632,7 @@ impl Contract {
             |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
         );
         if let Some(m) = self.market_record_by_id_mut(market_id) {
-            m.cfg.removable_at = 0;
+            m.cfg.removable_at = TimestampNs::ZERO;
         }
         Event::MarketRemovalRevoked { market: market_id }.emit();
     }
@@ -781,9 +781,9 @@ impl Contract {
 
                 shared_gov::submission_requires_timelock(shared_gov::timelock_config_decision(
                     current,
-                    new,
-                    MIN_TIMELOCK_NS,
-                    MAX_TIMELOCK_NS,
+                    TimestampNs(new),
+                    TimestampNs(MIN_TIMELOCK_NS),
+                    TimestampNs(MAX_TIMELOCK_NS),
                 ))
                 .unwrap_or_else(|err| {
                     panic_with_message(match err {
@@ -883,7 +883,7 @@ impl Contract {
                         "Market removal pending, cannot change cap"
                     );
                     require!(
-                        cfg.removable_at == 0,
+                        cfg.removable_at == TimestampNs::ZERO,
                         "Market removal pending, cannot change cap"
                     );
                     require!(
@@ -1009,7 +1009,7 @@ impl Contract {
                     "Removal already pending for this market"
                 );
                 require!(
-                    r.cfg.removable_at == 0,
+                    r.cfg.removable_at == TimestampNs::ZERO,
                     "Removal already accepted for this market"
                 );
                 require!(
@@ -1048,7 +1048,7 @@ impl Contract {
                 kind,
                 new_timelock_ns,
             } => {
-                let new_ns = new_timelock_ns.0;
+                let new_ns = TimestampNs(new_timelock_ns.0);
                 match kind {
                     None => {
                         self.governance_timelocks.sentinel_ns = new_ns;
@@ -1211,7 +1211,7 @@ impl Contract {
                         mkt.cfg.enabled = true;
                         Event::MarketEnabled { market: market_id }.emit();
                     }
-                    mkt.cfg.removable_at = 0;
+                    mkt.cfg.removable_at = TimestampNs::ZERO;
                 }
 
                 Event::SupplyCapSet {
@@ -1286,10 +1286,10 @@ impl Contract {
 
                 let rec = self.market_record_by_id_mut_or_panic(market_id);
 
-                rec.cfg.removable_at = env::block_timestamp();
+                rec.cfg.removable_at = TimestampNs(env::block_timestamp());
                 Event::MarketRemovalSubmitted {
                     market: market_id,
-                    removable_at: rec.cfg.removable_at.into(),
+                    removable_at: u64::from(rec.cfg.removable_at).into(),
                 }
                 .emit();
             }
@@ -1321,7 +1321,7 @@ impl Contract {
         };
 
         require!(
-            (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&cur),
+            (TimestampNs(MIN_TIMELOCK_NS)..=TimestampNs(MAX_TIMELOCK_NS)).contains(&cur),
             "Timelock duration out of bounds"
         );
 
@@ -1333,7 +1333,7 @@ impl Contract {
             "Change already pending for this action and arguments"
         );
 
-        let now_ns = env::block_timestamp();
+        let now_ns = TimestampNs(env::block_timestamp());
         let valid_at_ns = now_ns.saturating_add(cur);
         self.governance_timelocks
             .pending_actions
@@ -1343,7 +1343,7 @@ impl Contract {
             Event::CapGroupRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_cap: *new_cap,
-                valid_at_ns: valid_at_ns.into(),
+                valid_at_ns: u64::from(valid_at_ns).into(),
             }
             .emit();
         }
@@ -1356,7 +1356,7 @@ impl Contract {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_relative_cap: *new_relative_cap,
-                valid_at_ns: valid_at_ns.into(),
+                valid_at_ns: u64::from(valid_at_ns).into(),
             }
             .emit();
         }
@@ -1364,7 +1364,7 @@ impl Contract {
         if let TimelockedAction::FeesChange { fees } = action {
             Event::FeesChangeSubmitted {
                 fees: fees.clone(),
-                valid_at_ns: valid_at_ns.into(),
+                valid_at_ns: u64::from(valid_at_ns).into(),
             }
             .emit();
         }
@@ -1372,13 +1372,13 @@ impl Contract {
         if let TimelockedAction::RestrictionsChange { restrictions } = action {
             Event::RestrictionsChangeSubmitted {
                 restrictions: restrictions.clone(),
-                valid_at_ns: valid_at_ns.into(),
+                valid_at_ns: u64::from(valid_at_ns).into(),
             }
             .emit();
         }
 
         Event::TimelockChangeSubmitted {
-            valid_at_ns: valid_at_ns.into(),
+            valid_at_ns: u64::from(valid_at_ns).into(),
         }
         .emit();
     }
@@ -1392,7 +1392,7 @@ impl Contract {
     ) -> Option<TimelockedAction> {
         self.governance_timelocks
             .pending_actions
-            .take_mature(env::block_timestamp(), find_fn)
+            .take_mature(TimestampNs(env::block_timestamp()), find_fn)
             .unwrap_or_else(|_| panic_with_message("Timelock not elapsed yet"))
     }
 

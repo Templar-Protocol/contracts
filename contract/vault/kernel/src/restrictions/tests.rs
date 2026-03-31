@@ -1,7 +1,7 @@
 use super::*;
 
 fn addr(tag: u8) -> Address {
-    [tag; 32]
+    Address([tag; 32])
 }
 
 #[test]

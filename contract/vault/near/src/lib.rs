@@ -61,7 +61,7 @@ use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::state::queue::{
     compute_idle_settlement, is_past_cooldown, DEFAULT_COOLDOWN_NS,
 };
-use templar_vault_kernel::{Address, KernelAction, PayoutOutcome};
+use templar_vault_kernel::{Address, KernelAction, PayoutOutcome, TimestampNs};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120_000_000_000;
@@ -282,7 +282,7 @@ impl Contract {
             markets: BTreeMap::new(),
             market_ids: BTreeMap::new(),
             cap_groups: BTreeMap::new(),
-            governance_timelocks: initial_timelock_ns.0.into(),
+            governance_timelocks: TimestampNs(initial_timelock_ns.0).into(),
             next_market_id: 0,
             supply_queue: SupplyQueue::default(),
             virtual_shares: 1,
@@ -391,7 +391,7 @@ impl Contract {
                 receiver: receiver_addr,
                 shares,
                 min_assets_out: expected_assets,
-                now_ns: now,
+                now_ns: TimestampNs(now),
             },
         )
         .unwrap_or_else(|_| panic_with_message("Kernel request_withdraw failed"));
@@ -439,7 +439,11 @@ impl Contract {
 
         while let Some((id, pending)) = self.withdraw_queue.head() {
             let now = env::block_timestamp();
-            if !is_past_cooldown(pending.requested_at_ns, now, self.withdrawal_cooldown_ns) {
+            if !is_past_cooldown(
+                pending.requested_at_ns,
+                TimestampNs(now),
+                self.withdrawal_cooldown_ns,
+            ) {
                 return PromiseOrValue::Value(());
             }
 
@@ -455,7 +459,7 @@ impl Contract {
                 receiver: Some(receiver.clone()),
                 escrow_shares: Some(U128(pending.escrow_shares)),
                 expected_assets: Some(U128(pending.expected_assets)),
-                requested_at: Some(pending.requested_at_ns.into()),
+                requested_at: Some(u64::from(pending.requested_at_ns).into()),
             }
             .emit();
 
@@ -668,7 +672,7 @@ impl Contract {
             KernelAction::BeginRefreshing {
                 op_id,
                 plan: kernel_plan,
-                now_ns: now,
+                now_ns: TimestampNs(now),
             },
         )
         .unwrap_or_else(|_| panic_with_message("Kernel begin refresh failed"));
@@ -964,7 +968,7 @@ impl Contract {
             curator: role_member(&Role::Curator, "Curator"),
             sentinel: role_member(&Role::Sentinel, "Sentinel"),
             underlying_token: self.underlying_asset.clone(),
-            initial_timelock_ns: self.governance_timelocks.timelock_config_ns.into(),
+            initial_timelock_ns: u64::from(self.governance_timelocks.timelock_config_ns).into(),
             fees: self.fees.clone(),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
@@ -1558,7 +1562,7 @@ impl Contract {
                 receiver_addr,
                 entry.escrow_shares,
                 entry.expected_assets,
-                entry.requested_at,
+                TimestampNs(entry.requested_at),
             ),
         );
 
@@ -1785,7 +1789,9 @@ impl Contract {
             &kernel_config,
             kernel_restrictions.as_ref(),
             &self_address,
-            KernelAction::RefreshFees { now_ns: now },
+            KernelAction::RefreshFees {
+                now_ns: TimestampNs(now),
+            },
         )
         .unwrap_or_else(|_| panic_with_message("Kernel refresh fees failed"));
 
@@ -1793,7 +1799,7 @@ impl Contract {
         // only affects what can be charged as fees for the elapsed interval.
         self.fee_anchor = FeeAccrualAnchor {
             total_assets: cur_total_assets.into(),
-            timestamp_ns: result.state.fee_anchor.timestamp_ns.into(),
+            timestamp_ns: u64::from(result.state.fee_anchor.timestamp_ns).into(),
         };
     }
 
@@ -1851,7 +1857,7 @@ impl Contract {
             KernelAction::BeginAllocating {
                 op_id,
                 plan: kernel_plan,
-                now_ns: env::block_timestamp(),
+                now_ns: TimestampNs(env::block_timestamp()),
             },
         )
         .unwrap_or_else(|_| panic_with_message("Kernel begin allocation failed"));
@@ -2293,7 +2299,7 @@ impl OldContract {
                     receiver_addr,
                     entry.escrow_shares,
                     entry.expected_assets,
-                    entry.requested_at,
+                    TimestampNs(entry.requested_at),
                 ),
             );
 

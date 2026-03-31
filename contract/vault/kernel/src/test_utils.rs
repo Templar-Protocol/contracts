@@ -6,7 +6,7 @@ pub fn addr_with_tag(tag: u8, index: u64) -> Address {
     let mut addr = [0u8; 32];
     addr[0] = tag;
     addr[1..9].copy_from_slice(&index.to_le_bytes());
-    addr
+    Address(addr)
 }
 
 /// Helper for generating owner addresses in tests.

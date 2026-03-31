@@ -1459,7 +1459,7 @@ fn default_state() -> VaultState {
 }
 
 fn self_addr() -> templar_vault_kernel::Address {
-    [99u8; 32]
+    templar_vault_kernel::Address([99u8; 32])
 }
 
 /// Boundary 1: Depositing zero assets returns ZeroAmount error.

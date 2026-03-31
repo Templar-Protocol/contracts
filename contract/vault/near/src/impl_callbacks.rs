@@ -141,8 +141,10 @@ impl Contract {
 
         let current_index = allocating.state().index;
         if current_index != market_index {
-            return allocating
-                .stop_and_exit(Some(&Error::IndexDrifted(current_index, market_index)));
+            return allocating.stop_and_exit(Some(&Error::IndexDrifted(
+                current_index.into(),
+                market_index.into(),
+            )));
         }
 
         let SupplyReconciliation {

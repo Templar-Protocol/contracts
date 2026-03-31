@@ -30,7 +30,7 @@ fn build_withdrawals(len: usize) -> Vec<PendingWithdrawal> {
 }
 
 fn addr_with_byte(byte: u8) -> Address {
-    [byte; 32]
+    Address([byte; 32])
 }
 
 fn run_round(withdrawals: &[PendingWithdrawal], available_assets: u128) -> u128 {

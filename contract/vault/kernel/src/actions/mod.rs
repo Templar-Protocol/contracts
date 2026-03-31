@@ -1154,8 +1154,8 @@ fn handle_execute_withdraw(
         WithdrawalQueueOutcome::CoolingDown { requested_at_ns } => {
             if skipped_effects.is_empty() {
                 Err(KernelError::Cooldown {
-                    requested_at: requested_at_ns,
-                    now: now_ns,
+                    requested_at: requested_at_ns.into(),
+                    now: now_ns.into(),
                     cooldown_ns: config.withdrawal_cooldown_ns,
                 })
             } else {
@@ -1577,8 +1577,8 @@ fn handle_refresh_fees(
     let fee_total_assets = total_assets_for_fee_accrual(
         cur_total_assets,
         anchor.total_assets,
-        anchor.timestamp_ns,
-        now_ns,
+        anchor.timestamp_ns.into(),
+        now_ns.into(),
         config.fees.max_total_assets_growth_rate,
     );
 
@@ -1588,8 +1588,8 @@ fn handle_refresh_fees(
         cur_total_assets,
         total_supply,
         config.fees.management.fee_wad,
-        anchor.timestamp_ns,
-        now_ns,
+        anchor.timestamp_ns.into(),
+        now_ns.into(),
     );
     mint_fee_shares(
         &mut effects,
@@ -1622,7 +1622,7 @@ fn handle_refresh_fees(
 
     effects.push(KernelEffect::EmitEvent {
         event: crate::effects::KernelEvent::FeesRefreshed {
-            now_ns,
+            now_ns: now_ns.into(),
             total_assets: cur_total_assets,
         },
     });

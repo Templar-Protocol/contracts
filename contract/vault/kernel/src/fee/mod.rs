@@ -106,7 +106,7 @@ impl FeeSlot {
 
     pub const ZERO: Self = Self {
         fee_wad: Wad::ZERO,
-        recipient: [0u8; 32],
+        recipient: Address([0u8; 32]),
     };
 
     /// Create a zero fee slot (no fee, zero address).

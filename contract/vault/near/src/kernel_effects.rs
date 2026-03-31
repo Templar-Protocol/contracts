@@ -19,7 +19,6 @@ use templar_vault_kernel::AddressBook;
 use crate::governance::Gate;
 use crate::Contract;
 
-#[derive(Debug)]
 pub enum KernelEffectError {
     MissingAccount(Address),
     MintFailed,
@@ -30,11 +29,19 @@ pub enum KernelEffectError {
 impl fmt::Display for KernelEffectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingAccount(address) => write!(f, "missing account for address {address:?}"),
+            Self::MissingAccount(address) => {
+                write!(f, "missing account for address {:02x?}", address.as_bytes())
+            }
             Self::MintFailed => f.write_str("failed to mint shares"),
             Self::BurnFailed => f.write_str("failed to burn shares"),
             Self::UnsupportedEffect(kind) => write!(f, "unsupported kernel effect: {kind}"),
         }
+    }
+}
+
+impl fmt::Debug for KernelEffectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 

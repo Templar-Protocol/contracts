@@ -2,7 +2,6 @@
 
 use crate::restrictions::RestrictionKind;
 use crate::transitions::TransitionError;
-use alloc::fmt;
 
 /// Indexed invalid-state reasons for stable wasm diagnostics.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -127,8 +126,8 @@ impl InvalidStateCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl fmt::Display for InvalidStateCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl core::fmt::Display for InvalidStateCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.message())
     }
 }
@@ -162,8 +161,8 @@ impl InvalidConfigCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl fmt::Display for InvalidConfigCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl core::fmt::Display for InvalidConfigCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.message())
     }
 }
@@ -405,8 +404,8 @@ impl From<TransitionError> for KernelError {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl fmt::Display for KernelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl core::fmt::Display for KernelError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidState(code) => write!(f, "{code} (code {})", self.detailed_code()),
             Self::OpIdMismatch { expected, actual } => {

@@ -218,7 +218,12 @@ pub fn compute_settlement_shares(
     }
 
     settle_proportional(
-        &EscrowEntry::new([0u8; 32], escrow_shares, 0, expected_amount),
+        &EscrowEntry::new(
+            templar_vault_kernel::Address([0u8; 32]),
+            escrow_shares,
+            templar_vault_kernel::TimestampNs(0),
+            expected_amount,
+        ),
         collected_amount,
     )
 }

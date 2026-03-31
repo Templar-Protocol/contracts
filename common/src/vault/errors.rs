@@ -1,7 +1,6 @@
 use super::*;
 
 /// Vault operation errors.
-#[derive(Debug)]
 #[near(serializers = [json])]
 pub enum Error {
     /// Index drift or stale op_id.
@@ -33,6 +32,12 @@ pub enum Error {
     InsufficientLiquidity,
     /// Zero amount provided.
     ZeroAmount,
+}
+
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
 }
 
 impl std::fmt::Display for Error {

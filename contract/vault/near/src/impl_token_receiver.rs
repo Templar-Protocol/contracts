@@ -7,6 +7,7 @@ use templar_common::vault::{require_at_least, DepositMsg, IdleBalanceDelta, SUPP
 use templar_vault_kernel::actions::apply_action;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::KernelAction;
+use templar_vault_kernel::TimestampNs;
 
 use near_sdk_contract_tools::mt::{Nep245Receiver, TokenId};
 
@@ -150,7 +151,7 @@ impl Contract {
                 receiver: sender_address,
                 assets_in: accept,
                 min_shares_out: 0,
-                now_ns: env::block_timestamp(),
+                now_ns: TimestampNs(env::block_timestamp()),
             },
         )
         .unwrap_or_else(|_| templar_common::panic_with_message("Kernel deposit failed"));

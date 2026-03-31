@@ -42,8 +42,9 @@ impl TimeGate {
 
     #[must_use]
     pub fn remaining(self, now_ns: TimestampNs) -> TimestampNs {
-        self.ready_at_ns
-            .map_or(0, |ready_at| ready_at.saturating_sub(now_ns))
+        self.ready_at_ns.map_or(TimestampNs::ZERO, |ready_at| {
+            ready_at.saturating_sub(now_ns)
+        })
     }
 }
 
@@ -54,19 +55,19 @@ mod tests {
     #[test]
     fn time_gate_ready_now_is_always_ready() {
         let gate = TimeGate::ready_now();
-        assert!(gate.is_ready(0));
-        assert!(gate.is_ready(u64::MAX));
-        assert_eq!(gate.remaining(123), 0);
+        assert!(gate.is_ready(TimestampNs(0)));
+        assert!(gate.is_ready(TimestampNs(u64::MAX)));
+        assert_eq!(gate.remaining(TimestampNs(123)), TimestampNs(0));
         assert_eq!(gate.ready_at_ns(), None);
     }
 
     #[test]
     fn time_gate_scheduled_reports_remaining_and_readiness() {
-        let gate = TimeGate::schedule_from(100, 50);
-        assert_eq!(gate.ready_at_ns(), Some(150));
-        assert!(!gate.is_ready(149));
-        assert!(gate.is_ready(150));
-        assert_eq!(gate.remaining(120), 30);
-        assert_eq!(gate.remaining(160), 0);
+        let gate = TimeGate::schedule_from(TimestampNs(100), TimestampNs(50));
+        assert_eq!(gate.ready_at_ns(), Some(TimestampNs(150)));
+        assert!(!gate.is_ready(TimestampNs(149)));
+        assert!(gate.is_ready(TimestampNs(150)));
+        assert_eq!(gate.remaining(TimestampNs(120)), TimestampNs(30));
+        assert_eq!(gate.remaining(TimestampNs(160)), TimestampNs(0));
     }
 }

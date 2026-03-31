@@ -8,6 +8,7 @@ use templar_vault_kernel::state::vault::{
     FeeAccrualAnchor as KernelFeeAccrualAnchor, VaultConfig, VaultState, MAX_PENDING,
 };
 use templar_vault_kernel::Restrictions as KernelRestrictions;
+use templar_vault_kernel::TimestampNs;
 
 use crate::Contract;
 
@@ -22,7 +23,7 @@ impl Contract {
 
         let fee_anchor = KernelFeeAccrualAnchor::new(
             self.fee_anchor.total_assets.0,
-            self.fee_anchor.timestamp_ns.0,
+            TimestampNs(self.fee_anchor.timestamp_ns.0),
         );
 
         let op_state = self.op_state.clone();

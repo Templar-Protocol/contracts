@@ -2,20 +2,93 @@
 //!
 //! These types are designed to be portable across NEAR and Soroban.
 
-use derive_more::{From, Into};
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
+#[cfg(feature = "borsh-schema")]
+use alloc::string::ToString;
 
-/// Timestamp in nanoseconds (u64).
-pub type TimestampNs = u64;
+use derive_more::{Display, From, Into};
+
+/// Timestamp in nanoseconds.
+#[repr(transparent)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
+#[display("{_0}")]
+pub struct TimestampNs(pub u64);
+
+impl TimestampNs {
+    pub const ZERO: Self = Self(0);
+
+    /// Create a timestamp from raw nanoseconds.
+    pub const fn from_nanos(nanos: u64) -> Self {
+        Self(nanos)
+    }
+
+    /// Return the raw nanosecond value.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Saturating addition with another timestamp-like nanosecond delta.
+    pub const fn saturating_add(self, rhs: Self) -> Self {
+        Self(self.0.saturating_add(rhs.0))
+    }
+
+    /// Saturating addition with a raw nanosecond delta.
+    pub const fn saturating_add_u64(self, rhs: u64) -> Self {
+        Self(self.0.saturating_add(rhs))
+    }
+
+    /// Saturating subtraction with another timestamp-like nanosecond value.
+    pub const fn saturating_sub(self, rhs: Self) -> Self {
+        Self(self.0.saturating_sub(rhs.0))
+    }
+}
 
 /// Expected index in a queue or plan.
-pub type ExpectedIdx = u32;
+#[repr(transparent)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
+#[display("{_0}")]
+pub struct ExpectedIdx(pub u32);
 
 /// Actual index reached during processing.
-pub type ActualIdx = u32;
+#[repr(transparent)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
+#[display("{_0}")]
+pub struct ActualIdx(pub u32);
 
-/// Canonical address bytes (32 bytes).
+/// Canonical address bytes.
 /// Executors map chain-native account identifiers to this form (sha256 hash).
-pub type Address = [u8; 32];
+#[repr(transparent)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
+pub struct Address(pub [u8; 32]);
+
+impl Address {
+    /// Create an address from raw bytes.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return the raw bytes for this address.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8; 32]> for Address {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for Address {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// Asset identifier as a fixed 32-byte hash.
 /// Executors map chain-native asset identifiers (e.g., NEAR account id)

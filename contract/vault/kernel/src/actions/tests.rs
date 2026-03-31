@@ -9,7 +9,7 @@ use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::Number;
 
 fn addr(tag: u8) -> Address {
-    [tag; 32]
+    Address([tag; 32])
 }
 
 fn alloc_step(target_id: u32, amount: u128) -> AllocationPlanEntry {

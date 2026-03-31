@@ -40,7 +40,7 @@ impl FeeAccrualAnchor {
     pub const fn zero() -> Self {
         Self {
             total_assets: 0,
-            timestamp_ns: 0,
+            timestamp_ns: TimestampNs::ZERO,
         }
     }
 

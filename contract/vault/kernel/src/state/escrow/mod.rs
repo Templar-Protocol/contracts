@@ -134,7 +134,7 @@ pub fn can_apply_settlement(entry: &EscrowEntry, settlement: &EscrowSettlement) 
 #[inline]
 #[must_use]
 pub fn is_stale(entry: &EscrowEntry, now_ns: TimestampNs, max_age_ns: u64) -> bool {
-    now_ns > entry.created_at_ns.saturating_add(max_age_ns)
+    now_ns > entry.created_at_ns.saturating_add_u64(max_age_ns)
 }
 
 /// Compute aggregate escrow statistics from an iterator of entries.

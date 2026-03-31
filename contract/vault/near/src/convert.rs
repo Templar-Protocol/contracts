@@ -54,5 +54,5 @@ pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
     let mut bytes = Vec::with_capacity(ADDRESS_DOMAIN.len() + account.as_bytes().len());
     bytes.extend_from_slice(ADDRESS_DOMAIN);
     bytes.extend_from_slice(account.as_bytes());
-    env::sha256_array(&bytes)
+    Address(env::sha256_array(&bytes))
 }
