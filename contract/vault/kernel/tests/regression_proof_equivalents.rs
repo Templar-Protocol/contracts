@@ -148,6 +148,20 @@ fn settlement_conserves_shares() {
 }
 
 #[test]
+fn settlement_over_collection_burns_all_shares() {
+    let settlement = compute_settlement(100_u128, 1000_u128, 1001_u128);
+
+    assert_eq!(
+        settlement.to_burn, 100,
+        "over-collection should burn all shares"
+    );
+    assert_eq!(
+        settlement.refund, 0,
+        "over-collection should refund no shares"
+    );
+}
+
+#[test]
 fn escrow_settlement_proportional() {
     let entry = EscrowEntry::new(owner_addr(1), 100, 0, 1000);
 
