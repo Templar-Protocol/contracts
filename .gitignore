@@ -29,3 +29,4 @@ _site/
 client/vault/dist/
 
 .aider*
+.claude/

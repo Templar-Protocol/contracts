@@ -22,6 +22,7 @@ use templar_common::{
 use crate::{
     inventory,
     rpc::{check_transaction_success, get_access_key_data, send_tx},
+    swap::SwapProvider,
     CollateralStrategy, LiquidationOutcome, LiquidatorError, LiquidatorResult,
 };
 
@@ -216,6 +217,12 @@ impl LiquidationExecutor {
                             "Liquidation executed successfully (all receipts succeeded)"
                         );
 
+                        // Release the reservation — tokens have left our account
+                        self.inventory
+                            .write()
+                            .await
+                            .release(borrow_asset, liquidation_amount);
+
                         // Handle collateral based on strategy
                         let swap_succeeded = match &self.collateral_strategy {
                             CollateralStrategy::Hold => false, // No swap performed
@@ -297,6 +304,7 @@ impl LiquidationExecutor {
     /// Swap collateral immediately after liquidation.
     ///
     /// Returns `Ok(true)` if swap succeeded, `Ok(false)` if skipped or failed (non-fatal).
+    #[allow(clippy::too_many_lines)]
     async fn swap_collateral_to_borrow(
         &self,
         collateral_asset: &FungibleAsset<CollateralAsset>,
@@ -312,6 +320,16 @@ impl LiquidationExecutor {
         // Skip swap if collateral is already the target borrow asset
         if collateral_asset.to_string() == borrow_asset.to_string() {
             tracing::debug!("Collateral is already borrow asset, skipping JIT swap");
+            return Ok(false);
+        }
+
+        // Skip swap if the provider doesn't support this asset pair
+        if !swap_provider.supports_assets(collateral_asset, borrow_asset) {
+            tracing::info!(
+                from = %collateral_asset,
+                to = %borrow_asset,
+                "Swap provider does not support asset pair, holding collateral"
+            );
             return Ok(false);
         }
 
@@ -390,11 +408,16 @@ impl LiquidationExecutor {
                         error = %e,
                         "JIT swap skipped - amount below provider minimum, will batch"
                     );
+                } else if msg.contains("Quote failed") {
+                    tracing::debug!(
+                        swap = %swap_name,
+                        "No swap route available for asset, holding collateral"
+                    );
                 } else {
                     tracing::info!(
                         swap = %swap_name,
                         error = %e,
-                        "JIT swap failed after retries, holding collateral"
+                        "JIT swap failed, holding collateral"
                     );
                 }
                 Ok(false)
