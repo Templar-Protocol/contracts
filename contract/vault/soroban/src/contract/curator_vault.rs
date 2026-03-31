@@ -23,10 +23,19 @@ enum AllocationDecision {
     Withdraw(WithdrawAllocationDecision),
 }
 
+struct RefreshPlanDecision {
+    markets: Vec<TargetId>,
+}
+
 #[cfg(any(test, feature = "testutils"))]
 struct TestAllocationDecision {
     filtered_plan: Vec<AllocationPlanEntry>,
     total_allocated: u128,
+}
+
+#[derive(Clone, Copy)]
+struct RefreshCompletionSnapshot {
+    markets_refreshed: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -668,6 +677,64 @@ where
         Self::reserve_op_id(state)
     }
 
+    fn classify_refresh_plan(
+        &self,
+        plan: &[TargetId],
+        current_ns: u64,
+    ) -> Result<RefreshPlanDecision, RuntimeError> {
+        let markets = self
+            .policy_state
+            .locks
+            .build_refresh_plan_with_locks(plan, current_ns);
+
+        if markets.is_empty() {
+            return Err(RuntimeError::invalid_input("empty refresh plan"));
+        }
+
+        Ok(RefreshPlanDecision { markets })
+    }
+
+    #[inline]
+    fn snapshot_refresh_completion(state: &VaultState) -> RefreshCompletionSnapshot {
+        let markets_refreshed = state
+            .op_state
+            .as_refreshing()
+            .map_or(0, |refreshing| refreshing.plan.len() as u32);
+
+        RefreshCompletionSnapshot { markets_refreshed }
+    }
+
+    #[inline]
+    fn refresh_result(
+        op_id: u64,
+        markets_refreshed: u32,
+        new_external_assets: u128,
+    ) -> RefreshResult {
+        RefreshResult {
+            op_id,
+            markets_refreshed,
+            new_external_assets,
+        }
+    }
+
+    #[inline]
+    fn classify_refreshed_positions(
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Vec<RefreshedPosition> {
+        refreshed_positions
+            .iter()
+            .map(|&(market, total_assets)| RefreshedPosition::new(market, total_assets))
+            .collect()
+    }
+
+    fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
+        let policy = self.policy_state_mut();
+        for position in refreshed_positions {
+            policy.set_principal(position.market, position.total_assets);
+        }
+        policy.refresh_cap_group_principals();
+    }
+
     pub(crate) fn begin_allocation_internal(
         &mut self,
         caller: Address,
@@ -753,19 +820,10 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        let refreshed_positions = refreshed_positions
-            .iter()
-            .map(|&(market, total_assets)| RefreshedPosition::new(market, total_assets))
-            .collect::<Vec<_>>();
-
-        {
-            let policy = self.policy_state_mut();
-            for position in &refreshed_positions {
-                policy.set_principal(position.market, position.total_assets);
-            }
-            policy.refresh_cap_group_principals();
-        }
-        self.sync_external_assets(caller, op_id, self.policy_state().external_assets(), now_ns)?;
+        let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
+        self.apply_refreshed_positions(&refreshed_positions);
+        let new_external_assets = self.policy_state().external_assets();
+        self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(result)
@@ -878,22 +936,10 @@ where
         plan: Vec<TargetId>,
         current_ns: u64,
     ) -> Result<u64, RuntimeError> {
-        self.authorize(ActionKind::BeginRefreshing, caller)?;
-        let filtered_plan = self
-            .policy_state
-            .locks
-            .build_refresh_plan_with_locks(&plan, current_ns);
-
-        if filtered_plan.is_empty() {
-            return Err(RuntimeError::invalid_input("empty refresh plan"));
-        }
-
-        let op_id = {
-            let state = self.state_mut()?;
-            Self::reserve_op_id(state)?
-        };
+        let decision = self.classify_refresh_plan(&plan, current_ns)?;
+        let op_id = self.reserve_authorized_op_id(caller, ActionKind::BeginRefreshing)?;
         self.apply_kernel_action(
-            KernelAction::begin_refreshing(op_id, filtered_plan, current_ns),
+            KernelAction::begin_refreshing(op_id, decision.markets, current_ns),
             current_ns,
         )?;
         Ok(op_id)
@@ -906,20 +952,13 @@ where
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
         self.authorize(ActionKind::FinishRefreshing, caller)?;
-        let result = {
-            let markets_refreshed = match &self.state()?.op_state {
-                OpState::Refreshing(refresh) => refresh.plan.len() as u32,
-                _ => 0,
-            };
-            self.apply_kernel_action(KernelAction::finish_refreshing(op_id, now_ns), now_ns)?;
-
-            RefreshResult {
-                op_id,
-                markets_refreshed,
-                new_external_assets: self.state()?.external_assets,
-            }
-        };
-        Ok(result)
+        let snapshot = Self::snapshot_refresh_completion(self.state()?);
+        self.apply_kernel_action(KernelAction::finish_refreshing(op_id, now_ns), now_ns)?;
+        Ok(Self::refresh_result(
+            op_id,
+            snapshot.markets_refreshed,
+            self.state()?.external_assets,
+        ))
     }
 
     pub(crate) fn sync_external_assets(
