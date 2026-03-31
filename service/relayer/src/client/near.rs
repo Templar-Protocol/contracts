@@ -750,16 +750,23 @@ impl Near {
 
         let price = match transformer {
             Some(transformer) => {
-                let price = self
+                let Some(price) = self
                     .fetch_oracle_request(
                         OracleRequest::pyth(pyth_id, transformer.price_id),
                         max_age,
                     )
-                    .await?;
+                    .await?
+                else {
+                    return Ok(None);
+                };
 
                 let input = self.fetch_transformer_input(transformer.call).await?;
 
-                price.and_then(|price| transformer.action.apply(price, input))
+                transformer.action.apply(price, input)
+            }
+            None => {
+                self.fetch_oracle_request(OracleRequest::pyth(pyth_id, price_identifier), max_age)
+                    .await?
             }
             None => {
                 self.fetch_oracle_request(OracleRequest::pyth(pyth_id, price_identifier), max_age)

@@ -51,7 +51,7 @@ impl MarketController {
             .await
     }
 
-    pub async fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
+    pub fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
         Self {
             contract: contract_with_dummy_sk(worker, market_id),
         }
