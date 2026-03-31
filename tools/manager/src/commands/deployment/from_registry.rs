@@ -63,12 +63,16 @@ impl<C: DeploymentSpec> Runner<()> for FromRegistry<C> {
         tracing::debug!(%deposit);
 
         let full_access_keys = {
-            let mut keys = self.with_full_access_key.clone();
+            let mut keys = Vec::with_capacity(self.with_full_access_key.len() + 1);
             if !self.no_signer_full_access_key {
-                let signer_key = signer.public_key();
-                if !keys.contains(&signer_key) {
-                    keys.push(signer_key);
+                keys.push(signer.public_key());
+            }
+            for key in self.with_full_access_key.iter().cloned() {
+                if keys.contains(&key) {
+                    tracing::warn!("Duplicate full access key: {:?}", key);
+                    continue;
                 }
+                keys.push(key);
             }
             keys
         };
