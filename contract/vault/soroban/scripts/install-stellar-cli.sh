@@ -21,7 +21,7 @@ set -euo pipefail
 #       macOS:          (not needed — dbus is optional)
 # ---------------------------------------------------------------------------
 
-STELLAR_CLI_VERSION="25.1.0"
+STELLAR_CLI_VERSION="25.0.0"
 RUST_TOOLCHAIN="1.89.0"
 
 info()  { printf '\033[1;34m→\033[0m %s\n' "$*"; }
