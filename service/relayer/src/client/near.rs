@@ -636,12 +636,12 @@ impl Near {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    fn current_time_ms() -> Nanoseconds {
+    fn system_time() -> Nanoseconds {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis();
-        Nanoseconds::from_ms(u64::try_from(now).unwrap_or(u64::MAX))
+            .as_nanos();
+        Nanoseconds::from_ns(u64::try_from(now).unwrap_or(u64::MAX))
     }
 
     async fn get_transformer(
@@ -701,7 +701,7 @@ impl Near {
         Ok(fetched_price)
     }
 
-    #[tracing::instrument(skip(self), level = "debug")]
+    #[tracing::instrument(skip_all, level = "debug", fields(%oracle_id, %price_identifier, %max_age))]
     async fn resolve_price(
         &self,
         oracle_id: AccountId,
@@ -770,7 +770,7 @@ impl Near {
         Ok(price)
     }
 
-    #[tracing::instrument(skip(self), level = "debug")]
+    #[tracing::instrument(skip_all, level = "debug")]
     async fn resolve_price_with_proxy(
         &self,
         oracle_id: AccountId,
@@ -778,6 +778,7 @@ impl Near {
         max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
         let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? else {
+            tracing::debug!("No proxy found");
             return Ok(None);
         };
 
@@ -788,9 +789,13 @@ impl Near {
             }
         }
 
-        let aggregated_price = proxy.aggregator.aggregate(&prices, Self::current_time_ms());
+        tracing::debug!(?prices, "Prices to aggregate");
 
-        Ok(aggregated_price.map(Into::into))
+        let price = proxy.aggregator.aggregate(&prices, Self::system_time());
+
+        tracing::debug!(?price, "Aggregated price");
+
+        Ok(price.map(Into::into))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
