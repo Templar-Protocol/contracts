@@ -120,7 +120,7 @@ missing_panics_doc = "allow"
 unwrap_used = "warn"
 expect_used = "warn"
 large_digit_groups = "warn"
-wildcard_imports = "warn"
+wildcard_imports = "allow"
 
 [profile.dev]
 incremental = true

@@ -884,7 +884,14 @@ mod contract_tests {
             )
             .unwrap();
 
-            assert_eq!(VaultProxy::new(&env).virtual_offsets().unwrap(), (101, 202));
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::VirtualShares),
+                Some(101u128)
+            );
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::VirtualAssets),
+                Some(202u128)
+            );
         });
     }
 
@@ -2250,11 +2257,13 @@ mod storage_tests {
     }
 
     #[rstest]
-    fn test_governance_config_rejects_allowed_adapters_length_mismatch(
+    fn test_governance_config_updates_allowed_adapters_without_supply_queue_constraint(
         contract_env: (Env, soroban_sdk::Address),
     ) {
         let (env, contract_id) = contract_env;
+        env.mock_all_auths_allowing_non_root_auth();
         let governance = SdkAddress::generate(&env);
+        let updated_adapters = SdkVec::from_array(&env, [SdkAddress::generate(&env)]);
 
         env.as_contract(&contract_id, || {
             set_config_address(
@@ -2270,24 +2279,30 @@ mod storage_tests {
                 ),
             );
 
-            let err = SorobanVaultContract::set_governance_config(
+            SorobanVaultContract::set_governance_config(
                 env.clone(),
                 governance.clone(),
                 GovernanceConfigKind::AllowedAdapters,
                 None,
-                Some(SdkVec::from_array(&env, [SdkAddress::generate(&env)])),
+                Some(updated_adapters.clone()),
                 None,
                 None,
             )
-            .unwrap_err();
+            .unwrap();
 
-            assert_eq!(err, crate::error::ContractError::InvalidInput);
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&crate::contract::VaultDataKey::AllowedAdapters),
+                Some(updated_adapters)
+            );
         });
     }
 
     #[rstest]
     fn test_governance_policy_rejects_fee_account_count(contract_env: (Env, soroban_sdk::Address)) {
         let (env, contract_id) = contract_env;
+        env.mock_all_auths_allowing_non_root_auth();
         let governance = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {

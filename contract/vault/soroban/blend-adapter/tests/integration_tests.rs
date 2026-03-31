@@ -44,9 +44,9 @@ fn setup_blend_pool(
         &String::from_str(env, "test"),
         &BytesN::<32>::random(env),
         &Address::generate(env),
-        &0_1000000,
+        &1_000_000,
         &4,
-        &1_0000000,
+        &10_000_000,
     );
     let pool_client = pool::Client::new(env, &pool_addr);
 
@@ -59,7 +59,7 @@ fn setup_blend_pool(
     blend
         .backstop
         .mock_all_auths()
-        .deposit(&deployer, &pool_addr, &50_000_0000000);
+        .deposit(&deployer, &pool_addr, &500_000_000_000);
     pool_client.mock_all_auths().set_status(&3);
     pool_client.mock_all_auths().update_status();
 
@@ -86,7 +86,7 @@ fn supply_success_deposits_to_pool() {
     let vault = Address::generate(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
-    let supply_amount: i128 = 1_000_0000000;
+    let supply_amount: i128 = 10_000_000_000;
     asset_admin.mint(&adapter, &supply_amount);
 
     client.supply(&vault, &asset, &supply_amount);
@@ -109,11 +109,11 @@ fn withdraw_success_returns_assets() {
     let vault = Address::generate(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
-    let supply_amount: i128 = 1_000_0000000;
+    let supply_amount: i128 = 10_000_000_000;
     asset_admin.mint(&adapter, &supply_amount);
     client.supply(&vault, &asset, &supply_amount);
 
-    let withdraw_amount: i128 = 500_0000000;
+    let withdraw_amount: i128 = 5_000_000_000;
     client.withdraw(&vault, &asset, &withdraw_amount);
 
     let token_client = soroban_sdk::token::Client::new(&env, &asset);
@@ -140,7 +140,7 @@ fn total_assets_returns_correct_value_after_supply() {
     let vault = Address::generate(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
-    let supply_amount: i128 = 1_000_0000000;
+    let supply_amount: i128 = 10_000_000_000;
     asset_admin.mint(&adapter, &supply_amount);
     client.supply(&vault, &asset, &supply_amount);
 
@@ -184,13 +184,13 @@ fn total_assets_decreases_after_withdraw() {
     let vault = Address::generate(&env);
     let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
-    let supply_amount: i128 = 1_000_0000000;
+    let supply_amount: i128 = 10_000_000_000;
     asset_admin.mint(&_adapter, &supply_amount);
     client.supply(&vault, &asset, &supply_amount);
 
     let total_before = client.total_assets(&asset);
 
-    client.withdraw(&vault, &asset, &500_0000000);
+    client.withdraw(&vault, &asset, &5_000_000_000);
 
     let total_after = client.total_assets(&asset);
 
@@ -214,7 +214,7 @@ fn rescue_transfers_assets_to_receiver() {
     let pool = Address::generate(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
-    let rescue_amount: i128 = 500_0000000;
+    let rescue_amount: i128 = 5_000_000_000;
     let receiver = Address::generate(&env);
     asset_admin.mint(&adapter, &rescue_amount);
 
@@ -246,7 +246,7 @@ fn full_supply_withdraw_cycle() {
     let vault = Address::generate(&env);
     let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
-    let amount: i128 = 2_000_0000000;
+    let amount: i128 = 20_000_000_000;
     asset_admin.mint(&_adapter, &amount);
 
     // 1. Supply
