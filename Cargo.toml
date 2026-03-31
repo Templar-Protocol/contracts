@@ -44,7 +44,12 @@ console = "0.16.2"
 dirs = "6"
 ed25519-dalek = "2.2.0"
 futures = "0.3.31"
-derive_more = { version = "1", default-features = false, features = ["from", "into", "display", "is_variant"] }
+derive_more = { version = "1", default-features = false, features = [
+    "from",
+    "into",
+    "display",
+    "is_variant",
+] }
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
@@ -77,7 +82,13 @@ templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }
 templar-vault-contract = { path = "./contract/vault/near" }
-templar-vault-kernel = { path = "./contract/vault/kernel", features = ["near", "borsh-schema", "serde", "schemars", "all-actions"] }
+templar-vault-kernel = { path = "./contract/vault/kernel", features = [
+    "near",
+    "borsh-schema",
+    "serde",
+    "schemars",
+    "all-actions",
+] }
 templar-vault-macros = { path = "./contract/vault/macros" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
@@ -91,8 +102,6 @@ uniffi = "0.31.0"
 wiremock = "0.5.22"
 zeroize = "1.8.1"
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
 stellar-tokens = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-tokens", branch = "templar/rust-1.86-compat", default-features = false }
 
