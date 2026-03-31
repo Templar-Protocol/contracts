@@ -23,10 +23,10 @@ pub struct RedStoneArgsLoader {
     /// Use the test RedStone configuration
     #[arg(long)]
     pub test: bool,
-    /// JSON configuration
+    /// JSON initialization arguments
     #[arg(long)]
     pub args: Option<String>,
-    /// Path to a JSON configuration file
+    /// Path to a JSON initialization arguments file
     #[arg(long)]
     pub args_file: Option<PathBuf>,
 }
