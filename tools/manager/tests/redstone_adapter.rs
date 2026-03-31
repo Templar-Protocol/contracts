@@ -29,7 +29,7 @@ use templar_manager::commands::{
         version::add::{AddVersion, Package},
     },
 };
-use templar_manager::util::EmptyArgsLoader;
+use templar_manager::util::{EmptyArgsLoader, OutputArgs};
 use test_utils::{accounts, worker};
 
 /// Stellar test payload containing ETH + BTC prices, timestamp `1_770_985_144_000` ms.
@@ -225,6 +225,7 @@ async fn redstone_adapter_config(#[future(awt)] worker: Worker<Sandbox>) {
     // The config command should succeed.
     AdapterConfig {
         adapter_id: adapter.id().clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -309,7 +310,7 @@ async fn redstone_adapter_feed_get_empty(#[future(awt)] worker: Worker<Sandbox>)
     FeedGet {
         adapter_id: adapter.id().clone(),
         feed_id: vec!["ETH".to_string()],
-        json: false,
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -339,7 +340,8 @@ async fn redstone_adapter_write_prices(#[future(awt)] worker: Worker<Sandbox>) {
         signer: signer_args(&adapter),
         adapter_id: adapter.id().clone(),
         feed_id: vec!["ETH".into(), "BTC".into()],
-        payload: BASE64_STANDARD.encode(STELLAR_PAYLOAD),
+        payload_base64: Some(BASE64_STANDARD.encode(STELLAR_PAYLOAD)),
+        payload_base64_file: None,
     }
     .run(&ctx)
     .await
@@ -349,7 +351,10 @@ async fn redstone_adapter_write_prices(#[future(awt)] worker: Worker<Sandbox>) {
     FeedGet {
         adapter_id: adapter.id().clone(),
         feed_id: vec!["ETH".to_string(), "BTC".to_string()],
-        json: true,
+        output: OutputArgs {
+            json: true,
+            pretty: false,
+        },
     }
     .run(&ctx)
     .await

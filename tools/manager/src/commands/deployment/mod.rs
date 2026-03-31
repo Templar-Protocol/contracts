@@ -1,7 +1,7 @@
 mod from_registry;
 pub use from_registry::*;
-mod native;
-pub use native::*;
+mod direct;
+pub use direct::*;
 
 use serde::{de::DeserializeOwned, Serialize};
 

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use anyhow::Context;
 use serde::{de::DeserializeOwned, Serialize};
 
+use super::load_text;
+
 pub trait LoadArgs<T: DeserializeOwned + Serialize>: clap::Args {
     fn load(&self) -> anyhow::Result<T>;
 
@@ -41,14 +43,12 @@ impl GeneralArgsLoader {
 
 impl<T: DeserializeOwned + Serialize> LoadArgs<T> for GeneralArgsLoader {
     fn load(&self) -> anyhow::Result<T> {
-        match (&self.args, &self.args_file) {
-            (Some(json), None) => serde_json::from_str(json).context("deserialize json string"),
-            (None, Some(file)) => {
-                serde_json::from_reader(std::fs::File::open(file).context("open json file")?)
-                    .context("deserialize json file")
-            }
-            _ => anyhow::bail!("one of --args or --args-file must be provided"),
-        }
+        serde_json::from_str(&load_text(
+            self.args.as_deref(),
+            self.args_file.as_deref(),
+            "args",
+        )?)
+        .context("deserialize args json")
     }
 }
 

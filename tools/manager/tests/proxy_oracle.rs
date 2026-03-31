@@ -29,7 +29,7 @@ use templar_manager::commands::{
         version::add::{AddVersion, Package},
     },
 };
-use templar_manager::util::EmptyArgsLoader;
+use templar_manager::util::{EmptyArgsLoader, OutputArgs};
 use test_utils::{accounts, worker};
 
 fn sample_price_id() -> CliPriceIdentifier {
@@ -176,6 +176,7 @@ async fn proxy_oracle_proxy_list_empty(#[future(awt)] worker: Worker<Sandbox>) {
     // Should succeed with empty results.
     ListProxies {
         oracle_id: oracle.id().clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -218,6 +219,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
     GetProposal {
         oracle_id: oracle_id.clone(),
         id: 0,
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -226,6 +228,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
     // List proposals command should succeed.
     ListProposals {
         oracle_id: oracle_id.clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -269,7 +272,7 @@ async fn proxy_oracle_get_proxy_not_found(#[future(awt)] worker: Worker<Sandbox>
     GetProxy {
         oracle_id: oracle.id().clone(),
         price_id,
-        json: false,
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await

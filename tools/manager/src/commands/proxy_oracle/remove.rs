@@ -5,6 +5,7 @@ use crate::util::SignerArgs;
 
 #[derive(clap::Args, Debug)]
 pub struct ProxyOracleRemove {
+    /// Signer for the deletion transaction. This same account is deleted.
     #[command(flatten)]
     pub signer: SignerArgs,
     /// Account to receive remaining funds when the proxy oracle account is deleted

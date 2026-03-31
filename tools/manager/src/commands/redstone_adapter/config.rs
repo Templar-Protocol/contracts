@@ -1,13 +1,20 @@
+use std::io::Write;
+
 use near_sdk::AccountId;
 use templar_common::oracle::redstone::Config;
 
-use crate::CliContext;
+use crate::{
+    util::{OutputArgs, OutputStyle},
+    CliContext,
+};
 
 #[derive(clap::Args, Debug)]
 pub struct AdapterConfig {
     /// RedStone adapter contract account ID
     #[arg(long)]
     pub adapter_id: AccountId,
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 impl AdapterConfig {
@@ -19,8 +26,13 @@ impl AdapterConfig {
             .await?
             .json()?;
 
-        println!("{}", serde_json::to_string_pretty(&config)?);
+        self.output.print(&config)
+    }
+}
 
+impl OutputStyle for Config {
+    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+        writeln!(out, "{}", serde_json::to_string_pretty(self)?)?;
         Ok(())
     }
 }

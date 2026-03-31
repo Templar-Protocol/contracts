@@ -20,7 +20,7 @@ use templar_manager::commands::{
         },
     },
 };
-use templar_manager::util::{EmptyArgsLoader, GeneralArgsLoader, SignerArgs};
+use templar_manager::util::{EmptyArgsLoader, GeneralArgsLoader, OutputArgs, SignerArgs};
 use test_utils::{accounts, market_configuration, worker};
 
 fn market_package() -> Package {
@@ -218,6 +218,7 @@ async fn registry_list_versions_empty(#[future(awt)] worker: Worker<Sandbox>) {
     // The command should succeed even with no versions.
     ListVersions {
         registry_id: registry_id.clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -237,6 +238,7 @@ async fn registry_deployment_list_empty(#[future(awt)] worker: Worker<Sandbox>) 
     // No deployments yet — should succeed without error.
     ListDeployments {
         registry_id: registry_id.clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await

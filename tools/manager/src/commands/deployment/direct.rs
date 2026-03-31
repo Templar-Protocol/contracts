@@ -33,9 +33,6 @@ impl Package {
 pub struct Direct<C: DeploymentSpec> {
     #[command(flatten)]
     pub loader: ContractLoader,
-    // /// Name of the contract to deploy
-    // #[arg(value_enum, index = 1)]
-    // pub package: Package,
     #[command(flatten)]
     pub args: C::ArgsLoader,
     #[command(flatten)]

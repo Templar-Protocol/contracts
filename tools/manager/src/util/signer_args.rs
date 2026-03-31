@@ -9,8 +9,8 @@ use near_sdk::AccountId;
 /// Arguments common to every command that signs a transaction.
 #[derive(clap::Args, Clone)]
 pub struct SignerArgs {
-    /// Account ID to sign transactions as
-    #[arg(long, env = "ACCOUNT_ID")]
+    /// Account ID used to sign transactions; some commands also act on this same account
+    #[arg(long = "signer-id", env = "SIGNER_ID")]
     pub account_id: AccountId,
 
     /// Ed25519 private key for signing (ed25519:...)

@@ -15,14 +15,12 @@ use super::DeploymentSpec;
 #[derive(clap::Args)]
 pub struct FromRegistry<C: DeploymentSpec> {
     /// Registry account ID to deploy from
-    #[arg(index = 1)]
+    #[arg(long)]
     pub registry_id: AccountId,
     /// Version key to deploy from the registry
     #[arg(long)]
     pub version_key: String,
-    /// Name of the contract that will be deployed
-    ///
-    /// This will be used as the prefix for the account ID.
+    /// Subaccount prefix for the deployed contract. The resulting account ID is `<name>.<registry_id>`.
     #[arg(long)]
     pub name: String,
     /// Additional public keys to add as full access keys to the new account.
@@ -32,7 +30,8 @@ pub struct FromRegistry<C: DeploymentSpec> {
     /// Do not add the signer's public key as a full access key on the new account
     #[arg(long)]
     pub no_signer_full_access_key: bool,
-    /// Deposit to send with the deployment
+    /// Deposit to send with the deployment. Defaults to 1 yoctoNEAR for registries that support
+    /// global contracts, otherwise 6 NEAR.
     #[arg(long)]
     pub deposit: Option<NearToken>,
 

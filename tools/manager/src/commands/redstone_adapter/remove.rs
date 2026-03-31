@@ -5,8 +5,10 @@ use crate::util::SignerArgs;
 
 #[derive(clap::Args, Debug)]
 pub struct RedStoneAdapterRemove {
+    /// Signer for the deletion transaction. This same account is deleted.
     #[command(flatten)]
     pub signer: SignerArgs,
+    /// Account to receive remaining funds when the adapter account is deleted.
     #[arg(long)]
     pub beneficiary_id: AccountId,
 }

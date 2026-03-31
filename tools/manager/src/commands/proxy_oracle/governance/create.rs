@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
@@ -9,7 +11,7 @@ use templar_common::time::Nanoseconds;
 
 use super::execute::execute_proposal;
 use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
-use crate::util::SignerArgs;
+use crate::util::{load_text, SignerArgs};
 use crate::CliContext;
 
 #[derive(clap::Args, Debug)]
@@ -68,6 +70,9 @@ pub struct ProxyActionArgs {
     /// JSON-encoded Proxy value to insert for this price ID.
     #[arg(long)]
     insert: Option<String>,
+    /// Path to a JSON file containing the Proxy value to insert for this price ID.
+    #[arg(long)]
+    insert_file: Option<PathBuf>,
     /// Remove the proxy for this price ID.
     #[arg(long)]
     remove: bool,
@@ -77,6 +82,7 @@ impl ProxyActionArgs {
     pub fn insert(proxy: String) -> Self {
         Self {
             insert: Some(proxy),
+            insert_file: None,
             remove: false,
         }
     }
@@ -84,19 +90,28 @@ impl ProxyActionArgs {
     pub fn remove() -> Self {
         Self {
             insert: None,
+            insert_file: None,
             remove: true,
         }
     }
 
-    pub fn resolve(&self) -> Option<&str> {
-        self.insert.as_deref()
+    pub fn resolve(&self) -> anyhow::Result<Option<String>> {
+        if self.remove {
+            return Ok(None);
+        }
+
+        Ok(Some(load_text(
+            self.insert.as_deref(),
+            self.insert_file.as_deref(),
+            "insert",
+        )?))
     }
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[group(required = true, multiple = false)]
 pub struct SetTtlArgs {
-    /// New TTL in milliseconds
+    /// New TTL in nanoseconds
     #[arg(long, alias = "nanos", alias = "nanoseconds")]
     pub ns: Option<u64>,
     /// New TTL in milliseconds
@@ -160,7 +175,8 @@ impl CreateProposal {
             OperationCommand::Proxy(args) => {
                 let proxy: Option<Proxy> = args
                     .action
-                    .resolve()
+                    .resolve()?
+                    .as_deref()
                     .map(serde_json::from_str)
                     .transpose()?;
                 Operation::SetProxy {
