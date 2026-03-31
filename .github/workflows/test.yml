@@ -126,7 +126,7 @@ jobs:
           # Optimize cargo build for faster compilation
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
-        run: ./script/test.sh --workspace --exclude templar-soroban-runtime
+        run: ./script/test.sh --workspace
 
       - name: Cleanup Docker resources
         if: always()

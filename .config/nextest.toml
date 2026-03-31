@@ -12,6 +12,7 @@ max-fail = 10
 # CI-specific profile balancing disk space and performance
 test-threads = 6
 retries = 1
+default-filter = "not package(templar-soroban-runtime)"
 
 # Fail fast to avoid wasting resources
 fail-fast = false

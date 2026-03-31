@@ -2,7 +2,5 @@
 # https://github.com/rust-lang/cargo/issues/3946#issuecomment-973132993
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
 
-# Path remapping removed - hardcoded paths only worked on one machine.
-# TODO: Consider using relative paths or environment variables if size regression is significant.
 [target.wasm32-unknown-unknown]
 rustflags = []
