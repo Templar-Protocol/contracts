@@ -3278,17 +3278,14 @@ fn parity_deposit_withdraw_settle_roundtrip() {
     .unwrap();
 
     assert!(result.state.op_state.is_idle());
-    // Shares burned by kernel, but idle_assets/total_assets are decremented
-    // by the executor (which handles the actual asset transfer out). The kernel
-    // only burns shares; both executors then decrement idle_assets themselves.
     assert_eq!(result.state.total_shares, 0, "shares burned");
     assert_eq!(
-        result.state.total_assets, 10_000,
-        "kernel doesn't decrement assets — executor does"
+        result.state.total_assets, 0,
+        "kernel decrements assets on payout"
     );
     assert_eq!(
-        result.state.idle_assets, 10_000,
-        "kernel doesn't decrement idle — executor does"
+        result.state.idle_assets, 0,
+        "kernel decrements idle on payout"
     );
 }
 

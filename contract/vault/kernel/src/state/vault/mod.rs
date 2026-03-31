@@ -137,7 +137,9 @@ impl VaultState {
         external_assets: u128,
         timestamp_ns: TimestampNs,
     ) -> Self {
-        let computed_total = idle_assets.checked_add(external_assets).unwrap();
+        let computed_total = idle_assets
+            .checked_add(external_assets)
+            .expect("total_assets invariant overflow: idle + external");
         assert!(total_assets == computed_total);
         Self {
             total_assets,
@@ -169,7 +171,7 @@ impl VaultState {
     #[inline]
     pub fn allocate_op_id(&mut self) -> u64 {
         let id = self.next_op_id;
-        self.next_op_id = self.next_op_id.checked_add(1).unwrap();
+        self.next_op_id = self.next_op_id.checked_add(1).expect("op_id overflow");
         id
     }
 
@@ -193,7 +195,10 @@ impl VaultState {
     /// to restore the fundamental accounting invariant.
     #[inline]
     pub fn sync_total_assets(&mut self) {
-        self.total_assets = self.idle_assets.checked_add(self.external_assets).unwrap();
+        self.total_assets = self
+            .idle_assets
+            .checked_add(self.external_assets)
+            .expect("total_assets overflow: idle + external");
     }
 
     /// Add `amount` back to idle assets and recompute totals.
