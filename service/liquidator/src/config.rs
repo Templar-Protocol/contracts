@@ -15,7 +15,20 @@ use crate::{
     CollateralStrategy,
 };
 
-/// Validator function for `partial_percentage` range
+/// Parse a string into `Option<i64>`, treating empty/whitespace as `None`.
+/// Panics if the value is non-empty and not a valid integer.
+fn parse_optional_i64(s: &str) -> Option<i64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        trimmed
+            .parse::<i64>()
+            .unwrap_or_else(|_| panic!("TELEGRAM_THREAD_ID '{trimmed}' is not a valid integer")),
+    )
+}
+
 fn validate_percentage(s: &str) -> Result<u8, String> {
     let value: u8 = s
         .parse()
@@ -164,9 +177,10 @@ pub struct Args {
     #[arg(long, env = "TELEGRAM_CHAT_ID", default_value = "")]
     pub telegram_chat_id: String,
 
-    /// Telegram thread/topic ID for sending to specific threads in supergroups
-    #[arg(long, env = "TELEGRAM_THREAD_ID")]
-    pub telegram_thread_id: Option<i64>,
+    /// Telegram thread/topic ID for sending to specific threads in supergroups.
+    /// Accepts an empty env var gracefully (treated as unset).
+    #[arg(long, env = "TELEGRAM_THREAD_ID", default_value = "")]
+    pub telegram_thread_id: String,
 }
 
 impl Args {
@@ -303,7 +317,7 @@ impl Args {
                 Some(TelegramConfig {
                     bot_token: bot_token.to_owned().into(),
                     chat_id: chat_id.to_owned(),
-                    thread_id: self.telegram_thread_id,
+                    thread_id: parse_optional_i64(&self.telegram_thread_id),
                 })
             }
             _ => {
@@ -397,7 +411,7 @@ mod tests {
             swap_retry_base_delay_ms: 2000,
             telegram_bot_token: String::new(),
             telegram_chat_id: String::new(),
-            telegram_thread_id: None,
+            telegram_thread_id: String::new(),
         }
     }
 
@@ -546,7 +560,7 @@ mod tests {
         let mut args = create_test_args();
         args.telegram_bot_token = "123:ABC".to_string();
         args.telegram_chat_id = "-100123".to_string();
-        args.telegram_thread_id = Some(42);
+        args.telegram_thread_id = "42".to_string();
         let config = args.build_config();
         assert!(config.notifier.is_enabled());
     }
@@ -576,5 +590,33 @@ mod tests {
         args.telegram_chat_id = "  ".to_string();
         let config = args.build_config();
         assert!(!config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_parse_optional_i64_empty() {
+        assert_eq!(parse_optional_i64(""), None);
+        assert_eq!(parse_optional_i64("  "), None);
+    }
+
+    #[test]
+    fn test_parse_optional_i64_valid() {
+        assert_eq!(parse_optional_i64("42"), Some(42));
+        assert_eq!(parse_optional_i64(" -100 "), Some(-100));
+    }
+
+    #[test]
+    #[should_panic(expected = "not a valid integer")]
+    fn test_parse_optional_i64_invalid() {
+        parse_optional_i64("abc");
+    }
+
+    #[test]
+    fn test_telegram_empty_thread_id_env_var() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = "-100123".to_string();
+        args.telegram_thread_id = String::new();
+        let config = args.build_config();
+        assert!(config.notifier.is_enabled());
     }
 }

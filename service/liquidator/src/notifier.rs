@@ -6,12 +6,14 @@
 //!
 //! All `notify_*` methods are truly fire-and-forget: they spawn the HTTP
 //! request on a background task and return immediately, so they never
-//! block liquidation operations.
+//! block liquidation operations. A bounded semaphore limits in-flight
+//! notifications to prevent unbounded task growth.
 
 use std::sync::Arc;
 
 use near_sdk::serde_json::json;
 use reqwest::Client;
+use tokio::sync::Semaphore;
 
 /// A string wrapper that redacts its value in Debug output.
 #[derive(Clone)]
@@ -47,14 +49,19 @@ pub struct TelegramConfig {
 /// Shared notifier handle.
 pub type SharedNotifier = Arc<Notifier>;
 
+/// Maximum number of in-flight Telegram notifications.
+const MAX_INFLIGHT_NOTIFICATIONS: usize = 10;
+
 /// Liquidator event notifier.
 ///
 /// When Telegram is configured, sends HTML-formatted messages via
 /// background tasks. When unconfigured, all methods are silent no-ops.
+/// A semaphore bounds the number of concurrent in-flight notifications.
 #[derive(Debug)]
 pub struct Notifier {
     telegram: Option<TelegramConfig>,
     client: Client,
+    semaphore: Arc<Semaphore>,
 }
 
 /// Escape HTML special characters in dynamic values so they don't break
@@ -166,6 +173,7 @@ impl Notifier {
         Self {
             telegram,
             client: Client::new(),
+            semaphore: Arc::new(Semaphore::new(MAX_INFLIGHT_NOTIFICATIONS)),
         }
     }
 
@@ -232,13 +240,20 @@ impl Notifier {
     // ── Internal ────────────────────────────────────────────────────────────
 
     /// Spawns the send on a background task so callers never block.
+    /// Uses a semaphore to bound in-flight notifications; drops the
+    /// message if all permits are taken.
     fn spawn_send(self: &Arc<Self>, message: String) {
         if self.telegram.is_none() {
             return;
         }
+        let Ok(permit) = Arc::clone(&self.semaphore).try_acquire_owned() else {
+            tracing::warn!("Notification dropped — too many in-flight messages");
+            return;
+        };
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.send(&message).await;
+            drop(permit);
         });
     }
 

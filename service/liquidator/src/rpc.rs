@@ -191,7 +191,7 @@ pub async fn get_contract_version(
 /// # Returns
 ///
 /// Tuple of (nonce, block_hash) to use when constructing a transaction
-#[tracing::instrument(skip(client, nonce_tracker), level = "debug")]
+#[tracing::instrument(skip(client, signer, nonce_tracker), level = "debug")]
 pub async fn get_access_key_data(
     client: &JsonRpcClient,
     signer: &Signer,
