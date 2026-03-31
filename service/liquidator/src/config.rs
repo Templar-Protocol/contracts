@@ -290,17 +290,25 @@ impl Args {
             );
         }
 
-        // Build notifier
-        let telegram_config = if self.telegram_bot_token.is_empty() {
-            tracing::info!("Telegram notifications disabled (no bot token)");
-            None
-        } else {
-            tracing::info!("Telegram notifications enabled");
-            Some(TelegramConfig {
-                bot_token: self.telegram_bot_token.clone(),
-                chat_id: self.telegram_chat_id.clone(),
-                thread_id: self.telegram_thread_id,
-            })
+        // Build notifier — require both bot token and chat ID
+        let bot_token = self.telegram_bot_token.trim();
+        let chat_id = self.telegram_chat_id.trim();
+        let telegram_config = match (bot_token.is_empty(), chat_id.is_empty()) {
+            (true, true) => {
+                tracing::info!("Telegram notifications disabled");
+                None
+            }
+            (false, false) => {
+                tracing::info!("Telegram notifications enabled");
+                Some(TelegramConfig {
+                    bot_token: bot_token.to_owned(),
+                    chat_id: chat_id.to_owned(),
+                    thread_id: self.telegram_thread_id,
+                })
+            }
+            _ => {
+                panic!("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set or both be empty");
+            }
         };
         let notifier = Arc::new(Notifier::new(telegram_config));
 
@@ -514,5 +522,59 @@ mod tests {
         assert!(validate_percentage("101").is_err());
         assert!(validate_percentage("abc").is_err());
         assert!(validate_percentage("-5").is_err());
+    }
+
+    #[test]
+    fn test_telegram_disabled_both_empty() {
+        let args = create_test_args();
+        // Both empty → notifier disabled
+        let config = args.build_config();
+        assert!(!config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_telegram_enabled_both_set() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = "-100123".to_string();
+        let config = args.build_config();
+        assert!(config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_telegram_enabled_with_thread_id() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = "-100123".to_string();
+        args.telegram_thread_id = Some(42);
+        let config = args.build_config();
+        assert!(config.notifier.is_enabled());
+    }
+
+    #[test]
+    #[should_panic(expected = "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set")]
+    fn test_telegram_panics_token_without_chat_id() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = String::new();
+        args.build_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set")]
+    fn test_telegram_panics_chat_id_without_token() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = String::new();
+        args.telegram_chat_id = "-100123".to_string();
+        args.build_config();
+    }
+
+    #[test]
+    fn test_telegram_whitespace_only_treated_as_empty() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "  ".to_string();
+        args.telegram_chat_id = "  ".to_string();
+        let config = args.build_config();
+        assert!(!config.notifier.is_enabled());
     }
 }

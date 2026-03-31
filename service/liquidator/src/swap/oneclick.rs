@@ -302,6 +302,8 @@ pub struct OneClickSwap {
     api_token: Option<String>,
     /// Cached set of 1-Click supported token `assetId` values
     supported_tokens: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    /// Shared nonce tracker for coordinated nonce management
+    nonce_tracker: crate::rpc::NonceTracker,
 }
 
 impl OneClickSwap {
@@ -318,6 +320,7 @@ impl OneClickSwap {
         signer: Arc<Signer>,
         max_slippage_bps: Option<u32>,
         api_token: Option<String>,
+        nonce_tracker: crate::rpc::NonceTracker,
     ) -> Self {
         Self {
             client,
@@ -329,6 +332,7 @@ impl OneClickSwap {
             supported_tokens: std::sync::Arc::new(std::sync::RwLock::new(
                 std::collections::HashSet::new(),
             )),
+            nonce_tracker,
         }
     }
 
@@ -602,7 +606,8 @@ impl OneClickSwap {
             "Storage deposit minimum from contract"
         );
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
+        let (nonce, block_hash) =
+            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
 
         let storage_deposit_action = FunctionCallAction {
             method_name: "storage_deposit".to_string(),
@@ -683,7 +688,8 @@ impl OneClickSwap {
                 "Creating implicit account"
             );
 
-            let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
+            let (nonce, block_hash) =
+                get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
 
             // Send 1 yoctoNEAR to create the implicit account (minimum amount needed)
             let create_account_tx = Transaction::V0(TransactionV0 {
@@ -730,7 +736,8 @@ impl OneClickSwap {
         }
 
         // Get transaction parameters
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer, None).await?;
+        let (nonce, block_hash) =
+            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
 
         // Create deposit transaction
         // Use simple ft_transfer (not ft_transfer_call) for INTENTS depositType

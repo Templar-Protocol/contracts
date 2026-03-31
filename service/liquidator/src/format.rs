@@ -98,6 +98,17 @@ pub fn short_asset_name(asset_id: &str) -> String {
         }
     }
 
+    // Generic nep245:{contract}:{token_id} — recurse on the token_id part
+    if let Some(rest) = inner.strip_prefix("nep245:") {
+        if let Some((_contract, token_id)) = rest.split_once(':') {
+            return if token_id.starts_with("nep141:") || token_id.starts_with("nep245:") {
+                short_asset_name(token_id)
+            } else {
+                token_id.to_uppercase()
+            };
+        }
+    }
+
     // Fallback: try to extract something readable
     // nep141:something.near → SOMETHING
     if let Some(rest) = inner.strip_prefix("nep141:") {
@@ -315,5 +326,79 @@ mod tests {
         assert_eq!(format_iteration(1, 3), "1/3");
         assert_eq!(format_iteration(2, 3), "2/3");
         assert_eq!(format_iteration(3, 3), "3/3 (final)");
+    }
+
+    #[test]
+    fn test_short_asset_name_known() {
+        assert_eq!(short_asset_name("nep141:btc.omft.near"), "BTC");
+        assert_eq!(short_asset_name("nep141:wrap.near"), "wNEAR");
+        assert_eq!(
+            short_asset_name("17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"),
+            "USDC"
+        );
+    }
+
+    #[test]
+    fn test_short_asset_name_nep245_intents_wrapper() {
+        // nep245:intents.near: wrapper should be stripped
+        assert_eq!(
+            short_asset_name("nep245:intents.near:nep141:btc.omft.near"),
+            "BTC"
+        );
+    }
+
+    #[test]
+    fn test_short_asset_name_stellar_suffix() {
+        assert_eq!(
+            short_asset_name("nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"),
+            "USDC"
+        );
+        assert_eq!(
+            short_asset_name("nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"),
+            "XLM"
+        );
+    }
+
+    #[test]
+    fn test_short_asset_name_generic_nep245() {
+        // Generic nep245:{contract}:{token_id} should extract token_id
+        assert_eq!(short_asset_name("nep245:v2_1.omni.hot.tg:xlm"), "XLM");
+        assert_eq!(short_asset_name("nep245:some.contract:usdc"), "USDC");
+    }
+
+    #[test]
+    fn test_short_asset_name_nep141_near_fallback() {
+        assert_eq!(short_asset_name("nep141:mytoken.near"), "MYTOKEN");
+    }
+
+    #[test]
+    fn test_short_asset_name_truncation() {
+        let long_id = "abcdefghijklmnopqrstuvwxyz12345";
+        let result = short_asset_name(long_id);
+        assert_eq!(result, "abcdefghijklmnopq…");
+    }
+
+    #[test]
+    fn test_format_amount_short() {
+        assert_eq!(
+            format_amount_short(12_000_000, 6, "nep141:btc.omft.near"),
+            "12.000000 BTC"
+        );
+        assert_eq!(
+            format_amount_short(1_500_000, 6, "nep141:wrap.near"),
+            "1.500000 wNEAR"
+        );
+    }
+
+    #[test]
+    fn test_format_profit_short() {
+        assert_eq!(
+            format_profit_short(952_425, 12_000_000, 6, "nep141:btc.omft.near"),
+            "+0.952425 BTC (+7.9%)"
+        );
+        assert_eq!(
+            format_profit_short(-500_000, 12_000_000, 6, "nep141:wrap.near"),
+            "-0.500000 wNEAR (-4.2%)"
+        );
     }
 }

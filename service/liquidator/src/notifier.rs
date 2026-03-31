@@ -4,8 +4,9 @@
 //! - Successful liquidations
 //! - Failed or skipped swaps (unsupported assets, errors)
 //!
-//! All methods are fire-and-forget: notification failures are logged
-//! but never block liquidation operations.
+//! All `notify_*` methods are truly fire-and-forget: they spawn the HTTP
+//! request on a background task and return immediately, so they never
+//! block liquidation operations.
 
 use std::sync::Arc;
 
@@ -25,12 +26,115 @@ pub type SharedNotifier = Arc<Notifier>;
 
 /// Liquidator event notifier.
 ///
-/// When Telegram is configured, sends HTML-formatted messages.
-/// When unconfigured, all methods are silent no-ops.
+/// When Telegram is configured, sends HTML-formatted messages via
+/// background tasks. When unconfigured, all methods are silent no-ops.
 #[derive(Debug)]
 pub struct Notifier {
     telegram: Option<TelegramConfig>,
     client: Client,
+}
+
+/// Escape HTML special characters in dynamic values so they don't break
+/// Telegram's HTML parse mode or get rejected.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+// ── Message formatting (pure functions, easily testable) ────────────────
+
+/// Format a successful liquidation message.
+#[allow(clippy::too_many_arguments)]
+fn format_liquidation_message(
+    market: &str,
+    borrower: &str,
+    send_amount: &str,
+    receive_amount: &str,
+    profit: &str,
+    tx_hash: Option<&str>,
+    dry_run: bool,
+) -> String {
+    let prefix = if dry_run { "🧪 DRY RUN " } else { "" };
+    let tx_line = tx_hash.map_or(String::new(), |h| {
+        format!("\nTx: <code>{}</code>", html_escape(h))
+    });
+
+    format!(
+        "{prefix}✅ <b>Liquidation Executed</b>\n\
+         \n\
+         Market: <code>{}</code>\n\
+         Borrower: <code>{}</code>\n\
+         Sent: {}\n\
+         Received: {}\n\
+         Profit: {}{tx_line}",
+        html_escape(market),
+        html_escape(borrower),
+        html_escape(send_amount),
+        html_escape(receive_amount),
+        html_escape(profit),
+    )
+}
+
+/// Format a failed liquidation message.
+fn format_liquidation_failed_message(market: &str, borrower: &str, error: &str) -> String {
+    format!(
+        "❌ <b>Liquidation Failed</b>\n\
+         \n\
+         Market: <code>{}</code>\n\
+         Borrower: <code>{}</code>\n\
+         Error: {}",
+        html_escape(market),
+        html_escape(borrower),
+        html_escape(error),
+    )
+}
+
+/// Format a swap failure message.
+fn format_swap_failed_message(
+    market: &str,
+    from_asset: &str,
+    to_asset: &str,
+    amount: &str,
+    error: &str,
+) -> String {
+    format!(
+        "⚠️ <b>Swap Failed</b>\n\
+         \n\
+         Market: <code>{}</code>\n\
+         From: <code>{}</code>\n\
+         To: <code>{}</code>\n\
+         Amount: {}\n\
+         Error: {}",
+        html_escape(market),
+        html_escape(from_asset),
+        html_escape(to_asset),
+        html_escape(amount),
+        html_escape(error),
+    )
+}
+
+/// Format a swap-unsupported message.
+fn format_swap_unsupported_message(
+    market: &str,
+    from_asset: &str,
+    to_asset: &str,
+    amount: &str,
+) -> String {
+    format!(
+        "🚫 <b>Swap Unsupported</b>\n\
+         \n\
+         Market: <code>{}</code>\n\
+         From: <code>{}</code>\n\
+         To: <code>{}</code>\n\
+         Amount: {}\n\
+         \n\
+         Asset pair not supported by swap provider.",
+        html_escape(market),
+        html_escape(from_asset),
+        html_escape(to_asset),
+        html_escape(amount),
+    )
 }
 
 impl Notifier {
@@ -49,8 +153,8 @@ impl Notifier {
 
     /// Notify about a successful liquidation.
     #[allow(clippy::too_many_arguments)]
-    pub async fn notify_liquidation(
-        &self,
+    pub fn notify_liquidation(
+        self: &Arc<Self>,
         market: &str,
         borrower: &str,
         send_amount: &str,
@@ -59,80 +163,61 @@ impl Notifier {
         tx_hash: Option<&str>,
         dry_run: bool,
     ) {
-        let prefix = if dry_run { "🧪 DRY RUN " } else { "" };
-        let tx_line = tx_hash.map_or(String::new(), |h| format!("\nTx: <code>{h}</code>"));
-
-        let message = format!(
-            "{prefix}✅ <b>Liquidation Executed</b>\n\
-             \n\
-             Market: <code>{market}</code>\n\
-             Borrower: <code>{borrower}</code>\n\
-             Sent: {send_amount}\n\
-             Received: {receive_amount}\n\
-             Profit: {profit}{tx_line}"
-        );
-
-        self.send(&message).await;
+        self.spawn_send(format_liquidation_message(
+            market,
+            borrower,
+            send_amount,
+            receive_amount,
+            profit,
+            tx_hash,
+            dry_run,
+        ));
     }
 
     /// Notify about a failed liquidation attempt.
-    pub async fn notify_liquidation_failed(&self, market: &str, borrower: &str, error: &str) {
-        let message = format!(
-            "❌ <b>Liquidation Failed</b>\n\
-             \n\
-             Market: <code>{market}</code>\n\
-             Borrower: <code>{borrower}</code>\n\
-             Error: {error}"
-        );
-
-        self.send(&message).await;
+    pub fn notify_liquidation_failed(self: &Arc<Self>, market: &str, borrower: &str, error: &str) {
+        self.spawn_send(format_liquidation_failed_message(market, borrower, error));
     }
 
     /// Notify about a swap failure after liquidation.
-    pub async fn notify_swap_failed(
-        &self,
+    pub fn notify_swap_failed(
+        self: &Arc<Self>,
         market: &str,
         from_asset: &str,
         to_asset: &str,
         amount: &str,
         error: &str,
     ) {
-        let message = format!(
-            "⚠️ <b>Swap Failed</b>\n\
-             \n\
-             Market: <code>{market}</code>\n\
-             From: <code>{from_asset}</code>\n\
-             To: <code>{to_asset}</code>\n\
-             Amount: {amount}\n\
-             Error: {error}"
-        );
-
-        self.send(&message).await;
+        self.spawn_send(format_swap_failed_message(
+            market, from_asset, to_asset, amount, error,
+        ));
     }
 
     /// Notify when a swap is skipped because the asset pair is unsupported.
-    pub async fn notify_swap_unsupported(
-        &self,
+    pub fn notify_swap_unsupported(
+        self: &Arc<Self>,
         market: &str,
         from_asset: &str,
         to_asset: &str,
         amount: &str,
     ) {
-        let message = format!(
-            "🚫 <b>Swap Unsupported</b>\n\
-             \n\
-             Market: <code>{market}</code>\n\
-             From: <code>{from_asset}</code>\n\
-             To: <code>{to_asset}</code>\n\
-             Amount: {amount}\n\
-             \n\
-             Asset pair not supported by swap provider."
-        );
-
-        self.send(&message).await;
+        self.spawn_send(format_swap_unsupported_message(
+            market, from_asset, to_asset, amount,
+        ));
     }
 
     // ── Internal ────────────────────────────────────────────────────────────
+
+    /// Spawns the send on a background task so callers never block.
+    fn spawn_send(self: &Arc<Self>, message: String) {
+        if self.telegram.is_none() {
+            return;
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.send(&message).await;
+        });
+    }
 
     /// Sends an HTML message to the configured Telegram chat.
     /// Failures are logged and swallowed — never propagated.
@@ -184,7 +269,8 @@ impl Notifier {
                 tracing::debug!("Telegram notification sent");
             }
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to send Telegram notification");
+                let safe_error = e.without_url();
+                tracing::warn!(error = %safe_error, "Failed to send Telegram notification");
             }
         }
     }
@@ -221,5 +307,121 @@ mod tests {
         let notifier = Notifier::new(Some(config.clone()));
         assert!(notifier.is_enabled());
         assert_eq!(config.thread_id, Some(42));
+    }
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("a < b & c > d"), "a &lt; b &amp; c &gt; d");
+        assert_eq!(html_escape("no special chars"), "no special chars");
+        assert_eq!(
+            html_escape("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn test_format_liquidation_message() {
+        let msg = format_liquidation_message(
+            "market.near",
+            "borrower.near",
+            "100.00 USDC",
+            "0.005 BTC",
+            "+1.50 USDC (+1.5%)",
+            None,
+            false,
+        );
+        assert!(msg.contains("✅ <b>Liquidation Executed</b>"));
+        assert!(msg.contains("<code>market.near</code>"));
+        assert!(msg.contains("<code>borrower.near</code>"));
+        assert!(msg.contains("100.00 USDC"));
+        assert!(msg.contains("0.005 BTC"));
+        assert!(msg.contains("+1.50 USDC (+1.5%)"));
+        assert!(!msg.contains("Tx:"));
+    }
+
+    #[test]
+    fn test_format_liquidation_message_dry_run() {
+        let msg = format_liquidation_message(
+            "market.near",
+            "borrower.near",
+            "100.00 USDC",
+            "0.005 BTC",
+            "+1.50 USDC",
+            None,
+            true,
+        );
+        assert!(msg.starts_with("🧪 DRY RUN ✅"));
+    }
+
+    #[test]
+    fn test_format_liquidation_message_with_tx_hash() {
+        let msg = format_liquidation_message(
+            "market.near",
+            "borrower.near",
+            "100.00 USDC",
+            "0.005 BTC",
+            "+1.50 USDC",
+            Some("abc123"),
+            false,
+        );
+        assert!(msg.contains("Tx: <code>abc123</code>"));
+    }
+
+    #[test]
+    fn test_format_liquidation_message_escapes_html() {
+        let msg = format_liquidation_message(
+            "a<b>c", "x&y", "10 USDC", "0.1 BTC", "+1 USDC", None, false,
+        );
+        assert!(msg.contains("a&lt;b&gt;c"));
+        assert!(msg.contains("x&amp;y"));
+    }
+
+    #[test]
+    fn test_format_liquidation_failed_message() {
+        let msg = format_liquidation_failed_message(
+            "market.near",
+            "borrower.near",
+            "Transaction timed out",
+        );
+        assert!(msg.contains("❌ <b>Liquidation Failed</b>"));
+        assert!(msg.contains("<code>market.near</code>"));
+        assert!(msg.contains("<code>borrower.near</code>"));
+        assert!(msg.contains("Transaction timed out"));
+    }
+
+    #[test]
+    fn test_format_liquidation_failed_escapes_error() {
+        let msg = format_liquidation_failed_message("m", "b", "error <contains> html & stuff");
+        assert!(msg.contains("error &lt;contains&gt; html &amp; stuff"));
+    }
+
+    #[test]
+    fn test_format_swap_failed_message() {
+        let msg = format_swap_failed_message("market.near", "BTC", "USDC", "0.005 BTC", "No route");
+        assert!(msg.contains("⚠️ <b>Swap Failed</b>"));
+        assert!(msg.contains("<code>BTC</code>"));
+        assert!(msg.contains("<code>USDC</code>"));
+        assert!(msg.contains("0.005 BTC"));
+        assert!(msg.contains("No route"));
+    }
+
+    #[test]
+    fn test_format_swap_unsupported_message() {
+        let msg = format_swap_unsupported_message("market.near", "stNEAR", "USDC", "100 stNEAR");
+        assert!(msg.contains("🚫 <b>Swap Unsupported</b>"));
+        assert!(msg.contains("<code>stNEAR</code>"));
+        assert!(msg.contains("<code>USDC</code>"));
+        assert!(msg.contains("100 stNEAR"));
+        assert!(msg.contains("not supported by swap provider"));
+    }
+
+    #[test]
+    fn test_spawn_send_noop_when_disabled() {
+        let notifier = Arc::new(Notifier::new(None));
+        // Should not panic or spawn anything
+        notifier.notify_liquidation("m", "b", "1", "2", "3", None, false);
+        notifier.notify_liquidation_failed("m", "b", "err");
+        notifier.notify_swap_failed("m", "a", "b", "1", "err");
+        notifier.notify_swap_unsupported("m", "a", "b", "1");
     }
 }

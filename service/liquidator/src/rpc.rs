@@ -108,13 +108,22 @@ impl NonceTracker {
 
     /// Given an RPC-reported access key nonce, return the next safe nonce to use.
     ///
-    /// Takes the max of the RPC nonce and our tracked nonce, then adds 1.
+    /// Atomically reserves a unique nonce via CAS loop so concurrent callers
+    /// never receive the same value.
     pub fn next_nonce(&self, rpc_access_key_nonce: u64) -> u64 {
-        let tracked = self.0.load(std::sync::atomic::Ordering::SeqCst);
-        let base = rpc_access_key_nonce.max(tracked);
-        let next = base + 1;
-        self.0.fetch_max(next, std::sync::atomic::Ordering::SeqCst);
-        next
+        let mut observed = self.0.load(std::sync::atomic::Ordering::SeqCst);
+        loop {
+            let next = rpc_access_key_nonce.max(observed) + 1;
+            match self.0.compare_exchange(
+                observed,
+                next,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => return next,
+                Err(current) => observed = current,
+            }
+        }
     }
 }
 
@@ -593,5 +602,52 @@ mod tests {
         let display = format!("{error}");
         assert!(display.contains("60"));
         assert!(display.contains("65"));
+    }
+
+    #[test]
+    fn test_nonce_tracker_next_nonce_basic() {
+        let tracker = NonceTracker::default();
+        // First call with rpc_nonce=10 → 11
+        assert_eq!(tracker.next_nonce(10), 11);
+        // Second call with same rpc_nonce → 12 (tracked is now 11)
+        assert_eq!(tracker.next_nonce(10), 12);
+    }
+
+    #[test]
+    fn test_nonce_tracker_rpc_jumps_forward() {
+        let tracker = NonceTracker::default();
+        assert_eq!(tracker.next_nonce(10), 11);
+        // RPC reports higher nonce (another source used nonces)
+        assert_eq!(tracker.next_nonce(20), 21);
+        // Tracked is now 21
+        assert_eq!(tracker.next_nonce(15), 22);
+    }
+
+    #[test]
+    fn test_nonce_tracker_record_used() {
+        let tracker = NonceTracker::default();
+        tracker.record_used(50);
+        // next_nonce should be above recorded value
+        assert_eq!(tracker.next_nonce(10), 51);
+    }
+
+    #[test]
+    fn test_nonce_tracker_concurrent_unique() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        let tracker = Arc::new(NonceTracker::default());
+        let mut handles = Vec::new();
+
+        for _ in 0..100 {
+            let t = tracker.clone();
+            handles.push(std::thread::spawn(move || t.next_nonce(10)));
+        }
+
+        let nonces: HashSet<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        // All 100 nonces must be unique
+        assert_eq!(nonces.len(), 100);
+        // All should be > 10
+        assert!(nonces.iter().all(|&n| n > 10));
     }
 }
