@@ -290,6 +290,133 @@ impl OracleFetcher {
 
     // ── On-chain price updates ────────────────────────────────────────────────
 
+    /// Resolves the market-facing oracle account + price IDs to the actual
+    /// underlying Pyth oracle and feed IDs that need `update_price_feeds`.
+    ///
+    /// - **Direct Pyth oracle**: returns as-is.
+    /// - **LST oracle**: resolves via `oracle_id()` + transformers to get
+    ///   the underlying Pyth oracle and transformed feed IDs.
+    /// - **Proxy oracle**: reads proxy entries, collects all
+    ///   `OracleRequest::Pyth` targets (`oracle_id` + `price_id`).
+    ///
+    /// Returns a map of `pyth_oracle_account` → `Vec<feed_ids>`.
+    pub async fn resolve_pyth_update_targets(
+        &self,
+        oracle: &AccountId,
+        price_ids: &[PriceIdentifier],
+    ) -> HashMap<AccountId, Vec<PriceIdentifier>> {
+        let mut targets: HashMap<AccountId, Vec<PriceIdentifier>> = HashMap::new();
+
+        // LST oracle: resolve underlying oracle + transform price IDs
+        if let Ok(Some(underlying_oracle)) = self.is_lst_oracle(oracle).await {
+            let mut underlying_ids = Vec::new();
+            for &pid in price_ids {
+                match view::<Option<PriceTransformer>>(
+                    &self.client,
+                    oracle.clone(),
+                    "get_transformer",
+                    json!({ "price_identifier": pid }),
+                )
+                .await
+                {
+                    Ok(Some(transformer)) => underlying_ids.push(transformer.price_id),
+                    _ => underlying_ids.push(pid),
+                }
+            }
+            targets
+                .entry(underlying_oracle)
+                .or_default()
+                .extend(underlying_ids);
+            return targets;
+        }
+
+        // Proxy oracle: collect Pyth entries from proxy config
+        if self.proxy_oracle_cache.read().await.contains(oracle) {
+            for &pid in price_ids {
+                let proxy: Option<Proxy> = view(
+                    &self.client,
+                    oracle.clone(),
+                    "get_proxy",
+                    json!({ "id": pid }),
+                )
+                .await
+                .ok()
+                .flatten();
+
+                let Some(proxy) = proxy else { continue };
+
+                for entry in &proxy.entries {
+                    Self::collect_pyth_targets_from_source(&entry.source, &mut targets);
+                }
+            }
+            return targets;
+        }
+
+        // Direct Pyth oracle
+        targets
+            .entry(oracle.clone())
+            .or_default()
+            .extend(price_ids.iter().copied());
+        targets
+    }
+
+    /// Collects Pyth oracle targets from a proxy source entry.
+    fn collect_pyth_targets_from_source(
+        source: &Source,
+        targets: &mut HashMap<AccountId, Vec<PriceIdentifier>>,
+    ) {
+        match source {
+            Source::Request(OracleRequest::Pyth(pyth_req)) => {
+                targets
+                    .entry(pyth_req.oracle_id.clone())
+                    .or_default()
+                    .push(pyth_req.price_id);
+            }
+            Source::Request(OracleRequest::RedStone(_)) => {
+                // RedStone prices are pushed by the relayer, not by us
+            }
+            Source::Transformer(transformer) => {
+                // Transformer wraps an underlying request — extract its Pyth target
+                Self::collect_pyth_targets_from_source(
+                    &Source::Request(transformer.request.clone()),
+                    targets,
+                );
+            }
+        }
+    }
+
+    /// Resolves market-level oracle config to underlying Pyth targets and pushes
+    /// fresh prices on-chain for each. Returns `Ok(true)` if any update was sent.
+    pub async fn update_onchain_prices(
+        &self,
+        oracle: &AccountId,
+        price_ids: &[PriceIdentifier],
+    ) -> LiquidatorResult<bool> {
+        let targets = self.resolve_pyth_update_targets(oracle, price_ids).await;
+
+        if targets.is_empty() {
+            tracing::debug!("No Pyth targets to update on-chain");
+            return Ok(false);
+        }
+
+        let mut any_updated = false;
+        for (pyth_oracle, feed_ids) in &targets {
+            match self.update_pyth_prices(pyth_oracle, feed_ids).await {
+                Ok(true) => any_updated = true,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        oracle = %pyth_oracle,
+                        error = %e,
+                        "Failed to update on-chain Pyth prices"
+                    );
+                }
+            }
+        }
+
+        Ok(any_updated)
+    }
+
     /// Pushes fresh Pyth prices on-chain by fetching a VAA from Hermes and
     /// submitting an `update_price_feeds` transaction to the oracle contract.
     ///
@@ -299,7 +426,7 @@ impl OracleFetcher {
     ///
     /// Returns `Ok(true)` if update was sent, `Ok(false)` if no signer configured.
     #[tracing::instrument(skip(self), level = "info")]
-    pub async fn update_pyth_prices(
+    async fn update_pyth_prices(
         &self,
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],

@@ -621,9 +621,10 @@ impl Liquidator {
                 return Ok(LiquidationOutcome::Unprofitable);
             }
 
-            // Step 6: Push fresh prices to on-chain oracle before first execution.
+            // Step 6: Push fresh prices to underlying Pyth oracle(s) before first execution.
             // The market contract reads from the on-chain oracle during liquidation,
             // so prices must be fresh there — not just in our HTTP-fetched view.
+            // Resolves proxy/LST oracles to their underlying Pyth targets.
             // Only push once per liquidate() call (covers loop iterations too).
             if !prices_pushed_onchain && !dry_run {
                 let oracle_account = &self.market_config.price_oracle_configuration.account_id;
@@ -635,14 +636,19 @@ impl Liquidator {
                         .price_oracle_configuration
                         .collateral_asset_price_id,
                 ];
-                if let Err(e) = self
+                match self
                     .oracle_fetcher
-                    .update_pyth_prices(oracle_account, price_ids)
+                    .update_onchain_prices(oracle_account, price_ids)
                     .await
                 {
-                    tracing::warn!(error = %e, "Failed to update on-chain prices, proceeding with existing");
+                    Ok(_) => {
+                        prices_pushed_onchain = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to update on-chain prices, proceeding with existing");
+                        prices_pushed_onchain = true;
+                    }
                 }
-                prices_pushed_onchain = true;
             }
 
             // Execute liquidation (contract determines optimal collateral amount)
