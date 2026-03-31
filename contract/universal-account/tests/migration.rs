@@ -582,7 +582,7 @@ pub async fn future_stored_version_breaks_public_migration_views(
 #[case::from_0_4_0_v0_then_v1(
     MigrationSequenceStart::From0_4_0,
     &[MigrationStep::V0, MigrationStep::V1],
-    "Cannot deserialize the contract state.",
+    "Cannot deserialize the contract state.", // Bugged version doesn't have stored state properly set, but still fails correctly.
 )]
 #[tokio::test]
 pub async fn invalid_migration_sequences_fail(
