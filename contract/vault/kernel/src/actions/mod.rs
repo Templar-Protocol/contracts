@@ -121,6 +121,22 @@ struct PayoutSettlement {
     restore_idle: u128,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WithdrawalRequestPlan {
+    owner: Address,
+    receiver: Address,
+    shares: u128,
+    expected_assets: u128,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ExternalAssetSyncPlan {
+    new_external_assets: u128,
+    new_total_assets: u128,
+}
+
 /// Plan an idle-funded payout from the current vault state.
 ///
 /// Returns `Ok(None)` when the vault is in a valid withdrawing state but there is
@@ -868,6 +884,80 @@ fn withdrawal_request_from_head(
     }
 }
 
+#[inline]
+fn plan_withdrawal_request(
+    state: &VaultState,
+    config: &VaultConfig,
+    owner: Address,
+    receiver: Address,
+    shares: u128,
+    min_assets_out: u128,
+) -> Result<WithdrawalRequestPlan, KernelError> {
+    let expected_assets = convert_to_assets(state, config, shares);
+    if expected_assets < min_assets_out {
+        return Err(KernelError::Slippage {
+            min: min_assets_out,
+            actual: expected_assets,
+        });
+    }
+    if expected_assets < config.min_withdrawal_assets {
+        return Err(KernelError::MinWithdrawal {
+            amount: expected_assets,
+            min: config.min_withdrawal_assets,
+        });
+    }
+
+    Ok(WithdrawalRequestPlan {
+        owner,
+        receiver,
+        shares,
+        expected_assets,
+    })
+}
+
+#[inline]
+fn sync_external_in_flight_assets(op_state: &OpState) -> u128 {
+    match op_state {
+        OpState::Allocating(state) => state.remaining,
+        _ => 0,
+    }
+}
+
+#[inline]
+fn ensure_sync_external_state_allowed(op_state: &OpState) -> Result<(), KernelError> {
+    match op_state {
+        OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => Ok(()),
+        _ => Err(KernelError::from(
+            InvalidStateCode::SyncExternalRequiresAllowedStates,
+        )),
+    }
+}
+
+#[inline]
+fn plan_external_asset_sync(
+    state: &VaultState,
+    new_external_assets: u128,
+) -> Result<ExternalAssetSyncPlan, KernelError> {
+    let new_total_assets = state
+        .idle_assets
+        .checked_add(new_external_assets)
+        .ok_or_else(|| KernelError::from(InvalidStateCode::SyncExternalOverflowIdlePlusExternal))?;
+
+    let reference_total = state
+        .total_assets
+        .saturating_add(sync_external_in_flight_assets(&state.op_state));
+    if reference_total > 0 && new_total_assets > reference_total.saturating_mul(2) {
+        return Err(KernelError::from(
+            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets,
+        ));
+    }
+
+    Ok(ExternalAssetSyncPlan {
+        new_external_assets,
+        new_total_assets,
+    })
+}
+
 fn next_withdrawal_queue_outcome(
     state: &mut VaultState,
     config: &VaultConfig,
@@ -986,27 +1076,16 @@ fn handle_request_withdraw(
         shares,
     )?;
 
-    let expected_assets = convert_to_assets(&state, config, shares);
-    if expected_assets < min_assets_out {
-        return Err(KernelError::Slippage {
-            min: min_assets_out,
-            actual: expected_assets,
-        });
-    }
-    if expected_assets < config.min_withdrawal_assets {
-        return Err(KernelError::MinWithdrawal {
-            amount: expected_assets,
-            min: config.min_withdrawal_assets,
-        });
-    }
+    let request_plan =
+        plan_withdrawal_request(&state, config, owner, receiver, shares, min_assets_out)?;
 
     let id = state
         .withdraw_queue
         .enqueue(
-            owner,
-            receiver,
-            shares,
-            expected_assets,
+            request_plan.owner,
+            request_plan.receiver,
+            request_plan.shares,
+            request_plan.expected_assets,
             now_ns,
             config.max_pending_withdrawals,
         )
@@ -1014,17 +1093,17 @@ fn handle_request_withdraw(
 
     let effects = vec![
         KernelEffect::TransferShares {
-            from: owner,
+            from: request_plan.owner,
             to: *self_id,
-            shares,
+            shares: request_plan.shares,
         },
         KernelEffect::EmitEvent {
             event: crate::effects::KernelEvent::WithdrawalRequested {
                 id,
-                owner,
-                receiver,
-                shares,
-                expected_assets,
+                owner: request_plan.owner,
+                receiver: request_plan.receiver,
+                shares: request_plan.shares,
+                expected_assets: request_plan.expected_assets,
             },
         },
     ];
@@ -1175,39 +1254,11 @@ fn handle_sync_external_assets(
         InvalidStateCode::SyncExternalRequiresActiveOp,
     )?;
 
-    match state.op_state {
-        OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => {}
-        _ => {
-            return Err(KernelError::from(
-                InvalidStateCode::SyncExternalRequiresAllowedStates,
-            ));
-        }
-    }
+    ensure_sync_external_state_allowed(&state.op_state)?;
+    let sync_plan = plan_external_asset_sync(&state, new_external_assets)?;
 
-    // Overflow protection: idle_assets + new_external must fit in u128.
-    let new_total = state
-        .idle_assets
-        .checked_add(new_external_assets)
-        .ok_or_else(|| KernelError::from(InvalidStateCode::SyncExternalOverflowIdlePlusExternal))?;
-
-    // Sanity bound: prevent a compromised allocator from inflating
-    // total_assets beyond 2x the previous value. During allocation,
-    // assets are "in flight" (decremented from idle, not yet synced
-    // to external) so we include the remaining allocation amount in
-    // the reference total for the bound check.
-    let in_flight = match &state.op_state {
-        OpState::Allocating(s) => s.remaining,
-        _ => 0,
-    };
-    let reference_total = state.total_assets.saturating_add(in_flight);
-    if reference_total > 0 && new_total > reference_total.saturating_mul(2) {
-        return Err(KernelError::from(
-            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets,
-        ));
-    }
-
-    state.external_assets = new_external_assets;
-    state.total_assets = new_total;
+    state.external_assets = sync_plan.new_external_assets;
+    state.total_assets = sync_plan.new_total_assets;
 
     let total_assets = state.total_assets;
     Ok(KernelResult::new(
@@ -1215,7 +1266,7 @@ fn handle_sync_external_assets(
         vec![KernelEffect::EmitEvent {
             event: crate::effects::KernelEvent::ExternalAssetsSynced {
                 op_id,
-                new_external_assets,
+                new_external_assets: sync_plan.new_external_assets,
                 total_assets,
             },
         }],
