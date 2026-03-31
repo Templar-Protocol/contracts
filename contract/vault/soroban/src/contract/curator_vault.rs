@@ -3,6 +3,7 @@ use super::helpers::{
     transition_to_runtime,
 };
 use super::*;
+use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 pub struct CuratorVault<S, A, E>
 where
@@ -580,7 +581,14 @@ where
             Self::reserve_op_id(state)?
         };
         self.apply_kernel_action(
-            KernelAction::begin_allocating(op_id, plan.to_vec(), now_ns),
+            KernelAction::begin_allocating(
+                op_id,
+                plan.iter()
+                    .copied()
+                    .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
+                    .collect(),
+                now_ns,
+            ),
             now_ns,
         )?;
         Ok(op_id)
@@ -598,7 +606,11 @@ where
             Self::reserve_op_id(state)?
         };
         self.apply_kernel_action(
-            KernelAction::begin_allocating(op_id, vec![(market, 0)], now_ns),
+            KernelAction::begin_allocating(
+                op_id,
+                vec![AllocationPlanEntry::new(market, 0)],
+                now_ns,
+            ),
             now_ns,
         )?;
         Ok(op_id)
