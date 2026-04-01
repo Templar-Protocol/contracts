@@ -941,6 +941,8 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 None::<u32>,
                 None::<SdkString>,
                 None::<i128>,
+                None::<i128>,
+                None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }
@@ -977,6 +979,8 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 Some(accounts.clone()),
                 None::<u32>,
                 None::<SdkString>,
+                None::<i128>,
+                None::<i128>,
                 None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
@@ -1024,6 +1028,8 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 Some(*market_id),
                 None::<SdkString>,
                 Some(*new_cap),
+                None::<i128>,
+                None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }
@@ -1038,6 +1044,8 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 Some(*market_id),
                 None::<SdkString>,
                 None::<i128>,
+                None::<i128>,
+                None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }
@@ -1051,7 +1059,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 None::<Vec<Address>>,
                 Some(0u32),
                 Some(cap_group_id.clone()),
-                *new_cap,
+                Some(*new_cap),
+                None::<i128>,
+                None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }
@@ -1065,7 +1075,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 None::<Vec<Address>>,
                 Some(0u32),
                 Some(cap_group_id.clone()),
-                *new_relative_cap_wad,
+                Some(*new_relative_cap_wad),
+                None::<i128>,
+                None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }
@@ -1080,6 +1092,8 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 Some(*market_id),
                 Some(cap_group_id.clone()),
                 Some(0i128),
+                None::<i128>,
+                None::<i128>,
             );
             authorize_and_invoke(env, &vault, &fn_name, args.into_val(env));
         }

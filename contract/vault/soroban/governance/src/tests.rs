@@ -45,14 +45,14 @@ impl MockVault {
     pub fn set_governance_config(
         env: Env,
         _caller: Address,
-        kind: u32,
+        kind: GovernanceConfigKind,
         primary: Option<Address>,
         many: Option<Vec<Address>>,
         _value_a: Option<i128>,
         _value_b: Option<i128>,
     ) {
         match kind {
-            kind if kind == GovernanceConfigKind::Sentinel as u32 => {
+            GovernanceConfigKind::Sentinel => {
                 let Some(sentinel) = primary else {
                     return;
                 };
@@ -60,7 +60,7 @@ impl MockVault {
                     .instance()
                     .set(&MockVaultKey::Sentinel, &sentinel);
             }
-            kind if kind == GovernanceConfigKind::Guardians as u32 => {
+            GovernanceConfigKind::Guardians => {
                 let Some(guardians) = many else {
                     return;
                 };
@@ -109,7 +109,7 @@ fn sentinel_first_change_immediate_second_timelocked() {
 
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -153,7 +153,7 @@ fn sentinel_first_change_immediate_second_timelocked() {
 
     env.ledger().set(LedgerInfo {
         timestamp: 106,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -172,7 +172,7 @@ fn pause_immediate_unpause_timelocked() {
 
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -207,7 +207,7 @@ fn pause_immediate_unpause_timelocked() {
 
     env.ledger().set(LedgerInfo {
         timestamp: 106,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -224,7 +224,7 @@ fn revoke_kind_removes_all_matching() {
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -274,7 +274,7 @@ fn timelock_config_increase_immediate_decrease_timelocked() {
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -322,7 +322,7 @@ fn other_action_approval_and_consume() {
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -348,7 +348,7 @@ fn other_action_approval_and_consume() {
 
     env.ledger().set(LedgerInfo {
         timestamp: 106,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -393,7 +393,7 @@ fn abdicated_action_is_rejected() {
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -422,7 +422,7 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 
@@ -444,7 +444,7 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
 
     env.ledger().set(LedgerInfo {
         timestamp: 106,
-        protocol_version: 23,
+        protocol_version: 25,
         ..Default::default()
     });
 

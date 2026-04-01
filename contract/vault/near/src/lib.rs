@@ -1775,7 +1775,11 @@ impl Contract {
             }
         }
 
-        self.apply_kernel_refresh_fees(now, cur_total_assets);
+        if now > anchor.timestamp_ns.0 {
+            self.apply_kernel_refresh_fees(now, cur_total_assets);
+        } else {
+            self.fee_anchor.total_assets = cur_total_assets.into();
+        }
     }
 
     fn apply_kernel_refresh_fees(&mut self, now: u64, cur_total_assets: u128) {

@@ -4505,6 +4505,8 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
         owner: account_id_to_address(&owner),
         escrow_shares: 0,
     });
+    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
+    c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
 
     let res = c.execute_withdraw_02_reconcile_position(
         Ok(None),

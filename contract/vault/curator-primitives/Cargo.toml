@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-std = []
+std = ["borsh-schema"]
 borsh = ["dep:borsh", "templar-vault-kernel/borsh"]
 borsh-schema = ["borsh", "borsh/unstable__schema", "templar-vault-kernel/borsh-schema"]
 postcard = ["dep:postcard", "serde", "templar-vault-kernel/postcard"]
