@@ -674,7 +674,7 @@ pub async fn requires_network_update_prices_updates_redstone_market(
     assert!(price_data_before.is_empty());
 
     let response = templar_relayer::route::update_prices::update_prices(
-        State(app),
+        State(app.clone()),
         Json(UpdatePricesRequest {
             market_ids: vec![market.id().clone(), market.id().clone()],
         }),
@@ -685,6 +685,20 @@ pub async fn requires_network_update_prices_updates_redstone_market(
         panic!("update_prices should succeed");
     };
     assert_eq!(response.market_ids, vec![market.id().clone()]);
+
+    let SimpleResponse::Success(prices) =
+        templar_relayer::route::get_market_prices::get_market_prices(
+            State(app),
+            Query(GetMarketPricesRequest {
+                market_id: market.id().clone(),
+            }),
+        )
+        .await
+    else {
+        panic!("get_market_prices should succeed");
+    };
+    assert!(prices.borrow.is_some());
+    assert!(prices.collateral.is_some());
 
     let price_data_after = redstone_adapter
         .read_price_data(vec![usdc.clone(), btc.clone()])
