@@ -9,6 +9,7 @@ use templar_vault_kernel::state::queue::{
     compute_queue_status, compute_settlement, count_satisfiable, PendingWithdrawal,
 };
 use templar_vault_kernel::types::Address;
+use templar_vault_kernel::TimestampNs;
 
 fn build_withdrawals(len: usize) -> Vec<PendingWithdrawal> {
     let mut withdrawals = Vec::with_capacity(len);
@@ -17,7 +18,7 @@ fn build_withdrawals(len: usize) -> Vec<PendingWithdrawal> {
         let receiver = addr_with_byte((i as u8).wrapping_add(1));
         let escrow_shares = 50_000u128 + i as u128;
         let expected_assets = 75_000u128 + (i as u128 * 7);
-        let requested_at_ns = i as u64 * 1_000_000_000u64;
+        let requested_at_ns = TimestampNs(i as u64 * 1_000_000_000u64);
         withdrawals.push(PendingWithdrawal::new(
             owner,
             receiver,

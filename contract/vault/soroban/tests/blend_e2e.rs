@@ -75,7 +75,7 @@ fn setup_blend_pool(
         &String::from_str(env, "templar"),
         &BytesN::<32>::random(env),
         &Address::generate(env),
-        &0_1000000,
+        &1_000_000,
         &4,
         &1_0000000,
     );
@@ -90,7 +90,7 @@ fn setup_blend_pool(
     blend
         .backstop
         .mock_all_auths()
-        .deposit(&deployer, &pool_addr, &50_000_0000000);
+        .deposit(&deployer, &pool_addr, &500_000_000_000);
     pool_client.mock_all_auths().set_status(&3);
     pool_client.mock_all_auths().update_status();
 
@@ -164,9 +164,9 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         .unwrap();
     });
 
-    let deposit_amount = 1_000_0000000;
-    let supply_amount = 600_0000000;
-    let withdraw_amount = 250_0000000;
+    let deposit_amount = 10_000_000_000;
+    let supply_amount = 6_000_000_000;
+    let withdraw_amount = 2_500_000_000;
 
     asset_admin.mint(&user, &deposit_amount);
 

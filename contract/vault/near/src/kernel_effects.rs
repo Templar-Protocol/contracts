@@ -153,6 +153,10 @@ impl KernelEffectContext {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "event emission is a direct variant-to-log dispatch table"
+)]
 fn emit_kernel_event(
     event: &KernelEvent,
     ctx: &KernelEffectContext,
@@ -204,7 +208,7 @@ fn emit_kernel_event(
                 owner,
                 receiver,
             }
-            .emit()
+            .emit();
         }
         KernelEvent::WithdrawalCollected {
             op_id,
@@ -246,7 +250,7 @@ fn emit_kernel_event(
                 }
                 .to_string(),
             }
-            .emit()
+            .emit();
         }
         KernelEvent::RefreshStarted { op_id, plan_len } => KernelEventLog::RefreshStarted {
             op_id: U64(*op_id),
@@ -254,7 +258,7 @@ fn emit_kernel_event(
         }
         .emit(),
         KernelEvent::RefreshCompleted { op_id } => {
-            KernelEventLog::RefreshCompleted { op_id: U64(*op_id) }.emit()
+            KernelEventLog::RefreshCompleted { op_id: U64(*op_id) }.emit();
         }
         KernelEvent::PayoutCompleted {
             op_id,
@@ -284,7 +288,7 @@ fn emit_kernel_event(
                 assets_in: U128(*assets_in),
                 shares_out: U128(*shares_out),
             }
-            .emit()
+            .emit();
         }
         KernelEvent::AtomicWithdrawProcessed {
             owner,
@@ -300,7 +304,7 @@ fn emit_kernel_event(
                 shares_burned: U128(*shares_burned),
                 assets_out: U128(*assets_out),
             }
-            .emit()
+            .emit();
         }
         KernelEvent::WithdrawalRequested {
             id,
@@ -318,7 +322,7 @@ fn emit_kernel_event(
                 shares: U128(*shares),
                 expected_assets: U128(*expected_assets),
             }
-            .emit()
+            .emit();
         }
         KernelEvent::ExternalAssetsSynced {
             op_id,
@@ -339,14 +343,14 @@ fn emit_kernel_event(
         }
         .emit(),
         KernelEvent::PauseUpdated { paused } => {
-            KernelEventLog::PauseUpdated { paused: *paused }.emit()
+            KernelEventLog::PauseUpdated { paused: *paused }.emit();
         }
         KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
             KernelEventLog::EmergencyResetCompleted {
                 op_id: U64(*op_id),
                 from_state: *from_state,
             }
-            .emit()
+            .emit();
         }
     }
 

@@ -4,6 +4,8 @@ members = [
     "common",
     "contract/lst-oracle",
     "contract/market",
+    "contract/proxy-oracle",
+    "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
     "contract/universal-account",

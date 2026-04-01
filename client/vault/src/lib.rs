@@ -10,6 +10,7 @@ use near_primitives::errors::InvalidTxError;
 use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{Deserialize, Serialize};
+use templar_vault_kernel::Address as KernelAddress;
 
 pub use client::{VaultClient, VaultClientConfig};
 pub use key_pool::{KeyCredential, KeyInfo, KeyPoolClient, KeyPoolConfig, PoolError, PoolHealth};
@@ -452,7 +453,7 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
         Ok(match value {
             Restrictions::Paused => templar_common::vault::Restrictions::Paused,
             Restrictions::Blacklist(addresses) => {
-                let list: Vec<[u8; 32]> = addresses
+                let list: Vec<KernelAddress> = addresses
                     .iter()
                     .map(String::as_str)
                     .map(parse_hex_address)
@@ -460,7 +461,7 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
                 templar_common::vault::Restrictions::Blacklist(list)
             }
             Restrictions::Whitelist(addresses) => {
-                let list: Vec<[u8; 32]> = addresses
+                let list: Vec<KernelAddress> = addresses
                     .iter()
                     .map(String::as_str)
                     .map(parse_hex_address)
@@ -1104,11 +1105,11 @@ pub(crate) fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, 
     NearAccountId::try_from(account_id.clone())
 }
 
-fn address_to_hex(addr: &[u8; 32]) -> String {
-    format!("0x{}", hex::encode(addr))
+fn address_to_hex(addr: &KernelAddress) -> String {
+    format!("0x{}", hex::encode(addr.0))
 }
 
-fn parse_hex_address(input: &str) -> Result<[u8; 32], ErrorWrapper> {
+fn parse_hex_address(input: &str) -> Result<KernelAddress, ErrorWrapper> {
     let trimmed = input.trim();
     let hex_str = trimmed
         .strip_prefix("0x")
@@ -1125,7 +1126,7 @@ fn parse_hex_address(input: &str) -> Result<[u8; 32], ErrorWrapper> {
     }
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
-    Ok(out)
+    Ok(KernelAddress(out))
 }
 
 #[derive(uniffi::Error, Debug)]

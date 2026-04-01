@@ -37,6 +37,24 @@ use templar_vault_kernel::{
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
 
+type ProxyCoreView = (
+    (
+        soroban_sdk::Address,
+        soroban_sdk::Address,
+        soroban_sdk::Address,
+        soroban_sdk::Address,
+    ),
+    (i128, i128, bool),
+    (i128, i128, i128, i128),
+    (i128, u64, i128, i128),
+);
+type ProxyPolicyView = (
+    soroban_sdk::Vec<u32>,
+    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
+);
+type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
+type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
+
 // Test Helpers
 
 fn test_config() -> ContractConfig {
@@ -80,32 +98,16 @@ impl<'a> VaultProxy<'a> {
         Self { env }
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "test proxy mirrors compact contract ABI"
+    )]
     fn view(
         &self,
         owner: soroban_sdk::Address,
         assets: i128,
         shares: i128,
-    ) -> Result<
-        (
-            (
-                (
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                ),
-                (i128, i128, bool),
-                (i128, i128, i128, i128),
-                (i128, u64, i128, i128),
-            ),
-            (
-                soroban_sdk::Vec<u32>,
-                soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
-            ),
-            (i128, i128, i128, i128, i128, i128, i128, i128),
-        ),
-        templar_soroban_runtime::ContractError,
-    > {
+    ) -> Result<ProxyViewResponse, templar_soroban_runtime::ContractError> {
         SorobanVaultContract::proxy_view(self.env.clone(), owner, assets, shares)
     }
 
@@ -316,10 +318,12 @@ fn soroban_contract_preview_deposit_matches_kernel(
 
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
-        let mut state = VaultState::default();
-        state.total_assets = 10_000;
-        state.total_shares = 8_000;
-        state.idle_assets = 10_000;
+        let state = VaultState {
+            total_assets: 10_000,
+            total_shares: 8_000,
+            idle_assets: 10_000,
+            ..Default::default()
+        };
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
@@ -354,10 +358,12 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
         .unwrap();
 
         let mut storage = SorobanStorage::new(&env);
-        let mut state = VaultState::default();
-        state.total_assets = 10_000;
-        state.total_shares = 8_000;
-        state.idle_assets = 10_000;
+        let state = VaultState {
+            total_assets: 10_000,
+            total_shares: 8_000,
+            idle_assets: 10_000,
+            ..Default::default()
+        };
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
@@ -400,11 +406,13 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
         );
 
         let mut storage = SorobanStorage::new(&env);
-        let mut state = VaultState::default();
-        state.total_assets = 1_500;
-        state.total_shares = 1_000;
-        state.idle_assets = 1_500;
-        state.fee_anchor = FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0));
+        let state = VaultState {
+            total_assets: 1_500,
+            total_shares: 1_000,
+            idle_assets: 1_500,
+            fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
+            ..Default::default()
+        };
         storage
             .save_state(&VersionedState::new(state.clone()))
             .unwrap();
@@ -448,10 +456,12 @@ fn soroban_contract_preview_withdraw_matches_kernel(
     let proxy = VaultProxy::new(&env);
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
-        let mut state = VaultState::default();
-        state.total_assets = 20_000;
-        state.total_shares = 12_000;
-        state.idle_assets = 20_000;
+        let state = VaultState {
+            total_assets: 20_000,
+            total_shares: 12_000,
+            idle_assets: 20_000,
+            ..Default::default()
+        };
         let versioned = VersionedState::new(state.clone());
         storage.save_state(&versioned).unwrap();
 
@@ -488,13 +498,15 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        let mut state = VaultState::default();
-        state.op_state = OpState::Allocating(AllocatingState {
-            op_id: 1,
-            index: 0,
-            remaining: 0,
-            plan: Vec::new(),
-        });
+        let state = VaultState {
+            op_state: OpState::Allocating(AllocatingState {
+                op_id: 1,
+                index: 0,
+                remaining: 0,
+                plan: Vec::new(),
+            }),
+            ..Default::default()
+        };
         let mut storage = SorobanStorage::new(&env);
         let versioned = VersionedState::new(state);
         storage.save_state(&versioned).unwrap();
@@ -1538,11 +1550,13 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
         .unwrap();
 
         let mut storage = SorobanStorage::new(&env);
-        let mut state = VaultState::default();
-        state.total_assets = 500;
-        state.total_shares = 500;
-        state.idle_assets = 500;
-        state.fee_anchor = FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0));
+        let state = VaultState {
+            total_assets: 500,
+            total_shares: 500,
+            idle_assets: 500,
+            fee_anchor: FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0)),
+            ..Default::default()
+        };
         storage
             .save_state(&VersionedState::new(state))
             .expect("save state");

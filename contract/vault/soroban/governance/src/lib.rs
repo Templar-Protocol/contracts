@@ -19,6 +19,7 @@ use templar_curator_primitives::governance::{
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
 use templar_vault_kernel::math::wad::Wad;
+use templar_vault_kernel::TimestampNs;
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
@@ -457,7 +458,7 @@ impl SorobanVaultGovernanceContract {
         }
 
         let now_ns = ledger_timestamp_ns(&env)?;
-        let timelock_ns = load_timelocks(&env).get(timelock_kind_for_action(&action));
+        let timelock_ns = TimestampNs(load_timelocks(&env).get(timelock_kind_for_action(&action)));
         let mut queue = load_queue(&env);
         queue.schedule(QueuedProposal { id, action }, now_ns, timelock_ns);
         let valid_after_ns = queue
@@ -466,7 +467,11 @@ impl SorobanVaultGovernanceContract {
             .unwrap_or(now_ns);
         save_queue(&env, &queue);
 
-        ProposalSubmitted { id, valid_after_ns }.publish(&env);
+        ProposalSubmitted {
+            id,
+            valid_after_ns: valid_after_ns.into(),
+        }
+        .publish(&env);
         Ok(id)
     }
 }
@@ -579,12 +584,16 @@ fn decide_submission(
         }
         GovernanceAction::SetTimelock(kind, proposed) => {
             let current = load_timelocks(env).get(*kind);
-            timelock_config_decision(current, *proposed, MIN_TIMELOCK_NS, MAX_TIMELOCK_NS).map_err(
-                |err| match err {
-                    TimelockConfigError::NoChange => GovernanceError::NoChange,
-                    TimelockConfigError::OutOfBounds => GovernanceError::TimelockOutOfBounds,
-                },
+            timelock_config_decision(
+                TimestampNs(current),
+                TimestampNs(*proposed),
+                TimestampNs(MIN_TIMELOCK_NS),
+                TimestampNs(MAX_TIMELOCK_NS),
             )
+            .map_err(|err| match err {
+                TimelockConfigError::NoChange => GovernanceError::NoChange,
+                TimelockConfigError::OutOfBounds => GovernanceError::TimelockOutOfBounds,
+            })
         }
         GovernanceAction::SetFees(proposed) => {
             let current: FeeParams = env
@@ -722,6 +731,10 @@ fn to_shared_restrictions(
     }
 }
 
+#[allow(
+    clippy::mutable_key_type,
+    reason = "Soroban SDK Address is the restriction identity type consumed by shared governance logic"
+)]
 fn accounts_to_set(accounts: &Vec<Address>) -> BTreeSet<Address> {
     let mut set = BTreeSet::new();
     for account in accounts.iter() {
@@ -796,7 +809,7 @@ fn load_queue(env: &Env) -> PendingQueue<QueuedProposal> {
                 id: item.id,
                 action: item.action.clone(),
             },
-            valid_at_ns: item.valid_at_ns,
+            valid_at_ns: TimestampNs(item.valid_at_ns),
         });
     }
 
@@ -809,7 +822,7 @@ fn save_queue(env: &Env, queue: &PendingQueue<QueuedProposal>) {
         stored.push_back(StoredPending {
             id: entry.value.id,
             action: entry.value.action.clone(),
-            valid_at_ns: entry.valid_at_ns,
+            valid_at_ns: entry.valid_at_ns.into(),
         });
     }
     env.storage()
@@ -833,7 +846,7 @@ fn load_proposal(env: &Env, proposal_id: u64) -> Result<PendingProposal, Governa
             return Ok(PendingProposal {
                 id: entry.value.id,
                 action: entry.value.action.clone(),
-                valid_after_ns: entry.valid_at_ns,
+                valid_after_ns: entry.valid_at_ns.into(),
             });
         }
     }
@@ -1207,8 +1220,10 @@ fn require_not_abdicated(env: &Env, action: &GovernanceAction) -> Result<(), Gov
     Ok(())
 }
 
-fn ledger_timestamp_ns(env: &Env) -> Result<u64, GovernanceError> {
-    seconds_to_nanoseconds(env.ledger().timestamp()).ok_or(GovernanceError::ArithmeticOverflow)
+fn ledger_timestamp_ns(env: &Env) -> Result<TimestampNs, GovernanceError> {
+    seconds_to_nanoseconds(env.ledger().timestamp())
+        .map(TimestampNs)
+        .ok_or(GovernanceError::ArithmeticOverflow)
 }
 
 fn is_contract_address(addr: &Address) -> bool {

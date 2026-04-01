@@ -248,7 +248,7 @@ pub(crate) fn migrate_legacy_paused(env: &Env) {
 }
 
 #[inline(never)]
-pub(crate) fn load_vault_bootstrap<'a>(env: &'a Env) -> Result<VaultBootstrap<'a>, RuntimeError> {
+pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, RuntimeError> {
     if migration_in_progress(env) {
         return Err(RuntimeError::invalid_state(
             "migration in progress - call migrate() first",

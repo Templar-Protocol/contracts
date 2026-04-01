@@ -69,7 +69,7 @@ impl<'a, S: GuardSpec<Contract>> OpGuard<'a, S> {
     }
 }
 
-impl<'a, S: GuardSpec<Contract>> Deref for OpGuard<'a, S> {
+impl<S: GuardSpec<Contract>> Deref for OpGuard<'_, S> {
     type Target = Contract;
 
     fn deref(&self) -> &Self::Target {
@@ -77,7 +77,7 @@ impl<'a, S: GuardSpec<Contract>> Deref for OpGuard<'a, S> {
     }
 }
 
-impl<'a, S: GuardSpec<Contract>> DerefMut for OpGuard<'a, S> {
+impl<S: GuardSpec<Contract>> DerefMut for OpGuard<'_, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }

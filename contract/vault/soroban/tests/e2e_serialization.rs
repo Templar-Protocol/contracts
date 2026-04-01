@@ -31,7 +31,7 @@ fn allocator_addr() -> Address {
     Address([3u8; 32])
 }
 
-fn fresh_loaded_vault<'a>(env: &'a Env) -> SorobanTestVault<'a> {
+fn fresh_loaded_vault(env: &Env) -> SorobanTestVault<'_> {
     let mut vault = CuratorVault::new(
         test_config(),
         SorobanStorage::new(env),

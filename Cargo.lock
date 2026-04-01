@@ -13354,6 +13354,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-contract"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.15",
+ "hex-literal",
+ "near-contract-standards",
+ "near-sdk",
+ "near-sdk-contract-tools",
+ "near-workspaces 0.21.0",
+ "rstest",
+ "templar-common",
+ "test-utils",
+ "tokio",
+]
+
+[[package]]
+name = "templar-redstone-adapter-contract"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.15",
+ "hex-literal",
+ "near-sdk",
+ "near-sdk-contract-tools",
+ "primitive-types 0.14.0",
+ "rstest",
+ "templar-common",
+]
+
+[[package]]
 name = "templar-redstone-bridge"
 version = "0.1.0"
 dependencies = [
@@ -13541,6 +13570,7 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-vault-kernel",
  "thiserror 2.0.17",
  "tokio",
  "tracing",

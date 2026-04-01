@@ -66,16 +66,16 @@ pub enum TimelockedAction {
 }
 
 fn to_shared_restrictions(
-    restrictions: &Option<Restrictions>,
+    restrictions: Option<&Restrictions>,
 ) -> Option<shared_gov::Restrictions<Address>> {
     match restrictions {
         None => None,
         Some(Restrictions::Paused) => Some(shared_gov::Restrictions::Paused),
         Some(Restrictions::Blacklist(list)) => Some(shared_gov::Restrictions::Blacklist(
-            list.iter().cloned().collect(),
+            list.iter().copied().collect(),
         )),
         Some(Restrictions::Whitelist(list)) => Some(shared_gov::Restrictions::Whitelist(
-            list.iter().cloned().collect(),
+            list.iter().copied().collect(),
         )),
     }
 }
@@ -468,7 +468,7 @@ impl Contract {
     /// - relative cap
     /// - market ↔ group membership
     pub fn submit_cap_group_update(&mut self, update: CapGroupUpdate) {
-        let action = match PrimitiveCapGroupUpdate::from(update) {
+        let action = match update {
             PrimitiveCapGroupUpdate::SetCap {
                 cap_group_id,
                 new_cap,
@@ -503,7 +503,7 @@ impl Contract {
         AuthPattern::CuratorOrOwner.require();
         self.ensure_idle();
 
-        let action = match PrimitiveCapGroupUpdateKey::from(update) {
+        let action = match update {
             PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => self
                 .take_timelock(|a| {
                     matches!(
@@ -548,7 +548,7 @@ impl Contract {
     pub fn revoke_pending_cap_group_update(&mut self, update: CapGroupUpdateKey) {
         AuthPattern::CuratorOrOwner.require();
 
-        match PrimitiveCapGroupUpdateKey::from(update) {
+        match update {
             PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => {
                 if self.revoke_timelocks(|a| {
                     matches!(
@@ -770,7 +770,7 @@ impl Contract {
                     None | Some(TimelockKind::Config) => {
                         self.governance_timelocks.timelock_config_ns
                     }
-                    Some(TimelockKind::Guardian) | Some(TimelockKind::Sentinel) => {
+                    Some(TimelockKind::Guardian | TimelockKind::Sentinel) => {
                         self.governance_timelocks.sentinel_ns
                     }
                     Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,
@@ -821,9 +821,8 @@ impl Contract {
                     max_rate: proposed_fees.max_total_assets_growth_rate,
                 };
 
-                shared_gov::FeeConfig::evaluate_change(&current, &proposed)
-                    .map(|decision| decision.timelocked)
-                    .unwrap_or_else(|err| {
+                shared_gov::FeeConfig::evaluate_change(&current, &proposed).map_or_else(
+                    |err| {
                         panic_with_message(match err {
                             shared_gov::FeeChangeError::PerformanceFeeTooHigh => {
                                 ERR_PERFORMANCE_FEE_TOO_HIGH
@@ -833,7 +832,9 @@ impl Contract {
                             }
                             shared_gov::FeeChangeError::NoChange => ERR_NO_FEE_CHANGES,
                         })
-                    })
+                    },
+                    |decision| decision.timelocked,
+                )
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 Abdicator::require_not_abdicated(&self.abdicator, "set_restrictions");
@@ -842,8 +843,8 @@ impl Contract {
                     "No restriction changes"
                 );
 
-                let current = to_shared_restrictions(&self.gate.restrictions);
-                let proposed = to_shared_restrictions(restrictions);
+                let current = to_shared_restrictions(self.gate.restrictions.as_ref());
+                let proposed = to_shared_restrictions(restrictions.as_ref());
                 let is_relaxing = shared_gov::Restrictions::determine_relaxed(&current, &proposed);
 
                 if is_relaxing {
@@ -1032,6 +1033,10 @@ impl Contract {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "governance application is a large dispatch table over action variants"
+    )]
     fn apply_immediately(&mut self, action: &TimelockedAction) {
         match action {
             TimelockedAction::SentinelChange { account } => {
@@ -1056,7 +1061,7 @@ impl Contract {
                         self.governance_timelocks.market_removal_ns = new_ns;
                         self.governance_timelocks.cap_ns = new_ns;
                     }
-                    Some(TimelockKind::Guardian) | Some(TimelockKind::Sentinel) => {
+                    Some(TimelockKind::Guardian | TimelockKind::Sentinel) => {
                         self.governance_timelocks.sentinel_ns = new_ns;
                     }
                     Some(TimelockKind::Config) => {
@@ -1190,7 +1195,7 @@ impl Contract {
                     "No restriction changes"
                 );
 
-                self.gate.restrictions = restrictions.clone();
+                self.gate.restrictions.clone_from(restrictions);
                 Event::RestrictionsSet {
                     restrictions: restrictions.clone(),
                 }
@@ -1274,7 +1279,7 @@ impl Contract {
                 }
 
                 let rec = self.market_record_by_id_mut_or_panic(market_id);
-                rec.cfg.cap_group_id = cap_group.clone();
+                rec.cfg.cap_group_id.clone_from(cap_group);
                 Event::CapGroupMembershipSet {
                     market: market_id,
                     cap_group: cap_group.clone(),
@@ -1304,7 +1309,7 @@ impl Contract {
             TimelockedAction::SentinelChange { .. } => self.governance_timelocks.sentinel_ns,
             TimelockedAction::TimelockConfigChange { kind, .. } => match kind {
                 None | Some(TimelockKind::Config) => self.governance_timelocks.timelock_config_ns,
-                Some(TimelockKind::Guardian) | Some(TimelockKind::Sentinel) => {
+                Some(TimelockKind::Guardian | TimelockKind::Sentinel) => {
                     self.governance_timelocks.sentinel_ns
                 }
                 Some(TimelockKind::Cap) => self.governance_timelocks.cap_ns,

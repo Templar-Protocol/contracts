@@ -469,8 +469,7 @@ where
             AtomicPayoutKind::Withdraw,
             now_ns,
         )?;
-        Ok(to_i128(burned.shares_burned)
-            .map_err(|_| RuntimeError::invalid_input("burn overflow"))?)
+        to_i128(burned.shares_burned).map_err(|_| RuntimeError::invalid_input("burn overflow"))
     }
 
     #[inline(never)]
@@ -497,8 +496,8 @@ where
             AtomicPayoutKind::Redeem,
             now_ns,
         )?;
-        Ok(to_i128(summary.assets_transferred)
-            .map_err(|_| RuntimeError::invalid_input("asset overflow"))?)
+        to_i128(summary.assets_transferred)
+            .map_err(|_| RuntimeError::invalid_input("asset overflow"))
     }
 
     #[inline(never)]

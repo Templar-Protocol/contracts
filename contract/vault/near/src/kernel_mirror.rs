@@ -13,6 +13,12 @@ use templar_vault_kernel::TimestampNs;
 use crate::Contract;
 
 impl Contract {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "MAX_PENDING is a small protocol constant and fits in u32 by design"
+    )]
+    const MAX_PENDING_WITHDRAWALS_MIRROR: u32 = MAX_PENDING as u32;
+
     /// Build a kernel `VaultState` snapshot from NEAR storage fields.
     #[must_use]
     pub(crate) fn kernel_state_mirror(&self) -> VaultState {
@@ -60,7 +66,7 @@ impl Contract {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: 0,
             withdrawal_cooldown_ns: self.withdrawal_cooldown_ns,
-            max_pending_withdrawals: MAX_PENDING as u32,
+            max_pending_withdrawals: Self::MAX_PENDING_WITHDRAWALS_MIRROR,
             paused,
             virtual_shares,
             virtual_assets,
@@ -89,14 +95,14 @@ mod tests {
     use templar_vault_kernel::actions::apply_action;
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::state::queue::PendingWithdrawal as KernelPendingWithdrawal;
-    use templar_vault_kernel::KernelAction;
+    use templar_vault_kernel::{KernelAction, TimestampNs};
 
     fn make_market_config(cap: u128) -> MarketConfiguration {
         MarketConfiguration {
             cap: U128(cap),
             cap_group_id: None,
             enabled: true,
-            removable_at: 0,
+            removable_at: TimestampNs::ZERO,
         }
     }
 
@@ -119,24 +125,36 @@ mod tests {
         let owner_b = mk(3);
         let receiver_b = mk(4);
 
-        let owner_a_addr = account_id_to_address(&owner_a);
-        let receiver_a_addr = account_id_to_address(&receiver_a);
-        let owner_b_addr = account_id_to_address(&owner_b);
-        let receiver_b_addr = account_id_to_address(&receiver_b);
+        let owner_one_addr = account_id_to_address(&owner_a);
+        let receiver_one_addr = account_id_to_address(&receiver_a);
+        let owner_two_addr = account_id_to_address(&owner_b);
+        let receiver_two_addr = account_id_to_address(&receiver_b);
 
-        c.address_book.insert(owner_a_addr, owner_a.clone());
-        c.address_book.insert(receiver_a_addr, receiver_a.clone());
-        c.address_book.insert(owner_b_addr, owner_b.clone());
-        c.address_book.insert(receiver_b_addr, receiver_b.clone());
+        c.address_book.insert(owner_one_addr, owner_a.clone());
+        c.address_book.insert(receiver_one_addr, receiver_a.clone());
+        c.address_book.insert(owner_two_addr, owner_b.clone());
+        c.address_book.insert(receiver_two_addr, receiver_b.clone());
 
         let mut pending = BTreeMap::new();
         pending.insert(
             3,
-            KernelPendingWithdrawal::new(owner_a_addr, receiver_a_addr, 250, 400, 77),
+            KernelPendingWithdrawal::new(
+                owner_one_addr,
+                receiver_one_addr,
+                250,
+                400,
+                TimestampNs(77),
+            ),
         );
         pending.insert(
             4,
-            KernelPendingWithdrawal::new(owner_b_addr, receiver_b_addr, 300, 600, 88),
+            KernelPendingWithdrawal::new(
+                owner_two_addr,
+                receiver_two_addr,
+                300,
+                600,
+                TimestampNs(88),
+            ),
         );
         c.withdraw_queue = templar_vault_kernel::WithdrawQueue::with_state(pending, 3, 5);
 
@@ -150,7 +168,10 @@ mod tests {
             total_assets.saturating_sub(c.idle_balance)
         );
         assert_eq!(kernel.fee_anchor.total_assets, c.fee_anchor.total_assets.0);
-        assert_eq!(kernel.fee_anchor.timestamp_ns, c.fee_anchor.timestamp_ns.0);
+        assert_eq!(
+            kernel.fee_anchor.timestamp_ns,
+            TimestampNs(c.fee_anchor.timestamp_ns.0)
+        );
         assert_eq!(kernel.next_op_id, c.next_op_id);
 
         assert!(kernel.withdraw_queue.check_invariants());
@@ -165,11 +186,11 @@ mod tests {
         assert_eq!(kernel.withdraw_queue.pending_withdrawals().len(), 2);
 
         let pending = kernel.withdraw_queue.pending_withdrawals().get(&3).unwrap();
-        assert_eq!(pending.owner, owner_a_addr);
-        assert_eq!(pending.receiver, receiver_a_addr);
+        assert_eq!(pending.owner, owner_one_addr);
+        assert_eq!(pending.receiver, receiver_one_addr);
         assert_eq!(pending.escrow_shares, 250);
         assert_eq!(pending.expected_assets, 400);
-        assert_eq!(pending.requested_at_ns, 77);
+        assert_eq!(pending.requested_at_ns, TimestampNs(77));
     }
 
     #[test]
@@ -202,7 +223,7 @@ mod tests {
                 receiver,
                 assets_in,
                 min_shares_out: 0,
-                now_ns: 1_000,
+                now_ns: TimestampNs(1_000),
             },
         )
         .expect("kernel deposit");
@@ -249,7 +270,7 @@ mod tests {
                 receiver,
                 shares,
                 min_assets_out: 0,
-                now_ns: 2_000,
+                now_ns: TimestampNs(2_000),
             },
         )
         .expect("kernel request withdraw");
@@ -266,7 +287,7 @@ mod tests {
             receiver,
             escrow_shares: shares,
             expected_assets: near_expected,
-            requested_at_ns: 2_000,
+            requested_at_ns: TimestampNs(2_000),
         };
 
         assert_eq!(*pending, expected);
@@ -304,7 +325,7 @@ mod tests {
                 receiver: sender_addr,
                 assets_in: deposit,
                 min_shares_out: 0,
-                now_ns: 1_000,
+                now_ns: TimestampNs(1_000),
             },
         )
         .expect("kernel deposit");
@@ -368,7 +389,7 @@ mod tests {
                 receiver: receiver_addr,
                 shares,
                 min_assets_out: expected_assets,
-                now_ns: now,
+                now_ns: TimestampNs(now),
             },
         )
         .expect("kernel request withdraw");

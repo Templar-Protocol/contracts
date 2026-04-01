@@ -227,7 +227,6 @@ mod contract_tests {
     use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
-    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
     use templar_vault_kernel::effects::KernelEffect;
@@ -961,40 +960,6 @@ mod contract_tests {
             };
             with_contract_vault(self.env, &mut call).map(|()| result.unwrap_or(0))
         }
-
-        fn view(
-            &self,
-            owner: soroban_sdk::Address,
-            assets: i128,
-            shares: i128,
-        ) -> Result<
-            (
-                (
-                    (
-                        soroban_sdk::Address,
-                        soroban_sdk::Address,
-                        soroban_sdk::Address,
-                        soroban_sdk::Address,
-                    ),
-                    (i128, i128, bool),
-                    (i128, i128, i128, i128),
-                    (i128, u64, i128, i128),
-                ),
-                (
-                    soroban_sdk::Vec<u32>,
-                    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
-                ),
-                (i128, i128, i128, i128, i128, i128, i128, i128),
-            ),
-            crate::error::ContractError,
-        > {
-            SorobanVaultContract::proxy_view(self.env.clone(), owner, assets, shares)
-        }
-
-        fn virtual_offsets(&self) -> Result<(i128, i128), crate::error::ContractError> {
-            let core = self.view(soroban_sdk::Address::generate(self.env), 0, 0)?.0;
-            Ok((core.1 .0, core.1 .1))
-        }
     }
 
     #[test]
@@ -1062,11 +1027,13 @@ mod contract_tests {
                 &perf_recipient,
             );
 
-            let mut state = VaultState::default();
-            state.total_assets = 1_500;
-            state.total_shares = 1_000;
-            state.idle_assets = 1_500;
-            state.fee_anchor = FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0));
+            let state = VaultState {
+                total_assets: 1_500,
+                total_shares: 1_000,
+                idle_assets: 1_500,
+                fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            };
             storage
                 .save_state(&VersionedState::new(state))
                 .expect("save state");
@@ -1128,10 +1095,12 @@ mod contract_tests {
                 .unwrap();
 
             let mut storage = SorobanStorage::new(&env);
-            let mut state = VaultState::default();
-            state.total_assets = 1_500;
-            state.total_shares = 1_000;
-            state.idle_assets = 1_500;
+            let state = VaultState {
+                total_assets: 1_500,
+                total_shares: 1_000,
+                idle_assets: 1_500,
+                ..Default::default()
+            };
             storage
                 .save_state(&VersionedState::new(state))
                 .expect("save state");
@@ -1949,12 +1918,14 @@ mod storage_tests {
             assert!(storage.load_state_blob().is_none());
 
             // Save state
-            let mut kernel = VaultState::default();
-            kernel.total_assets = 10000;
-            kernel.total_shares = 5000;
-            kernel.idle_assets = 2000;
-            kernel.external_assets = 8000;
-            kernel.next_op_id = 1;
+            let kernel = VaultState {
+                total_assets: 10000,
+                total_shares: 5000,
+                idle_assets: 2000,
+                external_assets: 8000,
+                next_op_id: 1,
+                ..Default::default()
+            };
             let versioned = VersionedState::new(kernel);
             let mut storage_mut = SorobanStorage::new(&env);
             Storage::save_state(&mut storage_mut, &versioned).unwrap();
@@ -2175,8 +2146,10 @@ mod storage_tests {
         let (env, contract_id) = contract_env;
         env.as_contract(&contract_id, || {
             let mut storage = SorobanStorage::new(&env);
-            let mut state = VaultState::default();
-            state.total_assets = 42;
+            let state = VaultState {
+                total_assets: 42,
+                ..Default::default()
+            };
             let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
             storage.save_state(&legacy).unwrap();
 

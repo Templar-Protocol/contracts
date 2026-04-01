@@ -1,3 +1,8 @@
+#![allow(
+    clippy::too_many_arguments,
+    reason = "Soroban contract entrypoints and generated client args are ABI-shaped"
+)]
+
 use super::helpers::{
     adapter_for_market, apply_fee_change, current_supply_queue_len, emit_admin_event,
     emit_alloc_event, emit_pause_state_event, extend_storage_ttl, get_config_address,
@@ -10,6 +15,24 @@ use super::helpers::{
 use super::*;
 use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
+
+type ProxyCoreView = (
+    (
+        soroban_sdk::Address,
+        soroban_sdk::Address,
+        soroban_sdk::Address,
+        soroban_sdk::Address,
+    ),
+    (i128, i128, bool),
+    (i128, i128, i128, i128),
+    (i128, u64, i128, i128),
+);
+type ProxyPolicyView = (
+    soroban_sdk::Vec<u32>,
+    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
+);
+type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
+type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
 
 fn required_address(
     value: Option<soroban_sdk::Address>,
@@ -451,7 +474,7 @@ impl SorobanVaultContract {
             let observed_total_assets = to_u128(invoke_total_assets(&env, &adapter, &asset_token))?;
 
             let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-                let plan = vec![AllocationPlanEntry::new(market.into(), amount_u128)];
+                let plan = vec![AllocationPlanEntry::new(market, amount_u128)];
                 let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
                 new_external = vault.complete_supply_allocation(
                     caller_kernel,
@@ -469,11 +492,8 @@ impl SorobanVaultContract {
             let realized_amount_u128 = to_u128(realized_amount)?;
 
             let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-                let op_id = vault.begin_allocation_withdraw_internal(
-                    caller_kernel,
-                    market.into(),
-                    now_ns,
-                )?;
+                let op_id =
+                    vault.begin_allocation_withdraw_internal(caller_kernel, market, now_ns)?;
                 new_external = vault.complete_withdraw_allocation(
                     caller_kernel,
                     market,
@@ -536,6 +556,10 @@ impl SorobanVaultContract {
         to_i128(new_external)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "governance policy entrypoint is an external contract API"
+    )]
     pub fn set_governance_policy(
         env: Env,
         caller: soroban_sdk::Address,
@@ -665,32 +689,16 @@ impl SorobanVaultContract {
         Ok(())
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "proxy view is a compact ABI surface consumed by tests and tooling"
+    )]
     pub fn proxy_view(
         env: Env,
         owner: soroban_sdk::Address,
         assets: i128,
         shares: i128,
-    ) -> Result<
-        (
-            (
-                (
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                ),
-                (i128, i128, bool),
-                (i128, i128, i128, i128),
-                (i128, u64, i128, i128),
-            ),
-            (
-                soroban_sdk::Vec<u32>,
-                soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
-            ),
-            (i128, i128, i128, i128, i128, i128, i128, i128),
-        ),
-        ContractError,
-    > {
+    ) -> Result<ProxyViewResponse, ContractError> {
         let (virtual_shares, virtual_assets) = load_virtual_offsets(&env);
         let storage = SorobanStorage::new(&env);
         let (total_shares, idle_assets, external_assets) = query_vault_snapshot(&env);

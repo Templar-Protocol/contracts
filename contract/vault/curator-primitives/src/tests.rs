@@ -3,8 +3,6 @@
 //! These tests validate that the curator primitives produce deterministic outputs
 //! when given the same inputs, ensuring compatibility with the NEAR vault implementation.
 
-#![cfg(test)]
-
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -22,8 +20,8 @@ use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
 use templar_vault_kernel::Wad;
 #[cfg(feature = "recovery")]
 use templar_vault_kernel::{
-    AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
-    WithdrawingState,
+    state::op_state::AllocationPlanEntry, AllocatingState, KernelAction, OpState, PayoutOutcome,
+    PayoutState, RefreshingState, WithdrawingState,
 };
 
 // WAD constant matching templar-vault-kernel
@@ -131,7 +129,7 @@ mod auth_unit_tests {
         fn authorize(
             &self,
             action: ActionKind,
-            caller: Address,
+            _caller: Address,
             _proof: Option<&[u8]>,
         ) -> AuthResult<()> {
             if self.paused && action != ActionKind::Pause {
@@ -214,7 +212,7 @@ mod auth_unit_tests {
     #[test]
     fn test_permissive_auth() {
         let auth = TestPermissiveAuth;
-        let caller = [0u8; 32];
+        let caller = Address([0u8; 32]);
 
         assert!(auth.authorize(ActionKind::Deposit, caller, None).is_ok());
         assert!(auth.authorize(ActionKind::Pause, caller, None).is_ok());
@@ -227,7 +225,7 @@ mod auth_unit_tests {
     #[test]
     fn test_strict_auth_allows_user_actions() {
         let auth = TestStrictAuth::new();
-        let caller = [0u8; 32];
+        let caller = Address([0u8; 32]);
 
         assert!(auth.authorize(ActionKind::Deposit, caller, None).is_ok());
         assert!(auth
@@ -240,7 +238,7 @@ mod auth_unit_tests {
     #[test]
     fn test_strict_auth_denies_privileged_actions() {
         let auth = TestStrictAuth::new();
-        let caller = [0u8; 32];
+        let caller = Address([0u8; 32]);
 
         let result = auth.authorize(ActionKind::Pause, caller, None);
         assert!(matches!(result, Err(AuthError::NotAuthorized { .. })));
@@ -252,7 +250,7 @@ mod auth_unit_tests {
     #[test]
     fn test_strict_auth_paused() {
         let auth = TestStrictAuth::paused();
-        let caller = [0u8; 32];
+        let caller = Address([0u8; 32]);
 
         assert!(auth.is_paused());
 
@@ -528,10 +526,10 @@ fn golden_recovery_allocating_state() {
         index: 2,
         remaining: 500_000_000_000,
         plan: vec![
-            (0, 300_000_000_000),
-            (1, 200_000_000_000),
-            (2, 300_000_000_000),
-            (3, 200_000_000_000),
+            AllocationPlanEntry::new(0, 300_000_000_000),
+            AllocationPlanEntry::new(1, 200_000_000_000),
+            AllocationPlanEntry::new(2, 300_000_000_000),
+            AllocationPlanEntry::new(3, 200_000_000_000),
         ],
     });
 
@@ -885,7 +883,7 @@ mod cap_group_unit_tests {
     }
 
     #[test]
-    #[should_panic(expected = "cap group principal underflow")]
+    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
     fn test_remove_allocation_underflow_panics() {
         let cap = CapGroup::builder().absolute_cap(1000).build();
         let record = CapGroupRecord {
@@ -1004,8 +1002,8 @@ mod recovery_unit_tests {
     };
     use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
     use templar_vault_kernel::{
-        AllocatingState, KernelAction, OpState, PayoutOutcome, PayoutState, RefreshingState,
-        WithdrawingState,
+        state::op_state::AllocationPlanEntry, AllocatingState, KernelAction, OpState,
+        PayoutOutcome, PayoutState, RefreshingState, WithdrawingState,
     };
 
     #[test]
@@ -1026,7 +1024,12 @@ mod recovery_unit_tests {
             op_id: 1,
             index: 2,
             remaining: 500,
-            plan: vec![(0, 300), (1, 200), (2, 300), (3, 200)],
+            plan: vec![
+                AllocationPlanEntry::new(0, 300),
+                AllocationPlanEntry::new(1, 200),
+                AllocationPlanEntry::new(2, 300),
+                AllocationPlanEntry::new(3, 200),
+            ],
         });
 
         let ctx = RecoveryContext::new(1000);
@@ -1052,7 +1055,7 @@ mod recovery_unit_tests {
             op_id: 10,
             index: 0,
             remaining: 100,
-            plan: vec![(0, 100)],
+            plan: vec![AllocationPlanEntry::new(0, 100)],
         });
 
         let ctx = RecoveryContext::with_stuck_threshold(1_000, 500);
@@ -1068,7 +1071,7 @@ mod recovery_unit_tests {
             op_id: 11,
             index: 0,
             remaining: 100,
-            plan: vec![(0, 100)],
+            plan: vec![AllocationPlanEntry::new(0, 100)],
         });
 
         let ctx = RecoveryContext::forced(1_000);
@@ -1216,7 +1219,11 @@ mod recovery_unit_tests {
             op_id: 1,
             index: 2,
             remaining: 500,
-            plan: vec![(0, 300), (1, 200), (2, 300)],
+            plan: vec![
+                AllocationPlanEntry::new(0, 300),
+                AllocationPlanEntry::new(1, 200),
+                AllocationPlanEntry::new(2, 300),
+            ],
         };
 
         let outcome = handle_allocation_failure(&state, "Market unavailable");
@@ -1350,7 +1357,12 @@ mod recovery_unit_tests {
             op_id: 1,
             index: 2,
             remaining: 500,
-            plan: vec![(0, 300), (1, 200), (2, 300), (3, 200)],
+            plan: vec![
+                AllocationPlanEntry::new(0, 300),
+                AllocationPlanEntry::new(1, 200),
+                AllocationPlanEntry::new(2, 300),
+                AllocationPlanEntry::new(3, 200),
+            ],
         });
 
         let stats = compute_recovery_stats(&state);
@@ -1428,31 +1440,32 @@ mod recovery_unit_tests {
 mod governance_module_tests {
     pub use crate::governance::*;
     use alloc::collections::BTreeSet;
+    use templar_vault_kernel::TimestampNs;
 
     #[test]
     fn pending_value_maturity_is_time_based() {
         let pending = PendingValue {
             value: "ok",
-            valid_at_ns: 1_000,
+            valid_at_ns: TimestampNs(1_000),
         };
 
-        assert!(!pending.is_mature(999));
-        assert!(pending.is_mature(1_000));
-        assert!(pending.is_mature(1_001));
+        assert!(!pending.is_mature(TimestampNs(999)));
+        assert!(pending.is_mature(TimestampNs(1_000)));
+        assert!(pending.is_mature(TimestampNs(1_001)));
     }
 
     #[test]
     fn queue_take_mature_enforces_timelock() {
         let mut queue = PendingQueue::from(alloc::collections::VecDeque::from([PendingValue {
             value: "change",
-            valid_at_ns: 1_000,
+            valid_at_ns: TimestampNs(1_000),
         }]));
 
-        let not_ready = queue.take_mature(999, |value| *value == "change");
+        let not_ready = queue.take_mature(TimestampNs(999), |value| *value == "change");
         assert_eq!(not_ready, Err(PendingQueueError::NotMature));
         assert_eq!(queue.len(), 1);
 
-        let ready = queue.take_mature(1_000, |value| *value == "change");
+        let ready = queue.take_mature(TimestampNs(1_000), |value| *value == "change");
         assert_eq!(ready, Ok(Some("change")));
         assert!(queue.is_empty());
     }
@@ -1502,27 +1515,27 @@ mod rbac_module_tests {
 
     #[rstest::fixture]
     fn curator_addr() -> Address {
-        [1u8; 32]
+        Address([1u8; 32])
     }
 
     #[rstest::fixture]
     fn guardian_addr() -> Address {
-        [2u8; 32]
+        Address([2u8; 32])
     }
 
     #[rstest::fixture]
     fn allocator_addr() -> Address {
-        [3u8; 32]
+        Address([3u8; 32])
     }
 
     #[rstest::fixture]
     fn user_addr() -> Address {
-        [4u8; 32]
+        Address([4u8; 32])
     }
 
     #[rstest::fixture]
     fn sentinel_addr() -> Address {
-        [5u8; 32]
+        Address([5u8; 32])
     }
 
     #[rstest::fixture]
@@ -3191,7 +3204,7 @@ mod policy_withdraw_route_tests {
     }
 
     #[test]
-    #[should_panic(expected = "withdraw route total overflow")]
+    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
     fn test_route_total_overflow_panics() {
         let route = WithdrawRoute::from_entries(
             vec![
@@ -3205,7 +3218,7 @@ mod policy_withdraw_route_tests {
     }
 
     #[test]
-    #[should_panic(expected = "withdraw route liquidity overflow")]
+    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
     fn test_available_liquidity_overflow_panics() {
         let route = WithdrawRoute::from_entries(
             vec![

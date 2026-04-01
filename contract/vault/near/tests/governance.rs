@@ -17,14 +17,15 @@ use templar_common::{
     vault::{AllocationDelta, Delta, Restrictions},
 };
 use test_utils::{setup_test, worker, ContractController};
-
 const ADDRESS_DOMAIN: &[u8] = b"templar:near:account-id";
 
-fn account_to_kernel_address(account: &near_workspaces::AccountId) -> [u8; 32] {
+fn account_to_kernel_address(
+    account: &near_workspaces::AccountId,
+) -> templar_vault_kernel::Address {
     let mut bytes = Vec::with_capacity(ADDRESS_DOMAIN.len() + account.as_bytes().len());
     bytes.extend_from_slice(ADDRESS_DOMAIN);
     bytes.extend_from_slice(account.as_bytes());
-    sha256_array(&bytes)
+    templar_vault_kernel::Address(sha256_array(&bytes))
 }
 
 /// Sentinel can pause the vault. While paused, deposits are rejected.

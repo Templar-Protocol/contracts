@@ -291,16 +291,11 @@ impl Contract {
             op_state: OpState::Idle,
             next_op_id: 1,
             last_refresh_ns: 0,
-            refresh_cooldown_ns: refresh_cooldown_ns
-                .map(|v| v.0)
-                .unwrap_or(DEFAULT_REFRESH_COOLDOWN_NS),
-            withdrawal_cooldown_ns: withdrawal_cooldown_ns
-                .map(|v| v.0)
-                .unwrap_or(DEFAULT_COOLDOWN_NS),
+            refresh_cooldown_ns: refresh_cooldown_ns.map_or(DEFAULT_REFRESH_COOLDOWN_NS, |v| v.0),
+            withdrawal_cooldown_ns: withdrawal_cooldown_ns.map_or(DEFAULT_COOLDOWN_NS, |v| v.0),
             idle_resync_last_ns: 0,
             idle_resync_cooldown_ns: idle_resync_cooldown_ns
-                .map(|v| v.0)
-                .unwrap_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS),
+                .map_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS, |v| v.0),
             idle_resync_inflight_op_id: 0,
             withdraw_queue: templar_vault_kernel::WithdrawQueue::new(),
             address_book: BTreeMap::new(),
@@ -327,7 +322,10 @@ impl Contract {
     #[init(ignore_state)]
     #[must_use]
     pub fn migrate() -> Self {
-        let old: OldContract = env::state_read().expect("No contract state to migrate");
+        let Some(old) = env::state_read() else {
+            panic_with_message("No contract state to migrate");
+        };
+        let old: OldContract = old;
         old.into_current()
     }
 
@@ -899,7 +897,7 @@ impl Contract {
                     total: U128(total),
                     plan: plan
                         .iter()
-                        .cloned()
+                        .copied()
                         .map(|(market, amount)| (market, amount.into()))
                         .collect(),
                 }
@@ -1222,8 +1220,10 @@ impl Contract {
     }
 
     pub fn get_market_account_by_id(&self, market_id: U64) -> Option<AccountId> {
-        self.market_account_by_id(MarketId::from(market_id.0 as u32))
-            .cloned()
+        u32::try_from(market_id.0)
+            .ok()
+            .map(MarketId::from)
+            .and_then(|market_id| self.market_account_by_id(market_id).cloned())
     }
 
     pub fn list_markets_with_ids(&self) -> Vec<(U64, AccountId)> {

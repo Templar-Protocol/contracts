@@ -47,6 +47,7 @@ use templar_common::vault::{
     IdleResyncOutcome, MarketConfiguration, MarketId, RestrictionReason, Restrictions,
     WithdrawingState, MAX_TIMELOCK_NS, YEAR_NS,
 };
+use templar_vault_kernel::TimestampNs;
 
 #[fixture]
 fn vault_id() -> AccountId {
@@ -135,7 +136,7 @@ fn enabled_market_100() -> (AccountId, MarketConfiguration) {
     let cfg = MarketConfiguration {
         cap: U128(100),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     (m, cfg)
@@ -155,7 +156,7 @@ fn c(vault_id: AccountId, #[default(Vec::new())] markets: Vec<MarketFixture>) ->
             MarketConfiguration {
                 cap: U128(cap),
                 enabled,
-                removable_at: 0,
+                removable_at: TimestampNs::ZERO,
                 cap_group_id: None,
             },
             principal,
@@ -475,7 +476,7 @@ fn prop_get_max_deposit_matches_bruteforce() {
                     let cfg = MarketConfiguration {
                         cap: U128(*cap),
                         enabled: true,
-                        removable_at: 0,
+                        removable_at: TimestampNs::ZERO,
                         cap_group_id,
                     };
 
@@ -757,7 +758,7 @@ fn allocate_accrues_pending_fee_shares() {
     let cfg = MarketConfiguration {
         cap: U128(10_000),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     let market_id = c.insert_market_for_tests(market_account, cfg, 0);
@@ -894,7 +895,7 @@ fn cap_zero_keeps_enabled_and_submit_removal_works(owner_env: OwnerEnv) {
     let cfg = MarketConfiguration {
         cap: U128(10_000),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     let _ = contract.insert_market_for_tests(m.clone(), cfg, 0);
@@ -908,7 +909,10 @@ fn cap_zero_keeps_enabled_and_submit_removal_works(owner_env: OwnerEnv) {
 
     contract.submit_market_removal(m.clone());
     let cfg_after2 = must_market_record(&contract, &m);
-    assert!(cfg_after2.cfg.removable_at > 0, "removal must be scheduled");
+    assert!(
+        cfg_after2.cfg.removable_at > TimestampNs::ZERO,
+        "removal must be scheduled"
+    );
 }
 
 #[rstest]
@@ -2006,7 +2010,7 @@ fn clamp_allocation_total_matches_min_bounds_cases(
     let cfg = MarketConfiguration {
         cap: U128(cap),
         enabled: cap > 0,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     let market_id = c.insert_market_for_tests(m.clone(), cfg, cur);
@@ -2858,7 +2862,7 @@ fn cap_group_limits_total_room() {
         let cfg = MarketConfiguration {
             cap: U128(100),
             enabled: true,
-            removable_at: 0,
+            removable_at: TimestampNs::ZERO,
             cap_group_id: Some(group.clone()),
         };
         let market_id = c.insert_market_for_tests(mk(9200 + offset), cfg, 0);
@@ -2891,7 +2895,7 @@ fn cap_group_relative_caps_scale_with_aum() {
         MarketConfiguration {
             cap: U128(1_000),
             enabled: true,
-            removable_at: 0,
+            removable_at: TimestampNs::ZERO,
             cap_group_id: Some(group_a.clone()),
         },
         0,
@@ -2903,7 +2907,7 @@ fn cap_group_relative_caps_scale_with_aum() {
         MarketConfiguration {
             cap: U128(1_000),
             enabled: true,
-            removable_at: 0,
+            removable_at: TimestampNs::ZERO,
             cap_group_id: Some(group_b.clone()),
         },
         0,
@@ -2937,7 +2941,7 @@ fn cap_group_refunds_when_saturated() {
     let cfg = MarketConfiguration {
         cap: U128(100),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: Some(group.clone()),
     };
     let market_id = c.insert_market_for_tests(market_account, cfg, 0);
@@ -2968,7 +2972,7 @@ fn ft_on_transfer_wrong_token_full_refund_via_receiver() {
     let cfg = MarketConfiguration {
         cap: U128(100),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     let market_id = c.insert_market_for_tests(market_account, cfg, 0);
@@ -3121,7 +3125,7 @@ fn governance_set_curator_grants_allocator() {
     let cfg = MarketConfiguration {
         cap: U128(1),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     let market_id = c.insert_market_for_tests(market_account, cfg, 0);
@@ -3153,7 +3157,7 @@ fn governance_set_is_allocator_grant_allows_queue_ops() {
     let cfg = MarketConfiguration {
         cap: U128(1),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
     let market_id = c.insert_market_for_tests(market_account, cfg, 0);
@@ -3186,7 +3190,7 @@ fn governance_set_is_allocator_revoke_disallows_queue_ops() {
     let cfg = MarketConfiguration {
         cap: U128(1),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
 
@@ -3319,7 +3323,12 @@ fn governance_accept_guardian_not_yet_panics() {
     c.accept_sentinel();
 
     let max_timelock = MAX_TIMELOCK_NS;
-    c.governance_timelocks = Timelocks::new(max_timelock, max_timelock, max_timelock, max_timelock);
+    c.governance_timelocks = Timelocks::new(
+        TimestampNs(max_timelock),
+        TimestampNs(max_timelock),
+        TimestampNs(max_timelock),
+        TimestampNs(max_timelock),
+    );
     // Now submit another sentinel change but do not advance time.
     let new_sentinel = mk(5);
     set_ctx(&vault_id, &owner, None, None);
@@ -3488,7 +3497,7 @@ fn governance_submit_cap_immediate_decrease() {
     let cfg = MarketConfiguration {
         cap: U128(100),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
 
@@ -3509,7 +3518,12 @@ fn cap_group_membership_moves_principal() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.governance_timelocks = Timelocks::new(0, 0, 0, 0);
+    c.governance_timelocks = Timelocks::new(
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+    );
 
     let group_a = CapGroupId("ga".to_string());
     let group_b = CapGroupId("gb".to_string());
@@ -3533,7 +3547,7 @@ fn cap_group_membership_moves_principal() {
     let cfg = MarketConfiguration {
         cap: U128(200),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: Some(group_a.clone()),
     };
     let market_id = c.insert_market_for_tests(market.clone(), cfg, 80);
@@ -3572,7 +3586,12 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
 
-    c.governance_timelocks = Timelocks::new(0, 0, 0, 0);
+    c.governance_timelocks = Timelocks::new(
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+    );
 
     let group = CapGroupId("gr".to_string());
 
@@ -3688,7 +3707,7 @@ fn governance_submit_and_revoke_market_removal() {
     let cfg = MarketConfiguration {
         cap: U128(0),
         enabled: true,
-        removable_at: 0,
+        removable_at: TimestampNs::ZERO,
         cap_group_id: None,
     };
 
@@ -3697,11 +3716,19 @@ fn governance_submit_and_revoke_market_removal() {
     c.submit_market_removal(m.clone());
     c.accept_market_removal(m.clone());
     let after = must_market_record(&c, &m);
-    assert_eq!(after.cfg.removable_at, new_ts, "removal must be scheduled");
+    assert_eq!(
+        after.cfg.removable_at,
+        TimestampNs(new_ts),
+        "removal must be scheduled"
+    );
 
     c.revoke_pending_market_removal(m.clone());
     let after2 = must_market_record(&c, &m);
-    assert_eq!(after2.cfg.removable_at, 0, "removal must be revoked");
+    assert_eq!(
+        after2.cfg.removable_at,
+        TimestampNs::ZERO,
+        "removal must be revoked"
+    );
 }
 
 #[test]
@@ -4290,7 +4317,7 @@ fn resolve_market_helpers_supply_and_withdraw() {
     let m1 = MarketId(1001);
     let m2 = MarketId(1002);
     c.withdraw_route = vec![m1, m2].into();
-    assert_eq!(c.withdraw_route.get(0).copied(), Some(m1));
+    assert_eq!(c.withdraw_route.first().copied(), Some(m1));
     assert_eq!(c.withdraw_route.get(1).copied(), Some(m2));
     assert_eq!(c.withdraw_route.get(2).copied(), None);
 }
@@ -5689,7 +5716,7 @@ fn address_mapping_distinct_accounts_no_collision() {
         "alice-near.testnet".parse().unwrap(),
     ];
 
-    let addresses: Vec<_> = accounts.iter().map(|a| account_id_to_address(a)).collect();
+    let addresses: Vec<_> = accounts.iter().map(account_id_to_address).collect();
     let unique: HashSet<_> = addresses.iter().collect();
     assert_eq!(
         unique.len(),
@@ -5725,7 +5752,7 @@ fn address_mapping_is_domain_separated() {
 
     // Raw SHA256 without domain prefix should differ
     let raw_hash = env::sha256(alice.as_bytes());
-    let raw_addr: [u8; 32] = raw_hash.as_slice().try_into().unwrap();
+    let raw_addr = templar_vault_kernel::Address(raw_hash.as_slice().try_into().unwrap());
     assert_ne!(
         derived, raw_addr,
         "Domain-prefixed hash must differ from raw hash"
@@ -5767,7 +5794,7 @@ fn address_mapping_never_produces_escrow_address() {
     let vid = vault_id();
     setup_env(&vid, &vid, vec![]);
 
-    let escrow: [u8; 32] = [0u8; 32];
+    let escrow = templar_vault_kernel::Address([0u8; 32]);
     let accounts: Vec<AccountId> = vec![
         "alice.near".parse().unwrap(),
         "bob.near".parse().unwrap(),

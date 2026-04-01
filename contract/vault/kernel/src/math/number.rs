@@ -68,6 +68,7 @@ mod serde_impl {
 #[cfg(feature = "postcard")]
 mod postcard_serde_impl {
     use super::*;
+    use alloc::string::ToString;
     use core::fmt;
     use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -76,6 +77,10 @@ mod postcard_serde_impl {
         where
             S: Serializer,
         {
+            if serializer.is_human_readable() {
+                return serializer.serialize_str(&self.0.to_string());
+            }
+
             let mut bytes = [0u8; 32];
             self.0.write_as_little_endian(&mut bytes);
             serializer.serialize_bytes(&bytes)
@@ -93,7 +98,18 @@ mod postcard_serde_impl {
                 type Value = Number;
 
                 fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str("32 bytes little-endian U256")
+                    formatter.write_str(
+                        "a decimal string representing a U256 or 32 bytes little-endian U256",
+                    )
+                }
+
+                fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    U256::from_dec_str(v)
+                        .map(Number)
+                        .map_err(|_| E::custom("invalid decimal string for U256"))
                 }
 
                 fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
@@ -120,7 +136,11 @@ mod postcard_serde_impl {
                 }
             }
 
-            deserializer.deserialize_bytes(NumberVisitor)
+            if deserializer.is_human_readable() {
+                deserializer.deserialize_str(NumberVisitor)
+            } else {
+                deserializer.deserialize_bytes(NumberVisitor)
+            }
         }
     }
 }

@@ -40,10 +40,10 @@ macro_rules! unwrap_or_return {
 
 pub(crate) use unwrap_or_return;
 
-pub(crate) fn or_stop<'a, S>(
-    contract: &'a mut Contract,
+pub(crate) fn or_stop<S>(
+    contract: &mut Contract,
     op_id: u64,
-) -> Result<OpGuard<'a, S>, PromiseOrValue<()>>
+) -> Result<OpGuard<'_, S>, PromiseOrValue<()>>
 where
     S: GuardSpec<Contract, Error = Error>,
 {
@@ -200,7 +200,7 @@ impl Contract {
         .emit();
 
         allocating.set_market_principal(market_id, new_principal);
-        drop(allocating);
+        let _ = allocating;
         let kernel_state = self.op_state.clone();
         let result = templar_vault_kernel::transitions::allocation_step_callback(
             kernel_state,
@@ -826,8 +826,9 @@ impl Contract {
         market_id: MarketId,
         op_id: u64,
         index: u32,
-        _before: U128,
+        before: U128,
     ) -> PromiseOrValue<RealAssetsReport> {
+        let _ = before;
         let Ok(mut refreshing) = OpGuard::<RefreshingSpec>::expect(self, Some(op_id)) else {
             return PromiseOrValue::Value(self.build_real_assets_report());
         };
@@ -842,7 +843,7 @@ impl Contract {
             refreshing.set_market_principal(market_id, total);
         }
 
-        drop(refreshing);
+        let _ = refreshing;
 
         let kernel_state = self.op_state.clone();
         let result = templar_vault_kernel::transitions::refresh_step_callback(kernel_state, op_id)
@@ -875,13 +876,17 @@ impl Contract {
     }
 
     #[private]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "callback reconciles several terminal and recovery branches for one async operation"
+    )]
     pub fn resync_idle_balance_01_settle(
         &mut self,
         #[callback_result] balance: Result<U128, PromiseError>,
         op_id: u64,
         caller: AccountId,
         before_idle: U128,
-        _started_at_ns: u64,
+        started_at_ns: u64,
     ) -> templar_common::vault::ResyncIdleReport {
         use templar_common::vault::{IdleResyncOutcome, ResyncIdleReport};
 
@@ -995,7 +1000,7 @@ impl Contract {
             increased_by: U128(increased_by),
             decreased_by: U128(decreased_by),
             fee_anchor_bump: U128(increased_by),
-            resynced_at_ns: finished_at_ns.into(),
+            resynced_at_ns: started_at_ns.max(finished_at_ns).into(),
         }
     }
 }

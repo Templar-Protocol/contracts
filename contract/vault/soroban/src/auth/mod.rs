@@ -119,10 +119,11 @@ impl<'a> SorobanAuth<'a> {
         caller.require_auth();
 
         // Check if paused (allow pause action even when paused)
-        if self.paused && action != ActionKind::Pause {
-            if matches!(canonical_policy_class(action), AuthPolicyClass::Public) {
-                return Err(AuthError::VaultPaused);
-            }
+        if self.paused
+            && action != ActionKind::Pause
+            && matches!(canonical_policy_class(action), AuthPolicyClass::Public)
+        {
+            return Err(AuthError::VaultPaused);
         }
 
         // Check role-based permissions

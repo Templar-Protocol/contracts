@@ -1,5 +1,9 @@
+#![allow(
+    clippy::too_many_arguments,
+    reason = "mock contract entrypoints mirror external governance policy ABI"
+)]
+
 use super::*;
-use soroban_sdk::unwrap::UnwrapOptimized;
 use soroban_sdk::{
     contracttype,
     testutils::{Address as _, Ledger, LedgerInfo},
