@@ -30,7 +30,7 @@ impl MarketRemove {
     #[tracing::instrument(skip_all, name = "market_remove", fields(signer_id = %self.signer.signer_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         if !near::account_exists(&ctx.near, &self.signer.signer_id).await? {
-            tracing::info!(signer_id = %self.signer.signer_id, "Account does not exist, nothing to do");
+            tracing::info!("Account does not exist, nothing to do");
             return Ok(());
         }
 
