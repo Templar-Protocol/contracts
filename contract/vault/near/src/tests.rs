@@ -579,6 +579,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
 
     let receiver = mk(7);
     let owner = mk(1);
+    let queued_receiver = mk(9);
 
     c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
@@ -587,24 +588,38 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     // Partial payout scenario: collected/requested = 200/500 => burn 40% of escrowed shares
     let amount = 200;
     let op_id = 1;
-    c.op_state = OpState::Payout(PayoutState {
+    c.insert_pending_withdrawal_for_tests(
+        0,
+        PendingWithdrawal {
+            receiver: queued_receiver.clone(),
+            owner: owner.clone(),
+            escrow_shares: 100,
+            expected_assets: amount,
+            requested_at: 0,
+        },
+    );
+    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
+    c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
+    c.remember_account_mapping(
+        account_id_to_address(&queued_receiver),
+        queued_receiver.clone(),
+    );
+    c.address_book
+        .insert(account_id_to_address(&owner), owner.clone());
+    c.address_book
+        .insert(account_id_to_address(&receiver), receiver.clone());
+    c.address_book.insert(
+        account_id_to_address(&queued_receiver),
+        queued_receiver.clone(),
+    );
+    c.set_op_state(OpState::Payout(PayoutState {
         op_id,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
         escrow_shares: 100,
         burn_shares: 40,
-    });
-    c.insert_pending_withdrawal_for_tests(
-        0,
-        PendingWithdrawal {
-            receiver: mk(9),
-            owner: mk(1),
-            escrow_shares: 100,
-            expected_assets: amount,
-            requested_at: 0,
-        },
-    );
+    }));
 
     let supply_before = c.total_supply();
     c.payment_01_reconcile_idle_or_refund(Ok(()), op_id, receiver, U128(amount));
@@ -1047,6 +1062,8 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         owner: account_id_to_address(&mk(1)),
         escrow_shares: 100,
     });
+    c.remember_account_mapping(account_id_to_address(&mk(1)), mk(1));
+    c.remember_account_mapping(account_id_to_address(&mk(9)), mk(9));
 
     let _before_idle = c.idle_balance;
 
@@ -1130,6 +1147,8 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         owner: account_id_to_address(&mk(2)),
         escrow_shares: 100,
     });
+    c.remember_account_mapping(account_id_to_address(&mk(2)), mk(2));
+    c.remember_account_mapping(account_id_to_address(&mk(10)), mk(10));
 
     let before_balance = U128(1_000_000);
     let after_balance = Ok(U128(1_000_200)); // inflow = 200
@@ -1190,6 +1209,8 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
         owner: account_id_to_address(&mk(3)),
         escrow_shares: 200,
     });
+    c.remember_account_mapping(account_id_to_address(&mk(3)), mk(3));
+    c.remember_account_mapping(account_id_to_address(&mk(11)), mk(11));
 
     let before_balance = U128(1_000);
     let after_balance = Ok(U128(1_150));
@@ -1251,6 +1272,8 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         owner: account_id_to_address(&mk(4)),
         escrow_shares: 150,
     });
+    c.remember_account_mapping(account_id_to_address(&mk(4)), mk(4));
+    c.remember_account_mapping(account_id_to_address(&mk(12)), mk(12));
 
     let before_balance = U128(1_000_000);
     let after_balance = Ok(U128(1_000_000 + inflow));
@@ -1448,8 +1471,8 @@ fn rebalance_balance_read_failure_stops_operation() {
     let joined = logs.join("\n");
     assert!(
         joined.contains("\"event\":\"rebalance_withdraw_stopped\"")
-            && joined.contains("BalanceReadFailed"),
-        "expected rebalance stop event with BalanceReadFailed reason"
+            && joined.contains("balance read failed"),
+        "expected rebalance stop event with balance read failed reason"
     );
 }
 #[rstest(
@@ -1768,7 +1791,7 @@ fn idle_resync_callback_balance_read_failure_stops_and_clears_inflight() {
     let joined = near_sdk::test_utils::get_logs().join("\n");
     assert!(
         joined.contains("\"event\":\"idle_resync_stopped\"")
-            && joined.contains("BalanceReadFailed")
+            && joined.contains("balance read failed")
     );
 }
 
@@ -2405,8 +2428,7 @@ fn restrictions_unpause_is_timelocked(owner_env: OwnerEnv) {
 }
 
 #[rstest]
-#[should_panic]
-fn restrictions_unpause_by_sentinel_panics(owner_env: OwnerEnv) {
+fn restrictions_unpause_by_sentinel_is_timelocked(owner_env: OwnerEnv) {
     let OwnerEnv {
         vault_id,
         mut contract,
@@ -2418,8 +2440,10 @@ fn restrictions_unpause_by_sentinel_panics(owner_env: OwnerEnv) {
     let sentinel = contract.get_configuration().sentinel;
     set_ctx(&vault_id, &sentinel, None, None);
 
-    // Sentinel can pause immediately, but cannot relax/unpause.
     contract.set_restrictions(None);
+
+    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert_eq!(contract.governance_timelocks.pending_len(), 1);
 }
 
 #[rstest]
@@ -3532,15 +3556,9 @@ fn cap_group_membership_moves_principal() {
         cap_group_id: group_a.clone(),
         new_cap: 200,
     });
-    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
-        cap_group_id: group_a.clone(),
-    });
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group_b.clone(),
         new_cap: 300,
-    });
-    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
-        cap_group_id: group_b.clone(),
     });
 
     let market = mk(9400);
@@ -3598,9 +3616,6 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group.clone(),
         new_cap: 1_000,
-    });
-    c.accept_cap_group_update(CapGroupUpdateKey::SetCap {
-        cap_group_id: group.clone(),
     });
 
     assert_eq!(
@@ -3953,6 +3968,8 @@ fn after_exec_withdraw_read_none_to_payout(
         owner: account_id_to_address(&mk(1)),
         escrow_shares: 50,
     });
+    c.remember_account_mapping(account_id_to_address(&mk(1)), mk(1));
+    c.remember_account_mapping(account_id_to_address(&mk(9)), mk(9));
 
     let res = c.execute_withdraw_02_reconcile_position(
         Ok(None),
