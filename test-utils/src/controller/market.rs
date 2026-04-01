@@ -163,9 +163,7 @@ fn contract_with_dummy_sk(worker: &Worker<Sandbox>, account_id: AccountId) -> Co
 
 impl UnifiedMarketController {
     pub async fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {
-        let market = MarketController {
-            contract: contract_with_dummy_sk(worker, market_id),
-        };
+        let market = MarketController::attach(worker, market_id);
 
         let configuration = market.get_configuration().await;
 
