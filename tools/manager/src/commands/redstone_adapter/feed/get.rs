@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 
 use console::style;
 use near_sdk::serde_json::json;
@@ -6,7 +7,15 @@ use near_sdk::AccountId;
 use templar_common::oracle::redstone::{FeedData, FeedId, DECIMALS};
 use templar_common::primitive_types::U256;
 
-use crate::CliContext;
+use crate::{
+    util::{OutputArgs, OutputStyle},
+    CliContext,
+};
+
+#[derive(serde::Serialize)]
+struct FeedDataOutput {
+    data: HashMap<FeedId, FeedData>,
+}
 
 #[derive(clap::Args, Debug)]
 pub struct FeedGet {
@@ -16,9 +25,8 @@ pub struct FeedGet {
     /// Feed IDs to query (e.g. BTC, ETH, NEAR)
     #[arg(long, required = true)]
     pub feed_id: Vec<String>,
-    /// Output raw JSON
-    #[arg(long)]
-    pub json: bool,
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 fn format_price(price: U256) -> String {
@@ -62,34 +70,38 @@ impl FeedGet {
             .await?
             .json()?;
 
-        if self.json {
-            println!("{}", serde_json::to_string_pretty(&data)?);
+        self.output.print(&FeedDataOutput { data })
+    }
+}
+
+impl OutputStyle for FeedDataOutput {
+    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+        if self.data.is_empty() {
+            writeln!(out, "{}", style("No feed data found").dim())?;
             return Ok(());
         }
 
-        if data.is_empty() {
-            println!("{}", style("No feed data found").dim());
-            return Ok(());
-        }
-
-        for (feed_id, feed_data) in &data {
+        for (feed_id, feed_data) in &self.data {
             let price = U256::from(feed_data.price);
-            println!("{}:", style(feed_id).bold());
-            println!(
+            writeln!(out, "{}:", style(feed_id).bold())?;
+            writeln!(
+                out,
                 "  {}: {}",
                 style("price").dim(),
                 style(format_price(price)).green(),
-            );
-            println!(
+            )?;
+            writeln!(
+                out,
                 "  {}: {}",
                 style("package_timestamp").dim(),
                 format_timestamp_ms(feed_data.package_timestamp.as_ms())
-            );
-            println!(
+            )?;
+            writeln!(
+                out,
                 "  {}: {}",
                 style("write_timestamp").dim(),
                 format_timestamp_ms(feed_data.write_timestamp.as_ms())
-            );
+            )?;
         }
 
         Ok(())

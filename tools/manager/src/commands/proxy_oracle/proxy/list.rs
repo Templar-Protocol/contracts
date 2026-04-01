@@ -1,14 +1,26 @@
+use std::io::Write;
+
 use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
 
-use crate::CliContext;
+use crate::{
+    util::{OutputArgs, OutputStyle},
+    CliContext,
+};
+
+#[derive(serde::Serialize)]
+struct ProxyListOutput {
+    proxies: Vec<PriceIdentifier>,
+}
 
 #[derive(clap::Args, Debug)]
 pub struct ListProxies {
     #[arg(long)]
     pub oracle_id: AccountId,
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 impl ListProxies {
@@ -21,16 +33,26 @@ impl ListProxies {
             .await?
             .json()?;
 
-        if proxies.is_empty() {
-            println!("{}", style("No proxies found.").dim());
+        let count = proxies.len();
+
+        self.output.print(&ProxyListOutput { proxies })?;
+
+        tracing::info!(count, "Listed proxies");
+        Ok(())
+    }
+}
+
+impl OutputStyle for ProxyListOutput {
+    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+        if self.proxies.is_empty() {
+            writeln!(out, "{}", style("No proxies found.").dim())?;
             return Ok(());
         }
 
-        for price_id in &proxies {
-            println!("  {}", style(price_id).bold());
+        for price_id in &self.proxies {
+            writeln!(out, "  {}", style(price_id).bold())?;
         }
 
-        tracing::info!(count = proxies.len(), "Listed proxies");
         Ok(())
     }
 }

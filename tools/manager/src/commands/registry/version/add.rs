@@ -5,8 +5,10 @@ use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
 use templar_tools_common::{near, version::RegistryVersion};
 
-use crate::commands::{FixedContractWasm, SignerArgs};
-use crate::CliContext;
+use crate::{
+    util::{ContractLoader, SignerArgs},
+    CliContext,
+};
 
 const MARKET_PACKAGE: &str = "templar-market-contract";
 const UAC_PACKAGE: &str = "templar-universal-account-contract";
@@ -52,12 +54,12 @@ impl Package {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args)]
 pub struct AddVersion {
     #[command(flatten)]
     pub signer: SignerArgs,
     #[command(flatten)]
-    pub contract_wasm: FixedContractWasm,
+    pub contract_wasm: ContractLoader,
     #[command(flatten)]
     pub package: Package,
     /// Registry contract account ID
@@ -80,9 +82,7 @@ pub struct AddVersion {
 impl AddVersion {
     #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package(), registry_id = %self.registry_id, deploy_mode = %self.deploy_mode))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let loaded_contract = self
-            .contract_wasm
-            .load_contract::<()>(ctx, self.package.package())?;
+        let loaded_contract = self.contract_wasm.load::<()>(self.package.package())?;
         tracing::debug!(loaded_contract_version = %loaded_contract.version, "Loaded contract");
         let registry_version: RegistryVersion =
             near::contract_version(&ctx.near, &self.registry_id).await?;

@@ -1,13 +1,14 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{setup_ctx, signer_args};
+use common::{no_build_loader, setup_ctx, signer_args};
 use near_sdk::{serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{market::YieldWeights, registry::DeployMode};
 use templar_manager::commands::{
-    market::create::CreateMarket,
+    deployment::{Deploy, FromRegistry},
+    market::deploy::{DeployMarket, MarketInitArgs},
     registry::{
         deploy::DeployRegistry,
         deployment::{clear::ClearDeployments, list::ListDeployments},
@@ -18,13 +19,9 @@ use templar_manager::commands::{
             remove::VersionRemove,
         },
     },
-    DeployFromRegistry, FixedContractWasm, SignerArgs,
 };
+use templar_manager::util::{EmptyArgsLoader, GeneralArgsLoader, OutputArgs, SignerArgs};
 use test_utils::{accounts, market_configuration, worker};
-
-fn no_build() -> FixedContractWasm {
-    FixedContractWasm { no_build: true }
-}
 
 fn market_package() -> Package {
     Package {
@@ -39,9 +36,7 @@ fn market_package() -> Package {
 /// Helper: deploy a registry contract on the given account.
 async fn deploy_registry(ctx: &templar_manager::CliContext, signer: SignerArgs) {
     DeployRegistry {
-        signer,
-        contract: no_build(),
-        no_init: false,
+        deploy: Deploy::native(signer, no_build_loader(), EmptyArgsLoader::default()),
     }
     .run(ctx)
     .await
@@ -57,7 +52,7 @@ async fn add_market_version(
 ) {
     AddVersion {
         signer: signer.clone(),
-        contract_wasm: no_build(),
+        contract_wasm: no_build_loader(),
         package: market_package(),
         registry_id: registry_id.clone(),
         version_key: Some(version_key.to_string()),
@@ -148,17 +143,22 @@ async fn registry_version_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
         YieldWeights::new_with_supply_weight(1),
     );
 
-    let deploy_err = CreateMarket {
-        signer: signer.clone(),
-        deploy: DeployFromRegistry {
-            registry_id: registry_id.clone(),
-            version_key: "market@v1".to_string(),
-            name: "removed-version".to_string(),
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: Some(NearToken::from_near(6)),
-        },
-        configuration: serde_json::to_string(&config).unwrap(),
+    let deploy_err = DeployMarket {
+        deploy: Deploy::from_registry(
+            FromRegistry::new(
+                registry_id.clone(),
+                "market@v1".to_string(),
+                "removed-version".to_string(),
+                GeneralArgsLoader::from_json_string(
+                    serde_json::to_string(&MarketInitArgs {
+                        configuration: config,
+                    })
+                    .unwrap(),
+                ),
+                signer.clone(),
+            )
+            .with_deposit(NearToken::from_near(6)),
+        ),
     }
     .run(&ctx)
     .await
@@ -218,6 +218,7 @@ async fn registry_list_versions_empty(#[future(awt)] worker: Worker<Sandbox>) {
     // The command should succeed even with no versions.
     ListVersions {
         registry_id: registry_id.clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -237,6 +238,7 @@ async fn registry_deployment_list_empty(#[future(awt)] worker: Worker<Sandbox>) 
     // No deployments yet — should succeed without error.
     ListDeployments {
         registry_id: registry_id.clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await

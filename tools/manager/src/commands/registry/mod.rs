@@ -5,13 +5,13 @@ pub mod version;
 
 use crate::CliContext;
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct RegistryArgs {
     #[command(subcommand)]
     command: RegistryCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum RegistryCommand {
     /// Build and deploy the registry contract
     Deploy(deploy::DeployRegistry),

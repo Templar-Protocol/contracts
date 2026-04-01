@@ -1,12 +1,14 @@
 use near_sdk::AccountId;
 
-use crate::commands::{self, SignerArgs};
+use crate::{commands, util::SignerArgs};
 
 /// Remove all versions from a registry then delete its account.
 #[derive(clap::Args, Debug)]
 pub struct RemoveRegistry {
+    /// Signer for the deletion transaction. This same account is treated as the registry account.
     #[command(flatten)]
     pub signer: SignerArgs,
+    /// Account to receive remaining funds when the registry account is deleted.
     #[arg(long)]
     pub beneficiary_id: AccountId,
 }

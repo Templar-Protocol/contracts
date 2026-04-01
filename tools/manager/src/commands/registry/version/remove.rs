@@ -3,7 +3,7 @@ use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 
-use crate::commands::SignerArgs;
+use crate::util::SignerArgs;
 use crate::CliContext;
 
 /// Remove one or all versions from a registry.

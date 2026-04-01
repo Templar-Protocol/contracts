@@ -1,5 +1,4 @@
 pub mod config;
-pub mod create;
 pub mod deploy;
 pub mod feed;
 pub mod remove;
@@ -52,18 +51,15 @@ impl From<CliRole> for Role {
     }
 }
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct RedStoneAdapterArgs {
     #[command(subcommand)]
     command: RedStoneAdapterCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum RedStoneAdapterCommand {
-    /// Deploy a RedStone adapter from a registry
-    Create(create::CreateRedStoneAdapter),
-
-    /// Deploy the RedStone adapter contract directly from a WASM file
+    /// Deploy a RedStone adapter contract
     Deploy(deploy::DeployRedStoneAdapter),
 
     /// Delete a RedStone adapter account
@@ -88,7 +84,6 @@ enum RedStoneAdapterCommand {
 impl RedStoneAdapterArgs {
     pub async fn run(self, ctx: &CliContext) -> anyhow::Result<()> {
         match self.command {
-            RedStoneAdapterCommand::Create(a) => a.run(ctx).await,
             RedStoneAdapterCommand::Deploy(a) => a.run(ctx).await,
             RedStoneAdapterCommand::Remove(a) => a.run(ctx).await,
             RedStoneAdapterCommand::Feed(a) => a.run(ctx).await,

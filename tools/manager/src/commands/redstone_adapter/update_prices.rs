@@ -6,7 +6,7 @@ use templar_common::oracle::redstone::FeedId;
 use templar_redstone_bridge::Bridge;
 use tokio::sync::watch;
 
-use crate::{commands::SignerArgs, CliContext};
+use crate::{util::SignerArgs, CliContext};
 
 #[derive(clap::Args, Debug)]
 pub struct UpdatePrices {
