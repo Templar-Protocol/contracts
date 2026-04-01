@@ -31,7 +31,7 @@ impl AdapterConfig {
 }
 
 impl OutputStyle for Config {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         writeln!(out, "{}", serde_json::to_string_pretty(self)?)?;
         Ok(())
     }

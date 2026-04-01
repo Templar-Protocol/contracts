@@ -8,26 +8,24 @@ pub struct OutputArgs {
     /// Output machine-readable JSON instead of human-formatted text
     #[arg(long)]
     pub json: bool,
-    #[arg(long, requires = "json")]
-    pub pretty: bool,
 }
 
 pub trait OutputStyle: Serialize {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()>;
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()>;
 }
 
 impl OutputArgs {
+    pub fn json() -> Self {
+        Self { json: true }
+    }
+
     pub fn print(&self, item: &impl OutputStyle) -> anyhow::Result<()> {
         let mut out = std::io::stdout();
         if self.json {
-            if self.pretty {
-                writeln!(out, "{}", serde_json::to_string_pretty(item)?)?;
-            } else {
-                writeln!(out, "{}", serde_json::to_string(item)?)?;
-            }
+            writeln!(out, "{}", serde_json::to_string(item)?)?;
             Ok(())
         } else {
-            item.human(&mut out)
+            item.fmt_human(&mut out)
         }
     }
 
@@ -38,14 +36,10 @@ impl OutputArgs {
     ) -> anyhow::Result<()> {
         let mut out = std::io::stdout();
         if self.json {
-            if self.pretty {
-                writeln!(out, "{}", serde_json::to_string_pretty(&item)?)?;
-            } else {
-                writeln!(out, "{}", serde_json::to_string(&item)?)?;
-            }
+            writeln!(out, "{}", serde_json::to_string(&item)?)?;
             Ok(())
         } else if let Some(item) = item {
-            item.human(&mut out)
+            item.fmt_human(&mut out)
         } else {
             human_none(&mut out)
         }

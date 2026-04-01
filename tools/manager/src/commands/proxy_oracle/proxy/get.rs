@@ -46,7 +46,7 @@ impl GetProxy {
 }
 
 impl OutputStyle for Proxy {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         writeln!(
             out,
             "{}: {:?}",

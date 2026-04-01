@@ -43,7 +43,7 @@ impl ListProxies {
 }
 
 impl OutputStyle for ProxyListOutput {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         if self.proxies.is_empty() {
             writeln!(out, "{}", style("No proxies found.").dim())?;
             return Ok(());
