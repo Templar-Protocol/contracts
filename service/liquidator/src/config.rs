@@ -8,9 +8,27 @@ use clap::Parser;
 use near_sdk::AccountId;
 use templar_common::utils::Network;
 
-use crate::{service::ServiceConfig, swap::SwapRetryConfig, CollateralStrategy};
+use crate::{
+    notifier::{Notifier, TelegramConfig},
+    service::ServiceConfig,
+    swap::SwapRetryConfig,
+    CollateralStrategy,
+};
 
-/// Validator function for `partial_percentage` range
+/// Parse a string into `Option<i64>`, treating empty/whitespace as `None`.
+/// Panics if the value is non-empty and not a valid integer.
+fn parse_optional_i64(s: &str) -> Option<i64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        trimmed
+            .parse::<i64>()
+            .unwrap_or_else(|_| panic!("TELEGRAM_THREAD_ID '{trimmed}' is not a valid integer")),
+    )
+}
+
 fn validate_percentage(s: &str) -> Result<u8, String> {
     let value: u8 = s
         .parse()
@@ -150,6 +168,19 @@ pub struct Args {
     /// Base delay in milliseconds for swap retry exponential backoff (2s, 4s, 8s …)
     #[arg(long, env = "SWAP_RETRY_BASE_DELAY_MS", default_value_t = 2000)]
     pub swap_retry_base_delay_ms: u64,
+
+    /// Telegram bot token for notifications (leave empty to disable)
+    #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
+    pub telegram_bot_token: String,
+
+    /// Telegram chat/channel ID for notifications
+    #[arg(long, env = "TELEGRAM_CHAT_ID", default_value = "")]
+    pub telegram_chat_id: String,
+
+    /// Telegram thread/topic ID for sending to specific threads in supergroups.
+    /// Accepts an empty env var gracefully (treated as unset).
+    #[arg(long, env = "TELEGRAM_THREAD_ID", default_value = "")]
+    pub telegram_thread_id: String,
 }
 
 impl Args {
@@ -273,6 +304,28 @@ impl Args {
             );
         }
 
+        // Build notifier — require both bot token and chat ID
+        let bot_token = self.telegram_bot_token.trim();
+        let chat_id = self.telegram_chat_id.trim();
+        let telegram_config = match (bot_token.is_empty(), chat_id.is_empty()) {
+            (true, true) => {
+                tracing::info!("Telegram notifications disabled");
+                None
+            }
+            (false, false) => {
+                tracing::info!("Telegram notifications enabled");
+                Some(TelegramConfig {
+                    bot_token: bot_token.to_owned().into(),
+                    chat_id: chat_id.to_owned(),
+                    thread_id: parse_optional_i64(&self.telegram_thread_id),
+                })
+            }
+            _ => {
+                panic!("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set or both be empty");
+            }
+        };
+        let notifier = Arc::new(Notifier::new(telegram_config));
+
         ServiceConfig {
             registries: self.registries.clone(),
             signer_key: self.signer_key.clone(),
@@ -301,6 +354,7 @@ impl Args {
                 max_attempts: self.swap_retry_attempts,
                 base_delay_ms: self.swap_retry_base_delay_ms,
             },
+            notifier,
         }
     }
 
@@ -355,6 +409,9 @@ mod tests {
             batch_swap_on_cycle_start: true,
             swap_retry_attempts: 3,
             swap_retry_base_delay_ms: 2000,
+            telegram_bot_token: String::new(),
+            telegram_chat_id: String::new(),
+            telegram_thread_id: String::new(),
         }
     }
 
@@ -479,5 +536,87 @@ mod tests {
         assert!(validate_percentage("101").is_err());
         assert!(validate_percentage("abc").is_err());
         assert!(validate_percentage("-5").is_err());
+    }
+
+    #[test]
+    fn test_telegram_disabled_both_empty() {
+        let args = create_test_args();
+        // Both empty → notifier disabled
+        let config = args.build_config();
+        assert!(!config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_telegram_enabled_both_set() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = "-100123".to_string();
+        let config = args.build_config();
+        assert!(config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_telegram_enabled_with_thread_id() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = "-100123".to_string();
+        args.telegram_thread_id = "42".to_string();
+        let config = args.build_config();
+        assert!(config.notifier.is_enabled());
+    }
+
+    #[test]
+    #[should_panic(expected = "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set")]
+    fn test_telegram_panics_token_without_chat_id() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = String::new();
+        args.build_config();
+    }
+
+    #[test]
+    #[should_panic(expected = "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set")]
+    fn test_telegram_panics_chat_id_without_token() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = String::new();
+        args.telegram_chat_id = "-100123".to_string();
+        args.build_config();
+    }
+
+    #[test]
+    fn test_telegram_whitespace_only_treated_as_empty() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "  ".to_string();
+        args.telegram_chat_id = "  ".to_string();
+        let config = args.build_config();
+        assert!(!config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_parse_optional_i64_empty() {
+        assert_eq!(parse_optional_i64(""), None);
+        assert_eq!(parse_optional_i64("  "), None);
+    }
+
+    #[test]
+    fn test_parse_optional_i64_valid() {
+        assert_eq!(parse_optional_i64("42"), Some(42));
+        assert_eq!(parse_optional_i64(" -100 "), Some(-100));
+    }
+
+    #[test]
+    #[should_panic(expected = "not a valid integer")]
+    fn test_parse_optional_i64_invalid() {
+        parse_optional_i64("abc");
+    }
+
+    #[test]
+    fn test_telegram_empty_thread_id_env_var() {
+        let mut args = create_test_args();
+        args.telegram_bot_token = "123:ABC".to_string();
+        args.telegram_chat_id = "-100123".to_string();
+        args.telegram_thread_id = String::new();
+        let config = args.build_config();
+        assert!(config.notifier.is_enabled());
     }
 }
