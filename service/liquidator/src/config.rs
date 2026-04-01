@@ -128,6 +128,10 @@ pub struct Args {
     #[arg(long, env = "IGNORED_COLLATERAL_ASSETS", value_delimiter = ',')]
     pub ignored_collateral_assets: Vec<String>,
 
+    /// Market account IDs to ignore (comma-separated)
+    #[arg(long, env = "IGNORED_MARKETS", value_delimiter = ',')]
+    pub ignored_markets: Vec<String>,
+
     /// Enable loop liquidation - repeatedly liquidate until position is healthy
     #[arg(long, env = "LOOP_LIQUIDATION", default_value_t = false)]
     pub loop_liquidation: bool,
@@ -248,6 +252,7 @@ impl Args {
     }
 
     /// Build service configuration from arguments
+    #[allow(clippy::too_many_lines)]
     pub fn build_config(&self) -> ServiceConfig {
         let strategy = self.create_strategy();
         let collateral_strategy = self.parse_collateral_strategy();
@@ -304,6 +309,31 @@ impl Args {
             );
         }
 
+        let ignored_markets: Vec<AccountId> = self
+            .ignored_markets
+            .iter()
+            .filter_map(|s| {
+                s.trim()
+                    .parse::<AccountId>()
+                    .map_err(|e| {
+                        tracing::warn!(
+                            market = %s,
+                            error = ?e,
+                            "Failed to parse ignored market account ID, skipping"
+                        );
+                        e
+                    })
+                    .ok()
+            })
+            .collect();
+
+        if !ignored_markets.is_empty() {
+            tracing::info!(
+                ignored_markets = ?ignored_markets,
+                "Market filtering: ignoring specified markets"
+            );
+        }
+
         // Build notifier — require both bot token and chat ID
         let bot_token = self.telegram_bot_token.trim();
         let chat_id = self.telegram_chat_id.trim();
@@ -344,6 +374,7 @@ impl Args {
             ref_contract: self.ref_contract.clone(),
             allowed_collateral_assets,
             ignored_collateral_assets,
+            ignored_markets,
             loop_liquidation: self.loop_liquidation,
             max_loop_iterations: self.max_loop_iterations,
             hermes_url: self.hermes_url.clone(),
@@ -401,6 +432,7 @@ mod tests {
             ref_contract: None,
             allowed_collateral_assets: vec![],
             ignored_collateral_assets: vec![],
+            ignored_markets: vec![],
             loop_liquidation: false,
             max_loop_iterations: 10,
             hermes_url: "https://hermes.pyth.network".to_string(),

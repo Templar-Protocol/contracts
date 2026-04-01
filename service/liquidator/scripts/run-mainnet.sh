@@ -61,6 +61,7 @@ REF_CONTRACT="${REF_CONTRACT:-v2.ref-finance.near}"  # Mainnet default
 # Market filtering configuration
 ALLOWED_COLLATERAL_ASSETS="${ALLOWED_COLLATERAL_ASSETS}"
 IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
+IGNORED_MARKETS="${IGNORED_MARKETS}"
 
 # Oracle price update configuration
 PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes.pyth.network}"
@@ -104,6 +105,9 @@ if [ -n "$ALLOWED_COLLATERAL_ASSETS" ]; then
 fi
 if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
     echo "  Ignored Assets:       $IGNORED_COLLATERAL_ASSETS"
+fi
+if [ -n "$IGNORED_MARKETS" ]; then
+    echo "  Ignored Markets:      $IGNORED_MARKETS"
 fi
 
 echo ""
@@ -170,6 +174,13 @@ if [ -n "$IGNORED_COLLATERAL_ASSETS" ]; then
     IFS=',' read -ra ASSETS <<< "$IGNORED_COLLATERAL_ASSETS"
     for asset in "${ASSETS[@]}"; do
         CMD_ARGS+=("--ignored-collateral-assets" "$asset")
+    done
+fi
+
+if [ -n "$IGNORED_MARKETS" ]; then
+    IFS=',' read -ra MARKETS <<< "$IGNORED_MARKETS"
+    for market in "${MARKETS[@]}"; do
+        CMD_ARGS+=("--ignored-markets" "$market")
     done
 fi
 
