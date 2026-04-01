@@ -65,7 +65,7 @@ jobs:
         run: cargo nextest run -p templar-soroban-runtime
 
       - name: Install stellar CLI
-        run: cargo install --locked "stellar-cli@25.0.0" --features opt
+        run: RUSTUP_TOOLCHAIN=1.89.0 cargo install --locked "stellar-cli@25.0.0"
 
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
