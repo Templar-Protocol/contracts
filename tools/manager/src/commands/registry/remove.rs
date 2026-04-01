@@ -19,7 +19,7 @@ impl RemoveRegistry {
         let registry_id = self.signer.signer_id.clone();
 
         if !crate::near::account_exists(&ctx.near, &registry_id).await? {
-            tracing::info!(%registry_id, "Account does not exist, nothing to do");
+            tracing::info!("Account does not exist, nothing to do");
             return Ok(());
         }
 

@@ -12,13 +12,14 @@ pub mod storage_deposit;
 
 /// Check if the account exists and, if so, delete it and send remaining funds
 /// to `beneficiary_id`. Returns `Ok(false)` if the account did not exist.
+#[tracing::instrument(skip_all, name = "delete_account", fields(signer_id = %signer.signer_id, beneficiary_id = %beneficiary_id))]
 pub async fn delete_account(
     ctx: &crate::CliContext,
     signer: &SignerArgs,
     beneficiary_id: &AccountId,
 ) -> anyhow::Result<bool> {
     if !crate::near::account_exists(&ctx.near, &signer.signer_id).await? {
-        tracing::info!(account_id = %signer.signer_id, "Account does not exist, nothing to do");
+        tracing::info!("Account does not exist, nothing to do");
         return Ok(false);
     }
 

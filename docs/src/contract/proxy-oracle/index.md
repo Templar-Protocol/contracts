@@ -69,7 +69,7 @@ Freshness is checked at multiple layers:
 
 ### Native Support For Transformed Assets
 
-Transformers are useful for assets such as LSTs. If the LST has no direct oracle price, but the underlying asset price is available from the oracle and the redemption rate is available on chain, the proxy can derive the LST price from those inputs.
+Transformers are useful for assets such as LSTs. If the LST has no direct oracle price, but the underlying asset price is available from the oracle and the redemption rate is available on-chain, the proxy can derive the LST price from those inputs.
 
 ## How Backup Oracles Work
 

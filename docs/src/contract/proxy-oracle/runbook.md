@@ -17,7 +17,7 @@ A `Proxy` definition includes:
 
 Governance actions are applied through proposals rather than direct mutation.
 
-Transformers are especially useful for LSTs: the underlying asset price comes from the oracle, the conversion rate comes from chain state, and the proxy derives the LST price.
+Transformers are especially useful for LSTs: the underlying asset price comes from the oracle, the redemption rate comes from chain state, and the proxy derives the LST price.
 
 ## Governance Lifecycle
 
