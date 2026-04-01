@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::unwrap_used
+)]
+
 use std::collections::{HashMap, HashSet};
 
 use near_sdk::{
@@ -12,8 +18,9 @@ use templar_common::{
     oracle::{
         price_transformer::{self, ProxyPriceTransformer},
         proxy::{
+            aggregator::{AggregationMethod, Aggregator, Filter},
             governance::{Operation, ProxyGovernanceInterface},
-            Proxy, Source,
+            Entry, Proxy, Source,
         },
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
@@ -31,7 +38,6 @@ use test_utils::{
 };
 
 fn norm_price(price: &pyth::Price) -> u64 {
-    #[allow(clippy::unwrap_used, reason = "test should panic on negative price")]
     let p = u64::try_from(price.price.0).unwrap();
     let f = 10u64.pow(price.expo.unsigned_abs());
     if price.expo.is_negative() {
@@ -299,10 +305,14 @@ pub fn gas() {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 #[rstest::rstest]
+#[case::median_low(AggregationMethod::MedianLow)]
+#[case::priority(AggregationMethod::Priority)]
 #[tokio::test]
-pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
+pub async fn proxy_oracle(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] method: AggregationMethod,
+) {
     accounts!(
         worker,
         actor,
@@ -370,12 +380,43 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         };
     }
 
-    let btc_proxy_def = Proxy::median_low([
-        OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
-        OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
-        OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
-    ]);
+    let default_filter = Filter {
+        max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+        max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
+        min_sources: Some(1),
+    };
+
+    // For Priority, assign distinct weights so the method actually matters:
+    //   pyth1 = 1, redstone = 5, pyth2 = 10
+    // For MedianLow, equal weights (standard behavior).
+    let (w_pyth1, w_redstone, w_pyth2) = match method {
+        AggregationMethod::MedianLow => (1, 1, 1),
+        AggregationMethod::Priority => (1, 5, 10),
+    };
+
+    let btc_proxy_def = Proxy {
+        aggregator: Aggregator {
+            method: method.clone(),
+            filter: default_filter.clone(),
+        },
+        entries: vec![
+            Entry::new(
+                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
+                w_pyth1,
+            ),
+            Entry::new(
+                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
+                w_redstone,
+            ),
+            Entry::new(
+                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
+                w_pyth2,
+            ),
+        ],
+    };
     let btc_proxy_id = PriceIdentifier([0x01_u8; 32]);
+
+    // Single-source proxies: method doesn't affect the result.
     let just_pyth_btc =
         Proxy::median_low([OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()]);
     let just_pyth_btc_id = PriceIdentifier([0x02_u8; 32]);
@@ -419,6 +460,7 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         .await;
     assert_eq!(result, HashMap::from_iter([(btc_proxy_id, None)]));
 
+    // Step 1: Only redstone has a price. Single source → same for both methods.
     set!(redstone.BTC = 100_000).await;
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
@@ -429,6 +471,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         Some(100_000),
     );
 
+    // Step 2: redstone=100k, pyth1=90k.
+    //   MedianLow: median of [90k, 100k] → 90k
+    //   Priority: redstone (weight 5) > pyth1 (weight 1) → 100k
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
     set!(redstone.ETH = 1_800).await;
     let result = proxy_oracle
@@ -447,9 +492,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         )
         .await;
     assert_eq!(result.len(), 3);
+    let expected_btc_2source = match method {
+        AggregationMethod::MedianLow => 90_000,
+        AggregationMethod::Priority => 100_000,
+    };
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
-        Some(90_000),
+        Some(expected_btc_2source),
     );
     assert_eq!(
         result
@@ -468,17 +517,24 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         Some(1_800),
     );
 
-    // Set second Pyth oracle
+    // Step 3: All three sources: pyth1=90k, redstone=100k, pyth2=80k.
+    //   MedianLow: median of [80k, 90k, 100k] → 90k
+    //   Priority: pyth2 (weight 10) wins → 80k
     set!(pyth2.CRYPTO_BTC_USD = 80_000).await;
     let result = proxy_oracle
         .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
         .await;
     assert_eq!(result.len(), 1);
+    let expected_btc_3source = match method {
+        AggregationMethod::MedianLow => 90_000,
+        AggregationMethod::Priority => 80_000,
+    };
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
-        Some(90_000),
+        Some(expected_btc_3source),
     );
 
+    // Step 4: Clear pyth1 and redstone, only pyth2=80k remains. Single source → same for both.
     set!(pyth.CRYPTO_BTC_USD = None).await;
     set!(redstone.BTC = None).await;
     let result = proxy_oracle

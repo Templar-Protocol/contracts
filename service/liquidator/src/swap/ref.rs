@@ -48,11 +48,18 @@ pub struct RefSwap {
     pub max_slippage_bps: u32,
     /// Ref Finance indexer URL
     pub indexer_url: String,
+    /// Shared nonce tracker for coordinated nonce management
+    pub nonce_tracker: crate::rpc::NonceTracker,
 }
 
 impl RefSwap {
     /// Creates a new Ref Finance swap provider
-    pub fn new(contract: AccountId, client: JsonRpcClient, signer: Arc<Signer>) -> Self {
+    pub fn new(
+        contract: AccountId,
+        client: JsonRpcClient,
+        signer: Arc<Signer>,
+        nonce_tracker: crate::rpc::NonceTracker,
+    ) -> Self {
         #[allow(clippy::expect_used)]
         Self {
             contract,
@@ -61,6 +68,7 @@ impl RefSwap {
             wnear_contract: "wrap.near".parse().expect("wrap.near is a valid AccountId"),
             max_slippage_bps: Self::DEFAULT_MAX_SLIPPAGE_BPS,
             indexer_url: "https://indexer.ref.finance".to_string(),
+            nonce_tracker,
         }
     }
 
@@ -473,7 +481,8 @@ impl SwapProvider for RefSwap {
                 .await?;
         }
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) =
+            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
 
         // Execute swap via ft_transfer_call
         let tx = Transaction::V0(TransactionV0 {
@@ -544,7 +553,8 @@ impl SwapProvider for RefSwap {
             "Using storage deposit minimum from contract"
         );
 
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer).await?;
+        let (nonce, block_hash) =
+            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
 
         let storage_deposit_action = near_primitives::action::FunctionCallAction {
             method_name: "storage_deposit".to_string(),

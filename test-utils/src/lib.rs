@@ -47,6 +47,7 @@ pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal
 pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
+pub mod test_signer;
 
 #[rstest::fixture]
 pub async fn worker() -> Worker<Sandbox> {
@@ -386,5 +387,11 @@ pub fn print_execution(e: &ExecutionSuccess) {
             _ => {}
         }
         eprintln!();
+    }
+}
+
+pub fn assert_all_outcomes_success(result: &ExecutionSuccess) {
+    for outcome in result.outcomes() {
+        outcome.clone().into_result().unwrap();
     }
 }

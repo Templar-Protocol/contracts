@@ -21,9 +21,30 @@ use templar_common::{
 
 use crate::{
     inventory,
-    rpc::{check_transaction_success, get_access_key_data, send_tx},
+    rpc::{check_transaction_success, get_access_key_data, send_tx, NonceTracker},
+    swap::SwapProvider,
     CollateralStrategy, LiquidationOutcome, LiquidatorError, LiquidatorResult,
 };
+
+/// Swap issue that occurred after a successful liquidation.
+/// Returned to the caller so notifications can be sent in the right order
+/// (liquidation success first, then swap issue).
+#[derive(Debug)]
+pub enum SwapIssue {
+    /// Swap provider doesn't support this asset pair.
+    Unsupported {
+        from: String,
+        to: String,
+        amount: String,
+    },
+    /// Swap failed with an error.
+    Failed {
+        from: String,
+        to: String,
+        amount: String,
+        error: String,
+    },
+}
 
 /// Liquidation transaction executor.
 ///
@@ -43,6 +64,8 @@ pub struct LiquidationExecutor {
     swap_provider: Option<crate::swap::SwapProviderImpl>,
     swap_retry_config: crate::swap::SwapRetryConfig,
     min_swap_value_usd: f64,
+    collateral_decimals: i32,
+    nonce_tracker: NonceTracker,
 }
 
 impl LiquidationExecutor {
@@ -59,6 +82,8 @@ impl LiquidationExecutor {
         swap_provider: Option<crate::swap::SwapProviderImpl>,
         swap_retry_config: crate::swap::SwapRetryConfig,
         min_swap_value_usd: f64,
+        collateral_decimals: i32,
+        nonce_tracker: NonceTracker,
     ) -> Self {
         Self {
             client,
@@ -71,6 +96,8 @@ impl LiquidationExecutor {
             swap_provider,
             swap_retry_config,
             min_swap_value_usd,
+            collateral_decimals,
+            nonce_tracker,
         }
     }
 
@@ -128,7 +155,7 @@ impl LiquidationExecutor {
         liquidation_amount: BorrowAssetAmount,
         collateral_amount: CollateralAssetAmount,
         expected_collateral_value: BorrowAssetAmount,
-    ) -> LiquidatorResult<LiquidationOutcome> {
+    ) -> LiquidatorResult<(LiquidationOutcome, Option<SwapIssue>)> {
         // Dry run mode - log what would happen, skip execution
         if self.dry_run {
             // Log JIT swap intent if applicable
@@ -159,7 +186,7 @@ impl LiquidationExecutor {
                     );
                 }
             }
-            return Ok(LiquidationOutcome::Liquidated);
+            return Ok((LiquidationOutcome::Liquidated, None));
         }
 
         // Reserve inventory for this liquidation
@@ -176,9 +203,10 @@ impl LiquidationExecutor {
         );
 
         // Execute liquidation transaction
-        let (nonce, block_hash) = get_access_key_data(&self.client, &self.signer)
-            .await
-            .map_err(LiquidatorError::AccessKeyDataError)?;
+        let (nonce, block_hash) =
+            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker))
+                .await
+                .map_err(LiquidatorError::AccessKeyDataError)?;
 
         let tx = self.create_transfer_tx(
             borrow_asset,
@@ -216,9 +244,15 @@ impl LiquidationExecutor {
                             "Liquidation executed successfully (all receipts succeeded)"
                         );
 
+                        // Release the reservation — tokens have left our account
+                        self.inventory
+                            .write()
+                            .await
+                            .release(borrow_asset, liquidation_amount);
+
                         // Handle collateral based on strategy
-                        let swap_succeeded = match &self.collateral_strategy {
-                            CollateralStrategy::Hold => false, // No swap performed
+                        let (swap_succeeded, swap_issue) = match &self.collateral_strategy {
+                            CollateralStrategy::Hold => (false, None),
                             CollateralStrategy::SwapToBorrow => {
                                 // Estimate USD value for threshold check.
                                 // The expected_collateral_value is denominated in borrow asset
@@ -235,7 +269,7 @@ impl LiquidationExecutor {
                                     usd_estimate,
                                 )
                                 .await
-                                .unwrap_or(false)
+                                .unwrap_or((false, None))
                             }
                         };
 
@@ -256,7 +290,7 @@ impl LiquidationExecutor {
                             }
                         }
 
-                        Ok(LiquidationOutcome::Liquidated)
+                        Ok((LiquidationOutcome::Liquidated, swap_issue))
                     }
                     Err(error_msg) => {
                         // Receipt failed - release reserved inventory
@@ -296,23 +330,46 @@ impl LiquidationExecutor {
 
     /// Swap collateral immediately after liquidation.
     ///
-    /// Returns `Ok(true)` if swap succeeded, `Ok(false)` if skipped or failed (non-fatal).
+    /// Returns `Ok((succeeded, swap_issue))` where `swap_issue` is populated
+    /// when the swap failed or was unsupported (for notification by the caller).
+    #[allow(clippy::too_many_lines)]
     async fn swap_collateral_to_borrow(
         &self,
         collateral_asset: &FungibleAsset<CollateralAsset>,
         borrow_asset: &FungibleAsset<BorrowAsset>,
         collateral_amount: CollateralAssetAmount,
         expected_collateral_value_usd: Option<f64>,
-    ) -> LiquidatorResult<bool> {
+    ) -> LiquidatorResult<(bool, Option<SwapIssue>)> {
         let Some(ref swap_provider) = self.swap_provider else {
             tracing::debug!("No swap provider configured, holding collateral");
-            return Ok(false);
+            return Ok((false, None));
         };
 
         // Skip swap if collateral is already the target borrow asset
         if collateral_asset.to_string() == borrow_asset.to_string() {
             tracing::debug!("Collateral is already borrow asset, skipping JIT swap");
-            return Ok(false);
+            return Ok((false, None));
+        }
+
+        // Skip swap if the provider doesn't support this asset pair
+        if !swap_provider.supports_assets(collateral_asset, borrow_asset) {
+            tracing::info!(
+                from = %collateral_asset,
+                to = %borrow_asset,
+                "Swap provider does not support asset pair, holding collateral"
+            );
+            return Ok((
+                false,
+                Some(SwapIssue::Unsupported {
+                    from: crate::format::short_asset_name(&collateral_asset.to_string()),
+                    to: crate::format::short_asset_name(&borrow_asset.to_string()),
+                    amount: crate::format::format_amount_short(
+                        u128::from(collateral_amount),
+                        self.collateral_decimals,
+                        &collateral_asset.to_string(),
+                    ),
+                }),
+            ));
         }
 
         // Skip swap if value is below threshold — will be picked up by batch swap
@@ -325,7 +382,7 @@ impl LiquidationExecutor {
                     threshold = format!("${:.2}", self.min_swap_value_usd),
                     "Skipping JIT swap - below threshold, will batch later"
                 );
-                return Ok(false);
+                return Ok((false, None));
             }
         }
 
@@ -372,6 +429,14 @@ impl LiquidationExecutor {
             })
             .await;
 
+        let amount_short = crate::format::format_amount_short(
+            u128::from(collateral_amount),
+            self.collateral_decimals,
+            &from_asset_id,
+        );
+        let from_short = crate::format::short_asset_name(&from_asset_id);
+        let to_short = crate::format::short_asset_name(&to_asset_id);
+
         match result {
             Ok(()) => {
                 tracing::info!(
@@ -380,24 +445,42 @@ impl LiquidationExecutor {
                     amount_raw = %u128::from(collateral_amount),
                     "JIT swap completed - inventory replenished"
                 );
-                Ok(true)
+                Ok((true, None))
             }
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("Amount too low") {
+                let issue = if msg.contains("Amount too low") {
                     tracing::info!(
                         swap = %swap_name,
                         error = %e,
                         "JIT swap skipped - amount below provider minimum, will batch"
                     );
+                    None // Not a notification-worthy issue
+                } else if msg.contains("Quote failed") {
+                    tracing::debug!(
+                        swap = %swap_name,
+                        "No swap route available for asset, holding collateral"
+                    );
+                    Some(SwapIssue::Failed {
+                        from: from_short,
+                        to: to_short,
+                        amount: amount_short,
+                        error: "No swap route available".to_string(),
+                    })
                 } else {
                     tracing::info!(
                         swap = %swap_name,
                         error = %e,
-                        "JIT swap failed after retries, holding collateral"
+                        "JIT swap failed, holding collateral"
                     );
-                }
-                Ok(false)
+                    Some(SwapIssue::Failed {
+                        from: from_short,
+                        to: to_short,
+                        amount: amount_short,
+                        error: msg,
+                    })
+                };
+                Ok((false, issue))
             }
         }
     }

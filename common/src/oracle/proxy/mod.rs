@@ -26,6 +26,17 @@ impl Proxy {
             entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),
         }
     }
+
+    pub fn priority(entries: impl IntoIterator<Item = Source>) -> Self {
+        Self {
+            aggregator: Aggregator::priority(Filter {
+                max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+                max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
+                min_sources: Some(1),
+            }),
+            entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

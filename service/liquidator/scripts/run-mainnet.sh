@@ -64,7 +64,7 @@ IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
 
 # Oracle price update configuration
 PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes.pyth.network}"
-AUTO_UPDATE_PRICES="${AUTO_UPDATE_PRICES:-false}"
+REDSTONE_GATEWAY_URL="${REDSTONE_GATEWAY_URL:-https://oracle-gateway-1.a.redstone.vip}"
 
 # Build binary
 PROJECT_ROOT="$SCRIPT_DIR/../../.."
@@ -175,7 +175,12 @@ fi
 
 # Add oracle price update arguments
 CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
-[ "$AUTO_UPDATE_PRICES" = "true" ] && CMD_ARGS+=("--auto-update-prices")
+CMD_ARGS+=("--redstone-gateway-url" "$REDSTONE_GATEWAY_URL")
+
+# Add Telegram notification arguments (use = syntax because chat IDs start with -)
+[ -n "$TELEGRAM_BOT_TOKEN" ] && CMD_ARGS+=("--telegram-bot-token=$TELEGRAM_BOT_TOKEN")
+[ -n "$TELEGRAM_CHAT_ID" ] && CMD_ARGS+=("--telegram-chat-id=$TELEGRAM_CHAT_ID")
+[ -n "$TELEGRAM_THREAD_ID" ] && CMD_ARGS+=("--telegram-thread-id=$TELEGRAM_THREAD_ID")
 
 info "Starting liquidator..."
 echo ""

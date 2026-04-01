@@ -7,27 +7,18 @@ use near_sdk::{
     NearToken,
 };
 use near_workspaces::{network::Sandbox, Worker};
-use p256::{ecdsa::signature::Signer, elliptic_curve::rand_core::OsRng};
 use rstest::rstest;
 use templar_universal_account::{
-    authentication::{
-        ed25519::{eip191, raw, sep53},
-        eip712,
-        passkey::{
-            self,
-            data::{AuthenticatorData, ClientDataJson},
-        },
-        with_raw_string::WithRawString,
-        HashForSigning, MessageWithSignature, Payload,
-    },
-    contract_state::Migration,
+    authentication::{with_raw_string::WithRawString, Payload},
+    state,
     transaction::{FunctionCallAction, Transaction},
-    ExecuteArgs, ExecuteArgsMessage, KeyId, KeyParameters, PayloadExecutionParameters,
-    NEAR_TESTNET_CHAIN_ID,
+    KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::{
-    controller::universal_account::UniversalAccountController, worker, ContractController,
-    FtController, StorageManagementController,
+    assert_all_outcomes_success,
+    controller::{migration::MigrationController, universal_account::UniversalAccountController},
+    test_signer::TestSigner,
+    worker, ContractController, FtController, StorageManagementController,
 };
 
 fn mint(amount: u128) -> FunctionCallAction {
@@ -40,116 +31,6 @@ fn mint(amount: u128) -> FunctionCallAction {
         .into(),
         amount: NearToken::from_near(0),
         gas: near_sdk::Gas::from_tgas(30),
-    }
-}
-
-enum TestSigner {
-    Passkey(p256::SecretKey),
-    Ed25519Raw(ed25519_dalek::SigningKey),
-    Eip712(alloy::signers::local::PrivateKeySigner),
-    Sep53(ed25519_dalek::SigningKey),
-    Eip191(alloy::signers::local::PrivateKeySigner),
-}
-
-impl TestSigner {
-    fn random_passkey() -> Self {
-        Self::Passkey(p256::SecretKey::random(&mut OsRng))
-    }
-
-    fn random_ed25519_raw() -> Self {
-        Self::Ed25519Raw(ed25519_dalek::SigningKey::generate(&mut OsRng))
-    }
-
-    fn random_eip712() -> Self {
-        Self::Eip712(alloy::signers::local::PrivateKeySigner::random())
-    }
-
-    fn random_sep53() -> Self {
-        Self::Sep53(ed25519_dalek::SigningKey::generate(&mut OsRng))
-    }
-
-    fn random_eip191() -> Self {
-        Self::Eip191(alloy::signers::local::PrivateKeySigner::random())
-    }
-
-    fn id(&self) -> KeyId {
-        match self {
-            Self::Passkey(key) => passkey::VerifyKey(key.public_key().into()).into(),
-            Self::Ed25519Raw(key) => raw::VerifyKey(key.verifying_key().to_bytes().into()).into(),
-            Self::Eip712(key) => eip712::VerifyKey(key.address().into()).into(),
-            Self::Sep53(key) => sep53::VerifyKey(key.verifying_key().to_bytes().into()).into(),
-            Self::Eip191(key) => eip191::VerifyKey(key.address().into()).into(),
-        }
-    }
-
-    fn execute_args(
-        &self,
-        payload: WithRawString<Payload<Box<[Transaction]>>>,
-    ) -> ExecuteArgs<Box<[Transaction]>> {
-        match self {
-            TestSigner::Passkey(secret_key) => {
-                let payload = passkey::Message(payload);
-                let challenge = payload.hash_for_signing();
-
-                let message: MessageWithSignature<_> = payload.sign(
-                    secret_key,
-                    AuthenticatorData(Box::new([0xff_u8; 32])),
-                    ClientDataJson {
-                        r#type: "type".to_string(),
-                        challenge: challenge.into(),
-                        origin: "origin".to_string(),
-                        cross_origin: None,
-                        top_origin: None,
-                    },
-                );
-
-                ExecuteArgsMessage {
-                    key: passkey::VerifyKey(secret_key.public_key().into()),
-                    mws: Box::new(message),
-                }
-                .into()
-            }
-            TestSigner::Ed25519Raw(key) => {
-                let message = raw::Message::new(payload);
-                let signature = key.sign(&message.preimage_for_signing()).to_bytes().into();
-                let message = message.with_signature(signature);
-
-                ExecuteArgsMessage {
-                    key: raw::VerifyKey(key.verifying_key().to_bytes().into()),
-                    mws: Box::new(message),
-                }
-                .into()
-            }
-            TestSigner::Eip712(key) => {
-                let message = eip712::Message(payload);
-                let mws = message.sign(key).unwrap();
-                ExecuteArgsMessage {
-                    key: eip712::VerifyKey(key.address().into()),
-                    mws: Box::new(mws),
-                }
-                .into()
-            }
-            TestSigner::Sep53(key) => {
-                let message = sep53::Message::new(payload);
-                let signature = key.sign(&message.hash_for_signing()).to_bytes().into();
-                let message = message.with_signature(signature);
-
-                ExecuteArgsMessage {
-                    key: sep53::VerifyKey(key.verifying_key().to_bytes().into()),
-                    mws: Box::new(message),
-                }
-                .into()
-            }
-            TestSigner::Eip191(key) => {
-                let message = eip191::Message(payload);
-                let mws = message.sign(key).unwrap();
-                ExecuteArgsMessage {
-                    key: eip191::VerifyKey(key.address().into()),
-                    mws: Box::new(mws),
-                }
-                .into()
-            }
-        }
     }
 }
 
@@ -203,15 +84,19 @@ async fn setup(
             let r = ua
                 .migrate(
                     ua.contract().as_account(),
-                    Migration::V0 {
+                    state::migration::V0 {
                         chain_id: U128(NEAR_TESTNET_CHAIN_ID),
                     },
                 )
                 .await;
 
-            for o in r.outcomes() {
-                o.clone().into_result().unwrap();
-            }
+            assert_all_outcomes_success(&r);
+
+            let r = ua
+                .migrate(ua.contract().as_account(), state::migration::V1)
+                .await;
+
+            assert_all_outcomes_success(&r);
 
             ua
         } else {
@@ -235,10 +120,8 @@ async fn setup(
         }
     };
 
-    let (uac, ft) = tokio::join!(
-        make_uac(),
-        FtController::deploy(ft_account, "Fungible Token", "FT"),
-    );
+    let ft = FtController::deploy(ft_account, "Fungible Token", "FT").await;
+    let uac = make_uac().await;
 
     let counter = ft.get_counter(uac.contract.id()).await;
     if execute_on_create == ExecuteOnCreate::Counter && !migrated {
@@ -321,9 +204,7 @@ pub async fn universal_account(
 
     let e = uac.execute(&third_party, execute_args).await;
 
-    for o in e.outcomes() {
-        assert!(o.is_success(), "Expect success on all receipts: {o:?}");
-    }
+    assert_all_outcomes_success(&e);
 
     let balance = ft.ft_balance_of(uac.contract.id()).await;
     assert_eq!(balance.0, 100, "Function call should succeed");
@@ -362,9 +243,7 @@ pub async fn universal_account(
 
     let e = uac.execute(&third_party, execute_args).await;
 
-    for o in e.outcomes() {
-        assert!(o.is_success(), "Expect success on all receipts: {o:?}");
-    }
+    assert_all_outcomes_success(&e);
 
     let balance = ft.ft_balance_of(uac.contract.id()).await;
     assert_eq!(balance.0, 200, "Function call should succeed");
