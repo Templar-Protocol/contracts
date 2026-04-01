@@ -17,7 +17,14 @@ pub async fn get_market_prices(
     State(app): State<App>,
     Query(GetMarketPricesRequest { market_id }): Query<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
-    let Some(market) = app.accounts.read().await.market_data.get(&market_id).cloned() else {
+    let Some(market) = app
+        .accounts
+        .read()
+        .await
+        .market_data
+        .get(&market_id)
+        .cloned()
+    else {
         tracing::debug!(%market_id, "Unknown market");
         return SimpleResponse::Rejected {
             reason: format!("Unknown market: {market_id}"),
