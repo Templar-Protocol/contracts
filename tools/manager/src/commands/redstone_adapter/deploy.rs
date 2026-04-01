@@ -19,38 +19,37 @@ pub struct RedStoneAdapterInitArgs {
 pub struct RedStoneArgsLoader {
     /// Use the production RedStone configuration
     #[arg(long)]
-    pub prod: bool,
+    prod: bool,
     /// Use the test RedStone configuration
     #[arg(long)]
-    pub test: bool,
+    test: bool,
     /// JSON initialization arguments
     #[arg(long)]
-    pub args: Option<String>,
+    args: Option<String>,
     /// Path to a JSON initialization arguments file
     #[arg(long)]
-    pub args_file: Option<PathBuf>,
+    args_file: Option<PathBuf>,
 }
 
 impl LoadArgs<RedStoneAdapterInitArgs> for RedStoneArgsLoader {
     fn load(&self) -> anyhow::Result<RedStoneAdapterInitArgs> {
-        if self.prod {
-            return Ok(RedStoneAdapterInitArgs {
+        match (self.prod, self.test, &self.args, &self.args_file) {
+            (true, false, None, None) => Ok(RedStoneAdapterInitArgs {
                 config: templar_common::oracle::redstone::config::prod(),
-            });
-        }
-        if self.test {
-            return Ok(RedStoneAdapterInitArgs {
+            }),
+            (false, true, None, None) => Ok(RedStoneAdapterInitArgs {
                 config: templar_common::oracle::redstone::config::test(),
-            });
+            }),
+
+            (false, false, Some(args), None) => {
+                serde_json::from_str(args).context("args deserialization")
+            }
+            (false, false, None, Some(args_file)) => {
+                serde_json::from_reader(std::fs::File::open(args_file)?)
+                    .context("args file deserialization")
+            }
+            _ => anyhow::bail!("Exactly one source must be specified"),
         }
-        if let Some(args) = &self.args {
-            return serde_json::from_str(args).context("args deserialization");
-        }
-        if let Some(args_file) = &self.args_file {
-            return serde_json::from_reader(std::fs::File::open(args_file)?)
-                .context("args deserialization");
-        }
-        anyhow::bail!("no configuration provided");
     }
 }
 
