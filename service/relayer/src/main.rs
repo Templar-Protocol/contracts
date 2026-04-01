@@ -1,16 +1,10 @@
 use std::net::SocketAddr;
 
-use axum::{routing, Router};
 use clap::Parser;
 use tokio::{signal, sync::watch, task::JoinSet};
-use tower::ServiceBuilder;
-use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use templar_relayer::{
-    app::{App, Configuration},
-    route,
-};
+use templar_relayer::app::{App, Configuration};
 
 #[allow(clippy::unwrap_used)]
 #[tokio::main]
@@ -42,28 +36,9 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], app.args.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
-    let router = Router::new()
-        .route("/healthz", routing::get(|| async { "ok" }))
-        .route("/relay", routing::post(route::relay::relay))
-        .route(
-            "/update_prices",
-            routing::post(route::update_prices::update_prices),
-        )
-        .route(
-            "/get_allowance",
-            routing::get(route::get_allowance::get_allowance),
-        )
-        .route(
-            "/market_prices",
-            routing::get(route::get_market_prices::get_market_prices),
-        )
-        .nest("/universal_account", route::universal_account::router())
-        .layer(ServiceBuilder::new().layer(CorsLayer::permissive()))
-        .with_state(app);
-
     tracing::info!("Listening on {}", listener.local_addr().unwrap());
 
-    axum::serve(listener, router)
+    axum::serve(listener, templar_relayer::router(app))
         .with_graceful_shutdown(shutdown_signal(kill))
         .await
         .unwrap();

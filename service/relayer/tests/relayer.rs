@@ -50,8 +50,10 @@ use templar_relayer::{
             relay::RelayRequest as UaRelayRequest,
         },
         update_prices::UpdatePricesRequest,
+        update_prices::UpdatePricesResponse,
         SimpleResponse,
     },
+    ViewMarketPrices,
 };
 use templar_universal_account::{
     authentication::{
@@ -231,6 +233,17 @@ impl InitTest {
         self.app.load_markets().await;
         (market, proxy_oracle, redstone_adapter)
     }
+}
+
+async fn spawn_router(app: App) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, templar_relayer::router(app))
+            .await
+            .unwrap();
+    });
+    (format!("http://{address}"), server)
 }
 
 fn create_message<T: near_sdk::serde::Serialize>(
@@ -546,6 +559,57 @@ pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: Init
 
 #[rstest]
 #[tokio::test]
+pub async fn requires_network_router_serves_price_routes(#[future(awt)] mut init_test: InitTest) {
+    let (market, _proxy_oracle, _redstone_adapter) = init_test.market_proxy_redstone().await;
+    let InitTest { app, .. } = init_test;
+
+    let (base_url, server) = spawn_router(app).await;
+    let client = reqwest::Client::new();
+
+    let update_response = client
+        .post(format!("{base_url}/update_prices"))
+        .json(&UpdatePricesRequest {
+            market_ids: vec![market.id().clone(), market.id().clone()],
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(update_response.status().is_success());
+
+    let SimpleResponse::Success(update_response) = update_response
+        .json::<SimpleResponse<UpdatePricesResponse>>()
+        .await
+        .unwrap()
+    else {
+        panic!("update_prices should succeed");
+    };
+    assert_eq!(update_response.market_ids, vec![market.id().clone()]);
+
+    let prices_response = client
+        .get(format!("{base_url}/market_prices"))
+        .query(&GetMarketPricesRequest {
+            market_id: market.id().clone(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert!(prices_response.status().is_success());
+
+    let SimpleResponse::Success(prices) = prices_response
+        .json::<SimpleResponse<ViewMarketPrices>>()
+        .await
+        .unwrap()
+    else {
+        panic!("market_prices should succeed");
+    };
+    assert!(prices.borrow.is_some());
+    assert!(prices.collateral.is_some());
+
+    server.abort();
+}
+
+#[rstest]
+#[tokio::test]
 pub async fn market_prices_returns_direct_market_prices(#[future(awt)] mut init_test: InitTest) {
     let (market, pyth_oracle) = init_test.market_with_pyth_oracle().await;
     let InitTest { app, .. } = init_test;
@@ -686,6 +750,24 @@ pub async fn requires_network_update_prices_updates_redstone_market(
     };
     assert_eq!(response.market_ids, vec![market.id().clone()]);
 
+    let accounts = app.accounts.read().await;
+    let market_data = accounts.market_data.get(market.id()).unwrap();
+    assert!(market_data
+        .borrow
+        .update_oracle
+        .contains(&OracleRequest::redstone(
+            redstone_adapter.id().clone(),
+            usdc.clone(),
+        )));
+    assert!(market_data
+        .collateral
+        .update_oracle
+        .contains(&OracleRequest::redstone(
+            redstone_adapter.id().clone(),
+            btc.clone(),
+        )));
+    drop(accounts);
+
     let SimpleResponse::Success(prices) =
         templar_relayer::route::get_market_prices::get_market_prices(
             State(app),
@@ -697,14 +779,20 @@ pub async fn requires_network_update_prices_updates_redstone_market(
     else {
         panic!("get_market_prices should succeed");
     };
-    assert!(prices.borrow.is_some());
-    assert!(prices.collateral.is_some());
+    let Some(borrow) = prices.borrow else {
+        panic!("borrow price should resolve to USDC");
+    };
+    let Some(collateral) = prices.collateral else {
+        panic!("collateral price should resolve to BTC");
+    };
 
     let price_data_after = redstone_adapter
         .read_price_data(vec![usdc.clone(), btc.clone()])
         .await;
     assert!(price_data_after.contains_key(&usdc));
     assert!(price_data_after.contains_key(&btc));
+    assert_eq!(borrow, price_data_after[&usdc].to_pyth_price().unwrap());
+    assert_eq!(collateral, price_data_after[&btc].to_pyth_price().unwrap());
 }
 
 #[rstest]

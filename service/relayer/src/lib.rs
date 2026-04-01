@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use axum::{routing, Router};
 use near_primitives::{action::FunctionCallAction, types::AccountId};
 use near_sdk::{
     json_types::U128,
@@ -23,6 +24,27 @@ pub mod cache;
 pub mod client;
 pub mod error;
 pub mod route;
+
+pub fn router(app: app::App) -> Router {
+    Router::new()
+        .route("/healthz", routing::get(|| async { "ok" }))
+        .route("/relay", routing::post(route::relay::relay))
+        .route(
+            "/update_prices",
+            routing::post(route::update_prices::update_prices),
+        )
+        .route(
+            "/get_allowance",
+            routing::get(route::get_allowance::get_allowance),
+        )
+        .route(
+            "/market_prices",
+            routing::get(route::get_market_prices::get_market_prices),
+        )
+        .nest("/universal_account", route::universal_account::router())
+        .layer(tower::ServiceBuilder::new().layer(tower_http::cors::CorsLayer::permissive()))
+        .with_state(app)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct AccountData {
