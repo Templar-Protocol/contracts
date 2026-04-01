@@ -64,8 +64,11 @@ jobs:
           SQLX_OFFLINE: true
         run: cargo nextest run -p templar-soroban-runtime
 
+      - name: Install packages
+        run: sudo apt install libdbus-1-dev pkg-config
+
       - name: Install stellar CLI
-        run: RUSTUP_TOOLCHAIN=1.89.0 cargo install --locked "stellar-cli@25.0.0"
+        run: curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
 
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
