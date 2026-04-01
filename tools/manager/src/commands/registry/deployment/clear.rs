@@ -45,10 +45,7 @@ impl ClearDeployments {
         for market_id in deployments {
             tracing::info!(%market_id, "Removing market");
             let market_remove = MarketRemove {
-                signer: SignerArgs {
-                    account_id: market_id.clone(),
-                    secret_key: self.secret_key.clone(),
-                },
+                signer: SignerArgs::new(market_id.clone(), self.secret_key.clone()),
                 beneficiary_id: beneficiary_id.clone(),
                 force: self.force,
             };

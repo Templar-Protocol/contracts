@@ -27,16 +27,16 @@ pub struct MarketRemove {
 }
 
 impl MarketRemove {
-    #[tracing::instrument(skip_all, name = "market_remove", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
+    #[tracing::instrument(skip_all, name = "market_remove", fields(account_id = %self.signer.signer_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        if !near::account_exists(&ctx.near, &self.signer.account_id).await? {
-            tracing::info!(account_id = %self.signer.account_id, "Account does not exist, nothing to do");
+        if !near::account_exists(&ctx.near, &self.signer.signer_id).await? {
+            tracing::info!(account_id = %self.signer.signer_id, "Account does not exist, nothing to do");
             return Ok(());
         }
 
         let configuration = ctx
             .near
-            .view(&self.signer.account_id, "get_configuration")
+            .view(&self.signer.signer_id, "get_configuration")
             .await
             .and_then(|r| r.json::<MarketConfiguration>());
 

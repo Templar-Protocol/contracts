@@ -17,13 +17,13 @@ pub async fn delete_account(
     signer: &SignerArgs,
     beneficiary_id: &AccountId,
 ) -> anyhow::Result<bool> {
-    if !crate::near::account_exists(&ctx.near, &signer.account_id).await? {
-        tracing::info!(account_id = %signer.account_id, "Account does not exist, nothing to do");
+    if !crate::near::account_exists(&ctx.near, &signer.signer_id).await? {
+        tracing::info!(account_id = %signer.signer_id, "Account does not exist, nothing to do");
         return Ok(false);
     }
 
     let s = signer.signer();
-    ctx.batch(&s, &signer.account_id)
+    ctx.batch(&s, &signer.signer_id)
         .delete_account(beneficiary_id)
         .transact()
         .await?;

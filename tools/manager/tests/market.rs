@@ -209,7 +209,7 @@ async fn market_remove_after_registry_create(#[future(awt)] worker: Worker<Sandb
 
     MarketRemove {
         signer: SignerArgs {
-            account_id: market_id.clone(),
+            signer_id: market_id.clone(),
             secret_key: registry.secret_key().to_string().parse().unwrap(),
         },
         beneficiary_id: registry.id().clone(),
