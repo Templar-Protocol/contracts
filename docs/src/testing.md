@@ -40,7 +40,7 @@ open coverage-report/html/index.html
 Gas usage analysis is available through existing tools:
 
 ```bash
-./script/ci/gas-report.sh
+./script/gas-report.sh
 ```
 
 This generates a gas report for market operations, including average gas costs for individual operations and snapshot iteration limits.

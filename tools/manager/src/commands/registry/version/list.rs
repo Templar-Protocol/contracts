@@ -40,7 +40,7 @@ impl ListVersions {
 }
 
 impl OutputStyle for VersionListOutput {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         for version in &self.versions {
             writeln!(out, "{version}")?;
         }

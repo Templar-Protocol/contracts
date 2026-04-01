@@ -24,7 +24,7 @@ The protocol includes operational bots for automated tasks:
 Gas analysis tools provide performance insights:
 
 ```bash
-./script/ci/gas-report.sh
+./script/gas-report.sh
 ```
 
 This generates detailed reports on:

@@ -8,9 +8,7 @@ use near_sdk::{AccountId, NearToken};
 pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
     NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
 
-/// Deposit storage on `contract_id` for `account_id`.
-///
-/// Mirrors `script/ci/storage-deposit.sh`.
+/// Deposit storage on --contract-id for --signer-id.
 #[derive(clap::Args, Debug)]
 pub struct StorageDeposit {
     /// Signer for the deposit transaction. Storage is deposited on behalf of this same account.

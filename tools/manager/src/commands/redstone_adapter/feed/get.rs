@@ -75,7 +75,7 @@ impl FeedGet {
 }
 
 impl OutputStyle for FeedDataOutput {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         if self.data.is_empty() {
             writeln!(out, "{}", style("No feed data found").dim())?;
             return Ok(());
