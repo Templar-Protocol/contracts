@@ -1,18 +1,22 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{setup_ctx, signer_args};
+use common::{no_build_loader, setup_ctx, signer_args};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
-use templar_common::{registry::DeployMode, time::Nanoseconds};
+use templar_common::{
+    oracle::{proxy::Proxy, pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
+    registry::DeployMode,
+    time::Nanoseconds,
+};
 use templar_manager::commands::{
+    deployment::{Deploy, FromRegistry},
     proxy_oracle::{
-        create::CreateProxyOracle,
         deploy::DeployProxyOracle,
         governance::{
             cancel::CancelProposal,
-            create::{CreateProposal, OperationCommand, SetTtlArgs},
+            create::{CreateProposal, OperationCommand, ProxyArgs, SetTtlArgs},
             execute::ExecuteProposal,
             get::GetProposal,
             list::ListProposals,
@@ -24,12 +28,18 @@ use templar_manager::commands::{
         deploy::DeployRegistry,
         version::add::{AddVersion, Package},
     },
-    DeployFromRegistry, FixedContractWasm,
 };
+use templar_manager::util::{EmptyArgsLoader, OutputArgs};
 use test_utils::{accounts, worker};
 
-fn no_build() -> FixedContractWasm {
-    FixedContractWasm { no_build: true }
+fn sample_price_id() -> CliPriceIdentifier {
+    "0000000000000000000000000000000000000000000000000000000000000001"
+        .parse()
+        .unwrap()
+}
+
+fn sample_proxy(oracle_id: AccountId) -> Proxy {
+    Proxy::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()])
 }
 
 /// Helper: deploy a proxy oracle on the given account.
@@ -38,8 +48,11 @@ async fn deploy_proxy_oracle(
     account: &near_workspaces::Account,
 ) {
     DeployProxyOracle {
-        signer: signer_args(account),
-        contract_wasm: no_build(),
+        deploy: Deploy::native(
+            signer_args(account),
+            no_build_loader(),
+            EmptyArgsLoader::default(),
+        ),
     }
     .run(ctx)
     .await
@@ -81,9 +94,11 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
     let registry_signer = signer_args(&registry);
 
     DeployRegistry {
-        signer: registry_signer.clone(),
-        contract: no_build(),
-        no_init: false,
+        deploy: Deploy::native(
+            registry_signer.clone(),
+            no_build_loader(),
+            EmptyArgsLoader::default(),
+        ),
     }
     .run(&ctx)
     .await
@@ -91,7 +106,7 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
 
     AddVersion {
         signer: registry_signer.clone(),
-        contract_wasm: no_build(),
+        contract_wasm: no_build_loader(),
         package: Package {
             market: false,
             uac: false,
@@ -109,16 +124,17 @@ async fn proxy_oracle_create_from_registry(#[future(awt)] worker: Worker<Sandbox
     .unwrap();
 
     // Create proxy oracle from registry. The registry's deploy is owner-only.
-    CreateProxyOracle {
-        signer: registry_signer.clone(),
-        deploy: DeployFromRegistry {
-            registry_id: registry_id.clone(),
-            version_key: "proxy-oracle@test".to_string(),
-            name: "po".to_string(),
-            with_full_access_key: vec![],
-            no_signer_full_access_key: false,
-            deposit: Some(NearToken::from_near(6)),
-        },
+    DeployProxyOracle {
+        deploy: Deploy::from_registry(
+            FromRegistry::new(
+                registry_id.clone(),
+                "proxy-oracle@test".to_string(),
+                "po".to_string(),
+                EmptyArgsLoader::default(),
+                registry_signer.clone(),
+            )
+            .with_deposit(NearToken::from_near(6)),
+        ),
     }
     .run(&ctx)
     .await
@@ -160,6 +176,7 @@ async fn proxy_oracle_proxy_list_empty(#[future(awt)] worker: Worker<Sandbox>) {
     // Should succeed with empty results.
     ListProxies {
         oracle_id: oracle.id().clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -181,6 +198,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
         oracle_id: oracle_id.clone(),
         id: Some(0),
         operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(1000)),
+        execute_immediately: false,
     }
     .run(&ctx)
     .await
@@ -201,6 +219,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
     GetProposal {
         oracle_id: oracle_id.clone(),
         id: 0,
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -209,6 +228,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
     // List proposals command should succeed.
     ListProposals {
         oracle_id: oracle_id.clone(),
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -252,7 +272,7 @@ async fn proxy_oracle_get_proxy_not_found(#[future(awt)] worker: Worker<Sandbox>
     GetProxy {
         oracle_id: oracle.id().clone(),
         price_id,
-        json: false,
+        output: OutputArgs::default(),
     }
     .run(&ctx)
     .await
@@ -274,6 +294,7 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         oracle_id: oracle_id.clone(),
         id: Some(0),
         operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
+        execute_immediately: false,
     }
     .run(&ctx)
     .await
@@ -309,4 +330,166 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
         .json::<Nanoseconds>()
         .unwrap();
     assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn proxy_oracle_governance_create_and_execute_immediately(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, oracle);
+    let oracle_id = oracle.id().clone();
+
+    deploy_proxy_oracle(&ctx, &oracle).await;
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(0),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let ids: Vec<u32> = ctx
+        .near
+        .view(&oracle_id, "gov_list")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(ids.is_empty());
+
+    let new_ttl = ctx
+        .near
+        .view(&oracle_id, "gov_ttl_ns")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<Nanoseconds>()
+        .unwrap();
+    assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn proxy_oracle_governance_create_and_execute_immediately_requires_zero_ttl(
+    #[future(awt)] worker: Worker<Sandbox>,
+) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, oracle);
+    let oracle_id = oracle.id().clone();
+
+    deploy_proxy_oracle(&ctx, &oracle).await;
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(0),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(5000)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let err = CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(1),
+        operation: OperationCommand::SetTtl(SetTtlArgs::from_ms(1000)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap_err();
+
+    assert!(err
+        .to_string()
+        .contains("cannot immediately execute proposal 1"));
+
+    let ids: Vec<u32> = ctx
+        .near
+        .view(&oracle_id, "gov_list")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(ids, vec![1]);
+
+    let ttl = ctx
+        .near
+        .view(&oracle_id, "gov_ttl_ns")
+        .args_json(json!({}))
+        .await
+        .unwrap()
+        .json::<Nanoseconds>()
+        .unwrap();
+    assert_eq!(ttl, Nanoseconds::from_ms(5000));
+}
+
+#[rstest]
+#[tokio::test]
+async fn proxy_oracle_governance_proxy_action_flags(#[future(awt)] worker: Worker<Sandbox>) {
+    let ctx = setup_ctx(&worker);
+    accounts!(worker, oracle);
+    let oracle_id = oracle.id().clone();
+    let price_id = sample_price_id();
+
+    deploy_proxy_oracle(&ctx, &oracle).await;
+
+    let proxy = sample_proxy(oracle_id.clone());
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(0),
+        operation: OperationCommand::Proxy(ProxyArgs::insert(
+            price_id,
+            serde_json::to_string(&proxy).unwrap(),
+        )),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let get_proxy = ctx
+        .near
+        .view(&oracle_id, "get_proxy")
+        .args_json(json!({ "id": PriceIdentifier::from(price_id) }))
+        .await
+        .unwrap()
+        .json::<Option<Proxy>>()
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(get_proxy, proxy);
+
+    CreateProposal {
+        signer: signer_args(&oracle),
+        oracle_id: oracle_id.clone(),
+        id: Some(1),
+        operation: OperationCommand::Proxy(ProxyArgs::remove(price_id)),
+        execute_immediately: true,
+    }
+    .run(&ctx)
+    .await
+    .unwrap();
+
+    let get_proxy = ctx
+        .near
+        .view(&oracle_id, "get_proxy")
+        .args_json(json!({ "id": PriceIdentifier::from(price_id) }))
+        .await
+        .unwrap()
+        .json::<Option<Proxy>>()
+        .unwrap();
+
+    assert_eq!(get_proxy, None);
 }

@@ -1,7 +1,6 @@
 pub mod batch;
 pub mod commands;
-
-use std::path::PathBuf;
+pub mod util;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use commands::{
@@ -13,9 +12,19 @@ use tracing::level_filters::LevelFilter;
 
 pub use templar_tools_common::near;
 
+#[allow(async_fn_in_trait)]
+pub trait Runner<Input> {
+    type Output;
+
+    async fn run(&self, ctx: &crate::CliContext, input: &Input) -> anyhow::Result<Self::Output>;
+}
+
 #[derive(Parser)]
 #[command(group(ArgGroup::new("verbosity").multiple(false).args(["quiet", "verbose"])))]
-#[command(version, about = "CLI tool for deploying and managing Templar markets")]
+#[command(
+    version,
+    about = "CLI tool for deploying and managing Templar contracts and services"
+)]
 struct Cli {
     /// NEAR network to connect to
     #[arg(short, long, env = "NETWORK", default_value_t = Network::Testnet)]
@@ -29,10 +38,6 @@ struct Cli {
     /// the Nearblocks explorer for the selected network.
     #[arg(long)]
     transaction_url_prefix: Option<String>,
-
-    /// Path to the workspace root (defaults to current directory)
-    #[arg(short, long, env = "WORKSPACE_DIR", default_value = ".")]
-    workspace_dir: PathBuf,
 
     #[command(flatten)]
     verbosity: VerbosityArgs,
@@ -92,7 +97,6 @@ impl Cli {
                     Network::Testnet => "https://testnet.nearblocks.io/txns/".to_string(),
                 });
         CliContext {
-            workspace_path: self.workspace_dir.clone(),
             transaction_url_prefix,
             near,
         }
@@ -100,7 +104,6 @@ impl Cli {
 }
 
 pub struct CliContext {
-    pub workspace_path: PathBuf,
     pub transaction_url_prefix: String,
     pub near: near_fetch::Client,
 }
@@ -168,13 +171,13 @@ enum Commands {
     /// Manage the registry contract and its versions
     Registry(RegistryArgs),
 
-    /// Deploy, create, and remove market contracts
+    /// Deploy and remove market contracts
     Market(MarketArgs),
 
-    /// Deploy, create, and manage proxy oracle contracts
+    /// Deploy and manage proxy oracle contracts
     ProxyOracle(ProxyOracleArgs),
 
-    /// Deploy, create, and manage RedStone adapter contracts
+    /// Deploy and manage RedStone adapter contracts
     RedstoneAdapter(RedStoneAdapterArgs),
 
     /// Perform a storage deposit on a contract on behalf of an account
@@ -204,4 +207,102 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    fn secret_key() -> String {
+        near_crypto::SecretKey::from_seed(near_crypto::KeyType::ED25519, "templar-manager-test")
+            .to_string()
+    }
+
+    #[test]
+    fn parses_signer_id_for_direct_deploy() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "market",
+            "deploy",
+            "direct",
+            "--args",
+            r#"{"configuration":{}}"#,
+            "--signer-id",
+            "market.test.near",
+            "--secret-key",
+            &secret_key(),
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_registry_id_flag_for_registry_deployments() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "market",
+            "deploy",
+            "from-registry",
+            "--registry-id",
+            "registry.test.near",
+            "--version-key",
+            "market@test",
+            "--name",
+            "mkt",
+            "--args",
+            r#"{"configuration":{}}"#,
+            "--signer-id",
+            "owner.test.near",
+            "--secret-key",
+            &secret_key(),
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_base64_payload_flag_for_write_prices() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "redstone-adapter",
+            "write-prices",
+            "--signer-id",
+            "adapter.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--adapter-id",
+            "adapter.test.near",
+            "--feed-id",
+            "ETH",
+            "--payload-base64",
+            "Zg==",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_insert_file_flag_for_proxy_governance() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "oracle.test.near",
+            "proxy",
+            "--price-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--insert-file",
+            "proxy.json",
+        ]);
+
+        assert!(cli.is_ok());
+    }
 }

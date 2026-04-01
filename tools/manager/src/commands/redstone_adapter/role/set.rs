@@ -3,7 +3,7 @@ use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 use templar_common::oracle::redstone::Role;
 
-use crate::commands::SignerArgs;
+use crate::util::SignerArgs;
 use crate::CliContext;
 
 use super::super::CliRole;

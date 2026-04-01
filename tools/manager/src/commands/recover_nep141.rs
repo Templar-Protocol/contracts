@@ -6,6 +6,7 @@ use near_sdk::{AccountId, AccountIdRef, NearToken};
 
 #[derive(clap::Args, Debug)]
 pub struct RecoverNep141 {
+    /// Signer for the recovery transaction. Tokens are recovered from this same account.
     #[command(flatten)]
     pub signer: super::SignerArgs,
     /// Token ID to recover

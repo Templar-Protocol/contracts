@@ -13,6 +13,7 @@ pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
 /// Mirrors `script/ci/storage-deposit.sh`.
 #[derive(clap::Args, Debug)]
 pub struct StorageDeposit {
+    /// Signer for the deposit transaction. Storage is deposited on behalf of this same account.
     #[command(flatten)]
     pub signer: super::SignerArgs,
     /// The contract to deposit storage on.

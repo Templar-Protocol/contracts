@@ -1,47 +1,28 @@
-use anyhow::Context;
-use near_fetch::ops::Function;
-use near_sdk::serde_json::json;
-use templar_tools_common::version;
+use templar_tools_common::version::RegistryVersion;
 
-use crate::commands::{FixedContractWasm, SignerArgs};
+use crate::{
+    commands::deployment::{Deploy, DeploymentSpec},
+    util::EmptyArgsLoader,
+    Runner,
+};
 
-const REGISTRY_PACKAGE: &str = "templar-registry-contract";
-
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct DeployRegistry {
-    #[command(flatten)]
-    pub signer: SignerArgs,
-    #[command(flatten)]
-    pub contract: FixedContractWasm,
-    #[arg(long)]
-    pub no_init: bool,
+    #[command(subcommand)]
+    pub deploy: Deploy<Self>,
+}
+
+impl DeploymentSpec for DeployRegistry {
+    type Args = ();
+    type ArgsLoader = EmptyArgsLoader;
+    type Version = RegistryVersion;
+
+    const PACKAGE_ID: &'static str = "templar-registry-contract";
 }
 
 impl DeployRegistry {
-    #[tracing::instrument(skip_all, name = "deploy_registry", fields(account_id = %self.signer.account_id))]
+    #[tracing::instrument(skip_all, name = "deploy_registry")]
     pub async fn run(self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        let loaded_contract = self
-            .contract
-            .load_contract::<version::Registry>(ctx, REGISTRY_PACKAGE)?;
-        tracing::info!(version = %loaded_contract.version, "Deploying registry");
-
-        let signer = self.signer.signer();
-        if self.no_init {
-            ctx.batch(&signer, &self.signer.account_id)
-                .deploy(&loaded_contract.wasm_bytes)
-                .transact()
-                .await
-                .context("deploy registry without init")?;
-        } else {
-            ctx.batch(&signer, &self.signer.account_id)
-                .deploy(&loaded_contract.wasm_bytes)
-                .call(Function::new("new").args_json(json!({})).max_gas())
-                .transact()
-                .await
-                .context("deploy registry with init")?;
-        }
-
-        tracing::info!("Registry deployed successfully");
-        Ok(())
+        self.deploy.run(ctx, &()).await
     }
 }

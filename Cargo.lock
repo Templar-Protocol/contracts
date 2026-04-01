@@ -2034,9 +2034,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.9.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 dependencies = [
  "serde",
 ]
@@ -6166,9 +6166,9 @@ dependencies = [
 
 [[package]]
 name = "near-gas"
-version = "0.3.0"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "180edcc7dc2fac41f93570d0c7b759c1b6d492f6ad093d749d644a40b4310a97"
+checksum = "919d705b6dab5a7c6cc4b9a60e3025ed2f7cf3d4c3c32ad1a47264a4190e6409"
 dependencies = [
  "borsh 1.5.7",
  "schemars 0.8.22",
@@ -6612,9 +6612,9 @@ dependencies = [
 
 [[package]]
 name = "near-token"
-version = "0.3.0"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd3e60aa26a74dc514b1b6408fdd06cefe2eb0ff029020956c1c6517594048fd"
+checksum = "34de6b54d82d0790b2a56b677e7b4ecb7f021a7e8559f8611065c890d56cfcda"
 dependencies = [
  "borsh 1.5.7",
  "serde",
@@ -7268,9 +7268,9 @@ dependencies = [
 
 [[package]]
 name = "percent-encoding"
-version = "2.3.1"
+version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
+checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pest"
@@ -13538,12 +13538,9 @@ dependencies = [
 name = "templar-universal-account-contract"
 version = "0.4.0"
 dependencies = [
- "alloy",
- "ed25519-dalek",
  "getrandom 0.2.15",
  "near-sdk",
  "near-workspaces 0.21.0",
- "p256",
  "rstest",
  "templar-common",
  "templar-universal-account",
@@ -13651,10 +13648,13 @@ dependencies = [
 name = "test-utils"
 version = "0.1.0"
 dependencies = [
+ "alloy",
+ "ed25519-dalek",
  "hex-literal",
  "near-sdk",
  "near-sdk-contract-tools",
  "near-workspaces 0.21.0",
+ "p256",
  "rstest",
  "templar-common",
  "templar-universal-account",

@@ -9,12 +9,18 @@ use templar_common::oracle::pyth::PriceIdentifier;
 use crate::CliContext;
 
 /// Newtype around [`PriceIdentifier`] that implements [`FromStr`] for use as a clap argument.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CliPriceIdentifier(PriceIdentifier);
 
-impl CliPriceIdentifier {
-    pub fn into_inner(self) -> PriceIdentifier {
-        self.0
+impl From<CliPriceIdentifier> for PriceIdentifier {
+    fn from(value: CliPriceIdentifier) -> Self {
+        value.0
+    }
+}
+
+impl From<PriceIdentifier> for CliPriceIdentifier {
+    fn from(value: PriceIdentifier) -> Self {
+        Self(value)
     }
 }
 

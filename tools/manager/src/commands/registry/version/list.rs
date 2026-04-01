@@ -1,12 +1,24 @@
+use std::io::Write;
+
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 
-use crate::CliContext;
+use crate::{
+    util::{OutputArgs, OutputStyle},
+    CliContext,
+};
+
+#[derive(serde::Serialize)]
+struct VersionListOutput {
+    versions: Vec<String>,
+}
 
 #[derive(clap::Args, Debug)]
 pub struct ListVersions {
     #[arg(long)]
     pub registry_id: AccountId,
+    #[command(flatten)]
+    pub output: OutputArgs,
 }
 
 impl ListVersions {
@@ -19,11 +31,20 @@ impl ListVersions {
             .await?
             .json()?;
 
-        for version in &versions {
-            println!("{version}");
+        let output = VersionListOutput { versions };
+        self.output.print(&output)?;
+
+        tracing::info!(count = output.versions.len(), "Listed versions");
+        Ok(())
+    }
+}
+
+impl OutputStyle for VersionListOutput {
+    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+        for version in &self.versions {
+            writeln!(out, "{version}")?;
         }
 
-        tracing::info!(count = versions.len(), "Listed versions");
         Ok(())
     }
 }

@@ -98,6 +98,8 @@ pub struct ServiceConfig {
     pub batch_swap_on_cycle_start: bool,
     /// Retry configuration for transient swap errors
     pub swap_retry_config: crate::swap::SwapRetryConfig,
+    /// Shared notifier for Telegram alerts
+    pub notifier: crate::notifier::SharedNotifier,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -113,6 +115,8 @@ pub struct LiquidatorService {
     oracle_fetcher: crate::OracleFetcher,
     /// Collateral asset → price / swap target info (built from market configs)
     collateral_price_map: HashMap<String, CollateralPriceInfo>,
+    /// Shared nonce tracker for all transactions from this signer
+    nonce_tracker: crate::rpc::NonceTracker,
 }
 
 impl LiquidatorService {
@@ -143,9 +147,12 @@ impl LiquidatorService {
             config.signer_account.clone(),
         )));
 
+        // Shared nonce tracker for all transactions from this signer
+        let nonce_tracker = crate::rpc::NonceTracker::default();
+
         // Create swap provider for executor
         let (_, oneclick_provider) =
-            Self::create_swap_providers(&config, &client, Arc::new(signer.clone()));
+            Self::create_swap_providers(&config, &client, Arc::new(signer.clone()), &nonce_tracker);
 
         // Create oracle fetcher for batch swap price checks (no signer needed for reads)
         let oracle_fetcher = crate::OracleFetcher::new(
@@ -154,6 +161,7 @@ impl LiquidatorService {
             Some(config.redstone_gateway_url.clone()),
             None,
             None,
+            nonce_tracker.clone(),
         );
 
         // Log swap configuration
@@ -174,6 +182,7 @@ impl LiquidatorService {
             oneclick_provider,
             oracle_fetcher,
             collateral_price_map: HashMap::new(),
+            nonce_tracker,
         }
     }
 
@@ -182,6 +191,7 @@ impl LiquidatorService {
         config: &ServiceConfig,
         client: &JsonRpcClient,
         signer: Arc<near_crypto::Signer>,
+        nonce_tracker: &crate::rpc::NonceTracker,
     ) -> (
         Option<crate::swap::SwapProviderImpl>,
         Option<crate::swap::SwapProviderImpl>,
@@ -200,7 +210,12 @@ impl LiquidatorService {
         let ref_provider = if let Some(ref contract_str) = config.ref_contract {
             match contract_str.parse::<AccountId>() {
                 Ok(contract) => {
-                    let ref_swap = RefSwap::new(contract.clone(), client.clone(), signer.clone());
+                    let ref_swap = RefSwap::new(
+                        contract.clone(),
+                        client.clone(),
+                        signer.clone(),
+                        nonce_tracker.clone(),
+                    );
                     tracing::info!(
                         contract = %contract,
                         "Ref Finance provider initialized"
@@ -230,6 +245,7 @@ impl LiquidatorService {
                 signer,
                 None,
                 config.oneclick_api_token.clone(),
+                nonce_tracker.clone(),
             );
             if config.oneclick_api_token.is_some() {
                 tracing::info!("1-Click API provider initialized with authentication");
@@ -557,6 +573,8 @@ impl LiquidatorService {
                         self.config.signer_account.clone(),
                         self.config.signer_key.clone(),
                     )),
+                    self.config.notifier.clone(),
+                    self.nonce_tracker.clone(),
                 );
 
                 // Fetch market version for version-specific liquidation logic

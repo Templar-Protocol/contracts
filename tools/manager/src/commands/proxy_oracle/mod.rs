@@ -1,4 +1,3 @@
-pub mod create;
 pub mod deploy;
 pub mod governance;
 pub mod proxy;
@@ -6,18 +5,15 @@ pub mod remove;
 
 use crate::CliContext;
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct ProxyOracleArgs {
     #[command(subcommand)]
     command: ProxyOracleCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum ProxyOracleCommand {
-    /// Deploy a proxy oracle from a registry
-    Create(create::CreateProxyOracle),
-
-    /// Deploy a proxy oracle contract directly from a WASM file
+    /// Deploy a proxy oracle contract
     Deploy(deploy::DeployProxyOracle),
 
     /// Delete a proxy oracle account
@@ -33,7 +29,6 @@ enum ProxyOracleCommand {
 impl ProxyOracleArgs {
     pub async fn run(self, ctx: &CliContext) -> anyhow::Result<()> {
         match self.command {
-            ProxyOracleCommand::Create(a) => a.run(ctx).await,
             ProxyOracleCommand::Deploy(a) => a.run(ctx).await,
             ProxyOracleCommand::Remove(a) => a.run(ctx).await,
             ProxyOracleCommand::Proxy(a) => a.run(ctx).await,

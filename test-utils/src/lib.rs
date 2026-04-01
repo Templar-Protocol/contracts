@@ -47,6 +47,7 @@ pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal
 pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
+pub mod test_signer;
 
 pub fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_WORKSPACE_DIR"))
@@ -390,5 +391,11 @@ pub fn print_execution(e: &ExecutionSuccess) {
             _ => {}
         }
         eprintln!();
+    }
+}
+
+pub fn assert_all_outcomes_success(result: &ExecutionSuccess) {
+    for outcome in result.outcomes() {
+        outcome.clone().into_result().unwrap();
     }
 }

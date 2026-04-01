@@ -4,13 +4,13 @@ pub mod remove;
 
 use crate::CliContext;
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct VersionArgs {
     #[command(subcommand)]
     command: VersionCommand,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(clap::Subcommand)]
 enum VersionCommand {
     /// Add a contract version to the registry
     Add(add::AddVersion),

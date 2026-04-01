@@ -1,40 +1,34 @@
-use anyhow::Context;
-use near_fetch::ops::Function;
+use templar_common::market::MarketConfiguration;
+use templar_tools_common::version::MarketVersion;
 
-use crate::commands::{FixedContractWasm, SignerArgs};
+use crate::{
+    commands::deployment::{Deploy, DeploymentSpec},
+    util::GeneralArgsLoader,
+    Runner,
+};
 
-const MARKET_PACKAGE: &str = "templar-market-contract";
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct MarketInitArgs {
+    pub configuration: MarketConfiguration,
+}
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args)]
 pub struct DeployMarket {
-    #[command(flatten)]
-    pub signer: SignerArgs,
-    #[command(flatten)]
-    pub contract_wasm: FixedContractWasm,
-    /// JSON-encoded init args to pass to the market contract
-    #[arg(long)]
-    pub init_args: String,
+    #[command(subcommand)]
+    pub deploy: Deploy<Self>,
+}
+
+impl DeploymentSpec for DeployMarket {
+    type Args = MarketInitArgs;
+    type ArgsLoader = GeneralArgsLoader;
+    type Version = MarketVersion;
+
+    const PACKAGE_ID: &'static str = "templar-market-contract";
 }
 
 impl DeployMarket {
-    #[tracing::instrument(skip_all, name = "market_deploy", fields(account_id = %self.signer.account_id))]
+    #[tracing::instrument(skip_all, name = "deploy_market")]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
-        let loaded_contract = self
-            .contract_wasm
-            .load_contract::<()>(ctx, MARKET_PACKAGE)?;
-        tracing::info!(version = %loaded_contract.version, "Deploying market");
-
-        let init_args = serde_json::from_str::<serde_json::Value>(&self.init_args)
-            .context("parse init args as json")?;
-        let signer = self.signer.signer();
-
-        ctx.batch(&signer, &self.signer.account_id)
-            .deploy(&loaded_contract.wasm_bytes)
-            .call(Function::new("new").args_json(init_args).max_gas())
-            .transact()
-            .await?;
-
-        tracing::info!("Market deployed");
-        Ok(())
+        self.deploy.run(ctx, &()).await
     }
 }
