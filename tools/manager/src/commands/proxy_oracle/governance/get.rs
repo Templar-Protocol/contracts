@@ -41,7 +41,7 @@ impl GetProposal {
 }
 
 impl OutputStyle for Proposal<Operation> {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         let now = Nanoseconds::from_ms(
             std::time::SystemTime::now()
