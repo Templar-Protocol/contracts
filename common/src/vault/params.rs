@@ -1,4 +1,4 @@
-use super::{buffer, near, Gas};
+use super::*;
 
 pub const DAY_NS: u64 = 86_400_000_000_000;
 pub const YEAR_NS: u64 = 365 * DAY_NS;
@@ -55,7 +55,10 @@ pub const WITHDRAW_CREATE_REQUEST_CALLBACK_GAS: Gas =
 // Budget for the final "settle" phase of a withdraw execution:
 // reconcile principal and idle_balance, and potentially transition to
 // payout or the next market.
-const AFTER_EXECUTE_NEXT_WITHDRAW: u64 = 5 + 5 + AFTER_SEND_TO_USER;
+const RECONCILE_PRINCIPAL: u64 = 5;
+const RECONCILE_IDLE_BALANCE: u64 = 5;
+const AFTER_EXECUTE_NEXT_WITHDRAW: u64 =
+    RECONCILE_PRINCIPAL + RECONCILE_IDLE_BALANCE + AFTER_SEND_TO_USER;
 pub const WITHDRAW_SETTLE_CALLBACK_GAS: Gas = buffer(AFTER_EXECUTE_NEXT_WITHDRAW);
 
 // Budget for executing the next supply-withdrawal request on a market
@@ -68,7 +71,7 @@ const AFTER_SUPPLY_2_READ: u64 = 5;
 pub const SUPPLY_POSITION_READ_CALLBACK_GAS: Gas = buffer(AFTER_SUPPLY_2_READ);
 pub const SUPPLY_AFTER_TRANSFER_CHECK_GAS: Gas = buffer(GET_SUPPLY_POSITION + AFTER_SUPPLY_2_READ);
 
-// NOTE: these are taken after running the contract with the gas report and cieled to next whole TGAS.
+// NOTE: these are taken after running the contract with the gas report and ceiled to next whole TGAS.
 pub const SUPPLY_GAS: Gas = buffer(8);
 pub const ALLOCATE_GAS: Gas = buffer(20);
 pub const WITHDRAW_GAS: Gas = buffer(4);
@@ -77,3 +80,40 @@ pub const SUBMIT_CAP_GAS: Gas = buffer(3);
 
 const AFTER_SEND_TO_USER: u64 = 5;
 pub const AFTER_SEND_TO_USER_GAS: Gas = Gas::from_tgas(AFTER_SEND_TO_USER);
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        buffer, TimelockKind, AFTER_SEND_TO_USER_GAS, CREATE_WITHDRAW_REQ_GAS, DAY_NS,
+        MAX_QUEUE_LEN, MAX_TIMELOCK_NS, MIN_TIMELOCK_NS, RESYNC_IDLE_GAS, YEAR_NS,
+    };
+    use near_sdk::Gas;
+
+    #[test]
+    fn time_constants_match_expected_ranges() {
+        assert_eq!(YEAR_NS, 365 * DAY_NS);
+        assert_eq!(MIN_TIMELOCK_NS, 0);
+        assert_eq!(MAX_TIMELOCK_NS, 30 * DAY_NS);
+        assert_eq!(MAX_QUEUE_LEN, 64);
+    }
+
+    #[test]
+    fn gas_constants_use_buffered_roots() {
+        assert_eq!(CREATE_WITHDRAW_REQ_GAS, buffer(5));
+        assert_eq!(RESYNC_IDLE_GAS, buffer(10));
+        assert_eq!(AFTER_SEND_TO_USER_GAS, Gas::from_tgas(5));
+    }
+
+    #[test]
+    fn timelock_kind_variants_stay_stable() {
+        let variants = [
+            TimelockKind::Guardian,
+            TimelockKind::Sentinel,
+            TimelockKind::Config,
+            TimelockKind::Cap,
+            TimelockKind::MarketRemoval,
+        ];
+
+        assert_eq!(variants.len(), 5);
+    }
+}

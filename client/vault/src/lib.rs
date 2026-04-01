@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt::Display, str::FromStr, sync::Mutex};
+use std::{fmt::Display, str::FromStr, sync::Mutex};
 
 use mini_moka::sync::Cache as MokaCache;
 use near_account_id::AccountId as NearAccountId;
@@ -10,6 +10,7 @@ use near_primitives::errors::InvalidTxError;
 use near_primitives::types::Gas;
 use near_sdk::json_types::{U128, U64};
 use serde::{Deserialize, Serialize};
+use templar_vault_kernel::Address as KernelAddress;
 
 pub use client::{VaultClient, VaultClientConfig};
 pub use key_pool::{KeyCredential, KeyInfo, KeyPoolClient, KeyPoolConfig, PoolError, PoolHealth};
@@ -120,6 +121,20 @@ macro_rules! define_uniffi_wrapper {
 
 define_uniffi_wrapper!(MarketId, u32, [Copy], templar_common::vault::MarketId);
 define_uniffi_wrapper!(CapGroupId, String, [], templar_common::vault::CapGroupId);
+
+impl From<MarketId> for u64 {
+    fn from(value: MarketId) -> Self {
+        u64::from(templar_common::vault::MarketId::from(value))
+    }
+}
+
+impl TryFrom<u64> for MarketId {
+    type Error = <templar_common::vault::MarketId as TryFrom<u64>>::Error;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        templar_common::vault::MarketId::try_from(value).map(Into::into)
+    }
+}
 
 /// Generate a UniFFI-compatible builder for a simple struct.
 ///
@@ -413,19 +428,19 @@ impl FeesBuilder {
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum Restrictions {
     Paused,
-    BlackList(Vec<AccountId>),
-    WhiteList(Vec<AccountId>),
+    Blacklist(Vec<String>),
+    Whitelist(Vec<String>),
 }
 
 impl From<templar_common::vault::Restrictions> for Restrictions {
     fn from(value: templar_common::vault::Restrictions) -> Self {
         match value {
             templar_common::vault::Restrictions::Paused => Restrictions::Paused,
-            templar_common::vault::Restrictions::BlackList(set) => {
-                Restrictions::BlackList(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::Blacklist(list) => {
+                Restrictions::Blacklist(list.iter().map(address_to_hex).collect())
             }
-            templar_common::vault::Restrictions::WhiteList(set) => {
-                Restrictions::WhiteList(set.iter().map(|a| a.to_string().into()).collect())
+            templar_common::vault::Restrictions::Whitelist(list) => {
+                Restrictions::Whitelist(list.iter().map(address_to_hex).collect())
             }
         }
     }
@@ -437,91 +452,157 @@ impl TryFrom<Restrictions> for templar_common::vault::Restrictions {
     fn try_from(value: Restrictions) -> Result<Self, Self::Error> {
         Ok(match value {
             Restrictions::Paused => templar_common::vault::Restrictions::Paused,
-            Restrictions::BlackList(accounts) => {
-                let set: BTreeSet<NearAccountId> = accounts
-                    .into_iter()
-                    .map(|a| parse_account_id(&a))
+            Restrictions::Blacklist(addresses) => {
+                let list: Vec<KernelAddress> = addresses
+                    .iter()
+                    .map(String::as_str)
+                    .map(parse_hex_address)
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::BlackList(set)
+                templar_common::vault::Restrictions::Blacklist(list)
             }
-            Restrictions::WhiteList(accounts) => {
-                let set: BTreeSet<NearAccountId> = accounts
-                    .into_iter()
-                    .map(|a| parse_account_id(&a))
+            Restrictions::Whitelist(addresses) => {
+                let list: Vec<KernelAddress> = addresses
+                    .iter()
+                    .map(String::as_str)
+                    .map(parse_hex_address)
                     .collect::<Result<_, _>>()?;
-                templar_common::vault::Restrictions::WhiteList(set)
+                templar_common::vault::Restrictions::Whitelist(list)
             }
         })
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum CapGroupUpdate {
     SetCap {
-        cap_group: CapGroupId,
+        cap_group_id: CapGroupId,
         new_cap: ForeignU128,
     },
     SetRelativeCap {
-        cap_group: CapGroupId,
-        new_relative_cap: ForeignU128,
+        cap_group_id: CapGroupId,
+        new_relative_cap_wad: ForeignU128,
     },
-    SetMarketCapGroup {
-        market: MarketId,
-        cap_group: Option<CapGroupId>,
+    SetMembership {
+        market_id: MarketId,
+        cap_group_id: Option<CapGroupId>,
     },
+}
+
+impl CapGroupUpdate {
+    fn try_into_common(self) -> Result<templar_common::vault::CapGroupUpdate, ErrorWrapper> {
+        Ok(match self {
+            CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => templar_common::vault::CapGroupUpdate::SetCap {
+                cap_group_id: cap_group_id.into(),
+                new_cap: parse_u128(&new_cap)?,
+            },
+            CapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap_wad,
+            } => templar_common::vault::CapGroupUpdate::SetRelativeCap {
+                cap_group_id: cap_group_id.into(),
+                new_relative_cap_wad: parse_u128(&new_relative_cap_wad)?,
+            },
+            CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => templar_common::vault::CapGroupUpdate::SetMembership {
+                market_id: market_id.0,
+                cap_group_id: cap_group_id.map(Into::into),
+            },
+        })
+    }
 }
 
 impl TryFrom<CapGroupUpdate> for templar_common::vault::CapGroupUpdate {
     type Error = ErrorWrapper;
 
     fn try_from(value: CapGroupUpdate) -> Result<Self, Self::Error> {
-        Ok(match value {
-            CapGroupUpdate::SetCap { cap_group, new_cap } => {
-                templar_common::vault::CapGroupUpdate::SetCap {
-                    cap_group: cap_group.into(),
-                    new_cap: U128(parse_u128(&new_cap)?),
-                }
-            }
-            CapGroupUpdate::SetRelativeCap {
-                cap_group,
-                new_relative_cap,
-            } => templar_common::vault::CapGroupUpdate::SetRelativeCap {
-                cap_group: cap_group.into(),
-                new_relative_cap: U128(parse_u128(&new_relative_cap)?),
-            },
-            CapGroupUpdate::SetMarketCapGroup { market, cap_group } => {
-                templar_common::vault::CapGroupUpdate::SetMarketCapGroup {
-                    market: market.into(),
-                    cap_group: cap_group.map(Into::into),
-                }
-            }
-        })
+        value.try_into_common()
     }
 }
 
-#[derive(uniffi::Enum, Debug, Clone)]
+impl From<templar_common::vault::CapGroupUpdate> for CapGroupUpdate {
+    fn from(value: templar_common::vault::CapGroupUpdate) -> Self {
+        match value {
+            templar_common::vault::CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => Self::SetCap {
+                cap_group_id: cap_group_id.into(),
+                new_cap: new_cap.to_string(),
+            },
+            templar_common::vault::CapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap_wad,
+            } => Self::SetRelativeCap {
+                cap_group_id: cap_group_id.into(),
+                new_relative_cap_wad: new_relative_cap_wad.to_string(),
+            },
+            templar_common::vault::CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => Self::SetMembership {
+                market_id: MarketId(market_id),
+                cap_group_id: cap_group_id.map(Into::into),
+            },
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum CapGroupUpdateKey {
-    SetCap { cap_group: CapGroupId },
-    SetRelativeCap { cap_group: CapGroupId },
-    SetMarketCapGroup { market: MarketId },
+    SetCap { cap_group_id: CapGroupId },
+    SetRelativeCap { cap_group_id: CapGroupId },
+    SetMembership { market_id: MarketId },
+}
+
+impl CapGroupUpdateKey {
+    fn into_common(self) -> templar_common::vault::CapGroupUpdateKey {
+        match self {
+            CapGroupUpdateKey::SetCap { cap_group_id } => {
+                templar_common::vault::CapGroupUpdateKey::SetCap {
+                    cap_group_id: cap_group_id.into(),
+                }
+            }
+            CapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
+                templar_common::vault::CapGroupUpdateKey::SetRelativeCap {
+                    cap_group_id: cap_group_id.into(),
+                }
+            }
+            CapGroupUpdateKey::SetMembership { market_id } => {
+                templar_common::vault::CapGroupUpdateKey::SetMembership {
+                    market_id: market_id.0,
+                }
+            }
+        }
+    }
 }
 
 impl From<CapGroupUpdateKey> for templar_common::vault::CapGroupUpdateKey {
     fn from(value: CapGroupUpdateKey) -> Self {
+        value.into_common()
+    }
+}
+
+impl From<templar_common::vault::CapGroupUpdateKey> for CapGroupUpdateKey {
+    fn from(value: templar_common::vault::CapGroupUpdateKey) -> Self {
         match value {
-            CapGroupUpdateKey::SetCap { cap_group } => {
-                templar_common::vault::CapGroupUpdateKey::SetCap {
-                    cap_group: cap_group.into(),
+            templar_common::vault::CapGroupUpdateKey::SetCap { cap_group_id } => {
+                CapGroupUpdateKey::SetCap {
+                    cap_group_id: cap_group_id.into(),
                 }
             }
-            CapGroupUpdateKey::SetRelativeCap { cap_group } => {
-                templar_common::vault::CapGroupUpdateKey::SetRelativeCap {
-                    cap_group: cap_group.into(),
+            templar_common::vault::CapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
+                CapGroupUpdateKey::SetRelativeCap {
+                    cap_group_id: cap_group_id.into(),
                 }
             }
-            CapGroupUpdateKey::SetMarketCapGroup { market } => {
-                templar_common::vault::CapGroupUpdateKey::SetMarketCapGroup {
-                    market: market.into(),
+            templar_common::vault::CapGroupUpdateKey::SetMembership { market_id } => {
+                CapGroupUpdateKey::SetMembership {
+                    market_id: MarketId(market_id),
                 }
             }
         }
@@ -642,8 +723,8 @@ impl From<templar_common::vault::RealAssetsReport> for RealAssetsReport {
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct CapGroup {
     pub id: CapGroupId,
-    pub cap: ForeignU128,
-    pub relative_cap: ForeignU128,
+    pub cap: Option<ForeignU128>,
+    pub relative_cap: Option<ForeignU128>,
     pub principal: ForeignU128,
 }
 
@@ -662,8 +743,8 @@ impl
         let (id, rec) = value;
         CapGroup {
             id: id.into(),
-            cap: rec.cap.0.to_string(),
-            relative_cap: u128::from(rec.relative_cap).to_string(),
+            cap: rec.cap.absolute_cap.map(|cap| cap.get().to_string()),
+            relative_cap: rec.cap.relative_cap.map(|cap| u128::from(cap).to_string()),
             principal: rec.principal.to_string(),
         }
     }
@@ -712,6 +793,34 @@ pub enum TimelockedAction {
 pub struct PendingGovernanceAction {
     pub action: TimelockedAction,
     pub valid_at_ns: u64,
+}
+
+fn timelocked_action_from_common_cap_group_update(
+    update: templar_common::vault::CapGroupUpdate,
+) -> TimelockedAction {
+    match CapGroupUpdate::from(update) {
+        CapGroupUpdate::SetCap {
+            cap_group_id,
+            new_cap,
+        } => TimelockedAction::CapGroupChange {
+            cap_group: cap_group_id,
+            new_cap,
+        },
+        CapGroupUpdate::SetRelativeCap {
+            cap_group_id,
+            new_relative_cap_wad,
+        } => TimelockedAction::CapGroupRelativeCapChange {
+            cap_group: cap_group_id,
+            new_relative_cap: new_relative_cap_wad,
+        },
+        CapGroupUpdate::SetMembership {
+            market_id,
+            cap_group_id,
+        } => TimelockedAction::CapGroupMembership {
+            market: market_id,
+            cap_group: cap_group_id,
+        },
+    }
 }
 
 // Wire format types for deserializing NEAR RPC responses.
@@ -789,23 +898,29 @@ impl From<TimelockedActionSerde> for TimelockedAction {
                 new_cap: new_cap.0.to_string(),
             },
             TimelockedActionSerde::CapGroupChange { cap_group, new_cap } => {
-                TimelockedAction::CapGroupChange {
-                    cap_group: cap_group.into(),
-                    new_cap: new_cap.0.to_string(),
-                }
+                timelocked_action_from_common_cap_group_update(
+                    templar_common::vault::CapGroupUpdate::SetCap {
+                        cap_group_id: cap_group,
+                        new_cap: new_cap.0,
+                    },
+                )
             }
             TimelockedActionSerde::CapGroupRelativeCapChange {
                 cap_group,
                 new_relative_cap,
-            } => TimelockedAction::CapGroupRelativeCapChange {
-                cap_group: cap_group.into(),
-                new_relative_cap: new_relative_cap.0.to_string(),
-            },
+            } => timelocked_action_from_common_cap_group_update(
+                templar_common::vault::CapGroupUpdate::SetRelativeCap {
+                    cap_group_id: cap_group,
+                    new_relative_cap_wad: new_relative_cap.0,
+                },
+            ),
             TimelockedActionSerde::CapGroupMembership { market, cap_group } => {
-                TimelockedAction::CapGroupMembership {
-                    market: market.into(),
-                    cap_group: cap_group.map(Into::into),
-                }
+                timelocked_action_from_common_cap_group_update(
+                    templar_common::vault::CapGroupUpdate::SetMembership {
+                        market_id: market.0,
+                        cap_group_id: cap_group,
+                    },
+                )
             }
             TimelockedActionSerde::MarketRemoval { market } => TimelockedAction::MarketRemoval {
                 market: market.into(),
@@ -838,8 +953,8 @@ pub struct FeeWad {
     pub recipient: AccountId,
 }
 
-impl From<templar_common::vault::Fee<templar_common::vault::wad::Wad>> for FeeWad {
-    fn from(value: templar_common::vault::Fee<templar_common::vault::wad::Wad>) -> Self {
+impl From<templar_common::vault::Fee<templar_common::vault::prelude::Wad>> for FeeWad {
+    fn from(value: templar_common::vault::Fee<templar_common::vault::prelude::Wad>) -> Self {
         FeeWad {
             fee_wad: u128::from(value.fee).to_string(),
             recipient: value.recipient.to_string().into(),
@@ -854,8 +969,8 @@ pub struct FeesWad {
     pub max_total_assets_growth_rate_wad: Option<ForeignU128>,
 }
 
-impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for FeesWad {
-    fn from(value: templar_common::vault::Fees<templar_common::vault::wad::Wad>) -> Self {
+impl From<templar_common::vault::Fees<templar_common::vault::prelude::Wad>> for FeesWad {
+    fn from(value: templar_common::vault::Fees<templar_common::vault::prelude::Wad>) -> Self {
         FeesWad {
             performance: value.performance.into(),
             management: value.management.into(),
@@ -870,7 +985,6 @@ impl From<templar_common::vault::Fees<templar_common::vault::wad::Wad>> for Fees
 pub struct VaultConfiguration {
     pub owner: AccountId,
     pub curator: AccountId,
-    pub guardian: AccountId,
     pub sentinel: AccountId,
     pub underlying_token: UnderlyingToken,
     pub initial_timelock_ns: u64,
@@ -880,6 +994,7 @@ pub struct VaultConfiguration {
     pub symbol: String,
     pub decimals: u8,
     pub restrictions: Option<Restrictions>,
+    pub withdrawal_cooldown_ns: Option<u64>,
     pub refresh_cooldown_ns: Option<u64>,
     pub idle_resync_cooldown_ns: Option<u64>,
 }
@@ -905,7 +1020,6 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
         VaultConfiguration {
             owner: value.owner.to_string().into(),
             curator: value.curator.to_string().into(),
-            guardian: value.guardian.to_string().into(),
             sentinel: value.sentinel.to_string().into(),
             underlying_token,
             initial_timelock_ns: value.initial_timelock_ns.0,
@@ -915,6 +1029,7 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
             symbol: value.symbol,
             decimals: value.decimals.get(),
             restrictions: value.restrictions.map(Into::into),
+            withdrawal_cooldown_ns: value.withdrawal_cooldown_ns.map(|u| u.0),
             refresh_cooldown_ns: value.refresh_cooldown_ns.map(|u| u.0),
             idle_resync_cooldown_ns: value.idle_resync_cooldown_ns.map(|u| u.0),
         }
@@ -988,6 +1103,30 @@ pub(crate) fn parse_u128(s: &str) -> Result<u128, ErrorWrapper> {
 
 pub(crate) fn parse_account_id(account_id: &AccountId) -> Result<NearAccountId, ErrorWrapper> {
     NearAccountId::try_from(account_id.clone())
+}
+
+fn address_to_hex(addr: &KernelAddress) -> String {
+    format!("0x{}", hex::encode(addr.0))
+}
+
+fn parse_hex_address(input: &str) -> Result<KernelAddress, ErrorWrapper> {
+    let trimmed = input.trim();
+    let hex_str = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let bytes = hex::decode(hex_str).map_err(|e| {
+        ErrorWrapper::Wrapped(format!("invalid restriction address '{input}': {e}"))
+    })?;
+    if bytes.len() != 32 {
+        return Err(ErrorWrapper::Wrapped(format!(
+            "invalid restriction address '{input}': expected 32 bytes, got {}",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(KernelAddress(out))
 }
 
 #[derive(uniffi::Error, Debug)]
@@ -1110,6 +1249,21 @@ mod tests {
         "https://rpc.testnet.fastnear.com/".to_string()
     }
 
+    #[test]
+    fn market_id_roundtrips_u64() {
+        let id = MarketId(42);
+        assert_eq!(u64::from(id), 42);
+        assert_eq!(MarketId::try_from(42_u64), Ok(id));
+    }
+
+    #[test]
+    fn market_id_error_wrapper_mapping_rejects_out_of_range() {
+        let err = MarketId::try_from(u64::from(u32::MAX) + 1)
+            .map_err(|_| ErrorWrapper::Wrapped("market id out of u32 range".to_string()))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "market id out of u32 range".to_string());
+    }
+
     #[fixture]
     fn sk() -> SecretKey {
         SecretKey::from_random(KeyType::ED25519)
@@ -1173,6 +1327,87 @@ mod tests {
     fn parse_u128_rejects_invalid_input_with_specific_variant() {
         let err = super::parse_u128("not-a-number").unwrap_err();
         assert!(matches!(err, ErrorWrapper::InvalidU128(v) if v == "not-a-number"));
+    }
+
+    #[test]
+    fn cap_group_update_try_into_common_maps_variants() {
+        let set_cap = CapGroupUpdate::SetCap {
+            cap_group_id: CapGroupId("group-a".to_string()),
+            new_cap: "10".to_string(),
+        };
+        let common: templar_common::vault::CapGroupUpdate = set_cap.try_into().unwrap();
+        assert!(matches!(
+            common,
+            templar_common::vault::CapGroupUpdate::SetCap { cap_group_id, new_cap }
+                if cap_group_id.0 == "group-a" && new_cap == 10
+        ));
+
+        let set_relative = CapGroupUpdate::SetRelativeCap {
+            cap_group_id: CapGroupId("group-b".to_string()),
+            new_relative_cap_wad: "20".to_string(),
+        };
+        let common: templar_common::vault::CapGroupUpdate = set_relative.try_into().unwrap();
+        assert!(matches!(
+            common,
+            templar_common::vault::CapGroupUpdate::SetRelativeCap { cap_group_id, new_relative_cap_wad }
+                if cap_group_id.0 == "group-b" && new_relative_cap_wad == 20
+        ));
+
+        let set_membership = CapGroupUpdate::SetMembership {
+            market_id: MarketId(7),
+            cap_group_id: Some(CapGroupId("group-c".to_string())),
+        };
+        let common: templar_common::vault::CapGroupUpdate = set_membership.try_into().unwrap();
+        assert!(matches!(
+            common,
+            templar_common::vault::CapGroupUpdate::SetMembership { market_id, cap_group_id }
+                if market_id == 7
+                    && cap_group_id.as_ref().map(|id| id.0.as_str()) == Some("group-c")
+        ));
+    }
+
+    #[test]
+    fn cap_group_update_try_into_common_rejects_invalid_u128() {
+        let update = CapGroupUpdate::SetCap {
+            cap_group_id: CapGroupId("group-a".to_string()),
+            new_cap: "not-a-number".to_string(),
+        };
+        let err = templar_common::vault::CapGroupUpdate::try_from(update).unwrap_err();
+        assert!(matches!(err, ErrorWrapper::InvalidU128(v) if v == "not-a-number"));
+    }
+
+    #[test]
+    fn cap_group_update_key_roundtrips_with_common() {
+        let key = CapGroupUpdateKey::SetMembership {
+            market_id: MarketId(11),
+        };
+        let common: templar_common::vault::CapGroupUpdateKey = key.clone().into();
+        let back: CapGroupUpdateKey = common.into();
+        assert_eq!(back, key);
+    }
+
+    #[test]
+    fn timelocked_serde_cap_group_variants_use_shared_mapping() {
+        let action = TimelockedAction::from(TimelockedActionSerde::CapGroupChange {
+            cap_group: templar_common::vault::CapGroupId("group-z".to_string()),
+            new_cap: U128(44),
+        });
+        assert!(matches!(
+            action,
+            TimelockedAction::CapGroupChange { cap_group, new_cap }
+                if cap_group.0 == "group-z" && new_cap == "44"
+        ));
+
+        let action = TimelockedAction::from(TimelockedActionSerde::CapGroupMembership {
+            market: templar_common::vault::MarketId(9),
+            cap_group: Some(templar_common::vault::CapGroupId("group-z".to_string())),
+        });
+        assert!(matches!(
+            action,
+            TimelockedAction::CapGroupMembership { market, cap_group }
+                if market.0 == 9
+                    && cap_group.as_ref().map(|id| id.0.as_str()) == Some("group-z")
+        ));
     }
 
     #[test]

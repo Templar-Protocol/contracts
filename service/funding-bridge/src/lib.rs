@@ -57,7 +57,6 @@ pub mod rpc;
 pub mod tokens;
 pub mod treasury;
 
-// Re-export commonly used types
 pub use config::Args;
 pub use error::{FundingError, FundingResult};
 

@@ -32,7 +32,7 @@ use templar_common::{
     oracle::pyth::{self, PriceIdentifier, PythTimestamp},
     registry::DeployMode,
     vault::{
-        wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
+        prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
         Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
     },
 };
@@ -48,6 +48,10 @@ pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
 pub mod test_signer;
+
+pub fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_WORKSPACE_DIR"))
+}
 
 #[rstest::fixture]
 pub async fn worker() -> Worker<Sandbox> {
@@ -149,7 +153,7 @@ pub fn market_configuration(
 pub fn vault_configuration(
     owner_id: AccountId,
     curator_id: AccountId,
-    guardian_id: AccountId,
+    _guardian_id: AccountId,
     sentinel_id: AccountId,
     borrow_asset_id: AccountId,
     skim_recipient_id: AccountId,
@@ -158,7 +162,6 @@ pub fn vault_configuration(
     VaultConfiguration {
         owner: owner_id,
         curator: curator_id,
-        guardian: guardian_id,
         sentinel: sentinel_id,
         underlying_token: FungibleAsset::nep141(borrow_asset_id),
         initial_timelock_ns: templar_common::vault::MIN_TIMELOCK_NS.into(),
@@ -180,18 +183,19 @@ pub fn vault_configuration(
         restrictions: None,
         refresh_cooldown_ns: None,
         idle_resync_cooldown_ns: None,
+        withdrawal_cooldown_ns: None,
     }
 }
 
 async fn compile_contract(p: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_WORKSPACE_DIR")).join(p);
+    let path = workspace_root().join(p);
     near_workspaces::compile_project(path.to_str().unwrap())
         .await
         .unwrap()
 }
 
 async fn read_contract(name: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_WORKSPACE_DIR"))
+    let path = workspace_root()
         .join("target/near/")
         .join(name)
         .join(name.to_owned() + ".wasm");

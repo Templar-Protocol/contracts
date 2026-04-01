@@ -15,6 +15,7 @@ path = "uniffi-bindgen.rs"
 [dependencies]
 uniffi = { workspace = true, features = ["cli", "tokio"] }
 templar-common.workspace = true
+templar-vault-kernel = { path = "../../contract/vault/kernel", features = ["serde"] }
 near-jsonrpc-client.workspace = true
 near-crypto.workspace = true
 near-account-id.workspace = true
@@ -31,6 +32,7 @@ paste = "1.0"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 mini-moka = "0.10.3"
+hex.workspace = true
 
 near-sdk = { version = "5.17.2", features = ["unstable", "non-contract-usage"] }
 

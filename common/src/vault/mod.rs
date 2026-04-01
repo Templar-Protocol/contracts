@@ -1,16 +1,25 @@
-use std::{collections::BTreeSet, num::NonZeroU8};
+use std::num::NonZeroU8;
+
+use derive_more::{Display, From, Into};
 
 use crate::{
     asset::{BorrowAsset, FungibleAsset},
     supply::SupplyPosition,
-    vault::wad::Wad,
 };
 pub use external::*;
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, AccountId, AccountIdRef, Gas, Promise, PromiseOrValue,
+    near, require, AccountId, Gas, Promise, PromiseOrValue,
 };
+pub use templar_curator_primitives::{
+    CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+};
+pub use templar_vault_kernel::state::op_state::{
+    AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
+};
+pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
+use templar_vault_kernel::Wad;
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -18,139 +27,112 @@ pub use event::{
 };
 pub use params::*;
 
+pub mod errors;
 pub mod event;
 pub mod external;
+pub mod gas;
+pub mod lock;
 pub mod params;
-pub mod wad;
+pub mod restrictions;
 
-pub type TimestampNs = u64;
+pub use errors::Error;
+pub use gas::*;
+pub use lock::Locker;
+pub use restrictions::*;
 
-pub type ExpectedIdx = u32;
-pub type ActualIdx = u32;
+/// Broad import surface for vault consumers.
+///
+/// Prefer `use templar_common::vault::prelude::*;` at call sites that need
+/// most vault types, constants, and wad/math helpers.
+pub mod prelude {
+    pub use super::event::{
+        AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus,
+        Reason, UnbrickPhase, WithdrawProgressPhase, WithdrawalAccountingKind,
+    };
+    pub use super::external::*;
+    pub use super::gas::*;
+    pub use super::params::*;
+    pub use super::restrictions::*;
+    pub use super::{
+        require_at_least, storage_bytes_for_account_id, ActualIdx, AllocationDelta, AllocationPlan,
+        AllocationWeights, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Delta,
+        DepositMsg, Error, EscrowSettlement, ExpectedIdx, Fee, FeeAccrualAnchor, Fees,
+        IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId,
+        PendingWithdrawal, RealAssetsReport, ResyncIdleReport, TimestampNs, VaultConfiguration,
+    };
+    pub use templar_vault_kernel::math::number::{Number, WIDE};
+    pub use templar_vault_kernel::{
+        compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
+        mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+    };
+}
+
 pub type AllocationWeights = Vec<(MarketId, U128)>;
 pub type AllocationPlan = Vec<(MarketId, u128)>;
 
+/// Report of real (live) total assets broken down by market, used for AUM refresh.
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
 pub struct RealAssetsReport {
     pub total_assets: U128,
     pub per_market: Vec<(MarketId, U128)>,
+    /// Block timestamp in nanoseconds when this report was generated.
     pub refreshed_at: U64,
 }
 
+/// Outcome of an idle balance resynchronization attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub enum IdleResyncOutcome {
+    /// Resync succeeded.
     Ok,
+    /// ft_balance_of call failed.
     BalanceReadFailed,
+    /// Vault not in expected state.
     UnexpectedState,
+    /// Resync was a no-op (e.g. cooldown not elapsed).
     Ignored,
 }
 
+/// Detailed report from an idle balance resync operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct ResyncIdleReport {
     pub outcome: IdleResyncOutcome,
+    /// Balance snapshot before resync.
     pub before_idle: U128,
+    /// Actual idle balance read from contract.
     pub actual_idle: U128,
+    /// Balance snapshot after resync.
     pub after_idle: U128,
+    /// Magnitude of increase adjustment.
     pub increased_by: U128,
+    /// Magnitude of decrease adjustment.
     pub decreased_by: U128,
+    /// Amount added to fee anchor to prevent donation fees.
     pub fee_anchor_bump: U128,
+    /// Completion timestamp in nanoseconds.
     pub resynced_at_ns: U64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, From, Into, Display,
+)]
 #[near(serializers = [borsh, json])]
-pub struct CapGroupId(pub String);
-
-impl From<String> for CapGroupId {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl From<&str> for CapGroupId {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl core::fmt::Display for CapGroupId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Clone, Debug)]
-#[near(serializers = [borsh, json])]
-pub struct CapGroupRecord {
-    /// Absolute cap in underlying units.
-    pub cap: U128,
-    /// Relative cap as a fraction of total vault assets (WAD, 1e24 = 100%).
-    pub relative_cap: Wad,
-    /// Sum of principals for all markets assigned to this cap group.
-    pub principal: u128,
-}
-
-impl Default for CapGroupRecord {
-    fn default() -> Self {
-        Self {
-            cap: U128(0),
-            relative_cap: Wad::one(),
-            principal: 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [json])]
-pub enum CapGroupUpdate {
-    /// Update the absolute cap (in underlying units).
-    SetCap {
-        cap_group: CapGroupId,
-        new_cap: U128,
-    },
-    /// Update the relative cap (WAD, 1e24 = 100% of total assets).
-    SetRelativeCap {
-        cap_group: CapGroupId,
-        new_relative_cap: U128,
-    },
-    /// Assign (or remove) a market to/from a cap group.
-    SetMarketCapGroup {
-        market: MarketId,
-        cap_group: Option<CapGroupId>,
-    },
-}
-
-/// Identifies a pending cap-group timelock action.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [json])]
-pub enum CapGroupUpdateKey {
-    SetCap { cap_group: CapGroupId },
-    SetRelativeCap { cap_group: CapGroupId },
-    SetMarketCapGroup { market: MarketId },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[near(serializers = [borsh, json])]
+#[display("{_0}")]
 pub struct MarketId(pub u32);
 
-impl From<u32> for MarketId {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<MarketId> for u32 {
+impl From<MarketId> for u64 {
     fn from(value: MarketId) -> Self {
-        value.0
+        u64::from(value.0)
     }
 }
 
-impl core::fmt::Display for MarketId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
+impl TryFrom<u64> for MarketId {
+    type Error = <u32 as TryFrom<u64>>::Error;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self)
     }
 }
 
@@ -163,7 +145,8 @@ pub enum DepositMsg {
 }
 
 /// Concrete configuration for a market.
-#[derive(Clone, Default, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Default)]
 #[near]
 pub struct MarketConfiguration {
     /// Supply cap for this market (in underlying asset units)
@@ -176,6 +159,7 @@ pub struct MarketConfiguration {
     pub cap_group_id: Option<CapGroupId>,
 }
 
+/// A fee configuration pairing a fee rate with its recipient.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct Fee<T> {
@@ -183,6 +167,7 @@ pub struct Fee<T> {
     pub recipient: AccountId,
 }
 
+/// Complete fee configuration for the vault, including performance and management fees.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct Fees<T> {
@@ -190,10 +175,52 @@ pub struct Fees<T> {
     pub management: Fee<T>,
     /// Optional cap on how fast `total_assets` is allowed to grow for fee accrual.
     ///
-    /// Interpreted as an annualized WAD rate (1e24 = 100% per year). When set,
+    /// Interpreted as an annualized WAD rate (1e18 = 100% per year). When set,
     /// fee accrual uses `min(cur_total_assets, last_total_assets * (1 + max_rate * dt / YEAR))`
     /// as the effective `cur_total_assets`.
     pub max_total_assets_growth_rate: Option<T>,
+}
+
+impl From<Fee<Wad>> for Fee<U128> {
+    fn from(value: Fee<Wad>) -> Self {
+        Self {
+            fee: U128(u128::from(value.fee)),
+            recipient: value.recipient,
+        }
+    }
+}
+
+impl From<Fees<Wad>> for Fees<U128> {
+    fn from(value: Fees<Wad>) -> Self {
+        Self {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate: value
+                .max_total_assets_growth_rate
+                .map(|rate| U128(u128::from(rate))),
+        }
+    }
+}
+
+impl From<Fee<U128>> for Fee<Wad> {
+    fn from(value: Fee<U128>) -> Self {
+        Self {
+            fee: Wad::from(value.fee.0),
+            recipient: value.recipient,
+        }
+    }
+}
+
+impl From<Fees<U128>> for Fees<Wad> {
+    fn from(value: Fees<U128>) -> Self {
+        Self {
+            performance: value.performance.into(),
+            management: value.management.into(),
+            max_total_assets_growth_rate: value
+                .max_total_assets_growth_rate
+                .map(|rate| rate.0.into()),
+        }
+    }
 }
 
 /// Configuration for the setup of a metavault.
@@ -204,8 +231,6 @@ pub struct VaultConfiguration {
     pub owner: AccountId,
     /// The account that can submit allocation plans. See [AllocationMode].
     pub curator: AccountId,
-    /// The safety role that can revoke pending governance actions.
-    pub guardian: AccountId,
     /// The emergency role that can cancel withdrawals and trigger deallocations.
     pub sentinel: AccountId,
     /// The underlying asset for this vault.
@@ -222,291 +247,17 @@ pub struct VaultConfiguration {
     pub symbol: String,
     /// The number of decimals for the share token, usually would be the same as the underlying asset.
     pub decimals: NonZeroU8,
-    /// Restrictions for this market.
+    /// Restrictions for this vault.
     pub restrictions: Option<Restrictions>,
-    /// Optional cooldown (ns) between refresh_markets calls; defaults to contract constant if None.
+    /// Optional cooldown (ns) between `refresh_markets` calls; defaults to 30 seconds when `None`.
     pub refresh_cooldown_ns: Option<U64>,
-    /// Optional cooldown (ns) between idle_resync calls; defaults to contract constant if None.
+    /// Optional cooldown (ns) between `idle_resync` calls; defaults to 120 seconds when `None`.
     pub idle_resync_cooldown_ns: Option<U64>,
+    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 24 hours when `None`.
+    pub withdrawal_cooldown_ns: Option<U64>,
 }
 
-/// Restrictions that can be applied to the vault.
-///
-/// It should cover both Whitelist style functionality and Blacklist style functionality.
-/// It should also enable Pausing
-#[near(serializers = [borsh, json])]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Restrictions {
-    Paused,
-    BlackList(BTreeSet<AccountId>),
-    WhiteList(BTreeSet<AccountId>),
-}
-
-impl Restrictions {
-    /// Check if the account is restricted, and if so, what is the reason
-    pub fn is_restricted(&self, account_id: &AccountIdRef) -> Option<Restrictions> {
-        match self {
-            Restrictions::Paused => Some(Restrictions::Paused),
-            Restrictions::BlackList(blacklist) => {
-                if blacklist.contains(account_id) {
-                    Some(Restrictions::BlackList(blacklist.clone()))
-                } else {
-                    None
-                }
-            }
-            Restrictions::WhiteList(whitelist) => {
-                if whitelist.contains(account_id) || account_id == env::current_account_id() {
-                    None
-                } else {
-                    Some(Restrictions::WhiteList(whitelist.clone()))
-                }
-            }
-        }
-    }
-}
-
-// Add a 20% buffer to a gas estimate
-#[must_use]
-pub const fn buffer(size: u64) -> Gas {
-    Gas::from_tgas((size * 6).div_ceil(5))
-}
-
-pub fn require_at_least(needed: Gas) {
-    let gas = env::prepaid_gas();
-    require!(
-        gas >= needed,
-        format!("Insufficient gas: {}, needed: {needed}", gas)
-    );
-}
-
-#[derive(Clone, Debug)]
-#[near(serializers = [borsh, json])]
-pub struct PendingValue<T: core::fmt::Debug> {
-    pub value: T,
-    // Timestamp when this pending value can be finalized
-    pub valid_at_ns: TimestampNs,
-}
-
-impl<T: core::fmt::Debug> PendingValue<T> {
-    pub fn verify(&self) {
-        require!(
-            near_sdk::env::block_timestamp() >= self.valid_at_ns,
-            "Timelock not elapsed yet"
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh])]
-/// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
-pub struct IdleState;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh])]
-/// Supplying idle underlying to markets according to a plan or queue.
-///
-/// Transitions:
-/// - On completion of allocation: Withdrawing (to satisfy pending user requests) or Idle (if stopped).
-/// - On stop/failure: Idle.
-pub struct AllocatingState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
-    pub op_id: u64,
-    /// Zero-based position within the allocation plan/queue currently being processed.
-    pub index: u32,
-    /// Amount of underlying (in asset units) still to allocate during this operation.
-    pub remaining: u128,
-    /// Plan for allocation.
-    pub plan: Vec<(MarketId, u128)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh])]
-/// Collecting liquidity from markets to satisfy a user withdrawal/redeem request.
-///
-/// Transitions:
-/// - Advance within queue: Withdrawing (index increments) while collecting funds.
-/// - When enough is collected to satisfy the request: Payout.
-/// - If the op is stopped or cannot proceed and needs to refund: Idle (escrow_shares refunded).
-pub struct WithdrawingState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
-    pub op_id: u64,
-    /// Zero-based position within the withdraw queue currently being processed.
-    pub index: u32,
-    /// Remaining assets that must still be collected to satisfy the request.
-    pub remaining: u128,
-    /// Assets already collected and held as idle_balance pending payout.
-    pub collected: u128,
-    /// Account that should receive the assets during payout.
-    pub receiver: AccountId,
-    /// The owner whose shares are being redeemed.
-    pub owner: AccountId,
-    /// Shares locked in escrow for this request.
-    /// - Refunded on stop/failure.
-    /// - On payout success, a portion is burned (see burn_shares) and any remainder is refunded.
-    pub escrow_shares: u128,
-}
-
-/// Read-only refresh of market principals to update stored AUM.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh, json])]
-pub struct RefreshingState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
-    pub op_id: u64,
-    /// Zero-based position within the refresh plan currently being processed.
-    pub index: u32,
-    /// Markets to refresh.
-    pub plan: Vec<MarketId>,
-}
-
-/// Final step that transfers assets to the receiver and settles the share escrow.
-///
-/// Transitions:
-/// - On success or failure: Idle.
-///
-/// Invariant hooks:
-/// - idle_balance decreases only on payout success by `amount`.
-/// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
-/// - On failure, all `escrow_shares` are refunded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh])]
-pub struct PayoutState {
-    /// Unique operation id used to correlate async callbacks and detect drift.
-    pub op_id: u64,
-    /// Receiver of the asset payout.
-    pub receiver: AccountId,
-    /// Amount of assets to transfer out from idle_balance.
-    pub amount: u128,
-    /// The owner whose shares were escrowed for this payout.
-    pub owner: AccountId,
-    /// Total shares currently held in escrow for this operation.
-    pub escrow_shares: u128,
-    /// Portion of `escrow_shares` that will be burned on successful payout.
-    pub burn_shares: u128,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [borsh])]
-/// Operation state machine for asynchronous allocation, withdrawal, and payout flows.
-///
-/// State machine:
-/// - Allocating -> Withdrawing (or Idle via stop)
-/// - Withdrawing -> Withdrawing (advance) | Payout | Idle (refund)
-/// - Payout -> Idle (success or failure)
-///
-/// Invariants:
-/// - idle_balance increases only when funds are received and decreases only on payout success.
-/// - escrow_shares are refunded on stop/failure or partially burned/refunded on payout success.
-pub enum OpState {
-    /// No operation in-flight. The vault is ready to start a new allocation or withdrawal.
-    Idle,
-
-    /// Supplying idle underlying to markets according to a plan or queue.
-    ///
-    /// Transitions:
-    /// - On completion of allocation: Withdrawing (to satisfy pending user requests) or Idle (if stopped).
-    /// - On stop/failure: Idle.
-    Allocating(AllocatingState),
-
-    /// Collecting liquidity from markets to satisfy a user withdrawal/redeem request.
-    ///
-    /// Transitions:
-    /// - Advance within queue: Withdrawing (index increments) while collecting funds.
-    /// - When enough is collected to satisfy the request: Payout.
-    /// - If the op is stopped or cannot proceed and needs to refund: Idle (escrow_shares refunded).
-    Withdrawing(WithdrawingState),
-
-    /// Read-only refresh of market principals to update stored AUM.
-    Refreshing(RefreshingState),
-
-    /// Final step that transfers assets to the receiver and settles the share escrow.
-    ///
-    /// Transitions:
-    /// - On success or failure: Idle.
-    ///
-    /// Invariant hooks:
-    /// - idle_balance decreases only on payout success by `amount`.
-    /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
-    /// - On failure, all `escrow_shares` are refunded.
-    Payout(PayoutState),
-}
-
-impl From<IdleState> for OpState {
-    fn from(_: IdleState) -> Self {
-        OpState::Idle
-    }
-}
-
-impl From<AllocatingState> for OpState {
-    fn from(s: AllocatingState) -> Self {
-        OpState::Allocating(s)
-    }
-}
-
-impl From<WithdrawingState> for OpState {
-    fn from(s: WithdrawingState) -> Self {
-        OpState::Withdrawing(s)
-    }
-}
-
-impl From<RefreshingState> for OpState {
-    fn from(s: RefreshingState) -> Self {
-        OpState::Refreshing(s)
-    }
-}
-
-impl From<PayoutState> for OpState {
-    fn from(s: PayoutState) -> Self {
-        OpState::Payout(s)
-    }
-}
-
-impl OpState {
-    #[inline]
-    #[must_use]
-    pub const fn as_idle(&self) -> Option<&IdleState> {
-        match self {
-            OpState::Idle => Some(&IdleState),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_allocating(&self) -> Option<&AllocatingState> {
-        match self {
-            OpState::Allocating(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_withdrawing(&self) -> Option<&WithdrawingState> {
-        match self {
-            OpState::Withdrawing(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_refreshing(&self) -> Option<&RefreshingState> {
-        match self {
-            OpState::Refreshing(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn as_payout(&self) -> Option<&PayoutState> {
-        match self {
-            OpState::Payout(s) => Some(s),
-            _ => None,
-        }
-    }
-}
-
+/// A single market allocation delta specifying a market and an amount in underlying asset units.
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
 pub struct Delta {
@@ -526,8 +277,7 @@ impl Delta {
     }
 }
 
-// + Supply: forward-supply idle assets to a market
-// - Withdraw: ONLY creates a supply-withdrawal request in the market; does not execute it.
+/// Allocation instruction for a single market. `Supply` forwards idle assets to the market. `Withdraw` creates a supply-withdrawal request in the market (does not execute it).
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
 pub enum AllocationDelta {
@@ -543,6 +293,7 @@ impl AsRef<Delta> for AllocationDelta {
     }
 }
 
+/// Settlement breakdown for escrowed withdrawal shares. Invariant: `to_burn + refund == original escrow_shares`.
 #[derive(Debug, Clone, Copy)]
 pub struct EscrowSettlement {
     pub to_burn: u128,
@@ -551,10 +302,14 @@ pub struct EscrowSettlement {
 
 impl EscrowSettlement {
     pub fn new(escrow_shares: u128, burn_shares: u128) -> Self {
-        let to_burn = burn_shares.min(escrow_shares);
-        let refund = escrow_shares.saturating_sub(to_burn);
-
-        Self { to_burn, refund }
+        let settlement = templar_vault_kernel::types::EscrowSettlement::from_escrow_and_burn(
+            escrow_shares,
+            burn_shares,
+        );
+        Self {
+            to_burn: settlement.to_burn,
+            refund: settlement.refund,
+        }
     }
 }
 
@@ -564,37 +319,7 @@ impl From<EscrowSettlement> for (u128, u128) {
     }
 }
 
-#[derive(Debug)]
-#[near(serializers = [json])]
-pub enum Error {
-    // Invariant: Index drift or stale op_id results in a graceful stop
-    IndexDrifted(ExpectedIdx, ActualIdx),
-    // Invariant: Callback resolved a different market than expected.
-    MarketDrifted {
-        expected: MarketId,
-        actual: MarketId,
-    },
-    // Invariant: Attempting to work on an unknown market.
-    MissingMarket(MarketId),
-    NotWithdrawing,
-    NotAllocating,
-    NotRefreshing,
-    NotPayout,
-    MarketTransferFailed,
-    MissingSupplyPosition,
-    PositionReadFailed,
-    BalanceReadFailed,
-    // Insufficient liquidity across all markets to satisfy withdrawal
-    InsufficientLiquidity,
-    ZeroAmount,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
+/// A queued withdrawal request with shares held in escrow. Fields use underlying asset units for `expected_assets` and nanosecond timestamps for `requested_at`.
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh])]
 pub struct PendingWithdrawal {
@@ -623,6 +348,7 @@ pub const fn storage_bytes_for_account_id() -> u64 {
     4 + AccountId::MAX_LEN as u64
 }
 
+/// Direction and magnitude of an idle balance change. Emits an `IdleBalanceUpdated` event when applied.
 #[derive(Clone, Debug)]
 #[near(serializers = [borsh, json])]
 pub enum IdleBalanceDelta {
@@ -645,6 +371,7 @@ impl IdleBalanceDelta {
     }
 }
 
+/// Anchor point for fee accrual: stores the total assets and nanosecond timestamp at which fees were last accrued.
 #[near(serializers = [borsh, json])]
 #[derive(Debug, Clone, Default)]
 pub struct FeeAccrualAnchor {
@@ -652,45 +379,63 @@ pub struct FeeAccrualAnchor {
     pub timestamp_ns: U64,
 }
 
-#[derive(Default)]
-#[near(serializers = [borsh, serde])]
-pub struct Locker {
-    to_lock: Vec<MarketId>,
-}
+#[cfg(test)]
+mod tests {
+    use super::{Fee, Fees, MarketId};
+    use near_sdk::json_types::U128;
+    use near_sdk::AccountId;
+    use templar_vault_kernel::Wad;
 
-impl Locker {
-    pub fn lock(&mut self, market: MarketId) {
-        if self.is_locked(market) {
-            crate::panic_with_message("Market is locked");
-        }
-        Event::LockChange {
-            is_locked: true,
-            market,
-        }
-        .emit();
-        self.to_lock.push(market);
+    #[test]
+    fn market_id_try_from_u64_accepts_u32_range() {
+        assert_eq!(
+            MarketId::try_from(u64::from(u32::MAX)),
+            Ok(MarketId(u32::MAX))
+        );
     }
 
-    pub fn unlock(&mut self, market: MarketId) {
-        Event::LockChange {
-            is_locked: false,
-            market,
-        }
-        .emit();
-        self.to_lock.retain(|&x| x != market);
+    #[test]
+    fn market_id_try_from_u64_rejects_out_of_range() {
+        assert!(MarketId::try_from(u64::from(u32::MAX) + 1).is_err());
     }
 
-    /// Clears the lock status for all markets.
-    /// This method should be used with caution as it will unlock all markets
-    pub fn clear(&mut self) {
-        self.to_lock.clear();
-    }
+    #[test]
+    fn fees_roundtrip_between_u128_and_wad_preserves_values() {
+        let fees_u128 = Fees {
+            performance: Fee {
+                fee: U128(10),
+                recipient: "perf.testnet"
+                    .parse::<AccountId>()
+                    .expect("valid account id"),
+            },
+            management: Fee {
+                fee: U128(20),
+                recipient: "mgmt.testnet"
+                    .parse::<AccountId>()
+                    .expect("valid account id"),
+            },
+            max_total_assets_growth_rate: Some(U128(30)),
+        };
 
-    pub fn is_locked(&self, market: MarketId) -> bool {
-        self.to_lock.contains(&market)
-    }
+        let fees_wad: Fees<Wad> = fees_u128.clone().into();
+        assert_eq!(u128::from(fees_wad.performance.fee), 10);
+        assert_eq!(u128::from(fees_wad.management.fee), 20);
+        assert_eq!(
+            fees_wad
+                .max_total_assets_growth_rate
+                .map(u128::from)
+                .expect("max rate must be present"),
+            30
+        );
 
-    pub fn is_locked_all(&self) -> bool {
-        !self.to_lock.is_empty()
+        let roundtrip: Fees<U128> = fees_wad.into();
+        assert_eq!(roundtrip.performance.fee.0, 10);
+        assert_eq!(roundtrip.management.fee.0, 20);
+        assert_eq!(
+            roundtrip.max_total_assets_growth_rate.map(|v| v.0),
+            Some(30)
+        );
+        assert_eq!(roundtrip.performance.recipient.as_str(), "perf.testnet");
+        assert_eq!(roundtrip.management.recipient.as_str(), "mgmt.testnet");
     }
 }

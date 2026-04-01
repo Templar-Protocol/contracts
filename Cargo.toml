@@ -1,22 +1,36 @@
 [workspace]
 resolver = "3"
 members = [
-  "common",
-  "contract/*",
-  "fuzz",
-  "tools/*",
-  "client/*",
-  "mock/*",
-  "service/*",
-  "test-utils",
-  "universal-account",
+    "common",
+    "contract/lst-oracle",
+    "contract/market",
+    "contract/proxy-oracle",
+    "contract/redstone-adapter",
+    "contract/registry",
+    "contract/vault/macros",
+    "contract/universal-account",
+    "contract/vault/curator-primitives",
+    "contract/vault/kernel",
+    "contract/vault/near",
+    "contract/vault/soroban",
+    "contract/vault/soroban/shared-types",
+    "contract/vault/soroban/blend-adapter",
+    "contract/vault/soroban/governance",
+    "contract/vault/soroban/share-token",
+    "fuzz",
+    "tools/*",
+    "client/*",
+    "mock/*",
+    "service/*",
+    "test-utils",
+    "universal-account",
 ]
 
 [workspace.package]
-version = "0.1.0"
 license = "MIT"
 repository = "https://github.com/Templar-Protocol/contracts"
 edition = "2021"
+version = "1.2.1"
 
 [workspace.dependencies]
 alloy = { version = "1", default-features = false }
@@ -32,6 +46,12 @@ console = "0.16.2"
 dirs = "6"
 ed25519-dalek = "2.2.0"
 futures = "0.3.31"
+derive_more = { version = "1", default-features = false, features = [
+    "from",
+    "into",
+    "display",
+    "is_variant",
+] }
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
@@ -63,7 +83,15 @@ templar-common = { path = "./common" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }
-templar-vault-contract = { path = "./contract/vault" }
+templar-vault-contract = { path = "./contract/vault/near" }
+templar-vault-kernel = { path = "./contract/vault/kernel", features = [
+    "near",
+    "borsh-schema",
+    "serde",
+    "schemars",
+    "all-actions",
+] }
+templar-vault-macros = { path = "./contract/vault/macros" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }
@@ -76,6 +104,13 @@ uniffi = "0.31.0"
 wiremock = "0.5.22"
 zeroize = "1.8.1"
 
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
+stellar-tokens = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-tokens", branch = "templar/rust-1.86-compat", default-features = false }
+
+[patch.crates-io]
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat" }
+stellar-tokens = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-tokens", branch = "templar/rust-1.86-compat" }
+
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 must_use_candidate = "allow"
@@ -87,7 +122,7 @@ missing_panics_doc = "allow"
 unwrap_used = "warn"
 expect_used = "warn"
 large_digit_groups = "warn"
-wildcard_imports = "warn"
+wildcard_imports = "allow"
 
 [profile.dev]
 incremental = true
@@ -96,10 +131,28 @@ incremental = true
 codegen-units = 1
 # Tell `rustc` to optimize for small code size.
 opt-level = "z"
-lto = true
+lto = "fat"
 debug = false
 panic = "abort"
+strip = "symbols"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
+overflow-checks = true
+
+# Soroban-specific release profile (use with --profile release-soroban)
+# Dependencies don't need overflow-check panic strings in WASM — saves ~2.5 KiB.
+[profile.release-soroban]
+inherits = "release"
+
+[profile.release-soroban.package."*"]
+overflow-checks = false
+
+[profile.release-soroban.package.templar-soroban-runtime]
+overflow-checks = true
+
+[profile.release-soroban.package.templar-vault-kernel]
+overflow-checks = true
+
+[profile.release-soroban.package.templar-curator-primitives]
 overflow-checks = true
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification

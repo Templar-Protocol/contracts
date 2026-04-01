@@ -1,0 +1,22 @@
+[package]
+name = "templar-soroban-share-token"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Soroban vault share token with vault-controlled mint/burn and user-authorized transfers"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+doctest = false
+
+[features]
+default = []
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { version = "23.5.1", features = ["alloc"] }
+stellar-tokens.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { version = "23.5.1", features = ["testutils", "alloc"] }

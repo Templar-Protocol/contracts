@@ -78,8 +78,8 @@ macro_rules! impl_vault_view_methods {
                     .into_iter()
                     .map(|(id, rec)| $crate::CapGroup {
                         id: id.into(),
-                        cap: rec.cap.0.to_string(),
-                        relative_cap: u128::from(rec.relative_cap).to_string(),
+                        cap: rec.cap.absolute_cap.map(|cap| cap.get().to_string()),
+                        relative_cap: rec.cap.relative_cap.map(|cap| u128::from(cap).to_string()),
                         principal: rec.principal.to_string(),
                     })
                     .collect())
@@ -125,11 +125,11 @@ macro_rules! impl_vault_view_methods {
                     return Ok(None);
                 };
 
-                let id_u32: u32 = u.0.try_into().map_err(|_| {
+                let id = $crate::MarketId::try_from(u.0).map_err(|_| {
                     $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
                 })?;
 
-                Ok(Some($crate::MarketId(id_u32)))
+                Ok(Some(id))
             }
 
             #[instrument(skip(self, market_id))]
@@ -143,7 +143,7 @@ macro_rules! impl_vault_view_methods {
                     .view::<Option<NearAccountId>>(
                         &self.vault,
                         "get_market_account_by_id",
-                        (U64::from(u64::from(market_id.0)),),
+                        (U64::from(u64::from(market_id)),),
                     )
                     .await
                     .map_err($crate::ErrorWrapper::from)?;
@@ -165,11 +165,11 @@ macro_rules! impl_vault_view_methods {
                 let mapped = res
                     .into_iter()
                     .map(|(id, account)| {
-                        let id_u32: u32 = id.0.try_into().map_err(|_| {
+                        let market_id = $crate::MarketId::try_from(id.0).map_err(|_| {
                             $crate::ErrorWrapper::Wrapped("market id out of u32 range".to_string())
                         })?;
                         Ok($crate::MarketWithId {
-                            market_id: $crate::MarketId(id_u32),
+                            market_id,
                             account: $crate::AccountId::from(account.to_string()),
                         })
                     })
@@ -595,9 +595,14 @@ macro_rules! impl_vault_methods {
             }
 
             #[instrument(skip(self, delta))]
-            pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+            pub async fn allocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
                 let delta = templar_common::vault::AllocationDelta::try_from(delta.clone())?;
-                self.vault_call("reallocate", (delta,)).await
+                self.vault_call("allocate", (delta,)).await
+            }
+
+            #[instrument(skip(self, delta))]
+            pub async fn reallocate(&self, delta: &AllocationDelta) -> Result<(), ErrorWrapper> {
+                self.allocate(delta).await
             }
 
             #[instrument(skip(self, route))]

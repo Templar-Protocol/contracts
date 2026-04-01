@@ -1,12 +1,13 @@
-use std::{fs, path::Path};
+use std::fs;
 
 use templar_common::registry::DeployMode;
 
 pub fn main() {
     let cliargs = std::env::args().collect::<Vec<_>>();
     let name = &cliargs[1];
+    let workspace_root = test_utils::workspace_root();
 
-    let path = Path::new(env!("CARGO_WORKSPACE_DIR"))
+    let path = workspace_root
         .join("target/near/")
         .join(name)
         .join(name.to_owned() + ".wasm");

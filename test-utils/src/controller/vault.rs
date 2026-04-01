@@ -82,13 +82,13 @@ impl VaultController {
         #[view] pub fn preview_redeem(shares: U128) -> U128;
 
         /* -------- Calls (externals) -------- */
-        // Owner/guardian-gated: mints fee shares when performance is positive.
+        // Owner/sentinel-gated: mints fee shares when performance is positive.
         #[call(exec, tgas(20))]
         pub fn accrue_fee["internal_accrue_fee"]();
 
         // Allocator/curator/owner-gated: begins allocation across markets.
         #[call(exec, tgas(300))]
-        pub fn reallocate(delta: AllocationDelta);
+        pub fn reallocate["allocate"](delta: AllocationDelta);
 
         // Allocator-only: executes an existing market-side supply withdrawal
         // request and credits any returned funds to the vault's idle balance.
@@ -140,15 +140,6 @@ impl VaultController {
 
         #[call(exec, tgas(50))]
         pub fn set_is_allocator(account: AccountId, allowed: bool);
-
-        #[call(exec, tgas(50))]
-        pub fn submit_guardian(new_g: AccountId);
-
-        #[call(exec, tgas(50))]
-        pub fn accept_guardian();
-
-        #[call(exec, tgas(50))]
-        pub fn revoke_pending_guardian();
 
         #[call(exec, tgas(50))]
         pub fn submit_sentinel(new_s: AccountId);
@@ -213,7 +204,7 @@ impl VaultController {
 static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
 pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault"))
+    WASM.get_or_init(|| get_contract("templar_vault_contract", "contract/vault/near"))
         .await
 }
 

@@ -44,6 +44,51 @@ jobs:
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
 
+  soroban:
+    name: Soroban
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust
+
+      - name: Install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,nextest
+
+      - name: Run Soroban runtime tests
+        env:
+          SQLX_OFFLINE: true
+        run: cargo nextest run -p templar-soroban-runtime
+
+      - name: Install packages
+        run: sudo apt install libdbus-1-dev pkg-config
+
+      - name: Install stellar CLI
+        run: curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
+
+      - name: Enforce Soroban runtime size budget
+        run: just -f contract/vault/soroban/justfile size-budget-check
+
+      # Curator primitives feature matrix (Soroban-related)
+      - name: Check curator-primitives (default)
+        run: cargo check -p templar-curator-primitives
+
+      - name: Check curator-primitives (std)
+        run: cargo check -p templar-curator-primitives --no-default-features --features std
+
+      - name: Check curator-primitives (serde-borsh)
+        run: cargo check -p templar-curator-primitives --no-default-features --features borsh,serde,schemars,std
+
+      - name: Check curator-primitives (boundary/wasm)
+        run: cargo check -p templar-curator-primitives --no-default-features --features boundary,std --target wasm32-unknown-unknown
+
+      - name: Test curator-primitives (boundary)
+        run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
+
   tests:
     name: Tests
     timeout-minutes: 40
@@ -84,7 +129,7 @@ jobs:
           # Optimize cargo build for faster compilation
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
-        run: ./script/test.sh
+        run: ./script/test.sh --workspace
 
       - name: Cleanup Docker resources
         if: always()

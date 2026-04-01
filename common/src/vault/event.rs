@@ -1,7 +1,4 @@
-use super::{
-    near, AccountId, CapGroupId, Fees, IdleBalanceDelta, MarketId, Restrictions, SupplyPosition,
-    U128, U64,
-};
+use super::*;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh, json])]
@@ -123,7 +120,7 @@ pub enum Event {
         remaining_after: U128,
     },
     #[event_version("1.0.0")]
-    AllocationCompleted { op_id: u64 },
+    AllocationCompleted { op_id: U64 },
     #[event_version("1.0.0")]
     AllocationStopped {
         op_id: U64,
@@ -169,13 +166,13 @@ pub enum Event {
     #[event_version("1.0.0")]
     TimelockChangeSubmitted { valid_at_ns: U64 },
     #[event_version("1.0.0")]
-    FeesChangeSubmitted { fees: Fees<U128>, valid_at_ns: u64 },
+    FeesChangeSubmitted { fees: Fees<U128>, valid_at_ns: U64 },
     #[event_version("1.0.0")]
     FeesChangeRevoked,
     #[event_version("1.0.0")]
     RestrictionsChangeSubmitted {
         restrictions: Option<Restrictions>,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     RestrictionsChangeRevoked,
@@ -197,7 +194,7 @@ pub enum Event {
     SupplyCapRaiseSubmitted {
         market: MarketId,
         new_cap: U128,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     SupplyCapRaiseRevoked { market: MarketId },
@@ -207,7 +204,7 @@ pub enum Event {
     CapGroupRaiseSubmitted {
         cap_group: CapGroupId,
         new_cap: U128,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     CapGroupRaiseRevoked { cap_group: CapGroupId },
@@ -220,7 +217,7 @@ pub enum Event {
     CapGroupRelativeCapRaiseSubmitted {
         cap_group: CapGroupId,
         new_relative_cap: U128,
-        valid_at_ns: u64,
+        valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
     CapGroupRelativeCapRaiseRevoked { cap_group: CapGroupId },
@@ -297,7 +294,6 @@ pub enum Event {
     SupplyWithdrawRequestCreated { market: MarketId, amount: U128 },
     #[event_version("1.0.0")]
     WithdrawRequestCreated { market: MarketId, amount: U128 },
-    #[event_version("1.0.0")]
     #[event_version("1.0.0")]
     AllocationPositionIssue {
         op_id: U64,
@@ -396,4 +392,53 @@ pub enum Event {
     },
     #[event_version("1.0.0")]
     IdleResyncCallbackIgnored { op_id: U64, reason: Reason },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, QueueAction, QueueStatus, Reason, UnbrickPhase};
+    use crate::vault::{IdleBalanceDelta, MarketId};
+    use near_sdk::{json_types::U128, test_utils::VMContextBuilder, testing_env, AccountId};
+
+    #[test]
+    fn helper_enums_keep_expected_debug_labels() {
+        assert_eq!(format!("{:?}", Reason::NoRoom), "NoRoom");
+        assert_eq!(format!("{:?}", QueueAction::Parked), "Parked");
+        assert_eq!(format!("{:?}", QueueStatus::Empty), "Empty");
+        assert_eq!(format!("{:?}", UnbrickPhase::Payout), "Payout");
+    }
+
+    #[test]
+    fn event_variants_can_be_constructed_and_emitted() {
+        testing_env!(VMContextBuilder::new().build());
+
+        Event::LockChange {
+            is_locked: true,
+            market: MarketId(7),
+        }
+        .emit();
+
+        Event::IdleBalanceUpdated {
+            prev: U128(10),
+            delta: IdleBalanceDelta::Increase(U128(5)),
+        }
+        .emit();
+
+        Event::UnbrickInvoked {
+            phase: UnbrickPhase::Withdrawing,
+            op_id: Some(1.into()),
+            id: Some(2.into()),
+        }
+        .emit();
+
+        Event::PayoutStopped {
+            op_id: 1.into(),
+            receiver: "receiver.testnet"
+                .parse::<AccountId>()
+                .expect("valid account id"),
+            amount: U128(33),
+            reason: Some(Reason::Other("stopped".to_string())),
+        }
+        .emit();
+    }
 }
