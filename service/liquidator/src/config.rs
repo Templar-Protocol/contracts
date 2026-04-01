@@ -252,6 +252,7 @@ impl Args {
     }
 
     /// Build service configuration from arguments
+    #[allow(clippy::too_many_lines)]
     pub fn build_config(&self) -> ServiceConfig {
         let strategy = self.create_strategy();
         let collateral_strategy = self.parse_collateral_strategy();
@@ -312,7 +313,8 @@ impl Args {
             .ignored_markets
             .iter()
             .filter_map(|s| {
-                s.parse::<AccountId>()
+                s.trim()
+                    .parse::<AccountId>()
                     .map_err(|e| {
                         tracing::warn!(
                             market = %s,
@@ -430,6 +432,7 @@ mod tests {
             ref_contract: None,
             allowed_collateral_assets: vec![],
             ignored_collateral_assets: vec![],
+            ignored_markets: vec![],
             loop_liquidation: false,
             max_loop_iterations: 10,
             hermes_url: "https://hermes.pyth.network".to_string(),
