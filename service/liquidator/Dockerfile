@@ -16,6 +16,7 @@ WORKDIR /app
 
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
+COPY client ./client
 COPY common ./common
 COPY contract ./contract
 COPY fuzz ./fuzz
