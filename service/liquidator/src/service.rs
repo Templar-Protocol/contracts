@@ -84,6 +84,8 @@ pub struct ServiceConfig {
     /// Collateral assets to ignore in market filtering
     pub ignored_collateral_assets:
         Vec<templar_common::asset::FungibleAsset<templar_common::asset::CollateralAsset>>,
+    /// Market account IDs to ignore
+    pub ignored_markets: Vec<near_sdk::AccountId>,
     /// Enable loop liquidation - repeatedly liquidate until position is healthy
     pub loop_liquidation: bool,
     /// Maximum iterations for loop liquidation (safety limit)
@@ -372,13 +374,14 @@ impl LiquidatorService {
     /// Check if a market should be processed based on asset filtering rules.
     ///
     /// Returns (`should_process`, `reason_if_filtered`).
+    /// Note: ignored markets are checked earlier (before RPC calls) in `refresh_registry`.
     fn should_process_market(
         &self,
         config: &templar_common::market::MarketConfiguration,
     ) -> (bool, Option<String>) {
         let collateral_asset = &config.collateral_asset;
 
-        // Check ignore list
+        // Check ignored collateral assets list
         if !self.config.ignored_collateral_assets.is_empty() {
             for ignored_asset in &self.config.ignored_collateral_assets {
                 if collateral_asset == ignored_asset {
@@ -437,6 +440,15 @@ impl LiquidatorService {
             // Filter deployments using registry metadata, then fetch market configs
             let mut market_configs = Vec::new();
             for market in &all_markets {
+                // Step 0: Skip ignored markets before any RPC calls
+                if self.config.ignored_markets.contains(market) {
+                    tracing::info!(
+                        market = %market,
+                        "Market filtered out (ignored market)"
+                    );
+                    continue;
+                }
+
                 // Step 1: Fetch market configuration — this is the definitive check
                 // for whether a deployment is a market contract. Non-market contracts
                 // (proxy-oracles, redstone-adapters) won't have this method.
@@ -518,7 +530,7 @@ impl LiquidatorService {
                     .detect_and_register_proxy_oracle(oracle_account)
                     .await;
 
-                // Step 4: Apply market filtering rules (collateral asset allow/ignore lists)
+                // Step 4: Apply market filtering rules
                 let (should_process, filter_reason) = self.should_process_market(&config);
 
                 if should_process {
