@@ -59,8 +59,6 @@ tmplrmgr proxy-oracle proxy get \
   --json
 ```
 
-Add `--pretty` for formatted JSON.
-
 List proposals:
 
 ```bash
@@ -265,7 +263,7 @@ tmplrmgr proxy-oracle governance list \
 tmplrmgr proxy-oracle governance get \
   --oracle-id <proxy_oracle_account> \
   --id <proposal_id> \
-  --json --pretty
+  --json
 ```
 
 Execute after the TTL elapses:
@@ -284,7 +282,7 @@ Verify the live feed:
 tmplrmgr proxy-oracle proxy get \
   --oracle-id <proxy_oracle_account> \
   --price-id <price_identifier> \
-  --json --pretty
+  --json
 ```
 
 ## Create A Backup Oracle Path
@@ -381,7 +379,7 @@ After execution:
 - proposals execute in queue order; an earlier active proposal must be executed or cancelled first
 - empty proxy definitions are rejected by contract validation
 - proxy proposal creation supports `--insert`, `--insert-file`, and `--remove`
-- proposal and proxy inspection commands support `--json` and `--pretty`
+- proposal and proxy inspection commands support `--json`
 - the proxy oracle supports backup-source composition without changing market configuration
-- transformer-based entries can be used to derive prices for assets such as LSTs from an underlying oracle price plus an on-chain conversion rate
+- transformer-based entries can be used to derive prices for assets such as LSTs from an underlying oracle price plus an on-chain redemption rate
 - off-chain services may resolve the underlying source requests directly, so configuration changes should be documented and communicated as part of normal change management
