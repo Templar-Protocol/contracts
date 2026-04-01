@@ -351,10 +351,7 @@ async fn redstone_adapter_write_prices(#[future(awt)] worker: Worker<Sandbox>) {
     FeedGet {
         adapter_id: adapter.id().clone(),
         feed_id: vec!["ETH".to_string(), "BTC".to_string()],
-        output: OutputArgs {
-            json: true,
-            pretty: false,
-        },
+        output: OutputArgs::json(),
     }
     .run(&ctx)
     .await

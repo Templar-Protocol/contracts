@@ -70,7 +70,7 @@ impl ListDeployments {
 }
 
 impl OutputStyle for DeploymentListOutput {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         if self.deployments.is_empty() {
             writeln!(out, "{}", style("No deployments found.").dim())?;
             return Ok(());

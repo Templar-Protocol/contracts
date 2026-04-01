@@ -80,7 +80,7 @@ impl ListProposals {
 }
 
 impl OutputStyle for ProposalListOutput {
-    fn human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
+    fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         if self.proposals.is_empty() {
             writeln!(out, "{}", style("No active proposals.").dim())?;
             return Ok(());
