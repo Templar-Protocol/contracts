@@ -1,13 +1,12 @@
 use near_workspaces::{Account, Contract};
 use templar_universal_account::{
-    contract_state::Migration, transaction::Transaction, ExecuteArgs, InitArgs, KeyId,
-    PayloadExecutionParameters,
+    state, transaction::Transaction, ExecuteArgs, InitArgs, KeyId, PayloadExecutionParameters,
 };
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
 
-use super::ContractController;
+use super::{migration::MigrationController, ContractController};
 
 #[derive(Clone)]
 pub struct UniversalAccountController {
@@ -20,9 +19,17 @@ impl ContractController for UniversalAccountController {
     }
 }
 
+impl MigrationController for UniversalAccountController {
+    type Migration = state::Migration;
+}
+
 impl UniversalAccountController {
     pub const fn wasm_0_2_0() -> &'static [u8] {
         include_bytes!("wasm/uac_0_2_0.wasm")
+    }
+
+    pub const fn wasm_0_4_0() -> &'static [u8] {
+        include_bytes!("wasm/uac_0_4_0.wasm")
     }
 
     pub async fn wasm() -> &'static [u8] {
@@ -64,16 +71,8 @@ impl UniversalAccountController {
         pub fn get_key(key: KeyId) -> Option<PayloadExecutionParameters>;
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
-        #[view]
-        pub fn get_stored_state_version() -> u32;
-        #[view]
-        pub fn get_target_state_version() -> u32;
-        #[view]
-        pub fn needs_migration() -> bool;
 
         #[call(exec, tgas(300))]
         pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);
-        #[call(exec, tgas(300))]
-        pub fn migrate(args: Migration);
     }
 }

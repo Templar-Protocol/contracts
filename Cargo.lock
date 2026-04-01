@@ -12848,12 +12848,9 @@ dependencies = [
 name = "templar-universal-account-contract"
 version = "0.4.0"
 dependencies = [
- "alloy",
- "ed25519-dalek",
  "getrandom 0.2.15",
  "near-sdk",
  "near-workspaces 0.21.0",
- "p256",
  "rstest",
  "templar-common",
  "templar-universal-account",
@@ -12932,10 +12929,13 @@ dependencies = [
 name = "test-utils"
 version = "0.1.0"
 dependencies = [
+ "alloy",
+ "ed25519-dalek",
  "hex-literal",
  "near-sdk",
  "near-sdk-contract-tools",
  "near-workspaces 0.21.0",
+ "p256",
  "rstest",
  "templar-common",
  "templar-universal-account",
