@@ -2,6 +2,8 @@
 
 This document outlines the current administrative structure and governance controls of Templar Protocol.
 
+For governance workflows specific to proxy oracle feed management, see [Proxy Oracle Architecture](./contract/proxy-oracle/index.md) and the [Proxy Oracle Operations Runbook](./contract/proxy-oracle/runbook.md).
+
 ## Registry Contract
 
 The registry contract is immutable once deployed and locked. It designates an owner account, which has permission to add new contract code versions and to deploy new contracts. There is no upgrade mechanism.

@@ -10,11 +10,7 @@ use-default-preprocessors = false
 
 [preprocessor.links]
 
-[output.linkcheck]
-exclude = ['^/doc/']
-
 [output.html]
 git-repository-url = "https://github.com/Templar-Protocol/contracts/"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/Templar-Protocol/contracts/edit/dev/docs/{path}"
 site-url = "/guide/"

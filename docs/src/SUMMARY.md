@@ -8,6 +8,8 @@
     - [Liquidate](./contract/market/liquidate.md)
   - [Registry](./contract/registry.md)
   - [LST Oracle](./contract/lst-oracle.md)
+  - [Proxy Oracle](./contract/proxy-oracle/index.md)
+    - [Operations Runbook](./contract/proxy-oracle/runbook.md)
 - [Smart Contract Deployments](./deployments.md)
 - [Oracles](./oracles.md)
 - [Protocol Governance](./governance.md)
