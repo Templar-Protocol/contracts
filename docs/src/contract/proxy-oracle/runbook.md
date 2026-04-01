@@ -93,6 +93,8 @@ tmplrmgr proxy-oracle deploy \
   --secret-key <secret_key>
 ```
 
+Security note: passing secrets through `--secret-key` is convenient but not ideal. CLI arguments can leak via shell history and process listings. Prefer environment variables where possible; this CLI supports `SIGNER_ID` and `SECRET_KEY`. If you need stronger isolation, use external secret management and inject the key at runtime rather than hard-coding it in commands.
+
 Useful flags:
 
 - `--no-build` to skip rebuilding and use an existing WASM artifact
@@ -122,6 +124,33 @@ Useful flags:
 
 ## Proxy Definition Patterns
 
+## Aggregation Semantics
+
+`aggregator.method` controls how valid source results are combined after freshness filtering.
+
+### `MedianLow`
+
+- uses all valid sources that survive `max_age` and `max_clock_drift`
+- requires at least `min_sources` valid sources, or it returns no price
+- splits each source into lower and upper confidence bounds, sorts the resulting values, and returns the weighted lower median
+- has no explicit outlier filter beyond freshness and source-count filtering
+
+Use this when you want combination across live sources rather than a single preferred source.
+
+Example: if two equal-weight live sources resolve to `99` and `101`, `MedianLow` returns the lower median of the valid sorted set. With two clean sources, that gives a conservative combined result rather than always preferring one provider.
+
+### `Priority`
+
+- uses only valid sources that survive `max_age` and `max_clock_drift`
+- requires at least `min_sources` valid sources, or it returns no price
+- selects the surviving value with the highest numeric `weight`
+- if a higher-priority source is stale or otherwise filtered out, the next-highest valid source is used
+- if weights are equal, the first surviving entry wins
+
+Use this when you want a clear primary source with ordered backups.
+
+Example: if Pyth has weight `10`, RedStone has weight `5`, and a third backup has weight `1`, the proxy uses Pyth when valid, falls back to RedStone when Pyth is invalid, and only uses the third source if both higher-priority sources are unavailable.
+
 ### Single-Source Feed
 
 Use for direct passthrough.
@@ -143,47 +172,6 @@ Use for direct passthrough.
           "Pyth": {
             "oracle_id": "pyth-oracle.near",
             "price_id": "<underlying_price_id>"
-          }
-        }
-      },
-      "weight": 1
-    }
-  ]
-}
-```
-
-### Primary Plus Backup Feed
-
-Use for a preferred source plus backups.
-
-```json
-{
-  "aggregator": {
-    "method": "Priority",
-    "filter": {
-      "max_age": "60000000000",
-      "max_clock_drift": "10000000000",
-      "min_sources": 1
-    }
-  },
-  "entries": [
-    {
-      "source": {
-        "Request": {
-          "Pyth": {
-            "oracle_id": "pyth-oracle.near",
-            "price_id": "<pyth_price_id>"
-          }
-        }
-      },
-      "weight": 1
-    },
-    {
-      "source": {
-        "Request": {
-          "RedStone": {
-            "oracle_id": "<redstone_adapter_account>",
-            "price_id": "<redstone_feed_id>"
           }
         }
       },
@@ -233,6 +221,11 @@ Use when the highest-priority live source should win.
   ]
 }
 ```
+
+Guidance:
+
+- use differentiated weights such as `10/1` or `10/5` when one source should be primary and another should be backup
+- use equal weights only when first-entry-wins is acceptable
 
 ## Add Or Update A Feed
 
@@ -293,8 +286,8 @@ Use this when adding a production backup source to an existing feed.
 2. Add the backup source as a second `entries` item.
 3. Keep the same market-facing `price_id`.
 4. Choose the aggregation method:
-   - use `MedianLow` if you want live-source combination
-   - use `Priority` if you want a preferred source to dominate while backups remain available
+   - use `MedianLow` to combine all valid live sources into a conservative result
+   - use `Priority` to prefer the highest-weight valid source and fall back to lower-weight backups
 5. Create the governance proposal.
 6. Wait for TTL and execute.
 7. Re-check the live definition.
