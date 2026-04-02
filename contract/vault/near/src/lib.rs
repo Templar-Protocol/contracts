@@ -504,7 +504,6 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         crate::auth::require_action(crate::auth::ActionKind::ExecuteWithdraw);
-        self.internal_accrue_fee();
 
         let ctx = match self.ctx_withdrawing(op_id.0) {
             Ok(s) => s.clone(),
