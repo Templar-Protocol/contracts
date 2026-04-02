@@ -5,7 +5,7 @@
 //! These tests verify that the vault correctly handles failures during
 //! multi-step async operations and can recover via unbrick.
 
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_workspaces::{network::Sandbox, types::Gas, Worker};
 use rstest::rstest;

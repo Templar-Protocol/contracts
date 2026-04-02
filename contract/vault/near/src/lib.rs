@@ -504,7 +504,6 @@ impl Contract {
     ) -> PromiseOrValue<()> {
         require_at_least(EXECUTE_WITHDRAW_GAS);
         crate::auth::require_action(crate::auth::ActionKind::ExecuteWithdraw);
-        self.internal_accrue_fee();
 
         let ctx = match self.ctx_withdrawing(op_id.0) {
             Ok(s) => s.clone(),
@@ -1775,7 +1774,7 @@ impl Contract {
             }
         }
 
-        if now > anchor.timestamp_ns.0 && self.op_state.is_idle() {
+        if now > anchor.timestamp_ns.0 {
             self.apply_kernel_refresh_fees(now, cur_total_assets);
         } else {
             self.fee_anchor.total_assets = cur_total_assets.into();
