@@ -1775,7 +1775,7 @@ impl Contract {
             }
         }
 
-        if now > anchor.timestamp_ns.0 {
+        if now > anchor.timestamp_ns.0 && self.op_state.is_idle() {
             self.apply_kernel_refresh_fees(now, cur_total_assets);
         } else {
             self.fee_anchor.total_assets = cur_total_assets.into();
