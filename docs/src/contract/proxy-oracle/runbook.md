@@ -100,6 +100,8 @@ Useful flags:
 - `--no-build` to skip rebuilding and use an existing WASM artifact
 - `--workspace-path <path>` to load the contract from a different workspace root
 
+New proxy oracles start with a TTL of zero. This allows for quick and easy configuration of the oracle immediately after deployment, however, depending on the trust model for the associated market(s), consider updating the TTL to a non-zero value.
+
 ### Deploy From Registry
 
 Deploy through a registry:
@@ -122,11 +124,11 @@ Useful flags:
 - `--with-full-access-key <public_key>` to add additional full-access keys
 - `--no-signer-full-access-key` to avoid adding the signer's key to the deployed account
 
-## Proxy Definition Patterns
-
 ## Aggregation Semantics
 
 `aggregator.method` controls how valid source results are combined after freshness filtering.
+
+`min_sources` counts only sources that remain usable after freshness filtering, not total configured sources.
 
 ### `MedianLow`
 
@@ -150,6 +152,8 @@ Example: if two equal-weight live sources resolve to `99` and `101`, `MedianLow`
 Use this when you want a clear primary source with ordered backups.
 
 Example: if Pyth has weight `10`, RedStone has weight `5`, and a third backup has weight `1`, the proxy uses Pyth when valid, falls back to RedStone when Pyth is invalid, and only uses the third source if both higher-priority sources are unavailable.
+
+## Proxy Definition Patterns
 
 ### Single-Source Feed
 
@@ -224,8 +228,10 @@ Use when the highest-priority live source should win.
 
 Guidance:
 
-- use differentiated weights such as `10/1` or `10/5` when one source should be primary and another should be backup
-- use equal weights only when first-entry-wins is acceptable
+- higher numeric `weight` means higher priority
+- if the highest-priority source is stale or unusable, the next-highest usable source is used
+- if weights are equal, the first remaining entry wins
+- use differentiated weights such as `10:1` or `10:5` when one source should be primary and another should be backup
 
 ## Add Or Update A Feed
 
@@ -245,7 +251,7 @@ Notes:
 
 - use `--insert-file <path>` instead of `--insert` for file input
 - omit `--id` to auto-fetch the next proposal ID
-- add `--execute-immediately` only if the created proposal TTL is zero
+- add `--execute-immediately` only if the created proposal TTL is zero; this is mainly for initial setup, not normal operations
 
 Review the proposal:
 
@@ -286,8 +292,8 @@ Use this when adding a production backup source to an existing feed.
 2. Add the backup source as a second `entries` item.
 3. Keep the same market-facing `price_id`.
 4. Choose the aggregation method:
-   - use `MedianLow` to combine all valid live sources into a conservative result
-   - use `Priority` to prefer the highest-weight valid source and fall back to lower-weight backups
+- use `MedianLow` to combine all valid live sources into a conservative result
+- use `Priority` to prefer the highest-weight valid source and fall back to lower-weight backups
 5. Create the governance proposal.
 6. Wait for TTL and execute.
 7. Re-check the live definition.
@@ -333,6 +339,7 @@ You can also use `--ms` or `--ns`.
 
 Notes:
 
+- new proxy oracles start with a TTL of zero, so set a non-zero TTL during initial setup
 - the new TTL applies to future proposals
 - existing proposals keep the TTL snapshot recorded when they were created
 

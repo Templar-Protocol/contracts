@@ -104,6 +104,8 @@ Proxy oracle governance is simple:
 - proposals can be inspected before execution
 - proposals can be executed or cancelled after review
 
+The TTL starts at zero on deployment. Operators should set a non-zero TTL during initial setup.
+
 Supported actions:
 
 - set, update, or remove a proxied feed definition
@@ -136,6 +138,10 @@ Remaining risks:
 - bad configuration of feed definitions or weights
 - liveness issues if too few sources remain fresh
 - operational dependency on the governance process for feed changes
+- no inter-source deviation check; a bad source can still influence aggregation
+- no absolute price sanity bounds
+- governance can set the TTL back to zero, removing the delay for future proposals
+- there is no emergency shortcut around the active TTL
 
 ## Transparency
 

@@ -85,7 +85,13 @@ impl Aggregator {
         let mut values = prices_filtered
             .into_iter()
             .flat_map(|(price, weight)| {
-                // Split apart prices so that we don't need to worry about confidence when sorting.
+                // Expand each source into its lower/upper confidence bounds
+                // before aggregation. This keeps the aggregation logic simple,
+                // but it also means zero-confidence sources contribute two
+                // identical values to the candidate set. This does not affect
+                // the correctness of the median calculation:
+                // median_low(1, 2) == median_low(1, 1, 2, 2)
+                // median_low(1, 2, 3) == median_low(1, 1, 2, 2, 3, 3)
                 let [lower, upper] = SpecificPrice::split(price);
                 [(lower, *weight), (upper, *weight)]
             })
