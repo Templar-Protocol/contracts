@@ -16,6 +16,12 @@ use derive_more::{Display, From, Into};
 #[display("{_0}")]
 pub struct TimestampNs(pub u64);
 
+#[repr(transparent)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into, Display)]
+#[display("{_0}")]
+pub struct DurationNs(pub u64);
+
 impl TimestampNs {
     pub const ZERO: Self = Self(0);
 
@@ -42,6 +48,23 @@ impl TimestampNs {
     /// Saturating subtraction with another timestamp-like nanosecond value.
     pub const fn saturating_sub(self, rhs: Self) -> Self {
         Self(self.0.saturating_sub(rhs.0))
+    }
+
+    pub const fn saturating_add_duration(self, rhs: DurationNs) -> Self {
+        Self(self.0.saturating_add(rhs.0))
+    }
+}
+
+impl DurationNs {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn from_nanos(nanos: u64) -> Self {
+        Self(nanos)
+    }
+
+    /// Return the raw nanosecond value.
+    pub const fn as_u64(self) -> u64 {
+        self.0
     }
 }
 
