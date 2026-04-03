@@ -5,11 +5,13 @@
 //! relaxation checks. Chain-specific authorization and storage live in
 //! each executor, but the decision math is shared here.
 
-use alloc::collections::{BTreeSet, VecDeque};
-use core::cmp::Ordering;
+use alloc::{
+    collections::{BTreeSet, VecDeque},
+    vec::Vec,
+};
 
 use templar_vault_kernel::math::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
-use templar_vault_kernel::types::TimestampNs;
+use templar_vault_kernel::types::{DurationNs, TimestampNs};
 use templar_vault_kernel::TimeGate;
 
 /// A pending governance value gated by a timelock.
@@ -29,9 +31,16 @@ impl<T> PendingValue<T> {
 }
 
 #[templar_vault_macros::vault_derive]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PendingQueueError {
-    NotMature,
+#[derive(Clone, PartialEq, Eq)]
+pub enum TakePending<T> {
+    Missing,
+    Pending { ready_at_ns: TimestampNs },
+    Ready(T),
+}
+
+pub struct ScheduledPending<T> {
+    pub valid_at_ns: TimestampNs,
+    pub replaced: Vec<T>,
 }
 
 /// Timelocked pending governance values.
@@ -73,58 +82,100 @@ impl<T> PendingQueue<T> {
         self.entries.push_back(pending);
     }
 
-    /// Schedule a new timelocked value.
-    pub fn schedule(&mut self, value: T, now_ns: TimestampNs, timelock_ns: TimestampNs) {
+    pub fn schedule(
+        &mut self,
+        value: T,
+        now_ns: TimestampNs,
+        timelock_ns: DurationNs,
+    ) -> TimestampNs {
         let valid_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
             .ready_at_ns()
-            .unwrap_or(now_ns);
+            .expect("TimeGate::schedule_from always yields a ready timestamp");
         self.entries.push_back(PendingValue { value, valid_at_ns });
+        valid_at_ns
     }
 
     #[must_use]
-    pub fn has_pending(&self, mut pred: impl FnMut(&T) -> bool) -> bool {
-        self.entries.iter().any(|entry| pred(&entry.value))
+    pub fn has_pending_key<K: PartialEq>(&self, key: &K, mut key_of: impl FnMut(&T) -> K) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| key_of(&entry.value) == *key)
     }
 
-    pub fn take_mature(
+    pub fn take_by_key<K: PartialEq>(
         &mut self,
         now_ns: TimestampNs,
-        mut pred: impl FnMut(&T) -> bool,
-    ) -> Result<Option<T>, PendingQueueError> {
-        // Find the first entry that matches the predicate AND is mature.
-        // This prevents a stale locked entry from blocking a mature one behind it.
-        let mature_index = self
-            .entries
-            .iter()
-            .position(|entry| pred(&entry.value) && entry.is_mature(now_ns));
+        key: &K,
+        mut key_of: impl FnMut(&T) -> K,
+    ) -> TakePending<T> {
+        let mut mature_index = None;
+        let mut next_ready_at: Option<TimestampNs> = None;
+
+        for (index, entry) in self.entries.iter().enumerate() {
+            if key_of(&entry.value) != *key {
+                continue;
+            }
+
+            if entry.is_mature(now_ns) {
+                mature_index = Some(index);
+                break;
+            }
+
+            next_ready_at = Some(match next_ready_at {
+                Some(current) => current.min(entry.valid_at_ns),
+                None => entry.valid_at_ns,
+            });
+        }
 
         if let Some(index) = mature_index {
-            let Some(pending) = self.entries.remove(index) else {
-                return Ok(None);
-            };
-            return Ok(Some(pending.value));
+            let pending = self
+                .entries
+                .remove(index)
+                .expect("matched pending index must remain valid");
+            return TakePending::Ready(pending.value);
         }
 
-        // No mature match found - check if there's any match at all (immature).
-        let has_immature_match = self.entries.iter().any(|entry| pred(&entry.value));
-        if has_immature_match {
-            return Err(PendingQueueError::NotMature);
+        match next_ready_at {
+            Some(ready_at_ns) => TakePending::Pending { ready_at_ns },
+            None => TakePending::Missing,
         }
-
-        Ok(None)
     }
 
     #[must_use]
-    pub fn revoke_pending(&mut self, mut pred: impl FnMut(&T) -> bool) -> bool {
-        let mut removed_any = false;
-        self.entries.retain(|entry| {
-            let keep = !pred(&entry.value);
-            if !keep {
-                removed_any = true;
+    pub fn revoke_by_key<K: PartialEq>(
+        &mut self,
+        key: &K,
+        mut key_of: impl FnMut(&T) -> K,
+    ) -> Vec<T> {
+        let mut retained = VecDeque::with_capacity(self.entries.len());
+        let mut removed = Vec::new();
+
+        while let Some(entry) = self.entries.pop_front() {
+            if key_of(&entry.value) == *key {
+                removed.push(entry.value);
+            } else {
+                retained.push_back(entry);
             }
-            keep
-        });
-        removed_any
+        }
+
+        self.entries = retained;
+        removed
+    }
+
+    pub fn schedule_replacing<K: PartialEq>(
+        &mut self,
+        key: &K,
+        key_of: impl FnMut(&T) -> K,
+        value: T,
+        now_ns: TimestampNs,
+        timelock_ns: DurationNs,
+    ) -> ScheduledPending<T> {
+        let replaced = self.revoke_by_key(key, key_of);
+        let valid_at_ns = self.schedule(value, now_ns, timelock_ns);
+        ScheduledPending {
+            valid_at_ns,
+            replaced,
+        }
     }
 }
 
@@ -170,18 +221,6 @@ impl TimelockDecision {
     #[must_use]
     pub fn is_immediate(self) -> bool {
         matches!(self, TimelockDecision::Immediate)
-    }
-}
-
-impl TryFrom<Ordering> for TimelockDecision {
-    type Error = ();
-
-    fn try_from(ordering: Ordering) -> Result<Self, Self::Error> {
-        match ordering {
-            Ordering::Equal => Err(()),
-            Ordering::Greater => Ok(TimelockDecision::Timelocked),
-            Ordering::Less => Ok(TimelockDecision::Immediate),
-        }
     }
 }
 
@@ -304,10 +343,10 @@ pub enum TimelockConfigError {
 }
 
 pub fn timelock_config_decision(
-    current: TimestampNs,
-    proposed: TimestampNs,
-    min: TimestampNs,
-    max: TimestampNs,
+    current: DurationNs,
+    proposed: DurationNs,
+    min: DurationNs,
+    max: DurationNs,
 ) -> Result<TimelockDecision, TimelockConfigError> {
     if proposed == current {
         return Err(TimelockConfigError::NoChange);
@@ -341,6 +380,14 @@ pub enum MembershipChangeError {
     NoChange,
 }
 
+#[templar_vault_macros::vault_derive(borsh, serde)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MembershipChangeKind {
+    Added,
+    Removed,
+    Reassigned,
+}
+
 impl TimelockDecision {
     /// Decide timelock behavior for market caps.
     ///
@@ -348,9 +395,9 @@ impl TimelockDecision {
     /// treated as timelocked.
     pub fn from_cap_change(current: Option<u128>, proposed: u128) -> Result<Self, CapChangeError> {
         match current {
-            Some(existing) => {
-                Self::try_from(proposed.cmp(&existing)).map_err(|_| CapChangeError::NoChange)
-            }
+            Some(existing) if proposed == existing => Err(CapChangeError::NoChange),
+            Some(existing) if proposed > existing => Ok(Self::Timelocked),
+            Some(_) => Ok(Self::Immediate),
             None => Ok(Self::Timelocked),
         }
     }
@@ -372,8 +419,9 @@ impl TimelockDecision {
             (None, None) => Err(CapChangeError::NoChange),
             (None, Some(_)) => Ok(Self::Immediate),
             (Some(_), None) => Ok(Self::Timelocked),
-            (Some(existing), Some(next)) => Self::try_from(next.get().cmp(&existing.get()))
-                .map_err(|_| CapChangeError::NoChange),
+            (Some(existing), Some(next)) if next == existing => Err(CapChangeError::NoChange),
+            (Some(existing), Some(next)) if next > existing => Ok(Self::Timelocked),
+            (Some(_), Some(_)) => Ok(Self::Immediate),
         }
     }
 
@@ -386,17 +434,39 @@ impl TimelockDecision {
         }
 
         match current {
-            Some(existing) => Self::try_from(proposed.cmp(&existing))
-                .map_err(|_| RelativeCapChangeError::NoChange),
+            Some(existing) if proposed == existing => Err(RelativeCapChangeError::NoChange),
+            Some(existing) if proposed > existing => Ok(Self::Timelocked),
+            Some(_) => Ok(Self::Immediate),
             None => Ok(Self::Timelocked),
         }
     }
 
-    pub fn from_membership_change(changed: bool) -> Result<Self, MembershipChangeError> {
-        if changed {
-            Ok(Self::Timelocked)
-        } else {
-            Err(MembershipChangeError::NoChange)
+    #[must_use]
+    pub fn membership_change_kind<T: PartialEq>(
+        current: Option<&T>,
+        proposed: Option<&T>,
+    ) -> Option<MembershipChangeKind> {
+        match (current, proposed) {
+            (None, None) => None,
+            (None, Some(_)) => Some(MembershipChangeKind::Added),
+            (Some(_), None) => Some(MembershipChangeKind::Removed),
+            (Some(current), Some(proposed)) if current == proposed => None,
+            (Some(_), Some(_)) => Some(MembershipChangeKind::Reassigned),
         }
+    }
+
+    pub fn from_membership_assignment_change<T: PartialEq>(
+        current: Option<&T>,
+        proposed: Option<&T>,
+    ) -> Result<Self, MembershipChangeError> {
+        match Self::membership_change_kind(current, proposed) {
+            Some(_) => Ok(Self::Timelocked),
+            None => Err(MembershipChangeError::NoChange),
+        }
+    }
+
+    #[must_use]
+    pub fn from_membership_change_kind(_change: MembershipChangeKind) -> Self {
+        Self::Timelocked
     }
 }
