@@ -312,3 +312,40 @@ fn number_is_zero_is_one() {
     assert!(!two.is_zero());
     assert!(!two.is_one());
 }
+
+#[cfg(feature = "postcard")]
+#[test]
+fn postcard_roundtrip_small_number() {
+    let number = Number::from(123_456_789u128);
+    let bytes = postcard::to_allocvec(&number).expect("serialize number");
+    let decoded: Number = postcard::from_bytes(&bytes).expect("deserialize number");
+    assert_eq!(decoded, number);
+}
+
+#[cfg(all(feature = "postcard", feature = "soroban"))]
+#[test]
+fn soroban_postcard_uses_compact_u128_encoding() {
+    let number = Number::from(7u128);
+    let bytes = postcard::to_allocvec(&number).expect("serialize number");
+    assert!(
+        bytes.len() < 32,
+        "expected compact u128 encoding, got {} bytes",
+        bytes.len()
+    );
+}
+
+#[cfg(all(feature = "postcard", feature = "soroban"))]
+#[test]
+fn soroban_postcard_rejects_large_number_on_serialize() {
+    let large = Number(U256::from(u128::MAX) + U256::from(99u128));
+    let error = postcard::to_allocvec(&large).expect_err("serialize should fail");
+    assert!(error.to_string().contains("exceeds u128"));
+}
+
+#[cfg(all(feature = "postcard", not(feature = "soroban")))]
+#[test]
+fn non_soroban_postcard_keeps_32_byte_payload() {
+    let number = Number::from(7u128);
+    let bytes = postcard::to_allocvec(&number).expect("serialize number");
+    assert_eq!(bytes.len(), 33, "expected 1-byte length + 32-byte payload");
+}

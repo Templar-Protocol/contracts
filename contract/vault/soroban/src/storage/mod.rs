@@ -3,15 +3,22 @@
 //! This module provides versioned storage wrappers for persisting vault state
 //! to the Soroban ledger. It handles schema migrations and forward compatibility.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use derive_more::{From, Into};
 use soroban_sdk::{symbol_short, Address as SdkAddress, Bytes, BytesN, Env, Symbol};
-use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
-use templar_curator_primitives::policy::market_lock::MarketLeaseRegistry;
+use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
+use templar_curator_primitives::policy::market_lock::{
+    FencingToken, LeaseOwner, MarketLease, MarketLeaseRegistry,
+};
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
-use templar_curator_primitives::policy::supply_queue::SupplyQueue;
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::{Address, Restrictions, TargetId, VaultState};
+use templar_vault_kernel::{
+    Address, AllocatingState, AllocationPlanEntry, FeeAccrualAnchor, OpState, PayoutState,
+    PendingWithdrawal, RefreshingState, Restrictions, TargetId, VaultState, Wad, WithdrawQueue,
+    WithdrawingState,
+};
 
 use crate::error::RuntimeError;
 
@@ -41,18 +48,507 @@ impl SorobanStorageKey {
     pub const PausedState: Symbol = symbol_short!("paused_s");
 }
 
-fn pc_serialize<T: serde::Serialize>(
-    value: &T,
-    msg: &'static str,
-) -> Result<Vec<u8>, RuntimeError> {
-    postcard::to_allocvec(value).map_err(|_| RuntimeError::storage_error(msg))
+fn push_u8(out: &mut Vec<u8>, value: u8) {
+    out.push(value);
 }
 
-fn pc_deserialize<'a, T: serde::Deserialize<'a>>(
+fn push_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u128(out: &mut Vec<u8>, value: u128) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_address(out: &mut Vec<u8>, value: &Address) {
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn push_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    push_u32(out, value.len() as u32);
+    out.extend_from_slice(value);
+}
+
+fn read_exact<'a>(
     bytes: &'a [u8],
-    msg: &'static str,
-) -> Result<T, RuntimeError> {
-    postcard::from_bytes(bytes).map_err(|_| RuntimeError::storage_error(msg))
+    cursor: &mut usize,
+    len: usize,
+) -> Result<&'a [u8], RuntimeError> {
+    let end = cursor
+        .checked_add(len)
+        .ok_or_else(|| RuntimeError::storage_error("binary decode overflow"))?;
+    let slice = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| RuntimeError::storage_error("binary decode truncated"))?;
+    *cursor = end;
+    Ok(slice)
+}
+
+fn read_u8(bytes: &[u8], cursor: &mut usize) -> Result<u8, RuntimeError> {
+    Ok(read_exact(bytes, cursor, 1)?[0])
+}
+
+fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, RuntimeError> {
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(read_exact(bytes, cursor, 4)?);
+    Ok(u32::from_le_bytes(raw))
+}
+
+fn push_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, RuntimeError> {
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(read_exact(bytes, cursor, 8)?);
+    Ok(u64::from_le_bytes(raw))
+}
+
+fn read_u128(bytes: &[u8], cursor: &mut usize) -> Result<u128, RuntimeError> {
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(read_exact(bytes, cursor, 16)?);
+    Ok(u128::from_le_bytes(raw))
+}
+
+fn read_address(bytes: &[u8], cursor: &mut usize) -> Result<Address, RuntimeError> {
+    let mut raw = [0u8; 32];
+    raw.copy_from_slice(read_exact(bytes, cursor, 32)?);
+    Ok(Address(raw))
+}
+
+fn read_bytes<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], RuntimeError> {
+    let len = read_u32(bytes, cursor)? as usize;
+    read_exact(bytes, cursor, len)
+}
+
+fn encode_cap_group_id(id: &CapGroupId, out: &mut Vec<u8>) {
+    push_bytes(out, id.as_str().as_bytes());
+}
+
+fn decode_cap_group_id(bytes: &[u8], cursor: &mut usize) -> Result<CapGroupId, RuntimeError> {
+    let raw = read_bytes(bytes, cursor)?;
+    let id = String::from_utf8(raw.to_vec())
+        .map_err(|_| RuntimeError::storage_error("cap group id utf8 invalid"))?;
+    CapGroupId::try_from(id).map_err(|_| RuntimeError::storage_error("cap group id invalid"))
+}
+
+fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
+    let mut out = Vec::new();
+    match mode {
+        Restrictions::Blacklist(addresses) => {
+            push_u8(&mut out, 0);
+            push_u32(&mut out, addresses.len() as u32);
+            for address in addresses {
+                push_address(&mut out, address);
+            }
+        }
+        Restrictions::Whitelist(addresses) => {
+            push_u8(&mut out, 1);
+            push_u32(&mut out, addresses.len() as u32);
+            for address in addresses {
+                push_address(&mut out, address);
+            }
+        }
+    }
+    out
+}
+
+fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
+    let mut cursor = 0usize;
+    let tag = read_u8(bytes, &mut cursor)?;
+    let len = read_u32(bytes, &mut cursor)? as usize;
+    let mut addresses = Vec::with_capacity(len);
+    for _ in 0..len {
+        addresses.push(read_address(bytes, &mut cursor)?);
+    }
+    match tag {
+        0 => Ok(Restrictions::blacklist(addresses)),
+        1 => Ok(Restrictions::whitelist(addresses)),
+        _ => Err(RuntimeError::storage_error("restrictions tag invalid")),
+    }
+}
+
+fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
+    let mut out = Vec::new();
+    let max_length = queue.max_length().map(|value| value.get()).unwrap_or(0);
+    push_u32(&mut out, max_length);
+    let entries = queue.entries();
+    push_u32(&mut out, entries.len() as u32);
+    for entry in entries {
+        push_u32(&mut out, entry.target_id());
+        push_u128(&mut out, entry.amount());
+        push_u8(&mut out, entry.priority());
+    }
+    out
+}
+
+fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
+    let mut cursor = 0usize;
+    let max_length = read_u32(bytes, &mut cursor)?;
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let target_id = read_u32(bytes, &mut cursor)?;
+        let amount = read_u128(bytes, &mut cursor)?;
+        let priority = read_u8(bytes, &mut cursor)?;
+        let entry = SupplyQueueEntry::new_with_priority(target_id, amount, priority)
+            .map_err(|_| RuntimeError::storage_error("policy supply queue invalid"))?;
+        entries.push(entry);
+    }
+    let max_length = core::num::NonZeroU32::new(max_length);
+    SupplyQueue::try_from_entries(entries, max_length)
+        .map_err(|_| RuntimeError::storage_error("policy supply queue invalid"))
+}
+
+fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_u32(&mut out, cap_groups.len() as u32);
+    for (id, record) in cap_groups.iter() {
+        encode_cap_group_id(id, &mut out);
+        push_u128(&mut out, record.principal);
+        match record.cap.absolute_cap() {
+            Some(value) => {
+                push_u8(&mut out, 1);
+                push_u128(&mut out, value);
+            }
+            None => push_u8(&mut out, 0),
+        }
+        match record.cap.relative_cap() {
+            Some(value) => {
+                push_u8(&mut out, 1);
+                push_u128(&mut out, value.as_u128_trunc());
+            }
+            None => push_u8(&mut out, 0),
+        }
+    }
+    out
+}
+
+fn decode_cap_groups(bytes: &[u8]) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
+    let mut cursor = 0usize;
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    let mut cap_groups = OrderedMap::new();
+    for _ in 0..count {
+        let id = decode_cap_group_id(bytes, &mut cursor)?;
+        let principal = read_u128(bytes, &mut cursor)?;
+        let absolute_cap = match read_u8(bytes, &mut cursor)? {
+            0 => None,
+            1 => Some(read_u128(bytes, &mut cursor)?),
+            _ => {
+                return Err(RuntimeError::storage_error(
+                    "cap group absolute cap tag invalid",
+                ))
+            }
+        };
+        let relative_cap = match read_u8(bytes, &mut cursor)? {
+            0 => None,
+            1 => Some(Wad::from(read_u128(bytes, &mut cursor)?)),
+            _ => {
+                return Err(RuntimeError::storage_error(
+                    "cap group relative cap tag invalid",
+                ))
+            }
+        };
+        let mut cap = CapGroup::default();
+        cap.set_absolute_cap(absolute_cap);
+        cap.set_relative_cap(relative_cap);
+        let _ = cap_groups.insert(id, CapGroupRecord { cap, principal });
+    }
+    Ok(cap_groups)
+}
+
+fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_u32(&mut out, markets.len() as u32);
+    for (target_id, config) in markets.iter() {
+        push_u32(&mut out, *target_id);
+        push_u8(&mut out, u8::from(config.enabled));
+        push_u128(&mut out, config.cap);
+        match &config.cap_group_id {
+            Some(id) => {
+                push_u8(&mut out, 1);
+                encode_cap_group_id(id, &mut out);
+            }
+            None => push_u8(&mut out, 0),
+        }
+    }
+    out
+}
+
+fn decode_markets(bytes: &[u8]) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
+    let mut cursor = 0usize;
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    let mut markets = OrderedMap::new();
+    for _ in 0..count {
+        let target_id = read_u32(bytes, &mut cursor)?;
+        let enabled = match read_u8(bytes, &mut cursor)? {
+            0 => false,
+            1 => true,
+            _ => return Err(RuntimeError::storage_error("market enabled flag invalid")),
+        };
+        let cap = read_u128(bytes, &mut cursor)?;
+        let cap_group_id = match read_u8(bytes, &mut cursor)? {
+            0 => None,
+            1 => Some(decode_cap_group_id(bytes, &mut cursor)?),
+            _ => return Err(RuntimeError::storage_error("market cap group tag invalid")),
+        };
+        let _ = markets.insert(target_id, MarketConfig::new(enabled, cap, cap_group_id));
+    }
+    Ok(markets)
+}
+
+fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_u32(&mut out, principals.len() as u32);
+    for (target_id, principal) in principals.iter() {
+        push_u32(&mut out, *target_id);
+        push_u128(&mut out, *principal);
+    }
+    out
+}
+
+fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
+    let mut cursor = 0usize;
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    let mut principals = OrderedMap::new();
+    for _ in 0..count {
+        let target_id = read_u32(bytes, &mut cursor)?;
+        let principal = read_u128(bytes, &mut cursor)?;
+        let _ = principals.insert(target_id, principal);
+    }
+    Ok(principals)
+}
+
+fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_u32(&mut out, leases.stored_len() as u32);
+    push_u64(&mut out, leases.next_fencing_token());
+    for (_, lease) in leases.iter() {
+        push_u32(&mut out, lease.target_id());
+        push_u64(&mut out, lease.owner().0);
+        match lease.op_id() {
+            Some(op_id) => {
+                push_u8(&mut out, 1);
+                push_u64(&mut out, op_id);
+            }
+            None => push_u8(&mut out, 0),
+        }
+        push_u64(&mut out, lease.acquired_at().as_u64());
+        push_u64(&mut out, lease.expires_at().as_u64());
+        push_u64(&mut out, lease.fencing_token().0);
+    }
+    out
+}
+
+fn decode_policy_locks(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
+    let mut cursor = 0usize;
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    let next_fencing_token = read_u64(bytes, &mut cursor)?;
+    let mut leases_by_target = OrderedMap::new();
+    for _ in 0..count {
+        let target_id = read_u32(bytes, &mut cursor)?;
+        let owner = LeaseOwner(read_u64(bytes, &mut cursor)?);
+        let op_id = match read_u8(bytes, &mut cursor)? {
+            0 => None,
+            1 => Some(read_u64(bytes, &mut cursor)?),
+            _ => {
+                return Err(RuntimeError::storage_error(
+                    "policy locks op_id tag invalid",
+                ))
+            }
+        };
+        let acquired_at = templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?);
+        let expires_at = templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?);
+        let fencing_token = FencingToken(read_u64(bytes, &mut cursor)?);
+
+        let lease = MarketLease::from_parts(
+            target_id,
+            owner,
+            op_id,
+            acquired_at,
+            expires_at,
+            fencing_token,
+        );
+        let _ = leases_by_target.insert(target_id, lease);
+    }
+    Ok(MarketLeaseRegistry::from_parts(
+        leases_by_target,
+        next_fencing_token,
+    ))
+}
+
+fn encode_withdraw_queue(queue: &WithdrawQueue, out: &mut Vec<u8>) {
+    push_u64(out, queue.next_withdraw_to_execute);
+    push_u64(out, queue.next_pending_withdrawal_id);
+    let entries: Vec<_> = queue.iter().collect();
+    push_u32(out, entries.len() as u32);
+    for (id, withdrawal) in entries {
+        push_u64(out, id);
+        push_address(out, &withdrawal.owner);
+        push_address(out, &withdrawal.receiver);
+        push_u128(out, withdrawal.escrow_shares);
+        push_u128(out, withdrawal.expected_assets);
+        push_u64(out, withdrawal.requested_at_ns.as_u64());
+    }
+}
+
+fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQueue, RuntimeError> {
+    let next_withdraw_to_execute = read_u64(bytes, cursor)?;
+    let next_pending_withdrawal_id = read_u64(bytes, cursor)?;
+    let count = read_u32(bytes, cursor)? as usize;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = read_u64(bytes, cursor)?;
+        let withdrawal = PendingWithdrawal::new(
+            read_address(bytes, cursor)?,
+            read_address(bytes, cursor)?,
+            read_u128(bytes, cursor)?,
+            read_u128(bytes, cursor)?,
+            templar_vault_kernel::TimestampNs(read_u64(bytes, cursor)?),
+        );
+        entries.push((id, withdrawal));
+    }
+    Ok(WithdrawQueue::with_state(
+        entries,
+        next_withdraw_to_execute,
+        next_pending_withdrawal_id,
+    ))
+}
+
+fn encode_op_state(op_state: &OpState, out: &mut Vec<u8>) {
+    match op_state {
+        OpState::Idle => push_u8(out, 0),
+        OpState::Allocating(state) => {
+            push_u8(out, 1);
+            push_u64(out, state.op_id);
+            push_u32(out, state.index);
+            push_u128(out, state.remaining);
+            push_u32(out, state.plan.len() as u32);
+            for entry in &state.plan {
+                push_u32(out, entry.target_id);
+                push_u128(out, entry.amount);
+            }
+        }
+        OpState::Withdrawing(state) => {
+            push_u8(out, 2);
+            push_u64(out, state.op_id);
+            push_u64(out, state.request_id);
+            push_u32(out, state.index);
+            push_u128(out, state.remaining);
+            push_u128(out, state.collected);
+            push_address(out, &state.receiver);
+            push_address(out, &state.owner);
+            push_u128(out, state.escrow_shares);
+        }
+        OpState::Refreshing(state) => {
+            push_u8(out, 3);
+            push_u64(out, state.op_id);
+            push_u32(out, state.index);
+            push_u32(out, state.plan.len() as u32);
+            for target_id in &state.plan {
+                push_u32(out, *target_id);
+            }
+        }
+        OpState::Payout(state) => {
+            push_u8(out, 4);
+            push_u64(out, state.op_id);
+            push_u64(out, state.request_id);
+            push_address(out, &state.receiver);
+            push_u128(out, state.amount);
+            push_address(out, &state.owner);
+            push_u128(out, state.escrow_shares);
+            push_u128(out, state.burn_shares);
+        }
+    }
+}
+
+fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeError> {
+    match read_u8(bytes, cursor)? {
+        0 => Ok(OpState::Idle),
+        1 => {
+            let op_id = read_u64(bytes, cursor)?;
+            let index = read_u32(bytes, cursor)?;
+            let remaining = read_u128(bytes, cursor)?;
+            let count = read_u32(bytes, cursor)? as usize;
+            let mut plan = Vec::with_capacity(count);
+            for _ in 0..count {
+                plan.push(AllocationPlanEntry::new(
+                    read_u32(bytes, cursor)?,
+                    read_u128(bytes, cursor)?,
+                ));
+            }
+            Ok(OpState::Allocating(AllocatingState {
+                op_id,
+                index,
+                remaining,
+                plan,
+            }))
+        }
+        2 => Ok(OpState::Withdrawing(WithdrawingState {
+            op_id: read_u64(bytes, cursor)?,
+            request_id: read_u64(bytes, cursor)?,
+            index: read_u32(bytes, cursor)?,
+            remaining: read_u128(bytes, cursor)?,
+            collected: read_u128(bytes, cursor)?,
+            receiver: read_address(bytes, cursor)?,
+            owner: read_address(bytes, cursor)?,
+            escrow_shares: read_u128(bytes, cursor)?,
+        })),
+        3 => {
+            let op_id = read_u64(bytes, cursor)?;
+            let index = read_u32(bytes, cursor)?;
+            let count = read_u32(bytes, cursor)? as usize;
+            let mut plan = Vec::with_capacity(count);
+            for _ in 0..count {
+                plan.push(read_u32(bytes, cursor)?);
+            }
+            Ok(OpState::Refreshing(RefreshingState { op_id, index, plan }))
+        }
+        4 => Ok(OpState::Payout(PayoutState {
+            op_id: read_u64(bytes, cursor)?,
+            request_id: read_u64(bytes, cursor)?,
+            receiver: read_address(bytes, cursor)?,
+            amount: read_u128(bytes, cursor)?,
+            owner: read_address(bytes, cursor)?,
+            escrow_shares: read_u128(bytes, cursor)?,
+            burn_shares: read_u128(bytes, cursor)?,
+        })),
+        _ => Err(RuntimeError::storage_error("op state tag invalid")),
+    }
+}
+
+fn encode_state_blob(state: &VersionedState) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_u32(&mut out, state.version.number());
+    push_u128(&mut out, state.state.total_assets);
+    push_u128(&mut out, state.state.total_shares);
+    push_u128(&mut out, state.state.idle_assets);
+    push_u128(&mut out, state.state.external_assets);
+    push_u128(&mut out, state.state.fee_anchor.total_assets);
+    push_u64(&mut out, state.state.fee_anchor.timestamp_ns.as_u64());
+    encode_op_state(&state.state.op_state, &mut out);
+    encode_withdraw_queue(&state.state.withdraw_queue, &mut out);
+    push_u64(&mut out, state.state.next_op_id);
+    out
+}
+
+fn decode_state_blob(bytes: &[u8]) -> Result<VersionedState, RuntimeError> {
+    let mut cursor = 0usize;
+    let version = StorageVersion::new(read_u32(bytes, &mut cursor)?);
+    let state = VaultState {
+        total_assets: read_u128(bytes, &mut cursor)?,
+        total_shares: read_u128(bytes, &mut cursor)?,
+        idle_assets: read_u128(bytes, &mut cursor)?,
+        external_assets: read_u128(bytes, &mut cursor)?,
+        fee_anchor: FeeAccrualAnchor::new(
+            read_u128(bytes, &mut cursor)?,
+            templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?),
+        ),
+        op_state: decode_op_state(bytes, &mut cursor)?,
+        withdraw_queue: decode_withdraw_queue(bytes, &mut cursor)?,
+        next_op_id: read_u64(bytes, &mut cursor)?,
+    };
+    Ok(VersionedState { version, state })
 }
 
 pub(crate) fn compose_policy_state(
@@ -121,29 +617,6 @@ impl<'a> SorobanStorage<'a> {
             .storage()
             .persistent()
             .set(key, &Bytes::from_slice(self.env, bytes));
-    }
-
-    fn load_decoded<T>(&self, key: &Symbol, msg: &'static str) -> Result<Option<T>, RuntimeError>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        self.load_blob(key)
-            .map(|stored| pc_deserialize(&stored, msg))
-            .transpose()
-    }
-
-    fn save_encoded<T>(
-        &self,
-        key: &Symbol,
-        value: &T,
-        msg: &'static str,
-    ) -> Result<(), RuntimeError>
-    where
-        T: serde::Serialize,
-    {
-        let bytes = pc_serialize(value, msg)?;
-        self.save_blob(key, &bytes);
-        Ok(())
     }
 
     /// Load a kernel-to-Soroban address mapping from persistent storage.
@@ -332,8 +805,7 @@ impl<'a> SorobanStorage<'a> {
 impl Storage for SorobanStorage<'_> {
     fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
         if let Some(stored) = self.load_state_blob() {
-            let versioned =
-                pc_deserialize::<VersionedState>(&stored, "state blob deserialize failed")?;
+            let versioned = decode_state_blob(&stored)?;
 
             let version = SorobanStorage::get_version(self)
                 .ok_or_else(|| RuntimeError::storage_error("state version missing"))?;
@@ -354,7 +826,7 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
-        let state_blob = pc_serialize(state, "state blob serialize failed")?;
+        let state_blob = encode_state_blob(state);
         self.save_state_blob(&state_blob);
         self.set_version(state.version.number());
         self.extend_default_ttl();
@@ -382,65 +854,44 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        let leases = self.load_decoded(
-            &SorobanStorageKey::PolicyLocks,
-            "policy_locks deserialize failed",
-        )?;
-        let supply_queue = self.load_decoded(
-            &SorobanStorageKey::PolicySupplyQueue,
-            "policy_supply_queue deserialize failed",
-        )?;
-        let markets = self.load_decoded(
-            &SorobanStorageKey::PolicyMarkets,
-            "policy_markets deserialize failed",
-        )?;
-        let principals = self.load_decoded(
-            &SorobanStorageKey::PolicyPrincipals,
-            "policy_principals deserialize failed",
-        )?;
-        let cap_groups = self.load_decoded(
-            &SorobanStorageKey::PolicyCapGroups,
-            "policy_cap_groups deserialize failed",
-        )?;
+        let leases = self
+            .load_policy_locks()
+            .map(|stored| decode_policy_locks(&stored))
+            .transpose()?;
+        let supply_queue = self
+            .load_policy_supply_queue()
+            .map(|stored| decode_supply_queue(&stored))
+            .transpose()?;
+        let markets = self
+            .load_policy_markets()
+            .map(|stored| decode_markets(&stored))
+            .transpose()?;
+        let principals = self
+            .load_policy_principals()
+            .map(|stored| decode_principals(&stored))
+            .transpose()?;
+        let cap_groups = self
+            .load_policy_cap_groups()
+            .map(|stored| decode_cap_groups(&stored))
+            .transpose()?;
 
         compose_policy_state(markets, principals, cap_groups, leases, supply_queue)
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        self.save_encoded(
-            &SorobanStorageKey::PolicyLocks,
-            state.leases(),
-            "policy_locks serialize failed",
-        )?;
-        self.save_encoded(
-            &SorobanStorageKey::PolicySupplyQueue,
-            state.supply_queue(),
-            "policy_supply_queue serialize failed",
-        )?;
-        self.save_encoded(
-            &SorobanStorageKey::PolicyMarkets,
-            state.markets(),
-            "policy_markets serialize failed",
-        )?;
-        self.save_encoded(
-            &SorobanStorageKey::PolicyPrincipals,
-            state.principals(),
-            "policy_principals serialize failed",
-        )?;
-        self.save_encoded(
-            &SorobanStorageKey::PolicyCapGroups,
-            state.cap_groups(),
-            "policy_cap_groups serialize failed",
-        )?;
+        self.save_policy_locks(&encode_policy_locks(state.leases()));
+        self.save_policy_supply_queue(&encode_supply_queue(state.supply_queue()));
+        self.save_policy_markets(&encode_markets(state.markets()));
+        self.save_policy_principals(&encode_principals(state.principals()));
+        self.save_policy_cap_groups(&encode_cap_groups(state.cap_groups()));
         self.extend_default_ttl();
         Ok(())
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        self.load_decoded(
-            &SorobanStorageKey::Restrictions,
-            "restrictions deserialize failed",
-        )
+        self.load_restrictions()
+            .map(|stored| decode_restrictions(&stored))
+            .transpose()
     }
 
     fn save_restrictions(
@@ -448,11 +899,7 @@ impl Storage for SorobanStorage<'_> {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         if let Some(restrictions) = restrictions {
-            self.save_encoded(
-                &SorobanStorageKey::Restrictions,
-                restrictions,
-                "restrictions serialize failed",
-            )?;
+            SorobanStorage::save_restrictions(self, &encode_restrictions(restrictions));
         } else {
             SorobanStorage::clear_restrictions(self);
         }
