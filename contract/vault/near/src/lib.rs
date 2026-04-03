@@ -623,8 +623,8 @@ impl Contract {
                             op_id,
                             market_id,
                             lease.fencing_token().0.into(),
-                            batch_limit,
                             U128(principal),
+                            batch_limit,
                         ),
                 ),
         )
