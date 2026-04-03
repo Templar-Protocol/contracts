@@ -54,8 +54,7 @@ use templar_common::{
 };
 pub use templar_curator_primitives::rbac::Role;
 use templar_curator_primitives::{
-    determine_recovery_action, PayoutRecoveryEvidence, PendingValue, RecoveryContext,
-    RecoveryProgress,
+    determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
@@ -763,21 +762,15 @@ impl Contract {
         let kernel_state = self.op_state.clone();
         let now = env::block_timestamp();
         let context = RecoveryContext::forced(now);
-        let (progress, payout_evidence) = match &kernel_state {
-            OpState::Allocating(state) => (RecoveryProgress::new(state.op_id, now), None),
-            OpState::Withdrawing(state) => (RecoveryProgress::new(state.op_id, now), None),
-            OpState::Refreshing(state) => (RecoveryProgress::new(state.op_id, now), None),
-            OpState::Payout(state) => (
-                RecoveryProgress::new(state.op_id, now),
-                Some(PayoutRecoveryEvidence::Failure {
-                    restore_idle: state.amount,
-                }),
-            ),
+        let progress = match &kernel_state {
+            OpState::Allocating(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Withdrawing(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Refreshing(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Payout(_) => return PromiseOrValue::Value(()),
             OpState::Idle => return PromiseOrValue::Value(()),
         };
-        let Some(action) =
-            determine_recovery_action(&kernel_state, &context, &progress, payout_evidence)
-                .unwrap_or_else(|_| None)
+        let Some(action) = determine_recovery_action(&kernel_state, &context, &progress, None)
+            .unwrap_or_else(|_| None)
         else {
             return PromiseOrValue::Value(());
         };
@@ -827,7 +820,7 @@ impl Contract {
                 .emit();
 
                 match outcome {
-                    PayoutOutcome::Success { .. } => {
+                    PayoutOutcome::Success => {
                         let (receiver, amount) = match &self.op_state {
                             OpState::Payout(s) => (s.receiver, s.amount),
                             _ => return PromiseOrValue::Value(()),
@@ -840,7 +833,7 @@ impl Contract {
                         );
                         PromiseOrValue::Value(())
                     }
-                    PayoutOutcome::Failure { .. } => {
+                    PayoutOutcome::Failure => {
                         // Treat stuck payout as failure, but re-sync idle_balance using
                         // the actual underlying FT balance held by the vault account.
                         PromiseOrValue::Promise(
@@ -2050,6 +2043,7 @@ impl Contract {
 
         let request = templar_vault_kernel::transitions::WithdrawalRequest {
             op_id,
+            request_id: self.withdraw_queue.next_withdraw_to_execute,
             amount,
             receiver: account_id_to_address(receiver),
             owner: account_id_to_address(owner),
@@ -2075,6 +2069,7 @@ impl Contract {
     fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
         let OpState::Withdrawing(WithdrawingState {
             op_id,
+            request_id: _,
             index,
             remaining,
             receiver,
@@ -2177,6 +2172,7 @@ impl Contract {
 
         let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
+            request_id: withdrawing.request_id,
             receiver: *receiver,
             amount,
             owner: *owner,

@@ -110,7 +110,7 @@ pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, C
     };
 
     let policy_state = load_policy_state(env)?;
-    for (idx, entry) in policy_state.supply_queue.entries.iter().enumerate() {
+    for (idx, entry) in policy_state.supply_queue().entries.iter().enumerate() {
         if entry.target_id == market {
             let index = u32::try_from(idx).map_err(|_| ContractError::InvalidInput)?;
             return adapters.get(index).ok_or(ContractError::InvalidInput);
@@ -122,7 +122,7 @@ pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, C
 
 pub(crate) fn current_supply_queue_len(env: &Env) -> Result<u32, ContractError> {
     let policy_state = load_policy_state(env)?;
-    u32::try_from(policy_state.supply_queue.len()).map_err(|_| ContractError::InvalidInput)
+    u32::try_from(policy_state.supply_queue().len()).map_err(|_| ContractError::InvalidInput)
 }
 
 fn require_non_negative_bounded_wad(value: i128, max: u128) -> Result<Wad, ContractError> {
@@ -308,9 +308,7 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
         rbac_config.add_role(kernel_address_from_sdk(env, &sentinel_addr), Role::Sentinel);
     }
     rbac_config.set_paused(paused);
-    let auth = RbacAuth {
-        config: rbac_config,
-    };
+    let auth = RbacAuth::new(rbac_config);
 
     Ok(VaultBootstrap {
         config,
