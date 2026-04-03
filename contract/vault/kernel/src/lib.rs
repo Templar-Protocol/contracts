@@ -33,7 +33,7 @@ pub use math::wad::{
     mul_div_ceil, mul_div_floor, mul_wad_floor, total_assets_for_fee_accrual, Wad, MAX_FEE_WAD,
     MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, YEAR_NS,
 };
-pub use restrictions::{RestrictionKind, Restrictions};
+pub use restrictions::{RestrictionKind, RestrictionMode, Restrictions};
 pub use state::escrow::{
     apply_settlement, can_apply_settlement, compute_escrow_stats, find_by_owner, is_stale,
     settle_proportional, settle_proportional_raw, total_burn, total_refund, EscrowEntry,

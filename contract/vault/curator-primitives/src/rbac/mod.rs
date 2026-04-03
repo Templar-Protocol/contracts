@@ -10,7 +10,7 @@
 //! - **Sentinel**: Emergency backstop (used for pause and restriction updates)
 //! - **Allocator**: Can manage allocations and refreshes
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
 use templar_vault_kernel::Address;
 
 use crate::auth::{
@@ -95,7 +95,7 @@ pub struct RoleAssignment {
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, Default)]
 pub struct RbacConfig {
-    assignments_by_address: BTreeMap<Address, Vec<Role>>,
+    assignments: Vec<RoleAssignment>,
     /// Whether the vault is paused.
     paused: bool,
 }
@@ -105,11 +105,11 @@ impl RbacConfig {
     #[inline]
     #[must_use]
     pub fn new(curator: Address) -> Self {
-        let mut assignments_by_address = BTreeMap::new();
-        assignments_by_address.insert(curator, alloc::vec![Role::Curator]);
-
         Self {
-            assignments_by_address,
+            assignments: alloc::vec![RoleAssignment {
+                address: curator,
+                role: Role::Curator,
+            }],
             paused: false,
         }
     }
@@ -124,12 +124,11 @@ impl RbacConfig {
     /// Add a role assignment.
     #[inline]
     pub fn add_role(&mut self, address: Address, role: Role) -> bool {
-        let roles = self.assignments_by_address.entry(address).or_default();
-        if roles.contains(&role) {
+        if self.has_role(&address, role) {
             return false;
         }
 
-        roles.push(role);
+        self.assignments.push(RoleAssignment { address, role });
         true
     }
 
@@ -140,28 +139,24 @@ impl RbacConfig {
             return false;
         }
 
-        let Some(roles) = self.assignments_by_address.get_mut(address) else {
+        let original_len = self.assignments.len();
+        self.assignments
+            .retain(|assignment| assignment.address != *address || assignment.role != role);
+
+        if self.assignments.len() == original_len {
             return false;
-        };
-
-        let original_len = roles.len();
-        roles.retain(|existing_role| *existing_role != role);
-        let changed = roles.len() != original_len;
-
-        if roles.is_empty() {
-            self.assignments_by_address.remove(address);
         }
 
-        changed
+        true
     }
 
     /// Check if an address has a specific role.
     #[inline]
     #[must_use]
     pub fn has_role(&self, address: &Address, role: Role) -> bool {
-        self.assignments_by_address
-            .get(address)
-            .is_some_and(|roles| roles.contains(&role))
+        self.assignments
+            .iter()
+            .any(|assignment| assignment.address == *address && assignment.role == role)
     }
 
     #[inline]
@@ -173,32 +168,25 @@ impl RbacConfig {
     #[inline]
     #[must_use]
     fn curator_count(&self) -> usize {
-        self.assignments_by_address
-            .values()
-            .filter(|roles| roles.contains(&Role::Curator))
+        self.assignments
+            .iter()
+            .filter(|assignment| assignment.role == Role::Curator)
             .count()
     }
 
     /// Get all roles for an address.
     #[must_use]
     pub fn get_roles(&self, address: &Address) -> Vec<Role> {
-        self.assignments_by_address
-            .get(address)
-            .cloned()
-            .unwrap_or_default()
+        self.assignments
+            .iter()
+            .filter(|assignment| assignment.address == *address)
+            .map(|assignment| assignment.role)
+            .collect()
     }
 
     #[must_use]
     pub fn role_assignments(&self) -> Vec<RoleAssignment> {
-        self.assignments_by_address
-            .iter()
-            .flat_map(|(address, roles)| {
-                roles.iter().copied().map(|role| RoleAssignment {
-                    address: *address,
-                    role,
-                })
-            })
-            .collect()
+        self.assignments.clone()
     }
 
     /// Set the paused state.
@@ -255,11 +243,9 @@ impl RbacAuth {
     #[inline]
     fn is_allowed(&self, caller: &Address, allowed_roles: RoleSet) -> bool {
         allowed_roles == RoleSet::NONE
-            || self
-                .config
-                .get_roles(caller)
+            || [Role::Curator, Role::Sentinel, Role::Allocator]
                 .into_iter()
-                .any(|role| allowed_roles.contains(role))
+                .any(|role| allowed_roles.contains(role) && self.config.has_role(caller, role))
     }
 }
 

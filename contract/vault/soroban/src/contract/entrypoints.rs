@@ -7,10 +7,9 @@ use super::helpers::{
     adapter_for_market, apply_fee_change, current_supply_queue_len, emit_admin_event,
     emit_alloc_event, emit_pause_state_event, extend_storage_ttl, get_config_address,
     governance_caller, kernel_address_from_sdk, load_virtual_offsets, migrate_legacy_paused,
-    migration_in_progress, query_vault_field, query_vault_snapshot, require_contract_address,
-    require_governance, require_signed, sdk_string_to_alloc, set_config_address,
-    set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    with_contract_vault_contract_error,
+    migration_in_progress, require_contract_address, require_governance, require_signed,
+    sdk_string_to_alloc, set_config_address, set_migration_in_progress, store_fees_spec,
+    store_virtual_offsets, with_contract_vault_contract_error,
 };
 use super::*;
 use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
@@ -190,9 +189,8 @@ fn apply_restrictions_policy(
     }
     let mut restrictions = Some(match mode {
         0 => None,
-        1 => Some(Restrictions::Paused),
-        2 => Some(Restrictions::Blacklist(kernel_accounts)),
-        3 => Some(Restrictions::Whitelist(kernel_accounts)),
+        1 => Some(Restrictions::blacklist(kernel_accounts)),
+        2 => Some(Restrictions::whitelist(kernel_accounts)),
         _ => return Err(ContractError::InvalidInput),
     });
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
@@ -216,24 +214,26 @@ fn apply_group_policy(
     value: Option<i128>,
 ) -> Result<(), ContractError> {
     let market_id = market_id.unwrap_or(0);
-    let cap_group_id = cap_group_id.unwrap_or_else(|| soroban_sdk::String::from_str(env, ""));
+    let cap_group_raw = sdk_string_to_alloc(
+        cap_group_id.unwrap_or_else(|| soroban_sdk::String::from_str(env, "")),
+    )?;
+    let parsed_cap_group = |raw: alloc::string::String| {
+        CapGroupId::try_from(raw).map_err(|_| ContractError::InvalidInput)
+    };
     let internal = match mode {
         0 => CapGroupUpdate::SetCap {
-            cap_group_id: CapGroupId::try_from(sdk_string_to_alloc(cap_group_id)?)
-                .map_err(|_| ContractError::InvalidInput)?,
+            cap_group_id: parsed_cap_group(cap_group_raw.clone())?,
             new_cap: Some(to_u128(required_i128(value)?)?),
         },
         1 => CapGroupUpdate::SetRelativeCap {
-            cap_group_id: CapGroupId::try_from(sdk_string_to_alloc(cap_group_id)?)
-                .map_err(|_| ContractError::InvalidInput)?,
+            cap_group_id: parsed_cap_group(cap_group_raw.clone())?,
             new_relative_cap: Some(Wad::from(to_u128(required_i128(value)?)?)),
         },
         2 => {
-            let s = sdk_string_to_alloc(cap_group_id)?;
-            let group = if s.is_empty() {
+            let group = if cap_group_raw.is_empty() {
                 None
             } else {
-                Some(CapGroupId::try_from(s).map_err(|_| ContractError::InvalidInput)?)
+                Some(parsed_cap_group(cap_group_raw)?)
             };
             CapGroupUpdate::SetMembership {
                 market_id,
@@ -707,32 +707,28 @@ impl SorobanVaultContract {
     ) -> Result<ProxyViewResponse, ContractError> {
         let (virtual_shares, virtual_assets) = load_virtual_offsets(&env);
         let storage = SorobanStorage::new(&env);
-        let (total_shares, idle_assets, external_assets) = query_vault_snapshot(&env);
-        let total_assets = query_vault_field(&env, |s| s.total_assets);
-        let mut fee_info: (i128, u64, i128, i128) = (0, 0, 0, 0);
         let mut queue = soroban_sdk::Vec::new(&env);
         let mut groups = soroban_sdk::Vec::new(&env);
         let (state, config) = load_state_and_config(&env)?;
-        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let anchor = vault.get_fee_anchor()?;
-            let fees = vault.get_fees();
-            fee_info = (
-                anchor.total_assets as i128,
-                anchor.timestamp_ns.as_u64(),
-                u128::from(fees.management.fee_wad) as i128,
-                u128::from(fees.performance.fee_wad) as i128,
-            );
-            for target_id in vault.supply_queue_targets() {
-                queue.push_back(target_id);
-            }
-            for (id, rec) in vault.policy_state().cap_groups().iter() {
-                let sdk_id = soroban_sdk::String::from_str(&env, id.as_str());
-                let abs_cap = rec.cap.absolute_cap().map(|c| c as i128).unwrap_or(0);
-                groups.push_back((sdk_id, abs_cap, rec.principal as i128));
-            }
-            Ok(())
-        };
-        with_contract_vault_contract_error(&env, &mut call)?;
+        let total_shares = to_i128(state.total_shares)?;
+        let idle_assets = to_i128(state.idle_assets)?;
+        let external_assets = to_i128(state.external_assets)?;
+        let total_assets = to_i128(state.total_assets)?;
+        let fee_info = (
+            state.fee_anchor.total_assets as i128,
+            state.fee_anchor.timestamp_ns.as_u64(),
+            u128::from(config.fees.management.fee_wad) as i128,
+            u128::from(config.fees.performance.fee_wad) as i128,
+        );
+        let policy_state = runtime_to_contract(storage.load_policy_state())?.unwrap_or_default();
+        for entry in policy_state.supply_queue().entries() {
+            queue.push_back(entry.target_id());
+        }
+        for (id, rec) in policy_state.cap_groups().iter() {
+            let sdk_id = soroban_sdk::String::from_str(&env, id.as_str());
+            let abs_cap = rec.cap.absolute_cap().map(|c| c as i128).unwrap_or(0);
+            groups.push_back((sdk_id, abs_cap, rec.principal as i128));
+        }
         let convert_to_shares_value = if assets <= 0 {
             0
         } else {

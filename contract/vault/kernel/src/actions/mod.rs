@@ -778,8 +778,8 @@ fn restricted_withdraw_actor(
     receiver: &Address,
 ) -> Option<RestrictionKind> {
     restrictions
-        .and_then(|r| r.is_restricted(owner, self_id))
-        .or_else(|| restrictions.and_then(|r| r.is_restricted(receiver, self_id)))
+        .and_then(|r| r.is_restricted(owner))
+        .or_else(|| restrictions.and_then(|r| r.is_restricted_allowing_self(receiver, self_id)))
 }
 
 #[inline]
@@ -1732,7 +1732,8 @@ fn enforce_restrictions(
 
 #[inline]
 fn is_globally_paused(config: &VaultConfig, restrictions: Option<&Restrictions>) -> bool {
-    config.paused || matches!(restrictions, Some(Restrictions::Paused))
+    let _ = restrictions;
+    config.paused
 }
 
 mod planning {
@@ -1872,14 +1873,14 @@ mod access {
     pub(super) fn enforce_restrictions(
         config: &VaultConfig,
         restrictions: Option<&Restrictions>,
-        self_id: &Address,
+        _self_id: &Address,
         actor: &Address,
     ) -> Result<(), KernelError> {
         if config.paused {
             return Err(KernelError::Restricted(RestrictionKind::Paused));
         }
         if let Some(restrictions) = restrictions {
-            if let Some(kind) = restrictions.is_restricted(actor, self_id) {
+            if let Some(kind) = restrictions.is_restricted(actor) {
                 return Err(KernelError::Restricted(kind));
             }
         }

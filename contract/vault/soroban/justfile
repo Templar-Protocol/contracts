@@ -41,6 +41,7 @@ debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runti
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
 deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
+remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
@@ -103,7 +104,7 @@ _optimize-wasm package wasm_path:
 # Build and optimize the Soroban vault WASM.
 build:
 	@echo "Building Soroban vault/governance/share-token WASMs..."
-	@cargo build --profile release-soroban --target wasm32-unknown-unknown \
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" \
 		-p templar-soroban-runtime \
 		-p templar-soroban-governance \
@@ -144,7 +145,7 @@ wasm-analyze rows="250" lines="120":
 		exit 1; \
 	fi
 	@echo "Building debug WASM for analysis..."
-	@cargo build --target wasm32-unknown-unknown \
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
 	@mkdir -p "{{wasm_analysis_dir}}"
 	@twiggy top "{{debug_wasm}}" -n "{{rows}}" > "{{wasm_analysis_dir}}/top.txt"
@@ -156,7 +157,7 @@ wasm-analyze rows="250" lines="120":
 	@echo "  {{wasm_analysis_dir}}/monos.txt"
 	@echo ""
 	@echo "Computing release/optimized WASM sizes..."
-	@cargo build --profile release-soroban --target wasm32-unknown-unknown \
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime >/dev/null
 	@if [ -d "/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib" ]; then \
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \

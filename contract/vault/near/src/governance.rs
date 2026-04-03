@@ -139,6 +139,12 @@ fn to_shared_restrictions(
     }
 }
 
+fn to_kernel_restrictions(
+    restrictions: Option<&Restrictions>,
+) -> Option<templar_vault_kernel::Restrictions> {
+    restrictions.and_then(Restrictions::to_kernel_mode)
+}
+
 #[near(serializers = [borsh])]
 pub struct Timelocks {
     sentinel_ns: TimestampNs,
@@ -229,6 +235,7 @@ pub struct Gate {
     /// Internal flag to bypass transfer gates for trusted internal flows
     /// (e.g. escrow/redemption settlement).
     bypass_share_transfer_gates: bool,
+    pub(crate) paused: bool,
     // restrictions currently in the vault
     pub(crate) restrictions: Option<Restrictions>,
 }
@@ -236,22 +243,30 @@ pub struct Gate {
 impl Gate {
     pub fn new(restrictions: Option<Restrictions>) -> Self {
         Self {
+            paused: matches!(restrictions, Some(Restrictions::Paused)),
             restrictions,
             bypass_share_transfer_gates: false,
         }
     }
 
     pub(crate) fn enforce_policy(&self, account: &AccountIdRef) {
+        if self.paused {
+            templar_common::panic_with_message(&format!("Account {account} is restricted: Paused"));
+        }
+
         if let Some(restrictions) = &self.restrictions {
             let actor = account_id_to_address(&account.to_owned());
             let self_id = account_id_to_address(&env::current_account_id());
-            let kernel_restrictions = restrictions.clone();
+            let kernel_restrictions = restrictions.to_kernel_mode();
 
-            if let Some(reason) = kernel_restrictions.is_restricted(&actor, &self_id) {
+            if let Some(reason) = kernel_restrictions
+                .as_ref()
+                .and_then(|policy| policy.is_restricted_allowing_self(&actor, &self_id))
+            {
                 let reason = match reason {
-                    RestrictionReason::Paused => "Paused",
                     RestrictionReason::Blacklisted => "Blacklisted",
                     RestrictionReason::NotWhitelisted => "NotWhitelisted",
+                    RestrictionReason::Paused => "Paused",
                 };
                 templar_common::panic_with_message(&format!(
                     "Account {account} is restricted: {reason}"
@@ -831,12 +846,17 @@ impl Contract {
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 Abdicator::require_not_abdicated(&self.abdicator, "set_restrictions");
+                let current_restrictions = self
+                    .gate
+                    .paused
+                    .then_some(Restrictions::Paused)
+                    .or_else(|| self.gate.restrictions.clone());
                 require!(
-                    restrictions != &self.gate.restrictions,
+                    restrictions != &current_restrictions,
                     "No restriction changes"
                 );
 
-                let current = to_shared_restrictions(self.gate.restrictions.as_ref());
+                let current = to_shared_restrictions(current_restrictions.as_ref());
                 let proposed = to_shared_restrictions(restrictions.as_ref());
                 let is_relaxing = shared_gov::Restrictions::determine_relaxed(&current, &proposed);
 
@@ -1117,17 +1137,26 @@ impl Contract {
                     Event::RestrictionsChangeRevoked.emit();
                 }
 
+                let current_restrictions = self
+                    .gate
+                    .paused
+                    .then_some(Restrictions::Paused)
+                    .or_else(|| self.gate.restrictions.clone());
+
                 require!(
-                    restrictions != &self.gate.restrictions,
+                    restrictions != &current_restrictions,
                     "No restriction changes"
                 );
 
-                self.gate.restrictions.clone_from(restrictions);
+                self.gate.paused = matches!(restrictions, Some(Restrictions::Paused));
+                self.gate.restrictions = restrictions
+                    .clone()
+                    .filter(|restriction| !matches!(restriction, Restrictions::Paused));
                 Event::RestrictionsSet {
                     restrictions: restrictions.clone(),
                 }
                 .emit();
-                self.apply_kernel_pause(matches!(restrictions, Some(Restrictions::Paused)));
+                self.apply_kernel_pause(self.gate.paused);
             }
             TimelockedAction::CapChange { market, new_cap } => {
                 let market_id = self.ensure_market_record(market);

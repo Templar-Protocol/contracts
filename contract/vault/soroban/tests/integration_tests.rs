@@ -800,7 +800,7 @@ fn test_restrictions_blacklist_blocks_deposit(mut rbac_vault: RbacVault) {
     let user = user_addr();
 
     rbac_vault
-        .set_restrictions(sentinel, Some(Restrictions::Blacklist(vec![user])))
+        .set_restrictions(sentinel, Some(Restrictions::blacklist(vec![user])))
         .unwrap();
 
     let result = rbac_vault.deposit(user, user, 1000, 0, 100);

@@ -35,7 +35,6 @@ use alloc::string::String as AllocString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
-use core::num::NonZeroU128;
 pub(crate) use helpers::*;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,

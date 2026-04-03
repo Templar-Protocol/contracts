@@ -11,7 +11,7 @@ use super::cap_group::{CapGroupError, CapGroupId, CapGroupRecord};
 use super::market_lock::MarketLeaseRegistry;
 use super::supply_queue::{SupplyQueue, SupplyQueueError};
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct OrderedMap<K, V> {
     entries: Vec<(K, V)>,
@@ -366,10 +366,9 @@ impl PolicyState {
     /// Compute total external assets from all principals.
     #[must_use]
     pub fn external_assets(&self) -> u128 {
-        self.principals.values().fold(0u128, |acc, p| {
-            acc.checked_add(*p)
-                .expect("policy principal total overflow")
-        })
+        self.principals
+            .values()
+            .fold(0u128, |acc, p| acc.checked_add(*p).unwrap())
     }
 
     /// Compute principal totals per cap group.
@@ -389,9 +388,7 @@ impl PolicyState {
                 .iter_mut()
                 .find(|(existing_group_id, _)| *existing_group_id == group_id)
             {
-                *sum = sum
-                    .checked_add(principal)
-                    .expect("cap group principal overflow");
+                *sum = sum.checked_add(principal).unwrap();
             } else {
                 totals.push((group_id, principal));
             }
@@ -410,10 +407,7 @@ impl PolicyState {
 
     pub fn set_cap_group_absolute_cap(&mut self, cap_group_id: CapGroupId, new_cap: Option<u128>) {
         self.ensure_cap_group(cap_group_id.clone());
-        let record = self
-            .cap_groups
-            .get_mut(&cap_group_id)
-            .expect("cap group must exist after ensure_cap_group");
+        let record = self.cap_groups.get_mut(&cap_group_id).unwrap();
         record.cap.set_absolute_cap(new_cap);
     }
 
@@ -423,10 +417,7 @@ impl PolicyState {
         new_relative_cap: Option<templar_vault_kernel::Wad>,
     ) {
         self.ensure_cap_group(cap_group_id.clone());
-        let record = self
-            .cap_groups
-            .get_mut(&cap_group_id)
-            .expect("cap group must exist after ensure_cap_group");
+        let record = self.cap_groups.get_mut(&cap_group_id).unwrap();
         record.cap.set_relative_cap(new_relative_cap);
     }
 
@@ -541,8 +532,7 @@ impl From<PolicyStateError> for CapGroupError {
             | PolicyStateError::SupplyQueueDisabledMarket { target_id: _ }
             | PolicyStateError::SupplyQueueUnauthorizedMarket { target_id: _ } => {
                 Self::InconsistentRecord {
-                    id: CapGroupId::try_from("policy-state")
-                        .expect("policy-state must be a valid cap group id"),
+                    id: CapGroupId::policy_state_sentinel(),
                 }
             }
         }
