@@ -6,7 +6,7 @@ use rstest::{fixture, rstest};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Env,
+    Bytes, Env,
 };
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
@@ -17,7 +17,9 @@ use templar_soroban_runtime::{
     EffectInterpreter,
     Storage, // Import the trait
 };
-use templar_soroban_shared_types::GovernanceConfigKind;
+use templar_soroban_shared_types::{
+    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+};
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
@@ -36,6 +38,10 @@ use templar_vault_kernel::{
 
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
+
+fn sdk_text(address: &soroban_sdk::Address) -> alloc::string::String {
+    alloc::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+}
 
 type ProxyCoreView = (
     (
@@ -162,6 +168,26 @@ impl<'a> VaultProxy<'a> {
             .view(soroban_sdk::Address::generate(self.env), assets, 0)?
             .2
              .7)
+    }
+
+    fn execute(
+        &self,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+        let payload = Bytes::from_slice(self.env, &command.encode());
+        let result = SorobanVaultContract::execute(self.env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+    }
+
+    fn execute_unit(
+        &self,
+        command: &VaultCommand,
+    ) -> Result<(), templar_soroban_runtime::ContractError> {
+        match self.execute(command)? {
+            VaultCommandResult::Unit => Ok(()),
+            _ => Err(templar_soroban_runtime::ContractError::InvalidInput),
+        }
     }
 }
 
@@ -346,16 +372,17 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
 
     env.as_contract(&contract_id, || {
         let governance = proxy.governance().unwrap();
-        SorobanVaultContract::set_governance_config(
-            env.clone(),
-            governance,
-            GovernanceConfigKind::VirtualOffsets,
-            None,
-            None,
-            Some(virtual_shares as i128),
-            Some(virtual_assets as i128),
-        )
-        .unwrap();
+        let result = proxy
+            .execute(&VaultCommand::SetGovernanceConfig {
+                caller: sdk_text(&governance),
+                kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                primary: None,
+                many: None,
+                value_a: Some(virtual_shares as i128),
+                value_b: Some(virtual_assets as i128),
+            })
+            .unwrap();
+        assert_eq!(result, VaultCommandResult::Unit);
 
         let mut storage = SorobanStorage::new(&env);
         let state = VaultState {
@@ -484,7 +511,9 @@ fn soroban_contract_execute_withdraw_queue_empty_errors(
     let user = soroban_sdk::Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_text(&user),
+        });
         assert!(result.is_err());
     });
 }
@@ -513,7 +542,9 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     });
 
     env.as_contract(&contract_id, || {
-        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_text(&user),
+        });
         assert!(result.is_err());
     });
 }
@@ -546,9 +577,7 @@ fn create_rbac_vault() -> RbacVault {
     let mut vault = CuratorVault::new(
         test_config(),
         MemoryStorage::new(),
-        RbacAuth {
-            config: rbac_config,
-        },
+        RbacAuth::new(rbac_config),
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
@@ -1485,6 +1514,7 @@ fn test_withdrawal_transition_flow_reaches_idle(
 
     let request = WithdrawalRequest {
         op_id,
+        request_id: 7,
         amount: 150,
         receiver: Address([6u8; 32]),
         owner: Address([5u8; 32]),
@@ -1589,7 +1619,9 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
     assert_eq!(external_assets_after, 0);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::resync_idle_balance(env.clone()).unwrap();
+        proxy
+            .execute_unit(&VaultCommand::ResyncIdleBalance)
+            .unwrap();
     });
 
     let total_assets_final = env.as_contract(&contract_id, || proxy.total_assets().unwrap());
