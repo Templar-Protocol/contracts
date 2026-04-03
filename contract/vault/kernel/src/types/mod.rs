@@ -85,7 +85,7 @@ pub struct ActualIdx(pub u32);
 /// Canonical address bytes.
 /// Executors map chain-native account identifiers to this form (sha256 hash).
 #[repr(transparent)]
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde, postcard, schemars)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
 pub struct Address(pub [u8; 32]);
 
@@ -110,6 +110,68 @@ impl AsRef<[u8; 32]> for Address {
 impl AsRef<[u8]> for Address {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+#[cfg(feature = "postcard")]
+mod address_postcard_serde_impl {
+    use super::*;
+    #[cfg(not(feature = "soroban"))]
+    use serde::de;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    impl Serialize for Address {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            #[cfg(feature = "soroban")]
+            {
+                return self.0.serialize(serializer);
+            }
+
+            #[cfg(not(feature = "soroban"))]
+            {
+                serializer.serialize_bytes(&self.0)
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Address {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            #[cfg(feature = "soroban")]
+            {
+                return <[u8; 32]>::deserialize(deserializer).map(Address);
+            }
+
+            #[cfg(not(feature = "soroban"))]
+            {
+                struct AddressVisitor;
+
+                impl<'de> de::Visitor<'de> for AddressVisitor {
+                    type Value = Address;
+
+                    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                        formatter.write_str("exactly 32 bytes for Address")
+                    }
+
+                    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        let bytes: [u8; 32] = v
+                            .try_into()
+                            .map_err(|_| E::custom("expected exactly 32 bytes for Address"))?;
+                        Ok(Address(bytes))
+                    }
+                }
+
+                deserializer.deserialize_bytes(AddressVisitor)
+            }
+        }
     }
 }
 

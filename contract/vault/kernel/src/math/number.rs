@@ -68,22 +68,30 @@ mod serde_impl {
 #[cfg(feature = "postcard")]
 mod postcard_serde_impl {
     use super::*;
-    use alloc::string::ToString;
-    use core::fmt;
-    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+    #[cfg(not(feature = "soroban"))]
+    use serde::de;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     impl Serialize for Number {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
-            if serializer.is_human_readable() {
-                return serializer.serialize_str(&self.0.to_string());
+            #[cfg(feature = "soroban")]
+            {
+                return Number::as_u128_if_fits(self.0)
+                    .ok_or_else(|| {
+                        serde::ser::Error::custom("Number exceeds u128 for Soroban postcard")
+                    })
+                    .and_then(|value| serializer.serialize_u128(value));
             }
 
-            let mut bytes = [0u8; 32];
-            self.0.write_as_little_endian(&mut bytes);
-            serializer.serialize_bytes(&bytes)
+            #[cfg(not(feature = "soroban"))]
+            {
+                let mut bytes = [0u8; 32];
+                self.0.write_as_little_endian(&mut bytes);
+                serializer.serialize_bytes(&bytes)
+            }
         }
     }
 
@@ -92,53 +100,33 @@ mod postcard_serde_impl {
         where
             D: Deserializer<'de>,
         {
-            struct NumberVisitor;
-
-            impl<'de> de::Visitor<'de> for NumberVisitor {
-                type Value = Number;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                    formatter.write_str(
-                        "a decimal string representing a U256 or 32 bytes little-endian U256",
-                    )
-                }
-
-                fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    U256::from_dec_str(v)
-                        .map(Number)
-                        .map_err(|_| E::custom("invalid decimal string for U256"))
-                }
-
-                fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    if v.len() != 32 {
-                        return Err(E::custom("expected exactly 32 bytes for U256"));
-                    }
-                    Ok(Number(U256::from_little_endian(v)))
-                }
-
-                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: de::SeqAccess<'de>,
-                {
-                    let mut bytes = [0u8; 32];
-                    for (i, byte) in bytes.iter_mut().enumerate() {
-                        *byte = seq
-                            .next_element()?
-                            .ok_or_else(|| de::Error::invalid_length(i, &self))?;
-                    }
-                    Ok(Number(U256::from_little_endian(&bytes)))
-                }
+            #[cfg(feature = "soroban")]
+            {
+                return u128::deserialize(deserializer).map(Number::from);
             }
 
-            if deserializer.is_human_readable() {
-                deserializer.deserialize_str(NumberVisitor)
-            } else {
+            #[cfg(not(feature = "soroban"))]
+            {
+                struct NumberVisitor;
+
+                impl<'de> de::Visitor<'de> for NumberVisitor {
+                    type Value = Number;
+
+                    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                        formatter.write_str("exactly 32 bytes for little-endian U256")
+                    }
+
+                    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: de::Error,
+                    {
+                        if v.len() != 32 {
+                            return Err(E::custom("expected exactly 32 bytes for U256"));
+                        }
+                        Ok(Number(U256::from_little_endian(v)))
+                    }
+                }
+
                 deserializer.deserialize_bytes(NumberVisitor)
             }
         }

@@ -19,6 +19,24 @@ pub(crate) fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
     Address(env.crypto().sha256(&bytes).to_bytes().to_array())
 }
 
+pub(crate) fn address_from_alloc_string(
+    env: &Env,
+    value: &AllocString,
+) -> Result<SdkAddress, ContractError> {
+    Ok(SdkAddress::from_str(env, value))
+}
+
+pub(crate) fn addresses_from_alloc_strings(
+    env: &Env,
+    values: &[AllocString],
+) -> Result<soroban_sdk::Vec<SdkAddress>, ContractError> {
+    let mut result = soroban_sdk::Vec::new(env);
+    for value in values {
+        result.push_back(address_from_alloc_string(env, value)?);
+    }
+    Ok(result)
+}
+
 fn is_contract_address(addr: &SdkAddress) -> bool {
     let bytes = addr.to_string().to_bytes();
     matches!(bytes.get(0), Some(b'C'))
@@ -44,11 +62,76 @@ fn load_policy_state(env: &Env) -> Result<PolicyState, ContractError> {
 }
 
 fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
-    postcard::to_allocvec(fees).map_err(|_| RuntimeError::storage_error("fees serialize failed"))
+    let mut bytes = Vec::with_capacity(96);
+    bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+    bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+    bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+    bytes.extend_from_slice(fees.management.recipient.as_bytes());
+    match fees.max_total_assets_growth_rate {
+        Some(value) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&value.as_u128_trunc().to_le_bytes());
+        }
+        None => bytes.push(0),
+    }
+    Ok(bytes)
 }
 
 fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
-    postcard::from_bytes(bytes).map_err(|_| RuntimeError::storage_error("fees deserialize failed"))
+    const FIXED_LEN_NO_GROWTH: usize = 81;
+    const FIXED_LEN_WITH_GROWTH: usize = 97;
+
+    if bytes.len() != FIXED_LEN_NO_GROWTH && bytes.len() != FIXED_LEN_WITH_GROWTH {
+        return Err(RuntimeError::storage_error("fees deserialize failed"));
+    }
+
+    let mut cursor = 0usize;
+    let read_u128 = |cursor: &mut usize| -> Result<u128, RuntimeError> {
+        let end = *cursor + 16;
+        let raw = bytes
+            .get(*cursor..end)
+            .ok_or_else(|| RuntimeError::storage_error("fees deserialize failed"))?;
+        let mut array = [0u8; 16];
+        array.copy_from_slice(raw);
+        *cursor = end;
+        Ok(u128::from_le_bytes(array))
+    };
+    let read_address = |cursor: &mut usize| -> Result<Address, RuntimeError> {
+        let end = *cursor + 32;
+        let raw = bytes
+            .get(*cursor..end)
+            .ok_or_else(|| RuntimeError::storage_error("fees deserialize failed"))?;
+        let mut array = [0u8; 32];
+        array.copy_from_slice(raw);
+        *cursor = end;
+        Ok(Address(array))
+    };
+
+    let performance = FeeSlot::new(
+        Wad::from(read_u128(&mut cursor)?),
+        read_address(&mut cursor)?,
+    );
+    let management = FeeSlot::new(
+        Wad::from(read_u128(&mut cursor)?),
+        read_address(&mut cursor)?,
+    );
+    let max_total_assets_growth_rate = match *bytes
+        .get(cursor)
+        .ok_or_else(|| RuntimeError::storage_error("fees deserialize failed"))?
+    {
+        0 => None,
+        1 => {
+            cursor += 1;
+            Some(Wad::from(read_u128(&mut cursor)?))
+        }
+        _ => return Err(RuntimeError::storage_error("fees deserialize failed")),
+    };
+
+    Ok(FeesSpec::new(
+        performance,
+        management,
+        max_total_assets_growth_rate,
+    ))
 }
 
 pub(crate) fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
