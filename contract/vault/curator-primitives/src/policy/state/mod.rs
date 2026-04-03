@@ -9,7 +9,7 @@ use templar_vault_kernel::TargetId;
 
 use super::cap_group::{CapGroupError, CapGroupId, CapGroupRecord};
 use super::market_lock::MarketLeaseRegistry;
-use super::supply_queue::SupplyQueue;
+use super::supply_queue::{SupplyQueue, SupplyQueueError};
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
@@ -172,6 +172,7 @@ pub enum PolicyStateError {
     UnknownMarket { target_id: TargetId },
     UnknownCapGroup { id: CapGroupId },
     PrincipalOverflow { target_id: TargetId },
+    InvalidSupplyQueue { source: SupplyQueueError },
 }
 
 impl PolicyState {
@@ -189,6 +190,10 @@ impl PolicyState {
             supply_queue,
             leases,
         };
+        state
+            .supply_queue
+            .validate()
+            .map_err(|source| PolicyStateError::InvalidSupplyQueue { source })?;
         state.initialize_missing_principals();
         state.recompute_cap_group_principals()?;
         Ok(state)
@@ -234,8 +239,15 @@ impl PolicyState {
         self.cap_groups.get(cap_group_id)
     }
 
-    pub fn replace_supply_queue(&mut self, supply_queue: SupplyQueue) {
+    pub fn replace_supply_queue(
+        &mut self,
+        supply_queue: SupplyQueue,
+    ) -> Result<(), PolicyStateError> {
+        supply_queue
+            .validate()
+            .map_err(|source| PolicyStateError::InvalidSupplyQueue { source })?;
         self.supply_queue = supply_queue;
+        Ok(())
     }
 
     pub fn set_market_config(
