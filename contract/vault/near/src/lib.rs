@@ -54,7 +54,8 @@ use templar_common::{
 };
 pub use templar_curator_primitives::rbac::Role;
 use templar_curator_primitives::{
-    determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
+    determine_recovery_action, PayoutRecoveryEvidence, PendingValue, RecoveryContext,
+    RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
@@ -526,7 +527,11 @@ impl Contract {
             }));
         }
 
-        self.market_execution_lock.lock(market);
+        self.market_execution_lock.lock(
+            market,
+            op_id.0,
+            u64::MAX.saturating_sub(env::block_timestamp()),
+        );
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
@@ -591,7 +596,11 @@ impl Contract {
         let principal = self.principal_of(market_id);
         require!(principal > 0, "No principal to withdraw");
 
-        self.market_execution_lock.lock(market_id);
+        self.market_execution_lock.lock(
+            market_id,
+            op_id,
+            u64::MAX.saturating_sub(env::block_timestamp()),
+        );
 
         // Use Allocating as a generic in-flight guard for this rebalancing op.
         self.next_op_id = op_id.saturating_add(1);
@@ -654,7 +663,7 @@ impl Contract {
         }
         .emit();
 
-        let kernel_plan = refresh_plan.to_target_list();
+        let kernel_plan = refresh_plan.into_targets();
         let kernel_state = idle.kernel_state_mirror();
         let kernel_config = idle.kernel_config_mirror();
         let kernel_restrictions = idle.kernel_restrictions_mirror();
@@ -754,8 +763,22 @@ impl Contract {
         let kernel_state = self.op_state.clone();
         let now = env::block_timestamp();
         let context = RecoveryContext::forced(now);
-        let progress = RecoveryProgress::new(now);
-        let Some(action) = determine_recovery_action(&kernel_state, &context, &progress) else {
+        let (progress, payout_evidence) = match &kernel_state {
+            OpState::Allocating(state) => (RecoveryProgress::new(state.op_id, now), None),
+            OpState::Withdrawing(state) => (RecoveryProgress::new(state.op_id, now), None),
+            OpState::Refreshing(state) => (RecoveryProgress::new(state.op_id, now), None),
+            OpState::Payout(state) => (
+                RecoveryProgress::new(state.op_id, now),
+                Some(PayoutRecoveryEvidence::Failure {
+                    restore_idle: state.amount,
+                }),
+            ),
+            OpState::Idle => return PromiseOrValue::Value(()),
+        };
+        let Some(action) =
+            determine_recovery_action(&kernel_state, &context, &progress, payout_evidence)
+                .unwrap_or_else(|_| None)
+        else {
             return PromiseOrValue::Value(());
         };
 
@@ -1149,7 +1172,7 @@ impl Contract {
     pub fn has_pending_market_withdrawal(&self) -> bool {
         self.market_execution_lock
             .inner()
-            .active_count(env::block_timestamp())
+            .active_len(TimestampNs(env::block_timestamp()))
             > 0
     }
 
@@ -2003,10 +2026,10 @@ impl Contract {
         }
 
         {
+            use templar_curator_primitives::find_first_duplicate;
+
             let ids: Vec<u32> = route.iter().map(IntoTargetId::into_target_id).collect();
-            if let Some(dup) =
-                templar_curator_primitives::policy::target_set::find_duplicate_target_id(&ids)
-            {
+            if let Some(dup) = find_first_duplicate(&ids) {
                 use crate::convert::IntoMarketId;
                 panic_with_message(&format!(
                     "Duplicate market in withdraw route: {}",
