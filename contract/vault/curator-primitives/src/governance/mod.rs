@@ -391,20 +391,11 @@ impl TimelockDecision {
         }
     }
 
-    /// Decide timelock behavior for optional caps where `0` (or `None`) means unlimited.
-    ///
-    /// This is intended for cap-group absolute caps, where moving from unlimited to a finite
-    /// cap tightens policy and should be immediate, while moving from finite to unlimited
-    /// relaxes policy and should be timelocked.
     pub fn from_cap_group_cap_change(
         current: Option<u128>,
-        proposed: u128,
+        proposed: Option<u128>,
     ) -> Result<Self, CapChangeError> {
-        let normalize = |cap: Option<u128>| cap.and_then(core::num::NonZeroU128::new);
-        let current_cap = normalize(current);
-        let proposed_cap = core::num::NonZeroU128::new(proposed);
-
-        match (current_cap, proposed_cap) {
+        match (current, proposed) {
             (None, None) => Err(CapChangeError::NoChange),
             (None, Some(_)) => Ok(Self::Immediate),
             (Some(_), None) => Ok(Self::Timelocked),
@@ -416,17 +407,23 @@ impl TimelockDecision {
 
     pub fn from_relative_cap_change(
         current: Option<Wad>,
-        proposed: Wad,
+        proposed: Option<Wad>,
     ) -> Result<Self, RelativeCapChangeError> {
-        if proposed > Wad::one() {
-            return Err(RelativeCapChangeError::RelativeCapTooHigh);
+        if let Some(proposed) = proposed {
+            if proposed > Wad::one() {
+                return Err(RelativeCapChangeError::RelativeCapTooHigh);
+            }
         }
 
-        match current {
-            Some(existing) if proposed == existing => Err(RelativeCapChangeError::NoChange),
-            Some(existing) if proposed > existing => Ok(Self::Timelocked),
-            Some(_) => Ok(Self::Immediate),
-            None => Ok(Self::Timelocked),
+        match (current, proposed) {
+            (None, None) => Err(RelativeCapChangeError::NoChange),
+            (None, Some(_)) => Ok(Self::Timelocked),
+            (Some(_), None) => Ok(Self::Immediate),
+            (Some(existing), Some(next)) if next == existing => {
+                Err(RelativeCapChangeError::NoChange)
+            }
+            (Some(existing), Some(next)) if next > existing => Ok(Self::Timelocked),
+            (Some(_), Some(_)) => Ok(Self::Immediate),
         }
     }
 

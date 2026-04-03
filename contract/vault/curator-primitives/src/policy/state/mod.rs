@@ -541,7 +541,8 @@ impl From<PolicyStateError> for CapGroupError {
             | PolicyStateError::SupplyQueueDisabledMarket { target_id: _ }
             | PolicyStateError::SupplyQueueUnauthorizedMarket { target_id: _ } => {
                 Self::InconsistentRecord {
-                    id: "policy-state".into(),
+                    id: CapGroupId::try_from("policy-state")
+                        .expect("policy-state must be a valid cap group id"),
                 }
             }
         }
