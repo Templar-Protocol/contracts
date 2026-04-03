@@ -5,10 +5,7 @@ use near_sdk::{
 
 use crate::number::Decimal;
 
-use super::{
-    pyth::{self, PriceIdentifier},
-    OracleRequest,
-};
+use super::pyth::{self, PriceIdentifier};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -101,24 +98,6 @@ impl PriceTransformer {
     pub fn lst(price_id: PriceIdentifier, decimals: u32, call: Call) -> Self {
         Self {
             price_id,
-            call,
-            action: Action::NormalizeNativeLstPrice { decimals },
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct ProxyPriceTransformer {
-    pub request: OracleRequest,
-    pub call: Call,
-    pub action: Action,
-}
-
-impl ProxyPriceTransformer {
-    pub fn lst(price_id: OracleRequest, decimals: u32, call: Call) -> Self {
-        Self {
-            request: price_id,
             call,
             action: Action::NormalizeNativeLstPrice { decimals },
         }

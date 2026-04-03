@@ -87,10 +87,10 @@ impl<'a> CallbackHandler<'a> {
             .and_then(|p| p.to_pyth_price())
     }
 
-    pub fn get(&self, request: OracleRequest) -> Option<pyth::Price> {
+    pub fn get(&self, request: &OracleRequest) -> Option<pyth::Price> {
         let price = match request {
-            OracleRequest::Pyth(p) => self.pyth(&p),
-            OracleRequest::RedStone(p) => self.redstone(&p),
+            OracleRequest::Pyth(p) => self.pyth(p),
+            OracleRequest::RedStone(p) => self.redstone(p),
         }?;
 
         // Filter for staleness

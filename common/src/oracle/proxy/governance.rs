@@ -4,7 +4,7 @@ use crate::{
     gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, time::Nanoseconds,
 };
 
-use super::Proxy;
+use super::{aggregator::method::AggregationMethod, Proxy};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -26,7 +26,7 @@ impl Validatable for Operation {
         match self {
             Operation::SetProxy {
                 proxy: Some(proxy), ..
-            } if proxy.entries.is_empty() => Err(ValidationError::EmptyProxyDefinition),
+            } if proxy.sources().is_empty() => Err(ValidationError::EmptyProxyDefinition),
             _ => Ok(()),
         }
     }

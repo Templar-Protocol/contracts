@@ -1,75 +1,71 @@
+pub mod aggregator;
+pub mod governance;
+
 use near_sdk::near;
 
 use crate::time::Nanoseconds;
 
-use super::{price_transformer::ProxyPriceTransformer, OracleRequest};
+use aggregator::{
+    filter::Filter,
+    method::{
+        median_low::{MedianHigh, MedianLow},
+        priority::Priority,
+        AggregationMethod,
+    },
+    source::{Source, WeightedSource},
+};
 
-pub mod aggregator;
-use aggregator::{Aggregator, Filter};
-pub mod governance;
+use super::pyth;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub struct Proxy {
-    pub aggregator: Aggregator,
-    pub entries: Vec<Entry>,
+#[serde(tag = "aggregator")]
+pub enum Proxy {
+    MedianLow(MedianLow),
+    Priority(Priority),
+    MedianHigh(MedianHigh),
 }
 
 impl Proxy {
     pub fn median_low(entries: impl IntoIterator<Item = Source>) -> Self {
-        Self {
-            aggregator: Aggregator::median_low(Filter {
-                max_age: Some(Nanoseconds::from_ms(60 * 1000)),
-                max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
-                min_sources: Some(1),
-            }),
-            entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),
-        }
+        Self::MedianLow(MedianLow::new(
+            entries.into_iter().map(|s| WeightedSource::new(s, 1)),
+            Filter::new(
+                Some(Nanoseconds::from_ms(60 * 1000)),
+                Some(Nanoseconds::from_ms(10 * 1000)),
+            ),
+        ))
     }
 
     pub fn priority(entries: impl IntoIterator<Item = Source>) -> Self {
-        Self {
-            aggregator: Aggregator::priority(Filter {
-                max_age: Some(Nanoseconds::from_ms(60 * 1000)),
-                max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
-                min_sources: Some(1),
-            }),
-            entries: entries.into_iter().map(|s| Entry::new(s, 1)).collect(),
+        Self::Priority(Priority {
+            sources: entries.into_iter().collect(),
+            filter: Filter::new(
+                Some(Nanoseconds::from_ms(60 * 1000)),
+                Some(Nanoseconds::from_ms(10 * 1000)),
+            ),
+        })
+    }
+}
+
+impl AggregationMethod for Proxy {
+    fn sources(&self) -> Vec<&Source> {
+        match self {
+            Proxy::MedianLow(inner) => inner.sources(),
+            Proxy::Priority(inner) => inner.sources(),
+            Proxy::MedianHigh(inner) => inner.sources(),
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct Entry {
-    pub source: Source,
-    pub weight: u32,
-}
-
-impl Entry {
-    pub fn new(source: impl Into<Source>, weight: u32) -> Self {
-        Self {
-            source: source.into(),
-            weight,
+    fn aggregate(
+        &self,
+        prices: &[Option<pyth::Price>],
+        now: Nanoseconds,
+    ) -> Result<pyth::Price, aggregator::method::Error> {
+        match self {
+            Proxy::MedianLow(inner) => inner.aggregate(prices, now),
+            Proxy::Priority(inner) => inner.aggregate(prices, now),
+            Proxy::MedianHigh(inner) => inner.aggregate(prices, now),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub enum Source {
-    Request(OracleRequest),
-    Transformer(ProxyPriceTransformer),
-}
-
-impl From<ProxyPriceTransformer> for Source {
-    fn from(transformer: ProxyPriceTransformer) -> Self {
-        Self::Transformer(transformer)
-    }
-}
-
-impl From<OracleRequest> for Source {
-    fn from(oracle_price: OracleRequest) -> Self {
-        Self::Request(oracle_price)
     }
 }

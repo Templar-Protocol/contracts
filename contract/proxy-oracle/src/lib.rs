@@ -12,7 +12,11 @@ use templar_common::{
     governance::Governance,
     number::Decimal,
     oracle::{
-        proxy::{governance::Operation, Proxy, Source},
+        proxy::{
+            aggregator::{method::AggregationMethod, source::Source},
+            governance::Operation,
+            Proxy,
+        },
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
         OracleRequest,
@@ -101,27 +105,27 @@ impl Contract {
 
             invoked.push((*price_id, proxy.clone()));
 
-            for entry in proxy.entries {
-                let request = match entry.source {
+            for entry in proxy.sources() {
+                let request = match entry {
                     Source::Request(request) => request,
                     Source::Transformer(transformer) => {
                         transformer_promises.push(transformer.call.promise());
-                        transformer.request
+                        &transformer.request
                     }
                 };
 
                 match request {
                     OracleRequest::Pyth(p) => {
                         pyth_requests
-                            .entry(p.oracle_id)
+                            .entry(p.oracle_id.clone())
                             .or_default()
                             .insert(p.price_id);
                     }
                     OracleRequest::RedStone(p) => {
                         redstone_requests
-                            .entry(p.oracle_id)
+                            .entry(p.oracle_id.clone())
                             .or_default()
-                            .insert(p.price_id);
+                            .insert(p.price_id.clone());
                     }
                 }
             }
@@ -175,7 +179,7 @@ impl Contract {
         max_age: Nanoseconds,
     ) -> OracleResponse {
         let callback = CallbackHandler::new(&oracle_order, max_age);
-        let mut result = OracleResponse::with_capacity(invoked.len());
+        let mut results = OracleResponse::with_capacity(invoked.len());
 
         let now = Nanoseconds::now();
 
@@ -183,10 +187,10 @@ impl Contract {
         for (price_id, proxy) in invoked {
             let mut prices = vec![];
 
-            for entry in proxy.entries {
-                let entry_result = match entry.source {
+            for entry in proxy.sources() {
+                let entry_result = match entry {
                     Source::Transformer(transformer) => {
-                        let price = callback.get(transformer.request);
+                        let price = callback.get(&transformer.request);
                         let input = callback_result::<Decimal>(i);
                         i += 1;
 
@@ -197,18 +201,19 @@ impl Contract {
                     Source::Request(p) => callback.get(p),
                 };
 
-                if let Some(entry_result) = entry_result {
-                    prices.push((entry_result, entry.weight));
-                }
+                prices.push(entry_result);
             }
 
-            result.insert(
-                price_id,
-                proxy.aggregator.aggregate(&prices, now).map(Into::into),
-            );
+            let result = proxy.aggregate(&prices, now);
+
+            if let Err(ref error) = result {
+                near_sdk::log!("Aggregation error: {error}");
+            }
+
+            results.insert(price_id, result.ok());
         }
 
-        result
+        results
     }
 }
 
