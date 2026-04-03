@@ -191,12 +191,15 @@ impl SupplyQueue {
             });
         }
 
-        self.buckets[usize::from(entry.priority())].push(entry);
-        self.len = self
-            .len
-            .checked_add(1)
+        self.push_validated_entry(entry)
             .ok_or(SupplyQueueError::LengthOverflow)?;
         Ok(())
+    }
+
+    fn push_validated_entry(&mut self, entry: SupplyQueueEntry) -> Option<()> {
+        self.buckets[usize::from(entry.priority())].push(entry);
+        self.len = self.len.checked_add(1)?;
+        Some(())
     }
 
     pub fn dequeue(&mut self) -> Result<SupplyQueueEntry, SupplyQueueError> {
@@ -257,8 +260,7 @@ impl SupplyQueue {
         let mut filtered = Self::new(self.max_length());
         for entry in self.entries() {
             if leases.is_unleased(entry.target_id(), now_ns) {
-                filtered.buckets[usize::from(entry.priority())].push(entry.clone());
-                filtered.len += 1;
+                filtered.push_validated_entry(entry.clone()).unwrap();
             }
         }
         filtered
