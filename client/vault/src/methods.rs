@@ -78,8 +78,11 @@ macro_rules! impl_vault_view_methods {
                     .into_iter()
                     .map(|(id, rec)| $crate::CapGroup {
                         id: id.into(),
-                        cap: rec.cap.absolute_cap.map(|cap| cap.get().to_string()),
-                        relative_cap: rec.cap.relative_cap.map(|cap| u128::from(cap).to_string()),
+                        cap: rec.cap.absolute_cap().map(|cap| cap.get().to_string()),
+                        relative_cap: rec
+                            .cap
+                            .relative_cap()
+                            .map(|cap| u128::from(cap).to_string()),
                         principal: rec.principal.to_string(),
                     })
                     .collect())
@@ -102,7 +105,7 @@ macro_rules! impl_vault_view_methods {
                     .into_iter()
                     .map(|p| $crate::PendingGovernanceAction {
                         action: p.value.into(),
-                        valid_at_ns: p.valid_at_ns,
+                        ready_at_ns: p.ready_at_ns,
                     })
                     .collect())
             }

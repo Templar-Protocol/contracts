@@ -19,14 +19,14 @@ use templar_vault_kernel::TimeGate;
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingValue<T> {
     pub value: T,
-    pub valid_at_ns: TimestampNs,
+    pub ready_at_ns: TimestampNs,
 }
 
 impl<T> PendingValue<T> {
     /// Returns true if the timelock has elapsed.
     #[must_use]
     pub fn is_mature(&self, now_ns: TimestampNs) -> bool {
-        TimeGate::from_ready_at(self.valid_at_ns).is_ready(now_ns)
+        TimeGate::from_ready_at(self.ready_at_ns).is_ready(now_ns)
     }
 }
 
@@ -39,18 +39,17 @@ pub enum TakePending<T> {
 }
 
 pub struct ScheduledPending<T> {
-    pub valid_at_ns: TimestampNs,
+    pub ready_at_ns: TimestampNs,
     pub replaced: Vec<T>,
 }
 
-/// Timelocked pending governance values.
 #[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq)]
-pub struct PendingQueue<T> {
+pub struct PendingActions<T> {
     entries: VecDeque<PendingValue<T>>,
 }
 
-impl<T> Default for PendingQueue<T> {
+impl<T> Default for PendingActions<T> {
     fn default() -> Self {
         Self {
             entries: VecDeque::new(),
@@ -58,7 +57,7 @@ impl<T> Default for PendingQueue<T> {
     }
 }
 
-impl<T> PendingQueue<T> {
+impl<T> PendingActions<T> {
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -78,21 +77,17 @@ impl<T> PendingQueue<T> {
         self.entries.back()
     }
 
-    pub fn push_pending(&mut self, pending: PendingValue<T>) {
-        self.entries.push_back(pending);
-    }
-
     pub fn schedule(
         &mut self,
         value: T,
         now_ns: TimestampNs,
         timelock_ns: DurationNs,
     ) -> TimestampNs {
-        let valid_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
+        let ready_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
             .ready_at_ns()
             .expect("TimeGate::schedule_from always yields a ready timestamp");
-        self.entries.push_back(PendingValue { value, valid_at_ns });
-        valid_at_ns
+        self.entries.push_back(PendingValue { value, ready_at_ns });
+        ready_at_ns
     }
 
     #[must_use]
@@ -122,8 +117,8 @@ impl<T> PendingQueue<T> {
             }
 
             next_ready_at = Some(match next_ready_at {
-                Some(current) => current.min(entry.valid_at_ns),
-                None => entry.valid_at_ns,
+                Some(current) => current.min(entry.ready_at_ns),
+                None => entry.ready_at_ns,
             });
         }
 
@@ -171,28 +166,22 @@ impl<T> PendingQueue<T> {
         timelock_ns: DurationNs,
     ) -> ScheduledPending<T> {
         let replaced = self.revoke_by_key(key, key_of);
-        let valid_at_ns = self.schedule(value, now_ns, timelock_ns);
+        let ready_at_ns = self.schedule(value, now_ns, timelock_ns);
         ScheduledPending {
-            valid_at_ns,
+            ready_at_ns,
             replaced,
         }
     }
-}
 
-impl<T> From<VecDeque<PendingValue<T>>> for PendingQueue<T> {
-    fn from(entries: VecDeque<PendingValue<T>>) -> Self {
+    #[must_use]
+    pub fn from_restored_entries(entries: VecDeque<PendingValue<T>>) -> Self {
         Self { entries }
     }
-}
 
-impl<T> From<PendingQueue<T>> for VecDeque<PendingValue<T>> {
-    fn from(queue: PendingQueue<T>) -> Self {
-        queue.entries
+    #[must_use]
+    pub fn into_entries(self) -> VecDeque<PendingValue<T>> {
+        self.entries
     }
-}
-
-pub fn submission_requires_timelock<E>(decision: Result<TimelockDecision, E>) -> Result<bool, E> {
-    decision.map(TimelockDecision::requires_timelock)
 }
 
 /// Decision on whether an action should be timelocked.

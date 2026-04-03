@@ -14,7 +14,7 @@ use templar_common::{
     vault::{RestrictionReason, Restrictions},
 };
 use templar_curator_primitives::governance as shared_gov;
-use templar_curator_primitives::governance::{PendingQueue, PendingValue, TakePending};
+use templar_curator_primitives::governance::{PendingActions, PendingValue, TakePending};
 use templar_curator_primitives::CapGroupUpdate as PrimitiveCapGroupUpdate;
 use templar_curator_primitives::CapGroupUpdateKey as PrimitiveCapGroupUpdateKey;
 use templar_vault_kernel::{Address, DurationNs};
@@ -145,7 +145,7 @@ pub struct Timelocks {
     pub timelock_config_ns: TimestampNs,
     cap_ns: TimestampNs,
     market_removal_ns: TimestampNs,
-    pending_actions: PendingQueue<TimelockedAction>,
+    pending_actions: PendingActions<TimelockedAction>,
 }
 
 impl From<TimestampNs> for Timelocks {
@@ -155,7 +155,7 @@ impl From<TimestampNs> for Timelocks {
             timelock_config_ns: ns,
             cap_ns: ns,
             market_removal_ns: ns,
-            pending_actions: PendingQueue::default(),
+            pending_actions: PendingActions::default(),
         }
     }
 }
@@ -172,7 +172,7 @@ impl Timelocks {
             timelock_config_ns,
             cap_ns,
             market_removal_ns,
-            pending_actions: PendingQueue::default(),
+            pending_actions: PendingActions::default(),
         }
     }
 
@@ -527,10 +527,10 @@ impl Contract {
             },
             PrimitiveCapGroupUpdate::SetRelativeCap {
                 cap_group_id,
-                new_relative_cap_wad,
+                new_relative_cap,
             } => TimelockedAction::CapGroupRelativeCapChange {
                 cap_group: cap_group_id,
-                new_relative_cap: U128(new_relative_cap_wad),
+                new_relative_cap: U128(new_relative_cap.map_or(0, u128::from)),
             },
             PrimitiveCapGroupUpdate::SetMembership {
                 market_id,
@@ -779,12 +779,13 @@ impl Contract {
                     }
                 };
 
-                shared_gov::submission_requires_timelock(shared_gov::timelock_config_decision(
+                shared_gov::timelock_config_decision(
                     DurationNs::from(current),
                     DurationNs(new),
                     DurationNs(MIN_TIMELOCK_NS),
                     DurationNs(MAX_TIMELOCK_NS),
-                ))
+                )
+                .map(shared_gov::TimelockDecision::requires_timelock)
                 .unwrap_or_else(|err| {
                     panic_with_message(match err {
                         shared_gov::TimelockConfigError::NoChange => ERR_TIMELOCK_NO_CHANGE,
@@ -873,10 +874,9 @@ impl Contract {
                         cfg.removable_at == TimestampNs::ZERO,
                         "Market removal pending, cannot change cap"
                     );
-                    shared_gov::submission_requires_timelock(
-                        shared_gov::TimelockDecision::from_cap_change(Some(cfg.cap.0), new_cap.0),
-                    )
-                    .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
+                    shared_gov::TimelockDecision::from_cap_change(Some(cfg.cap.0), new_cap.0)
+                        .map(shared_gov::TimelockDecision::requires_timelock)
+                        .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
                 } else {
                     true
                 }
@@ -890,10 +890,9 @@ impl Contract {
                     .cap_groups
                     .get(cap_group)
                     .map(templar_curator_primitives::cap_group_record_absolute_cap);
-                shared_gov::submission_requires_timelock(
-                    shared_gov::TimelockDecision::from_cap_group_cap_change(current, new_cap.0),
-                )
-                .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
+                shared_gov::TimelockDecision::from_cap_group_cap_change(current, new_cap.0)
+                    .map(shared_gov::TimelockDecision::requires_timelock)
+                    .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
             }
             TimelockedAction::CapGroupRelativeCapChange {
                 cap_group,
@@ -909,17 +908,18 @@ impl Contract {
                     .cap_groups
                     .get(cap_group)
                     .map(templar_curator_primitives::cap_group_record_relative_cap);
-                shared_gov::submission_requires_timelock(
-                    shared_gov::TimelockDecision::from_relative_cap_change(current, new_wad),
-                )
-                .unwrap_or_else(|err| {
-                    panic_with_message(match err {
-                        shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
-                            ERR_RELATIVE_CAP_TOO_HIGH
-                        }
-                        shared_gov::RelativeCapChangeError::NoChange => ERR_RELATIVE_CAP_NO_CHANGE,
+                shared_gov::TimelockDecision::from_relative_cap_change(current, new_wad)
+                    .map(shared_gov::TimelockDecision::requires_timelock)
+                    .unwrap_or_else(|err| {
+                        panic_with_message(match err {
+                            shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
+                                ERR_RELATIVE_CAP_TOO_HIGH
+                            }
+                            shared_gov::RelativeCapChangeError::NoChange => {
+                                ERR_RELATIVE_CAP_NO_CHANGE
+                            }
+                        })
                     })
-                })
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 AuthPattern::CuratorOrOwner.require();
@@ -928,12 +928,11 @@ impl Contract {
 
                 let rec = self.market_record_by_id_or_panic(*market);
 
-                let decision = shared_gov::submission_requires_timelock(
-                    shared_gov::TimelockDecision::from_membership_assignment_change(
-                        rec.cfg.cap_group_id.as_ref(),
-                        cap_group.as_ref(),
-                    ),
+                let decision = shared_gov::TimelockDecision::from_membership_assignment_change(
+                    rec.cfg.cap_group_id.as_ref(),
+                    cap_group.as_ref(),
                 )
+                .map(shared_gov::TimelockDecision::requires_timelock)
                 .unwrap_or_else(|_| panic_with_message(ERR_MEMBERSHIP_NO_CHANGE));
 
                 decision
@@ -1267,13 +1266,13 @@ impl Contract {
                 now_ns,
                 DurationNs::from(cur),
             );
-        let valid_at_ns = scheduled.valid_at_ns;
+        let ready_at_ns = scheduled.ready_at_ns;
 
         if let TimelockedAction::CapGroupChange { cap_group, new_cap } = action {
             Event::CapGroupRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_cap: *new_cap,
-                valid_at_ns: u64::from(valid_at_ns).into(),
+                valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();
         }
@@ -1286,7 +1285,7 @@ impl Contract {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
                 new_relative_cap: *new_relative_cap,
-                valid_at_ns: u64::from(valid_at_ns).into(),
+                valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();
         }
@@ -1294,7 +1293,7 @@ impl Contract {
         if let TimelockedAction::FeesChange { fees } = action {
             Event::FeesChangeSubmitted {
                 fees: fees.clone(),
-                valid_at_ns: u64::from(valid_at_ns).into(),
+                valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();
         }
@@ -1302,13 +1301,13 @@ impl Contract {
         if let TimelockedAction::RestrictionsChange { restrictions } = action {
             Event::RestrictionsChangeSubmitted {
                 restrictions: restrictions.clone(),
-                valid_at_ns: u64::from(valid_at_ns).into(),
+                valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();
         }
 
         Event::TimelockChangeSubmitted {
-            valid_at_ns: u64::from(valid_at_ns).into(),
+            valid_at_ns: u64::from(ready_at_ns).into(),
         }
         .emit();
     }
