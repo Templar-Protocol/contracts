@@ -857,6 +857,7 @@ impl Contract {
 
         if next_index as usize >= next_plan.len() {
             let report = self.build_real_assets_report();
+            self.last_refresh_ns = u64::from(report.refreshed_at);
             Event::RefreshCompleted {
                 op_id: op_id.into(),
                 markets: next_plan.into_iter().map(MarketId::from).collect(),

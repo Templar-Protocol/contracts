@@ -1526,14 +1526,17 @@ fn refresh_markets_updates_principals_and_emits_events() {
     let op_id = c.next_op_id;
     let _ = c.refresh_markets(vec![]);
     assert!(matches!(c.op_state, OpState::Refreshing(_)));
+    assert_eq!(c.last_refresh_ns, 0);
 
     let pos1 = SupplyPosition::new(0);
     let _ = c.refresh_01_settle(Ok(Some(pos1)), m1_id, op_id, 0, U128(10));
+    assert_eq!(c.last_refresh_ns, 0);
 
     let pos2 = SupplyPosition::new(0);
     let res = c.refresh_01_settle(Ok(Some(pos2)), m2_id, op_id, 1, U128(20));
     if let PromiseOrValue::Value(report) = res {
         assert_eq!(report.total_assets, c.get_total_assets());
+        assert_eq!(c.last_refresh_ns, u64::from(report.refreshed_at));
     }
     assert!(matches!(c.op_state, OpState::Idle));
 
@@ -1643,6 +1646,79 @@ fn refresh_markets_throttles_without_time_advance() {
         Some(near_sdk::Gas::from_tgas(300)),
     );
     c.refresh_markets(vec![market_id]).detach();
+}
+
+#[test]
+fn refresh_markets_does_not_consume_cooldown_before_completion() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let market_id = c.insert_market_for_tests(mk(7004), MarketConfiguration::default(), 0);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![market_id]);
+    assert_eq!(c.last_refresh_ns, 0);
+
+    let ignored = c.refresh_01_settle(
+        Ok(Some(SupplyPosition::new(0))),
+        market_id,
+        op_id,
+        99,
+        U128(0),
+    );
+    assert!(matches!(ignored, PromiseOrValue::Value(_)));
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.last_refresh_ns, 0);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let _ = c.refresh_markets(vec![market_id]);
+    assert!(matches!(c.op_state, OpState::Refreshing(_)));
+}
+
+#[test]
+fn refresh_markets_with_no_targets_stamps_completion_timestamp() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let result = c.refresh_markets(vec![]);
+
+    let PromiseOrValue::Value(report) = result else {
+        panic!("expected immediate refresh completion");
+    };
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.last_refresh_ns, u64::from(report.refreshed_at));
 }
 
 #[test]
