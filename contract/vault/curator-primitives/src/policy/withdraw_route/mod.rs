@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
-use super::target_set::find_first_duplicate;
+use super::{market_lock::MarketLockSet, target_set::find_first_duplicate};
 
 /// An entry in a withdraw route.
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
@@ -152,6 +152,41 @@ impl WithdrawRoute {
     pub fn has_target(&self, target_id: TargetId) -> bool {
         self.entries.iter().any(|e| e.target_id == target_id)
     }
+
+    pub fn excluding_locked(
+        &self,
+        locks: &MarketLockSet,
+        current_ns: u64,
+    ) -> Result<Self, WithdrawRouteError> {
+        self.validate()?;
+
+        let filtered = Self::from_entries(
+            self.entries
+                .iter()
+                .filter(|entry| locks.is_unlocked(entry.target_id, current_ns))
+                .cloned()
+                .collect(),
+            self.target_amount,
+        );
+
+        filtered
+            .validate()
+            .map_err(|source| WithdrawRouteError::LockedTargetsExcluded {
+                source: alloc::boxed::Box::new(source),
+            })?;
+
+        Ok(filtered)
+    }
+
+    pub fn to_withdrawal_plan_excluding_locked(
+        &self,
+        locks: &MarketLockSet,
+        current_ns: u64,
+    ) -> Result<Vec<(TargetId, u128)>, WithdrawRouteError> {
+        Ok(self
+            .excluding_locked(locks, current_ns)?
+            .to_withdrawal_plan())
+    }
 }
 
 impl From<(Vec<WithdrawRouteEntry>, u128)> for WithdrawRoute {
@@ -179,6 +214,9 @@ pub enum WithdrawRouteError {
     ZeroMaxAmount { target_id: TargetId },
     /// Route arithmetic overflowed while summing amounts.
     AmountOverflow,
+    LockedTargetsExcluded {
+        source: alloc::boxed::Box<WithdrawRouteError>,
+    },
 }
 
 fn checked_total_amount<I>(amounts: I) -> Result<u128, WithdrawRouteError>

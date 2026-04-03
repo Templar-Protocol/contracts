@@ -2085,28 +2085,27 @@ mod policy_lock_filter_tests {
     }
 
     #[rstest::rstest]
-    fn filters_unlocked_targets(lock_set_target_2: MarketLockSet) {
+    fn filters_targets(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
         let targets = vec![1, 2, 3];
-        assert_eq!(
-            lock_set.filter_unlocked_targets(&targets, 1_500),
-            vec![1, 3]
-        );
+        assert_eq!(lock_set.filter_targets(&targets, 1_500), vec![1, 3]);
     }
 
     #[rstest::rstest]
-    fn filters_allocation_plan(lock_set_target_2: MarketLockSet) {
+    fn filters_partial_allocation_plan(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
         let plan = vec![(1, 10), (2, 20), (3, 30)];
 
         assert_eq!(
-            lock_set.filter_allocation_plan(&plan, 1_500),
+            SupplyQueue::filter_partial_allocation_plan(&plan, &lock_set, 1_500),
             vec![(1, 10), (3, 30)]
         );
     }
 
     #[rstest::rstest]
-    fn filters_supply_queue_and_preserves_max_length(lock_set_target_2: MarketLockSet) {
+    fn excludes_locked_supply_queue_entries_and_preserves_max_length(
+        lock_set_target_2: MarketLockSet,
+    ) {
         let lock_set = lock_set_target_2;
         let queue = SupplyQueue {
             entries: vec![
@@ -2117,7 +2116,7 @@ mod policy_lock_filter_tests {
             max_length: 16,
         };
 
-        let filtered = lock_set.filter_supply_queue(&queue, 1_500);
+        let filtered = queue.excluding_locked(&lock_set, 1_500);
 
         assert_eq!(filtered.max_length, 16);
         assert_eq!(filtered.entries.len(), 2);
@@ -2126,7 +2125,7 @@ mod policy_lock_filter_tests {
     }
 
     #[rstest::rstest]
-    fn filters_withdraw_route_and_preserves_target_amount(lock_set_target_1: MarketLockSet) {
+    fn excluding_locked_targets_can_invalidate_withdraw_route(lock_set_target_1: MarketLockSet) {
         let lock_set = lock_set_target_1;
         let route = WithdrawRoute::from_entries(
             vec![
@@ -2136,19 +2135,20 @@ mod policy_lock_filter_tests {
             250,
         );
 
-        let filtered = lock_set.filter_withdraw_route(&route, 1_500);
+        let filtered = route.excluding_locked(&lock_set, 1_500);
 
         assert!(matches!(
             filtered,
-            Err(WithdrawRouteError::InsufficientRouteTotal {
-                route_total: 200,
-                target_amount: 250,
-            })
+            Err(WithdrawRouteError::LockedTargetsExcluded { source })
+                if matches!(*source, WithdrawRouteError::InsufficientRouteTotal {
+                    route_total: 200,
+                    target_amount: 250,
+                })
         ));
     }
 
     #[rstest::rstest]
-    fn builds_allocation_plan_with_locks(lock_set_target_2: MarketLockSet) {
+    fn builds_allocation_plan_excluding_locked_targets(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
         let queue = SupplyQueue {
             entries: vec![
@@ -2160,13 +2160,13 @@ mod policy_lock_filter_tests {
         };
 
         assert_eq!(
-            lock_set.build_allocation_plan_with_locks(&queue, 1_500),
+            queue.to_allocation_plan_excluding_locked(&lock_set, 1_500),
             vec![(1, 10), (3, 30)]
         );
     }
 
     #[rstest::rstest]
-    fn builds_withdrawal_plan_with_locks(lock_set_target_1: MarketLockSet) {
+    fn builds_withdrawal_plan_excluding_locked_targets(lock_set_target_1: MarketLockSet) {
         let lock_set = lock_set_target_1;
         let route = WithdrawRoute::from_entries(
             vec![
@@ -2178,8 +2178,8 @@ mod policy_lock_filter_tests {
         );
 
         assert_eq!(
-            lock_set
-                .build_withdrawal_plan_with_locks(&route, 1_500)
+            route
+                .to_withdrawal_plan_excluding_locked(&lock_set, 1_500)
                 .expect("filtered route remains satisfiable"),
             vec![(2, 200), (3, 300)]
         );
@@ -2196,26 +2196,52 @@ mod policy_lock_filter_tests {
             250,
         );
 
-        let result = lock_set.build_withdrawal_plan_with_locks(&route, 1_500);
+        let result = route.to_withdrawal_plan_excluding_locked(&lock_set, 1_500);
 
         assert!(matches!(
             result,
-            Err(WithdrawRouteError::InsufficientRouteTotal {
-                route_total: 200,
-                target_amount: 250,
-            })
+            Err(WithdrawRouteError::LockedTargetsExcluded { source })
+                if matches!(*source, WithdrawRouteError::InsufficientRouteTotal {
+                    route_total: 200,
+                    target_amount: 250,
+                })
+        ));
+    }
+
+    #[test]
+    fn excluding_locked_preserves_original_route_validation_errors() {
+        let lock_set = lock_set_with_target(1);
+        let invalid_route = WithdrawRoute::from_entries(
+            vec![
+                WithdrawRouteEntry::new(1, 100),
+                WithdrawRouteEntry::new(1, 200),
+            ],
+            250,
+        );
+
+        let result = invalid_route.excluding_locked(&lock_set, 1_500);
+
+        assert!(matches!(
+            result,
+            Err(WithdrawRouteError::DuplicateTarget { target_id: 1 })
         ));
     }
 
     #[rstest::rstest]
-    fn builds_refresh_plan_with_locks(lock_set_target_2: MarketLockSet) {
+    fn filters_refresh_targets(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
         let targets = vec![1, 2, 3, 4];
 
-        assert_eq!(
-            lock_set.build_refresh_plan_with_locks(&targets, 1_500),
-            vec![1, 3, 4]
-        );
+        assert_eq!(lock_set.filter_targets(&targets, 1_500), vec![1, 3, 4]);
+    }
+
+    #[rstest::rstest]
+    fn reports_unlocked_targets(lock_set_target_2: MarketLockSet) {
+        let lock_set = lock_set_target_2;
+
+        assert!(lock_set.is_unlocked(1, 1_500));
+        assert!(!lock_set.is_unlocked(2, 1_500));
+        assert!(lock_set.is_unlocked(3, 1_500));
     }
 }
 

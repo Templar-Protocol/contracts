@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 use typed_builder::TypedBuilder;
 
+use super::market_lock::MarketLockSet;
+
 /// An entry in the supply queue representing a pending allocation.
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq, TypedBuilder)]
@@ -137,6 +139,15 @@ impl SupplyQueue {
         new_queue
     }
 
+    #[must_use]
+    pub fn excluding_locked(&self, locks: &MarketLockSet, current_ns: u64) -> Self {
+        let mut new_queue = self.clone();
+        new_queue
+            .entries
+            .retain(|entry| locks.is_unlocked(entry.target_id, current_ns));
+        new_queue
+    }
+
     /// Drain the queue into a list of entries.
     #[must_use]
     pub fn drain(&self) -> (Self, Vec<SupplyQueueEntry>) {
@@ -155,6 +166,28 @@ impl SupplyQueue {
     #[must_use]
     pub fn to_allocation_plan(&self) -> Vec<(TargetId, u128)> {
         self.totals_by_target()
+    }
+
+    #[must_use]
+    pub fn to_allocation_plan_excluding_locked(
+        &self,
+        locks: &MarketLockSet,
+        current_ns: u64,
+    ) -> Vec<(TargetId, u128)> {
+        self.excluding_locked(locks, current_ns)
+            .to_allocation_plan()
+    }
+
+    #[must_use]
+    pub fn filter_partial_allocation_plan(
+        plan: &[(TargetId, u128)],
+        locks: &MarketLockSet,
+        current_ns: u64,
+    ) -> Vec<(TargetId, u128)> {
+        plan.iter()
+            .copied()
+            .filter(|(target_id, _)| locks.is_unlocked(*target_id, current_ns))
+            .collect()
     }
 
     /// Get total amount for a specific target.
