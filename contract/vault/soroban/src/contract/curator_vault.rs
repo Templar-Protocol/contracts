@@ -423,13 +423,13 @@ where
         Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
     }
 
-    fn atomic_payout(
+    fn atomic_withdraw_effects(
         &mut self,
         owner: Address,
         receiver: Address,
         operator: Address,
-        amount: u128,
-        kind: AtomicPayoutKind,
+        assets_out: u128,
+        max_shares_burned: u128,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
         self.apply_kernel_action(
@@ -437,8 +437,30 @@ where
                 owner,
                 receiver,
                 operator,
-                amount,
-                kind,
+                assets_out,
+                max_shares_burned,
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )
+    }
+
+    fn atomic_redeem_effects(
+        &mut self,
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        shares: u128,
+        min_assets_out: u128,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.apply_kernel_action(
+            KernelAction::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
                 now_ns: TimestampNs(now_ns),
             },
             now_ns,
@@ -450,6 +472,7 @@ where
         &mut self,
         env: &Env,
         assets: i128,
+        max_shares_burned: i128,
         receiver: SdkAddress,
         owner: SdkAddress,
         operator: SdkAddress,
@@ -461,12 +484,13 @@ where
         let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let burned = self.atomic_payout(
+        let burned = self.atomic_withdraw_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(assets).map_err(|_| RuntimeError::invalid_input("invalid assets"))?,
-            AtomicPayoutKind::Withdraw,
+            to_u128(max_shares_burned)
+                .map_err(|_| RuntimeError::invalid_input("invalid max shares burned"))?,
             now_ns,
         )?;
         to_i128(burned.shares_burned).map_err(|_| RuntimeError::invalid_input("burn overflow"))
@@ -477,6 +501,7 @@ where
         &mut self,
         env: &Env,
         shares: i128,
+        min_assets_out: i128,
         receiver: SdkAddress,
         owner: SdkAddress,
         operator: SdkAddress,
@@ -488,12 +513,13 @@ where
         let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let summary = self.atomic_payout(
+        let summary = self.atomic_redeem_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(shares).map_err(|_| RuntimeError::invalid_input("invalid shares"))?,
-            AtomicPayoutKind::Redeem,
+            to_u128(min_assets_out)
+                .map_err(|_| RuntimeError::invalid_input("invalid min assets out"))?,
             now_ns,
         )?;
         to_i128(summary.assets_transferred)
@@ -980,6 +1006,17 @@ where
 
         let mut entries = Vec::with_capacity(target_ids.len());
         for target_id in target_ids {
+            let config = self
+                .policy_state
+                .market_config(target_id)
+                .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
+            if !config.enabled {
+                return Err(RuntimeError::invalid_input("market disabled"));
+            }
+            if config.cap == 0 {
+                return Err(RuntimeError::invalid_input("unauthorized market"));
+            }
+
             if entries
                 .iter()
                 .any(|entry: &SupplyQueueEntry| entry.target_id() == target_id)
@@ -1054,8 +1091,9 @@ where
             ));
         }
 
-        self.policy_state
-            .set_market_enabled(market_id, false)
+        let _ = self
+            .policy_state
+            .remove_market(market_id)
             .map_err(|_| RuntimeError::invalid_input("market not found"))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
@@ -1077,7 +1115,7 @@ where
                 let current = self
                     .policy_state
                     .cap_group(&cap_group_id)
-                    .and_then(|record| record.cap.absolute_cap().map(NonZeroU128::get));
+                    .and_then(|record| record.cap.absolute_cap());
                 let decision = TimelockDecision::from_cap_group_cap_change(current, new_cap)
                     .map_err(|_| RuntimeError::invalid_input("cap group cap unchanged"))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
@@ -1091,9 +1129,9 @@ where
             }
             CapGroupUpdate::SetRelativeCap {
                 cap_group_id,
-                new_relative_cap_wad,
+                new_relative_cap,
             } => {
-                let proposed = Wad::from(new_relative_cap_wad);
+                let proposed = new_relative_cap;
                 let current = self
                     .policy_state
                     .cap_group(&cap_group_id)
@@ -1109,7 +1147,7 @@ where
                 }
 
                 self.policy_state
-                    .set_cap_group_relative_cap(cap_group_id, Some(proposed));
+                    .set_cap_group_relative_cap(cap_group_id, proposed);
             }
             CapGroupUpdate::SetMembership {
                 market_id,
@@ -1131,6 +1169,9 @@ where
                         templar_curator_primitives::policy::state::PolicyStateError::UnknownCapGroup {
                             ..
                         } => RuntimeError::invalid_input("cap group not found"),
+                        templar_curator_primitives::policy::state::PolicyStateError::CapGroupInUse {
+                            ..
+                        } => RuntimeError::invalid_input("cap group in use"),
                         templar_curator_primitives::policy::state::PolicyStateError::UnknownMarket {
                             ..
                         }
@@ -1138,6 +1179,15 @@ where
                             ..
                         }
                         | templar_curator_primitives::policy::state::PolicyStateError::InvalidSupplyQueue {
+                            ..
+                        }
+                        | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueUnknownMarket {
+                            ..
+                        }
+                        | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueDisabledMarket {
+                            ..
+                        }
+                        | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueUnauthorizedMarket {
                             ..
                         } => RuntimeError::invalid_input("market not found"),
                     })?;

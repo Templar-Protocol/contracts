@@ -219,16 +219,22 @@ fn apply_group_policy(
     let cap_group_id = cap_group_id.unwrap_or_else(|| soroban_sdk::String::from_str(env, ""));
     let internal = match mode {
         0 => CapGroupUpdate::SetCap {
-            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
-            new_cap: to_u128(required_i128(value)?)?,
+            cap_group_id: CapGroupId::try_from(sdk_string_to_alloc(cap_group_id)?)
+                .map_err(|_| ContractError::InvalidInput)?,
+            new_cap: Some(to_u128(required_i128(value)?)?),
         },
         1 => CapGroupUpdate::SetRelativeCap {
-            cap_group_id: sdk_string_to_alloc(cap_group_id)?.into(),
-            new_relative_cap_wad: to_u128(required_i128(value)?)?,
+            cap_group_id: CapGroupId::try_from(sdk_string_to_alloc(cap_group_id)?)
+                .map_err(|_| ContractError::InvalidInput)?,
+            new_relative_cap: Some(Wad::from(to_u128(required_i128(value)?)?)),
         },
         2 => {
             let s = sdk_string_to_alloc(cap_group_id)?;
-            let group = if s.is_empty() { None } else { Some(s.into()) };
+            let group = if s.is_empty() {
+                None
+            } else {
+                Some(CapGroupId::try_from(s).map_err(|_| ContractError::InvalidInput)?)
+            };
             CapGroupUpdate::SetMembership {
                 market_id,
                 cap_group_id: group,
@@ -721,8 +727,8 @@ impl SorobanVaultContract {
                 queue.push_back(target_id);
             }
             for (id, rec) in vault.policy_state().cap_groups().iter() {
-                let sdk_id = soroban_sdk::String::from_str(&env, &id.0);
-                let abs_cap = rec.cap.absolute_cap().map(|c| c.get() as i128).unwrap_or(0);
+                let sdk_id = soroban_sdk::String::from_str(&env, id.as_str());
+                let abs_cap = rec.cap.absolute_cap().map(|c| c as i128).unwrap_or(0);
                 groups.push_back((sdk_id, abs_cap, rec.principal as i128));
             }
             Ok(())
