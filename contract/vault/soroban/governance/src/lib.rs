@@ -13,7 +13,7 @@ use soroban_sdk::{
 };
 use templar_curator_primitives::governance::{
     timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
-    MembershipChangeKind, PendingQueue, PendingValue, RelativeCapChangeError,
+    MembershipChangeKind, PendingActions, PendingValue, RelativeCapChangeError,
     Restrictions as SharedRestrictions, TakePending, TimelockConfigError, TimelockDecision,
 };
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
@@ -537,7 +537,7 @@ impl SorobanVaultGovernanceContract {
             now_ns,
             timelock_ns,
         );
-        let valid_after_ns = scheduled.valid_at_ns;
+        let valid_after_ns = scheduled.ready_at_ns;
         save_queue(&env, &queue);
 
         for replaced in scheduled.replaced.into_iter() {
@@ -877,34 +877,34 @@ fn next_proposal_id(env: &Env) -> Result<u64, GovernanceError> {
     Ok(current)
 }
 
-fn load_queue(env: &Env) -> PendingQueue<QueuedProposal> {
+fn load_queue(env: &Env) -> PendingActions<QueuedProposal> {
     let stored: Vec<StoredPending> = env
         .storage()
         .instance()
         .get(&DataKey::PendingQueue)
         .unwrap_or_else(|| Vec::new(env));
 
-    let mut queue = PendingQueue::default();
+    let mut entries = alloc::collections::VecDeque::new();
     for item in stored.iter() {
-        queue.push_pending(PendingValue {
+        entries.push_back(PendingValue {
             value: QueuedProposal {
                 id: item.id,
                 action: item.action.clone(),
             },
-            valid_at_ns: TimestampNs(item.valid_at_ns),
+            ready_at_ns: TimestampNs(item.valid_at_ns),
         });
     }
 
-    queue
+    PendingActions::from_restored_entries(entries)
 }
 
-fn save_queue(env: &Env, queue: &PendingQueue<QueuedProposal>) {
+fn save_queue(env: &Env, queue: &PendingActions<QueuedProposal>) {
     let mut stored = Vec::new(env);
     for entry in queue.iter() {
         stored.push_back(StoredPending {
             id: entry.value.id,
             action: entry.value.action.clone(),
-            valid_at_ns: entry.valid_at_ns.into(),
+            valid_at_ns: entry.ready_at_ns.into(),
         });
     }
     env.storage()
@@ -928,7 +928,7 @@ fn load_proposal(env: &Env, proposal_id: u64) -> Result<PendingProposal, Governa
             return Ok(PendingProposal {
                 id: entry.value.id,
                 action: entry.value.action.clone(),
-                valid_after_ns: entry.valid_at_ns.into(),
+                valid_after_ns: entry.ready_at_ns.into(),
             });
         }
     }
