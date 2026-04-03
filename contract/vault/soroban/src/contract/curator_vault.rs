@@ -683,10 +683,7 @@ where
         plan: &[TargetId],
         current_ns: u64,
     ) -> Result<RefreshPlanDecision, RuntimeError> {
-        let markets = self
-            .policy_state
-            .locks
-            .build_refresh_plan_with_locks(plan, current_ns);
+        let markets = self.policy_state.locks.filter_targets(plan, current_ns);
 
         if markets.is_empty() {
             return Err(RuntimeError::invalid_input("empty refresh plan"));

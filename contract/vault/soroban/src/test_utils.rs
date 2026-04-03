@@ -232,13 +232,11 @@ where
     A: AuthAdapter,
     E: EffectInterpreter + AddressRegistrar,
 {
-    let filtered_plan = vault
-        .policy_state()
-        .locks
-        .filter_allocation_plan(plan, current_ns)
-        .into_iter()
-        .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
-        .collect::<Vec<_>>();
+    let filtered_plan =
+        SupplyQueue::filter_partial_allocation_plan(plan, &vault.policy_state().locks, current_ns)
+            .into_iter()
+            .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
+            .collect::<Vec<_>>();
     let total_allocated = filtered_plan.iter().map(|entry| entry.amount).sum();
 
     TestAllocationDecision {
