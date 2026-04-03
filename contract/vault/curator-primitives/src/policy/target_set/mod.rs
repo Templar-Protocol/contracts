@@ -2,25 +2,44 @@ use alloc::vec::Vec;
 use templar_vault_kernel::TargetId;
 
 use super::{
-    refresh_plan::{RefreshPlan, RefreshPlanError, RefreshThrottle},
-    withdraw_route::{build_withdraw_route, WithdrawRouteError},
+    refresh_plan::{refresh_execution_plan, RefreshExecutionPlan, RefreshPlanError},
+    withdraw_route::{withdraw_plan_from_principals, WithdrawPlanEntry, WithdrawRouteError},
 };
 
-/// Build a withdraw plan from target principals.
-pub fn build_withdraw_plan_from_target_principals(
+pub fn build_withdraw_capacity_pairs_from_target_principals(
     principals: &[(TargetId, u128)],
     target_amount: u128,
 ) -> Result<Vec<(TargetId, u128)>, WithdrawRouteError> {
-    build_withdraw_route(principals, target_amount).map(|route| route.to_target_amount_pairs())
+    withdraw_plan_from_principals(principals, target_amount)
+        .map(|plan| plan.into_iter().map(Into::into).collect())
 }
 
-/// Build and validate a refresh plan from target IDs.
+pub fn withdraw_plan(
+    principals: &[(TargetId, u128)],
+    target_amount: u128,
+) -> Result<Vec<WithdrawPlanEntry>, WithdrawRouteError> {
+    withdraw_plan_from_principals(principals, target_amount)
+}
+
 pub fn build_refresh_plan_from_targets(
     targets: &[TargetId],
     cooldown_ns: u64,
     last_refresh_ns: Option<u64>,
-) -> Result<(RefreshPlan, RefreshThrottle), RefreshPlanError> {
-    let plan = RefreshPlan::new(targets.to_vec())?;
-    let throttle = RefreshThrottle::new(cooldown_ns, last_refresh_ns);
-    Ok((plan, throttle))
+) -> Result<
+    (
+        super::refresh_plan::RefreshPlan,
+        super::refresh_plan::RefreshThrottle,
+    ),
+    RefreshPlanError,
+> {
+    refresh_execution_plan(targets, cooldown_ns, last_refresh_ns)
+        .map(RefreshExecutionPlan::into_parts)
+}
+
+pub fn refresh_plan(
+    targets: &[TargetId],
+    cooldown_ns: u64,
+    last_refresh_ns: Option<u64>,
+) -> Result<RefreshExecutionPlan, RefreshPlanError> {
+    refresh_execution_plan(targets, cooldown_ns, last_refresh_ns)
 }

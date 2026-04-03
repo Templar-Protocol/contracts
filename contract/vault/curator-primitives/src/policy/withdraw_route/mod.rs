@@ -54,9 +54,36 @@ impl WithdrawRouteEntry {
     }
 }
 
-impl From<(TargetId, u128)> for WithdrawRouteEntry {
-    fn from(value: (TargetId, u128)) -> Self {
-        Self::new(value.0, value.1).expect("tuple conversion requires non-zero max amount")
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct WithdrawPlanEntry {
+    target_id: TargetId,
+    max_amount: u128,
+}
+
+impl WithdrawPlanEntry {
+    #[must_use]
+    pub const fn new(target_id: TargetId, max_amount: u128) -> Self {
+        Self {
+            target_id,
+            max_amount,
+        }
+    }
+
+    #[must_use]
+    pub const fn target_id(&self) -> TargetId {
+        self.target_id
+    }
+
+    #[must_use]
+    pub const fn max_amount(&self) -> u128 {
+        self.max_amount
+    }
+}
+
+impl From<WithdrawPlanEntry> for (TargetId, u128) {
+    fn from(value: WithdrawPlanEntry) -> Self {
+        (value.target_id, value.max_amount)
     }
 }
 
@@ -178,9 +205,14 @@ impl WithdrawRoute {
 
     #[must_use]
     pub fn to_target_amount_pairs(&self) -> Vec<(TargetId, u128)> {
+        self.withdraw_plan().into_iter().map(Into::into).collect()
+    }
+
+    #[must_use]
+    pub fn withdraw_plan(&self) -> Vec<WithdrawPlanEntry> {
         self.entries
             .iter()
-            .map(|entry| (entry.target_id(), entry.max_amount()))
+            .map(|entry| WithdrawPlanEntry::new(entry.target_id(), entry.max_amount()))
             .collect()
     }
 
@@ -225,8 +257,19 @@ impl WithdrawRoute {
         now_ns: TimestampNs,
     ) -> Result<Vec<(TargetId, u128)>, WithdrawRouteError> {
         Ok(self
-            .excluding_leased(leases, now_ns)?
-            .to_target_amount_pairs())
+            .withdraw_plan_excluding_leased(leases, now_ns)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    #[must_use]
+    pub fn withdraw_plan_excluding_leased(
+        &self,
+        leases: &MarketLeaseRegistry,
+        now_ns: TimestampNs,
+    ) -> Result<Vec<WithdrawPlanEntry>, WithdrawRouteError> {
+        Ok(self.excluding_leased(leases, now_ns)?.withdraw_plan())
     }
 }
 
@@ -319,6 +362,13 @@ pub fn build_withdraw_route(
     }
 
     WithdrawRoute::new(entries, target_amount)
+}
+
+pub fn withdraw_plan_from_principals(
+    principals: &[(TargetId, u128)],
+    target_amount: u128,
+) -> Result<Vec<WithdrawPlanEntry>, WithdrawRouteError> {
+    build_withdraw_route(principals, target_amount).map(|route| route.withdraw_plan())
 }
 
 pub fn build_withdraw_route_with_liquidity(

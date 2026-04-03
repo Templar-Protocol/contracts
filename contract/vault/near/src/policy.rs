@@ -13,7 +13,7 @@ pub use templar_curator_primitives::policy::{
         CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId,
         CapGroupRecord as PrimitiveCapGroupRecord,
     },
-    market_lock::{LeaseDurationNs, LeaseOwner, MarketLease, MarketLeaseRegistry},
+    market_lock::{FencingToken, LeaseDurationNs, LeaseOwner, MarketLease, MarketLeaseRegistry},
     refresh_plan::{
         RefreshPlan as PrimitiveRefreshPlan, RefreshPlanError, RefreshTargetStatus, RefreshThrottle,
     },
@@ -133,10 +133,14 @@ impl MarketExecutionLock {
     }
 
     pub fn assert_current(&self, market: MarketId, lease: &MarketLease) {
+        self.assert_current_token(market, lease.fencing_token());
+    }
+
+    pub fn assert_current_token(&self, market: MarketId, token: FencingToken) {
         self.inner
             .assert_token_current(
                 market.into_target_id(),
-                lease.fencing_token(),
+                token,
                 TimestampNs(env::block_timestamp()),
             )
             .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED));
