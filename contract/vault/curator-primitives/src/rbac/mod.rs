@@ -9,7 +9,6 @@
 //! - **Curator**: Curator-scoped actions, plus allocator-class operations
 //! - **Sentinel**: Emergency backstop (used for pause and restriction updates)
 //! - **Allocator**: Can manage allocations and refreshes
-//! - **User**: Can deposit, withdraw, execute withdrawals
 
 use alloc::vec::Vec;
 use templar_vault_kernel::Address;
@@ -44,6 +43,69 @@ impl Role {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RoleSet(u8);
+
+impl RoleSet {
+    const NONE: Self = Self(0);
+    const CURATOR: Self = Self(1 << 0);
+    const SENTINEL: Self = Self(1 << 1);
+    const ALLOCATOR: Self = Self(1 << 2);
+
+    #[inline]
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    #[inline]
+    const fn contains(self, role: Role) -> bool {
+        let mask = match role {
+            Role::Curator => Self::CURATOR.0,
+            Role::Sentinel => Self::SENTINEL.0,
+            Role::Allocator => Self::ALLOCATOR.0,
+        };
+        self.0 & mask != 0
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ActionRule {
+    allowed_roles: RoleSet,
+    allowed_while_paused: bool,
+}
+
+const fn allowed_roles_for(action: ActionKind) -> RoleSet {
+    match canonical_policy_class(action) {
+        AuthPolicyClass::Public => RoleSet::NONE,
+        AuthPolicyClass::Sentinel => RoleSet::SENTINEL,
+        AuthPolicyClass::Allocator => RoleSet::ALLOCATOR.union(RoleSet::CURATOR),
+        AuthPolicyClass::AllocatorEmergency => RoleSet::ALLOCATOR
+            .union(RoleSet::SENTINEL)
+            .union(RoleSet::CURATOR),
+        AuthPolicyClass::Curator => RoleSet::CURATOR,
+    }
+}
+
+const fn allowed_while_paused(action: ActionKind) -> bool {
+    matches!(
+        action,
+        ActionKind::Pause
+            | ActionKind::SetRestrictions
+            | ActionKind::AbortAllocating
+            | ActionKind::AbortWithdrawing
+            | ActionKind::AbortRefreshing
+            | ActionKind::ManualReconcile
+            | ActionKind::EmergencyReset
+    )
+}
+
+const fn action_rule(action: ActionKind) -> ActionRule {
+    ActionRule {
+        allowed_roles: allowed_roles_for(action),
+        allowed_while_paused: allowed_while_paused(action),
+    }
+}
+
 /// Role assignment for an address.
 #[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
@@ -56,19 +118,19 @@ pub struct RoleAssignment {
 
 /// RBAC configuration for the vault.
 #[templar_vault_macros::vault_derive]
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RbacConfig {
     /// List of role assignments.
-    pub assignments: Vec<RoleAssignment>,
+    assignments: Vec<RoleAssignment>,
     /// Whether the vault is paused.
-    pub paused: bool,
+    paused: bool,
 }
 
 impl RbacConfig {
     /// Create an RBAC configuration with a single curator.
     #[inline]
     #[must_use]
-    pub fn with_curator(curator: Address) -> Self {
+    pub fn new(curator: Address) -> Self {
         Self {
             assignments: alloc::vec![RoleAssignment {
                 address: curator,
@@ -78,20 +140,35 @@ impl RbacConfig {
         }
     }
 
+    /// Create an RBAC configuration with a single curator.
+    #[inline]
+    #[must_use]
+    pub fn with_curator(curator: Address) -> Self {
+        Self::new(curator)
+    }
+
     /// Add a role assignment.
     #[inline]
-    pub fn add_role(&mut self, address: Address, role: Role) {
-        // Remove any existing assignment for this address with the same role
-        self.assignments
-            .retain(|a| !(a.address == address && a.role == role));
+    pub fn add_role(&mut self, address: Address, role: Role) -> bool {
+        if self.has_role(&address, role) {
+            return false;
+        }
+
         self.assignments.push(RoleAssignment { address, role });
+        true
     }
 
     /// Remove a role from an address.
     #[inline]
-    pub fn remove_role(&mut self, address: &Address, role: Role) {
+    pub fn remove_role(&mut self, address: &Address, role: Role) -> bool {
+        if role == Role::Curator && self.curator_count() == 1 && self.has_role(address, role) {
+            return false;
+        }
+
+        let original_len = self.assignments.len();
         self.assignments
             .retain(|assignment| !(assignment.address == *address && assignment.role == role));
+        self.assignments.len() != original_len
     }
 
     /// Check if an address has a specific role.
@@ -109,6 +186,15 @@ impl RbacConfig {
         self.has_role(address, Role::Curator)
     }
 
+    #[inline]
+    #[must_use]
+    fn curator_count(&self) -> usize {
+        self.assignments
+            .iter()
+            .filter(|assignment| assignment.role == Role::Curator)
+            .count()
+    }
+
     /// Get all roles for an address.
     #[must_use]
     pub fn get_roles(&self, address: &Address) -> Vec<Role> {
@@ -119,26 +205,31 @@ impl RbacConfig {
             .collect()
     }
 
+    #[must_use]
+    pub fn role_assignments(&self) -> &[RoleAssignment] {
+        &self.assignments
+    }
+
     /// Set the paused state.
     #[inline]
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
+
+    #[inline]
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
 }
 
-/// Get the required role for an action.
-///
-/// This is the canonical action-to-role mapping shared across all executors.
-/// Returns `None` for user-facing actions that don't require a special role.
 #[inline]
 #[must_use]
-pub fn required_role(action: ActionKind) -> Option<Role> {
-    match canonical_policy_class(action) {
-        AuthPolicyClass::Public => None,
-        AuthPolicyClass::Sentinel => Some(Role::Sentinel),
-        AuthPolicyClass::Allocator | AuthPolicyClass::AllocatorEmergency => Some(Role::Allocator),
-        AuthPolicyClass::Curator => Some(Role::Curator),
-    }
+pub fn allowed_roles_for_action(action: ActionKind) -> Vec<Role> {
+    [Role::Curator, Role::Sentinel, Role::Allocator]
+        .into_iter()
+        .filter(|role| allowed_roles_for(action).contains(*role))
+        .collect()
 }
 
 /// RBAC auth adapter implementation.
@@ -146,28 +237,38 @@ pub fn required_role(action: ActionKind) -> Option<Role> {
 /// This adapter enforces role-based access control for curator vault actions.
 /// It checks that the caller has the required role for each action type.
 #[templar_vault_macros::vault_derive]
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RbacAuth {
     /// RBAC configuration.
-    pub config: RbacConfig,
+    config: RbacConfig,
 }
 
 impl RbacAuth {
     #[inline]
-    fn is_allowed(&self, action: ActionKind, caller: &Address) -> bool {
-        match canonical_policy_class(action) {
-            AuthPolicyClass::Public => true,
-            AuthPolicyClass::Sentinel => self.config.has_role(caller, Role::Sentinel),
-            AuthPolicyClass::Allocator => {
-                self.config.has_role(caller, Role::Allocator) || self.config.is_curator(caller)
-            }
-            AuthPolicyClass::AllocatorEmergency => {
-                self.config.has_role(caller, Role::Allocator)
-                    || self.config.has_role(caller, Role::Sentinel)
-                    || self.config.is_curator(caller)
-            }
-            AuthPolicyClass::Curator => self.config.is_curator(caller),
-        }
+    #[must_use]
+    pub fn new(config: RbacConfig) -> Self {
+        Self { config }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn config(&self) -> &RbacConfig {
+        &self.config
+    }
+
+    #[inline]
+    pub fn set_paused(&mut self, paused: bool) {
+        self.config.set_paused(paused);
+    }
+
+    #[inline]
+    fn is_allowed(&self, caller: &Address, allowed_roles: RoleSet) -> bool {
+        allowed_roles == RoleSet::NONE
+            || self
+                .config
+                .get_roles(caller)
+                .into_iter()
+                .any(|role| allowed_roles.contains(role))
     }
 }
 
@@ -178,13 +279,13 @@ impl AuthAdapter for RbacAuth {
         caller: Address,
         _proof: Option<&[u8]>,
     ) -> AuthResult<()> {
-        // Check if paused (allow pause action even when paused).
-        // Public/user actions are blocked while paused.
-        if self.config.paused && action != ActionKind::Pause && !action.is_privileged() {
+        let rule = action_rule(action);
+
+        if self.config.is_paused() && !rule.allowed_while_paused {
             return Err(AuthError::VaultPaused);
         }
 
-        if !self.is_allowed(action, &caller) {
+        if !self.is_allowed(&caller, rule.allowed_roles) {
             return Err(AuthError::MissingRole);
         }
 
@@ -192,6 +293,6 @@ impl AuthAdapter for RbacAuth {
     }
 
     fn is_paused(&self) -> bool {
-        self.config.paused
+        self.config.is_paused()
     }
 }
