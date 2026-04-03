@@ -792,7 +792,7 @@ pub enum TimelockedAction {
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct PendingGovernanceAction {
     pub action: TimelockedAction,
-    pub valid_at_ns: u64,
+    pub ready_at_ns: u64,
 }
 
 fn timelocked_action_from_common_cap_group_update(
@@ -933,7 +933,7 @@ impl From<TimelockedActionSerde> for TimelockedAction {
 #[serde(crate = "near_sdk::serde")]
 pub(crate) struct PendingValueSerde {
     pub value: TimelockedActionSerde,
-    pub valid_at_ns: u64,
+    pub ready_at_ns: u64,
 }
 
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
