@@ -126,7 +126,7 @@ impl<K, V> IntoIterator for OrderedMap<K, V> {
     }
 }
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct MarketConfig {
     pub enabled: bool,
@@ -156,7 +156,7 @@ impl Default for MarketConfig {
 }
 
 /// Curator policy state used by executors.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Default)]
 pub struct PolicyState {
     markets: OrderedMap<TargetId, MarketConfig>,

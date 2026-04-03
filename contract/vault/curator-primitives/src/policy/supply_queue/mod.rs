@@ -6,7 +6,7 @@ use templar_vault_kernel::{TargetId, TimestampNs};
 
 use super::market_lock::MarketLeaseRegistry;
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SupplyQueueEntry {
     target_id: TargetId,
@@ -67,7 +67,7 @@ impl TryFrom<(TargetId, u128)> for SupplyQueueEntry {
     }
 }
 
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SupplyQueue {
     buckets: Vec<Vec<SupplyQueueEntry>>,

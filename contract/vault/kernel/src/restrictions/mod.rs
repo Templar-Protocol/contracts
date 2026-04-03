@@ -40,7 +40,7 @@ pub enum RestrictionKind {
     NotWhitelisted,
 }
 
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, IsVariant)]
 pub enum RestrictionMode {
     /// Blacklist - specified actors are blocked.
