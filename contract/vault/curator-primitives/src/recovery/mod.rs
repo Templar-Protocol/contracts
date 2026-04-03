@@ -404,17 +404,13 @@ fn state_op_id(state: &OpState) -> Option<u64> {
 }
 
 fn abort_allocating_action(state: &AllocatingState) -> KernelAction {
-    KernelAction::AbortAllocating {
-        op_id: state.op_id,
-        restore_idle: state.remaining,
-    }
+    let _ = state.remaining;
+    KernelAction::AbortAllocating { op_id: state.op_id }
 }
 
 fn abort_withdrawing_action(state: &WithdrawingState) -> KernelAction {
-    KernelAction::AbortWithdrawing {
-        op_id: state.op_id,
-        refund_shares: state.escrow_shares,
-    }
+    let _ = state.escrow_shares;
+    KernelAction::AbortWithdrawing { op_id: state.op_id }
 }
 
 fn abort_refreshing_action(state: &RefreshingState) -> KernelAction {
