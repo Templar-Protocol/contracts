@@ -7,6 +7,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Bytes, BytesN, Env, String,
 };
+use std::string::String as StdString;
 use templar_soroban_blend_adapter::BlendAdapterContract;
 use templar_soroban_runtime::contract::SorobanVaultContract;
 use templar_soroban_shared_types::{
@@ -14,8 +15,8 @@ use templar_soroban_shared_types::{
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
-fn address_text(address: &Address) -> alloc::string::String {
-    alloc::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+fn address_text(address: &Address) -> StdString {
+    StdString::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
 }
 
 fn execute_command(
@@ -154,7 +155,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             },
         )
         .unwrap();
-        assert_eq!(result, VaultCommandResult::Unit);
+        assert!(matches!(result, VaultCommandResult::Unit));
     });
     env.as_contract(&vault, || {
         let result = execute_command(
@@ -173,7 +174,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             },
         )
         .unwrap();
-        assert_eq!(result, VaultCommandResult::Unit);
+        assert!(matches!(result, VaultCommandResult::Unit));
     });
     env.as_contract(&vault, || {
         let result = execute_command(
@@ -188,7 +189,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             },
         )
         .unwrap();
-        assert_eq!(result, VaultCommandResult::Unit);
+        assert!(matches!(result, VaultCommandResult::Unit));
     });
 
     let deposit_amount = 10_000_000_000;

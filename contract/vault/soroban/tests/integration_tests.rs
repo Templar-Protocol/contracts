@@ -8,6 +8,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Bytes, Env,
 };
+use std::string::String;
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
@@ -39,8 +40,8 @@ use templar_vault_kernel::{
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
 
-fn sdk_text(address: &soroban_sdk::Address) -> alloc::string::String {
-    alloc::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+fn sdk_text(address: &soroban_sdk::Address) -> String {
+    String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
 }
 
 type ProxyCoreView = (
@@ -382,7 +383,7 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
                 value_b: Some(virtual_assets as i128),
             })
             .unwrap();
-        assert_eq!(result, VaultCommandResult::Unit);
+        assert!(matches!(result, VaultCommandResult::Unit));
 
         let mut storage = SorobanStorage::new(&env);
         let state = VaultState {
@@ -509,6 +510,7 @@ fn soroban_contract_execute_withdraw_queue_empty_errors(
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&contract_id, || {
         let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
@@ -525,6 +527,7 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&contract_id, || {
         let state = VaultState {
