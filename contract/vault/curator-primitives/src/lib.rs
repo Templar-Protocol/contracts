@@ -44,13 +44,18 @@ pub use policy::{
         MarketLeaseRegistry, ReleaseLeaseError,
     },
     refresh_plan::{
-        build_stale_refresh_plan, RefreshPlan, RefreshPlanError, RefreshTargetStatus,
-        RefreshThrottle,
+        build_stale_refresh_plan, refresh_execution_plan, RefreshExecutionPlan, RefreshPlan,
+        RefreshPlanError, RefreshTargetStatus, RefreshThrottle,
     },
     state::{MarketConfig, PolicyState},
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
-    target_set::{build_refresh_plan_from_targets, build_withdraw_plan_from_target_principals},
-    withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
+    target_set::{
+        build_refresh_plan_from_targets, build_withdraw_capacity_pairs_from_target_principals,
+    },
+    withdraw_route::{
+        withdraw_plan_from_principals, WithdrawPlanEntry, WithdrawRoute, WithdrawRouteEntry,
+        WithdrawRouteError,
+    },
 };
 
 #[cfg(feature = "recovery")]
@@ -63,8 +68,8 @@ pub use recovery::{
 
 pub use governance::{
     timelock_config_decision, FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError,
-    MembershipChangeKind, PendingQueue, PendingValue, Restrictions, ScheduledPending, TakePending,
-    TimelockConfigError, TimelockDecision,
+    MembershipChangeKind, PendingActions, PendingValue, Restrictions, ScheduledPending,
+    TakePending, TimelockConfigError, TimelockDecision,
 };
 pub use utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked};
 
