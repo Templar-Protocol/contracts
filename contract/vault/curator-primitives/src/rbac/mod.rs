@@ -10,11 +10,12 @@
 //! - **Sentinel**: Emergency backstop (used for pause and restriction updates)
 //! - **Allocator**: Can manage allocations and refreshes
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use templar_vault_kernel::Address;
 
 use crate::auth::{
-    canonical_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult,
+    allowed_while_paused, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
+    AuthPolicyClass, AuthResult,
 };
 
 /// Role types for RBAC.
@@ -68,12 +69,6 @@ impl RoleSet {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ActionRule {
-    allowed_roles: RoleSet,
-    allowed_while_paused: bool,
-}
-
 const fn allowed_roles_for(action: ActionKind) -> RoleSet {
     match canonical_policy_class(action) {
         AuthPolicyClass::Public => RoleSet::NONE,
@@ -83,26 +78,6 @@ const fn allowed_roles_for(action: ActionKind) -> RoleSet {
             .union(RoleSet::SENTINEL)
             .union(RoleSet::CURATOR),
         AuthPolicyClass::Curator => RoleSet::CURATOR,
-    }
-}
-
-const fn allowed_while_paused(action: ActionKind) -> bool {
-    matches!(
-        action,
-        ActionKind::Pause
-            | ActionKind::SetRestrictions
-            | ActionKind::AbortAllocating
-            | ActionKind::AbortWithdrawing
-            | ActionKind::AbortRefreshing
-            | ActionKind::ManualReconcile
-            | ActionKind::EmergencyReset
-    )
-}
-
-const fn action_rule(action: ActionKind) -> ActionRule {
-    ActionRule {
-        allowed_roles: allowed_roles_for(action),
-        allowed_while_paused: allowed_while_paused(action),
     }
 }
 
@@ -118,10 +93,9 @@ pub struct RoleAssignment {
 
 /// RBAC configuration for the vault.
 #[templar_vault_macros::vault_derive]
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct RbacConfig {
-    /// List of role assignments.
-    assignments: Vec<RoleAssignment>,
+    assignments_by_address: BTreeMap<Address, Vec<Role>>,
     /// Whether the vault is paused.
     paused: bool,
 }
@@ -131,11 +105,11 @@ impl RbacConfig {
     #[inline]
     #[must_use]
     pub fn new(curator: Address) -> Self {
+        let mut assignments_by_address = BTreeMap::new();
+        assignments_by_address.insert(curator, alloc::vec![Role::Curator]);
+
         Self {
-            assignments: alloc::vec![RoleAssignment {
-                address: curator,
-                role: Role::Curator,
-            }],
+            assignments_by_address,
             paused: false,
         }
     }
@@ -150,11 +124,12 @@ impl RbacConfig {
     /// Add a role assignment.
     #[inline]
     pub fn add_role(&mut self, address: Address, role: Role) -> bool {
-        if self.has_role(&address, role) {
+        let roles = self.assignments_by_address.entry(address).or_default();
+        if roles.contains(&role) {
             return false;
         }
 
-        self.assignments.push(RoleAssignment { address, role });
+        roles.push(role);
         true
     }
 
@@ -165,19 +140,28 @@ impl RbacConfig {
             return false;
         }
 
-        let original_len = self.assignments.len();
-        self.assignments
-            .retain(|assignment| !(assignment.address == *address && assignment.role == role));
-        self.assignments.len() != original_len
+        let Some(roles) = self.assignments_by_address.get_mut(address) else {
+            return false;
+        };
+
+        let original_len = roles.len();
+        roles.retain(|existing_role| *existing_role != role);
+        let changed = roles.len() != original_len;
+
+        if roles.is_empty() {
+            self.assignments_by_address.remove(address);
+        }
+
+        changed
     }
 
     /// Check if an address has a specific role.
     #[inline]
     #[must_use]
     pub fn has_role(&self, address: &Address, role: Role) -> bool {
-        self.assignments
-            .iter()
-            .any(|assignment| assignment.address == *address && assignment.role == role)
+        self.assignments_by_address
+            .get(address)
+            .is_some_and(|roles| roles.contains(&role))
     }
 
     #[inline]
@@ -189,25 +173,32 @@ impl RbacConfig {
     #[inline]
     #[must_use]
     fn curator_count(&self) -> usize {
-        self.assignments
-            .iter()
-            .filter(|assignment| assignment.role == Role::Curator)
+        self.assignments_by_address
+            .values()
+            .filter(|roles| roles.contains(&Role::Curator))
             .count()
     }
 
     /// Get all roles for an address.
     #[must_use]
     pub fn get_roles(&self, address: &Address) -> Vec<Role> {
-        self.assignments
-            .iter()
-            .filter(|a| &a.address == address)
-            .map(|a| a.role)
-            .collect()
+        self.assignments_by_address
+            .get(address)
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[must_use]
-    pub fn role_assignments(&self) -> &[RoleAssignment] {
-        &self.assignments
+    pub fn role_assignments(&self) -> Vec<RoleAssignment> {
+        self.assignments_by_address
+            .iter()
+            .flat_map(|(address, roles)| {
+                roles.iter().copied().map(|role| RoleAssignment {
+                    address: *address,
+                    role,
+                })
+            })
+            .collect()
     }
 
     /// Set the paused state.
@@ -279,14 +270,15 @@ impl AuthAdapter for RbacAuth {
         caller: Address,
         _proof: Option<&[u8]>,
     ) -> AuthResult<()> {
-        let rule = action_rule(action);
-
-        if self.config.is_paused() && !rule.allowed_while_paused {
+        if self.config.is_paused() && !allowed_while_paused(action) {
             return Err(AuthError::VaultPaused);
         }
 
-        if !self.is_allowed(&caller, rule.allowed_roles) {
-            return Err(AuthError::MissingRole);
+        if !self.is_allowed(&caller, allowed_roles_for(action)) {
+            return Err(AuthError::MissingRole {
+                action,
+                policy_class: canonical_policy_class(action),
+            });
         }
 
         Ok(())

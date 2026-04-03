@@ -7,15 +7,15 @@
 use soroban_sdk::{Address as SdkAddress, Env};
 
 pub use templar_curator_primitives::auth::{
-    canonical_policy_class, ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult,
+    allowed_while_paused, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
+    AuthPolicyClass, AuthResult,
 };
 pub use templar_curator_primitives::rbac::Role;
 
 /// Soroban native authentication adapter.
 ///
 /// This adapter integrates with Soroban's native authentication using
-/// `require_auth()`. It verifies that callers have signed the transaction
-/// and optionally delegates to RBAC for role-based permission checks.
+/// `require_auth()`. It verifies that callers have signed the transaction.
 ///
 /// # Usage
 ///
@@ -113,18 +113,11 @@ impl<'a> SorobanAuth<'a> {
     /// # Errors
     ///
     /// Returns `AuthError::NotAuthorized` if the caller lacks the required role.
-    /// Returns `AuthError::VaultPaused` if the vault is paused and action is not Pause.
+    /// Returns `AuthError::VaultPaused` if the vault is paused and the action is
+    /// outside the shared paused-action whitelist.
     pub fn verify_and_authorize(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
         // Verify the caller has signed the transaction
         caller.require_auth();
-
-        // Check if paused (allow pause action even when paused)
-        if self.paused
-            && action != ActionKind::Pause
-            && matches!(canonical_policy_class(action), AuthPolicyClass::Public)
-        {
-            return Err(AuthError::VaultPaused);
-        }
 
         // Check role-based permissions
         self.check_role(action, caller)
@@ -132,10 +125,15 @@ impl<'a> SorobanAuth<'a> {
 
     /// Check role-based permissions without calling require_auth.
     ///
-    /// Uses the canonical action policy class from curator-primitives, then
+    /// Uses the shared paused whitelist and canonical action policy class, then
     /// checks Soroban-specific role holders.
     pub fn check_role(&self, action: ActionKind, caller: &SdkAddress) -> AuthResult<()> {
-        let has_role = match canonical_policy_class(action) {
+        if self.paused && !allowed_while_paused(action) {
+            return Err(AuthError::VaultPaused);
+        }
+
+        let policy_class = canonical_policy_class(action);
+        let has_role = match policy_class {
             AuthPolicyClass::Public => true,
             AuthPolicyClass::Sentinel => self.has_role(Role::Sentinel, caller),
             AuthPolicyClass::Allocator => self.has_role(Role::Allocator, caller),
@@ -148,7 +146,10 @@ impl<'a> SorobanAuth<'a> {
         if has_role {
             Ok(())
         } else {
-            Err(AuthError::MissingRole)
+            Err(AuthError::MissingRole {
+                action,
+                policy_class,
+            })
         }
     }
 

@@ -104,7 +104,7 @@ impl From<crate::auth::AuthError> for RuntimeError {
         match err {
             crate::auth::AuthError::NotAuthorized { .. } => RuntimeError::Unauthorized,
             crate::auth::AuthError::InvalidProof => RuntimeError::Unauthorized,
-            crate::auth::AuthError::MissingRole => RuntimeError::Unauthorized,
+            crate::auth::AuthError::MissingRole { .. } => RuntimeError::Unauthorized,
             crate::auth::AuthError::VaultPaused => RuntimeError::InvalidState,
         }
     }
