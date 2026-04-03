@@ -643,10 +643,15 @@ impl Contract {
         let now = env::block_timestamp();
         let refresh_execution_plan = {
             let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();
+            let refresh_timing =
+                templar_curator_primitives::policy::refresh_plan::RefreshTiming::new(
+                    idle.refresh_cooldown_ns.into(),
+                    (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns.into()),
+                );
+
             templar_curator_primitives::policy::refresh_plan::refresh_execution_plan(
                 &targets,
-                idle.refresh_cooldown_ns.into(),
-                (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns.into()),
+                refresh_timing,
             )
             .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
