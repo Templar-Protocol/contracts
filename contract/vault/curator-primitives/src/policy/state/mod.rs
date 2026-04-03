@@ -7,8 +7,8 @@ use alloc::vec::Vec;
 
 use templar_vault_kernel::TargetId;
 
-use super::cap_group::{CapGroupId, CapGroupRecord};
-use super::market_lock::MarketLockSet;
+use super::cap_group::{CapGroupError, CapGroupId, CapGroupRecord};
+use super::market_lock::MarketLeaseRegistry;
 use super::supply_queue::SupplyQueue;
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
@@ -82,6 +82,18 @@ impl<K: PartialEq, V> OrderedMap<K, V> {
         self.entries.iter().map(|(key, value)| (key, value))
     }
 
+    pub fn retain(&mut self, mut f: impl FnMut(&K, &V) -> bool) {
+        self.entries.retain(|(key, value)| f(key, value));
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(candidate, _)| candidate == key)?;
+        Some(self.entries.remove(index).1)
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
         self.entries.iter_mut().map(|(key, value)| (&*key, value))
     }
@@ -123,10 +135,11 @@ pub struct MarketConfig {
 }
 
 impl MarketConfig {
-    pub fn new(enabled: bool, cap_group_id: Option<CapGroupId>) -> Self {
+    #[must_use]
+    pub fn new(enabled: bool, cap: u128, cap_group_id: Option<CapGroupId>) -> Self {
         Self {
             enabled,
-            cap: 0,
+            cap,
             cap_group_id,
         }
     }
@@ -150,33 +163,158 @@ pub struct PolicyState {
     pub principals: OrderedMap<TargetId, u128>,
     pub cap_groups: OrderedMap<CapGroupId, CapGroupRecord>,
     pub supply_queue: SupplyQueue,
-    pub locks: MarketLockSet,
+    pub leases: MarketLeaseRegistry,
+}
+
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, PartialEq, Eq)]
+pub enum PolicyStateError {
+    UnknownMarket { target_id: TargetId },
+    UnknownCapGroup { id: CapGroupId },
+    PrincipalOverflow { target_id: TargetId },
 }
 
 impl PolicyState {
-    pub fn set_market_config(&mut self, target_id: TargetId, config: MarketConfig) {
+    pub fn from_parts(
+        markets: OrderedMap<TargetId, MarketConfig>,
+        principals: OrderedMap<TargetId, u128>,
+        cap_groups: OrderedMap<CapGroupId, CapGroupRecord>,
+        leases: MarketLeaseRegistry,
+        supply_queue: SupplyQueue,
+    ) -> Result<Self, PolicyStateError> {
+        let mut state = Self {
+            markets,
+            principals,
+            cap_groups,
+            supply_queue,
+            leases,
+        };
+        state.initialize_missing_principals();
+        state.recompute_cap_group_principals()?;
+        Ok(state)
+    }
+
+    #[must_use]
+    pub fn markets(&self) -> &OrderedMap<TargetId, MarketConfig> {
+        &self.markets
+    }
+
+    #[must_use]
+    pub fn principals(&self) -> &OrderedMap<TargetId, u128> {
+        &self.principals
+    }
+
+    #[must_use]
+    pub fn cap_groups(&self) -> &OrderedMap<CapGroupId, CapGroupRecord> {
+        &self.cap_groups
+    }
+
+    #[must_use]
+    pub fn supply_queue(&self) -> &SupplyQueue {
+        &self.supply_queue
+    }
+
+    #[must_use]
+    pub fn leases(&self) -> &MarketLeaseRegistry {
+        &self.leases
+    }
+
+    #[must_use]
+    pub fn market_config(&self, target_id: TargetId) -> Option<&MarketConfig> {
+        self.markets.get(&target_id)
+    }
+
+    #[must_use]
+    pub fn principal_entry(&self, target_id: TargetId) -> Option<u128> {
+        self.principals.get(&target_id).copied()
+    }
+
+    #[must_use]
+    pub fn cap_group(&self, cap_group_id: &CapGroupId) -> Option<&CapGroupRecord> {
+        self.cap_groups.get(cap_group_id)
+    }
+
+    pub fn replace_supply_queue(&mut self, supply_queue: SupplyQueue) {
+        self.supply_queue = supply_queue;
+    }
+
+    pub fn set_market_config(
+        &mut self,
+        target_id: TargetId,
+        config: MarketConfig,
+    ) -> Result<(), PolicyStateError> {
+        self.ensure_known_cap_group(config.cap_group_id.as_ref())?;
         self.markets.insert(target_id, config);
-        // Refresh cap group principals to keep them in sync with market config changes
-        self.refresh_cap_group_principals();
+        let _ = self
+            .principals
+            .insert(target_id, self.principal_entry(target_id).unwrap_or(0));
+        self.recompute_cap_group_principals()
     }
 
-    pub fn set_principal(&mut self, target_id: TargetId, principal: u128) {
-        self.principals.insert(target_id, principal);
-        // Refresh cap group principals to keep them in sync with principal changes
-        self.refresh_cap_group_principals();
+    pub fn set_market_cap(
+        &mut self,
+        target_id: TargetId,
+        cap: u128,
+    ) -> Result<(), PolicyStateError> {
+        let config = self
+            .markets
+            .get_mut(&target_id)
+            .ok_or(PolicyStateError::UnknownMarket { target_id })?;
+        config.cap = cap;
+        Ok(())
     }
 
-    /// Return the principal for a market (0 if missing).
-    pub fn principal_for(&self, target_id: TargetId) -> u128 {
-        self.principals.get(&target_id).copied().unwrap_or(0)
+    pub fn set_market_enabled(
+        &mut self,
+        target_id: TargetId,
+        enabled: bool,
+    ) -> Result<(), PolicyStateError> {
+        let config = self
+            .markets
+            .get_mut(&target_id)
+            .ok_or(PolicyStateError::UnknownMarket { target_id })?;
+        config.enabled = enabled;
+        Ok(())
+    }
+
+    pub fn set_market_cap_group(
+        &mut self,
+        target_id: TargetId,
+        cap_group_id: Option<CapGroupId>,
+    ) -> Result<(), PolicyStateError> {
+        self.ensure_known_cap_group(cap_group_id.as_ref())?;
+        let config = self
+            .markets
+            .get_mut(&target_id)
+            .ok_or(PolicyStateError::UnknownMarket { target_id })?;
+        config.cap_group_id = cap_group_id;
+        self.recompute_cap_group_principals()
+    }
+
+    pub fn set_principal(
+        &mut self,
+        target_id: TargetId,
+        principal: u128,
+    ) -> Result<(), PolicyStateError> {
+        if !self.markets.contains_key(&target_id) {
+            return Err(PolicyStateError::UnknownMarket { target_id });
+        }
+        let _ = self.principals.insert(target_id, principal);
+        self.recompute_cap_group_principals()
+    }
+
+    #[must_use]
+    pub fn principal_for(&self, target_id: TargetId) -> Option<u128> {
+        self.principal_entry(target_id)
     }
 
     /// Compute total external assets from all principals.
     #[must_use]
     pub fn external_assets(&self) -> u128 {
-        self.principals
-            .values()
-            .fold(0u128, |acc, p| acc.saturating_add(*p))
+        self.principals.values().fold(0u128, |acc, p| {
+            acc.checked_add(*p)
+                .expect("policy principal total overflow")
+        })
     }
 
     /// Compute principal totals per cap group.
@@ -191,12 +329,14 @@ impl PolicyState {
                 Some(id) => id.clone(),
                 None => continue,
             };
-            let principal = self.principal_for(*target_id);
+            let principal = self.principal_entry(*target_id).unwrap_or(0);
             if let Some((_, sum)) = totals
                 .iter_mut()
                 .find(|(existing_group_id, _)| *existing_group_id == group_id)
             {
-                *sum = sum.saturating_add(principal);
+                *sum = sum
+                    .checked_add(principal)
+                    .expect("cap group principal overflow");
             } else {
                 totals.push((group_id, principal));
             }
@@ -205,27 +345,46 @@ impl PolicyState {
         totals
     }
 
-    /// Recompute and update cap group principals in-place.
-    ///
-    /// Note: This also creates missing cap group entries (with default caps)
-    /// for any cap groups referenced by markets but not yet in `cap_groups`.
-    /// This prevents silently dropping principals for unknown groups.
-    pub fn refresh_cap_group_principals(&mut self) {
+    pub fn ensure_cap_group(&mut self, cap_group_id: CapGroupId) {
+        if !self.cap_groups.contains_key(&cap_group_id) {
+            let _ = self
+                .cap_groups
+                .insert(cap_group_id, CapGroupRecord::default());
+        }
+    }
+
+    pub fn set_cap_group_absolute_cap(&mut self, cap_group_id: CapGroupId, new_cap: Option<u128>) {
+        self.ensure_cap_group(cap_group_id.clone());
+        let record = self
+            .cap_groups
+            .get_mut(&cap_group_id)
+            .expect("cap group must exist after ensure_cap_group");
+        record.cap.set_absolute_cap(new_cap.unwrap_or(0));
+    }
+
+    pub fn set_cap_group_relative_cap(
+        &mut self,
+        cap_group_id: CapGroupId,
+        new_relative_cap: Option<templar_vault_kernel::Wad>,
+    ) {
+        self.ensure_cap_group(cap_group_id.clone());
+        let record = self
+            .cap_groups
+            .get_mut(&cap_group_id)
+            .expect("cap group must exist after ensure_cap_group");
+        if let Some(relative_cap) = new_relative_cap {
+            record.cap.set_relative_cap(relative_cap);
+        } else {
+            record.cap = super::cap_group::CapGroup::builder()
+                .absolute_cap(record.cap.absolute_cap().map_or(0, |cap| cap.get()))
+                .build();
+        }
+    }
+
+    pub fn recompute_cap_group_principals(&mut self) -> Result<(), PolicyStateError> {
+        self.validate_cap_group_memberships()?;
         let totals = self.compute_cap_group_totals();
 
-        // First, ensure all referenced cap groups exist (create missing ones with defaults)
-        for (group_id, principal) in &totals {
-            if !self.cap_groups.contains_key(group_id) {
-                // Create a default cap group record for the missing group
-                let record = CapGroupRecord {
-                    principal: *principal,
-                    ..Default::default()
-                };
-                self.cap_groups.insert(group_id.clone(), record);
-            }
-        }
-
-        // Now update all cap group principals
         for (group_id, record) in self.cap_groups.iter_mut() {
             let total = totals
                 .iter()
@@ -233,6 +392,58 @@ impl PolicyState {
                 .map(|(_, sum)| *sum)
                 .unwrap_or(0);
             record.principal = total;
+        }
+
+        Ok(())
+    }
+
+    fn initialize_missing_principals(&mut self) {
+        let market_ids: Vec<TargetId> = self.markets.keys().copied().collect();
+        for target_id in market_ids {
+            if !self.principals.contains_key(&target_id) {
+                let _ = self.principals.insert(target_id, 0);
+            }
+        }
+    }
+
+    fn ensure_known_cap_group(
+        &self,
+        cap_group_id: Option<&CapGroupId>,
+    ) -> Result<(), PolicyStateError> {
+        match cap_group_id {
+            Some(id) if !self.cap_groups.contains_key(id) => {
+                Err(PolicyStateError::UnknownCapGroup { id: id.clone() })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_cap_group_memberships(&self) -> Result<(), PolicyStateError> {
+        for (_, config) in self.markets.iter() {
+            self.ensure_known_cap_group(config.cap_group_id.as_ref())?;
+        }
+
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.leases.is_empty()
+            && self.markets.is_empty()
+            && self.principals.is_empty()
+            && self.cap_groups.is_empty()
+            && self.supply_queue.is_empty()
+    }
+}
+
+impl From<PolicyStateError> for CapGroupError {
+    fn from(err: PolicyStateError) -> Self {
+        match err {
+            PolicyStateError::UnknownCapGroup { id } => Self::NotFound { id },
+            PolicyStateError::PrincipalOverflow { target_id: _ }
+            | PolicyStateError::UnknownMarket { target_id: _ } => Self::InconsistentRecord {
+                id: CapGroupId::from("policy-state"),
+            },
         }
     }
 }

@@ -513,15 +513,7 @@ where
         if assets_out == 0 {
             return Ok(EffectSummary::new());
         }
-        let burn_shares = match idle_payout.outcome {
-            PayoutOutcome::Success {
-                burn_shares,
-                refund_shares: _,
-            } => burn_shares,
-            PayoutOutcome::Failure { .. } => {
-                return Err(contract_error("idle payout planning must succeed"));
-            }
-        };
+        let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
 
         let collected = {
@@ -546,7 +538,7 @@ where
         summary.merge(transfer_summary);
 
         let settle_summary = self.apply_kernel_action(
-            KernelAction::settle_payout(op_id, idle_payout.outcome),
+            KernelAction::settle_payout(op_id, PayoutOutcome::Success),
             now_ns,
         )?;
         summary.merge(settle_summary);
@@ -683,7 +675,10 @@ where
         plan: &[TargetId],
         current_ns: u64,
     ) -> Result<RefreshPlanDecision, RuntimeError> {
-        let markets = self.policy_state.locks.filter_targets(plan, current_ns);
+        let markets = self
+            .policy_state
+            .leases()
+            .excluding_leased_targets(plan, TimestampNs(current_ns));
 
         if markets.is_empty() {
             return Err(RuntimeError::invalid_input("empty refresh plan"));
@@ -728,9 +723,10 @@ where
     fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
         let policy = self.policy_state_mut();
         for position in refreshed_positions {
-            policy.set_principal(position.market, position.total_assets);
+            policy
+                .set_principal(position.market, position.total_assets)
+                .expect("refreshed positions must refer to known markets");
         }
-        policy.refresh_cap_group_principals();
     }
 
     pub(crate) fn begin_allocation_internal(
@@ -767,8 +763,9 @@ where
 
     fn update_market_principal(&mut self, market: TargetId, principal: u128) {
         let policy = self.policy_state_mut();
-        policy.set_principal(market, principal);
-        policy.refresh_cap_group_principals();
+        policy
+            .set_principal(market, principal)
+            .expect("market principal updates must refer to known markets");
     }
 
     pub(crate) fn complete_supply_allocation(
@@ -942,7 +939,7 @@ where
 
     pub fn get_cap_groups(&self) -> Vec<(CapGroupId, CapGroupRecord)> {
         self.policy_state
-            .cap_groups
+            .cap_groups()
             .iter()
             .map(|(id, rec)| (id.clone(), rec.clone()))
             .collect()
@@ -994,7 +991,8 @@ where
             entries.push(SupplyQueueEntry::new(target_id, 1));
         }
 
-        self.policy_state.supply_queue = SupplyQueue::from(entries);
+        self.policy_state
+            .replace_supply_queue(SupplyQueue::from(entries));
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1007,7 +1005,7 @@ where
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
-        let current_cap = self.policy_state.markets.get(&market_id).map(|m| m.cap);
+        let current_cap = self.policy_state.market_config(market_id).map(|m| m.cap);
         let decision = TimelockDecision::from_cap_change(current_cap, new_cap)
             .map_err(|_| RuntimeError::invalid_input("cap unchanged"))?;
         if matches!(decision, TimelockDecision::Timelocked) {
@@ -1016,10 +1014,9 @@ where
             ));
         }
 
-        let Some(config) = self.policy_state.markets.get_mut(&market_id) else {
-            return Err(RuntimeError::invalid_input("market not found"));
-        };
-        config.cap = new_cap;
+        self.policy_state
+            .set_market_cap(market_id, new_cap)
+            .map_err(|_| RuntimeError::invalid_input("market not found"))?;
 
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
@@ -1032,8 +1029,8 @@ where
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
-        let principal = self.policy_state.principal_for(market_id);
-        let Some(config) = self.policy_state.markets.get_mut(&market_id) else {
+        let principal = self.policy_state.principal_for(market_id).unwrap_or(0);
+        let Some(config) = self.policy_state.market_config(market_id) else {
             return Err(RuntimeError::invalid_input("market not found"));
         };
         if config.cap > 0 {
@@ -1050,7 +1047,9 @@ where
             ));
         }
 
-        config.enabled = false;
+        self.policy_state
+            .set_market_enabled(market_id, false)
+            .map_err(|_| RuntimeError::invalid_input("market not found"))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1070,9 +1069,8 @@ where
             } => {
                 let current = self
                     .policy_state
-                    .cap_groups
-                    .get(&cap_group_id)
-                    .and_then(|record| record.cap.absolute_cap.map(NonZeroU128::get));
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.absolute_cap().map(NonZeroU128::get));
                 let decision = TimelockDecision::from_cap_group_cap_change(current, new_cap)
                     .map_err(|_| RuntimeError::invalid_input("cap group cap unchanged"))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
@@ -1081,12 +1079,8 @@ where
                     ));
                 }
 
-                let record = self
-                    .policy_state
-                    .cap_groups
-                    .get_mut(&cap_group_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("cap group not found"))?;
-                record.cap.absolute_cap = NonZeroU128::new(new_cap);
+                self.policy_state
+                    .set_cap_group_absolute_cap(cap_group_id, new_cap);
             }
             CapGroupUpdate::SetRelativeCap {
                 cap_group_id,
@@ -1095,9 +1089,8 @@ where
                 let proposed = Wad::from(new_relative_cap_wad);
                 let current = self
                     .policy_state
-                    .cap_groups
-                    .get(&cap_group_id)
-                    .and_then(|record| record.cap.relative_cap);
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.relative_cap());
                 let decision = TimelockDecision::from_relative_cap_change(current, proposed)
                     .map_err(|_| {
                         RuntimeError::invalid_input("invalid cap group relative cap change")
@@ -1108,16 +1101,8 @@ where
                     ));
                 }
 
-                let record = self
-                    .policy_state
-                    .cap_groups
-                    .get_mut(&cap_group_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("cap group not found"))?;
-                record.cap.relative_cap = if proposed.is_zero() {
-                    None
-                } else {
-                    Some(proposed)
-                };
+                self.policy_state
+                    .set_cap_group_relative_cap(cap_group_id, Some(proposed));
             }
             CapGroupUpdate::SetMembership {
                 market_id,
@@ -1126,29 +1111,26 @@ where
                 let changed = {
                     let market = self
                         .policy_state
-                        .markets
-                        .get(&market_id)
+                        .market_config(market_id)
                         .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
                     market.cap_group_id != cap_group_id
                 };
                 let _decision = TimelockDecision::from_membership_change(changed)
                     .map_err(|_| RuntimeError::invalid_input("membership unchanged"))?;
 
-                if let Some(group_id) = cap_group_id.as_ref() {
-                    if !self.policy_state.cap_groups.contains_key(group_id) {
-                        self.policy_state
-                            .cap_groups
-                            .insert(group_id.clone(), CapGroupRecord::default());
-                    }
-                }
-
-                let market = self
-                    .policy_state
-                    .markets
-                    .get_mut(&market_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
-                market.cap_group_id = cap_group_id;
-                self.policy_state.refresh_cap_group_principals();
+                self.policy_state
+                    .set_market_cap_group(market_id, cap_group_id)
+                    .map_err(|error| match error {
+                        templar_curator_primitives::policy::state::PolicyStateError::UnknownCapGroup {
+                            ..
+                        } => RuntimeError::invalid_input("cap group not found"),
+                        templar_curator_primitives::policy::state::PolicyStateError::UnknownMarket {
+                            ..
+                        }
+                        | templar_curator_primitives::policy::state::PolicyStateError::PrincipalOverflow {
+                            ..
+                        } => RuntimeError::invalid_input("market not found"),
+                    })?;
             }
         }
 
@@ -1158,7 +1140,7 @@ where
 
     pub fn supply_queue_targets(&self) -> Vec<TargetId> {
         self.policy_state
-            .supply_queue
+            .supply_queue()
             .entries
             .iter()
             .map(|entry| entry.target_id)

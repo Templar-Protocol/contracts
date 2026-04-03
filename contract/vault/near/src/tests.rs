@@ -348,6 +348,7 @@ fn prop_address_book_rebuilds_to_live_queue_and_op_state() {
 
                 c.set_op_state(OpState::Withdrawing(WithdrawingState {
                     op_id: 7,
+                    request_id: 7,
                     index: 0,
                     remaining,
                     collected: 0,
@@ -1055,6 +1056,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 1,
+        request_id: 1,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(9)),
@@ -1140,6 +1142,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 2,
+        request_id: 2,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(10)),
@@ -1202,6 +1205,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
+        request_id: 42,
         index: 0,
         remaining: 300,
         receiver: account_id_to_address(&mk(11)),
@@ -1265,6 +1269,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 43,
+        request_id: 43,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(12)),
@@ -1443,7 +1448,7 @@ fn rebalance_balance_read_failure_stops_operation() {
 
     let op_id = 11;
 
-    c.market_execution_lock.lock(market_id);
+    c.market_execution_lock.lock(market_id, op_id, u64::MAX / 2);
     c.op_state = OpState::Allocating(AllocatingState {
         op_id,
         index: 0,
@@ -4148,6 +4153,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 99,
+        request_id: 99,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(9)),
@@ -4214,6 +4220,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: real_op,
+        request_id: real_op,
         index: real_idx,
         remaining: 1,
         receiver: account_id_to_address(&mk(9)),
@@ -4378,6 +4385,7 @@ fn ctx_withdrawing_ok_and_err() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
+        request_id: 7,
         index: 1,
         remaining: 50,
         receiver: account_id_to_address(&recv),
@@ -4491,6 +4499,7 @@ fn after_create_withdraw_req_success_returns_promise(
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 21,
+        request_id: 21,
         index: 0,
         remaining: 60,
         receiver: account_id_to_address(&receiver),
@@ -4810,7 +4819,7 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
 
     let market = MarketId(999);
     c.withdraw_route = vec![market].into();
-    c.market_execution_lock.lock(market);
+    c.market_execution_lock.lock(market, 2, u64::MAX / 2);
 
     c.idle_balance = 123;
     c.op_state = OpState::Payout(PayoutState {
@@ -4952,6 +4961,7 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     c.withdraw_route = vec![MarketId(1001)].into();
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
+        request_id: 42,
         index: 0,
         remaining: 1,
         receiver: account_id_to_address(&receiver),
@@ -5085,6 +5095,64 @@ fn unbrick_noop_when_not_withdrawing() {
 }
 
 #[test]
+fn unbrick_noop_when_payout_state_is_ambiguous() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let receiver = mk(29);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    let head_before = c.queue_tail();
+    c.insert_pending_withdrawal_for_tests(
+        head_before,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    c.op_state = OpState::Payout(PayoutState {
+        op_id: 88,
+        receiver: account_id_to_address(&receiver),
+        amount: 1,
+        owner: account_id_to_address(&owner),
+        escrow_shares: escrow,
+        burn_shares: escrow,
+    });
+
+    let len_before = c.pending_withdrawals_len();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let supply_before = c.total_supply();
+
+    let res = c.unbrick();
+    match res {
+        PromiseOrValue::Value(()) => {}
+        _ => panic!("Expected Value(()) from unbrick"),
+    }
+
+    assert!(matches!(
+        c.op_state,
+        OpState::Payout(PayoutState { op_id: 88, .. })
+    ));
+    assert_eq!(c.pending_withdrawals_len(), len_before);
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before
+    );
+    assert_eq!(c.balance_of(&owner), owner_before);
+    assert_eq!(c.total_supply(), supply_before);
+    assert_eq!(c.withdraw_queue.next_withdraw_to_execute, head_before);
+}
+
+#[test]
 fn sentinel_can_unbrick_withdrawing_state() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
@@ -5111,6 +5179,7 @@ fn sentinel_can_unbrick_withdrawing_state() {
     c.withdraw_route = vec![MarketId(1901)].into();
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 77,
+        request_id: 77,
         index: 0,
         remaining: 1,
         receiver: account_id_to_address(&receiver),
@@ -5766,6 +5835,7 @@ fn address_book_keeps_live_withdrawing_addresses_off_queue() {
 
     c.set_op_state(OpState::Withdrawing(WithdrawingState {
         op_id: 42,
+        request_id: 42,
         index: 0,
         remaining: 5,
         collected: 0,
