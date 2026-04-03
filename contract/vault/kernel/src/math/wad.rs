@@ -61,7 +61,15 @@ mod postcard_serde_impl {
         where
             S: Serializer,
         {
-            Serialize::serialize(&self.0, serializer)
+            #[cfg(feature = "soroban")]
+            {
+                return self.0.serialize(serializer);
+            }
+
+            #[cfg(not(feature = "soroban"))]
+            {
+                Serialize::serialize(&self.0, serializer)
+            }
         }
     }
 
@@ -70,7 +78,15 @@ mod postcard_serde_impl {
         where
             D: Deserializer<'de>,
         {
-            <Number as Deserialize>::deserialize(deserializer).map(Wad)
+            #[cfg(feature = "soroban")]
+            {
+                return u128::deserialize(deserializer).map(|value| Wad(Number::from(value)));
+            }
+
+            #[cfg(not(feature = "soroban"))]
+            {
+                <Number as Deserialize>::deserialize(deserializer).map(Wad)
+            }
         }
     }
 }
@@ -179,7 +195,7 @@ impl Wad {
     #[inline]
     #[must_use]
     pub fn apply_floored(self, amount: Number) -> Number {
-        Number::mul_div_floor(amount, self.0, Number::from(Self::SCALE))
+        mul_wad_floor(amount, self)
     }
 }
 
