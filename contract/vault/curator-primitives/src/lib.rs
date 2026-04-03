@@ -38,7 +38,6 @@ pub use policy::{
         set_cap_group_record_absolute_cap, set_cap_group_record_relative_cap,
     },
     cooldown::{Cooldown, CooldownError},
-    duplicate::{find_first_duplicate, has_unique_items},
     market_lock::{
         AcquireLeaseError, FencingError, FencingToken, LeaseDurationNs, LeaseOwner, MarketLease,
         MarketLeaseRegistry, ReleaseLeaseError,
@@ -51,6 +50,7 @@ pub use policy::{
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
     target_set::{
         build_refresh_plan_from_targets, build_withdraw_capacity_pairs_from_target_principals,
+        find_first_duplicate, has_unique_items,
     },
     withdraw_route::{
         withdraw_plan_from_principals, WithdrawPlanEntry, WithdrawRoute, WithdrawRouteEntry,

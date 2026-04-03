@@ -12,8 +12,8 @@ use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use crate::policy::withdraw_route::{build_withdraw_route, WithdrawRoute, WithdrawRouteEntry};
 #[cfg(feature = "recovery")]
 use crate::recovery::{
-    compute_recovery_stats, compute_settlement_shares, determine_recovery_action, RecoveryContext,
-    RecoveryProgress,
+    compute_recovery_stats, compute_settlement_shares, determine_recovery_action,
+    PayoutRecoveryEvidence, RecoveryContext, RecoveryProgress,
 };
 #[cfg(feature = "recovery")]
 use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
@@ -210,6 +210,39 @@ mod auth_unit_tests {
     }
 
     #[test]
+    fn test_allowed_while_paused_whitelist() {
+        for action in [
+            ActionKind::Pause,
+            ActionKind::SetRestrictions,
+            ActionKind::AbortAllocating,
+            ActionKind::AbortWithdrawing,
+            ActionKind::AbortRefreshing,
+            ActionKind::ManualReconcile,
+            ActionKind::EmergencyReset,
+        ] {
+            assert!(allowed_while_paused(action));
+        }
+
+        for action in [
+            ActionKind::Deposit,
+            ActionKind::RequestWithdraw,
+            ActionKind::ExecuteWithdraw,
+            ActionKind::BeginAllocating,
+            ActionKind::FinishAllocating,
+            ActionKind::SyncExternalAssets,
+            ActionKind::RebalanceWithdraw,
+            ActionKind::BeginRefreshing,
+            ActionKind::FinishRefreshing,
+            ActionKind::SettlePayout,
+            ActionKind::RefreshFees,
+            ActionKind::PolicyAdmin,
+            ActionKind::AtomicWithdraw,
+        ] {
+            assert!(!allowed_while_paused(action));
+        }
+    }
+
+    #[test]
     fn test_permissive_auth() {
         let auth = TestPermissiveAuth;
         let caller = Address([0u8; 32]);
@@ -368,35 +401,28 @@ fn golden_cap_group_allocation_validation(near_snapshot: NearVaultSnapshot) {
 
 #[test]
 fn golden_supply_queue_to_plan() {
-    // Simulate a supply queue with multiple entries for the same target
     let mut queue = SupplyQueue::default();
 
-    // Add entries simulating batched deposits
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(0, 500_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(0, 500_000_000_000).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(1, 300_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(1, 300_000_000_000).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(0, 200_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(0, 200_000_000_000).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(2, 400_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(2, 400_000_000_000).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(1, 100_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(1, 100_000_000_000).unwrap())
         .unwrap();
 
-    // Expected total: 1.5M
-    let total = queue.total();
+    let total = queue.total().unwrap();
     assert_eq!(total, 1_500_000_000_000);
 
-    // Expected plan (aggregated by target):
-    // Target 0: 700_000_000_000 (0.7M)
-    // Target 1: 400_000_000_000 (0.4M)
-    // Target 2: 400_000_000_000 (0.4M)
-    let plan = queue.to_allocation_plan();
+    let plan = queue.to_allocation_plan().unwrap();
 
     let target_0_amount = plan.iter().find(|(id, _)| *id == 0).map(|(_, a)| *a);
     let target_1_amount = plan.iter().find(|(id, _)| *id == 1).map(|(_, a)| *a);
@@ -412,45 +438,24 @@ fn golden_supply_queue_priority_ordering() {
     let mut queue = SupplyQueue::default();
 
     // Add entries with different priorities
-    queue = queue
-        .enqueue(
-            SupplyQueueEntry::builder()
-                .target_id(0_u32)
-                .amount(100_000_000_000_u128)
-                .priority(0)
-                .build(),
-        )
+    queue
+        .enqueue(SupplyQueueEntry::new_with_priority(0, 100_000_000_000_u128, 0).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(
-            SupplyQueueEntry::builder()
-                .target_id(1_u32)
-                .amount(200_000_000_000_u128)
-                .priority(5)
-                .build(),
-        )
+    queue
+        .enqueue(SupplyQueueEntry::new_with_priority(1, 200_000_000_000_u128, 5).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(
-            SupplyQueueEntry::builder()
-                .target_id(2_u32)
-                .amount(300_000_000_000_u128)
-                .priority(10)
-                .build(),
-        )
+    queue
+        .enqueue(SupplyQueueEntry::new_with_priority(2, 300_000_000_000_u128, 10).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(
-            SupplyQueueEntry::builder()
-                .target_id(3_u32)
-                .amount(400_000_000_000_u128)
-                .priority(3)
-                .build(),
-        )
+    queue
+        .enqueue(SupplyQueueEntry::new_with_priority(3, 400_000_000_000_u128, 3).unwrap())
         .unwrap();
 
-    // Expected order by priority (highest first): 2, 1, 3, 0
-    let entries: Vec<u32> = queue.entries.iter().map(|e| e.target_id).collect();
+    let entries: Vec<u32> = queue
+        .entries()
+        .iter()
+        .map(SupplyQueueEntry::target_id)
+        .collect();
     assert_eq!(entries, vec![2, 1, 3, 0]);
 }
 
@@ -469,33 +474,34 @@ fn golden_withdraw_route_from_principals(near_snapshot: NearVaultSnapshot) {
     assert!(route.validate().is_ok());
 
     // Route total should cover target
-    let route_total = route.total();
+    let route_total = route.checked_total().unwrap();
     assert!(route_total >= target_amount);
 
     // Markets should be sorted by principal (largest first)
     // Expected order: 0 (3M), 1 (2.5M), 2 (1.5M)
-    assert_eq!(route.entries[0].target_id, 0);
-    assert_eq!(route.entries[1].target_id, 1);
-    assert_eq!(route.entries[2].target_id, 2);
+    assert_eq!(route.entries()[0].target_id(), 0);
+    assert_eq!(route.entries()[1].target_id(), 1);
+    assert_eq!(route.entries()[2].target_id(), 2);
 }
 
 #[test]
 fn golden_withdraw_route_validation() {
     // Create a manually constructed route
-    let route = WithdrawRoute::from_entries(
+    let route = WithdrawRoute::new(
         vec![
-            WithdrawRouteEntry::new(0, 1_000_000_000_000),
-            WithdrawRouteEntry::new(1, 800_000_000_000),
-            WithdrawRouteEntry::new(2, 500_000_000_000),
+            WithdrawRouteEntry::new(0, 1_000_000_000_000).unwrap(),
+            WithdrawRouteEntry::new(1, 800_000_000_000).unwrap(),
+            WithdrawRouteEntry::new(2, 500_000_000_000).unwrap(),
         ],
         2_000_000_000_000,
-    );
+    )
+    .unwrap();
 
     // Should be valid (total 2.3M >= target 2M)
     assert!(route.validate().is_ok());
 
     // Route total
-    assert_eq!(route.total(), 2_300_000_000_000);
+    assert_eq!(route.checked_total().unwrap(), 2_300_000_000_000);
 }
 
 // Golden Test: Refresh Plan
@@ -509,11 +515,9 @@ fn golden_refresh_plan_building(near_snapshot: NearVaultSnapshot) {
         .map(|(id, _)| *id)
         .collect();
 
-    // Build refresh plan for all markets
-    let plan = build_refresh_plan(&enabled_targets, Some(30_000_000_000)).unwrap();
+    let plan = build_refresh_plan(&enabled_targets).unwrap();
 
-    assert_eq!(plan.len(), 3); // 3 markets
-    assert_eq!(plan.cooldown_ns(), 30_000_000_000); // 30 seconds
+    assert_eq!(plan.len(), 3);
 }
 
 #[cfg(feature = "recovery")]
@@ -532,9 +536,11 @@ fn golden_recovery_allocating_state() {
         ],
     });
 
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let progress = RecoveryProgress::new(0);
-    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+    let ctx = RecoveryContext::after_inactivity(1_000_000_000_000, 1);
+    let progress = RecoveryProgress::new(42, 0);
+    let action = determine_recovery_action(&state, &ctx, &progress, None)
+        .expect("expected action")
+        .expect("expected action");
 
     match action {
         KernelAction::AbortAllocating {
@@ -559,6 +565,7 @@ fn golden_recovery_allocating_state() {
 fn golden_recovery_withdrawing_state() {
     let state = OpState::Withdrawing(WithdrawingState {
         op_id: 43,
+        request_id: 43,
         index: 1,
         remaining: 400_000_000_000,
         collected: 600_000_000_000,
@@ -567,9 +574,11 @@ fn golden_recovery_withdrawing_state() {
         escrow_shares: 1_000_000_000_000,
     });
 
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let progress = RecoveryProgress::new(0);
-    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+    let ctx = RecoveryContext::after_inactivity(1_000_000_000_000, 1);
+    let progress = RecoveryProgress::new(43, 0);
+    let action = determine_recovery_action(&state, &ctx, &progress, None)
+        .expect("expected action")
+        .expect("expected action");
 
     match action {
         KernelAction::AbortWithdrawing {
@@ -588,6 +597,8 @@ fn golden_recovery_withdrawing_state() {
 fn golden_recovery_payout_state() {
     let state = OpState::Payout(PayoutState {
         op_id: 44,
+        request_id: 44,
+        request_id: 44,
         receiver: receiver_addr(1),
         amount: 1_000_000_000_000,
         owner: owner_addr(1),
@@ -595,23 +606,23 @@ fn golden_recovery_payout_state() {
         burn_shares: 400_000_000_000,
     });
 
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let progress = RecoveryProgress::new(0);
-    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+    let ctx = RecoveryContext::after_inactivity(1_000_000_000_000, 1);
+    let progress = RecoveryProgress::new(44, 0);
+    let action = determine_recovery_action(
+        &state,
+        &ctx,
+        &progress,
+        Some(PayoutRecoveryEvidence::Failure {
+            restore_idle: 1_000_000_000_000,
+        }),
+    )
+    .expect("expected action")
+    .expect("expected action");
 
     match action {
         KernelAction::SettlePayout { op_id, outcome } => {
             assert_eq!(op_id, 44);
-            match outcome {
-                PayoutOutcome::Failure {
-                    restore_idle,
-                    refund_shares,
-                } => {
-                    assert_eq!(restore_idle, 1_000_000_000_000);
-                    assert_eq!(refund_shares, 500_000_000_000); // Full refund
-                }
-                _ => panic!("Expected failure outcome"),
-            }
+            assert_eq!(outcome, PayoutOutcome::Failure);
         }
         _ => panic!("Expected SettlePayout"),
     }
@@ -647,7 +658,8 @@ fn golden_settlement_shares_cases(
     #[case] expected_burn: u128,
     #[case] expected_refund: u128,
 ) {
-    let settlement = compute_settlement_shares(escrow, expected, collected);
+    let settlement = compute_settlement_shares(escrow, expected, collected)
+        .expect("golden settlement inputs should be valid");
     assert_eq!(settlement.to_burn, expected_burn);
     assert_eq!(settlement.refund, expected_refund);
 }
@@ -659,7 +671,8 @@ fn golden_settlement_shares_large_values() {
     let expected = u128::MAX / 4;
     let collected = expected / 2;
 
-    let settlement = compute_settlement_shares(escrow, expected, collected);
+    let settlement = compute_settlement_shares(escrow, expected, collected)
+        .expect("golden settlement inputs should be valid");
 
     assert!(settlement.to_burn <= escrow);
     assert_eq!(settlement.to_burn + settlement.refund, escrow);
@@ -671,21 +684,19 @@ fn golden_settlement_shares_large_values() {
 fn golden_full_allocation_cycle(near_snapshot: NearVaultSnapshot) {
     let snapshot = near_snapshot;
 
-    // Step 1: Create supply queue with batched deposits (1M total)
     let mut queue = SupplyQueue::default();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(0, 400_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(0, 400_000_000_000).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(1, 300_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(1, 300_000_000_000).unwrap())
         .unwrap();
-    queue = queue
-        .enqueue(SupplyQueueEntry::new(2, 300_000_000_000))
+    queue
+        .enqueue(SupplyQueueEntry::new(2, 300_000_000_000).unwrap())
         .unwrap();
 
-    // Step 2: Convert to allocation plan
-    let plan = queue.to_allocation_plan();
-    assert_eq!(queue.total(), 1_000_000_000_000);
+    let plan = queue.to_allocation_plan().unwrap();
+    assert_eq!(queue.total().unwrap(), 1_000_000_000_000);
 
     // Step 3: Validate against cap groups
     // Market 0 -> "stable" group: 3M + 0.4M = 3.4M < 5M cap (OK)
@@ -725,16 +736,13 @@ fn golden_full_allocation_cycle(near_snapshot: NearVaultSnapshot) {
 fn golden_refresh_after_allocation(near_snapshot: NearVaultSnapshot) {
     let snapshot = near_snapshot;
 
-    // Build refresh plan for all markets
     let enabled_targets: Vec<u32> = snapshot
         .market_principals
         .iter()
         .map(|(id, _)| *id)
         .collect();
-    let plan = build_refresh_plan(&enabled_targets, None).unwrap();
+    let plan = build_refresh_plan(&enabled_targets).unwrap();
 
-    // Validate plan
-    // Simulate refreshing state
     let state = OpState::Refreshing(RefreshingState {
         op_id: 100,
         index: 1,
@@ -742,9 +750,11 @@ fn golden_refresh_after_allocation(near_snapshot: NearVaultSnapshot) {
     });
 
     // Check recovery from stuck refresh
-    let ctx = RecoveryContext::new(1_000_000_000_000);
-    let progress = RecoveryProgress::new(0);
-    let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+    let ctx = RecoveryContext::after_inactivity(1_000_000_000_000, 1);
+    let progress = RecoveryProgress::new(100, 0);
+    let action = determine_recovery_action(&state, &ctx, &progress, None)
+        .expect("expected action")
+        .expect("expected action");
 
     match action {
         KernelAction::AbortRefreshing { op_id } => {
@@ -1039,9 +1049,9 @@ mod recovery_unit_tests {
 
     use crate::recovery::{
         compute_payout_failure_outcome, compute_payout_success_outcome, compute_recovery_stats,
-        compute_settlement_shares, determine_recovery_action, handle_allocation_failure,
-        handle_payout_failure, handle_payout_failure_default, handle_refresh_failure,
-        handle_withdrawal_failure, RecoveryContext, RecoveryOutcome, RecoveryProgress,
+        compute_settlement_shares, determine_recovery_action, plan_allocation_recovery,
+        plan_payout_recovery, plan_refresh_recovery, plan_withdrawal_recovery,
+        PayoutRecoveryEvidence, RecoveryContext, RecoveryError, RecoveryOutcome, RecoveryProgress,
     };
     use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
     use templar_vault_kernel::{
@@ -1054,9 +1064,10 @@ mod recovery_unit_tests {
         let state = OpState::Idle;
 
         let ctx = RecoveryContext::new(1000);
-        let progress = RecoveryProgress::new(0);
+        let progress = RecoveryProgress::new(0, 0);
 
-        let action = determine_recovery_action(&state, &ctx, &progress);
+        let action = determine_recovery_action(&state, &ctx, &progress, None)
+            .expect("idle should not error");
 
         assert!(action.is_none());
     }
@@ -1075,10 +1086,12 @@ mod recovery_unit_tests {
             ],
         });
 
-        let ctx = RecoveryContext::new(1000);
-        let progress = RecoveryProgress::new(0);
+        let ctx = RecoveryContext::after_inactivity(1000, 500);
+        let progress = RecoveryProgress::new(1, 0);
 
-        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+        let action = determine_recovery_action(&state, &ctx, &progress, None)
+            .expect("expected action")
+            .expect("expected action");
 
         match action {
             KernelAction::AbortAllocating {
@@ -1101,10 +1114,11 @@ mod recovery_unit_tests {
             plan: vec![AllocationPlanEntry::new(0, 100)],
         });
 
-        let ctx = RecoveryContext::with_stuck_threshold(1_000, 500);
-        let progress = RecoveryProgress::with_last_progress(900, 900);
+        let ctx = RecoveryContext::after_inactivity(1_000, 500);
+        let progress = RecoveryProgress::with_last_progress(10, 900, 900);
 
-        let action = determine_recovery_action(&state, &ctx, &progress);
+        let action = determine_recovery_action(&state, &ctx, &progress, None)
+            .expect("progress should be valid");
         assert!(action.is_none());
     }
 
@@ -1118,16 +1132,19 @@ mod recovery_unit_tests {
         });
 
         let ctx = RecoveryContext::forced(1_000);
-        let progress = RecoveryProgress::with_last_progress(999, 999);
+        let progress = RecoveryProgress::with_last_progress(11, 999, 999);
 
-        let action = determine_recovery_action(&state, &ctx, &progress);
-        assert!(action.is_some());
+        let action = determine_recovery_action(&state, &ctx, &progress, None);
+        assert!(action
+            .expect("recovery evaluation should succeed")
+            .is_some());
     }
 
     #[test]
     fn test_determine_recovery_action_withdrawing() {
         let state = OpState::Withdrawing(WithdrawingState {
             op_id: 2,
+            request_id: 2,
             index: 1,
             remaining: 400,
             collected: 600,
@@ -1136,10 +1153,12 @@ mod recovery_unit_tests {
             escrow_shares: 1000,
         });
 
-        let ctx = RecoveryContext::new(1000);
-        let progress = RecoveryProgress::new(0);
+        let ctx = RecoveryContext::after_inactivity(1000, 500);
+        let progress = RecoveryProgress::new(2, 0);
 
-        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+        let action = determine_recovery_action(&state, &ctx, &progress, None)
+            .expect("expected action")
+            .expect("expected action");
 
         match action {
             KernelAction::AbortWithdrawing {
@@ -1161,10 +1180,12 @@ mod recovery_unit_tests {
             plan: vec![0, 1, 2],
         });
 
-        let ctx = RecoveryContext::new(1000);
-        let progress = RecoveryProgress::new(0);
+        let ctx = RecoveryContext::after_inactivity(1000, 500);
+        let progress = RecoveryProgress::new(3, 0);
 
-        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+        let action = determine_recovery_action(&state, &ctx, &progress, None)
+            .expect("expected action")
+            .expect("expected action");
 
         match action {
             KernelAction::AbortRefreshing { op_id } => {
@@ -1175,9 +1196,10 @@ mod recovery_unit_tests {
     }
 
     #[test]
-    fn test_determine_recovery_action_payout() {
+    fn test_determine_recovery_action_payout_requires_evidence() {
         let state = OpState::Payout(PayoutState {
             op_id: 4,
+            request_id: 4,
             receiver: receiver_addr(1),
             amount: 1000,
             owner: owner_addr(1),
@@ -1185,79 +1207,111 @@ mod recovery_unit_tests {
             burn_shares: 400,
         });
 
-        let ctx = RecoveryContext::new(1000);
-        let progress = RecoveryProgress::new(0);
+        let ctx = RecoveryContext::after_inactivity(1000, 500);
+        let progress = RecoveryProgress::new(4, 0);
 
-        let action = determine_recovery_action(&state, &ctx, &progress).expect("expected action");
+        let action = determine_recovery_action(&state, &ctx, &progress, None);
+
+        assert_eq!(action, Err(RecoveryError::UnknownPayoutState { op_id: 4 }));
+    }
+
+    #[test]
+    fn test_determine_recovery_action_payout_with_failure_evidence() {
+        let state = OpState::Payout(PayoutState {
+            op_id: 4,
+            request_id: 4,
+            request_id: 4,
+            receiver: receiver_addr(1),
+            amount: 1000,
+            owner: owner_addr(1),
+            escrow_shares: 500,
+            burn_shares: 400,
+        });
+
+        let ctx = RecoveryContext::after_inactivity(1000, 500);
+        let progress = RecoveryProgress::new(4, 0);
+
+        let action = determine_recovery_action(
+            &state,
+            &ctx,
+            &progress,
+            Some(PayoutRecoveryEvidence::Failure { restore_idle: 1000 }),
+        )
+        .expect("expected action")
+        .expect("expected action");
 
         match action {
             KernelAction::SettlePayout { op_id, outcome } => {
                 assert_eq!(op_id, 4);
-                match outcome {
-                    PayoutOutcome::Failure {
-                        restore_idle,
-                        refund_shares,
-                    } => {
-                        assert_eq!(restore_idle, 1000);
-                        assert_eq!(refund_shares, 500);
-                    }
-                    _ => panic!("Expected failure outcome"),
-                }
+                assert_eq!(outcome, PayoutOutcome::Failure);
             }
             _ => panic!("Expected SettlePayout"),
         }
     }
 
     #[rstest::rstest]
-    #[case(1000, 500, 500, 1000, 0)] // full collection
-    #[case(1000, 500, 250, 500, 500)] // partial collection
-    #[case(1000, 500, 600, 1000, 0)] // over collection
-    #[case(1000, 0, 0, 0, 1000)] // zero expected
-    #[case(0, 500, 250, 0, 0)] // zero escrow
+    #[case(1000, 500, 500, Ok((1000, 0)))]
+    #[case(1000, 500, 250, Ok((500, 500)))]
+    #[case(1000, 500, 600, Err(RecoveryError::CollectedExceedsExpected { expected_amount: 500, collected_amount: 600 }))]
+    #[case(1000, 0, 0, Err(RecoveryError::ExpectedAmountZero { escrow_shares: 1000, collected_amount: 0 }))]
+    #[case(0, 500, 250, Ok((0, 0)))]
     fn test_compute_settlement_shares_cases(
         #[case] escrow: u128,
         #[case] expected: u128,
         #[case] collected: u128,
-        #[case] expected_burn: u128,
-        #[case] expected_refund: u128,
+        #[case] expected_result: Result<(u128, u128), RecoveryError>,
     ) {
         let settlement = compute_settlement_shares(escrow, expected, collected);
-        assert_eq!(settlement.to_burn, expected_burn);
-        assert_eq!(settlement.refund, expected_refund);
+        match (settlement, expected_result) {
+            (Ok(settlement), Ok((expected_burn, expected_refund))) => {
+                assert_eq!(settlement.to_burn, expected_burn);
+                assert_eq!(settlement.refund, expected_refund);
+            }
+            (Err(actual_error), Err(expected_error)) => assert_eq!(actual_error, expected_error),
+            (actual, expected) => {
+                panic!("unexpected settlement result: actual={actual:?} expected={expected:?}")
+            }
+        }
     }
 
     #[test]
     fn test_compute_payout_success_outcome_maps_settlement() {
-        let outcome = compute_payout_success_outcome(1000, 500, 250);
-        match outcome {
-            PayoutOutcome::Success {
-                burn_shares,
-                refund_shares,
-            } => {
-                assert_eq!(burn_shares, 500);
-                assert_eq!(refund_shares, 500);
-            }
-            _ => panic!("Expected success outcome"),
-        }
+        let outcome = compute_payout_success_outcome(1000, 500, 250).expect("valid payout success");
+        assert_eq!(outcome, PayoutOutcome::Success);
     }
 
     #[test]
     fn test_compute_payout_failure_outcome_refunds_all() {
         let outcome = compute_payout_failure_outcome(1000, 250);
-        match outcome {
-            PayoutOutcome::Failure {
-                restore_idle,
-                refund_shares,
-            } => {
-                assert_eq!(restore_idle, 250);
-                assert_eq!(refund_shares, 1000);
-            }
-            _ => panic!("Expected failure outcome"),
-        }
+        assert_eq!(outcome, PayoutOutcome::Failure);
     }
 
     #[test]
-    fn test_handle_allocation_failure() {
+    fn test_determine_recovery_action_rejects_invalid_progress_timestamps() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 77,
+            index: 0,
+            remaining: 100,
+            plan: vec![AllocationPlanEntry::new(0, 100)],
+        });
+
+        let ctx = RecoveryContext::forced(1_000);
+        let progress = RecoveryProgress::with_last_progress(77, 900, 1_100);
+
+        let action = determine_recovery_action(&state, &ctx, &progress, None);
+
+        assert_eq!(
+            action,
+            Err(RecoveryError::InvalidProgressTimestamps {
+                started_at_ns: 900,
+                last_progress_ns: 1_100,
+                current_ns: 1_000,
+            })
+        );
+    }
+
+    #[test]
+    fn test_plan_allocation_recovery() {
         let state = AllocatingState {
             op_id: 1,
             index: 2,
@@ -1269,9 +1323,9 @@ mod recovery_unit_tests {
             ],
         };
 
-        let outcome = handle_allocation_failure(&state, "Market unavailable");
+        let outcome = plan_allocation_recovery(&state, "Market unavailable");
 
-        assert!(outcome.success);
+        assert!(outcome.planned);
         assert_eq!(outcome.message, Some(String::from("Market unavailable")));
         match outcome.action {
             KernelAction::AbortAllocating {
@@ -1286,9 +1340,10 @@ mod recovery_unit_tests {
     }
 
     #[test]
-    fn test_handle_withdrawal_failure() {
+    fn test_plan_withdrawal_recovery() {
         let state = WithdrawingState {
             op_id: 2,
+            request_id: 2,
             index: 1,
             remaining: 400,
             collected: 600,
@@ -1297,9 +1352,9 @@ mod recovery_unit_tests {
             escrow_shares: 1000,
         };
 
-        let outcome = handle_withdrawal_failure(&state, "Insufficient liquidity");
+        let outcome = plan_withdrawal_recovery(&state, "Insufficient liquidity");
 
-        assert!(outcome.success);
+        assert!(outcome.planned);
         match outcome.action {
             KernelAction::AbortWithdrawing {
                 op_id,
@@ -1313,16 +1368,16 @@ mod recovery_unit_tests {
     }
 
     #[test]
-    fn test_handle_refresh_failure() {
+    fn test_plan_refresh_recovery() {
         let state = RefreshingState {
             op_id: 3,
             index: 1,
             plan: vec![0, 1, 2],
         };
 
-        let outcome = handle_refresh_failure(&state, "Oracle unavailable");
+        let outcome = plan_refresh_recovery(&state, "Oracle unavailable");
 
-        assert!(outcome.success);
+        assert!(outcome.planned);
         match outcome.action {
             KernelAction::AbortRefreshing { op_id } => {
                 assert_eq!(op_id, 3);
@@ -1332,9 +1387,10 @@ mod recovery_unit_tests {
     }
 
     #[test]
-    fn test_handle_payout_failure() {
+    fn test_plan_payout_recovery_failure() {
         let state = PayoutState {
             op_id: 4,
+            request_id: 4,
             receiver: receiver_addr(1),
             amount: 1000,
             owner: owner_addr(1),
@@ -1342,31 +1398,28 @@ mod recovery_unit_tests {
             burn_shares: 400,
         };
 
-        let outcome = handle_payout_failure(&state, 1000, "Transfer rejected");
+        let outcome = plan_payout_recovery(
+            &state,
+            PayoutRecoveryEvidence::Failure { restore_idle: 1000 },
+            "Transfer rejected",
+        )
+        .expect("payout failure planning should succeed");
 
-        assert!(outcome.success);
+        assert!(outcome.planned);
         match outcome.action {
             KernelAction::SettlePayout { op_id, outcome } => {
                 assert_eq!(op_id, 4);
-                match outcome {
-                    PayoutOutcome::Failure {
-                        restore_idle,
-                        refund_shares,
-                    } => {
-                        assert_eq!(restore_idle, 1000);
-                        assert_eq!(refund_shares, 500);
-                    }
-                    _ => panic!("Expected failure outcome"),
-                }
+                assert_eq!(outcome, PayoutOutcome::Failure);
             }
             _ => panic!("Expected SettlePayout"),
         }
     }
 
     #[test]
-    fn test_handle_payout_failure_default_uses_amount() {
+    fn test_plan_payout_recovery_success() {
         let state = PayoutState {
             op_id: 5,
+            request_id: 5,
             receiver: receiver_addr(2),
             amount: 1500,
             owner: owner_addr(2),
@@ -1374,24 +1427,63 @@ mod recovery_unit_tests {
             burn_shares: 0,
         };
 
-        let outcome = handle_payout_failure_default(&state, "Transfer rejected");
+        let outcome = plan_payout_recovery(
+            &state,
+            PayoutRecoveryEvidence::Success {
+                collected_amount: 1500,
+            },
+            "Transfer completed",
+        )
+        .expect("payout success planning should succeed");
 
         match outcome.action {
             KernelAction::SettlePayout { op_id, outcome } => {
                 assert_eq!(op_id, 5);
-                match outcome {
-                    PayoutOutcome::Failure {
-                        restore_idle,
-                        refund_shares,
-                    } => {
-                        assert_eq!(restore_idle, 1500);
-                        assert_eq!(refund_shares, 750);
-                    }
-                    _ => panic!("Expected failure outcome"),
-                }
+                assert_eq!(outcome, PayoutOutcome::Success);
             }
             _ => panic!("Expected SettlePayout"),
         }
+    }
+
+    #[test]
+    fn test_determine_recovery_action_rejects_progress_for_wrong_op() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 99,
+            index: 0,
+            remaining: 100,
+            plan: vec![AllocationPlanEntry::new(0, 100)],
+        });
+
+        let ctx = RecoveryContext::forced(1000);
+        let progress = RecoveryProgress::new(100, 900);
+
+        let action = determine_recovery_action(&state, &ctx, &progress, None);
+
+        assert_eq!(
+            action,
+            Err(RecoveryError::ProgressOpMismatch {
+                expected_op_id: 99,
+                progress_op_id: 100,
+            })
+        );
+    }
+
+    #[test]
+    fn test_determine_recovery_action_uses_max_total_age() {
+        let state = OpState::Allocating(AllocatingState {
+            op_id: 12,
+            index: 0,
+            remaining: 100,
+            plan: vec![AllocationPlanEntry::new(0, 100)],
+        });
+
+        let ctx = RecoveryContext::after_inactivity_with_max_age(1_000, 500, 900);
+        let progress = RecoveryProgress::with_last_progress(12, 0, 950);
+
+        let action = determine_recovery_action(&state, &ctx, &progress, None)
+            .expect("progress should be valid");
+
+        assert!(action.is_some());
     }
 
     #[test]
@@ -1420,6 +1512,7 @@ mod recovery_unit_tests {
     fn test_compute_recovery_stats_withdrawing() {
         let state = OpState::Withdrawing(WithdrawingState {
             op_id: 2,
+            request_id: 2,
             index: 3,
             remaining: 400,
             collected: 600,
@@ -1466,17 +1559,13 @@ mod recovery_unit_tests {
     fn test_recovery_outcome_creation() {
         let action = KernelAction::AbortRefreshing { op_id: 1 };
 
-        let success = RecoveryOutcome::success(action.clone());
-        assert!(success.success);
-        assert!(success.message.is_none());
+        let planned = RecoveryOutcome::planned(action.clone());
+        assert!(planned.planned);
+        assert!(planned.message.is_none());
 
-        let with_msg = RecoveryOutcome::success_with_message(action.clone(), "All good");
-        assert!(with_msg.success);
+        let with_msg = RecoveryOutcome::planned_with_message(action, "All good");
+        assert!(with_msg.planned);
         assert_eq!(with_msg.message, Some(String::from("All good")));
-
-        let failure = RecoveryOutcome::failure(action, "Something went wrong");
-        assert!(!failure.success);
-        assert_eq!(failure.message, Some(String::from("Something went wrong")));
     }
 }
 
@@ -1493,7 +1582,7 @@ mod governance_module_tests {
     fn pending_value_maturity_is_time_based() {
         let pending = PendingValue {
             value: "ok",
-            valid_at_ns: TimestampNs(1_000),
+            ready_at_ns: TimestampNs(1_000),
         };
 
         assert!(!pending.is_mature(TimestampNs(999)));
@@ -1503,10 +1592,13 @@ mod governance_module_tests {
 
     #[test]
     fn queue_take_by_key_enforces_timelock() {
-        let mut queue = PendingQueue::from(alloc::collections::VecDeque::from([PendingValue {
-            value: "change",
-            valid_at_ns: TimestampNs(1_000),
-        }]));
+        let mut queue =
+            PendingActions::from_restored_entries(alloc::collections::VecDeque::from([
+                PendingValue {
+                    value: "change",
+                    ready_at_ns: TimestampNs(1_000),
+                },
+            ]));
 
         let not_ready = queue.take_by_key(TimestampNs(999), &"change", identity_key);
         assert_eq!(
@@ -1524,7 +1616,7 @@ mod governance_module_tests {
 
     #[test]
     fn queue_take_by_key_reports_missing() {
-        let mut queue = PendingQueue::default();
+        let mut queue = PendingActions::default();
         queue.schedule("change", TimestampNs(1_000), DurationNs(10));
 
         assert_eq!(
@@ -1535,42 +1627,42 @@ mod governance_module_tests {
 
     #[test]
     fn queue_schedule_uses_delay_to_compute_maturity() {
-        let mut queue = PendingQueue::default();
+        let mut queue = PendingActions::default();
 
         queue.schedule("change", TimestampNs(1_000), DurationNs(50));
 
         assert_eq!(
-            queue.back().map(|entry| entry.valid_at_ns),
+            queue.back().map(|entry| entry.ready_at_ns),
             Some(TimestampNs(1_050))
         );
     }
 
     #[test]
     fn queue_schedule_zero_delay_is_ready_at_current_time() {
-        let mut queue = PendingQueue::default();
+        let mut queue = PendingActions::default();
 
         queue.schedule("change", TimestampNs(1_000), DurationNs::ZERO);
 
         let entry = queue.back().expect("scheduled entry must exist");
-        assert_eq!(entry.valid_at_ns, TimestampNs(1_000));
+        assert_eq!(entry.ready_at_ns, TimestampNs(1_000));
         assert!(entry.is_mature(TimestampNs(1_000)));
     }
 
     #[test]
     fn queue_schedule_overflow_saturates_ready_time() {
-        let mut queue = PendingQueue::default();
+        let mut queue = PendingActions::default();
 
         queue.schedule("change", TimestampNs(u64::MAX - 5), DurationNs(10));
 
         assert_eq!(
-            queue.back().map(|entry| entry.valid_at_ns),
+            queue.back().map(|entry| entry.ready_at_ns),
             Some(TimestampNs(u64::MAX))
         );
     }
 
     #[test]
     fn queue_schedule_replacing_supersedes_existing_key() {
-        let mut queue = PendingQueue::default();
+        let mut queue = PendingActions::default();
         queue.schedule("old", TimestampNs(1_000), DurationNs(100));
 
         let scheduled = queue.schedule_replacing(
@@ -1582,10 +1674,10 @@ mod governance_module_tests {
         );
 
         assert_eq!(scheduled.replaced, alloc::vec!["old"]);
-        assert_eq!(scheduled.valid_at_ns, TimestampNs(1_250));
+        assert_eq!(scheduled.ready_at_ns, TimestampNs(1_250));
         assert_eq!(queue.len(), 1);
         assert_eq!(
-            queue.back().map(|entry| entry.valid_at_ns),
+            queue.back().map(|entry| entry.ready_at_ns),
             Some(TimestampNs(1_250))
         );
     }
@@ -1843,6 +1935,37 @@ mod rbac_module_tests {
     }
 
     #[rstest::rstest]
+    fn test_role_assignments_snapshot(curator_addr: Address, sentinel_addr: Address) {
+        let mut config = RbacConfig::with_curator(curator_addr);
+        config.add_role(sentinel_addr, Role::Sentinel);
+
+        let assignments = config.role_assignments();
+        assert_eq!(assignments.len(), 2);
+        assert!(assignments.contains(&RoleAssignment {
+            address: curator_addr,
+            role: Role::Curator,
+        }));
+        assert!(assignments.contains(&RoleAssignment {
+            address: sentinel_addr,
+            role: Role::Sentinel,
+        }));
+    }
+
+    fn assert_missing_role(
+        result: AuthResult<()>,
+        action: ActionKind,
+        policy_class: AuthPolicyClass,
+    ) {
+        assert!(matches!(
+            result,
+            Err(AuthError::MissingRole {
+                action: actual_action,
+                policy_class: actual_policy_class,
+            }) if actual_action == action && actual_policy_class == policy_class
+        ));
+    }
+
+    #[rstest::rstest]
     fn test_cannot_remove_last_curator(curator_addr: Address) {
         let mut config = RbacConfig::with_curator(curator_addr);
 
@@ -1877,7 +2000,11 @@ mod rbac_module_tests {
             .is_ok());
 
         let result = auth.authorize(ActionKind::ExecuteWithdraw, user_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ExecuteWithdraw,
+            AuthPolicyClass::Allocator,
+        );
     }
 
     #[rstest::rstest]
@@ -1897,7 +2024,11 @@ mod rbac_module_tests {
             .is_ok());
 
         let result = auth.authorize(ActionKind::AbortAllocating, user_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::AbortAllocating,
+            AuthPolicyClass::AllocatorEmergency,
+        );
     }
 
     #[rstest::rstest]
@@ -1914,10 +2045,10 @@ mod rbac_module_tests {
             .is_ok());
 
         let result = auth.authorize(ActionKind::Pause, guardian_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::Pause, AuthPolicyClass::Sentinel);
 
         let result = auth.authorize(ActionKind::Pause, user_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::Pause, AuthPolicyClass::Sentinel);
     }
 
     #[rstest::rstest]
@@ -1941,7 +2072,11 @@ mod rbac_module_tests {
             .is_ok());
 
         let result = auth.authorize(ActionKind::BeginAllocating, user_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::BeginAllocating,
+            AuthPolicyClass::Allocator,
+        );
     }
 
     #[rstest::rstest]
@@ -1960,7 +2095,7 @@ mod rbac_module_tests {
             .is_ok());
 
         let result = auth.authorize(ActionKind::Pause, curator_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::Pause, AuthPolicyClass::Sentinel);
 
         assert!(auth
             .authorize(ActionKind::BeginAllocating, curator_addr, None)
@@ -1985,10 +2120,18 @@ mod rbac_module_tests {
             .is_ok());
 
         let result = auth.authorize(ActionKind::ManualReconcile, allocator_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ManualReconcile,
+            AuthPolicyClass::Curator,
+        );
 
         let result = auth.authorize(ActionKind::ManualReconcile, guardian_addr, None);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ManualReconcile,
+            AuthPolicyClass::Curator,
+        );
     }
 
     #[rstest::rstest]
@@ -2032,6 +2175,18 @@ mod rbac_module_tests {
         assert!(auth
             .authorize(ActionKind::ManualReconcile, curator_addr, None)
             .is_ok());
+        assert!(auth
+            .authorize(ActionKind::AbortWithdrawing, sentinel_addr, None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::AbortRefreshing, sentinel_addr, None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::SetRestrictions, sentinel_addr, None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::EmergencyReset, curator_addr, None)
+            .is_ok());
     }
 
     #[rstest::rstest]
@@ -2052,6 +2207,13 @@ mod rbac_module_tests {
         assert!(roles.contains(&Role::Allocator));
         assert!(roles.contains(&Role::Sentinel));
         assert!(roles.contains(&Role::Curator));
+    }
+
+    #[test]
+    fn test_allowed_roles_for_action_curator_policy() {
+        let roles = allowed_roles_for_action(ActionKind::PolicyAdmin);
+
+        assert_eq!(roles, vec![Role::Curator]);
     }
 
     #[test]
@@ -2390,21 +2552,25 @@ mod policy_lock_filter_tests {
         lease_registry_target_2: MarketLeaseRegistry,
     ) {
         let lease_registry = lease_registry_target_2;
-        let queue = SupplyQueue {
-            entries: vec![
-                SupplyQueueEntry::new(1, 10),
-                SupplyQueueEntry::new(2, 20),
-                SupplyQueueEntry::new(3, 30),
+        let queue = SupplyQueue::try_from_entries(
+            vec![
+                SupplyQueueEntry::new(1, 10).unwrap(),
+                SupplyQueueEntry::new(2, 20).unwrap(),
+                SupplyQueueEntry::new(3, 30).unwrap(),
             ],
-            max_length: 16,
-        };
+            core::num::NonZeroU32::new(16),
+        )
+        .unwrap();
 
         let filtered = queue.excluding_leased(&lease_registry, TimestampNs(1_500));
 
-        assert_eq!(filtered.max_length, 16);
-        assert_eq!(filtered.entries.len(), 2);
-        assert_eq!(filtered.entries[0].target_id, 1);
-        assert_eq!(filtered.entries[1].target_id, 3);
+        assert_eq!(
+            filtered.max_length().map(core::num::NonZeroU32::get),
+            Some(16)
+        );
+        assert_eq!(filtered.entries().len(), 2);
+        assert_eq!(filtered.entries()[0].target_id(), 1);
+        assert_eq!(filtered.entries()[1].target_id(), 3);
     }
 
     #[rstest::rstest]
@@ -2438,17 +2604,20 @@ mod policy_lock_filter_tests {
         lease_registry_target_2: MarketLeaseRegistry,
     ) {
         let lease_registry = lease_registry_target_2;
-        let queue = SupplyQueue {
-            entries: vec![
-                SupplyQueueEntry::new(1, 10),
-                SupplyQueueEntry::new(2, 20),
-                SupplyQueueEntry::new(3, 30),
+        let queue = SupplyQueue::try_from_entries(
+            vec![
+                SupplyQueueEntry::new(1, 10).unwrap(),
+                SupplyQueueEntry::new(2, 20).unwrap(),
+                SupplyQueueEntry::new(3, 30).unwrap(),
             ],
-            max_length: 16,
-        };
+            core::num::NonZeroU32::new(16),
+        )
+        .unwrap();
 
         assert_eq!(
-            queue.to_allocation_plan_excluding_leased(&lease_registry, TimestampNs(1_500)),
+            queue
+                .to_allocation_plan_excluding_leased(&lease_registry, TimestampNs(1_500))
+                .unwrap(),
             vec![(1, 10), (3, 30)]
         );
     }
@@ -2503,7 +2672,6 @@ mod policy_lock_filter_tests {
 
     #[test]
     fn excluding_leased_preserves_original_route_validation_errors() {
-        let lease_registry = lease_registry_with_target(1);
         let invalid_route = WithdrawRoute::new(
             vec![
                 WithdrawRouteEntry::new(1, 100).expect("valid route entry"),
@@ -2784,9 +2952,8 @@ mod policy_refresh_plan_tests {
     #[test]
     fn test_new_plan() {
         let plan = RefreshPlan::new(vec![1, 2, 3]).unwrap();
-        assert!(!plan.is_empty());
         assert_eq!(plan.len(), 3);
-        assert!(plan.cooldown().is_unlimited());
+        assert_eq!(plan.targets(), [1, 2, 3]);
     }
 
     #[test]
@@ -2806,77 +2973,62 @@ mod policy_refresh_plan_tests {
 
     #[test]
     fn test_check_refresh_cooldown_no_cooldown() {
-        let plan = RefreshPlan::new(vec![1, 2]).unwrap();
-        assert!(plan.check_cooldown(1000).is_ok());
-        assert!(plan.is_ready(1000));
+        let throttle = RefreshThrottle::new(0, None);
+        assert!(throttle.check(1000).is_ok());
+        assert!(throttle.is_ready(1000));
     }
 
     #[test]
     fn test_check_refresh_cooldown_first_refresh() {
-        let plan = RefreshPlan::new(vec![1, 2]).unwrap().with_cooldown(1000);
-        // No last_refresh_ns, so first refresh should be allowed
-        assert!(plan.check_cooldown(100).is_ok());
-        assert!(plan.is_ready(100));
+        let throttle = RefreshThrottle::new(1000, None);
+        assert!(throttle.check(100).is_ok());
+        assert!(throttle.is_ready(100));
     }
 
     #[test]
     fn test_check_refresh_cooldown_on_cooldown() {
-        let plan = RefreshPlan::new(vec![1, 2])
-            .unwrap()
-            .with_cooldown(1000)
-            .with_last_refresh(Some(100));
-
-        // Only 500ns elapsed, cooldown is 1000ns
-        let result = plan.check_cooldown(600);
+        let throttle = RefreshThrottle::new(1000, Some(100));
+        let result = throttle.check(600);
         assert!(matches!(result, Err(RefreshPlanError::OnCooldown { .. })));
-        assert!(!plan.is_ready(600));
+        assert!(!throttle.is_ready(600));
     }
 
     #[test]
     fn test_check_refresh_cooldown_after_cooldown() {
-        let plan = RefreshPlan::new(vec![1, 2])
-            .unwrap()
-            .with_cooldown(1000)
-            .with_last_refresh(Some(100));
-
-        // 1100ns elapsed, cooldown is 1000ns
-        assert!(plan.check_cooldown(1200).is_ok());
-        assert!(plan.is_ready(1200));
+        let throttle = RefreshThrottle::new(1000, Some(100));
+        assert!(throttle.check(1200).is_ok());
+        assert!(throttle.is_ready(1200));
     }
 
     #[test]
     fn test_with_cooldown_preserves_last_refresh_timestamp() {
-        let plan = RefreshPlan::new(vec![1, 2])
-            .unwrap()
-            .with_last_refresh(Some(50))
-            .with_cooldown(200);
+        let throttle = RefreshThrottle::new(200, Some(50));
 
-        assert_eq!(plan.last_refresh_ns(), Some(50));
-        assert_eq!(plan.cooldown_ns(), 200);
+        assert_eq!(throttle.last_refresh_ns(), Some(50));
+        assert_eq!(throttle.cooldown_ns(), 200);
     }
 
     #[test]
     fn test_zero_cooldown_maps_to_unlimited() {
-        let plan = RefreshPlan::new(vec![1, 2]).unwrap().with_cooldown(0);
+        let throttle = RefreshThrottle::new(0, None);
 
-        assert!(plan.cooldown().is_unlimited());
-        assert_eq!(plan.cooldown_ns(), 0);
-        assert_eq!(plan.last_refresh_ns(), None);
+        assert!(throttle.cooldown().is_unlimited());
+        assert_eq!(throttle.cooldown_ns(), 0);
+        assert_eq!(throttle.last_refresh_ns(), None);
     }
 
     #[test]
     fn test_build_refresh_plan() {
         let enabled = vec![1, 2, 3];
-        let plan = build_refresh_plan(&enabled, Some(5000)).unwrap();
+        let plan = build_refresh_plan(&enabled).unwrap();
 
         assert_eq!(plan.targets(), [1, 2, 3]);
-        assert_eq!(plan.cooldown_ns(), 5000);
     }
 
     #[test]
     fn test_build_refresh_plan_empty() {
         let enabled: Vec<TargetId> = vec![];
-        let result = build_refresh_plan(&enabled, None);
+        let result = build_refresh_plan(&enabled);
 
         assert!(matches!(result, Err(RefreshPlanError::EmptyPlan)));
     }
@@ -2932,32 +3084,67 @@ mod policy_refresh_plan_tests {
 
     #[test]
     fn test_record_refresh_completion() {
-        let plan = RefreshPlan::new(vec![1, 2]).unwrap().with_cooldown(1000);
-        let updated = plan.record_completion(5000);
+        let throttle = RefreshThrottle::new(1000, None);
+        let updated = throttle.record_completion(5000);
 
         assert_eq!(updated.last_refresh_ns(), Some(5000));
         assert_eq!(updated.cooldown_ns(), 1000);
-        assert_eq!(updated.targets(), [1, 2]);
     }
 
     #[test]
     fn test_filter_stale_targets() {
         let targets = vec![
-            (1, 1000), // refreshed at 1000
-            (2, 500),  // refreshed at 500
-            (3, 2000), // refreshed at 2000
+            RefreshTargetStatus::new(1, Some(1000)),
+            RefreshTargetStatus::new(2, Some(500)),
+            RefreshTargetStatus::new(3, Some(2000)),
         ];
 
-        // Current time is 3000, max age is 1500
-        // Target 2 (age 2500) is stale
-        // Target 1 (age 2000) is stale
-        // Target 3 (age 1000) is fresh
-        let stale = filter_stale_targets(&targets, 1500, 3000);
+        let stale = filter_stale_targets(&targets, 1500, 3000).unwrap();
 
         assert_eq!(stale.len(), 2);
         assert!(stale.contains(&1));
         assert!(stale.contains(&2));
         assert!(!stale.contains(&3));
+    }
+
+    #[test]
+    fn test_filter_stale_targets_includes_never_refreshed() {
+        let targets = vec![
+            RefreshTargetStatus::new(1, None),
+            RefreshTargetStatus::new(2, Some(2_000)),
+        ];
+
+        let stale = filter_stale_targets(&targets, 1_500, 3_000).unwrap();
+
+        assert_eq!(stale, vec![1]);
+    }
+
+    #[test]
+    fn test_filter_stale_targets_rejects_future_timestamp() {
+        let targets = vec![RefreshTargetStatus::new(7, Some(4_000))];
+
+        let result = filter_stale_targets(&targets, 1_500, 3_000);
+
+        assert!(matches!(
+            result,
+            Err(RefreshPlanError::FutureRefreshTimestamp {
+                target_id: 7,
+                last_refresh_ns: 4_000,
+                current_ns: 3_000,
+            })
+        ));
+    }
+
+    #[test]
+    fn test_build_stale_refresh_plan_returns_none_when_nothing_is_stale() {
+        let targets = vec![
+            RefreshTargetStatus::new(1, Some(2_000)),
+            RefreshTargetStatus::new(2, Some(2_500)),
+        ];
+
+        let plan = build_stale_refresh_plan(&targets, 1_500, 3_000, &[1, 2]).unwrap();
+
+        assert!(plan.is_none());
     }
 
     #[test]
@@ -2979,15 +3166,20 @@ mod policy_refresh_plan_tests {
 mod policy_state_tests {
     pub use crate::policy::state::*;
 
-    use crate::policy::cap_group::{CapGroupId, CapGroupRecord};
+    use crate::policy::cap_group::CapGroupId;
+    use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
     use alloc::string::String;
+    use alloc::vec;
 
     #[test]
     fn external_assets_sums_principals() {
         let mut state = PolicyState::default();
-        state.set_principal(1, 100);
-        state.set_principal(2, 250);
-        state.set_principal(3, 50);
+        state.set_market_config(1, MarketConfig::default()).unwrap();
+        state.set_market_config(2, MarketConfig::default()).unwrap();
+        state.set_market_config(3, MarketConfig::default()).unwrap();
+        state.set_principal(1, 100).unwrap();
+        state.set_principal(2, 250).unwrap();
+        state.set_principal(3, 50).unwrap();
 
         assert_eq!(state.external_assets(), 400);
     }
@@ -2998,13 +3190,21 @@ mod policy_state_tests {
         let group_a: CapGroupId = "group-a".into();
         let group_b: CapGroupId = "group-b".into();
 
-        state.set_market_config(1, MarketConfig::new(true, Some(group_a.clone())));
-        state.set_market_config(2, MarketConfig::new(true, Some(group_a.clone())));
-        state.set_market_config(3, MarketConfig::new(true, Some(group_b.clone())));
+        state.ensure_cap_group(group_a.clone());
+        state.ensure_cap_group(group_b.clone());
+        state
+            .set_market_config(1, MarketConfig::new(true, 0, Some(group_a.clone())))
+            .unwrap();
+        state
+            .set_market_config(2, MarketConfig::new(true, 0, Some(group_a.clone())))
+            .unwrap();
+        state
+            .set_market_config(3, MarketConfig::new(true, 0, Some(group_b.clone())))
+            .unwrap();
 
-        state.set_principal(1, 10);
-        state.set_principal(2, 20);
-        state.set_principal(3, 40);
+        state.set_principal(1, 10).unwrap();
+        state.set_principal(2, 20).unwrap();
+        state.set_principal(3, 40).unwrap();
 
         let totals = state.compute_cap_group_totals();
         let total_for = |group_id: &CapGroupId| {
@@ -3019,24 +3219,219 @@ mod policy_state_tests {
     }
 
     #[test]
-    fn refresh_cap_group_principals_updates_records() {
+    fn recompute_cap_group_principals_updates_records() {
         let mut state = PolicyState::default();
         let group: CapGroupId = String::from("group").into();
+        state.ensure_cap_group(group.clone());
         state
-            .cap_groups
-            .insert(group.clone(), CapGroupRecord::default());
-        state.set_market_config(1, MarketConfig::new(true, Some(group.clone())));
-        state.set_principal(1, 123);
+            .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
+            .unwrap();
+        state.set_principal(1, 123).unwrap();
 
-        state.refresh_cap_group_principals();
+        state.recompute_cap_group_principals().unwrap();
 
-        let record = state.cap_groups.get(&group).expect("cap group");
+        let record = state.cap_groups().get(&group).expect("cap group");
         assert_eq!(record.principal, 123);
+    }
+
+    #[test]
+    fn set_principal_requires_known_market() {
+        let mut state = PolicyState::default();
+
+        let err = state.set_principal(7, 1).unwrap_err();
+
+        assert_eq!(err, PolicyStateError::UnknownMarket { target_id: 7 });
+    }
+
+    #[test]
+    fn set_market_config_rejects_unknown_cap_group() {
+        let mut state = PolicyState::default();
+        let missing_group: CapGroupId = "missing".into();
+
+        let err = state
+            .set_market_config(1, MarketConfig::new(true, 0, Some(missing_group.clone())))
+            .unwrap_err();
+
+        assert_eq!(err, PolicyStateError::UnknownCapGroup { id: missing_group });
+    }
+
+    #[test]
+    fn remove_market_prunes_its_principal_and_group_total() {
+        let mut state = PolicyState::default();
+        let group: CapGroupId = "group".into();
+        state.ensure_cap_group(group.clone());
+        state
+            .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
+            .unwrap();
+        state.set_principal(1, 25).unwrap();
+        state
+            .replace_supply_queue(
+                SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(1, 1).unwrap()], None)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let removed = state.remove_market(1).unwrap();
+
+        assert!(removed.is_some());
+        assert_eq!(state.principal_for(1), None);
+        assert!(state.market_config(1).is_none());
+        assert!(state.supply_queue().is_empty());
+        assert_eq!(state.cap_group(&group).expect("cap group").principal, 0);
+    }
+
+    #[test]
+    fn prune_zero_principals_removes_zero_entries_for_known_markets() {
+        let mut state = PolicyState::default();
+        state.set_market_config(1, MarketConfig::default()).unwrap();
+        state.set_market_config(2, MarketConfig::default()).unwrap();
+        state.set_principal(1, 10).unwrap();
+
+        state.prune_zero_principals();
+
+        assert_eq!(state.principal_for(1), Some(10));
+        assert_eq!(state.principal_for(2), None);
+    }
+
+    #[test]
+    fn prune_unused_cap_groups_removes_unreferenced_groups() {
+        let mut state = PolicyState::default();
+        let used_group: CapGroupId = "used".into();
+        let unused_group: CapGroupId = "unused".into();
+        state.ensure_cap_group(used_group.clone());
+        state.ensure_cap_group(unused_group.clone());
+        state
+            .set_market_config(1, MarketConfig::new(true, 0, Some(used_group.clone())))
+            .unwrap();
+
+        state.prune_unused_cap_groups();
+
+        assert!(state.cap_group(&used_group).is_some());
+        assert!(state.cap_group(&unused_group).is_none());
+    }
+
+    #[test]
+    fn remove_cap_group_rejects_groups_still_in_use() {
+        let mut state = PolicyState::default();
+        let group: CapGroupId = "group".into();
+        state.ensure_cap_group(group.clone());
+        state
+            .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
+            .unwrap();
+
+        let err = state.remove_cap_group(&group).unwrap_err();
+
+        assert_eq!(err, PolicyStateError::CapGroupInUse { id: group });
+    }
+
+    #[test]
+    fn replace_supply_queue_rejects_unknown_market_targets() {
+        let mut state = PolicyState::default();
+        state.set_market_config(1, MarketConfig::default()).unwrap();
+
+        let queue = SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(9, 1).unwrap()], None)
+            .unwrap();
+
+        let err = state.replace_supply_queue(queue).unwrap_err();
+
+        assert_eq!(
+            err,
+            PolicyStateError::SupplyQueueUnknownMarket { target_id: 9 }
+        );
+    }
+
+    #[test]
+    fn replace_supply_queue_rejects_disabled_market_targets() {
+        let mut state = PolicyState::default();
+        state.set_market_config(1, MarketConfig::default()).unwrap();
+        state.set_market_enabled(1, false).unwrap();
+
+        let queue = SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(1, 1).unwrap()], None)
+            .unwrap();
+
+        let err = state.replace_supply_queue(queue).unwrap_err();
+
+        assert_eq!(
+            err,
+            PolicyStateError::SupplyQueueDisabledMarket { target_id: 1 }
+        );
+    }
+
+    #[test]
+    fn replace_supply_queue_rejects_zero_cap_market_targets() {
+        let mut state = PolicyState::default();
+        state.set_market_config(1, MarketConfig::default()).unwrap();
+
+        let queue = SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(1, 1).unwrap()], None)
+            .unwrap();
+
+        let err = state.replace_supply_queue(queue).unwrap_err();
+
+        assert_eq!(
+            err,
+            PolicyStateError::SupplyQueueUnauthorizedMarket { target_id: 1 }
+        );
+    }
+
+    #[test]
+    fn from_parts_rejects_invalid_supply_queue_targets() {
+        let markets = OrderedMap::from_iter([(1, MarketConfig::new(true, 5, None))]);
+        let principals = OrderedMap::default();
+        let cap_groups = OrderedMap::default();
+        let leases = MarketLeaseRegistry::default();
+        let supply_queue =
+            SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(2, 1).unwrap()], None)
+                .unwrap();
+
+        let err = PolicyState::from_parts(markets, principals, cap_groups, leases, supply_queue)
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            PolicyStateError::SupplyQueueUnknownMarket { target_id: 2 }
+        );
+    }
+
+    #[test]
+    fn disabling_market_prunes_supply_queue_target() {
+        let mut state = PolicyState::default();
+        state
+            .set_market_config(1, MarketConfig::new(true, 5, None))
+            .unwrap();
+        state
+            .replace_supply_queue(
+                SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(1, 1).unwrap()], None)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        state.set_market_enabled(1, false).unwrap();
+
+        assert!(state.supply_queue().is_empty());
+    }
+
+    #[test]
+    fn zero_cap_prunes_supply_queue_target() {
+        let mut state = PolicyState::default();
+        state
+            .set_market_config(1, MarketConfig::new(true, 5, None))
+            .unwrap();
+        state
+            .replace_supply_queue(
+                SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(1, 1).unwrap()], None)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        state.set_market_cap(1, 0).unwrap();
+
+        assert!(state.supply_queue().is_empty());
     }
 }
 
 mod policy_supply_queue_tests {
     pub use crate::policy::supply_queue::*;
+    use core::num::NonZeroU32;
 
     #[rstest::fixture]
     fn empty_queue() -> SupplyQueue {
@@ -3044,23 +3439,28 @@ mod policy_supply_queue_tests {
     }
 
     #[rstest::fixture]
-    fn queue_two_entries(empty_queue: SupplyQueue) -> SupplyQueue {
+    fn queue_two_entries(mut empty_queue: SupplyQueue) -> SupplyQueue {
         empty_queue
-            .enqueue(SupplyQueueEntry::new(1, 100))
-            .unwrap()
-            .enqueue(SupplyQueueEntry::new(2, 200))
-            .unwrap()
+            .enqueue(SupplyQueueEntry::new(1, 100).unwrap())
+            .unwrap();
+        empty_queue
+            .enqueue(SupplyQueueEntry::new(2, 200).unwrap())
+            .unwrap();
+        empty_queue
     }
 
     #[rstest::fixture]
-    fn queue_with_repeated_target(empty_queue: SupplyQueue) -> SupplyQueue {
+    fn queue_with_repeated_target(mut empty_queue: SupplyQueue) -> SupplyQueue {
         empty_queue
-            .enqueue(SupplyQueueEntry::new(1, 100))
-            .unwrap()
-            .enqueue(SupplyQueueEntry::new(2, 200))
-            .unwrap()
-            .enqueue(SupplyQueueEntry::new(1, 50))
-            .unwrap()
+            .enqueue(SupplyQueueEntry::new(1, 100).unwrap())
+            .unwrap();
+        empty_queue
+            .enqueue(SupplyQueueEntry::new(2, 200).unwrap())
+            .unwrap();
+        empty_queue
+            .enqueue(SupplyQueueEntry::new(1, 50).unwrap())
+            .unwrap();
+        empty_queue
     }
 
     #[rstest::rstest]
@@ -3072,38 +3472,31 @@ mod policy_supply_queue_tests {
     }
 
     #[rstest::rstest]
-    fn test_enqueue_supply(empty_queue: SupplyQueue) {
-        let queue = empty_queue;
-        let entry = SupplyQueueEntry::new(1, 100);
+    fn test_enqueue_supply(mut empty_queue: SupplyQueue) {
+        let entry = SupplyQueueEntry::new(1, 100).unwrap();
 
-        let result = queue.enqueue(entry.clone()).unwrap();
+        empty_queue.enqueue(entry.clone()).unwrap();
 
-        assert_eq!(result.len(), 1);
-        assert_eq!(result.entries[0], entry);
+        assert_eq!(empty_queue.len(), 1);
+        assert_eq!(*empty_queue.entries()[0], entry);
     }
 
     #[rstest::rstest]
-    fn test_enqueue_zero_amount_error(empty_queue: SupplyQueue) {
-        let queue = empty_queue;
-        let entry = SupplyQueueEntry::new(1, 0);
-
-        let result = queue.enqueue(entry);
+    fn test_enqueue_zero_amount_error() {
+        let result = SupplyQueueEntry::new(1, 0);
 
         assert!(matches!(result, Err(SupplyQueueError::ZeroAmount)));
     }
 
     #[test]
     fn test_enqueue_full_queue_error() {
-        let queue = SupplyQueue {
-            entries: alloc::vec![],
-            max_length: 2,
-        };
-        let entry1 = SupplyQueueEntry::new(1, 100);
-        let entry2 = SupplyQueueEntry::new(2, 200);
-        let entry3 = SupplyQueueEntry::new(3, 300);
+        let mut queue = SupplyQueue::bounded(NonZeroU32::new(2).unwrap());
+        let entry1 = SupplyQueueEntry::new(1, 100).unwrap();
+        let entry2 = SupplyQueueEntry::new(2, 200).unwrap();
+        let entry3 = SupplyQueueEntry::new(3, 300).unwrap();
 
-        let queue = queue.enqueue(entry1).unwrap();
-        let queue = queue.enqueue(entry2).unwrap();
+        queue.enqueue(entry1).unwrap();
+        queue.enqueue(entry2).unwrap();
         let result = queue.enqueue(entry3);
 
         assert!(matches!(
@@ -3113,149 +3506,126 @@ mod policy_supply_queue_tests {
     }
 
     #[rstest::rstest]
-    fn test_enqueue_with_priority(empty_queue: SupplyQueue) {
-        let queue = empty_queue;
-        let low = SupplyQueueEntry::builder()
-            .target_id(1_u32)
-            .amount(100_u128)
-            .priority(0)
-            .build();
-        let high = SupplyQueueEntry::builder()
-            .target_id(2_u32)
-            .amount(200_u128)
-            .priority(10)
-            .build();
-        let medium = SupplyQueueEntry::builder()
-            .target_id(3_u32)
-            .amount(300_u128)
-            .priority(5)
-            .build();
+    fn test_enqueue_with_priority(mut empty_queue: SupplyQueue) {
+        let low = SupplyQueueEntry::new_with_priority(1, 100, 0).unwrap();
+        let high = SupplyQueueEntry::new_with_priority(2, 200, 10).unwrap();
+        let medium = SupplyQueueEntry::new_with_priority(3, 300, 5).unwrap();
 
-        let queue = queue.enqueue(low).unwrap();
-        let queue = queue.enqueue(high).unwrap();
-        let queue = queue.enqueue(medium).unwrap();
+        empty_queue.enqueue(low).unwrap();
+        empty_queue.enqueue(high).unwrap();
+        empty_queue.enqueue(medium).unwrap();
 
-        // High priority should be first
-        assert_eq!(queue.entries[0].target_id, 2);
-        assert_eq!(queue.entries[1].target_id, 3);
-        assert_eq!(queue.entries[2].target_id, 1);
+        let entries = empty_queue.entries();
+        assert_eq!(entries[0].target_id(), 2);
+        assert_eq!(entries[1].target_id(), 3);
+        assert_eq!(entries[2].target_id(), 1);
     }
 
     #[rstest::rstest]
-    fn test_dequeue_supply(queue_two_entries: SupplyQueue) {
-        let queue = queue_two_entries;
-        let (queue, dequeued) = queue.dequeue().unwrap();
+    fn test_dequeue_supply(mut queue_two_entries: SupplyQueue) {
+        let dequeued = queue_two_entries.dequeue().unwrap();
 
-        assert_eq!(dequeued.target_id, 1);
-        assert_eq!(dequeued.amount, 100);
-        assert_eq!(queue.len(), 1);
+        assert_eq!(dequeued.target_id(), 1);
+        assert_eq!(dequeued.amount(), 100);
+        assert_eq!(queue_two_entries.len(), 1);
     }
 
     #[rstest::rstest]
-    fn test_dequeue_empty_error(empty_queue: SupplyQueue) {
-        let queue = empty_queue;
-        let result = queue.dequeue();
+    fn test_dequeue_empty_error(mut empty_queue: SupplyQueue) {
+        let result = empty_queue.dequeue();
 
         assert!(matches!(result, Err(SupplyQueueError::QueueEmpty)));
     }
 
     #[rstest::rstest]
-    fn test_peek(empty_queue: SupplyQueue) {
-        let queue = empty_queue;
-        assert!(queue.peek().is_none());
+    fn test_peek(mut empty_queue: SupplyQueue) {
+        assert!(empty_queue.peek().is_none());
 
-        let entry = SupplyQueueEntry::new(1, 100);
-        let queue = queue.enqueue(entry.clone()).unwrap();
+        let entry = SupplyQueueEntry::new(1, 100).unwrap();
+        empty_queue.enqueue(entry.clone()).unwrap();
 
-        assert_eq!(queue.peek(), Some(&entry));
-        assert_eq!(queue.len(), 1); // Still in queue
+        assert_eq!(empty_queue.peek(), Some(&entry));
+        assert_eq!(empty_queue.len(), 1);
     }
 
     #[rstest::rstest]
     fn test_compute_queue_total(queue_with_repeated_target: SupplyQueue) {
         let queue = queue_with_repeated_target;
-        assert_eq!(queue.total(), 350);
+        assert_eq!(queue.total().unwrap(), 350);
     }
 
     #[rstest::rstest]
     fn test_compute_queue_totals_by_target(queue_with_repeated_target: SupplyQueue) {
         let queue = queue_with_repeated_target;
-        let totals = queue.totals_by_target();
+        let totals = queue.totals_by_target().unwrap();
 
         assert_eq!(totals.len(), 2);
-        assert!(totals.contains(&(1, 150)));
-        assert!(totals.contains(&(2, 200)));
+        assert_eq!(totals.get(&1), Some(&150));
+        assert_eq!(totals.get(&2), Some(&200));
     }
 
     #[rstest::rstest]
-    fn test_remove_target_entries(queue_with_repeated_target: SupplyQueue) {
-        let queue = queue_with_repeated_target;
-        let filtered = queue.remove_target(1);
+    fn test_remove_target_entries(mut queue_with_repeated_target: SupplyQueue) {
+        queue_with_repeated_target.remove_target(1);
 
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered.entries[0].target_id, 2);
+        assert_eq!(queue_with_repeated_target.len(), 1);
+        assert_eq!(queue_with_repeated_target.entries()[0].target_id(), 2);
     }
 
     #[rstest::rstest]
-    fn test_drain_queue(queue_two_entries: SupplyQueue) {
-        let queue = queue_two_entries;
-        let (empty, entries) = queue.drain();
+    fn test_drain_queue(mut queue_two_entries: SupplyQueue) {
+        let entries = queue_two_entries.drain();
 
-        assert!(empty.is_empty());
+        assert!(queue_two_entries.is_empty());
         assert_eq!(entries.len(), 2);
     }
 
     #[rstest::rstest]
     fn test_to_allocation_plan(queue_with_repeated_target: SupplyQueue) {
         let queue = queue_with_repeated_target;
-        let plan = queue.to_allocation_plan();
+        let plan = queue.to_allocation_plan().unwrap();
 
-        // Should be aggregated by target
         assert_eq!(plan.len(), 2);
-        assert!(plan.contains(&(1, 150)));
-        assert!(plan.contains(&(2, 200)));
+        assert_eq!(plan, alloc::vec![(1, 150), (2, 200)]);
     }
 
     #[rstest::rstest]
     fn test_total_for_target(queue_with_repeated_target: SupplyQueue) {
         let queue = queue_with_repeated_target;
-        assert_eq!(queue.total_for_target(1), 150);
-        assert_eq!(queue.total_for_target(2), 200);
-        assert_eq!(queue.total_for_target(3), 0);
+        assert_eq!(queue.total_for_target(1).unwrap(), 150);
+        assert_eq!(queue.total_for_target(2).unwrap(), 200);
+        assert_eq!(queue.total_for_target(3).unwrap(), 0);
     }
 
     #[rstest::rstest]
-    fn test_has_target(empty_queue: SupplyQueue) {
-        let queue = empty_queue;
-        let entry = SupplyQueueEntry::new(1, 100);
-        let queue = queue.enqueue(entry).unwrap();
+    fn test_has_target(mut empty_queue: SupplyQueue) {
+        let entry = SupplyQueueEntry::new(1, 100).unwrap();
+        empty_queue.enqueue(entry).unwrap();
 
-        assert!(queue.has_target(1));
-        assert!(!queue.has_target(2));
+        assert!(empty_queue.has_target(1));
+        assert!(!empty_queue.has_target(2));
     }
 
     #[test]
-    fn test_builder_pattern() {
-        let entry = SupplyQueueEntry::builder()
-            .target_id(1_u32)
-            .amount(100_u128)
-            .priority(5)
-            .queued_at_ns(1000_u64)
-            .build();
+    fn test_entry_construction_with_priority() {
+        let entry = SupplyQueueEntry::new_with_priority(1, 100, 5).unwrap();
 
-        assert_eq!(entry.target_id, 1);
-        assert_eq!(entry.amount, 100);
-        assert_eq!(entry.priority, 5);
-        assert_eq!(entry.queued_at_ns, 1000);
+        assert_eq!(entry.target_id(), 1);
+        assert_eq!(entry.amount(), 100);
+        assert_eq!(entry.priority(), 5);
     }
 }
 
 mod policy_target_set_tests {
-    pub use crate::policy::target_set::*;
+    use crate::policy::{
+        market_lock::{LeaseDurationNs, LeaseOwner, MarketLeaseRegistry},
+        target_set::{
+            build_refresh_plan_from_targets, build_withdraw_capacity_pairs_from_target_principals,
+        },
+        target_set::{find_first_duplicate, has_unique_items},
+    };
 
     use alloc::vec;
-
-    use crate::policy::market_lock::{MarketLock, MarketLockSet};
 
     #[test]
     fn finds_first_duplicate() {
@@ -3271,38 +3641,55 @@ mod policy_target_set_tests {
     }
 
     #[test]
-    fn validates_no_duplicate_targets() {
-        assert!(validate_no_duplicate_targets(&[1, 2, 3]));
-        assert!(!validate_no_duplicate_targets(&[1, 2, 1]));
-        assert_eq!(find_duplicate_target_id(&[1, 2, 1]), Some(1));
+    fn reports_duplicate_target_ids() {
+        assert_eq!(find_first_duplicate(&[1, 2, 3]), None);
+        assert_eq!(find_first_duplicate(&[1, 2, 1]), Some(1));
     }
 
     #[test]
-    fn builds_withdraw_plan_from_target_principals() {
+    fn builds_withdraw_capacity_pairs_from_target_principals() {
         let principals = vec![(1, 100), (2, 200), (3, 300)];
-        let plan = build_withdraw_plan_from_target_principals(&principals, 250).unwrap();
+        let plan = build_withdraw_capacity_pairs_from_target_principals(&principals, 250).unwrap();
 
         assert_eq!(plan, vec![(3, 300), (2, 200), (1, 100)]);
     }
 
     #[test]
-    fn target_lock_helpers_delegate_to_lock_set() {
-        let mut set = MarketLockSet::default();
-        set = set.acquire(MarketLock::new(2, 1_000), 1_000).unwrap();
+    fn lease_registry_queries_stay_on_registry() {
+        let owner = LeaseOwner(7);
+        let (registry, _) = MarketLeaseRegistry::default()
+            .try_acquire(2, owner, None, 1_000.into(), LeaseDurationNs(500))
+            .unwrap();
 
         let targets = vec![1, 2, 3];
-        assert_eq!(find_locked_targets(&set, &targets, 1_500), vec![2]);
-        assert!(is_target_locked(&set, 2, 1_500));
-        assert!(!is_target_locked(&set, 1, 1_500));
-        assert_eq!(get_locked_targets(&set, 1_500), vec![2]);
+        assert_eq!(
+            registry.find_leased_targets(&targets, 1_250.into()),
+            vec![2]
+        );
+        assert!(registry.is_leased(2, 1_250.into()));
+        assert!(!registry.is_leased(1, 1_250.into()));
+        assert_eq!(registry.leased_targets(1_250.into()), vec![2]);
     }
 
     #[test]
     fn builds_refresh_plan_from_targets() {
-        let plan = build_refresh_plan_from_targets(&[1, 2, 3], 100, Some(50)).unwrap();
+        let (plan, throttle) = build_refresh_plan_from_targets(&[1, 2, 3], 100, Some(50)).unwrap();
         assert_eq!(plan.targets(), [1, 2, 3]);
-        assert_eq!(plan.cooldown_ns(), 100);
-        assert_eq!(plan.last_refresh_ns(), Some(50));
+        assert_eq!(throttle.cooldown_ns(), 100);
+        assert_eq!(throttle.last_refresh_ns(), Some(50));
+    }
+
+    #[test]
+    fn builds_named_refresh_execution_plan() {
+        let refresh_execution_plan =
+            crate::policy::target_set::refresh_plan(&[1, 2, 3], 100, Some(50)).unwrap();
+
+        assert_eq!(refresh_execution_plan.plan().targets(), [1, 2, 3]);
+        assert_eq!(refresh_execution_plan.throttle().cooldown_ns(), 100);
+        assert_eq!(
+            refresh_execution_plan.throttle().last_refresh_ns(),
+            Some(50)
+        );
     }
 }
 
@@ -3311,180 +3698,161 @@ mod policy_withdraw_route_tests {
 
     use alloc::vec;
 
-    #[rstest::fixture]
-    fn empty_route() -> WithdrawRoute {
-        WithdrawRoute::from_entries(vec![], 1000)
+    fn route_entry(target_id: u32, max_amount: u128) -> WithdrawRouteEntry {
+        WithdrawRouteEntry::new(target_id, max_amount).unwrap()
+    }
+
+    fn route_entry_with_liquidity(
+        target_id: u32,
+        max_amount: u128,
+        available_liquidity: u128,
+    ) -> WithdrawRouteEntry {
+        WithdrawRouteEntry::new(target_id, max_amount)
+            .unwrap()
+            .with_liquidity(available_liquidity)
+            .unwrap()
     }
 
     #[rstest::fixture]
     fn valid_route() -> WithdrawRoute {
-        WithdrawRoute::from_entries(
+        WithdrawRoute::new(
             vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 300),
-                WithdrawRouteEntry::new(3, 200),
+                route_entry(1, 500),
+                route_entry(2, 300),
+                route_entry(3, 200),
             ],
             1000,
         )
+        .unwrap()
     }
 
     #[rstest::fixture]
     fn two_entry_route() -> WithdrawRoute {
-        WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 300),
-            ],
-            800,
-        )
+        WithdrawRoute::new(vec![route_entry(1, 500), route_entry(2, 300)], 800).unwrap()
     }
 
-    #[rstest::fixture]
-    fn duplicate_target_route() -> WithdrawRoute {
-        WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(1, 600),
-            ],
-            1000,
-        )
-    }
+    #[test]
+    fn test_new_route() {
+        let route = WithdrawRoute::new(vec![route_entry(1, 1000)], 1000).unwrap();
 
-    #[rstest::fixture]
-    fn zero_max_route() -> WithdrawRoute {
-        WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 0),
-            ],
-            500,
-        )
-    }
-
-    #[rstest::fixture]
-    fn insufficient_route() -> WithdrawRoute {
-        WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000)
-    }
-
-    #[rstest::rstest]
-    fn test_new_route(empty_route: WithdrawRoute) {
-        let route = empty_route;
-        assert!(route.is_empty());
-        assert_eq!(route.target_amount, 1000);
+        assert!(!route.is_empty());
+        assert_eq!(route.target_amount(), 1000);
     }
 
     #[test]
     fn test_builder_pattern() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 600),
-            ],
-            1000,
-        );
+        let route =
+            WithdrawRoute::new(vec![route_entry(1, 500), route_entry(2, 600)], 1000).unwrap();
 
         assert_eq!(route.len(), 2);
-        assert_eq!(route.total(), 1100);
+        assert_eq!(route.checked_total().unwrap(), 1100);
     }
 
     #[test]
     fn test_entry_builder() {
-        let entry = WithdrawRouteEntry::new(1, 500).with_liquidity(400);
+        let entry = route_entry_with_liquidity(1, 400, 400);
 
-        assert_eq!(entry.target_id, 1);
-        assert_eq!(entry.max_amount, 500);
-        assert_eq!(entry.available_liquidity, Some(400));
+        assert_eq!(entry.target_id(), 1);
+        assert_eq!(entry.max_amount(), 400);
+        assert_eq!(entry.available_liquidity(), Some(400));
     }
 
     #[rstest::rstest]
     fn test_compute_route_total(valid_route: WithdrawRoute) {
         let route = valid_route;
-        assert_eq!(route.total(), 1000);
+        assert_eq!(route.checked_total().unwrap(), 1000);
     }
 
     #[test]
-    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
-    fn test_route_total_overflow_panics() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, u128::MAX),
-                WithdrawRouteEntry::new(2, 1),
-            ],
-            1,
-        );
+    fn test_route_total_overflow_is_error() {
+        let route =
+            WithdrawRoute::new(vec![route_entry(1, u128::MAX), route_entry(2, 1)], 1).unwrap();
 
-        let _ = route.total();
+        assert!(matches!(
+            route.checked_total(),
+            Err(WithdrawRouteError::AmountOverflow)
+        ));
     }
 
     #[test]
-    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
-    fn test_available_liquidity_overflow_panics() {
-        let route = WithdrawRoute::from_entries(
+    fn test_known_available_liquidity_overflow_is_error() {
+        let route = WithdrawRoute::new(
             vec![
-                WithdrawRouteEntry::new(1, 1).with_liquidity(u128::MAX),
-                WithdrawRouteEntry::new(2, 1).with_liquidity(1),
+                route_entry_with_liquidity(1, 1, u128::MAX),
+                route_entry_with_liquidity(2, 1, 1),
             ],
             1,
-        );
+        )
+        .unwrap();
 
-        let _ = route.available_liquidity();
+        assert!(matches!(
+            route.known_available_liquidity(),
+            Err(WithdrawRouteError::AmountOverflow)
+        ));
     }
 
     #[test]
     fn test_validate_withdraw_route_success() {
-        let route = WithdrawRoute::from_entries(
-            vec![
-                WithdrawRouteEntry::new(1, 500),
-                WithdrawRouteEntry::new(2, 600),
-            ],
-            1000,
-        );
+        let route =
+            WithdrawRoute::new(vec![route_entry(1, 500), route_entry(2, 600)], 1000).unwrap();
         assert!(route.validate().is_ok());
     }
 
     #[test]
     fn test_validate_withdraw_route_zero_target() {
-        let route = WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 0);
+        let route = WithdrawRoute::new(vec![route_entry(1, 500)], 0);
 
-        assert!(matches!(
-            route.validate(),
-            Err(WithdrawRouteError::ZeroTargetAmount)
-        ));
+        assert!(matches!(route, Err(WithdrawRouteError::ZeroTargetAmount)));
     }
 
-    #[rstest::rstest]
-    fn test_validate_withdraw_route_empty(empty_route: WithdrawRoute) {
-        let route = empty_route;
-        assert!(matches!(
-            route.validate(),
-            Err(WithdrawRouteError::EmptyRoute)
-        ));
+    #[test]
+    fn test_validate_withdraw_route_empty() {
+        let route = WithdrawRoute::new(vec![], 1000);
+
+        assert!(matches!(route, Err(WithdrawRouteError::EmptyRoute)));
     }
 
-    #[rstest::rstest]
-    fn test_validate_withdraw_route_insufficient(insufficient_route: WithdrawRoute) {
-        let route = insufficient_route;
+    #[test]
+    fn test_validate_withdraw_route_insufficient() {
+        let route = WithdrawRoute::new(vec![route_entry(1, 500)], 1000);
+
         assert!(matches!(
-            route.validate(),
+            route,
             Err(WithdrawRouteError::InsufficientRouteTotal { .. })
         ));
     }
 
-    #[rstest::rstest]
-    fn test_validate_withdraw_route_duplicate(duplicate_target_route: WithdrawRoute) {
-        let route = duplicate_target_route;
+    #[test]
+    fn test_validate_withdraw_route_duplicate() {
+        let route = WithdrawRoute::new(vec![route_entry(1, 500), route_entry(1, 600)], 1000);
+
         assert!(matches!(
-            route.validate(),
+            route,
             Err(WithdrawRouteError::DuplicateTarget { target_id: 1 })
         ));
     }
 
-    #[rstest::rstest]
-    fn test_validate_withdraw_route_zero_max(zero_max_route: WithdrawRoute) {
-        let route = zero_max_route;
+    #[test]
+    fn test_entry_zero_max_is_rejected() {
+        let entry = WithdrawRouteEntry::new(2, 0);
+
         assert!(matches!(
-            route.validate(),
+            entry,
             Err(WithdrawRouteError::ZeroMaxAmount { target_id: 2 })
+        ));
+    }
+
+    #[test]
+    fn test_entry_liquidity_less_than_max_is_rejected() {
+        let entry = WithdrawRouteEntry::new(2, 100).unwrap().with_liquidity(50);
+
+        assert!(matches!(
+            entry,
+            Err(WithdrawRouteError::LiquidityLessThanMaxAmount {
+                target_id: 2,
+                max_amount: 100,
+                available_liquidity: 50,
+            })
         ));
     }
 
@@ -3494,11 +3862,10 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route(&principals, 800).unwrap();
 
-        // Should be sorted by principal (largest first)
-        assert_eq!(route.entries[0].target_id, 1);
-        assert_eq!(route.entries[1].target_id, 2);
-        assert_eq!(route.entries[2].target_id, 3);
-        assert_eq!(route.target_amount, 800);
+        assert_eq!(route.entries()[0].target_id(), 1);
+        assert_eq!(route.entries()[1].target_id(), 2);
+        assert_eq!(route.entries()[2].target_id(), 3);
+        assert_eq!(route.target_amount(), 800);
     }
 
     #[test]
@@ -3507,10 +3874,9 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route(&principals, 100).unwrap();
 
-        // Equal principals should be ordered by target_id asc
-        assert_eq!(route.entries[0].target_id, 1);
-        assert_eq!(route.entries[1].target_id, 2);
-        assert_eq!(route.entries[2].target_id, 3);
+        assert_eq!(route.entries()[0].target_id(), 1);
+        assert_eq!(route.entries()[1].target_id(), 2);
+        assert_eq!(route.entries()[2].target_id(), 3);
     }
 
     #[test]
@@ -3526,26 +3892,22 @@ mod policy_withdraw_route_tests {
     }
 
     #[test]
-    fn test_build_withdraw_route_overflow_errors() {
-        let result = build_withdraw_route(&[(1, u128::MAX), (2, 1)], 1);
+    fn test_build_withdraw_route_caps_satisfiability_without_overflow() {
+        let route = build_withdraw_route(&[(1, u128::MAX), (2, 1)], 1).unwrap();
 
-        assert!(matches!(result, Err(WithdrawRouteError::AmountOverflow)));
+        assert_eq!(route.entries()[0].target_id(), 1);
+        assert!(route.can_satisfy());
     }
 
     #[test]
     fn test_build_withdraw_route_with_liquidity() {
-        let market_data = vec![
-            (1, 1000, 800), // principal 1000, liquidity 800
-            (2, 500, 500),  // principal 500, liquidity 500
-            (3, 300, 100),  // principal 300, liquidity 100
-        ];
+        let market_data = vec![(1, 1000, 800), (2, 500, 500), (3, 300, 100)];
 
         let route = build_withdraw_route_with_liquidity(&market_data, 500).unwrap();
 
-        // Should be sorted by liquidity (highest first)
-        assert_eq!(route.entries[0].target_id, 1);
-        assert_eq!(route.entries[0].max_amount, 800); // min(1000, 800)
-        assert_eq!(route.entries[0].available_liquidity, Some(800));
+        assert_eq!(route.entries()[0].target_id(), 1);
+        assert_eq!(route.entries()[0].max_amount(), 800);
+        assert_eq!(route.entries()[0].available_liquidity(), Some(800));
     }
 
     #[test]
@@ -3554,46 +3916,62 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route_with_liquidity(&market_data, 100).unwrap();
 
-        // Equal liquidity should be ordered by target_id asc
-        assert_eq!(route.entries[0].target_id, 1);
-        assert_eq!(route.entries[1].target_id, 2);
-        assert_eq!(route.entries[2].target_id, 3);
+        assert_eq!(route.entries()[0].target_id(), 2);
+        assert_eq!(route.entries()[1].target_id(), 1);
+        assert_eq!(route.entries()[2].target_id(), 3);
     }
 
     #[rstest::rstest]
-    fn test_compute_available_liquidity(valid_route: WithdrawRoute) {
-        let route = WithdrawRoute::from_entries(
+    fn test_compute_known_available_liquidity(valid_route: WithdrawRoute) {
+        let route = WithdrawRoute::new(
             valid_route
-                .entries
-                .into_iter()
-                .map(|entry| {
-                    if entry.target_id == 1 {
-                        entry.with_liquidity(400)
-                    } else if entry.target_id == 3 {
-                        entry.with_liquidity(200)
-                    } else {
-                        entry
-                    }
+                .entries()
+                .iter()
+                .cloned()
+                .map(|entry| match entry.target_id() {
+                    1 => entry.with_liquidity(500).unwrap(),
+                    3 => entry.with_liquidity(200).unwrap(),
+                    _ => entry,
                 })
                 .collect(),
             1000,
-        );
-        assert_eq!(route.available_liquidity(), 600);
+        )
+        .unwrap();
+        assert_eq!(route.known_available_liquidity().unwrap(), None);
     }
 
     #[rstest::rstest]
-    fn test_to_withdrawal_plan(two_entry_route: WithdrawRoute) {
+    fn test_to_target_amount_pairs(two_entry_route: WithdrawRoute) {
         let route = two_entry_route;
-        let plan = route.to_withdrawal_plan();
+        let pairs = route.to_target_amount_pairs();
 
-        assert_eq!(plan, vec![(1, 500), (2, 300)]);
+        assert_eq!(pairs, vec![(1, 500), (2, 300)]);
     }
 
     #[rstest::rstest]
-    #[case(WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 500)], 1000), false)]
-    #[case(WithdrawRoute::from_entries(vec![WithdrawRouteEntry::new(1, 1000)], 1000), true)]
-    fn test_can_satisfy(#[case] route: WithdrawRoute, #[case] expected: bool) {
-        assert_eq!(route.can_satisfy(), expected);
+    fn test_withdraw_plan(two_entry_route: WithdrawRoute) {
+        let route = two_entry_route;
+        let plan = route.withdraw_plan();
+
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].target_id(), 1);
+        assert_eq!(plan[0].max_amount(), 500);
+        assert_eq!(plan[1].target_id(), 2);
+        assert_eq!(plan[1].max_amount(), 300);
+    }
+
+    #[rstest::rstest]
+    #[case(Err(WithdrawRoute::new(vec![route_entry(1, 500)], 1000).unwrap_err()), false)]
+    #[case(Ok(WithdrawRoute::new(vec![route_entry(1, 1000)], 1000).unwrap()), true)]
+    fn test_can_satisfy_valid_route(
+        #[case] route: Result<WithdrawRoute, WithdrawRouteError>,
+        #[case] expected: bool,
+    ) {
+        match route {
+            Ok(route) => assert_eq!(route.can_satisfy(), expected),
+            Err(WithdrawRouteError::InsufficientRouteTotal { .. }) => assert!(!expected),
+            Err(error) => panic!("unexpected error: {error:?}"),
+        }
     }
 
     #[rstest::rstest]
@@ -3606,7 +3984,7 @@ mod policy_withdraw_route_tests {
 
         let entry = route.get_entry(1);
         assert!(entry.is_some());
-        assert_eq!(entry.unwrap().max_amount, 500);
+        assert_eq!(entry.unwrap().max_amount(), 500);
 
         assert!(route.get_entry(3).is_none());
     }
