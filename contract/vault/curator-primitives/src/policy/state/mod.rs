@@ -159,11 +159,11 @@ impl Default for MarketConfig {
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Default)]
 pub struct PolicyState {
-    markets: OrderedMap<TargetId, MarketConfig>,
-    principals: OrderedMap<TargetId, u128>,
-    cap_groups: OrderedMap<CapGroupId, CapGroupRecord>,
-    supply_queue: SupplyQueue,
-    leases: MarketLeaseRegistry,
+    pub markets: OrderedMap<TargetId, MarketConfig>,
+    pub principals: OrderedMap<TargetId, u128>,
+    pub cap_groups: OrderedMap<CapGroupId, CapGroupRecord>,
+    pub supply_queue: SupplyQueue,
+    pub leases: MarketLeaseRegistry,
 }
 
 #[templar_vault_macros::vault_derive]
@@ -171,12 +171,8 @@ pub struct PolicyState {
 pub enum PolicyStateError {
     UnknownMarket { target_id: TargetId },
     UnknownCapGroup { id: CapGroupId },
-    CapGroupInUse { id: CapGroupId },
     PrincipalOverflow { target_id: TargetId },
     InvalidSupplyQueue { source: SupplyQueueError },
-    SupplyQueueUnknownMarket { target_id: TargetId },
-    SupplyQueueDisabledMarket { target_id: TargetId },
-    SupplyQueueUnauthorizedMarket { target_id: TargetId },
 }
 
 impl PolicyState {
@@ -198,8 +194,6 @@ impl PolicyState {
             .supply_queue
             .validate()
             .map_err(|source| PolicyStateError::InvalidSupplyQueue { source })?;
-        state.validate_supply_queue_targets()?;
-        state.prune_orphan_principals();
         state.initialize_missing_principals();
         state.recompute_cap_group_principals()?;
         Ok(state)
@@ -252,7 +246,6 @@ impl PolicyState {
         supply_queue
             .validate()
             .map_err(|source| PolicyStateError::InvalidSupplyQueue { source })?;
-        self.validate_supply_queue_targets_with(&supply_queue)?;
         self.supply_queue = supply_queue;
         Ok(())
     }
@@ -280,9 +273,6 @@ impl PolicyState {
             .get_mut(&target_id)
             .ok_or(PolicyStateError::UnknownMarket { target_id })?;
         config.cap = cap;
-        if cap == 0 {
-            self.supply_queue.remove_target(target_id);
-        }
         Ok(())
     }
 
@@ -296,9 +286,6 @@ impl PolicyState {
             .get_mut(&target_id)
             .ok_or(PolicyStateError::UnknownMarket { target_id })?;
         config.enabled = enabled;
-        if !enabled {
-            self.supply_queue.remove_target(target_id);
-        }
         Ok(())
     }
 
@@ -326,36 +313,6 @@ impl PolicyState {
         }
         let _ = self.principals.insert(target_id, principal);
         self.recompute_cap_group_principals()
-    }
-
-    pub fn remove_market(
-        &mut self,
-        target_id: TargetId,
-    ) -> Result<Option<MarketConfig>, PolicyStateError> {
-        let removed = self.markets.remove(&target_id);
-        if removed.is_some() {
-            let _ = self.principals.remove(&target_id);
-            self.supply_queue.remove_target(target_id);
-            self.recompute_cap_group_principals()?;
-        }
-        Ok(removed)
-    }
-
-    pub fn remove_cap_group(
-        &mut self,
-        cap_group_id: &CapGroupId,
-    ) -> Result<Option<CapGroupRecord>, PolicyStateError> {
-        if self
-            .markets
-            .values()
-            .any(|config| config.cap_group_id.as_ref() == Some(cap_group_id))
-        {
-            return Err(PolicyStateError::CapGroupInUse {
-                id: cap_group_id.clone(),
-            });
-        }
-
-        Ok(self.cap_groups.remove(cap_group_id))
     }
 
     #[must_use]
@@ -414,7 +371,7 @@ impl PolicyState {
             .cap_groups
             .get_mut(&cap_group_id)
             .expect("cap group must exist after ensure_cap_group");
-        record.cap.set_absolute_cap(new_cap);
+        record.cap.set_absolute_cap(new_cap.unwrap_or(0));
     }
 
     pub fn set_cap_group_relative_cap(
@@ -427,7 +384,13 @@ impl PolicyState {
             .cap_groups
             .get_mut(&cap_group_id)
             .expect("cap group must exist after ensure_cap_group");
-        record.cap.set_relative_cap(new_relative_cap);
+        if let Some(relative_cap) = new_relative_cap {
+            record.cap.set_relative_cap(relative_cap);
+        } else {
+            record.cap = super::cap_group::CapGroup::builder()
+                .absolute_cap(record.cap.absolute_cap().map_or(0, |cap| cap.get()))
+                .build();
+        }
     }
 
     pub fn recompute_cap_group_principals(&mut self) -> Result<(), PolicyStateError> {
@@ -446,19 +409,6 @@ impl PolicyState {
         Ok(())
     }
 
-    pub fn prune_unused_cap_groups(&mut self) {
-        self.cap_groups.retain(|group_id, _| {
-            self.markets
-                .values()
-                .any(|config| config.cap_group_id.as_ref() == Some(group_id))
-        });
-    }
-
-    pub fn prune_zero_principals(&mut self) {
-        self.principals
-            .retain(|target_id, principal| *principal != 0 && self.markets.contains_key(target_id));
-    }
-
     fn initialize_missing_principals(&mut self) {
         let market_ids: Vec<TargetId> = self.markets.keys().copied().collect();
         for target_id in market_ids {
@@ -466,37 +416,6 @@ impl PolicyState {
                 let _ = self.principals.insert(target_id, 0);
             }
         }
-    }
-
-    fn validate_supply_queue_targets(&self) -> Result<(), PolicyStateError> {
-        self.validate_supply_queue_targets_with(&self.supply_queue)
-    }
-
-    fn validate_supply_queue_targets_with(
-        &self,
-        supply_queue: &SupplyQueue,
-    ) -> Result<(), PolicyStateError> {
-        for entry in supply_queue.entries() {
-            let target_id = entry.target_id();
-            let config = self
-                .market_config(target_id)
-                .ok_or(PolicyStateError::SupplyQueueUnknownMarket { target_id })?;
-
-            if !config.enabled {
-                return Err(PolicyStateError::SupplyQueueDisabledMarket { target_id });
-            }
-
-            if config.cap == 0 {
-                return Err(PolicyStateError::SupplyQueueUnauthorizedMarket { target_id });
-            }
-        }
-
-        Ok(())
-    }
-
-    fn prune_orphan_principals(&mut self) {
-        self.principals
-            .retain(|target_id, _| self.markets.contains_key(target_id));
     }
 
     fn ensure_known_cap_group(
@@ -533,17 +452,10 @@ impl From<PolicyStateError> for CapGroupError {
     fn from(err: PolicyStateError) -> Self {
         match err {
             PolicyStateError::UnknownCapGroup { id } => Self::NotFound { id },
-            PolicyStateError::CapGroupInUse { id } => Self::InconsistentRecord { id },
             PolicyStateError::PrincipalOverflow { target_id: _ }
-            | PolicyStateError::UnknownMarket { target_id: _ }
-            | PolicyStateError::InvalidSupplyQueue { source: _ }
-            | PolicyStateError::SupplyQueueUnknownMarket { target_id: _ }
-            | PolicyStateError::SupplyQueueDisabledMarket { target_id: _ }
-            | PolicyStateError::SupplyQueueUnauthorizedMarket { target_id: _ } => {
-                Self::InconsistentRecord {
-                    id: "policy-state".into(),
-                }
-            }
+            | PolicyStateError::UnknownMarket { target_id: _ } => Self::InconsistentRecord {
+                id: CapGroupId::from("policy-state"),
+            },
         }
     }
 }
