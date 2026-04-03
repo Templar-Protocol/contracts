@@ -1,6 +1,6 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use templar_vault_kernel::TargetId;
+use templar_vault_kernel::{DurationNs, TargetId, TimestampNs};
 
 use super::{
     refresh_plan::{refresh_execution_plan, RefreshExecutionPlan, RefreshPlanError},
@@ -42,8 +42,8 @@ pub fn withdraw_plan(
 
 pub fn build_refresh_plan_from_targets(
     targets: &[TargetId],
-    cooldown_ns: u64,
-    last_refresh_ns: Option<u64>,
+    cooldown: DurationNs,
+    last_refresh_at: Option<TimestampNs>,
 ) -> Result<
     (
         super::refresh_plan::RefreshPlan,
@@ -51,14 +51,13 @@ pub fn build_refresh_plan_from_targets(
     ),
     RefreshPlanError,
 > {
-    refresh_execution_plan(targets, cooldown_ns, last_refresh_ns)
-        .map(RefreshExecutionPlan::into_parts)
+    refresh_execution_plan(targets, cooldown, last_refresh_at).map(RefreshExecutionPlan::into_parts)
 }
 
 pub fn refresh_plan(
     targets: &[TargetId],
-    cooldown_ns: u64,
-    last_refresh_ns: Option<u64>,
+    cooldown: DurationNs,
+    last_refresh_at: Option<TimestampNs>,
 ) -> Result<RefreshExecutionPlan, RefreshPlanError> {
-    refresh_execution_plan(targets, cooldown_ns, last_refresh_ns)
+    refresh_execution_plan(targets, cooldown, last_refresh_at)
 }
