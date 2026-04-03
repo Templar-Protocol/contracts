@@ -526,7 +526,7 @@ impl Contract {
             }));
         }
 
-        self.market_execution_lock.lock(
+        let lease = self.market_execution_lock.lock(
             market,
             op_id.0,
             u64::MAX.saturating_sub(env::block_timestamp()),
@@ -543,6 +543,7 @@ impl Contract {
                         .execute_withdraw_01_execute_withdraw_fetch_position(
                             op_id.into(),
                             market,
+                            lease.fencing_token().0.into(),
                             batch_limit,
                         ),
                 ),
@@ -561,8 +562,8 @@ impl Contract {
     ///
     /// Implementation details:
     /// - Uses `OpState::Allocating` as a generic in-flight guard for this rebalance op.
-    /// - Locks the target market index in `market_execution_lock` to serialize the underlying
-    ///   market call.
+    /// - Acquires a fenced market lease in `market_execution_lock` before the underlying
+    ///   market call and enforces the lease token across callback settlement.
     ///
     /// Expects that a supply withdrawal request for this vault already exists in the given
     /// `market` and is ready to be executed.
@@ -595,7 +596,7 @@ impl Contract {
         let principal = self.principal_of(market_id);
         require!(principal > 0, "No principal to withdraw");
 
-        self.market_execution_lock.lock(
+        let lease = self.market_execution_lock.lock(
             market_id,
             op_id,
             u64::MAX.saturating_sub(env::block_timestamp()),
@@ -621,6 +622,7 @@ impl Contract {
                         .rebalance_withdraw_01_execute_withdraw_fetch_position(
                             op_id,
                             market_id,
+                            lease.fencing_token().0.into(),
                             batch_limit,
                             U128(principal),
                         ),
@@ -639,15 +641,16 @@ impl Contract {
         plan.dedup();
 
         let now = env::block_timestamp();
-        let (refresh_plan, refresh_throttle) = {
+        let refresh_execution_plan = {
             let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();
-            templar_curator_primitives::policy::target_set::build_refresh_plan_from_targets(
+            templar_curator_primitives::policy::refresh_plan::refresh_execution_plan(
                 &targets,
                 idle.refresh_cooldown_ns,
                 (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns),
             )
             .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
+        let (refresh_plan, refresh_throttle) = refresh_execution_plan.into_parts();
         let refresh_throttle = refresh_throttle
             .try_acquire(now)
             .unwrap_or_else(|_| panic_with_message("Refresh throttled"));
@@ -755,7 +758,7 @@ impl Contract {
     /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
     /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
-    /// - Clears withdraw state and market execution locks and returns the vault to Idle.
+    /// - Clears withdraw state and market execution leases and returns the vault to Idle.
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
         crate::auth::require_action(crate::auth::ActionKind::AbortWithdrawing);
 
@@ -820,7 +823,7 @@ impl Contract {
                 .emit();
 
                 match outcome {
-                    PayoutOutcome::Success => {
+                    PayoutOutcome::Success { .. } => {
                         let (receiver, amount) = match &self.op_state {
                             OpState::Payout(s) => (s.receiver, s.amount),
                             _ => return PromiseOrValue::Value(()),
@@ -833,7 +836,7 @@ impl Contract {
                         );
                         PromiseOrValue::Value(())
                     }
-                    PayoutOutcome::Failure => {
+                    PayoutOutcome::Failure { .. } => {
                         // Treat stuck payout as failure, but re-sync idle_balance using
                         // the actual underlying FT balance held by the vault account.
                         PromiseOrValue::Promise(
@@ -1158,7 +1161,7 @@ impl Contract {
         }
     }
 
-    /// Returns `true` if any market execution lock is currently held.
+    /// Returns `true` if any market execution lease is currently held.
     ///
     /// This is a coarse signal that a withdrawal or allocator-only
     /// rebalance is in-flight against at least one market.

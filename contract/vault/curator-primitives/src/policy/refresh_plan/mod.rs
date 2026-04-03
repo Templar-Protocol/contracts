@@ -3,7 +3,7 @@ use core::num::NonZeroU64;
 use templar_vault_kernel::TargetId;
 
 use super::cooldown::Cooldown;
-use super::duplicate::find_first_duplicate;
+use super::target_set::find_first_duplicate;
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone)]
@@ -22,6 +22,13 @@ pub struct RefreshThrottle {
 pub struct RefreshTargetStatus {
     target_id: TargetId,
     last_refresh_ns: Option<u64>,
+}
+
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[derive(Clone)]
+pub struct RefreshExecutionPlan {
+    plan: RefreshPlan,
+    throttle: RefreshThrottle,
 }
 
 impl RefreshPlan {
@@ -158,6 +165,28 @@ impl RefreshTargetStatus {
     }
 }
 
+impl RefreshExecutionPlan {
+    #[must_use]
+    pub const fn new(plan: RefreshPlan, throttle: RefreshThrottle) -> Self {
+        Self { plan, throttle }
+    }
+
+    #[must_use]
+    pub const fn plan(&self) -> &RefreshPlan {
+        &self.plan
+    }
+
+    #[must_use]
+    pub const fn throttle(&self) -> &RefreshThrottle {
+        &self.throttle
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (RefreshPlan, RefreshThrottle) {
+        (self.plan, self.throttle)
+    }
+}
+
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum RefreshPlanError {
@@ -197,6 +226,16 @@ pub fn build_targeted_refresh_plan(
     }
 
     Ok(plan)
+}
+
+pub fn refresh_execution_plan(
+    targets: &[TargetId],
+    cooldown_ns: u64,
+    last_refresh_ns: Option<u64>,
+) -> Result<RefreshExecutionPlan, RefreshPlanError> {
+    let plan = RefreshPlan::new(targets.to_vec())?;
+    let throttle = RefreshThrottle::new(cooldown_ns, last_refresh_ns);
+    Ok(RefreshExecutionPlan::new(plan, throttle))
 }
 
 pub fn build_stale_refresh_plan(
