@@ -3,7 +3,12 @@ use crate::contract::helpers::transition_to_runtime;
 use crate::contract::CuratorVault;
 use crate::effects::{AddressRegistrar, EffectInterpreter, EffectSummary};
 use crate::error::RuntimeError;
-use crate::storage::{compose_policy_state, Storage, StorageVersion, VersionedState};
+use crate::storage::{
+    compose_policy_state, decode_markets, decode_policy_locks, decode_principals,
+    decode_restrictions, decode_state_blob, decode_supply_queue, encode_markets,
+    encode_policy_locks, encode_principals, encode_restrictions, encode_state_blob,
+    encode_supply_queue, Storage, StorageVersion, VersionedState,
+};
 use alloc::vec::Vec;
 use core::mem;
 use soroban_sdk::{Address as SdkAddress, Bytes, Env};
@@ -19,6 +24,62 @@ use templar_vault_kernel::{
 };
 
 pub type AttemptId = u64;
+
+pub mod fuzz_api {
+    use super::*;
+
+    pub fn encode_restrictions_bytes(value: &Restrictions) -> Vec<u8> {
+        encode_restrictions(value)
+    }
+
+    pub fn decode_restrictions_bytes(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
+        decode_restrictions(bytes)
+    }
+
+    pub fn encode_supply_queue_bytes(value: &SupplyQueue) -> Vec<u8> {
+        encode_supply_queue(value)
+    }
+
+    pub fn decode_supply_queue_bytes(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
+        decode_supply_queue(bytes)
+    }
+
+    pub fn encode_markets_bytes(value: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
+        encode_markets(value)
+    }
+
+    pub fn decode_markets_bytes(
+        bytes: &[u8],
+    ) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
+        decode_markets(bytes)
+    }
+
+    pub fn encode_principals_bytes(value: &OrderedMap<TargetId, u128>) -> Vec<u8> {
+        encode_principals(value)
+    }
+
+    pub fn decode_principals_bytes(
+        bytes: &[u8],
+    ) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
+        decode_principals(bytes)
+    }
+
+    pub fn encode_policy_locks_bytes(value: &MarketLeaseRegistry) -> Vec<u8> {
+        encode_policy_locks(value)
+    }
+
+    pub fn decode_policy_locks_bytes(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
+        decode_policy_locks(bytes)
+    }
+
+    pub fn encode_state_blob_bytes(value: &VersionedState) -> Vec<u8> {
+        encode_state_blob(value)
+    }
+
+    pub fn decode_state_blob_bytes(bytes: &[u8]) -> Result<VersionedState, RuntimeError> {
+        decode_state_blob(bytes)
+    }
+}
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]

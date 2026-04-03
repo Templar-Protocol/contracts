@@ -132,7 +132,7 @@ fn decode_cap_group_id(bytes: &[u8], cursor: &mut usize) -> Result<CapGroupId, R
     CapGroupId::try_from(id).map_err(|_| RuntimeError::storage_error("cap group id invalid"))
 }
 
-fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
+pub(crate) fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
     let mut out = Vec::new();
     match mode {
         Restrictions::Blacklist(addresses) => {
@@ -153,7 +153,7 @@ fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
     out
 }
 
-fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
+pub(crate) fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
     let mut cursor = 0usize;
     let tag = read_u8(bytes, &mut cursor)?;
     let len = read_u32(bytes, &mut cursor)? as usize;
@@ -168,7 +168,7 @@ fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
     }
 }
 
-fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
+pub(crate) fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
     let mut out = Vec::new();
     let max_length = queue.max_length().map(|value| value.get()).unwrap_or(0);
     push_u32(&mut out, max_length);
@@ -182,7 +182,7 @@ fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
     out
 }
 
-fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
+pub(crate) fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
     let mut cursor = 0usize;
     let max_length = read_u32(bytes, &mut cursor)?;
     let count = read_u32(bytes, &mut cursor)? as usize;
@@ -257,7 +257,7 @@ fn decode_cap_groups(bytes: &[u8]) -> Result<OrderedMap<CapGroupId, CapGroupReco
     Ok(cap_groups)
 }
 
-fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
+pub(crate) fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
     let mut out = Vec::new();
     push_u32(&mut out, markets.len() as u32);
     for (target_id, config) in markets.iter() {
@@ -275,7 +275,9 @@ fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
     out
 }
 
-fn decode_markets(bytes: &[u8]) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
+pub(crate) fn decode_markets(
+    bytes: &[u8],
+) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut markets = OrderedMap::new();
@@ -297,7 +299,7 @@ fn decode_markets(bytes: &[u8]) -> Result<OrderedMap<TargetId, MarketConfig>, Ru
     Ok(markets)
 }
 
-fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<u8> {
+pub(crate) fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<u8> {
     let mut out = Vec::new();
     push_u32(&mut out, principals.len() as u32);
     for (target_id, principal) in principals.iter() {
@@ -307,7 +309,7 @@ fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<u8> {
     out
 }
 
-fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
+pub(crate) fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut principals = OrderedMap::new();
@@ -319,7 +321,7 @@ fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, Runtime
     Ok(principals)
 }
 
-fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
+pub(crate) fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
     let mut out = Vec::new();
     push_u32(&mut out, leases.stored_len() as u32);
     push_u64(&mut out, leases.next_fencing_token());
@@ -340,7 +342,7 @@ fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
     out
 }
 
-fn decode_policy_locks(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
+pub(crate) fn decode_policy_locks(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let next_fencing_token = read_u64(bytes, &mut cursor)?;
@@ -517,7 +519,7 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
     }
 }
 
-fn encode_state_blob(state: &VersionedState) -> Vec<u8> {
+pub(crate) fn encode_state_blob(state: &VersionedState) -> Vec<u8> {
     let mut out = Vec::new();
     push_u32(&mut out, state.version.number());
     push_u128(&mut out, state.state.total_assets);
@@ -532,7 +534,7 @@ fn encode_state_blob(state: &VersionedState) -> Vec<u8> {
     out
 }
 
-fn decode_state_blob(bytes: &[u8]) -> Result<VersionedState, RuntimeError> {
+pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VersionedState, RuntimeError> {
     let mut cursor = 0usize;
     let version = StorageVersion::new(read_u32(bytes, &mut cursor)?);
     let state = VaultState {
