@@ -44,7 +44,7 @@ pub use policy::{
     },
     refresh_plan::{
         build_stale_refresh_plan, refresh_execution_plan, RefreshExecutionPlan, RefreshPlan,
-        RefreshPlanError, RefreshTargetStatus, RefreshThrottle,
+        RefreshPlanError, RefreshTargetStatus, RefreshThrottle, RefreshTiming,
     },
     state::{MarketConfig, PolicyState},
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},

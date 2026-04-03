@@ -3612,6 +3612,7 @@ mod policy_supply_queue_tests {
 mod policy_target_set_tests {
     use crate::policy::{
         market_lock::{LeaseDurationNs, LeaseOwner, MarketLeaseRegistry},
+        refresh_plan::RefreshTiming,
         target_set::{
             build_refresh_plan_from_targets, build_withdraw_capacity_pairs_from_target_principals,
         },
@@ -3619,6 +3620,7 @@ mod policy_target_set_tests {
     };
 
     use alloc::vec;
+    use templar_vault_kernel::{DurationNs, TimestampNs};
 
     #[test]
     fn finds_first_duplicate() {
@@ -3680,6 +3682,25 @@ mod policy_target_set_tests {
             &[1, 2, 3],
             DurationNs(100),
             Some(TimestampNs(50)),
+        )
+        .unwrap();
+
+        assert_eq!(refresh_execution_plan.plan().targets(), [1, 2, 3]);
+        assert_eq!(
+            refresh_execution_plan.throttle().cooldown_duration(),
+            DurationNs(100)
+        );
+        assert_eq!(
+            refresh_execution_plan.throttle().last_refresh_at(),
+            Some(TimestampNs(50))
+        );
+    }
+
+    #[test]
+    fn builds_refresh_execution_plan_with_timing() {
+        let refresh_execution_plan = crate::policy::target_set::refresh_plan_with_timing(
+            &[1, 2, 3],
+            RefreshTiming::new(DurationNs(100), Some(TimestampNs(50))),
         )
         .unwrap();
 
