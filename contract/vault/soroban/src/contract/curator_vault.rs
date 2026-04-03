@@ -616,6 +616,7 @@ where
                 let observed_total_assets = self
                     .policy_state()
                     .principal_for(delta.market)
+                    .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?
                     .checked_add(delta.amount)
                     .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
 
@@ -749,9 +750,12 @@ where
     fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
         let policy = self.policy_state_mut();
         for position in refreshed_positions {
-            policy
+            if policy
                 .set_principal(position.market, position.total_assets)
-                .expect("refreshed positions must refer to known markets");
+                .is_err()
+            {
+                panic!();
+            }
         }
     }
 
@@ -789,9 +793,9 @@ where
 
     fn update_market_principal(&mut self, market: TargetId, principal: u128) {
         let policy = self.policy_state_mut();
-        policy
-            .set_principal(market, principal)
-            .expect("market principal updates must refer to known markets");
+        if policy.set_principal(market, principal).is_err() {
+            panic!();
+        }
     }
 
     pub(crate) fn complete_supply_allocation(
@@ -825,6 +829,7 @@ where
         let next_principal = self
             .policy_state()
             .principal_for(market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
             .checked_sub(realized_amount)
             .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
         self.update_market_principal(market, next_principal);
@@ -1203,7 +1208,7 @@ where
             .supply_queue()
             .entries()
             .iter()
-            .map(SupplyQueueEntry::target_id)
+            .map(|entry| entry.target_id())
             .collect()
     }
 }

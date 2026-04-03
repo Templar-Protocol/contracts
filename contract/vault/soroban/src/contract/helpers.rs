@@ -203,26 +203,6 @@ pub(crate) fn set_config_address(env: &Env, key: &soroban_sdk::Symbol, addr: &Sd
     env.storage().instance().set(key, addr);
 }
 
-pub(crate) fn query_vault_field(env: &Env, f: fn(&VaultState) -> u128) -> i128 {
-    let storage = SorobanStorage::new(env);
-    match storage.load_state() {
-        Ok(Some(versioned)) => to_i128(f(&versioned.state)).unwrap_or(0),
-        Ok(None) | Err(_) => 0,
-    }
-}
-
-pub(crate) fn query_vault_snapshot(env: &Env) -> (i128, i128, i128) {
-    let storage = SorobanStorage::new(env);
-    match storage.load_state() {
-        Ok(Some(versioned)) => (
-            to_i128(versioned.state.total_shares).unwrap_or(0),
-            to_i128(versioned.state.idle_assets).unwrap_or(0),
-            to_i128(versioned.state.external_assets).unwrap_or(0),
-        ),
-        Ok(None) | Err(_) => (0, 0, 0),
-    }
-}
-
 pub(crate) fn sdk_string_to_alloc(
     value: soroban_sdk::String,
 ) -> Result<AllocString, ContractError> {

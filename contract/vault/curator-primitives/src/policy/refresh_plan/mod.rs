@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::vec::Vec;
 use core::num::NonZeroU64;
 use templar_vault_kernel::{DurationNs, TargetId, TimestampNs};
 
@@ -256,10 +256,9 @@ pub fn build_targeted_refresh_plan(
     enabled_targets: &[TargetId],
 ) -> Result<RefreshPlan, RefreshPlanError> {
     let plan = RefreshPlan::new(targets.to_vec())?;
-    let enabled_set: BTreeSet<_> = enabled_targets.iter().copied().collect();
 
     for target in plan.targets() {
-        if !enabled_set.contains(target) {
+        if !enabled_targets.contains(target) {
             return Err(RefreshPlanError::TargetNotFound { target_id: *target });
         }
     }

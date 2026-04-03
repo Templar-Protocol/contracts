@@ -43,7 +43,7 @@ impl Cooldown {
         match self.last_event_ns {
             Some(last) => TimeGate::schedule_from(
                 TimestampNs(last),
-                DurationNs(self.interval_ns.expect("finite cooldown interval").get()),
+                DurationNs(self.interval_ns.unwrap().get()),
             ),
             None => TimeGate::ready_now(),
         }

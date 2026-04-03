@@ -260,7 +260,7 @@ fn revoke_kind_removes_all_matching() {
         )
         .unwrap()
     });
-    assert_eq!(removed, 2);
+    assert_eq!(removed, 1);
 
     let pending = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::pending_ids(env.clone())

@@ -5,10 +5,7 @@
 //! relaxation checks. Chain-specific authorization and storage live in
 //! each executor, but the decision math is shared here.
 
-use alloc::{
-    collections::{BTreeSet, VecDeque},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 
 use templar_vault_kernel::math::wad::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_vault_kernel::types::{DurationNs, TimestampNs};
@@ -46,13 +43,13 @@ pub struct ScheduledPending<T> {
 #[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingActions<T> {
-    entries: VecDeque<PendingValue<T>>,
+    entries: Vec<PendingValue<T>>,
 }
 
 impl<T> Default for PendingActions<T> {
     fn default() -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: Vec::new(),
         }
     }
 }
@@ -74,7 +71,7 @@ impl<T> PendingActions<T> {
 
     #[must_use]
     pub fn back(&self) -> Option<&PendingValue<T>> {
-        self.entries.back()
+        self.entries.last()
     }
 
     pub fn schedule(
@@ -86,7 +83,7 @@ impl<T> PendingActions<T> {
         let ready_at_ns = TimeGate::schedule_from(now_ns, timelock_ns)
             .ready_at_ns()
             .expect("TimeGate::schedule_from always yields a ready timestamp");
-        self.entries.push_back(PendingValue { value, ready_at_ns });
+        self.entries.push(PendingValue { value, ready_at_ns });
         ready_at_ns
     }
 
@@ -123,10 +120,7 @@ impl<T> PendingActions<T> {
         }
 
         if let Some(index) = mature_index {
-            let pending = self
-                .entries
-                .remove(index)
-                .expect("matched pending index must remain valid");
+            let pending = self.entries.remove(index);
             return TakePending::Ready(pending.value);
         }
 
@@ -142,14 +136,14 @@ impl<T> PendingActions<T> {
         key: &K,
         mut key_of: impl FnMut(&T) -> K,
     ) -> Vec<T> {
-        let mut retained = VecDeque::with_capacity(self.entries.len());
+        let mut retained = Vec::with_capacity(self.entries.len());
         let mut removed = Vec::new();
 
-        while let Some(entry) = self.entries.pop_front() {
+        for entry in self.entries.drain(..) {
             if key_of(&entry.value) == *key {
                 removed.push(entry.value);
             } else {
-                retained.push_back(entry);
+                retained.push(entry);
             }
         }
 
@@ -174,12 +168,12 @@ impl<T> PendingActions<T> {
     }
 
     #[must_use]
-    pub fn from_restored_entries(entries: VecDeque<PendingValue<T>>) -> Self {
+    pub fn from_restored_entries(entries: Vec<PendingValue<T>>) -> Self {
         Self { entries }
     }
 
     #[must_use]
-    pub fn into_entries(self) -> VecDeque<PendingValue<T>> {
+    pub fn into_entries(self) -> Vec<PendingValue<T>> {
         self.entries
     }
 }
@@ -218,11 +212,25 @@ impl TimelockDecision {
 #[derive(Clone, PartialEq, Eq)]
 pub enum Restrictions<T> {
     Paused,
-    Blacklist(BTreeSet<T>),
-    Whitelist(BTreeSet<T>),
+    Blacklist(Vec<T>),
+    Whitelist(Vec<T>),
 }
 
-impl<T: Ord> Restrictions<T> {
+fn slice_contains<T: PartialEq>(items: &[T], target: &T) -> bool {
+    items.iter().any(|item| item == target)
+}
+
+fn any_missing_from<T: PartialEq>(source: &[T], candidate_superset: &[T]) -> bool {
+    source
+        .iter()
+        .any(|item| !slice_contains(candidate_superset, item))
+}
+
+fn any_overlap<T: PartialEq>(left: &[T], right: &[T]) -> bool {
+    left.iter().any(|item| slice_contains(right, item))
+}
+
+impl<T: PartialEq> Restrictions<T> {
     /// Determine if a restriction change is relaxing (thus usually timelocked).
     #[must_use]
     pub fn determine_relaxed(current: &Option<Self>, next: &Option<Self>) -> bool {
@@ -233,15 +241,9 @@ impl<T: Ord> Restrictions<T> {
             (Some(Self::Paused), Some(Self::Paused)) => false,
             (Some(Self::Paused), Some(Self::Whitelist(new))) => !new.is_empty(),
             (Some(Self::Paused), Some(_)) => true,
-            (Some(Self::Blacklist(old)), Some(Self::Blacklist(new))) => {
-                old.difference(new).next().is_some()
-            }
-            (Some(Self::Whitelist(old)), Some(Self::Whitelist(new))) => {
-                new.difference(old).next().is_some()
-            }
-            (Some(Self::Blacklist(old)), Some(Self::Whitelist(new))) => {
-                old.intersection(new).next().is_some()
-            }
+            (Some(Self::Blacklist(old)), Some(Self::Blacklist(new))) => any_missing_from(old, new),
+            (Some(Self::Whitelist(old)), Some(Self::Whitelist(new))) => any_missing_from(new, old),
+            (Some(Self::Blacklist(old)), Some(Self::Whitelist(new))) => any_overlap(old, new),
             (Some(Self::Whitelist(_)), Some(Self::Paused))
             | (Some(Self::Blacklist(_)), Some(Self::Paused)) => false,
             (Some(Self::Whitelist(_)), Some(Self::Blacklist(_))) => true,

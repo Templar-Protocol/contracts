@@ -230,7 +230,7 @@ fn deposit_blocked_when_paused() {
 fn request_withdraw_blocked_by_blacklist() {
     let state = idle_state(1_000, 1_000);
     let config = test_config();
-    let restrictions = Restrictions::Blacklist(alloc::vec![addr(9)]);
+    let restrictions = Restrictions::blacklist(alloc::vec![addr(9)]);
 
     let result = apply_action(
         state,
@@ -3099,7 +3099,7 @@ fn execute_withdraw_skips_restricted_head_and_processes_next() {
         )
         .expect("enqueue second");
 
-    let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
+    let restrictions = Restrictions::blacklist(vec![restricted_owner]);
     let result = apply_action(
         state,
         &config,
@@ -3238,7 +3238,7 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
         plan: vec![alloc_step(1, 500)],
     });
 
-    let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
+    let restrictions = Restrictions::blacklist(vec![restricted_owner]);
     let result = apply_action(
         state,
         &config,
@@ -3309,7 +3309,7 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
         plan: vec![alloc_step(1, 500)],
     });
 
-    let restrictions = Restrictions::Blacklist(vec![restricted_owner]);
+    let restrictions = Restrictions::blacklist(vec![restricted_owner]);
     let result = apply_action(
         state,
         &config,
@@ -3344,7 +3344,8 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
 
 #[test]
 fn execute_withdraw_respects_paused_restrictions() {
-    let config = base_config();
+    let mut config = base_config();
+    config.paused = true;
     let mut state = base_state(1_000, 1_000);
 
     state
@@ -3362,7 +3363,7 @@ fn execute_withdraw_respects_paused_restrictions() {
     let result = apply_action(
         state,
         &config,
-        Some(&Restrictions::Paused),
+        None,
         &Address([9u8; 32]),
         KernelAction::ExecuteWithdraw {
             now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),

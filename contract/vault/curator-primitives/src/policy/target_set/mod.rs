@@ -1,4 +1,3 @@
-use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use templar_vault_kernel::{DurationNs, TargetId, TimestampNs};
 
@@ -8,11 +7,9 @@ use super::{
 };
 
 #[must_use]
-pub fn find_first_duplicate<T: Ord + Copy>(items: &[T]) -> Option<T> {
-    let mut seen = BTreeSet::new();
-
-    for item in items {
-        if !seen.insert(*item) {
+pub fn find_first_duplicate<T: PartialEq + Copy>(items: &[T]) -> Option<T> {
+    for (index, item) in items.iter().enumerate() {
+        if items[index + 1..].contains(item) {
             return Some(*item);
         }
     }
@@ -21,7 +18,7 @@ pub fn find_first_duplicate<T: Ord + Copy>(items: &[T]) -> Option<T> {
 }
 
 #[must_use]
-pub fn has_unique_items<T: Ord + Copy>(items: &[T]) -> bool {
+pub fn has_unique_items<T: PartialEq + Copy>(items: &[T]) -> bool {
     find_first_duplicate(items).is_none()
 }
 

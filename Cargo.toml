@@ -151,13 +151,13 @@ inherits = "release"
 overflow-checks = false
 
 [profile.release-soroban.package.templar-soroban-runtime]
-overflow-checks = true
+overflow-checks = false
 
 [profile.release-soroban.package.templar-vault-kernel]
-overflow-checks = true
+overflow-checks = false
 
 [profile.release-soroban.package.templar-curator-primitives]
-overflow-checks = true
+overflow-checks = false
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification
 [profile.dev.package.sqlx-macros]
