@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use templar_vault_kernel::{TargetId, TimestampNs};
 
-use super::{duplicate::find_first_duplicate, market_lock::MarketLeaseRegistry};
+use super::{market_lock::MarketLeaseRegistry, target_set::find_first_duplicate};
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
