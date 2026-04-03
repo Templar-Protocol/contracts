@@ -18,7 +18,7 @@ pub const MAX_PENDING: usize = 1024;
 /// Stores the total assets and timestamp at which fees were last accrued.
 /// Used to calculate time-weighted management fees and performance fees
 /// based on AUM growth.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeAccrualAnchor {
     pub total_assets: u128,
@@ -66,7 +66,7 @@ impl Default for FeeAccrualAnchor {
 /// Fee recipients are 32-byte addresses. Executors are responsible for mapping
 /// chain-native account identifiers (e.g., NEAR AccountId, Soroban Address) to
 /// this canonical 32-byte format, typically using a SHA256 hash.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VaultConfig {
     pub fees: FeesSpec,
@@ -99,7 +99,7 @@ impl VaultConfig {
 /// - `withdraw_queue.check_invariants()`
 /// - `next_op_id` is monotonically increasing
 /// - Operations can only proceed when `op_state` allows them
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct VaultState {
     pub total_assets: u128,

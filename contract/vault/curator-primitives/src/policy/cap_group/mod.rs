@@ -10,7 +10,7 @@ use derive_more::Display;
 use templar_vault_kernel::Wad;
 use typed_builder::TypedBuilder;
 
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Display))]
 #[cfg_attr(not(target_arch = "wasm32"), display("{_0}"))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -94,7 +94,7 @@ pub enum CapGroupIdError {
 ///
 /// Caps are optional - `None` means no limit for that cap type.
 /// When both caps are set, the effective cap is the minimum of the two.
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
@@ -215,7 +215,7 @@ impl CapGroup {
 }
 
 /// Record tracking the state of a cap group.
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[derive(Clone, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.

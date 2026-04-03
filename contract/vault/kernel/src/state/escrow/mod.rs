@@ -12,7 +12,7 @@ pub use crate::types::EscrowSettlement;
 /// Escrow entry for a single actor.
 ///
 /// Tracks shares held in escrow for a pending withdrawal.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct EscrowEntry {
     pub owner: Address,
@@ -46,7 +46,7 @@ impl EscrowEntry {
 }
 
 /// Result of applying a settlement to an escrow entry.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SettlementResult {
     pub burned: u128,
@@ -55,7 +55,7 @@ pub struct SettlementResult {
 }
 
 /// Aggregate escrow statistics.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct EscrowStats {
     pub count: u32,

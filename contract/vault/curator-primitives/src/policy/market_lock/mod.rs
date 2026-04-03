@@ -9,19 +9,19 @@ use templar_vault_kernel::{TargetId, TimestampNs};
 
 use super::state::OrderedMap;
 
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseOwner(pub u64);
 
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FencingToken(pub u64);
 
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseDurationNs(pub u64);
 
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct MarketLease {
     target_id: TargetId,
@@ -33,6 +33,25 @@ pub struct MarketLease {
 }
 
 impl MarketLease {
+    #[must_use]
+    pub fn from_parts(
+        target_id: TargetId,
+        owner: LeaseOwner,
+        op_id: Option<u64>,
+        acquired_at: TimestampNs,
+        expires_at: TimestampNs,
+        fencing_token: FencingToken,
+    ) -> Self {
+        Self {
+            target_id,
+            owner,
+            op_id,
+            acquired_at,
+            expires_at,
+            fencing_token,
+        }
+    }
+
     #[must_use]
     pub fn target_id(&self) -> TargetId {
         self.target_id
@@ -108,7 +127,7 @@ pub enum FencingError {
     },
 }
 
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct MarketLeaseRegistry {
     leases_by_target: OrderedMap<TargetId, MarketLease>,
@@ -124,6 +143,26 @@ impl MarketLeaseRegistry {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.leases_by_target.is_empty()
+    }
+
+    #[must_use]
+    pub fn next_fencing_token(&self) -> u64 {
+        self.next_fencing_token
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&TargetId, &MarketLease)> {
+        self.leases_by_target.iter()
+    }
+
+    #[must_use]
+    pub fn from_parts(
+        leases_by_target: OrderedMap<TargetId, MarketLease>,
+        next_fencing_token: u64,
+    ) -> Self {
+        Self {
+            leases_by_target,
+            next_fencing_token,
+        }
     }
 
     #[must_use]
