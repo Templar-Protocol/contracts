@@ -163,7 +163,6 @@ graph TD
     AllocEmergency["AllocatorEmergency\nAbortAllocating\nAbortWithdrawing\nAbortRefreshing"]
     Curator["Curator\nPolicyAdmin\nManualReconcile\nEmergencyReset"]
 
-    Curator --> Sentinel
     Curator --> Allocator
     Sentinel --> AllocEmergency
     Allocator --> AllocEmergency

@@ -512,7 +512,6 @@ fn golden_refresh_plan_building(near_snapshot: NearVaultSnapshot) {
     // Build refresh plan for all markets
     let plan = build_refresh_plan(&enabled_targets, Some(30_000_000_000)).unwrap();
 
-    assert!(plan.validate().is_ok());
     assert_eq!(plan.len(), 3); // 3 markets
     assert_eq!(plan.cooldown_ns(), 30_000_000_000); // 30 seconds
 }
@@ -735,13 +734,11 @@ fn golden_refresh_after_allocation(near_snapshot: NearVaultSnapshot) {
     let plan = build_refresh_plan(&enabled_targets, None).unwrap();
 
     // Validate plan
-    assert!(plan.validate().is_ok());
-
     // Simulate refreshing state
     let state = OpState::Refreshing(RefreshingState {
         op_id: 100,
         index: 1,
-        plan: plan.targets.clone(),
+        plan: plan.targets().to_vec(),
     });
 
     // Check recovery from stuck refresh
@@ -771,14 +768,19 @@ mod cap_group_unit_tests {
         let cap = CapGroup::default();
         assert!(cap.is_unlimited());
         assert!(cap.can_allocate(0, u128::MAX, 1000));
+        assert!(!cap.can_allocate(u128::MAX, 1, 1000));
+        assert!(matches!(
+            cap.enforce(u128::MAX, 1, 1000),
+            Err(CapGroupError::Overflow { .. })
+        ));
     }
 
     #[test]
     fn test_cap_group_absolute_only() {
         let cap = CapGroup::builder().absolute_cap(1000).build();
         assert!(!cap.is_unlimited());
-        assert!(cap.absolute_cap.is_some());
-        assert!(cap.relative_cap.is_none());
+        assert!(cap.absolute_cap().is_some());
+        assert!(cap.relative_cap().is_none());
 
         // Can allocate up to cap
         assert!(cap.can_allocate(0, 1000, 10000));
@@ -794,8 +796,8 @@ mod cap_group_unit_tests {
         // 50% relative cap
         let cap = CapGroup::builder().relative_cap(Wad::from(WAD / 2)).build();
         assert!(!cap.is_unlimited());
-        assert!(cap.absolute_cap.is_none());
-        assert!(cap.relative_cap.is_some());
+        assert!(cap.absolute_cap().is_none());
+        assert!(cap.relative_cap().is_some());
 
         // Total assets = 1000, effective cap = 500
         assert!(cap.can_allocate(0, 500, 1000));
@@ -863,11 +865,13 @@ mod cap_group_unit_tests {
     #[test]
     fn test_compute_available_capacity() {
         let cap = CapGroup::builder().absolute_cap(1000).build();
+        let unlimited = CapGroup::default();
 
         assert_eq!(cap.available_capacity(0, 2000), 1000);
         assert_eq!(cap.available_capacity(300, 2000), 700);
         assert_eq!(cap.available_capacity(1000, 2000), 0);
         assert_eq!(cap.available_capacity(1500, 2000), 0); // Already over, saturates to 0
+        assert_eq!(unlimited.available_capacity(u128::MAX, 2000), 0);
     }
 
     #[test]
@@ -875,23 +879,38 @@ mod cap_group_unit_tests {
         let cap = CapGroup::builder().absolute_cap(1000).build();
         let record = CapGroupRecord { cap, principal: 0 };
 
-        let updated = record.apply_allocation(300);
+        let updated = record.apply_allocation(300).unwrap();
         assert_eq!(updated.principal, 300);
 
-        let reduced = updated.remove_allocation(100);
+        let reduced = updated.remove_allocation(100).unwrap();
         assert_eq!(reduced.principal, 200);
     }
 
     #[test]
-    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
-    fn test_remove_allocation_underflow_panics() {
+    fn test_remove_allocation_underflow_returns_error() {
         let cap = CapGroup::builder().absolute_cap(1000).build();
         let record = CapGroupRecord {
             cap,
             principal: 200,
         };
 
-        let _ = record.remove_allocation(500);
+        assert!(matches!(
+            record.remove_allocation(500),
+            Err(CapGroupError::Underflow { .. })
+        ));
+    }
+
+    #[test]
+    fn test_apply_allocation_overflow_returns_error() {
+        let record = CapGroupRecord {
+            cap: CapGroup::default(),
+            principal: u128::MAX,
+        };
+
+        assert!(matches!(
+            record.apply_allocation(1),
+            Err(CapGroupError::Overflow { .. })
+        ));
     }
 
     #[test]
@@ -961,8 +980,36 @@ mod cap_group_unit_tests {
     #[test]
     fn test_zero_absolute_cap_is_unlimited() {
         let cap = CapGroup::builder().absolute_cap(0).build();
-        // NonZeroU128::new(0) returns None, so this should be unlimited
-        assert!(cap.absolute_cap.is_none());
+        assert!(cap.absolute_cap().is_none());
+    }
+
+    #[test]
+    fn test_zero_relative_cap_is_zero_cap() {
+        let cap = CapGroup::builder().relative_cap(Wad::zero()).build();
+
+        assert_eq!(cap.relative_cap(), Some(Wad::zero()));
+        assert_eq!(cap.effective_cap(1_000), 0);
+        assert!(!cap.can_allocate(0, 1, 1_000));
+    }
+
+    #[test]
+    fn test_validate_allocations_rejects_inconsistent_records() {
+        let group = CapGroupId::from("group1");
+        let canonical = CapGroupRecord {
+            cap: CapGroup::builder().absolute_cap(1000).build(),
+            principal: 90,
+        };
+        let stale = CapGroupRecord {
+            cap: CapGroup::builder().absolute_cap(1000).build(),
+            principal: 0,
+        };
+
+        let allocations = vec![(&group, &canonical, 5u128), (&group, &stale, 95u128)];
+
+        assert!(matches!(
+            validate_allocations(&allocations, 2_000),
+            Err(CapGroupError::InconsistentRecord { .. })
+        ));
     }
 
     proptest::proptest! {
@@ -980,11 +1027,7 @@ mod cap_group_unit_tests {
             let effective = cap.effective_cap(total);
             let available = cap.available_capacity(current, total);
 
-            if cap.is_unlimited() {
-                proptest::prop_assert_eq!(available, u128::MAX);
-            } else {
-                proptest::prop_assert_eq!(available, effective.saturating_sub(current));
-            }
+            proptest::prop_assert_eq!(available, effective.saturating_sub(current));
         }
     }
 }
@@ -1547,7 +1590,7 @@ mod rbac_module_tests {
         let mut config = RbacConfig::with_curator(curator_addr);
         config.add_role(allocator_addr, Role::Allocator);
         config.add_role(sentinel_addr, Role::Sentinel);
-        RbacAuth { config }
+        RbacAuth::new(config)
     }
 
     #[rstest::rstest]
@@ -1559,14 +1602,16 @@ mod rbac_module_tests {
     }
 
     #[rstest::rstest]
-    fn test_add_remove_role(sentinel_addr: Address) {
-        let mut config = RbacConfig::default();
+    fn test_add_remove_role(curator_addr: Address, sentinel_addr: Address) {
+        let mut config = RbacConfig::with_curator(curator_addr);
 
-        config.add_role(sentinel_addr, Role::Sentinel);
+        assert!(config.add_role(sentinel_addr, Role::Sentinel));
         assert!(config.has_role(&sentinel_addr, Role::Sentinel));
+        assert!(!config.add_role(sentinel_addr, Role::Sentinel));
 
-        config.remove_role(&sentinel_addr, Role::Sentinel);
+        assert!(config.remove_role(&sentinel_addr, Role::Sentinel));
         assert!(!config.has_role(&sentinel_addr, Role::Sentinel));
+        assert!(!config.remove_role(&sentinel_addr, Role::Sentinel));
     }
 
     #[rstest::rstest]
@@ -1602,14 +1647,22 @@ mod rbac_module_tests {
     }
 
     #[rstest::rstest]
-    fn test_sentinel_add_remove(sentinel_addr: Address) {
-        let mut config = RbacConfig::default();
+    fn test_sentinel_add_remove(curator_addr: Address, sentinel_addr: Address) {
+        let mut config = RbacConfig::with_curator(curator_addr);
 
-        config.add_role(sentinel_addr, Role::Sentinel);
+        assert!(config.add_role(sentinel_addr, Role::Sentinel));
         assert!(config.has_role(&sentinel_addr, Role::Sentinel));
 
-        config.remove_role(&sentinel_addr, Role::Sentinel);
+        assert!(config.remove_role(&sentinel_addr, Role::Sentinel));
         assert!(!config.has_role(&sentinel_addr, Role::Sentinel));
+    }
+
+    #[rstest::rstest]
+    fn test_cannot_remove_last_curator(curator_addr: Address) {
+        let mut config = RbacConfig::with_curator(curator_addr);
+
+        assert!(!config.remove_role(&curator_addr, Role::Curator));
+        assert!(config.has_role(&curator_addr, Role::Curator));
     }
 
     #[rstest::rstest]
@@ -1760,23 +1813,39 @@ mod rbac_module_tests {
         allocator_addr: Address,
     ) {
         let mut auth = rbac_auth;
-        auth.config.set_paused(true);
+        auth.set_paused(true);
 
         let result = auth.authorize(ActionKind::Deposit, user_addr, None);
         assert!(matches!(result, Err(AuthError::VaultPaused)));
 
-        assert!(auth
-            .authorize(ActionKind::BeginAllocating, allocator_addr, None)
-            .is_ok());
+        let result = auth.authorize(ActionKind::BeginAllocating, allocator_addr, None);
+        assert!(matches!(result, Err(AuthError::VaultPaused)));
     }
 
     #[rstest::rstest]
     fn test_paused_allows_pause_action(rbac_auth: RbacAuth, sentinel_addr: Address) {
         let mut auth = rbac_auth;
-        auth.config.set_paused(true);
+        auth.set_paused(true);
 
         assert!(auth
             .authorize(ActionKind::Pause, sentinel_addr, None)
+            .is_ok());
+    }
+
+    #[rstest::rstest]
+    fn test_paused_allows_emergency_actions(
+        rbac_auth: RbacAuth,
+        sentinel_addr: Address,
+        curator_addr: Address,
+    ) {
+        let mut auth = rbac_auth;
+        auth.set_paused(true);
+
+        assert!(auth
+            .authorize(ActionKind::AbortAllocating, sentinel_addr, None)
+            .is_ok());
+        assert!(auth
+            .authorize(ActionKind::ManualReconcile, curator_addr, None)
             .is_ok());
     }
 
@@ -1786,8 +1855,18 @@ mod rbac_module_tests {
 
         assert!(!auth.is_paused());
 
-        auth.config.set_paused(true);
+        auth.set_paused(true);
         assert!(auth.is_paused());
+    }
+
+    #[test]
+    fn test_allowed_roles_for_action_matches_emergency_policy() {
+        let roles = allowed_roles_for_action(ActionKind::AbortRefreshing);
+
+        assert_eq!(roles.len(), 3);
+        assert!(roles.contains(&Role::Allocator));
+        assert!(roles.contains(&Role::Sentinel));
+        assert!(roles.contains(&Role::Curator));
     }
 
     #[test]
@@ -1913,15 +1992,15 @@ mod policy_cap_group_adapter_tests {
             .absolute_cap(1_000)
             .relative_cap(Wad::from(WAD / 2))
             .build();
-        assert_eq!(cap.absolute_cap.map(|v| v.get()), Some(1_000));
-        assert_eq!(cap.relative_cap, Some(Wad::from(WAD / 2)));
+        assert_eq!(cap.absolute_cap().map(|v| v.get()), Some(1_000));
+        assert_eq!(cap.relative_cap(), Some(Wad::from(WAD / 2)));
 
         let record = CapGroupRecord {
             cap,
             principal: 300,
         };
         assert_eq!(record.principal, 300);
-        assert_eq!(record.cap.absolute_cap.map(|v| v.get()), Some(1_000));
+        assert_eq!(record.cap.absolute_cap().map(|v| v.get()), Some(1_000));
     }
 
     #[test]
@@ -1997,7 +2076,7 @@ mod policy_cooldown_tests {
     #[test]
     fn test_cooldown_enforced() {
         let cooldown = Cooldown::new(1000);
-        let cooldown = cooldown.record(100);
+        let cooldown = cooldown.recorded_at(100);
 
         assert!(!cooldown.is_ready(100));
         assert!(!cooldown.is_ready(500));
@@ -2009,15 +2088,14 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_check_returns_error() {
-        let cooldown = Cooldown::new(1000).record(100);
+        let cooldown = Cooldown::new(1000).recorded_at(100);
 
         let result = cooldown.check(500);
         assert!(matches!(
             result,
             Err(CooldownError::OnCooldown {
-                last_event_ns: Some(100),
-                interval_ns: 1000,
-                current_ns: 500,
+                ready_at_ns: 1100,
+                remaining_ns: 600,
             })
         ));
 
@@ -2030,7 +2108,7 @@ mod policy_cooldown_tests {
         let cooldown = Cooldown::new(1000);
         assert_eq!(cooldown.ready_at(), None);
 
-        let cooldown = cooldown.record(100);
+        let cooldown = cooldown.recorded_at(100);
         assert_eq!(cooldown.ready_at(), Some(1100));
 
         let unlimited = Cooldown::unlimited();
@@ -2039,7 +2117,7 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_remaining() {
-        let cooldown = Cooldown::new(1000).record(100);
+        let cooldown = Cooldown::new(1000).recorded_at(100);
 
         assert_eq!(cooldown.remaining(100), 1000);
         assert_eq!(cooldown.remaining(500), 600);
@@ -2050,13 +2128,22 @@ mod policy_cooldown_tests {
     #[test]
     fn test_record_updates_last_event() {
         let cooldown = Cooldown::new(1000);
-        assert_eq!(cooldown.last_event_ns, None);
+        assert_eq!(cooldown.last_event_ns(), None);
 
-        let cooldown = cooldown.record(500);
-        assert_eq!(cooldown.last_event_ns, Some(500));
+        let cooldown = cooldown.recorded_at(500);
+        assert_eq!(cooldown.last_event_ns(), Some(500));
 
-        let cooldown = cooldown.record(1500);
-        assert_eq!(cooldown.last_event_ns, Some(1500));
+        let cooldown = cooldown.recorded_at(1500);
+        assert_eq!(cooldown.last_event_ns(), Some(1500));
+    }
+
+    #[test]
+    fn test_unlimited_state_is_canonical_after_recording() {
+        let unlimited = Cooldown::unlimited();
+        let recorded = unlimited.recorded_at(123);
+
+        assert_eq!(recorded, Cooldown::unlimited());
+        assert_eq!(recorded.last_event_ns(), None);
     }
 }
 
@@ -2066,7 +2153,7 @@ mod policy_lock_filter_tests {
     use crate::policy::market_lock::{MarketLock, MarketLockSet};
     use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
     use crate::policy::withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError};
-    use templar_vault_kernel::TargetId;
+    use templar_vault_kernel::{TargetId, TimestampNs};
 
     fn lock_set_with_target(target_id: TargetId) -> MarketLockSet {
         MarketLockSet::default()
@@ -2088,17 +2175,9 @@ mod policy_lock_filter_tests {
     fn filters_targets(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
         let targets = vec![1, 2, 3];
-        assert_eq!(lock_set.filter_targets(&targets, 1_500), vec![1, 3]);
-    }
-
-    #[rstest::rstest]
-    fn filters_partial_allocation_plan(lock_set_target_2: MarketLockSet) {
-        let lock_set = lock_set_target_2;
-        let plan = vec![(1, 10), (2, 20), (3, 30)];
-
         assert_eq!(
-            SupplyQueue::filter_partial_allocation_plan(&plan, &lock_set, 1_500),
-            vec![(1, 10), (3, 30)]
+            lock_set.excluding_leased_targets(&targets, TimestampNs(1_500)),
+            vec![1, 3]
         );
     }
 
@@ -2116,7 +2195,7 @@ mod policy_lock_filter_tests {
             max_length: 16,
         };
 
-        let filtered = queue.excluding_locked(&lock_set, 1_500);
+        let filtered = queue.excluding_leased(&lock_set, TimestampNs(1_500));
 
         assert_eq!(filtered.max_length, 16);
         assert_eq!(filtered.entries.len(), 2);
@@ -2125,7 +2204,7 @@ mod policy_lock_filter_tests {
     }
 
     #[rstest::rstest]
-    fn excluding_locked_targets_can_invalidate_withdraw_route(lock_set_target_1: MarketLockSet) {
+    fn excluding_leased_targets_can_invalidate_withdraw_route(lock_set_target_1: MarketLockSet) {
         let lock_set = lock_set_target_1;
         let route = WithdrawRoute::from_entries(
             vec![
@@ -2135,7 +2214,7 @@ mod policy_lock_filter_tests {
             250,
         );
 
-        let filtered = route.excluding_locked(&lock_set, 1_500);
+        let filtered = route.excluding_leased(&lock_set, TimestampNs(1_500));
 
         assert!(matches!(
             filtered,
@@ -2148,7 +2227,7 @@ mod policy_lock_filter_tests {
     }
 
     #[rstest::rstest]
-    fn builds_allocation_plan_excluding_locked_targets(lock_set_target_2: MarketLockSet) {
+    fn builds_allocation_plan_excluding_leased_targets(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
         let queue = SupplyQueue {
             entries: vec![
@@ -2160,13 +2239,13 @@ mod policy_lock_filter_tests {
         };
 
         assert_eq!(
-            queue.to_allocation_plan_excluding_locked(&lock_set, 1_500),
+            queue.to_allocation_plan_excluding_leased(&lock_set, TimestampNs(1_500)),
             vec![(1, 10), (3, 30)]
         );
     }
 
     #[rstest::rstest]
-    fn builds_withdrawal_plan_excluding_locked_targets(lock_set_target_1: MarketLockSet) {
+    fn builds_withdrawal_plan_excluding_leased_targets(lock_set_target_1: MarketLockSet) {
         let lock_set = lock_set_target_1;
         let route = WithdrawRoute::from_entries(
             vec![
@@ -2179,7 +2258,7 @@ mod policy_lock_filter_tests {
 
         assert_eq!(
             route
-                .to_withdrawal_plan_excluding_locked(&lock_set, 1_500)
+                .to_withdrawal_plan_excluding_leased(&lock_set, TimestampNs(1_500))
                 .expect("filtered route remains satisfiable"),
             vec![(2, 200), (3, 300)]
         );
@@ -2196,7 +2275,7 @@ mod policy_lock_filter_tests {
             250,
         );
 
-        let result = route.to_withdrawal_plan_excluding_locked(&lock_set, 1_500);
+        let result = route.to_withdrawal_plan_excluding_leased(&lock_set, TimestampNs(1_500));
 
         assert!(matches!(
             result,
@@ -2209,7 +2288,7 @@ mod policy_lock_filter_tests {
     }
 
     #[test]
-    fn excluding_locked_preserves_original_route_validation_errors() {
+    fn excluding_leased_preserves_original_route_validation_errors() {
         let lock_set = lock_set_with_target(1);
         let invalid_route = WithdrawRoute::from_entries(
             vec![
@@ -2219,7 +2298,7 @@ mod policy_lock_filter_tests {
             250,
         );
 
-        let result = invalid_route.excluding_locked(&lock_set, 1_500);
+        let result = invalid_route.excluding_leased(&lock_set, TimestampNs(1_500));
 
         assert!(matches!(
             result,
@@ -2232,16 +2311,19 @@ mod policy_lock_filter_tests {
         let lock_set = lock_set_target_2;
         let targets = vec![1, 2, 3, 4];
 
-        assert_eq!(lock_set.filter_targets(&targets, 1_500), vec![1, 3, 4]);
+        assert_eq!(
+            lock_set.excluding_leased_targets(&targets, TimestampNs(1_500)),
+            vec![1, 3, 4]
+        );
     }
 
     #[rstest::rstest]
-    fn reports_unlocked_targets(lock_set_target_2: MarketLockSet) {
+    fn reports_unleased_targets(lock_set_target_2: MarketLockSet) {
         let lock_set = lock_set_target_2;
 
-        assert!(lock_set.is_unlocked(1, 1_500));
-        assert!(!lock_set.is_unlocked(2, 1_500));
-        assert!(lock_set.is_unlocked(3, 1_500));
+        assert!(lock_set.is_unleased(1, TimestampNs(1_500)));
+        assert!(!lock_set.is_unleased(2, TimestampNs(1_500)));
+        assert!(lock_set.is_unleased(3, TimestampNs(1_500)));
     }
 }
 
@@ -2619,50 +2701,37 @@ mod policy_refresh_plan_tests {
 
     #[test]
     fn test_new_plan() {
-        let plan = RefreshPlan::new(vec![1, 2, 3]);
+        let plan = RefreshPlan::new(vec![1, 2, 3]).unwrap();
         assert!(!plan.is_empty());
         assert_eq!(plan.len(), 3);
-        assert!(plan.cooldown.is_unlimited());
+        assert!(plan.cooldown().is_unlimited());
     }
 
     #[test]
-    fn test_empty_plan() {
-        let plan = RefreshPlan::empty();
-        assert!(plan.is_empty());
-        assert_eq!(plan.len(), 0);
+    fn test_new_plan_rejects_empty_targets() {
+        let result = RefreshPlan::new(vec![]);
+        assert!(matches!(result, Err(RefreshPlanError::EmptyPlan)));
     }
 
     #[test]
-    fn test_validate_refresh_plan_success() {
-        let plan = RefreshPlan::new(vec![1, 2, 3]);
-        assert!(plan.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_refresh_plan_empty() {
-        let plan = RefreshPlan::empty();
-        assert!(matches!(plan.validate(), Err(RefreshPlanError::EmptyPlan)));
-    }
-
-    #[test]
-    fn test_validate_refresh_plan_duplicate() {
+    fn test_new_plan_rejects_duplicate_targets() {
         let plan = RefreshPlan::new(vec![1, 2, 1]);
         assert!(matches!(
-            plan.validate(),
+            plan,
             Err(RefreshPlanError::DuplicateTarget { target_id: 1 })
         ));
     }
 
     #[test]
     fn test_check_refresh_cooldown_no_cooldown() {
-        let plan = RefreshPlan::new(vec![1, 2]);
+        let plan = RefreshPlan::new(vec![1, 2]).unwrap();
         assert!(plan.check_cooldown(1000).is_ok());
         assert!(plan.is_ready(1000));
     }
 
     #[test]
     fn test_check_refresh_cooldown_first_refresh() {
-        let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
+        let plan = RefreshPlan::new(vec![1, 2]).unwrap().with_cooldown(1000);
         // No last_refresh_ns, so first refresh should be allowed
         assert!(plan.check_cooldown(100).is_ok());
         assert!(plan.is_ready(100));
@@ -2671,8 +2740,9 @@ mod policy_refresh_plan_tests {
     #[test]
     fn test_check_refresh_cooldown_on_cooldown() {
         let plan = RefreshPlan::new(vec![1, 2])
+            .unwrap()
             .with_cooldown(1000)
-            .with_last_refresh(100);
+            .with_last_refresh(Some(100));
 
         // Only 500ns elapsed, cooldown is 1000ns
         let result = plan.check_cooldown(600);
@@ -2683,8 +2753,9 @@ mod policy_refresh_plan_tests {
     #[test]
     fn test_check_refresh_cooldown_after_cooldown() {
         let plan = RefreshPlan::new(vec![1, 2])
+            .unwrap()
             .with_cooldown(1000)
-            .with_last_refresh(100);
+            .with_last_refresh(Some(100));
 
         // 1100ns elapsed, cooldown is 1000ns
         assert!(plan.check_cooldown(1200).is_ok());
@@ -2692,11 +2763,22 @@ mod policy_refresh_plan_tests {
     }
 
     #[test]
+    fn test_with_cooldown_preserves_last_refresh_timestamp() {
+        let plan = RefreshPlan::new(vec![1, 2])
+            .unwrap()
+            .with_last_refresh(Some(50))
+            .with_cooldown(200);
+
+        assert_eq!(plan.last_refresh_ns(), Some(50));
+        assert_eq!(plan.cooldown_ns(), 200);
+    }
+
+    #[test]
     fn test_build_refresh_plan() {
         let enabled = vec![1, 2, 3];
         let plan = build_refresh_plan(&enabled, Some(5000)).unwrap();
 
-        assert_eq!(plan.targets, vec![1, 2, 3]);
+        assert_eq!(plan.targets(), [1, 2, 3]);
         assert_eq!(plan.cooldown_ns(), 5000);
     }
 
@@ -2715,7 +2797,7 @@ mod policy_refresh_plan_tests {
 
         let plan = build_targeted_refresh_plan(&targets, &enabled).unwrap();
 
-        assert_eq!(plan.targets, vec![2, 4]);
+        assert_eq!(plan.targets(), [2, 4]);
     }
 
     #[test]
@@ -2759,12 +2841,12 @@ mod policy_refresh_plan_tests {
 
     #[test]
     fn test_record_refresh_completion() {
-        let plan = RefreshPlan::new(vec![1, 2]).with_cooldown(1000);
+        let plan = RefreshPlan::new(vec![1, 2]).unwrap().with_cooldown(1000);
         let updated = plan.record_completion(5000);
 
         assert_eq!(updated.last_refresh_ns(), Some(5000));
         assert_eq!(updated.cooldown_ns(), 1000);
-        assert_eq!(updated.targets, vec![1, 2]);
+        assert_eq!(updated.targets(), [1, 2]);
     }
 
     #[test]
@@ -2788,9 +2870,9 @@ mod policy_refresh_plan_tests {
     }
 
     #[test]
-    fn test_to_target_list() {
-        let plan = RefreshPlan::new(vec![5, 3, 1]);
-        let list = plan.to_target_list();
+    fn test_into_targets() {
+        let plan = RefreshPlan::new(vec![5, 3, 1]).unwrap();
+        let list = plan.into_targets();
         assert_eq!(list, vec![5, 3, 1]);
     }
 
@@ -3126,8 +3208,8 @@ mod policy_target_set_tests {
 
     #[test]
     fn builds_refresh_plan_from_targets() {
-        let plan = build_refresh_plan_from_targets(&[1, 2, 3], 100, 50).unwrap();
-        assert_eq!(plan.targets, vec![1, 2, 3]);
+        let plan = build_refresh_plan_from_targets(&[1, 2, 3], 100, Some(50)).unwrap();
+        assert_eq!(plan.targets(), [1, 2, 3]);
         assert_eq!(plan.cooldown_ns(), 100);
         assert_eq!(plan.last_refresh_ns(), Some(50));
     }
