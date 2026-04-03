@@ -135,10 +135,9 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
 
     #[allow(clippy::match_wildcard_for_single_variants)]
     match request.unwrap_err() {
-        ResolvePriceIdentifierError::NotFound {
-            oracle_id,
-            price_identifier,
-        } => {
+        ResolvePriceIdentifierError::NotFound(error) => {
+            let oracle_id = error.oracle_id;
+            let price_identifier = error.price_identifier;
             assert_eq!(&oracle_id, proxy_oracle.id());
             assert_eq!(price_identifier, DEFAULT_BORROW_PRICE_ID);
         }

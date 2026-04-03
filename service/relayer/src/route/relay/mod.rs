@@ -21,16 +21,17 @@ pub async fn relay(
     Json(RelayRequest {
         signed_delegate_action,
         storage_deposit,
+        update_prices,
         wait_until,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing relay request");
-    let (gas, contract_data) = match app
+    let relay_check = match app
         .sda_check_and_calculate_gas(&signed_delegate_action)
         .await
     {
         Ok(x) => {
-            tracing::info!(gas = %x.0, "Gas check passed");
+            tracing::info!(gas = %x.gas, "Gas check passed");
             x
         }
         Err(e) => {
@@ -40,6 +41,10 @@ pub async fn relay(
             };
         }
     };
+
+    let gas = relay_check.gas;
+    let contract_data = relay_check.contract_data;
+    let market_ids = relay_check.market_ids;
 
     let account_id = signed_delegate_action.delegate_action.sender_id.clone();
 
@@ -58,6 +63,14 @@ pub async fn relay(
             };
         }
     } // end storage deposit
+
+    if update_prices {
+        if let Err(error) = app.update_market_prices(&market_ids).await {
+            return SimpleResponse::Failure {
+                error: error.to_string(),
+            };
+        }
+    }
 
     let Some(cost_of_gas) = app.estimate_cost_of_gas(gas).await else {
         tracing::error!("Failed to estimate cost of gas: {gas}");

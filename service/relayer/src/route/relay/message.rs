@@ -11,6 +11,8 @@ pub struct RelayRequest {
     #[serde(default)]
     pub storage_deposit: bool,
     #[serde(default)]
+    pub update_prices: bool,
+    #[serde(default)]
     pub wait_until: TxExecutionStatus,
 }
 
@@ -69,6 +71,7 @@ mod tests {
                 signature: Signature::empty(near_crypto::KeyType::ED25519),
             },
             storage_deposit: false,
+            update_prices: false,
             wait_until: TxExecutionStatus::default(),
         };
 

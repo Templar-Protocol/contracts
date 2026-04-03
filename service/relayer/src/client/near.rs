@@ -1,6 +1,7 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{atomic::AtomicUsize, Arc},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use near_crypto::{PublicKey, Signer};
@@ -33,16 +34,18 @@ use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBo
 
 use templar_common::{
     market::MarketConfiguration,
+    number::Decimal,
     oracle::{
-        price_transformer::PriceTransformer,
+        price_transformer::{Call, PriceTransformer},
         proxy::{Proxy, Source},
-        pyth::PriceIdentifier,
-        OracleRequest,
+        pyth::{self, PriceIdentifier},
+        redstone, OracleRequest,
     },
+    time::Nanoseconds,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
-use crate::{cache::Cache, AssetResolution, MarketData};
+use crate::{cache::Cache, AssetResolution, MarketData, ViewMarketPrices};
 
 pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
 pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
@@ -124,11 +127,25 @@ pub enum LoadMarketAccountsError {
 pub enum ResolvePriceIdentifierError {
     #[error("View error: {0}")]
     View(#[from] ViewError),
-    #[error("Price identifier not defined on oracle {oracle_id}: {price_identifier}")]
-    NotFound {
-        oracle_id: AccountId,
-        price_identifier: PriceIdentifier,
-    },
+    #[error(transparent)]
+    NotFound(#[from] NotFoundError),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Price identifier not defined on oracle {oracle_id}: {price_identifier}")]
+pub struct NotFoundError {
+    pub oracle_id: AccountId,
+    pub price_identifier: PriceIdentifier,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SourcePriceError {
+    #[error("Source returned no price")]
+    Missing,
+    #[error("Failed to convert publish_time")]
+    InvalidPublishTime,
+    #[error("Price is stale")]
+    Stale,
 }
 
 #[derive(Debug, Clone)]
@@ -481,20 +498,20 @@ impl Near {
         result
     }
 
-    async fn view<T: DeserializeOwned>(
+    pub async fn view_raw(
         &self,
         account_id: AccountId,
-        method_name: impl Into<String>,
-        args: impl Serialize,
-    ) -> Result<T, ViewError> {
+        method_name: String,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, JsonRpcError<RpcQueryError>> {
         let result = self
             .client
             .call(methods::query::RpcQueryRequest {
                 block_reference: Finality::Final.into(),
                 request: QueryRequest::CallFunction {
                     account_id,
-                    method_name: method_name.into(),
-                    args: serde_json::to_vec(&args)?.into(),
+                    method_name,
+                    args: args.into(),
                 },
             })
             .await?;
@@ -503,7 +520,20 @@ impl Near {
             unimplemented!("Invalid response kind");
         };
 
-        Ok(serde_json::from_slice(&result.result)?)
+        Ok(result.result)
+    }
+
+    pub async fn view<T: DeserializeOwned>(
+        &self,
+        account_id: AccountId,
+        method_name: impl Into<String>,
+        args: impl Serialize,
+    ) -> Result<T, ViewError> {
+        let raw_result = self
+            .view_raw(account_id, method_name.into(), serde_json::to_vec(&args)?)
+            .await?;
+
+        Ok(serde_json::from_slice(&raw_result)?)
     }
 
     /// # Errors
@@ -567,7 +597,7 @@ impl Near {
             .view::<MarketConfiguration>(market_id.clone(), "get_configuration", json!({}))
             .await?;
 
-        let oracle_id = config.price_oracle_configuration.account_id;
+        let oracle_id = config.price_oracle_configuration.account_id.clone();
 
         let borrow_request = self
             .resolve_price_identifier(
@@ -585,6 +615,7 @@ impl Near {
         Ok(MarketData {
             account_id: market_id.clone(),
             oracle_id,
+            price_oracle_configuration: config.price_oracle_configuration.clone(),
             collateral: AssetResolution {
                 asset: config.collateral_asset.clone(),
                 price_id: config.price_oracle_configuration.collateral_asset_price_id,
@@ -598,6 +629,227 @@ impl Near {
         })
     }
 
+    async fn fetch_transformer_input(&self, call: Call) -> Result<Decimal, ViewError> {
+        let bytes = self
+            .view_raw(call.account_id, call.method_name, call.args.0)
+            .await?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    fn system_time() -> Nanoseconds {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        Nanoseconds::from_ns(u64::try_from(now).unwrap_or(u64::MAX))
+    }
+
+    async fn get_transformer(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    ) -> Result<Option<PriceTransformer>, ViewError> {
+        self.view(
+            oracle_id,
+            "get_transformer",
+            json!({ "price_identifier": price_identifier }),
+        )
+        .await
+    }
+
+    async fn get_proxy(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    ) -> Result<Option<Proxy>, ViewError> {
+        self.view(oracle_id, "get_proxy", json!({ "id": price_identifier }))
+            .await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn fetch_oracle_request(
+        &self,
+        request: OracleRequest,
+        max_age: Nanoseconds,
+    ) -> Result<Option<pyth::Price>, ViewError> {
+        let fetched_price = match &request {
+            OracleRequest::Pyth(request) => self
+                .view::<pyth::OracleResponse>(
+                    request.oracle_id.clone(),
+                    "list_ema_prices_no_older_than",
+                    json!({
+                        "price_ids": [request.price_id],
+                        "age": max_age.as_secs(),
+                    }),
+                )
+                .await?
+                .remove(&request.price_id)
+                .flatten(),
+            OracleRequest::RedStone(request) => self
+                .view::<HashMap<redstone::FeedId, redstone::FeedData>>(
+                    request.oracle_id.clone(),
+                    "read_price_data",
+                    json!({
+                        "feed_ids": [request.price_id.clone()],
+                    }),
+                )
+                .await?
+                .remove(&request.price_id)
+                .and_then(|feed| feed.to_pyth_price()),
+        };
+
+        Ok(fetched_price)
+    }
+
+    #[tracing::instrument(skip_all, level = "debug", fields(%oracle_id, %price_identifier, %max_age))]
+    async fn resolve_price(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        max_age: Nanoseconds,
+    ) -> Result<Option<pyth::Price>, ViewError> {
+        match self.query_oracle_type(oracle_id.clone()).await? {
+            OracleType::PythDirect => {
+                self.resolve_price_with_pyth(oracle_id, price_identifier, max_age)
+                    .await
+            }
+            OracleType::PythLst { pyth_id } => {
+                self.resolve_price_with_lst(oracle_id, pyth_id, price_identifier, max_age)
+                    .await
+            }
+            OracleType::Proxy => {
+                self.resolve_price_with_proxy(oracle_id, price_identifier, max_age)
+                    .await
+            }
+        }
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn resolve_price_with_pyth(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        max_age: Nanoseconds,
+    ) -> Result<Option<pyth::Price>, ViewError> {
+        let final_price = self
+            .fetch_oracle_request(OracleRequest::pyth(oracle_id, price_identifier), max_age)
+            .await?;
+
+        Ok(final_price)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn resolve_price_with_lst(
+        &self,
+        oracle_id: AccountId,
+        pyth_id: AccountId,
+        price_identifier: PriceIdentifier,
+        max_age: Nanoseconds,
+    ) -> Result<Option<pyth::Price>, ViewError> {
+        let transformer = self.get_transformer(oracle_id, price_identifier).await?;
+
+        let price = match transformer {
+            Some(transformer) => {
+                let Some(price) = self
+                    .fetch_oracle_request(
+                        OracleRequest::pyth(pyth_id, transformer.price_id),
+                        max_age,
+                    )
+                    .await?
+                else {
+                    return Ok(None);
+                };
+
+                let input = self.fetch_transformer_input(transformer.call).await?;
+
+                transformer.action.apply(price, input)
+            }
+            None => {
+                self.fetch_oracle_request(OracleRequest::pyth(pyth_id, price_identifier), max_age)
+                    .await?
+            }
+        };
+
+        Ok(price)
+    }
+
+    #[tracing::instrument(skip_all, level = "debug")]
+    async fn resolve_price_with_proxy(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        max_age: Nanoseconds,
+    ) -> Result<Option<pyth::Price>, ViewError> {
+        let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? else {
+            tracing::debug!("No proxy found");
+            return Ok(None);
+        };
+
+        let mut prices = vec![];
+        for entry in &proxy.entries {
+            if let Some(price) = self.resolve_proxy_entry_price(entry, max_age).await? {
+                prices.push((price, entry.weight));
+            }
+        }
+
+        tracing::debug!(?prices, "Prices to aggregate");
+
+        let price = proxy.aggregator.aggregate(&prices, Self::system_time());
+
+        tracing::debug!(?price, "Aggregated price");
+
+        Ok(price.map(Into::into))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn resolve_proxy_entry_price(
+        &self,
+        entry: &templar_common::oracle::proxy::Entry,
+        max_age: Nanoseconds,
+    ) -> Result<Option<pyth::Price>, ViewError> {
+        match &entry.source {
+            Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
+            Source::Transformer(t) => {
+                let Some(price) = self
+                    .fetch_oracle_request(t.request.clone(), max_age)
+                    .await?
+                else {
+                    return Ok(None);
+                };
+
+                let input = self.fetch_transformer_input(t.call.clone()).await?;
+                Ok(t.action.apply(price, input))
+            }
+        }
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn load_market_prices(
+        &self,
+        market: &MarketData,
+    ) -> Result<ViewMarketPrices, ViewError> {
+        let oracle_config = &market.price_oracle_configuration;
+        let max_age = Nanoseconds::from_secs(u64::from(oracle_config.price_maximum_age_s));
+
+        let borrow = self.resolve_price(
+            oracle_config.account_id.clone(),
+            oracle_config.borrow_asset_price_id,
+            max_age,
+        );
+        let collateral = self.resolve_price(
+            oracle_config.account_id.clone(),
+            oracle_config.collateral_asset_price_id,
+            max_age,
+        );
+        let (borrow, collateral) = tokio::join!(borrow, collateral);
+
+        Ok(ViewMarketPrices {
+            borrow: borrow?,
+            collateral: collateral?,
+        })
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn query_oracle_type(&self, oracle_id: AccountId) -> Result<OracleType, ViewError> {
         let test_proxy = self
             .view::<Vec<PriceIdentifier>>(oracle_id.clone(), "list_proxies", json!({ "count": 1 }))
@@ -702,18 +954,18 @@ impl Near {
                         .collect::<HashSet<_>>();
                     if requests.is_empty() {
                         tracing::error!("Proxy oracle contract returned empty proxy definition");
-                        return Err(ResolvePriceIdentifierError::NotFound {
+                        return Err(ResolvePriceIdentifierError::NotFound(NotFoundError {
                             oracle_id,
                             price_identifier,
-                        });
+                        }));
                     }
                     Ok(requests)
                 } else {
                     tracing::debug!("Price ID not found on proxy oracle contract");
-                    Err(ResolvePriceIdentifierError::NotFound {
+                    Err(ResolvePriceIdentifierError::NotFound(NotFoundError {
                         oracle_id,
                         price_identifier,
-                    })
+                    }))
                 }
             }
         }

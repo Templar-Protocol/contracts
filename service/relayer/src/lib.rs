@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use axum::{routing, Router};
 use near_primitives::{action::FunctionCallAction, types::AccountId};
 use near_sdk::{
     json_types::U128,
@@ -10,7 +11,11 @@ use near_sdk::{
 use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use templar_common::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
-    oracle::{pyth::PriceIdentifier, OracleRequest},
+    market::PriceOracleConfiguration,
+    oracle::{
+        pyth::{Price, PriceIdentifier},
+        OracleRequest,
+    },
 };
 
 pub mod app;
@@ -19,6 +24,27 @@ pub mod cache;
 pub mod client;
 pub mod error;
 pub mod route;
+
+pub fn router(app: app::App) -> Router {
+    Router::new()
+        .route("/healthz", routing::get(|| async { "ok" }))
+        .route("/relay", routing::post(route::relay::relay))
+        .route(
+            "/update_prices",
+            routing::post(route::update_prices::update_prices),
+        )
+        .route(
+            "/get_allowance",
+            routing::get(route::get_allowance::get_allowance),
+        )
+        .route(
+            "/market_prices",
+            routing::get(route::get_market_prices::get_market_prices),
+        )
+        .nest("/universal_account", route::universal_account::router())
+        .layer(tower::ServiceBuilder::new().layer(tower_http::cors::CorsLayer::permissive()))
+        .with_state(app)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct AccountData {
@@ -36,6 +62,7 @@ pub struct ContractData {
 pub struct MarketData {
     pub account_id: AccountId,
     pub oracle_id: AccountId,
+    pub price_oracle_configuration: PriceOracleConfiguration,
     pub collateral: AssetResolution<CollateralAsset>,
     pub borrow: AssetResolution<BorrowAsset>,
 }
@@ -140,4 +167,11 @@ pub struct MtTransferCallArgs {
     pub amount: U128,
     pub memo: Option<String>,
     pub msg: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ViewMarketPrices {
+    pub borrow: Option<Price>,
+    pub collateral: Option<Price>,
 }

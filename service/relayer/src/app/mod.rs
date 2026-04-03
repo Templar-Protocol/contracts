@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     future::Future,
     sync::Arc,
     time::Duration,
@@ -10,6 +10,7 @@ use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
 use near_primitives::{
     action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
+    hash::CryptoHash,
     transaction::SignedTransaction,
     views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
@@ -17,6 +18,7 @@ use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
 use templar_common::{
     asset::{BorrowAsset, CollateralAsset},
     market::DepositMsg,
+    oracle::{pyth, redstone, OracleRequest},
 };
 use tokio::{
     sync::{watch, RwLock},
@@ -139,6 +141,7 @@ impl App {
         // Load markets from registry...
         let mut set = JoinSet::new();
         for registry_id in &self.args.monitor.registry {
+            tracing::debug!(%registry_id, "Loading from registry");
             set.spawn({
                 let near = self.relay_near.clone();
                 let registry_id = registry_id.clone();
@@ -159,6 +162,7 @@ impl App {
         // ...and add any individual markets.
         let mut set = JoinSet::new();
         for market in markets {
+            tracing::debug!(%market, "Loading market");
             set.spawn({
                 let near = self.relay_near.clone();
                 async move {
@@ -264,6 +268,164 @@ impl App {
         handle.allowed_contract_data = allowed_contracts;
     }
 
+    pub fn expand_market_related_contracts(
+        accounts: &AccountData,
+        interacted_contract_ids: &mut HashSet<AccountId>,
+    ) {
+        let additional_contract_ids = interacted_contract_ids
+            .iter()
+            .filter_map(|contract_id| accounts.market_data.get(contract_id))
+            .flat_map(|market_data| {
+                [
+                    market_data.oracle_id.clone(),
+                    market_data.borrow.asset.contract_id().to_owned(),
+                    market_data.collateral.asset.contract_id().to_owned(),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        interacted_contract_ids.extend(additional_contract_ids);
+    }
+
+    pub fn resolve_market_ids(
+        accounts: &AccountData,
+        interacted_contract_ids: &HashSet<AccountId>,
+    ) -> HashSet<AccountId> {
+        interacted_contract_ids
+            .iter()
+            .filter(|contract_id| accounts.market_data.contains_key(*contract_id))
+            .cloned()
+            .collect()
+    }
+
+    fn derive_sda_interactions(
+        accounts: &AccountData,
+        receiver_id: &AccountId,
+        additional_interactions: Vec<AccountId>,
+    ) -> (HashSet<AccountId>, HashSet<AccountId>) {
+        let interacted_contract_ids: HashSet<_> = std::iter::once(receiver_id.clone())
+            .chain(additional_interactions)
+            .collect();
+        let market_ids = Self::resolve_market_ids(accounts, &interacted_contract_ids);
+        (interacted_contract_ids, market_ids)
+    }
+
+    fn grouped_price_updates(
+        accounts: &AccountData,
+        market_ids: &HashSet<AccountId>,
+    ) -> (
+        HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
+        HashMap<AccountId, HashSet<redstone::FeedId>>,
+    ) {
+        market_ids
+            .iter()
+            .filter_map(|market_id| accounts.market_data.get(market_id))
+            .fold(
+                (HashMap::new(), HashMap::new()),
+                |(mut pyth, mut redstone), market_data| {
+                    for request in market_data
+                        .collateral
+                        .update_oracle
+                        .iter()
+                        .chain(market_data.borrow.update_oracle.iter())
+                    {
+                        match request {
+                            OracleRequest::Pyth(request) => {
+                                pyth.entry(request.oracle_id.clone())
+                                    .or_default()
+                                    .insert(request.price_id);
+                            }
+                            OracleRequest::RedStone(request) => {
+                                redstone
+                                    .entry(request.oracle_id.clone())
+                                    .or_default()
+                                    .insert(request.price_id.clone());
+                            }
+                        }
+                    }
+                    (pyth, redstone)
+                },
+            )
+    }
+
+    async fn dispatch_grouped_price_updates<
+        PythUpdate,
+        PythFuture,
+        RedstoneUpdate,
+        RedstoneFuture,
+    >(
+        pyth_updates: HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
+        redstone_updates: HashMap<AccountId, HashSet<redstone::FeedId>>,
+        mut pyth_update: PythUpdate,
+        mut redstone_update: RedstoneUpdate,
+    ) -> Result<(), PriceUpdateError>
+    where
+        PythUpdate: FnMut(AccountId, Box<[pyth::PriceIdentifier]>) -> PythFuture,
+        PythFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
+        RedstoneUpdate: FnMut(AccountId, Box<[redstone::FeedId]>) -> RedstoneFuture,
+        RedstoneFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
+    {
+        for (oracle_id, feed_ids) in pyth_updates {
+            match pyth_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await {
+                Ok(Some(hash)) => {
+                    tracing::debug!(%hash, "Oracle update transaction succeeded");
+                }
+                Ok(None) => {
+                    tracing::debug!("No price updates needed");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Oracle update failed");
+                    return Err(PriceUpdateError::Oracle(error));
+                }
+            }
+        }
+
+        for (oracle_id, feed_ids) in redstone_updates {
+            match redstone_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await
+            {
+                Ok(Some(hash)) => {
+                    tracing::debug!(%hash, "Oracle update transaction succeeded");
+                }
+                Ok(None) => {
+                    tracing::debug!("No price updates needed");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Oracle update failed");
+                    return Err(PriceUpdateError::Oracle(error));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_market_prices(
+        &self,
+        market_ids: &HashSet<AccountId>,
+    ) -> Result<(), PriceUpdateError> {
+        let (pyth_updates, redstone_updates) = {
+            let accounts = self.accounts.read().await;
+            Self::grouped_price_updates(&accounts, market_ids)
+        };
+
+        let pyth = self.pyth.clone();
+        let redstone = self.redstone.clone();
+
+        Self::dispatch_grouped_price_updates(
+            pyth_updates,
+            redstone_updates,
+            move |oracle_id, feed_ids| {
+                let pyth = pyth.clone();
+                async move { pyth.update(oracle_id, feed_ids).await }
+            },
+            move |oracle_id, feed_ids| {
+                let redstone = redstone.clone();
+                async move { redstone.update(oracle_id, feed_ids).await }
+            },
+        )
+        .await
+    }
+
     /// Checks that the all of the function call actions are allowed for the specific receiver.
     ///
     /// Returns a list of other accounts that this action will probably interact with in addition to the receiver.
@@ -359,7 +521,7 @@ impl App {
     pub async fn sda_check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
-    ) -> Result<(near_sdk::Gas, ContractData), PayloadRejectionReason> {
+    ) -> Result<SdaCheckResult, PayloadRejectionReason> {
         tracing::debug!("Checking and calculating gas for delegate action");
         if !signed_delegate_action.verify() {
             return Err(PayloadRejectionReason::SignatureVerificationFailure);
@@ -389,17 +551,26 @@ impl App {
             })
             .map_err(|index| PayloadRejectionReason::UnsupportedAction { index })?;
 
-        self.actions_are_allowed(
-            &accounts,
-            receiver_id,
-            &contract_data,
-            calls.iter().map(Borrow::borrow),
-        )
-        .map_err(PayloadRejectionReason::FunctionCallRejection)?;
+        let additional_interactions = self
+            .actions_are_allowed(
+                &accounts,
+                receiver_id,
+                &contract_data,
+                calls.iter().map(Borrow::borrow),
+            )
+            .map_err(PayloadRejectionReason::FunctionCallRejection)?;
+
+        let (interacted_contract_ids, market_ids) =
+            Self::derive_sda_interactions(&accounts, receiver_id, additional_interactions);
 
         let gas_total = calls.iter().map(|call| call.gas).sum();
 
-        Ok((near_sdk::Gas::from_gas(gas_total), contract_data))
+        Ok(SdaCheckResult {
+            gas: near_sdk::Gas::from_gas(gas_total),
+            contract_data,
+            interacted_contract_ids,
+            market_ids,
+        })
     }
 
     /// # Errors
@@ -550,6 +721,14 @@ impl App {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SdaCheckResult {
+    pub gas: near_sdk::Gas,
+    pub contract_data: ContractData,
+    pub interacted_contract_ids: HashSet<AccountId>,
+    pub market_ids: HashSet<AccountId>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StorageDepositError {
     #[error("RPC view error: {0}")]
@@ -578,4 +757,265 @@ pub enum ResolveTransactionError {
     Rpc(#[from] JsonRpcError<RpcTransactionError>),
     #[error("Record transaction error: {0}")]
     RecordTransaction(#[from] RecordTransactionError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PriceUpdateError {
+    #[error("Oracle update failed: {0}")]
+    Oracle(Arc<oracle::UpdateError>),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use near_sdk::AccountId;
+    use templar_common::{
+        asset::FungibleAsset,
+        oracle::{pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
+    };
+    use tokio::{sync::Notify, time::timeout};
+
+    use super::*;
+    use crate::{AccountData, AssetResolution, MarketData};
+
+    fn account_id(value: &str) -> AccountId {
+        value.parse().unwrap()
+    }
+
+    fn price_id(byte: u8) -> PriceIdentifier {
+        PriceIdentifier([byte; 32])
+    }
+
+    #[test]
+    fn resolve_market_ids_filters_non_markets() {
+        let market_id = account_id("market.test.near");
+        let mut accounts = AccountData::default();
+        accounts.market_data.insert(
+            market_id.clone(),
+            MarketData {
+                account_id: market_id.clone(),
+                oracle_id: account_id("oracle.test.near"),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: account_id("oracle.test.near"),
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
+                collateral: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("collateral.test.near")),
+                    price_id: price_id(1),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        account_id("oracle.test.near"),
+                        price_id(1),
+                    )]),
+                },
+                borrow: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("borrow.test.near")),
+                    price_id: price_id(2),
+                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
+                        account_id("oracle.test.near"),
+                        FeedId::from("BTC"),
+                    )]),
+                },
+            },
+        );
+
+        let interacted_contract_ids = HashSet::from([
+            market_id.clone(),
+            account_id("borrow.test.near"),
+            account_id("something-else.test.near"),
+        ]);
+
+        assert_eq!(
+            App::resolve_market_ids(&accounts, &interacted_contract_ids),
+            HashSet::from([market_id])
+        );
+    }
+
+    #[test]
+    fn grouped_price_updates_combines_market_requests() {
+        let market_a = account_id("market-a.test.near");
+        let market_b = account_id("market-b.test.near");
+        let pyth_oracle = account_id("pyth.test.near");
+        let redstone_oracle = account_id("redstone.test.near");
+
+        let mut accounts = AccountData::default();
+        accounts.market_data.insert(
+            market_a.clone(),
+            MarketData {
+                account_id: market_a.clone(),
+                oracle_id: pyth_oracle.clone(),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: pyth_oracle.clone(),
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
+                collateral: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("collateral-a.test.near")),
+                    price_id: price_id(1),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        pyth_oracle.clone(),
+                        price_id(11),
+                    )]),
+                },
+                borrow: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("borrow-a.test.near")),
+                    price_id: price_id(2),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        pyth_oracle.clone(),
+                        price_id(12),
+                    )]),
+                },
+            },
+        );
+        accounts.market_data.insert(
+            market_b.clone(),
+            MarketData {
+                account_id: market_b.clone(),
+                oracle_id: redstone_oracle.clone(),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: redstone_oracle.clone(),
+                    collateral_asset_price_id: price_id(3),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(4),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
+                collateral: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("collateral-b.test.near")),
+                    price_id: price_id(3),
+                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
+                        redstone_oracle.clone(),
+                        FeedId::from("ETH"),
+                    )]),
+                },
+                borrow: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("borrow-b.test.near")),
+                    price_id: price_id(4),
+                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
+                        redstone_oracle.clone(),
+                        FeedId::from("BTC"),
+                    )]),
+                },
+            },
+        );
+
+        let (pyth_updates, redstone_updates) =
+            App::grouped_price_updates(&accounts, &HashSet::from([market_a, market_b]));
+
+        assert_eq!(pyth_updates.len(), 1);
+        assert_eq!(
+            pyth_updates[&pyth_oracle],
+            HashSet::from([price_id(11), price_id(12)])
+        );
+        assert_eq!(redstone_updates.len(), 1);
+        assert_eq!(
+            redstone_updates[&redstone_oracle],
+            HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
+        );
+    }
+
+    #[test]
+    fn derive_sda_interactions_keeps_only_contracts_the_sda_touches() {
+        let market_id = account_id("market.test.near");
+        let oracle_id = account_id("oracle.test.near");
+        let borrow_asset_id = account_id("borrow.test.near");
+        let collateral_asset_id = account_id("collateral.test.near");
+        let mut accounts = AccountData::default();
+        accounts.market_data.insert(
+            market_id.clone(),
+            MarketData {
+                account_id: market_id.clone(),
+                oracle_id: oracle_id.clone(),
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: oracle_id,
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
+                collateral: AssetResolution {
+                    asset: FungibleAsset::nep141(collateral_asset_id.clone()),
+                    price_id: price_id(1),
+                    update_oracle: HashSet::new(),
+                },
+                borrow: AssetResolution {
+                    asset: FungibleAsset::nep141(borrow_asset_id),
+                    price_id: price_id(2),
+                    update_oracle: HashSet::new(),
+                },
+            },
+        );
+
+        let (interacted_contract_ids, market_ids) =
+            App::derive_sda_interactions(&accounts, &market_id, vec![]);
+
+        assert_eq!(interacted_contract_ids, HashSet::from([market_id.clone()]));
+        assert_eq!(market_ids, HashSet::from([market_id]));
+    }
+
+    #[tokio::test]
+    async fn dispatch_grouped_price_updates_waits_for_pyth_before_redstone() {
+        let pyth_updates =
+            HashMap::from([(account_id("pyth.test.near"), HashSet::from([price_id(1)]))]);
+        let redstone_updates = HashMap::from([(
+            account_id("redstone.test.near"),
+            HashSet::from([FeedId::from("BTC")]),
+        )]);
+
+        let pyth_started = Arc::new(Notify::new());
+        let pyth_release = Arc::new(Notify::new());
+        let redstone_started = Arc::new(Notify::new());
+
+        let task = tokio::spawn({
+            let pyth_started = pyth_started.clone();
+            let pyth_release = pyth_release.clone();
+            let redstone_started = redstone_started.clone();
+
+            App::dispatch_grouped_price_updates(
+                pyth_updates,
+                redstone_updates,
+                move |_, _| {
+                    let pyth_started = pyth_started.clone();
+                    let pyth_release = pyth_release.clone();
+                    async move {
+                        pyth_started.notify_one();
+                        pyth_release.notified().await;
+                        Ok(None)
+                    }
+                },
+                move |_, _| {
+                    let redstone_started = redstone_started.clone();
+                    async move {
+                        redstone_started.notify_one();
+                        Ok(None)
+                    }
+                },
+            )
+        });
+
+        timeout(Duration::from_secs(1), pyth_started.notified())
+            .await
+            .unwrap();
+        let redstone_started_while_pyth_blocked =
+            timeout(Duration::from_millis(100), redstone_started.notified())
+                .await
+                .is_ok();
+
+        pyth_release.notify_one();
+
+        task.await.unwrap().unwrap();
+
+        assert!(
+            !redstone_started_while_pyth_blocked,
+            "redstone update started before blocked pyth update completed"
+        );
+    }
 }

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write,
-};
+use std::{collections::HashSet, fmt::Write};
 
 use axum::{extract::State, Json};
 use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
@@ -9,12 +6,10 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     serde_json, AccountId, NearToken,
 };
-use templar_common::oracle::{pyth::PriceIdentifier, OracleRequest};
 use templar_universal_account::{
     transaction::{Action, Transaction},
     ExecuteArgs,
 };
-use tokio::task::JoinSet;
 
 use crate::{app::App, route::SimpleResponse};
 
@@ -25,9 +20,8 @@ pub struct RelayRequest {
     pub args: serde_json::Value,
     #[serde(default)]
     pub storage_deposit: HashSet<AccountId>,
-    // TODO: Get rid of this field / switch to boolean.
     #[serde(default)]
-    pub update_price_feeds: HashSet<PriceIdentifier>,
+    pub update_prices: bool,
 }
 
 impl RelayRequest {
@@ -42,7 +36,7 @@ impl RelayRequest {
             account_id,
             args: serde_json::to_value(args.into())?,
             storage_deposit: HashSet::default(),
-            update_price_feeds: HashSet::default(),
+            update_prices: false,
         })
     }
 }
@@ -61,7 +55,7 @@ pub async fn relay(
         account_id,
         args: args_raw,
         storage_deposit,
-        update_price_feeds,
+        update_prices,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
@@ -193,13 +187,11 @@ pub async fn relay(
             };
         interacted_contract_ids.insert(receiver_id.to_owned());
         interacted_contract_ids.extend(additional_interactions.into_iter());
-        if let Some(market_data) = accounts.market_data.get(receiver_id) {
-            interacted_contract_ids.insert(market_data.oracle_id.clone());
-            interacted_contract_ids.insert(market_data.borrow.asset.contract_id().to_owned());
-            interacted_contract_ids.insert(market_data.collateral.asset.contract_id().to_owned());
-        }
         gas += calls.iter().map(|f| f.gas).sum::<u64>();
     }
+
+    App::expand_market_related_contracts(&accounts, &mut interacted_contract_ids);
+    let market_ids = App::resolve_market_ids(&accounts, &interacted_contract_ids);
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 
@@ -234,70 +226,13 @@ pub async fn relay(
             }
         }
     }
+    drop(accounts);
 
-    let (pyth_updates, redstone_updates) = interacted_prices
-        .into_iter()
-        .filter(|(price_id, _)| update_price_feeds.contains(price_id))
-        .fold(
-            (HashMap::new(), HashMap::new()),
-            |(mut pyth, mut redstone), (_, request)| {
-                match request {
-                    OracleRequest::Pyth(r) => {
-                        pyth.entry(r.oracle_id)
-                            .or_insert_with(HashSet::new)
-                            .insert(r.price_id);
-                    }
-                    OracleRequest::RedStone(r) => {
-                        redstone
-                            .entry(r.oracle_id)
-                            .or_insert_with(HashSet::new)
-                            .insert(r.price_id);
-                    }
-                }
-                (pyth, redstone)
-            },
-        );
-
-    let mut oracle_update_set = JoinSet::new();
-
-    for (oracle_id, feed_ids) in pyth_updates {
-        let app = app.clone();
-        oracle_update_set.spawn(async move {
-            app.pyth
-                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-                .await
-        });
-    }
-
-    for (oracle_id, feed_ids) in redstone_updates {
-        let app = app.clone();
-        oracle_update_set.spawn(async move {
-            app.redstone
-                .update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into())
-                .await
-        });
-    }
-
-    while let Some(result) = oracle_update_set.join_next().await {
-        match result {
-            Ok(Ok(Some(hash))) => {
-                tracing::debug!(%hash, "Oracle update transaction succeeded");
-            }
-            Ok(Ok(None)) => {
-                tracing::debug!("No price updates needed");
-            }
-            Ok(Err(error)) => {
-                tracing::error!(%error, "Oracle update failed");
-                return SimpleResponse::Failure {
-                    error: format!("Oracle update failed: {error}"),
-                };
-            }
-            Err(error) => {
-                tracing::error!(%error, "Oracle update task failed");
-                return SimpleResponse::Failure {
-                    error: format!("Oracle update task failed: {error}"),
-                };
-            }
+    if update_prices {
+        if let Err(error) = app.update_market_prices(&market_ids).await {
+            return SimpleResponse::Failure {
+                error: error.to_string(),
+            };
         }
     }
 
