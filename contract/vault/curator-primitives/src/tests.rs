@@ -543,12 +543,8 @@ fn golden_recovery_allocating_state() {
         .expect("expected action");
 
     match action {
-        KernelAction::AbortAllocating {
-            op_id,
-            restore_idle,
-        } => {
+        KernelAction::AbortAllocating { op_id } => {
             assert_eq!(op_id, 42);
-            assert_eq!(restore_idle, 500_000_000_000);
         }
         _ => panic!("Expected AbortAllocating"),
     }
@@ -581,12 +577,8 @@ fn golden_recovery_withdrawing_state() {
         .expect("expected action");
 
     match action {
-        KernelAction::AbortWithdrawing {
-            op_id,
-            refund_shares,
-        } => {
+        KernelAction::AbortWithdrawing { op_id } => {
             assert_eq!(op_id, 43);
-            assert_eq!(refund_shares, 1_000_000_000_000);
         }
         _ => panic!("Expected AbortWithdrawing"),
     }
@@ -597,7 +589,6 @@ fn golden_recovery_withdrawing_state() {
 fn golden_recovery_payout_state() {
     let state = OpState::Payout(PayoutState {
         op_id: 44,
-        request_id: 44,
         request_id: 44,
         receiver: receiver_addr(1),
         amount: 1_000_000_000_000,
@@ -1742,22 +1733,22 @@ mod governance_module_tests {
 
     #[test]
     fn cap_group_cap_change_decision_unlimited_to_finite_is_immediate() {
-        let from_none = TimelockDecision::from_cap_group_cap_change(None, 100);
+        let from_none = TimelockDecision::from_cap_group_cap_change(None, Some(100));
         assert_eq!(from_none, Ok(TimelockDecision::Immediate));
 
-        let from_zero = TimelockDecision::from_cap_group_cap_change(Some(0), 100);
+        let from_zero = TimelockDecision::from_cap_group_cap_change(Some(0), Some(100));
         assert_eq!(from_zero, Ok(TimelockDecision::Immediate));
     }
 
     #[test]
     fn cap_group_cap_change_decision_finite_to_unlimited_is_timelocked() {
-        let decision = TimelockDecision::from_cap_group_cap_change(Some(100), 0);
+        let decision = TimelockDecision::from_cap_group_cap_change(Some(100), None);
         assert_eq!(decision, Ok(TimelockDecision::Timelocked));
     }
 
     #[test]
     fn cap_group_cap_change_decision_finite_decrease_is_immediate() {
-        let decision = TimelockDecision::from_cap_group_cap_change(Some(100), 50);
+        let decision = TimelockDecision::from_cap_group_cap_change(Some(100), Some(50));
         assert_eq!(decision, Ok(TimelockDecision::Immediate));
     }
 
@@ -1766,14 +1757,14 @@ mod governance_module_tests {
         assert_eq!(
             TimelockDecision::from_relative_cap_change(
                 Some(Wad::from(10_u128)),
-                Wad::from(20_u128)
+                Some(Wad::from(20_u128))
             ),
             Ok(TimelockDecision::Timelocked)
         );
         assert_eq!(
             TimelockDecision::from_relative_cap_change(
                 Some(Wad::from(20_u128)),
-                Wad::from(10_u128)
+                Some(Wad::from(10_u128))
             ),
             Ok(TimelockDecision::Immediate)
         );
@@ -2284,14 +2275,14 @@ mod policy_cap_group_update_tests {
     fn cap_group_update_uses_canonical_set_relative_cap_shape() {
         let update = CapGroupUpdate::SetRelativeCap {
             cap_group_id: CapGroupId::from("group-b"),
-            new_relative_cap_wad: 999,
+            new_relative_cap: Some(Wad::from(999u128)),
         };
 
         assert_eq!(
             update,
             CapGroupUpdate::SetRelativeCap {
                 cap_group_id: CapGroupId::from("group-b"),
-                new_relative_cap_wad: 999,
+                new_relative_cap: Some(Wad::from(999u128)),
             }
         );
     }
@@ -2947,7 +2938,7 @@ mod policy_refresh_plan_tests {
     use crate::policy::target_set::find_first_duplicate;
     use alloc::vec;
     use alloc::vec::Vec;
-    use templar_vault_kernel::TargetId;
+    use templar_vault_kernel::{DurationNs, TargetId, TimestampNs};
 
     #[test]
     fn test_new_plan() {
@@ -2973,48 +2964,48 @@ mod policy_refresh_plan_tests {
 
     #[test]
     fn test_check_refresh_cooldown_no_cooldown() {
-        let throttle = RefreshThrottle::new(0, None);
-        assert!(throttle.check(1000).is_ok());
-        assert!(throttle.is_ready(1000));
+        let throttle = RefreshThrottle::new(DurationNs::ZERO, None);
+        assert!(throttle.check(TimestampNs(1000)).is_ok());
+        assert!(throttle.is_ready(TimestampNs(1000)));
     }
 
     #[test]
     fn test_check_refresh_cooldown_first_refresh() {
-        let throttle = RefreshThrottle::new(1000, None);
-        assert!(throttle.check(100).is_ok());
-        assert!(throttle.is_ready(100));
+        let throttle = RefreshThrottle::new(DurationNs(1000), None);
+        assert!(throttle.check(TimestampNs(100)).is_ok());
+        assert!(throttle.is_ready(TimestampNs(100)));
     }
 
     #[test]
     fn test_check_refresh_cooldown_on_cooldown() {
-        let throttle = RefreshThrottle::new(1000, Some(100));
-        let result = throttle.check(600);
+        let throttle = RefreshThrottle::new(DurationNs(1000), Some(TimestampNs(100)));
+        let result = throttle.check(TimestampNs(600));
         assert!(matches!(result, Err(RefreshPlanError::OnCooldown { .. })));
-        assert!(!throttle.is_ready(600));
+        assert!(!throttle.is_ready(TimestampNs(600)));
     }
 
     #[test]
     fn test_check_refresh_cooldown_after_cooldown() {
-        let throttle = RefreshThrottle::new(1000, Some(100));
-        assert!(throttle.check(1200).is_ok());
-        assert!(throttle.is_ready(1200));
+        let throttle = RefreshThrottle::new(DurationNs(1000), Some(TimestampNs(100)));
+        assert!(throttle.check(TimestampNs(1200)).is_ok());
+        assert!(throttle.is_ready(TimestampNs(1200)));
     }
 
     #[test]
     fn test_with_cooldown_preserves_last_refresh_timestamp() {
-        let throttle = RefreshThrottle::new(200, Some(50));
+        let throttle = RefreshThrottle::new(DurationNs(200), Some(TimestampNs(50)));
 
-        assert_eq!(throttle.last_refresh_ns(), Some(50));
-        assert_eq!(throttle.cooldown_ns(), 200);
+        assert_eq!(throttle.last_refresh_at(), Some(TimestampNs(50)));
+        assert_eq!(throttle.cooldown_duration(), DurationNs(200));
     }
 
     #[test]
     fn test_zero_cooldown_maps_to_unlimited() {
-        let throttle = RefreshThrottle::new(0, None);
+        let throttle = RefreshThrottle::new(DurationNs::ZERO, None);
 
         assert!(throttle.cooldown().is_unlimited());
-        assert_eq!(throttle.cooldown_ns(), 0);
-        assert_eq!(throttle.last_refresh_ns(), None);
+        assert_eq!(throttle.cooldown_duration(), DurationNs::ZERO);
+        assert_eq!(throttle.last_refresh_at(), None);
     }
 
     #[test]
@@ -3084,22 +3075,22 @@ mod policy_refresh_plan_tests {
 
     #[test]
     fn test_record_refresh_completion() {
-        let throttle = RefreshThrottle::new(1000, None);
-        let updated = throttle.record_completion(5000);
+        let throttle = RefreshThrottle::new(DurationNs(1000), None);
+        let updated = throttle.record_completion(TimestampNs(5000));
 
-        assert_eq!(updated.last_refresh_ns(), Some(5000));
-        assert_eq!(updated.cooldown_ns(), 1000);
+        assert_eq!(updated.last_refresh_at(), Some(TimestampNs(5000)));
+        assert_eq!(updated.cooldown_duration(), DurationNs(1000));
     }
 
     #[test]
     fn test_filter_stale_targets() {
         let targets = vec![
-            RefreshTargetStatus::new(1, Some(1000)),
-            RefreshTargetStatus::new(2, Some(500)),
-            RefreshTargetStatus::new(3, Some(2000)),
+            RefreshTargetStatus::new(1, Some(TimestampNs(1000))),
+            RefreshTargetStatus::new(2, Some(TimestampNs(500))),
+            RefreshTargetStatus::new(3, Some(TimestampNs(2000))),
         ];
 
-        let stale = filter_stale_targets(&targets, 1500, 3000).unwrap();
+        let stale = filter_stale_targets(&targets, DurationNs(1500), TimestampNs(3000)).unwrap();
 
         assert_eq!(stale.len(), 2);
         assert!(stale.contains(&1));
@@ -3111,26 +3102,26 @@ mod policy_refresh_plan_tests {
     fn test_filter_stale_targets_includes_never_refreshed() {
         let targets = vec![
             RefreshTargetStatus::new(1, None),
-            RefreshTargetStatus::new(2, Some(2_000)),
+            RefreshTargetStatus::new(2, Some(TimestampNs(2_000))),
         ];
 
-        let stale = filter_stale_targets(&targets, 1_500, 3_000).unwrap();
+        let stale = filter_stale_targets(&targets, DurationNs(1_500), TimestampNs(3_000)).unwrap();
 
         assert_eq!(stale, vec![1]);
     }
 
     #[test]
     fn test_filter_stale_targets_rejects_future_timestamp() {
-        let targets = vec![RefreshTargetStatus::new(7, Some(4_000))];
+        let targets = vec![RefreshTargetStatus::new(7, Some(TimestampNs(4_000)))];
 
-        let result = filter_stale_targets(&targets, 1_500, 3_000);
+        let result = filter_stale_targets(&targets, DurationNs(1_500), TimestampNs(3_000));
 
         assert!(matches!(
             result,
             Err(RefreshPlanError::FutureRefreshTimestamp {
                 target_id: 7,
-                last_refresh_ns: 4_000,
-                current_ns: 3_000,
+                last_refresh_at: TimestampNs(4_000),
+                current_time: TimestampNs(3_000),
             })
         ));
     }
@@ -3138,11 +3129,13 @@ mod policy_refresh_plan_tests {
     #[test]
     fn test_build_stale_refresh_plan_returns_none_when_nothing_is_stale() {
         let targets = vec![
-            RefreshTargetStatus::new(1, Some(2_000)),
-            RefreshTargetStatus::new(2, Some(2_500)),
+            RefreshTargetStatus::new(1, Some(TimestampNs(2_000))),
+            RefreshTargetStatus::new(2, Some(TimestampNs(2_500))),
         ];
 
-        let plan = build_stale_refresh_plan(&targets, 1_500, 3_000, &[1, 2]).unwrap();
+        let plan =
+            build_stale_refresh_plan(&targets, DurationNs(1_500), TimestampNs(3_000), &[1, 2])
+                .unwrap();
 
         assert!(plan.is_none());
     }
@@ -3673,22 +3666,31 @@ mod policy_target_set_tests {
 
     #[test]
     fn builds_refresh_plan_from_targets() {
-        let (plan, throttle) = build_refresh_plan_from_targets(&[1, 2, 3], 100, Some(50)).unwrap();
+        let (plan, throttle) =
+            build_refresh_plan_from_targets(&[1, 2, 3], DurationNs(100), Some(TimestampNs(50)))
+                .unwrap();
         assert_eq!(plan.targets(), [1, 2, 3]);
-        assert_eq!(throttle.cooldown_ns(), 100);
-        assert_eq!(throttle.last_refresh_ns(), Some(50));
+        assert_eq!(throttle.cooldown_duration(), DurationNs(100));
+        assert_eq!(throttle.last_refresh_at(), Some(TimestampNs(50)));
     }
 
     #[test]
     fn builds_named_refresh_execution_plan() {
-        let refresh_execution_plan =
-            crate::policy::target_set::refresh_plan(&[1, 2, 3], 100, Some(50)).unwrap();
+        let refresh_execution_plan = crate::policy::target_set::refresh_plan(
+            &[1, 2, 3],
+            DurationNs(100),
+            Some(TimestampNs(50)),
+        )
+        .unwrap();
 
         assert_eq!(refresh_execution_plan.plan().targets(), [1, 2, 3]);
-        assert_eq!(refresh_execution_plan.throttle().cooldown_ns(), 100);
         assert_eq!(
-            refresh_execution_plan.throttle().last_refresh_ns(),
-            Some(50)
+            refresh_execution_plan.throttle().cooldown_duration(),
+            DurationNs(100)
+        );
+        assert_eq!(
+            refresh_execution_plan.throttle().last_refresh_at(),
+            Some(TimestampNs(50))
         );
     }
 }
