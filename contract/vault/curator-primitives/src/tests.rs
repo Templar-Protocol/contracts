@@ -2057,6 +2057,7 @@ mod policy_cap_group_adapter_tests {
 
 mod policy_cooldown_tests {
     pub use crate::policy::cooldown::*;
+    use core::num::NonZeroU64;
 
     #[test]
     fn test_unlimited_cooldown() {
@@ -2068,14 +2069,14 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_first_operation_always_ready() {
-        let cooldown = Cooldown::new(1000);
+        let cooldown = Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval"));
         assert!(cooldown.is_ready(0));
         assert!(cooldown.is_ready(500));
     }
 
     #[test]
     fn test_cooldown_enforced() {
-        let cooldown = Cooldown::new(1000);
+        let cooldown = Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval"));
         let cooldown = cooldown.recorded_at(100);
 
         assert!(!cooldown.is_ready(100));
@@ -2088,7 +2089,8 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_check_returns_error() {
-        let cooldown = Cooldown::new(1000).recorded_at(100);
+        let cooldown =
+            Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval")).recorded_at(100);
 
         let result = cooldown.check(500);
         assert!(matches!(
@@ -2105,7 +2107,7 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_ready_at() {
-        let cooldown = Cooldown::new(1000);
+        let cooldown = Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval"));
         assert_eq!(cooldown.ready_at(), None);
 
         let cooldown = cooldown.recorded_at(100);
@@ -2117,7 +2119,8 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_remaining() {
-        let cooldown = Cooldown::new(1000).recorded_at(100);
+        let cooldown =
+            Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval")).recorded_at(100);
 
         assert_eq!(cooldown.remaining(100), 1000);
         assert_eq!(cooldown.remaining(500), 600);
@@ -2127,7 +2130,7 @@ mod policy_cooldown_tests {
 
     #[test]
     fn test_record_updates_last_event() {
-        let cooldown = Cooldown::new(1000);
+        let cooldown = Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval"));
         assert_eq!(cooldown.last_event_ns(), None);
 
         let cooldown = cooldown.recorded_at(500);
@@ -2144,6 +2147,15 @@ mod policy_cooldown_tests {
 
         assert_eq!(recorded, Cooldown::unlimited());
         assert_eq!(recorded.last_event_ns(), None);
+    }
+
+    #[test]
+    fn test_interval_ns_reports_finite_or_unlimited_honestly() {
+        let unlimited = Cooldown::unlimited();
+        assert_eq!(unlimited.interval_ns(), None);
+
+        let cooldown = Cooldown::new(NonZeroU64::new(1000).expect("non-zero interval"));
+        assert_eq!(cooldown.interval_ns().map(NonZeroU64::get), Some(1000));
     }
 }
 
@@ -2771,6 +2783,15 @@ mod policy_refresh_plan_tests {
 
         assert_eq!(plan.last_refresh_ns(), Some(50));
         assert_eq!(plan.cooldown_ns(), 200);
+    }
+
+    #[test]
+    fn test_zero_cooldown_maps_to_unlimited() {
+        let plan = RefreshPlan::new(vec![1, 2]).unwrap().with_cooldown(0);
+
+        assert!(plan.cooldown().is_unlimited());
+        assert_eq!(plan.cooldown_ns(), 0);
+        assert_eq!(plan.last_refresh_ns(), None);
     }
 
     #[test]
