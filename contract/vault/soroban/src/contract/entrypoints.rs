@@ -720,9 +720,9 @@ impl SorobanVaultContract {
             for target_id in vault.supply_queue_targets() {
                 queue.push_back(target_id);
             }
-            for (id, rec) in vault.policy_state().cap_groups.iter() {
+            for (id, rec) in vault.policy_state().cap_groups().iter() {
                 let sdk_id = soroban_sdk::String::from_str(&env, &id.0);
-                let abs_cap = rec.cap.absolute_cap.map(|c| c.get() as i128).unwrap_or(0);
+                let abs_cap = rec.cap.absolute_cap().map(|c| c.get() as i128).unwrap_or(0);
                 groups.push_back((sdk_id, abs_cap, rec.principal as i128));
             }
             Ok(())
