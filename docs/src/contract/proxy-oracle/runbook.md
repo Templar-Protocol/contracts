@@ -139,7 +139,7 @@ Useful flags:
 
 Use this when you want combination across live sources rather than a single preferred source.
 
-Example: if two equal-weight live sources resolve to `99` and `101`, `MedianLow` returns the lower median of the valid sorted set. With two clean sources, that gives a conservative combined result rather than always preferring one provider.
+Example: if two equal-weight live sources resolve to `99` and `101`, `MedianLow` returns the lower median of the valid sorted set. With two clean sources, that gives the lower result rather than always preferring one provider.
 
 ### `Priority`
 
