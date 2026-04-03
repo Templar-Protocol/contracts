@@ -25,6 +25,13 @@ pub struct RefreshTargetStatus {
 }
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RefreshTiming {
+    cooldown: DurationNs,
+    last_refresh_at: Option<TimestampNs>,
+}
+
+#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone)]
 pub struct RefreshExecutionPlan {
     plan: RefreshPlan,
@@ -177,6 +184,26 @@ impl RefreshTargetStatus {
     }
 }
 
+impl RefreshTiming {
+    #[must_use]
+    pub const fn new(cooldown: DurationNs, last_refresh_at: Option<TimestampNs>) -> Self {
+        Self {
+            cooldown,
+            last_refresh_at,
+        }
+    }
+
+    #[must_use]
+    pub const fn cooldown(&self) -> DurationNs {
+        self.cooldown
+    }
+
+    #[must_use]
+    pub const fn last_refresh_at(&self) -> Option<TimestampNs> {
+        self.last_refresh_at
+    }
+}
+
 impl RefreshExecutionPlan {
     #[must_use]
     pub const fn new(plan: RefreshPlan, throttle: RefreshThrottle) -> Self {
@@ -242,11 +269,10 @@ pub fn build_targeted_refresh_plan(
 
 pub fn refresh_execution_plan(
     targets: &[TargetId],
-    cooldown: DurationNs,
-    last_refresh_at: Option<TimestampNs>,
+    timing: RefreshTiming,
 ) -> Result<RefreshExecutionPlan, RefreshPlanError> {
     let plan = RefreshPlan::new(targets.to_vec())?;
-    let throttle = RefreshThrottle::new(cooldown, last_refresh_at);
+    let throttle = RefreshThrottle::new(timing.cooldown(), timing.last_refresh_at());
     Ok(RefreshExecutionPlan::new(plan, throttle))
 }
 

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use templar_vault_kernel::{DurationNs, TargetId, TimestampNs};
 
 use super::{
-    refresh_plan::{refresh_execution_plan, RefreshExecutionPlan, RefreshPlanError},
+    refresh_plan::{refresh_execution_plan, RefreshExecutionPlan, RefreshPlanError, RefreshTiming},
     withdraw_route::{withdraw_plan_from_principals, WithdrawPlanEntry, WithdrawRouteError},
 };
 
@@ -51,7 +51,8 @@ pub fn build_refresh_plan_from_targets(
     ),
     RefreshPlanError,
 > {
-    refresh_execution_plan(targets, cooldown, last_refresh_at).map(RefreshExecutionPlan::into_parts)
+    refresh_execution_plan(targets, RefreshTiming::new(cooldown, last_refresh_at))
+        .map(RefreshExecutionPlan::into_parts)
 }
 
 pub fn refresh_plan(
@@ -59,5 +60,12 @@ pub fn refresh_plan(
     cooldown: DurationNs,
     last_refresh_at: Option<TimestampNs>,
 ) -> Result<RefreshExecutionPlan, RefreshPlanError> {
-    refresh_execution_plan(targets, cooldown, last_refresh_at)
+    refresh_execution_plan(targets, RefreshTiming::new(cooldown, last_refresh_at))
+}
+
+pub fn refresh_plan_with_timing(
+    targets: &[TargetId],
+    timing: RefreshTiming,
+) -> Result<RefreshExecutionPlan, RefreshPlanError> {
+    refresh_execution_plan(targets, timing)
 }
