@@ -744,7 +744,7 @@ fn decide_submission(
         GovernanceAction::RemoveMarket(_) => Ok(TimelockDecision::from_requires_timelock(true)),
         GovernanceAction::SetGroupCap(_, new_cap) => {
             let decision =
-                TimelockDecision::from_cap_group_cap_change(None, to_wad(*new_cap)?.into());
+                TimelockDecision::from_cap_group_cap_change(None, Some(to_wad(*new_cap)?.into()));
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
@@ -752,7 +752,10 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupRelCap(_, new_relative_cap_wad) => {
-            match TimelockDecision::from_relative_cap_change(None, to_wad(*new_relative_cap_wad)?) {
+            match TimelockDecision::from_relative_cap_change(
+                None,
+                Some(to_wad(*new_relative_cap_wad)?),
+            ) {
                 Ok(decision) => Ok(decision),
                 Err(RelativeCapChangeError::NoChange) => Err(GovernanceError::NoChange),
                 Err(RelativeCapChangeError::RelativeCapTooHigh) => {

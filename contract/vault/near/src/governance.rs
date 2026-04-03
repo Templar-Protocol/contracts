@@ -49,12 +49,12 @@ pub enum TimelockedAction {
     /// Increase the cap for a correlated-risk cap group.
     CapGroupChange {
         cap_group: CapGroupId,
-        new_cap: U128,
+        new_cap: Option<U128>,
     },
     /// Change the relative cap (fraction of total vault assets) for a cap group.
     CapGroupRelativeCapChange {
         cap_group: CapGroupId,
-        new_relative_cap: U128,
+        new_relative_cap: Option<U128>,
     },
     /// Assign (or remove) a market to/from a cap group.
     CapGroupMembership {
@@ -523,14 +523,14 @@ impl Contract {
                 new_cap,
             } => TimelockedAction::CapGroupChange {
                 cap_group: cap_group_id,
-                new_cap: U128(new_cap),
+                new_cap: new_cap.map(U128),
             },
             PrimitiveCapGroupUpdate::SetRelativeCap {
                 cap_group_id,
                 new_relative_cap,
             } => TimelockedAction::CapGroupRelativeCapChange {
                 cap_group: cap_group_id,
-                new_relative_cap: U128(new_relative_cap.map_or(0, u128::from)),
+                new_relative_cap: new_relative_cap.map(|cap| U128(u128::from(cap))),
             },
             PrimitiveCapGroupUpdate::SetMembership {
                 market_id,
@@ -890,9 +890,12 @@ impl Contract {
                     .cap_groups
                     .get(cap_group)
                     .map(templar_curator_primitives::cap_group_record_absolute_cap);
-                shared_gov::TimelockDecision::from_cap_group_cap_change(current, new_cap.0)
-                    .map(shared_gov::TimelockDecision::requires_timelock)
-                    .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
+                shared_gov::TimelockDecision::from_cap_group_cap_change(
+                    current,
+                    new_cap.map(|cap| cap.0),
+                )
+                .map(shared_gov::TimelockDecision::requires_timelock)
+                .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
             }
             TimelockedAction::CapGroupRelativeCapChange {
                 cap_group,
@@ -902,24 +905,23 @@ impl Contract {
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
 
-                let new_wad = Wad::from(new_relative_cap.0);
-
                 let current = self
                     .cap_groups
                     .get(cap_group)
                     .map(templar_curator_primitives::cap_group_record_relative_cap);
-                shared_gov::TimelockDecision::from_relative_cap_change(current, new_wad)
-                    .map(shared_gov::TimelockDecision::requires_timelock)
-                    .unwrap_or_else(|err| {
-                        panic_with_message(match err {
-                            shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
-                                ERR_RELATIVE_CAP_TOO_HIGH
-                            }
-                            shared_gov::RelativeCapChangeError::NoChange => {
-                                ERR_RELATIVE_CAP_NO_CHANGE
-                            }
-                        })
+                shared_gov::TimelockDecision::from_relative_cap_change(
+                    current,
+                    new_relative_cap.map(|cap| Wad::from(cap.0)),
+                )
+                .map(shared_gov::TimelockDecision::requires_timelock)
+                .unwrap_or_else(|err| {
+                    panic_with_message(match err {
+                        shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
+                            ERR_RELATIVE_CAP_TOO_HIGH
+                        }
+                        shared_gov::RelativeCapChangeError::NoChange => ERR_RELATIVE_CAP_NO_CHANGE,
                     })
+                })
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 AuthPattern::CuratorOrOwner.require();
@@ -1156,10 +1158,15 @@ impl Contract {
                     .cap_groups
                     .entry(cap_group.clone())
                     .or_insert_with(Self::default_cap_group_record);
-                templar_curator_primitives::set_cap_group_record_absolute_cap(record, new_cap.0);
+                match new_cap {
+                    Some(new_cap) => templar_curator_primitives::set_cap_group_record_absolute_cap(
+                        record, new_cap.0,
+                    ),
+                    None => record.cap.set_absolute_cap(None),
+                }
                 Event::CapGroupSet {
                     cap_group: cap_group.clone(),
-                    new_cap: *new_cap,
+                    new_cap: new_cap.map_or(U128(0), |cap| *cap),
                 }
                 .emit();
             }
@@ -1167,18 +1174,25 @@ impl Contract {
                 cap_group,
                 new_relative_cap,
             } => {
-                let new_wad = Wad::from(new_relative_cap.0);
-                require!(new_wad <= Wad::one(), "relative cap too high");
-
                 let record = self
                     .cap_groups
                     .entry(cap_group.clone())
                     .or_insert_with(Self::default_cap_group_record);
-                templar_curator_primitives::set_cap_group_record_relative_cap(record, new_wad);
+                match new_relative_cap {
+                    Some(new_relative_cap) => {
+                        let new_wad = Wad::from(new_relative_cap.0);
+                        require!(new_wad <= Wad::one(), "relative cap too high");
+                        templar_curator_primitives::set_cap_group_record_relative_cap(
+                            record, new_wad,
+                        );
+                    }
+                    None => record.cap.set_relative_cap(None),
+                }
 
                 Event::CapGroupRelativeCapSet {
                     cap_group: cap_group.clone(),
-                    new_relative_cap: *new_relative_cap,
+                    new_relative_cap: new_relative_cap
+                        .map_or(U128(u128::from(Wad::one())), |cap| *cap),
                 }
                 .emit();
             }
@@ -1271,7 +1285,7 @@ impl Contract {
         if let TimelockedAction::CapGroupChange { cap_group, new_cap } = action {
             Event::CapGroupRaiseSubmitted {
                 cap_group: cap_group.clone(),
-                new_cap: *new_cap,
+                new_cap: new_cap.map_or(U128(0), |cap| *cap),
                 valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();
@@ -1284,7 +1298,7 @@ impl Contract {
         {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
-                new_relative_cap: *new_relative_cap,
+                new_relative_cap: new_relative_cap.map_or(U128(u128::from(Wad::one())), |cap| *cap),
                 valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();

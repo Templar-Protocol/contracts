@@ -137,14 +137,6 @@ impl Default for RefreshThrottle {
     }
 }
 
-impl Default for RefreshThrottle {
-    fn default() -> Self {
-        Self {
-            cooldown: Cooldown::unlimited(),
-        }
-    }
-}
-
 impl RefreshTargetStatus {
     #[must_use]
     pub const fn new(target_id: TargetId, last_refresh_ns: Option<u64>) -> Self {
