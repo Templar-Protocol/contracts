@@ -154,9 +154,22 @@ impl RbacConfig {
     #[inline]
     #[must_use]
     pub fn has_role(&self, address: &Address, role: Role) -> bool {
+        self.role_set_for(address).contains(role)
+    }
+
+    #[inline]
+    #[must_use]
+    fn role_set_for(&self, address: &Address) -> RoleSet {
         self.assignments
             .iter()
-            .any(|assignment| assignment.address == *address && assignment.role == role)
+            .filter(|assignment| assignment.address == *address)
+            .fold(RoleSet::NONE, |roles, assignment| {
+                roles.union(match assignment.role {
+                    Role::Curator => RoleSet::CURATOR,
+                    Role::Sentinel => RoleSet::SENTINEL,
+                    Role::Allocator => RoleSet::ALLOCATOR,
+                })
+            })
     }
 
     #[inline]
@@ -177,10 +190,10 @@ impl RbacConfig {
     /// Get all roles for an address.
     #[must_use]
     pub fn get_roles(&self, address: &Address) -> Vec<Role> {
-        self.assignments
-            .iter()
-            .filter(|assignment| assignment.address == *address)
-            .map(|assignment| assignment.role)
+        let roles = self.role_set_for(address);
+        [Role::Curator, Role::Sentinel, Role::Allocator]
+            .into_iter()
+            .filter(|role| roles.contains(*role))
             .collect()
     }
 
@@ -242,10 +255,11 @@ impl RbacAuth {
 
     #[inline]
     fn is_allowed(&self, caller: &Address, allowed_roles: RoleSet) -> bool {
+        let caller_roles = self.config.role_set_for(caller);
         allowed_roles == RoleSet::NONE
             || [Role::Curator, Role::Sentinel, Role::Allocator]
                 .into_iter()
-                .any(|role| allowed_roles.contains(role) && self.config.has_role(caller, role))
+                .any(|role| allowed_roles.contains(role) && caller_roles.contains(role))
     }
 }
 
