@@ -1,17 +1,13 @@
-pub mod median_low;
+pub mod median;
 pub mod priority;
 
-use crate::{oracle::pyth, time::Nanoseconds};
+use crate::oracle::pyth;
 
 use super::source::Source;
 
-pub trait AggregationMethod {
+pub trait Aggregate {
     fn sources(&self) -> Vec<&Source>;
-    fn aggregate(
-        &self,
-        prices: &[Option<pyth::Price>],
-        now: Nanoseconds,
-    ) -> Result<pyth::Price, Error>;
+    fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, Error>;
 }
 
 #[derive(thiserror::Error, Debug)]

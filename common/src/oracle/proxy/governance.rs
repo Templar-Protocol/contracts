@@ -4,7 +4,7 @@ use crate::{
     gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, time::Nanoseconds,
 };
 
-use super::{aggregator::method::AggregationMethod, Proxy};
+use super::{aggregator::method::Aggregate, Proxy};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -26,7 +26,9 @@ impl Validatable for Operation {
         match self {
             Operation::SetProxy {
                 proxy: Some(proxy), ..
-            } if proxy.sources().is_empty() => Err(ValidationError::EmptyProxyDefinition),
+            } if proxy.aggregator.sources().is_empty() => {
+                Err(ValidationError::EmptyProxyDefinition)
+            }
             _ => Ok(()),
         }
     }
@@ -47,24 +49,30 @@ gen_ext_governance!(ext_proxy_governance, ProxyGovernanceInterface, Operation);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oracle::OracleRequest;
+    use crate::oracle::{
+        proxy::aggregator::{filter::Filter, Aggregator},
+        OracleRequest,
+    };
     use rstest::rstest;
 
     fn invalid_operation() -> Operation {
         Operation::SetProxy {
             id: PriceIdentifier([0xaa; 32]),
-            proxy: Some(Proxy::median_low([])),
+            proxy: Some(Proxy::new(Aggregator::median_low([]), Filter::default())),
         }
     }
 
     fn valid_operation() -> Operation {
         Operation::SetProxy {
             id: PriceIdentifier([0xff; 32]),
-            proxy: Some(Proxy::median_low([OracleRequest::pyth(
-                "pyth-oracle.near".parse().unwrap(),
-                PriceIdentifier([0xdd; 32]),
-            )
-            .into()])),
+            proxy: Some(Proxy::new(
+                Aggregator::median_low([OracleRequest::pyth(
+                    "pyth-oracle.near".parse().unwrap(),
+                    PriceIdentifier([0xdd; 32]),
+                )
+                .into()]),
+                Filter::default(),
+            )),
         }
     }
 
