@@ -173,8 +173,36 @@ impl<T> PendingActions<T> {
     }
 
     #[must_use]
+    pub fn from_entries<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = PendingValue<T>>,
+    {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
     pub fn into_entries(self) -> Vec<PendingValue<T>> {
         self.entries
+    }
+}
+
+impl<T> IntoIterator for PendingActions<T> {
+    type Item = PendingValue<T>;
+    type IntoIter = alloc::vec::IntoIter<PendingValue<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a PendingActions<T> {
+    type Item = &'a PendingValue<T>;
+    type IntoIter = core::slice::Iter<'a, PendingValue<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter()
     }
 }
 
@@ -231,6 +259,33 @@ fn any_overlap<T: PartialEq>(left: &[T], right: &[T]) -> bool {
 }
 
 impl<T: PartialEq> Restrictions<T> {
+    #[must_use]
+    pub fn blacklist(members: Vec<T>) -> Self {
+        Self::Blacklist(normalize_members(members))
+    }
+
+    #[must_use]
+    pub fn whitelist(members: Vec<T>) -> Self {
+        Self::Whitelist(normalize_members(members))
+    }
+
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Paused => Self::Paused,
+            Self::Blacklist(members) => Self::Blacklist(normalize_members(members)),
+            Self::Whitelist(members) => Self::Whitelist(normalize_members(members)),
+        }
+    }
+
+    #[must_use]
+    pub fn members(&self) -> Option<&[T]> {
+        match self {
+            Self::Paused => None,
+            Self::Blacklist(members) | Self::Whitelist(members) => Some(members),
+        }
+    }
+
     /// Determine if a restriction change is relaxing (thus usually timelocked).
     #[must_use]
     pub fn determine_relaxed(current: &Option<Self>, next: &Option<Self>) -> bool {
@@ -249,6 +304,16 @@ impl<T: PartialEq> Restrictions<T> {
             (Some(Self::Whitelist(_)), Some(Self::Blacklist(_))) => true,
         }
     }
+}
+
+fn normalize_members<T: PartialEq>(members: Vec<T>) -> Vec<T> {
+    let mut normalized = Vec::with_capacity(members.len());
+    for member in members {
+        if !normalized.iter().any(|existing| existing == &member) {
+            normalized.push(member);
+        }
+    }
+    normalized
 }
 
 /// Fee config view for change evaluation.
