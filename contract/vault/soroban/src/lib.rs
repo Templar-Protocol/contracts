@@ -55,7 +55,7 @@ pub use {
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
     storage::{SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState},
-    templar_curator_primitives::policy::market_lock::{MarketLock, MarketLockSet},
+    templar_curator_primitives::policy::market_lock::{MarketLease, MarketLeaseRegistry},
 };
 
 #[cfg(any(test, feature = "testutils"))]

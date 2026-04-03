@@ -1217,10 +1217,7 @@ mod contract_tests {
         let vault = create_test_vault();
 
         // Policy state should be initialized empty
-        assert!(vault.policy_state().locks.is_empty());
-        assert!(vault.policy_state().markets.is_empty());
-        assert!(vault.policy_state().principals.is_empty());
-        assert!(vault.policy_state().cap_groups.is_empty());
+        assert!(vault.policy_state().is_empty());
     }
 
     #[test]
@@ -1983,6 +1980,7 @@ mod storage_tests {
             let receiver = templar_vault_kernel::Address([2u8; 32]);
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id: 7,
+                request_id: 7,
                 index: 1,
                 remaining: 500,
                 collected: 200,
@@ -2176,6 +2174,7 @@ mod storage_tests {
             let receiver = templar_vault_kernel::Address([2u8; 32]);
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id: 11,
+                request_id: 11,
                 index: 1,
                 remaining: 500,
                 collected: 200,

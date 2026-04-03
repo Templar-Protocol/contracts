@@ -228,7 +228,11 @@ impl Contract {
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
 
         if did_create.is_ok() {
-            self.market_execution_lock.lock(market);
+            self.market_execution_lock.lock(
+                market,
+                op_id,
+                u64::MAX.saturating_sub(env::block_timestamp()),
+            );
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -431,7 +435,7 @@ impl Contract {
             Ordering::Equal => {}
         }
 
-        self.market_execution_lock.unlock(market);
+        self.market_execution_lock.unlock(market, op_id);
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -514,7 +518,7 @@ impl Contract {
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
 
         let Ok(before_balance) = before_balance else {
-            allocating.market_execution_lock.unlock(market_id);
+            allocating.market_execution_lock.unlock(market_id, op_id);
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -562,7 +566,7 @@ impl Contract {
             // Treat missing position as zero - market has no funds for us
             Ok(None) => 0,
             Err(_) => {
-                allocating.market_execution_lock.unlock(market_id);
+                allocating.market_execution_lock.unlock(market_id, op_id);
                 let _idle = allocating.into_idle();
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
@@ -605,7 +609,7 @@ impl Contract {
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
 
         let Ok(after_balance) = after_balance else {
-            allocating.market_execution_lock.unlock(market_id);
+            allocating.market_execution_lock.unlock(market_id, op_id);
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -624,7 +628,7 @@ impl Contract {
             before_balance,
         );
 
-        allocating.market_execution_lock.unlock(market_id);
+        allocating.market_execution_lock.unlock(market_id, op_id);
 
         let _idle = allocating.into_idle();
         Event::RebalanceWithdrawCompleted {

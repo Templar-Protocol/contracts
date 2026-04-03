@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use derive_more::{From, Into};
 use soroban_sdk::{symbol_short, Address as SdkAddress, Bytes, BytesN, Env, Symbol};
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
-use templar_curator_primitives::policy::market_lock::MarketLockSet;
+use templar_curator_primitives::policy::market_lock::MarketLeaseRegistry;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
@@ -59,35 +59,28 @@ pub(crate) fn compose_policy_state(
     markets: Option<OrderedMap<TargetId, MarketConfig>>,
     principals: Option<OrderedMap<TargetId, u128>>,
     cap_groups: Option<OrderedMap<CapGroupId, CapGroupRecord>>,
-    locks: Option<MarketLockSet>,
+    leases: Option<MarketLeaseRegistry>,
     supply_queue: Option<SupplyQueue>,
-) -> Option<PolicyState> {
+) -> Result<Option<PolicyState>, RuntimeError> {
     if markets.is_none()
         && principals.is_none()
         && cap_groups.is_none()
-        && locks.is_none()
+        && leases.is_none()
         && supply_queue.is_none()
     {
-        return None;
+        return Ok(None);
     }
 
-    let mut state = PolicyState::default();
-    if let Some(markets) = markets {
-        state.markets = markets;
-    }
-    if let Some(principals) = principals {
-        state.principals = principals;
-    }
-    if let Some(cap_groups) = cap_groups {
-        state.cap_groups = cap_groups;
-    }
-    if let Some(locks) = locks {
-        state.locks = locks;
-    }
-    if let Some(supply_queue) = supply_queue {
-        state.supply_queue = supply_queue;
-    }
-    Some(state)
+    let state = PolicyState::from_parts(
+        markets.unwrap_or_default(),
+        principals.unwrap_or_default(),
+        cap_groups.unwrap_or_default(),
+        leases.unwrap_or_default(),
+        supply_queue.unwrap_or_default(),
+    )
+    .map_err(|_| RuntimeError::storage_error("policy state invariant violation"))?;
+
+    Ok(Some(state))
 }
 
 /// Soroban ledger storage implementation.
@@ -389,7 +382,7 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        let locks = self.load_decoded(
+        let leases = self.load_decoded(
             &SorobanStorageKey::PolicyLocks,
             "policy_locks deserialize failed",
         )?;
@@ -410,39 +403,33 @@ impl Storage for SorobanStorage<'_> {
             "policy_cap_groups deserialize failed",
         )?;
 
-        Ok(compose_policy_state(
-            markets,
-            principals,
-            cap_groups,
-            locks,
-            supply_queue,
-        ))
+        compose_policy_state(markets, principals, cap_groups, leases, supply_queue)
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
         self.save_encoded(
             &SorobanStorageKey::PolicyLocks,
-            &state.locks,
+            state.leases(),
             "policy_locks serialize failed",
         )?;
         self.save_encoded(
             &SorobanStorageKey::PolicySupplyQueue,
-            &state.supply_queue,
+            state.supply_queue(),
             "policy_supply_queue serialize failed",
         )?;
         self.save_encoded(
             &SorobanStorageKey::PolicyMarkets,
-            &state.markets,
+            state.markets(),
             "policy_markets serialize failed",
         )?;
         self.save_encoded(
             &SorobanStorageKey::PolicyPrincipals,
-            &state.principals,
+            state.principals(),
             "policy_principals serialize failed",
         )?;
         self.save_encoded(
             &SorobanStorageKey::PolicyCapGroups,
-            &state.cap_groups,
+            state.cap_groups(),
             "policy_cap_groups serialize failed",
         )?;
         self.extend_default_ttl();
