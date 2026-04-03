@@ -615,6 +615,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     );
     c.set_op_state(OpState::Payout(PayoutState {
         op_id,
+        request_id: op_id,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -1079,6 +1080,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         after_balance,
         1,
         market_id,
+        U64(0),
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1162,6 +1164,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         after_balance,
         2,
         market_id,
+        U64(0),
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1224,6 +1227,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
         after_balance,
         42,
         market_id,
+        U64(0),
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1289,6 +1293,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         after_balance,
         43,
         market_id,
+        U64(0),
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1358,6 +1363,7 @@ fn withdraw_balance_read_failure_stops_operation() {
     let op_id = 9;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: 0,
         index: 0,
         remaining: 200,
         receiver: account_id_to_address(&receiver),
@@ -1370,6 +1376,7 @@ fn withdraw_balance_read_failure_stops_operation() {
         Err(near_sdk::PromiseError::Failed),
         op_id,
         market_id,
+        U64(0),
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
@@ -1414,6 +1421,7 @@ fn rebalance_resyncs_idle_on_external_deposit() {
         after_balance,
         7,
         market_id,
+        U64(0),
         U128(before_principal),
         U128(before_principal),
         before_balance,
@@ -1460,6 +1468,7 @@ fn rebalance_balance_read_failure_stops_operation() {
         Err(near_sdk::PromiseError::Failed),
         op_id,
         market_id,
+        U64(0),
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
@@ -3635,11 +3644,11 @@ fn cap_group_membership_moves_principal() {
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group_a.clone(),
-        new_cap: 200,
+        new_cap: Some(200),
     });
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group_b.clone(),
-        new_cap: 300,
+        new_cap: Some(300),
     });
 
     let market = mk(9400);
@@ -3696,7 +3705,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group.clone(),
-        new_cap: 1_000,
+        new_cap: Some(1_000),
     });
 
     assert_eq!(
@@ -3707,7 +3716,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     let half = Wad::one() / 2;
     c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
         cap_group_id: group.clone(),
-        new_relative_cap_wad: u128::from(half),
+        new_relative_cap: Some(half),
     });
 
     assert_eq!(
@@ -3721,7 +3730,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
 
     c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
         cap_group_id: group.clone(),
-        new_relative_cap_wad: u128::from(Wad::one()),
+        new_relative_cap: Some(Wad::one()),
     });
 
     assert!(
@@ -4042,6 +4051,7 @@ fn after_exec_withdraw_read_none_to_payout(
     let index = 0;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index,
         remaining: 60,
         receiver: account_id_to_address(&mk(9)),
@@ -4056,6 +4066,7 @@ fn after_exec_withdraw_read_none_to_payout(
         Ok(None),
         op_id,
         market_id,
+        U64(0),
         U128(principal),
         U128(0),
     );
@@ -4068,6 +4079,7 @@ fn after_exec_withdraw_read_none_to_payout(
         Ok(U128(principal)),
         op_id,
         market_id,
+        U64(0),
         U128(principal),
         U128(0),
         U128(0),
@@ -4177,6 +4189,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         Err(near_sdk::PromiseError::Failed),
         99,
         market_id,
+        U64(0),
         U128(before),
         U128(0),
     );
@@ -4247,8 +4260,14 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
         MarketId(market_id.0.saturating_add(1))
     };
 
-    let r =
-        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_market, U128(10), U128(0));
+    let r = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        call_op,
+        call_market,
+        U64(0),
+        U128(10),
+        U128(0),
+    );
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
@@ -4279,6 +4298,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
     let index = 0;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index,
         remaining: 0,
         receiver: account_id_to_address(&mk(9)),
@@ -4302,8 +4322,14 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
     let owner_before = c.balance_of(&owner);
 
     // Read result with need=0 ensures credited=0; triggers refund branch
-    let res =
-        c.execute_withdraw_02_reconcile_position(Ok(None), op_id, market_id, U128(0), U128(0));
+    let res = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        op_id,
+        market_id,
+        U64(0),
+        U128(0),
+        U128(0),
+    );
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to proceed to balance settlement"),
@@ -4313,6 +4339,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
         Ok(U128(0)), // no inflow observed
         op_id,
         market_id,
+        U64(0),
         U128(0), // before_principal
         U128(0), // new_principal reported
         U128(0), // before_balance
@@ -4560,6 +4587,7 @@ fn after_exec_withdraw_req_returns_promise(
     let op_id = 33;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index: 0,
         remaining: 5,
         receiver: account_id_to_address(&mk(9)),
@@ -4568,8 +4596,13 @@ fn after_exec_withdraw_req_returns_promise(
         escrow_shares: 0,
     });
 
-    let res =
-        c.execute_withdraw_01_execute_withdraw_fetch_position(Ok(U128(1)), op_id, market_id, None);
+    let res = c.execute_withdraw_01_execute_withdraw_fetch_position(
+        Ok(U128(1)),
+        op_id,
+        market_id,
+        U64(0),
+        None,
+    );
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),
@@ -4600,6 +4633,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index,
         remaining: 10,
         receiver: account_id_to_address(&receiver),
@@ -4614,6 +4648,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
         Ok(None),
         op_id,
         m1,
+        U64(0),
         U128(0),
         U128(before_balance),
     );
@@ -4630,6 +4665,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
         Ok(U128(record_principal)), // after_balance
         op_id,
         m1,
+        U64(0),
         U128(record_principal), // before_principal
         U128(0),
         U128(before_balance),
@@ -4638,6 +4674,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     match &c.op_state {
         OpState::Payout(PayoutState {
             op_id,
+            request_id: _,
             receiver: r,
             amount,
             owner: o,
@@ -4748,6 +4785,7 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
     // Enter Payout with non-zero escrow
     c.op_state = OpState::Payout(PayoutState {
         op_id: 123,
+        request_id: 123,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -4824,6 +4862,7 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
     c.idle_balance = 123;
     c.op_state = OpState::Payout(PayoutState {
         op_id: 2,
+        request_id: 2,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -4893,6 +4932,7 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
     let amount = 1;
     c.op_state = OpState::Payout(PayoutState {
         op_id: 7,
+        request_id: 7,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -5120,6 +5160,7 @@ fn unbrick_noop_when_payout_state_is_ambiguous() {
 
     c.op_state = OpState::Payout(PayoutState {
         op_id: 88,
+        request_id: 88,
         receiver: account_id_to_address(&receiver),
         amount: 1,
         owner: account_id_to_address(&owner),

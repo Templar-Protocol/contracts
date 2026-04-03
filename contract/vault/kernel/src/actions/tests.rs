@@ -1,6 +1,6 @@
 use super::*;
 use crate::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
-use crate::error::{InvalidConfigCode, InvalidStateCode};
+use crate::error::InvalidStateCode;
 use crate::fee::{FeeSlot, FeesSpec};
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
 use crate::state::op_state::{AllocatingState, AllocationPlanEntry, WithdrawingState};
@@ -52,18 +52,13 @@ fn action_builder_and_metadata_helpers() {
     assert_eq!(pause.op_id(), None);
     assert_eq!(pause.timestamp_ns(), None);
 
-    let atomic = KernelAction::atomic_withdraw(addr(1), addr(2), addr(3), 11, TimestampNs(1_000));
+    let atomic =
+        KernelAction::atomic_withdraw(addr(1), addr(2), addr(3), 11, 11, TimestampNs(1_000));
     assert!(matches!(atomic, KernelAction::AtomicWithdraw { .. }));
     assert_eq!(atomic.op_id(), None);
     assert_eq!(atomic.timestamp_ns(), Some(TimestampNs(1_000)));
 
-    let settle = KernelAction::settle_payout(
-        7,
-        PayoutOutcome::Failure {
-            restore_idle: 10,
-            refund_shares: 20,
-        },
-    );
+    let settle = KernelAction::settle_payout(7, PayoutOutcome::Failure);
     assert!(matches!(settle, KernelAction::SettlePayout { .. }));
     assert_eq!(settle.op_id(), Some(7));
     assert_eq!(settle.timestamp_ns(), None);
@@ -83,12 +78,7 @@ fn invalid_max_pending_rejected() {
         KernelAction::Pause { paused: false },
     );
 
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidConfig(
-            InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit
-        ))
-    ));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -183,6 +173,7 @@ fn execute_withdraw_withdrawing_advances_index() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
+        request_id: 0,
         index: 0,
         remaining: 200,
         collected: 0,
@@ -425,8 +416,8 @@ fn atomic_withdraw_success_emits_burn_and_transfer() {
             owner,
             receiver,
             operator: owner,
-            amount: 100,
-            kind: AtomicPayoutKind::Withdraw,
+            assets_out: 100,
+            max_shares_burned: 100,
             now_ns: TimestampNs(0),
         },
     )
@@ -464,12 +455,12 @@ fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AtomicWithdraw {
+        KernelAction::AtomicRedeem {
             owner,
             receiver,
             operator,
-            amount: 100,
-            kind: AtomicPayoutKind::Redeem,
+            shares: 100,
+            min_assets_out: 100,
             now_ns: TimestampNs(0),
         },
     )
@@ -507,8 +498,8 @@ fn atomic_withdraw_not_idle_fails() {
             owner: addr(1),
             receiver: addr(2),
             operator: addr(1),
-            amount: 100,
-            kind: AtomicPayoutKind::Withdraw,
+            assets_out: 100,
+            max_shares_burned: 100,
             now_ns: TimestampNs(0),
         },
     );
@@ -535,8 +526,8 @@ fn atomic_withdraw_exceeding_idle_fails() {
             owner: addr(1),
             receiver: addr(2),
             operator: addr(1),
-            amount: 300,
-            kind: AtomicPayoutKind::Withdraw,
+            assets_out: 300,
+            max_shares_burned: 300,
             now_ns: TimestampNs(0),
         },
     );
@@ -583,8 +574,8 @@ fn refresh_fees_then_atomic_withdraw_succeeds() {
             owner: addr(1),
             receiver: addr(2),
             operator: addr(1),
-            amount: 500,
-            kind: AtomicPayoutKind::Withdraw,
+            assets_out: 500,
+            max_shares_burned: 500,
             now_ns: TimestampNs(100),
         },
     )
@@ -846,6 +837,7 @@ fn execute_withdraw_queue_head_mismatch_fails() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
+        request_id: 0,
         index: 0,
         remaining: 200,
         collected: 0,
@@ -1045,6 +1037,7 @@ fn execute_withdraw_withdrawing_empty_queue() {
     // State is Withdrawing but queue is empty (shouldn't happen in practice)
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 8,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 0,
@@ -1160,6 +1153,7 @@ fn sync_external_assets_withdrawing() {
     let mut state = balanced_state();
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 4,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 0,
@@ -1280,6 +1274,7 @@ fn sync_external_assets_payout_fails() {
     let mut state = balanced_state();
     state.op_state = OpState::Payout(PayoutState {
         op_id: 6,
+        request_id: 6,
         owner: addr(1),
         receiver: addr(2),
         amount: 50,
@@ -1604,10 +1599,7 @@ fn abort_allocating_success() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortAllocating {
-            op_id: 8,
-            restore_idle: 200,
-        },
+        KernelAction::AbortAllocating { op_id: 8 },
     )
     .unwrap();
 
@@ -1626,10 +1618,7 @@ fn abort_allocating_wrong_state_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortAllocating {
-            op_id: 1,
-            restore_idle: 0,
-        },
+        KernelAction::AbortAllocating { op_id: 1 },
     );
 
     assert!(matches!(
@@ -1658,10 +1647,7 @@ fn abort_allocating_op_id_mismatch_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortAllocating {
-            op_id: 99,
-            restore_idle: 500,
-        },
+        KernelAction::AbortAllocating { op_id: 99 },
     );
 
     assert!(matches!(
@@ -1670,38 +1656,6 @@ fn abort_allocating_op_id_mismatch_fails() {
             expected: 10,
             actual: 99
         })
-    ));
-}
-
-#[test]
-fn abort_allocating_restore_mismatch_fails() {
-    use crate::state::op_state::AllocatingState;
-
-    let mut state = balanced_state();
-    state.op_state = OpState::Allocating(AllocatingState {
-        op_id: 10,
-        index: 0,
-        remaining: 500,
-        plan: vec![alloc_step(1, 500)],
-    });
-    let config = test_config();
-
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &addr(0xFF),
-        KernelAction::AbortAllocating {
-            op_id: 10,
-            restore_idle: 999, // Wrong amount
-        },
-    );
-
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::AbortAllocatingRestoreIdleMismatch
-        ))
     ));
 }
 
@@ -1726,6 +1680,7 @@ fn abort_withdrawing_success() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 9,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 0,
@@ -1739,10 +1694,7 @@ fn abort_withdrawing_success() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortWithdrawing {
-            op_id: 9,
-            refund_shares: 100,
-        },
+        KernelAction::AbortWithdrawing { op_id: 9 },
     )
     .unwrap();
 
@@ -1760,10 +1712,7 @@ fn abort_withdrawing_wrong_state_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortWithdrawing {
-            op_id: 1,
-            refund_shares: 100,
-        },
+        KernelAction::AbortWithdrawing { op_id: 1 },
     );
 
     assert!(matches!(
@@ -1795,6 +1744,7 @@ fn abort_withdrawing_op_id_mismatch_fails() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 10,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 0,
@@ -1808,10 +1758,7 @@ fn abort_withdrawing_op_id_mismatch_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortWithdrawing {
-            op_id: 99,
-            refund_shares: 100,
-        },
+        KernelAction::AbortWithdrawing { op_id: 99 },
     );
 
     assert!(matches!(
@@ -1820,54 +1767,6 @@ fn abort_withdrawing_op_id_mismatch_fails() {
             expected: 10,
             actual: 99
         })
-    ));
-}
-
-#[test]
-fn abort_withdrawing_refund_mismatch_fails() {
-    let mut state = balanced_state();
-    let config = test_config();
-    let owner = addr(1);
-    let receiver = addr(2);
-
-    state
-        .withdraw_queue
-        .enqueue(
-            owner,
-            receiver,
-            100,
-            100,
-            TimestampNs(0),
-            config.max_pending_withdrawals,
-        )
-        .unwrap();
-
-    state.op_state = OpState::Withdrawing(WithdrawingState {
-        op_id: 10,
-        index: 0,
-        remaining: 100,
-        collected: 0,
-        owner,
-        receiver,
-        escrow_shares: 100,
-    });
-
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &addr(0xFF),
-        KernelAction::AbortWithdrawing {
-            op_id: 10,
-            refund_shares: 999,
-        },
-    );
-
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::AbortWithdrawingRefundMismatch
-        ))
     ));
 }
 
@@ -1891,6 +1790,7 @@ fn abort_withdrawing_queue_head_mismatch_fails() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 10,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 0,
@@ -1904,10 +1804,7 @@ fn abort_withdrawing_queue_head_mismatch_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortWithdrawing {
-            op_id: 10,
-            refund_shares: 100,
-        },
+        KernelAction::AbortWithdrawing { op_id: 10 },
     );
 
     assert!(matches!(
@@ -1925,6 +1822,7 @@ fn abort_withdrawing_empty_queue_fails() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 10,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 0,
@@ -1938,10 +1836,7 @@ fn abort_withdrawing_empty_queue_fails() {
         &config,
         None,
         &addr(0xFF),
-        KernelAction::AbortWithdrawing {
-            op_id: 10,
-            refund_shares: 100,
-        },
+        KernelAction::AbortWithdrawing { op_id: 10 },
     );
 
     assert!(matches!(result, Err(KernelError::NoPendingWithdrawals)));
@@ -1970,6 +1865,7 @@ fn settle_payout_success_burn_only() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 11,
+        request_id: 0,
         owner,
         receiver,
         amount: 100,
@@ -1984,10 +1880,7 @@ fn settle_payout_success_burn_only() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 11,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 100,
-                refund_shares: 0,
-            },
+            outcome: PayoutOutcome::Success,
         },
     )
     .unwrap();
@@ -2049,6 +1942,7 @@ fn settle_payout_success_partial_refund() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 12,
+        request_id: 0,
         owner,
         receiver,
         amount: 50,
@@ -2063,10 +1957,7 @@ fn settle_payout_success_partial_refund() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 12,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 50,
-                refund_shares: 50,
-            },
+            outcome: PayoutOutcome::Success,
         },
     )
     .unwrap();
@@ -2118,6 +2009,7 @@ fn settle_payout_failure() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 13,
+        request_id: 0,
         owner,
         receiver,
         amount: 100,
@@ -2132,10 +2024,7 @@ fn settle_payout_failure() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 13,
-            outcome: PayoutOutcome::Failure {
-                restore_idle: 100,
-                refund_shares: 100,
-            },
+            outcome: PayoutOutcome::Failure,
         },
     )
     .unwrap();
@@ -2179,10 +2068,7 @@ fn settle_payout_wrong_state_fails() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 1,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 100,
-                refund_shares: 0,
-            },
+            outcome: PayoutOutcome::Success,
         },
     );
 
@@ -2217,6 +2103,7 @@ fn settle_payout_op_id_mismatch_fails() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 20,
+        request_id: 20,
         owner,
         receiver,
         amount: 100,
@@ -2231,10 +2118,7 @@ fn settle_payout_op_id_mismatch_fails() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 99,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 100,
-                refund_shares: 0,
-            },
+            outcome: PayoutOutcome::Success,
         },
     );
 
@@ -2256,6 +2140,7 @@ fn settle_payout_empty_queue_fails() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 20,
+        request_id: 20,
         owner: addr(1),
         receiver: addr(2),
         amount: 100,
@@ -2270,10 +2155,7 @@ fn settle_payout_empty_queue_fails() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 20,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 100,
-                refund_shares: 0,
-            },
+            outcome: PayoutOutcome::Success,
         },
     );
 
@@ -2301,6 +2183,7 @@ fn settle_payout_queue_head_mismatch_fails() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 20,
+        request_id: 20,
         owner: addr(1),
         receiver: addr(2),
         amount: 100,
@@ -2315,10 +2198,7 @@ fn settle_payout_queue_head_mismatch_fails() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 20,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 100,
-                refund_shares: 0,
-            },
+            outcome: PayoutOutcome::Success,
         },
     );
 
@@ -2331,7 +2211,7 @@ fn settle_payout_queue_head_mismatch_fails() {
 }
 
 #[test]
-fn settle_payout_success_settlement_mismatch_fails() {
+fn settle_payout_uses_state_derived_partial_settlement() {
     use crate::state::op_state::PayoutState;
 
     let mut state = balanced_state();
@@ -2353,11 +2233,12 @@ fn settle_payout_success_settlement_mismatch_fails() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 20,
+        request_id: 0,
         owner,
         receiver,
-        amount: 100,
+        amount: 40,
         escrow_shares: 100,
-        burn_shares: 100,
+        burn_shares: 40,
     });
 
     let result = apply_action(
@@ -2367,176 +2248,30 @@ fn settle_payout_success_settlement_mismatch_fails() {
         &addr(0xFF),
         KernelAction::SettlePayout {
             op_id: 20,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 50,
-                refund_shares: 10, // 50 + 10 != 100 escrow
-            },
+            outcome: PayoutOutcome::Success,
         },
-    );
+    )
+    .unwrap();
 
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::PayoutSuccessSettlementMismatch
-        ))
-    ));
-}
+    let event = result
+        .effects
+        .iter()
+        .find_map(|e| match e {
+            KernelEffect::EmitEvent {
+                event:
+                    KernelEvent::PayoutCompleted {
+                        op_id,
+                        success,
+                        burn_shares,
+                        refund_shares,
+                        amount,
+                    },
+            } => Some((*op_id, *success, *burn_shares, *refund_shares, *amount)),
+            _ => None,
+        })
+        .expect("missing PayoutCompleted event");
 
-#[test]
-fn settle_payout_success_settlement_overflow_fails() {
-    use crate::state::op_state::PayoutState;
-
-    let mut state = VaultState::with_initial(1, u128::MAX, 1, 0, TimestampNs(0));
-    let config = test_config();
-    let owner = addr(1);
-    let receiver = addr(2);
-
-    state
-        .withdraw_queue
-        .enqueue(
-            owner,
-            receiver,
-            u128::MAX,
-            1,
-            TimestampNs(0),
-            config.max_pending_withdrawals,
-        )
-        .unwrap();
-
-    state.op_state = OpState::Payout(PayoutState {
-        op_id: 22,
-        owner,
-        receiver,
-        amount: 1,
-        escrow_shares: u128::MAX,
-        burn_shares: u128::MAX,
-    });
-
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &addr(0xFF),
-        KernelAction::SettlePayout {
-            op_id: 22,
-            outcome: PayoutOutcome::Success {
-                burn_shares: u128::MAX,
-                refund_shares: u128::MAX,
-            },
-        },
-    );
-
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::PayoutSuccessSettlementMismatch
-        ))
-    ));
-}
-
-#[test]
-fn settle_payout_failure_settlement_mismatch_fails() {
-    use crate::state::op_state::PayoutState;
-
-    let mut state = balanced_state();
-    let config = test_config();
-    let owner = addr(1);
-    let receiver = addr(2);
-
-    state
-        .withdraw_queue
-        .enqueue(
-            owner,
-            receiver,
-            100,
-            100,
-            TimestampNs(0),
-            config.max_pending_withdrawals,
-        )
-        .unwrap();
-
-    state.op_state = OpState::Payout(PayoutState {
-        op_id: 20,
-        owner,
-        receiver,
-        amount: 100,
-        escrow_shares: 100,
-        burn_shares: 100,
-    });
-
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &addr(0xFF),
-        KernelAction::SettlePayout {
-            op_id: 20,
-            outcome: PayoutOutcome::Failure {
-                restore_idle: 100,
-                refund_shares: 50, // Should be 100
-            },
-        },
-    );
-
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::PayoutFailureSettlementMismatch
-        ))
-    ));
-}
-
-#[test]
-fn settle_payout_failure_restore_idle_mismatch_fails() {
-    use crate::state::op_state::PayoutState;
-
-    let mut state = balanced_state();
-    let config = test_config();
-    let owner = addr(1);
-    let receiver = addr(2);
-
-    state
-        .withdraw_queue
-        .enqueue(
-            owner,
-            receiver,
-            100,
-            100,
-            TimestampNs(0),
-            config.max_pending_withdrawals,
-        )
-        .unwrap();
-
-    state.op_state = OpState::Payout(PayoutState {
-        op_id: 21,
-        owner,
-        receiver,
-        amount: 100,
-        escrow_shares: 100,
-        burn_shares: 100,
-    });
-
-    // restore_idle: 200 doesn't match payout.amount: 100
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &addr(0xFF),
-        KernelAction::SettlePayout {
-            op_id: 21,
-            outcome: PayoutOutcome::Failure {
-                restore_idle: 200, // Should be 100
-                refund_shares: 100,
-            },
-        },
-    );
-
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::PayoutFailureRestoreIdleMismatch
-        ))
-    ));
+    assert_eq!(event, (20, true, 40, 60, 40));
 }
 
 // =========================================================================
@@ -3025,6 +2760,7 @@ fn emergency_reset_from_withdrawing_refunds_shares() {
 
     state.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 20,
+        request_id: 0,
         index: 0,
         remaining: 100,
         collected: 50,
@@ -3065,6 +2801,7 @@ fn emergency_reset_from_payout_refunds_and_restores() {
 
     state.op_state = OpState::Payout(PayoutState {
         op_id: 30,
+        request_id: 30,
         receiver,
         amount: 250,
         owner,

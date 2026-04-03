@@ -4,7 +4,22 @@ mod auth_tests {
     use crate::auth::{ActionKind, AuthError, SorobanAuth};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Env};
+    use templar_curator_primitives::auth::{AuthPolicyClass, AuthResult};
     use templar_curator_primitives::rbac::Role;
+
+    fn assert_missing_role(
+        result: AuthResult<()>,
+        action: ActionKind,
+        policy_class: AuthPolicyClass,
+    ) {
+        assert!(matches!(
+            result,
+            Err(AuthError::MissingRole {
+                action: actual_action,
+                policy_class: actual_policy_class,
+            }) if actual_action == action && actual_policy_class == policy_class
+        ));
+    }
 
     #[test]
     fn test_soroban_auth_new() {
@@ -73,7 +88,11 @@ mod auth_tests {
         assert!(auth.check_role(ActionKind::RequestWithdraw, &user).is_ok());
 
         let result = auth.check_role(ActionKind::ExecuteWithdraw, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ExecuteWithdraw,
+            AuthPolicyClass::Allocator,
+        );
     }
 
     #[test]
@@ -91,7 +110,7 @@ mod auth_tests {
         assert!(auth.check_role(ActionKind::Pause, &curator).is_ok());
         // User cannot pause
         let result = auth.check_role(ActionKind::Pause, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::Pause, AuthPolicyClass::Sentinel);
 
         assert!(auth
             .check_role(ActionKind::SetRestrictions, &sentinel)
@@ -131,7 +150,11 @@ mod auth_tests {
 
         // User cannot
         let result = auth.check_role(ActionKind::BeginAllocating, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::BeginAllocating,
+            AuthPolicyClass::Allocator,
+        );
     }
 
     #[test]
@@ -160,7 +183,11 @@ mod auth_tests {
             .is_ok());
 
         let result = auth.check_role(ActionKind::AbortWithdrawing, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::AbortWithdrawing,
+            AuthPolicyClass::AllocatorEmergency,
+        );
     }
 
     #[test]
@@ -178,15 +205,19 @@ mod auth_tests {
 
         // Allocator cannot
         let result = auth.check_role(ActionKind::ManualReconcile, &allocator);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ManualReconcile,
+            AuthPolicyClass::Curator,
+        );
 
         assert!(auth.check_role(ActionKind::PolicyAdmin, &curator).is_ok());
         let result = auth.check_role(ActionKind::PolicyAdmin, &allocator);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::PolicyAdmin, AuthPolicyClass::Curator);
     }
 
     #[test]
-    fn test_soroban_auth_paused_allows_privileged_actions() {
+    fn test_soroban_auth_paused_blocks_non_whitelisted_actions() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
@@ -195,10 +226,46 @@ mod auth_tests {
             SorobanAuth::with_roles(&env, curator.clone(), None, Some(allocator.clone()));
         auth.set_paused(true);
 
+        let result = auth.check_role(ActionKind::BeginAllocating, &allocator);
+        assert!(matches!(result, Err(AuthError::VaultPaused)));
+        let result = auth.check_role(ActionKind::PolicyAdmin, &curator);
+        assert!(matches!(result, Err(AuthError::VaultPaused)));
+    }
+
+    #[test]
+    fn test_soroban_auth_paused_allows_whitelisted_actions() {
+        let env = Env::default();
+        let curator = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
+        let allocator = SdkAddress::generate(&env);
+
+        let mut auth = SorobanAuth::with_roles(
+            &env,
+            curator.clone(),
+            Some(sentinel.clone()),
+            Some(allocator),
+        );
+        auth.set_paused(true);
+
+        assert!(auth.check_role(ActionKind::Pause, &sentinel).is_ok());
         assert!(auth
-            .check_role(ActionKind::BeginAllocating, &allocator)
+            .check_role(ActionKind::SetRestrictions, &sentinel)
             .is_ok());
-        assert!(auth.check_role(ActionKind::PolicyAdmin, &curator).is_ok());
+        assert!(auth
+            .check_role(ActionKind::AbortAllocating, &sentinel)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::AbortWithdrawing, &sentinel)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::AbortRefreshing, &sentinel)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::ManualReconcile, &curator)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::EmergencyReset, &curator)
+            .is_ok());
     }
 
     #[test]
@@ -952,6 +1019,7 @@ mod contract_tests {
                 result = Some(vault.atomic_withdraw(
                     self.env,
                     assets,
+                    i128::MAX,
                     receiver.clone(),
                     owner.clone(),
                     operator.clone(),
