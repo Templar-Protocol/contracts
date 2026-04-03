@@ -1,23 +1,26 @@
 use alloc::vec::Vec;
 
-use templar_vault_kernel::TargetId;
+use templar_vault_kernel::{TargetId, TimestampNs};
 
-use super::market_lock::MarketLockSet;
+use super::market_lock::MarketLeaseRegistry;
 
-impl MarketLockSet {
+impl MarketLeaseRegistry {
     #[inline]
     #[must_use]
-    pub fn is_unlocked(&self, target_id: TargetId, current_ns: u64) -> bool {
-        !self.is_locked(target_id, current_ns)
+    pub fn is_unleased(&self, target_id: TargetId, now_ns: TimestampNs) -> bool {
+        !self.is_leased(target_id, now_ns)
     }
 
-    /// Filter a target list to only unlocked targets.
     #[must_use]
-    pub fn filter_targets(&self, targets: &[TargetId], current_ns: u64) -> Vec<TargetId> {
+    pub fn excluding_leased_targets(
+        &self,
+        targets: &[TargetId],
+        now_ns: TimestampNs,
+    ) -> Vec<TargetId> {
         targets
             .iter()
             .copied()
-            .filter(|target_id| self.is_unlocked(*target_id, current_ns))
+            .filter(|target_id| self.is_unleased(*target_id, now_ns))
             .collect()
     }
 }
