@@ -8,7 +8,10 @@ use soroban_sdk::{
     contracttype,
     testutils::{Address as _, Ledger, LedgerInfo},
 };
-use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
+use templar_soroban_shared_types::{
+    GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_FEES,
+    GOVERNANCE_POLICY_KIND_PAUSED,
+};
 
 #[contract]
 struct MockVault;
@@ -45,14 +48,14 @@ impl MockVault {
     pub fn set_governance_config(
         env: Env,
         _caller: Address,
-        kind: GovernanceConfigKind,
+        kind: u32,
         primary: Option<Address>,
         many: Option<Vec<Address>>,
         _value_a: Option<i128>,
         _value_b: Option<i128>,
     ) {
         match kind {
-            GovernanceConfigKind::Sentinel => {
+            GOVERNANCE_CONFIG_KIND_SENTINEL => {
                 let Some(sentinel) = primary else {
                     return;
                 };
@@ -60,7 +63,7 @@ impl MockVault {
                     .instance()
                     .set(&MockVaultKey::Sentinel, &sentinel);
             }
-            GovernanceConfigKind::Guardians => {
+            GOVERNANCE_CONFIG_KIND_GUARDIANS => {
                 let Some(guardians) = many else {
                     return;
                 };
@@ -80,7 +83,7 @@ impl MockVault {
     pub fn set_governance_policy(
         env: Env,
         _caller: Address,
-        kind: GovernancePolicyKind,
+        kind: u32,
         _target_ids: Option<Vec<u32>>,
         mode: Option<u32>,
         accounts: Option<Vec<Address>>,
@@ -90,11 +93,11 @@ impl MockVault {
         _value_b: Option<i128>,
         _value_c: Option<i128>,
     ) {
-        if kind == GovernancePolicyKind::Paused {
+        if kind == GOVERNANCE_POLICY_KIND_PAUSED {
             let paused = mode.unwrap_or(0) != 0;
             env.storage().instance().set(&MockVaultKey::Paused, &paused);
         }
-        if kind == GovernancePolicyKind::Fees {
+        if kind == GOVERNANCE_POLICY_KIND_FEES {
             let _ = accounts;
         }
     }

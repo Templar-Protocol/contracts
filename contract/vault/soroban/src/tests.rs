@@ -296,6 +296,10 @@ mod contract_tests {
     use alloc::vec::Vec;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
+    use templar_soroban_shared_types::{
+        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_FEES,
+    };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
         FeeAccrualAnchor, FeesSpec, Restrictions, VaultState, MIN_WITHDRAWAL_ASSETS,
@@ -359,6 +363,20 @@ mod contract_tests {
         fn has_address(&self, _kernel_addr: &templar_vault_kernel::Address) -> bool {
             true
         }
+    }
+
+    fn sdk_text(address: &SdkAddress) -> alloc::string::String {
+        alloc::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+    }
+
+    fn execute_command(
+        env: &Env,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+        let payload = Bytes::from_slice(env, &command.encode());
+        let result = SorobanVaultContract::execute(env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| crate::error::ContractError::InvalidInput)
     }
 
     #[derive(Clone, Debug, Default)]
@@ -939,16 +957,19 @@ mod contract_tests {
             )
             .unwrap();
 
-            SorobanVaultContract::set_governance_config(
-                env.clone(),
-                governance,
-                templar_soroban_shared_types::GovernanceConfigKind::VirtualOffsets,
-                None,
-                None,
-                Some(101),
-                Some(202),
+            let result = execute_command(
+                &env,
+                &VaultCommand::SetGovernanceConfig {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                    primary: None,
+                    many: None,
+                    value_a: Some(101),
+                    value_b: Some(202),
+                },
             )
             .unwrap();
+            assert_eq!(result, VaultCommandResult::Unit);
 
             assert_eq!(
                 env.storage().instance().get(&VaultDataKey::VirtualShares),
@@ -1250,15 +1271,20 @@ mod contract_tests {
         env.cost_estimate().budget().reset_default();
         let minted = env
             .as_contract(&contract_id, || {
-                SorobanVaultContract::deposit_with_min(
-                    env.clone(),
-                    owner.clone(),
-                    receiver.clone(),
-                    deposit_assets,
-                    0,
+                execute_command(
+                    &env,
+                    &VaultCommand::DepositWithMin {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        assets: deposit_assets,
+                        min_shares_out: 0,
+                    },
                 )
             })
             .expect("deposit_with_min should succeed");
+        let VaultCommandResult::I128(minted) = minted else {
+            panic!("expected i128 result")
+        };
         let resources = env.cost_estimate().resources();
 
         std::println!(
@@ -2319,16 +2345,23 @@ mod storage_tests {
                 ),
             );
 
-            SorobanVaultContract::set_governance_config(
-                env.clone(),
-                governance.clone(),
-                GovernanceConfigKind::AllowedAdapters,
-                None,
-                Some(updated_adapters.clone()),
-                None,
-                None,
+            let updated = updated_adapters
+                .iter()
+                .map(|address| sdk_text(&address))
+                .collect();
+            let result = execute_command(
+                &env,
+                &VaultCommand::SetGovernanceConfig {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                    primary: None,
+                    many: Some(updated),
+                    value_a: None,
+                    value_b: None,
+                },
             )
             .unwrap();
+            assert_eq!(result, VaultCommandResult::Unit);
 
             assert_eq!(
                 env.storage()
@@ -2352,18 +2385,20 @@ mod storage_tests {
                 &governance,
             );
 
-            let err = SorobanVaultContract::set_governance_policy(
-                env.clone(),
-                governance.clone(),
-                GovernancePolicyKind::Fees,
-                None,
-                None,
-                Some(SdkVec::from_array(&env, [SdkAddress::generate(&env)])),
-                None,
-                None,
-                Some(1),
-                Some(2),
-                None,
+            let err = execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_FEES,
+                    target_ids: None,
+                    mode: None,
+                    accounts: Some(vec![sdk_text(&SdkAddress::generate(&env))]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: Some(1),
+                    value_b: Some(2),
+                    value_c: None,
+                },
             )
             .unwrap_err();
 
