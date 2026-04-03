@@ -631,19 +631,18 @@ impl Contract {
         plan.dedup();
 
         let now = env::block_timestamp();
-        let refresh_plan = {
+        let (refresh_plan, refresh_throttle) = {
             let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();
             templar_curator_primitives::policy::target_set::build_refresh_plan_from_targets(
                 &targets,
                 idle.refresh_cooldown_ns,
-                idle.last_refresh_ns,
+                (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns),
             )
             .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
-        refresh_plan
-            .check_cooldown(now)
+        let refresh_throttle = refresh_throttle
+            .try_acquire(now)
             .unwrap_or_else(|_| panic_with_message("Refresh throttled"));
-        idle.last_refresh_ns = now;
 
         let op_id = idle.next_op_id;
         idle.next_op_id = idle.next_op_id.saturating_add(1);
@@ -2236,6 +2235,7 @@ impl Contract {
 
         if index as usize >= plan.len() {
             let report = self.build_real_assets_report();
+            self.last_refresh_ns = u64::from(report.refreshed_at);
             Event::RefreshCompleted {
                 op_id: op_id.into(),
                 markets: plan.into_iter().map(MarketId::from).collect(),
