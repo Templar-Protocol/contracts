@@ -13238,6 +13238,9 @@ dependencies = [
  "near-sdk",
  "primitive-types 0.14.0",
  "templar-common",
+ "templar-curator-primitives",
+ "templar-soroban-runtime",
+ "templar-vault-kernel",
 ]
 
 [[package]]
