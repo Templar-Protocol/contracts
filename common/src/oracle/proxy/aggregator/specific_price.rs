@@ -66,3 +66,43 @@ impl Ord for SpecificPrice {
         lhs.cmp(&rhs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::oracle::pyth::PythTimestamp;
+
+    use super::*;
+
+    fn sp(value: i64, exponent: i32) -> SpecificPrice {
+        SpecificPrice {
+            value,
+            exponent,
+            publish_time: PythTimestamp::from_secs(0),
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(sp(100, -4), sp(200, -4), std::cmp::Ordering::Less)]
+    #[case(sp(200, -4), sp(200, -4), std::cmp::Ordering::Equal)]
+    #[case(sp(300, -4), sp(200, -4), std::cmp::Ordering::Greater)]
+    #[case(sp(1, -3), sp(10, -4), std::cmp::Ordering::Equal)]
+    #[case(sp(10, -4), sp(1, -3), std::cmp::Ordering::Equal)]
+    #[case(sp(1, -3), sp(9, -4), std::cmp::Ordering::Greater)]
+    #[case(sp(1, -3), sp(11, -4), std::cmp::Ordering::Less)]
+    #[case(sp(-100, -4), sp(-200, -4), std::cmp::Ordering::Greater)]
+    #[case(sp(-1, -3), sp(-10, -4), std::cmp::Ordering::Equal)]
+    #[case(sp(-1, -3), sp(-9, -4), std::cmp::Ordering::Less)]
+    #[case(sp(0, -4), sp(0, 4), std::cmp::Ordering::Equal)]
+    #[case(sp(0, -4), sp(1, -4), std::cmp::Ordering::Less)]
+    #[case(sp(1, 39), sp(1, 0), std::cmp::Ordering::Greater)]
+    #[case(sp(0, 39), sp(1, 0), std::cmp::Ordering::Less)]
+    #[case(sp(1, 0), sp(1, 39), std::cmp::Ordering::Less)]
+    #[case(sp(1, 38), sp(1, 0), std::cmp::Ordering::Greater)]
+    fn specific_price_cmp(
+        #[case] a: SpecificPrice,
+        #[case] b: SpecificPrice,
+        #[case] expected: std::cmp::Ordering,
+    ) {
+        assert_eq!(a.cmp(&b), expected);
+    }
+}

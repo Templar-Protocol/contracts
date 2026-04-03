@@ -4,7 +4,9 @@ use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::{
-    governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
+    governance::Proposal,
+    oracle::proxy::{governance::Operation, Proxy},
+    time::Nanoseconds,
 };
 
 use crate::{
@@ -83,11 +85,10 @@ impl OutputStyle for Proposal<Operation> {
                 writeln!(out, "    price_id: {id}")?;
                 match proxy {
                     Some(proxy) => {
+                        let (aggregator_name, entries_len) = proxy_summary(proxy);
                         writeln!(
                             out,
-                            "    proxy: {} entries, aggregator={:?}",
-                            proxy.entries.len(),
-                            proxy.aggregator.method,
+                            "    proxy: {entries_len} entries, aggregator={aggregator_name:?}",
                         )?;
                     }
                     None => {
@@ -102,5 +103,13 @@ impl OutputStyle for Proposal<Operation> {
         }
 
         Ok(())
+    }
+}
+
+fn proxy_summary(proxy: &Proxy) -> (&'static str, usize) {
+    match proxy {
+        Proxy::MedianLow(proxy) => ("MedianLow", proxy.sources.len()),
+        Proxy::MedianHigh(proxy) => ("MedianHigh", proxy.sources.len()),
+        Proxy::Priority(proxy) => ("Priority", proxy.sources.len()),
     }
 }

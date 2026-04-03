@@ -4,7 +4,10 @@ use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::{
-    proxy::{Entry, Proxy, Source},
+    proxy::{
+        aggregator::source::{Source, WeightedSource},
+        Proxy,
+    },
     pyth::PriceIdentifier,
     OracleRequest,
 };
@@ -47,29 +50,26 @@ impl GetProxy {
 
 impl OutputStyle for Proxy {
     fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
-        writeln!(
-            out,
-            "{}: {:?}",
-            style("Aggregator").bold(),
-            self.aggregator.method
-        )?;
-        if let Some(max_age) = self.aggregator.filter.max_age {
+        let (aggregator_name, max_age, max_clock_drift, min_sources, entries_len) =
+            proxy_summary(self);
+        writeln!(out, "{}: {:?}", style("Aggregator").bold(), aggregator_name)?;
+        if let Some(max_age) = max_age {
             writeln!(out, "  {}: {max_age}", style("max_age").dim())?;
         }
-        if let Some(max_clock_drift) = self.aggregator.filter.max_clock_drift {
+        if let Some(max_clock_drift) = max_clock_drift {
             writeln!(
                 out,
                 "  {}: {max_clock_drift}",
                 style("max_clock_drift").dim()
             )?;
         }
-        if let Some(min_sources) = self.aggregator.filter.min_sources {
+        if let Some(min_sources) = min_sources {
             writeln!(out, "  {}: {min_sources}", style("min_sources").dim())?;
         }
 
         writeln!(out)?;
-        writeln!(out, "{} ({}):", style("Entries").bold(), self.entries.len())?;
-        for (index, entry) in self.entries.iter().enumerate() {
+        writeln!(out, "{} ({}):", style("Entries").bold(), entries_len)?;
+        for (index, entry) in proxy_entries(self).iter().enumerate() {
             write_entry(out, index, entry)?;
         }
 
@@ -77,7 +77,54 @@ impl OutputStyle for Proxy {
     }
 }
 
-fn write_entry(out: &mut dyn Write, index: usize, entry: &Entry) -> anyhow::Result<()> {
+fn proxy_summary(
+    proxy: &Proxy,
+) -> (
+    &'static str,
+    Option<templar_common::time::Nanoseconds>,
+    Option<templar_common::time::Nanoseconds>,
+    Option<u32>,
+    usize,
+) {
+    match proxy {
+        Proxy::MedianLow(proxy) => (
+            "MedianLow",
+            proxy.filter.price.max_age,
+            proxy.filter.price.max_clock_drift,
+            proxy.filter.min_sources,
+            proxy.sources.len(),
+        ),
+        Proxy::MedianHigh(proxy) => (
+            "MedianHigh",
+            proxy.filter.price.max_age,
+            proxy.filter.price.max_clock_drift,
+            proxy.filter.min_sources,
+            proxy.sources.len(),
+        ),
+        Proxy::Priority(proxy) => (
+            "Priority",
+            proxy.filter.price.max_age,
+            proxy.filter.price.max_clock_drift,
+            proxy.filter.min_sources,
+            proxy.sources.len(),
+        ),
+    }
+}
+
+fn proxy_entries(proxy: &Proxy) -> Vec<WeightedSource> {
+    match proxy {
+        Proxy::MedianLow(proxy) => proxy.sources.clone(),
+        Proxy::MedianHigh(proxy) => proxy.sources.clone(),
+        Proxy::Priority(proxy) => proxy
+            .sources
+            .iter()
+            .cloned()
+            .map(|source| WeightedSource { source, weight: 1 })
+            .collect(),
+    }
+}
+
+fn write_entry(out: &mut dyn Write, index: usize, entry: &WeightedSource) -> anyhow::Result<()> {
     writeln!(
         out,
         "  {} {}={}",

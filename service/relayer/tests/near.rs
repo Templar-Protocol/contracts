@@ -3,8 +3,11 @@ use std::collections::HashSet;
 use near_jsonrpc_client::JsonRpcClient;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
-    price_transformer::{self, PriceTransformer, ProxyPriceTransformer},
-    proxy::{Proxy, Source},
+    price_transformer::{self, PriceTransformer},
+    proxy::{
+        aggregator::{source::Source, transformer::ProxyPriceTransformer},
+        Proxy,
+    },
     pyth::PriceIdentifier,
     OracleRequest,
 };

@@ -17,7 +17,12 @@ use templar_common::{
     number::Decimal,
     oracle::{
         price_transformer::PriceTransformer,
-        proxy::{Proxy, Source},
+        proxy::{
+            aggregator::{
+                method::AggregationMethod, source::Source, transformer::ProxyPriceTransformer,
+            },
+            Proxy,
+        },
         pyth::{self, OracleResponse, PriceIdentifier},
         redstone, OracleRequest,
     },
@@ -349,8 +354,8 @@ impl OracleFetcher {
 
                 let Some(proxy) = proxy else { continue };
 
-                for entry in &proxy.entries {
-                    Self::collect_pyth_targets_from_source(&entry.source, &mut targets);
+                for source in proxy.sources() {
+                    Self::collect_pyth_targets_from_source(source, &mut targets);
                 }
             }
             return targets;
@@ -772,38 +777,36 @@ impl OracleFetcher {
             };
 
             // Collect prices from underlying oracles for each entry
-            let mut prices: Vec<(pyth::Price, u32)> = Vec::new();
+            let mut prices = Vec::new();
 
-            for entry in &proxy.entries {
-                let price = match &entry.source {
+            for source in proxy.sources() {
+                let price = match source {
                     Source::Request(request) => self.fetch_oracle_request_price(request, age).await,
                     Source::Transformer(transformer) => {
                         self.fetch_proxy_transformed_price(transformer, age).await
                     }
                 };
 
-                if let Some(price) = price {
-                    prices.push((price, entry.weight));
-                }
+                prices.push(price);
             }
 
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
-            let aggregated = proxy.aggregator.aggregate(&prices, now);
-            result.insert(price_id, aggregated.map(Into::into));
+            let aggregated = proxy.aggregate(&prices, now).ok();
+            result.insert(price_id, aggregated);
 
             if result.get(&price_id).and_then(|p| p.as_ref()).is_some() {
                 tracing::debug!(
                     oracle = %proxy_oracle,
                     price_id = ?price_id,
-                    source_count = prices.len(),
+                    source_count = prices.iter().filter(|price| price.is_some()).count(),
                     "Proxy oracle: aggregated price from underlying sources"
                 );
             } else {
                 tracing::warn!(
                     oracle = %proxy_oracle,
                     price_id = ?price_id,
-                    source_count = prices.len(),
+                    source_count = prices.iter().filter(|price| price.is_some()).count(),
                     "Proxy oracle: aggregation returned no price"
                 );
             }
@@ -951,7 +954,7 @@ impl OracleFetcher {
     /// Fetches a transformed price from a proxy entry (underlying oracle + transformer input).
     async fn fetch_proxy_transformed_price(
         &self,
-        transformer: &templar_common::oracle::price_transformer::ProxyPriceTransformer,
+        transformer: &ProxyPriceTransformer,
         age: u32,
     ) -> Option<pyth::Price> {
         // Fetch the underlying price

@@ -37,7 +37,10 @@ use templar_common::{
     number::Decimal,
     oracle::{
         price_transformer::{Call, PriceTransformer},
-        proxy::{Proxy, Source},
+        proxy::{
+            aggregator::{method::AggregationMethod as _, source::Source},
+            Proxy,
+        },
         pyth::{self, PriceIdentifier},
         redstone, OracleRequest,
     },
@@ -786,28 +789,26 @@ impl Near {
         };
 
         let mut prices = vec![];
-        for entry in &proxy.entries {
-            if let Some(price) = self.resolve_proxy_entry_price(entry, max_age).await? {
-                prices.push((price, entry.weight));
-            }
+        for source in proxy.sources() {
+            prices.push(self.resolve_proxy_source_price(source, max_age).await?);
         }
 
         tracing::debug!(?prices, "Prices to aggregate");
 
-        let price = proxy.aggregator.aggregate(&prices, Self::system_time());
+        let price = proxy.aggregate(&prices, Self::system_time()).ok();
 
         tracing::debug!(?price, "Aggregated price");
 
-        Ok(price.map(Into::into))
+        Ok(price)
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn resolve_proxy_entry_price(
+    async fn resolve_proxy_source_price(
         &self,
-        entry: &templar_common::oracle::proxy::Entry,
+        source: &Source,
         max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
-        match &entry.source {
+        match source {
             Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
             Source::Transformer(t) => {
                 let Some(price) = self
@@ -945,11 +946,11 @@ impl Near {
                     .await?
                 {
                     let requests = proxy
-                        .entries
+                        .sources()
                         .into_iter()
-                        .map(|entry| match entry.source {
-                            Source::Transformer(transformer) => transformer.request,
-                            Source::Request(request) => request,
+                        .map(|source| match source {
+                            Source::Transformer(transformer) => transformer.request.clone(),
+                            Source::Request(request) => request.clone(),
                         })
                         .collect::<HashSet<_>>();
                     if requests.is_empty() {

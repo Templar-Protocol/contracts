@@ -7,11 +7,20 @@ use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, YieldWeights},
     oracle::{
-        price_transformer::{self, Call, PriceTransformer},
+        price_transformer::{Call, PriceTransformer},
         pyth::PriceIdentifier,
     },
 };
 use test_utils::*;
+
+fn redemption_rate_call(account_id: &near_sdk::AccountIdRef) -> Call {
+    Call {
+        account_id: account_id.into(),
+        method_name: "redemption_rate".to_string(),
+        args: near_sdk::json_types::Base64VecU8(vec![]),
+        gas: near_sdk::Gas::from_tgas(3).as_gas().into(),
+    }
+}
 
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cc11000000000000000000000000000000000000000000000000000000000000"
@@ -51,10 +60,7 @@ async fn setup_lst_oracle(
                     PriceTransformer::lst(
                         DEFAULT_COLLATERAL_PRICE_ID,
                         24,
-                        price_transformer::Call::new_simple(
-                            c.collateral_asset.contract().id(),
-                            "redemption_rate",
-                        ),
+                        redemption_rate_call(c.collateral_asset.contract().id()),
                     ),
                 )
                 .await;
@@ -125,7 +131,7 @@ async fn lst_oracle(#[future(awt)] worker: Worker<Sandbox>) {
         PriceTransformer::lst(
             DEFAULT_COLLATERAL_PRICE_ID,
             24,
-            Call::new_simple(c.collateral_asset.contract().id(), "redemption_rate"),
+            redemption_rate_call(c.collateral_asset.contract().id()),
         ),
     );
 

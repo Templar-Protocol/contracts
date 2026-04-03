@@ -148,3 +148,227 @@ impl<V: MedianVariant> AggregationMethod for Median<V> {
         Ok(values.swap_remove(V::median(&values)).0.into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::json_types::{I64, U64};
+
+    use crate::{oracle::pyth::PythTimestamp, oracle::OracleRequest, time::Nanoseconds};
+
+    use super::*;
+
+    fn price(value: i64, conf: u64, publish_time: PythTimestamp) -> pyth::Price {
+        pyth::Price {
+            price: I64(value),
+            conf: U64(conf),
+            expo: -6,
+            publish_time,
+        }
+    }
+
+    fn secs(s: i64) -> PythTimestamp {
+        PythTimestamp::from_secs(s)
+    }
+
+    fn median_low(filter: Filter, weights: &[u32]) -> MedianLow {
+        MedianLow::new(
+            weights.iter().map(|weight| {
+                WeightedSource::new(
+                    OracleRequest::redstone("oracle.near".parse().unwrap(), "BTC"),
+                    *weight,
+                )
+            }),
+            filter,
+        )
+    }
+
+    #[test]
+    fn aggregate_empty_returns_too_few_valid_sources() {
+        let error = MedianLow::new([], Filter::default())
+            .aggregate(&[], Nanoseconds::zero())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::Error::TooFewValidSources {
+                expected: 1,
+                actual: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn aggregate_single_price_no_conf() {
+        let result = median_low(Filter::default(), &[1])
+            .aggregate(&[Some(price(1_000_000, 0, secs(0)))], Nanoseconds::zero())
+            .unwrap();
+        assert_eq!(result.price.0, 1_000_000);
+    }
+
+    #[test]
+    fn aggregate_median_of_three() {
+        let prices = [
+            Some(price(1_000_000, 0, secs(0))),
+            Some(price(2_000_000, 0, secs(0))),
+            Some(price(3_000_000, 0, secs(0))),
+        ];
+        let result = median_low(Filter::default(), &[1, 1, 1])
+            .aggregate(&prices, Nanoseconds::zero())
+            .unwrap();
+        assert_eq!(result.price.0, 2_000_000);
+    }
+
+    #[test]
+    fn aggregate_min_sources_not_met_returns_error() {
+        let filter = Filter {
+            min_sources: Some(3),
+            ..Default::default()
+        };
+        let prices = [
+            Some(price(1_000_000, 0, secs(0))),
+            Some(price(2_000_000, 0, secs(0))),
+        ];
+        let error = median_low(filter, &[1, 1])
+            .aggregate(&prices, Nanoseconds::zero())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::Error::TooFewValidSources {
+                expected: 3,
+                actual: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn aggregate_min_sources_exactly_met() {
+        let filter = Filter {
+            min_sources: Some(2),
+            ..Default::default()
+        };
+        let prices = [
+            Some(price(1_000_000, 0, secs(0))),
+            Some(price(2_000_000, 0, secs(0))),
+        ];
+        assert!(median_low(filter, &[1, 1])
+            .aggregate(&prices, Nanoseconds::zero())
+            .is_ok());
+    }
+
+    #[test]
+    fn aggregate_min_sources_applies_after_time_filtering() {
+        let filter = Filter {
+            price: super::super::super::filter::IndividualPriceFilter {
+                max_age: Some(Nanoseconds::from_secs(500)),
+                max_clock_drift: None,
+            },
+            min_sources: Some(2),
+        };
+        let prices = [
+            Some(price(1_000_000, 0, secs(1_000))),
+            Some(price(2_000_000, 0, secs(100))),
+        ];
+        let error = median_low(filter, &[1, 1])
+            .aggregate(&prices, Nanoseconds::from_secs(1_000))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::Error::TooFewValidSources {
+                expected: 2,
+                actual: 1,
+            }
+        ));
+    }
+
+    #[rstest::rstest]
+    #[case::one_under_included(501, 1000, 500, true)]
+    #[case::exactly_at_limit_included(500, 1000, 500, true)]
+    #[case::one_over_excluded(499, 1000, 500, false)]
+    fn aggregate_max_age_boundary(
+        #[case] publish_time_s: i64,
+        #[case] now_s: i64,
+        #[case] max_age_s: u64,
+        #[case] included: bool,
+    ) {
+        let now_s_u64 = u64::try_from(now_s).unwrap();
+        let filter = Filter {
+            price: super::super::super::filter::IndividualPriceFilter {
+                max_age: Some(Nanoseconds::from_secs(max_age_s)),
+                max_clock_drift: None,
+            },
+            min_sources: None,
+        };
+        let prices = [
+            Some(price(1_000_000, 0, secs(publish_time_s))),
+            Some(price(9_999_999, 0, secs(now_s))),
+        ];
+        let result = median_low(filter, &[1, 1])
+            .aggregate(&prices, Nanoseconds::from_secs(now_s_u64))
+            .unwrap();
+        assert_eq!(result.price.0, if included { 1_000_000 } else { 9_999_999 });
+    }
+
+    #[rstest::rstest]
+    #[case::exactly_at_limit_included(1500, 1000, 500, true)]
+    #[case::one_over_excluded(1501, 1000, 500, false)]
+    fn aggregate_max_clock_drift_boundary(
+        #[case] publish_time_s: i64,
+        #[case] now_s: i64,
+        #[case] max_clock_drift_s: u64,
+        #[case] included: bool,
+    ) {
+        let now_s_u64 = u64::try_from(now_s).unwrap();
+        let filter = Filter {
+            price: super::super::super::filter::IndividualPriceFilter {
+                max_age: None,
+                max_clock_drift: Some(Nanoseconds::from_secs(max_clock_drift_s)),
+            },
+            min_sources: None,
+        };
+        let prices = [
+            Some(price(1_000_000, 0, secs(publish_time_s))),
+            Some(price(9_999_999, 0, secs(now_s))),
+        ];
+        let result = median_low(filter, &[1, 1])
+            .aggregate(&prices, Nanoseconds::from_secs(now_s_u64))
+            .unwrap();
+        assert_eq!(result.price.0, if included { 1_000_000 } else { 9_999_999 });
+    }
+
+    #[test]
+    fn aggregate_negative_publish_time_excluded() {
+        let filter = Filter {
+            price: super::super::super::filter::IndividualPriceFilter {
+                max_age: Some(Nanoseconds::from_ms(500)),
+                max_clock_drift: None,
+            },
+            min_sources: None,
+        };
+        let prices = [
+            Some(price(1_000_000, 0, secs(-1))),
+            Some(price(9_999_999, 0, secs(1000))),
+        ];
+        let result = median_low(filter, &[1, 1])
+            .aggregate(&prices, Nanoseconds::from_ms(1000))
+            .unwrap();
+        assert_eq!(result.price.0, 9_999_999);
+    }
+
+    #[rstest::rstest]
+    #[case(&[("a", 1)], "a")]
+    #[case(&[("a", 1), ("b", 1), ("c", 1)], "b")]
+    #[case(&[("a", 1), ("b", 1), ("c", 1), ("d", 1)], "b")]
+    #[case(&[("a", 2), ("b", 1), ("c", 1), ("d", 1)], "b")]
+    #[case(&[("a", 1), ("b", 1), ("c", 1), ("d", 2)], "c")]
+    #[case(&[("a", 10), ("b", 2), ("c", 6), ("d", 2)], "a")]
+    #[case(&[("a", 1), ("b", 10000), ("c", 1)], "b")]
+    #[case(&[("a", 2), ("b", 1), ("c", 1)], "a")]
+    #[case(&[("a", u32::MAX), ("b", u32::MAX), ("c", u32::MAX)], "b")]
+    #[case(&[("a", u32::MAX), ("b", 0), ("c", u32::MAX)], "a")]
+    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 0)], "a")]
+    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 1)], "d")]
+    #[case(&[("a", 0), ("b", 1), ("c", 0), ("d", 1)], "b")]
+    fn weighted_median_low(#[case] list: &[(&str, u32)], #[case] expected: &str) {
+        let item = list[Low::median(list)].0;
+        assert_eq!(item, expected);
+    }
+}

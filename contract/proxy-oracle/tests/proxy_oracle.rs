@@ -16,11 +16,16 @@ use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
     governance::Proposal,
     oracle::{
-        price_transformer::{self, ProxyPriceTransformer},
+        price_transformer,
         proxy::{
-            aggregator::{AggregationMethod, Aggregator, Filter},
+            aggregator::{
+                filter::{Filter, IndividualPriceFilter},
+                method::{median_low::MedianLow, priority::Priority, AggregationMethod},
+                source::{Source, WeightedSource},
+                transformer::ProxyPriceTransformer,
+            },
             governance::{Operation, ProxyGovernanceInterface},
-            Entry, Proxy, Source,
+            Proxy,
         },
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
@@ -59,21 +64,21 @@ fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
             continue;
         };
 
-        for entry in proxy.entries {
-            let request = match entry.source {
+        for entry in proxy.sources() {
+            let request = match entry {
                 Source::Request(request) => request,
                 Source::Transformer(transformer) => {
                     total = total.saturating_add(Gas::from_gas(transformer.call.gas.0));
-                    transformer.request
+                    &transformer.request
                 }
             };
 
             match request {
                 OracleRequest::Pyth(p) => {
-                    pyth.insert(p.oracle_id);
+                    pyth.insert(p.oracle_id.clone());
                 }
                 OracleRequest::RedStone(p) => {
-                    redstone.insert(p.oracle_id);
+                    redstone.insert(p.oracle_id.clone());
                 }
             }
         }
@@ -85,6 +90,12 @@ fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
     total = total.saturating_add(Contract::GAS_FOR_LIST_01_CALLBACK);
 
     total
+}
+
+#[derive(Clone, Copy)]
+enum TestMethod {
+    MedianLow,
+    Priority,
 }
 
 #[rstest::rstest]
@@ -306,13 +317,10 @@ pub fn gas() {
 }
 
 #[rstest::rstest]
-#[case::median_low(AggregationMethod::MedianLow)]
-#[case::priority(AggregationMethod::Priority)]
+#[case::median_low(TestMethod::MedianLow)]
+#[case::priority(TestMethod::Priority)]
 #[tokio::test]
-pub async fn proxy_oracle(
-    #[future(awt)] worker: Worker<Sandbox>,
-    #[case] method: AggregationMethod,
-) {
+pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method: TestMethod) {
     accounts!(
         worker,
         actor,
@@ -381,38 +389,40 @@ pub async fn proxy_oracle(
     }
 
     let default_filter = Filter {
-        max_age: Some(Nanoseconds::from_ms(60 * 1000)),
-        max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
+        price: IndividualPriceFilter {
+            max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+            max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
+        },
         min_sources: Some(1),
     };
 
-    // For Priority, assign distinct weights so the method actually matters:
-    //   pyth1 = 1, redstone = 5, pyth2 = 10
-    // For MedianLow, equal weights (standard behavior).
-    let (w_pyth1, w_redstone, w_pyth2) = match method {
-        AggregationMethod::MedianLow => (1, 1, 1),
-        AggregationMethod::Priority => (1, 5, 10),
-    };
-
-    let btc_proxy_def = Proxy {
-        aggregator: Aggregator {
-            method: method.clone(),
+    let btc_proxy_def = match method {
+        TestMethod::MedianLow => Proxy::MedianLow(MedianLow::new(
+            [
+                WeightedSource::new(
+                    OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
+                    1,
+                ),
+                WeightedSource::new(
+                    OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
+                    1,
+                ),
+                WeightedSource::new(
+                    OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
+                    1,
+                ),
+            ],
+            default_filter.clone(),
+        )),
+        TestMethod::Priority => Proxy::Priority(Priority {
+            // Priority returns the first valid source, so order matters.
+            sources: vec![
+                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
+                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
+                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
+            ],
             filter: default_filter.clone(),
-        },
-        entries: vec![
-            Entry::new(
-                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
-                w_pyth1,
-            ),
-            Entry::new(
-                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
-                w_redstone,
-            ),
-            Entry::new(
-                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
-                w_pyth2,
-            ),
-        ],
+        }),
     };
     let btc_proxy_id = PriceIdentifier([0x01_u8; 32]);
 
@@ -493,8 +503,8 @@ pub async fn proxy_oracle(
         .await;
     assert_eq!(result.len(), 3);
     let expected_btc_2source = match method {
-        AggregationMethod::MedianLow => 90_000,
-        AggregationMethod::Priority => 100_000,
+        TestMethod::MedianLow => 90_000,
+        TestMethod::Priority => 100_000,
     };
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -526,8 +536,8 @@ pub async fn proxy_oracle(
         .await;
     assert_eq!(result.len(), 1);
     let expected_btc_3source = match method {
-        AggregationMethod::MedianLow => 90_000,
-        AggregationMethod::Priority => 80_000,
+        TestMethod::MedianLow => 90_000,
+        TestMethod::Priority => 80_000,
     };
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
