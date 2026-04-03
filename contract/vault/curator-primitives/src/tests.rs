@@ -1483,7 +1483,11 @@ mod recovery_unit_tests {
 mod governance_module_tests {
     pub use crate::governance::*;
     use alloc::collections::BTreeSet;
-    use templar_vault_kernel::TimestampNs;
+    use templar_vault_kernel::{DurationNs, TimestampNs, Wad};
+
+    fn identity_key<'a>(value: &&'a str) -> &'a str {
+        *value
+    }
 
     #[test]
     fn pending_value_maturity_is_time_based() {
@@ -1498,19 +1502,144 @@ mod governance_module_tests {
     }
 
     #[test]
-    fn queue_take_mature_enforces_timelock() {
+    fn queue_take_by_key_enforces_timelock() {
         let mut queue = PendingQueue::from(alloc::collections::VecDeque::from([PendingValue {
             value: "change",
             valid_at_ns: TimestampNs(1_000),
         }]));
 
-        let not_ready = queue.take_mature(TimestampNs(999), |value| *value == "change");
-        assert_eq!(not_ready, Err(PendingQueueError::NotMature));
+        let not_ready = queue.take_by_key(TimestampNs(999), &"change", identity_key);
+        assert_eq!(
+            not_ready,
+            TakePending::Pending {
+                ready_at_ns: TimestampNs(1_000)
+            }
+        );
         assert_eq!(queue.len(), 1);
 
-        let ready = queue.take_mature(TimestampNs(1_000), |value| *value == "change");
-        assert_eq!(ready, Ok(Some("change")));
+        let ready = queue.take_by_key(TimestampNs(1_000), &"change", identity_key);
+        assert_eq!(ready, TakePending::Ready("change"));
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn queue_take_by_key_reports_missing() {
+        let mut queue = PendingQueue::default();
+        queue.schedule("change", TimestampNs(1_000), DurationNs(10));
+
+        assert_eq!(
+            queue.take_by_key(TimestampNs(2_000), &"other", identity_key),
+            TakePending::Missing
+        );
+    }
+
+    #[test]
+    fn queue_schedule_uses_delay_to_compute_maturity() {
+        let mut queue = PendingQueue::default();
+
+        queue.schedule("change", TimestampNs(1_000), DurationNs(50));
+
+        assert_eq!(
+            queue.back().map(|entry| entry.valid_at_ns),
+            Some(TimestampNs(1_050))
+        );
+    }
+
+    #[test]
+    fn queue_schedule_zero_delay_is_ready_at_current_time() {
+        let mut queue = PendingQueue::default();
+
+        queue.schedule("change", TimestampNs(1_000), DurationNs::ZERO);
+
+        let entry = queue.back().expect("scheduled entry must exist");
+        assert_eq!(entry.valid_at_ns, TimestampNs(1_000));
+        assert!(entry.is_mature(TimestampNs(1_000)));
+    }
+
+    #[test]
+    fn queue_schedule_overflow_saturates_ready_time() {
+        let mut queue = PendingQueue::default();
+
+        queue.schedule("change", TimestampNs(u64::MAX - 5), DurationNs(10));
+
+        assert_eq!(
+            queue.back().map(|entry| entry.valid_at_ns),
+            Some(TimestampNs(u64::MAX))
+        );
+    }
+
+    #[test]
+    fn queue_schedule_replacing_supersedes_existing_key() {
+        let mut queue = PendingQueue::default();
+        queue.schedule("old", TimestampNs(1_000), DurationNs(100));
+
+        let scheduled = queue.schedule_replacing(
+            &"old",
+            identity_key,
+            "old",
+            TimestampNs(1_050),
+            DurationNs(200),
+        );
+
+        assert_eq!(scheduled.replaced, alloc::vec!["old"]);
+        assert_eq!(scheduled.valid_at_ns, TimestampNs(1_250));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(
+            queue.back().map(|entry| entry.valid_at_ns),
+            Some(TimestampNs(1_250))
+        );
+    }
+
+    #[test]
+    fn timelock_config_decision_treats_reductions_as_timelocked() {
+        let decision = timelock_config_decision(
+            DurationNs(100),
+            DurationNs(50),
+            DurationNs(10),
+            DurationNs(200),
+        );
+
+        assert_eq!(decision, Ok(TimelockDecision::Timelocked));
+    }
+
+    #[test]
+    fn timelock_config_decision_rejects_out_of_bounds_values() {
+        let decision = timelock_config_decision(
+            DurationNs(100),
+            DurationNs(250),
+            DurationNs(10),
+            DurationNs(200),
+        );
+
+        assert_eq!(decision, Err(TimelockConfigError::OutOfBounds));
+    }
+
+    #[test]
+    fn fee_change_decision_marks_recipient_change_as_timelocked() {
+        let current = FeeConfig {
+            performance_fee: Wad::from(10_u128),
+            management_fee: Wad::from(20_u128),
+            performance_recipient: &"alice",
+            management_recipient: &"bob",
+            max_rate: Some(Wad::from(30_u128)),
+        };
+        let proposed = FeeConfig {
+            performance_fee: Wad::from(10_u128),
+            management_fee: Wad::from(20_u128),
+            performance_recipient: &"carol",
+            management_recipient: &"bob",
+            max_rate: Some(Wad::from(30_u128)),
+        };
+
+        assert_eq!(
+            FeeConfig::evaluate_change(&current, &proposed),
+            Ok(FeeChangeDecision {
+                timelocked: true,
+                fee_increase: false,
+                recipient_changed: true,
+                max_rate_relaxed: false,
+            })
+        );
     }
 
     #[test]
@@ -1532,6 +1661,62 @@ mod governance_module_tests {
     fn cap_group_cap_change_decision_finite_to_unlimited_is_timelocked() {
         let decision = TimelockDecision::from_cap_group_cap_change(Some(100), 0);
         assert_eq!(decision, Ok(TimelockDecision::Timelocked));
+    }
+
+    #[test]
+    fn cap_group_cap_change_decision_finite_decrease_is_immediate() {
+        let decision = TimelockDecision::from_cap_group_cap_change(Some(100), 50);
+        assert_eq!(decision, Ok(TimelockDecision::Immediate));
+    }
+
+    #[test]
+    fn relative_cap_change_decision_is_directional() {
+        assert_eq!(
+            TimelockDecision::from_relative_cap_change(
+                Some(Wad::from(10_u128)),
+                Wad::from(20_u128)
+            ),
+            Ok(TimelockDecision::Timelocked)
+        );
+        assert_eq!(
+            TimelockDecision::from_relative_cap_change(
+                Some(Wad::from(20_u128)),
+                Wad::from(10_u128)
+            ),
+            Ok(TimelockDecision::Immediate)
+        );
+    }
+
+    #[test]
+    fn membership_change_kind_is_directional() {
+        assert_eq!(
+            TimelockDecision::membership_change_kind::<u32>(None, Some(&1)),
+            Some(MembershipChangeKind::Added)
+        );
+        assert_eq!(
+            TimelockDecision::membership_change_kind(Some(&1), None::<&u32>),
+            Some(MembershipChangeKind::Removed)
+        );
+        assert_eq!(
+            TimelockDecision::membership_change_kind(Some(&1), Some(&2)),
+            Some(MembershipChangeKind::Reassigned)
+        );
+        assert_eq!(
+            TimelockDecision::membership_change_kind(Some(&1), Some(&1)),
+            None
+        );
+    }
+
+    #[test]
+    fn membership_assignment_change_requires_actual_difference() {
+        assert_eq!(
+            TimelockDecision::from_membership_assignment_change(Some(&1_u32), Some(&1_u32)),
+            Err(MembershipChangeError::NoChange)
+        );
+        assert_eq!(
+            TimelockDecision::from_membership_assignment_change(Some(&1_u32), Some(&2_u32)),
+            Ok(TimelockDecision::Timelocked)
+        );
     }
 
     #[test]

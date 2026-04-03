@@ -982,17 +982,24 @@ where
         for target_id in target_ids {
             if entries
                 .iter()
-                .any(|entry: &SupplyQueueEntry| entry.target_id == target_id)
+                .any(|entry: &SupplyQueueEntry| entry.target_id() == target_id)
             {
                 return Err(RuntimeError::invalid_input(
                     "duplicate market in supply queue",
                 ));
             }
-            entries.push(SupplyQueueEntry::new(target_id, 1));
+            entries.push(
+                SupplyQueueEntry::new(target_id, 1)
+                    .map_err(|_| RuntimeError::invalid_input("invalid supply queue entry"))?,
+            );
         }
 
         self.policy_state
-            .replace_supply_queue(SupplyQueue::from(entries));
+            .replace_supply_queue(
+                SupplyQueue::try_from_entries(entries, None)
+                    .map_err(|_| RuntimeError::invalid_input("invalid supply queue"))?,
+            )
+            .map_err(|_| RuntimeError::invalid_input("invalid supply queue"))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1108,15 +1115,15 @@ where
                 market_id,
                 cap_group_id,
             } => {
-                let changed = {
-                    let market = self
-                        .policy_state
-                        .market_config(market_id)
-                        .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
-                    market.cap_group_id != cap_group_id
-                };
-                let _decision = TimelockDecision::from_membership_change(changed)
-                    .map_err(|_| RuntimeError::invalid_input("membership unchanged"))?;
+                let market = self
+                    .policy_state
+                    .market_config(market_id)
+                    .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
+                let _decision = TimelockDecision::from_membership_assignment_change(
+                    market.cap_group_id.as_ref(),
+                    cap_group_id.as_ref(),
+                )
+                .map_err(|_| RuntimeError::invalid_input("membership unchanged"))?;
 
                 self.policy_state
                     .set_market_cap_group(market_id, cap_group_id)
@@ -1128,6 +1135,9 @@ where
                             ..
                         }
                         | templar_curator_primitives::policy::state::PolicyStateError::PrincipalOverflow {
+                            ..
+                        }
+                        | templar_curator_primitives::policy::state::PolicyStateError::InvalidSupplyQueue {
                             ..
                         } => RuntimeError::invalid_input("market not found"),
                     })?;
@@ -1141,9 +1151,9 @@ where
     pub fn supply_queue_targets(&self) -> Vec<TargetId> {
         self.policy_state
             .supply_queue()
-            .entries
+            .entries()
             .iter()
-            .map(|entry| entry.target_id)
+            .map(SupplyQueueEntry::target_id)
             .collect()
     }
 }

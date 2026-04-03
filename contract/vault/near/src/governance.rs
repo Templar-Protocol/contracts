@@ -14,10 +14,10 @@ use templar_common::{
     vault::{RestrictionReason, Restrictions},
 };
 use templar_curator_primitives::governance as shared_gov;
-use templar_curator_primitives::governance::{PendingQueue, PendingValue};
+use templar_curator_primitives::governance::{PendingQueue, PendingValue, TakePending};
 use templar_curator_primitives::CapGroupUpdate as PrimitiveCapGroupUpdate;
 use templar_curator_primitives::CapGroupUpdateKey as PrimitiveCapGroupUpdateKey;
-use templar_vault_kernel::Address;
+use templar_vault_kernel::{Address, DurationNs};
 
 const ERR_TIMELOCK_NO_CHANGE: &str = "Already set to this value";
 const ERR_TIMELOCK_OUT_OF_BOUNDS: &str = "Timelock out of bounds";
@@ -63,6 +63,65 @@ pub enum TimelockedAction {
     },
     /// Mark a `market` for removal (timestamp is still stored on the config).
     MarketRemoval { market: AccountId },
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum TimelockedActionKey {
+    Sentinel,
+    TimelockConfig,
+    Fees,
+    Restrictions,
+    Cap { market: AccountId },
+    CapGroupCap { cap_group: CapGroupId },
+    CapGroupRelativeCap { cap_group: CapGroupId },
+    CapGroupMembership { market: MarketId },
+    MarketRemoval { market: AccountId },
+}
+
+impl TimelockedAction {
+    fn pending_key(&self) -> TimelockedActionKey {
+        match self {
+            Self::SentinelChange { .. } => TimelockedActionKey::Sentinel,
+            Self::TimelockConfigChange { .. } => TimelockedActionKey::TimelockConfig,
+            Self::FeesChange { .. } => TimelockedActionKey::Fees,
+            Self::RestrictionsChange { .. } => TimelockedActionKey::Restrictions,
+            Self::CapChange { market, .. } => TimelockedActionKey::Cap {
+                market: market.clone(),
+            },
+            Self::CapGroupChange { cap_group, .. } => TimelockedActionKey::CapGroupCap {
+                cap_group: cap_group.clone(),
+            },
+            Self::CapGroupRelativeCapChange { cap_group, .. } => {
+                TimelockedActionKey::CapGroupRelativeCap {
+                    cap_group: cap_group.clone(),
+                }
+            }
+            Self::CapGroupMembership { market, .. } => {
+                TimelockedActionKey::CapGroupMembership { market: *market }
+            }
+            Self::MarketRemoval { market } => TimelockedActionKey::MarketRemoval {
+                market: market.clone(),
+            },
+        }
+    }
+}
+
+impl TimelockedActionKey {
+    fn from_cap_group_update_key(value: &PrimitiveCapGroupUpdateKey) -> Self {
+        match value {
+            PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => Self::CapGroupCap {
+                cap_group: cap_group_id.clone(),
+            },
+            PrimitiveCapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
+                Self::CapGroupRelativeCap {
+                    cap_group: cap_group_id.clone(),
+                }
+            }
+            PrimitiveCapGroupUpdateKey::SetMembership { market_id } => Self::CapGroupMembership {
+                market: MarketId::from(*market_id),
+            },
+        }
+    }
 }
 
 fn to_shared_restrictions(
@@ -329,20 +388,17 @@ impl Contract {
     pub fn accept_fees(&mut self) {
         Self::require_owner();
 
-        if let Some(action) =
-            self.take_timelock(|a| matches!(a, TimelockedAction::FeesChange { .. }))
-        {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending fee change");
-        }
+        let action = self
+            .take_timelock(&TimelockedActionKey::Fees)
+            .unwrap_or_else(|| panic_with_message("No pending fee change"));
+        self.apply_immediately(&action);
     }
 
     /// Revokes any pending fee change.
     pub fn revoke_pending_fees(&mut self) {
         AuthPattern::SentinelOrOwner.require();
 
-        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::FeesChange { .. })) {
+        if self.revoke_timelocks(&TimelockedActionKey::Fees) {
             Event::FeesChangeRevoked.emit();
         }
     }
@@ -367,20 +423,17 @@ impl Contract {
     pub fn accept_sentinel(&mut self) {
         Self::require_owner();
 
-        if let Some(action) =
-            self.take_timelock(|a| matches!(a, TimelockedAction::SentinelChange { .. }))
-        {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending change");
-        }
+        let action = self
+            .take_timelock(&TimelockedActionKey::Sentinel)
+            .unwrap_or_else(|| panic_with_message("No pending change"));
+        self.apply_immediately(&action);
     }
 
     /// Revokes any pending Sentinel change.
     pub fn revoke_pending_sentinel(&mut self) {
         AuthPattern::SentinelOrOwner.require();
 
-        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::SentinelChange { .. })) {
+        if self.revoke_timelocks(&TimelockedActionKey::Sentinel) {
             Event::PendingTimelockRevoked.emit();
         }
     }
@@ -405,19 +458,16 @@ impl Contract {
     pub fn accept_timelock(&mut self) {
         Self::require_owner();
 
-        if let Some(action) =
-            self.take_timelock(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. }))
-        {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending change");
-        }
+        let action = self
+            .take_timelock(&TimelockedActionKey::TimelockConfig)
+            .unwrap_or_else(|| panic_with_message("No pending change"));
+        self.apply_immediately(&action);
     }
 
     /// Revokes any pending timelock change.
     pub fn revoke_pending_timelock(&mut self) {
         AuthPattern::SentinelOrOwner.require();
-        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::TimelockConfigChange { .. })) {
+        if self.revoke_timelocks(&TimelockedActionKey::TimelockConfig) {
             Event::PendingTimelockRevoked.emit();
         }
     }
@@ -439,13 +489,12 @@ impl Contract {
         AuthPattern::CuratorOrOwner.require();
         self.ensure_idle();
 
-        if let Some(action) = self.take_timelock(
-            |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
-        ) {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending cap change for this market");
-        }
+        let action = self
+            .take_timelock(&TimelockedActionKey::Cap {
+                market: market.clone(),
+            })
+            .unwrap_or_else(|| panic_with_message("No pending cap change for this market"));
+        self.apply_immediately(&action);
     }
 
     /// Revokes any pending cap change for `market`.
@@ -454,9 +503,9 @@ impl Contract {
 
         let market_id = self.market_id_of_or_panic(&market);
 
-        if self.revoke_timelocks(
-            |a| matches!(a, TimelockedAction::CapChange { market: mkt, .. } if mkt == &market),
-        ) {
+        if self.revoke_timelocks(&TimelockedActionKey::Cap {
+            market: market.clone(),
+        }) {
             Event::SupplyCapRaiseRevoked { market: market_id }.emit();
         }
     }
@@ -503,43 +552,18 @@ impl Contract {
         AuthPattern::CuratorOrOwner.require();
         self.ensure_idle();
 
-        let action = match update {
-            PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => self
-                .take_timelock(|a| {
-                    matches!(
-                        a,
-                        TimelockedAction::CapGroupChange {
-                            cap_group: pending,
-                            ..
-                        } if pending == &cap_group_id
-                    )
-                })
-                .unwrap_or_else(|| panic_with_message("No pending cap group change for this id")),
-            PrimitiveCapGroupUpdateKey::SetRelativeCap { cap_group_id } => self
-                .take_timelock(|a| {
-                    matches!(
-                        a,
-                        TimelockedAction::CapGroupRelativeCapChange {
-                            cap_group: pending,
-                            ..
-                        } if pending == &cap_group_id
-                    )
-                })
-                .unwrap_or_else(|| {
-                    panic_with_message("No pending cap group relative cap change for this id")
-                }),
-            PrimitiveCapGroupUpdateKey::SetMembership { market_id } => self
-                .take_timelock(|a| {
-                    matches!(
-                        a,
-                        TimelockedAction::CapGroupMembership { market: pending, .. }
-                            if pending == &MarketId::from(market_id)
-                    )
-                })
-                .unwrap_or_else(|| {
-                    panic_with_message("No pending cap group membership change for this market")
-                }),
-        };
+        let key = TimelockedActionKey::from_cap_group_update_key(&update);
+        let action = self.take_timelock(&key).unwrap_or_else(|| match update {
+            PrimitiveCapGroupUpdateKey::SetCap { .. } => {
+                panic_with_message("No pending cap group change for this id")
+            }
+            PrimitiveCapGroupUpdateKey::SetRelativeCap { .. } => {
+                panic_with_message("No pending cap group relative cap change for this id")
+            }
+            PrimitiveCapGroupUpdateKey::SetMembership { .. } => {
+                panic_with_message("No pending cap group membership change for this market")
+            }
+        });
 
         self.apply_immediately(&action);
     }
@@ -550,14 +574,8 @@ impl Contract {
 
         match update {
             PrimitiveCapGroupUpdateKey::SetCap { cap_group_id } => {
-                if self.revoke_timelocks(|a| {
-                    matches!(
-                        a,
-                        TimelockedAction::CapGroupChange {
-                            cap_group: pending,
-                            ..
-                        } if pending == &cap_group_id
-                    )
+                if self.revoke_timelocks(&TimelockedActionKey::CapGroupCap {
+                    cap_group: cap_group_id.clone(),
                 }) {
                     Event::CapGroupRaiseRevoked {
                         cap_group: cap_group_id,
@@ -566,14 +584,8 @@ impl Contract {
                 }
             }
             PrimitiveCapGroupUpdateKey::SetRelativeCap { cap_group_id } => {
-                if self.revoke_timelocks(|a| {
-                    matches!(
-                        a,
-                        TimelockedAction::CapGroupRelativeCapChange {
-                            cap_group: pending,
-                            ..
-                        } if pending == &cap_group_id
-                    )
+                if self.revoke_timelocks(&TimelockedActionKey::CapGroupRelativeCap {
+                    cap_group: cap_group_id.clone(),
                 }) {
                     Event::CapGroupRelativeCapRaiseRevoked {
                         cap_group: cap_group_id,
@@ -582,17 +594,9 @@ impl Contract {
                 }
             }
             PrimitiveCapGroupUpdateKey::SetMembership { market_id } => {
-                if self.revoke_timelocks(|a| {
-                    matches!(
-                        a,
-                        TimelockedAction::CapGroupMembership { market: pending, .. }
-                            if pending == &MarketId::from(market_id)
-                    )
-                }) {
-                    Event::CapGroupMembershipRevoked {
-                        market: MarketId::from(market_id),
-                    }
-                    .emit();
+                let market = MarketId::from(market_id);
+                if self.revoke_timelocks(&TimelockedActionKey::CapGroupMembership { market }) {
+                    Event::CapGroupMembershipRevoked { market }.emit();
                 }
             }
         }
@@ -613,13 +617,12 @@ impl Contract {
     pub fn accept_market_removal(&mut self, market: AccountId) {
         AuthPattern::CuratorOrOwner.require();
 
-        if let Some(action) = self.take_timelock(
-            |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
-        ) {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending market removal for this market");
-        }
+        let action = self
+            .take_timelock(&TimelockedActionKey::MarketRemoval {
+                market: market.clone(),
+            })
+            .unwrap_or_else(|| panic_with_message("No pending market removal for this market"));
+        self.apply_immediately(&action);
     }
 
     /// Revokes a pending market removal for `market`.
@@ -628,9 +631,9 @@ impl Contract {
 
         let market_id = self.market_id_of_or_panic(&market);
 
-        self.revoke_timelocks(
-            |a| matches!(a, TimelockedAction::MarketRemoval { market: mkt } if mkt == &market),
-        );
+        self.revoke_timelocks(&TimelockedActionKey::MarketRemoval {
+            market: market.clone(),
+        });
         if let Some(m) = self.market_record_by_id_mut(market_id) {
             m.cfg.removable_at = TimestampNs::ZERO;
         }
@@ -648,10 +651,10 @@ impl Contract {
 
         {
             use crate::convert::IntoTargetId;
+            use templar_curator_primitives::find_first_duplicate;
+
             let ids: Vec<u32> = markets.iter().map(IntoTargetId::into_target_id).collect();
-            if let Some(dup) =
-                templar_curator_primitives::policy::target_set::find_duplicate_target_id(&ids)
-            {
+            if let Some(dup) = find_first_duplicate(&ids) {
                 use crate::convert::IntoMarketId;
                 panic_with_message(&format!(
                     "Duplicate market in supply queue: {}",
@@ -703,20 +706,17 @@ impl Contract {
     pub fn accept_restrictions(&mut self) {
         AuthPattern::SentinelOrOwner.require();
 
-        if let Some(action) =
-            self.take_timelock(|a| matches!(a, TimelockedAction::RestrictionsChange { .. }))
-        {
-            self.apply_immediately(&action);
-        } else {
-            panic_with_message("No pending restrictions change");
-        }
+        let action = self
+            .take_timelock(&TimelockedActionKey::Restrictions)
+            .unwrap_or_else(|| panic_with_message("No pending restrictions change"));
+        self.apply_immediately(&action);
     }
 
     /// Revokes any pending restrictions change.
     pub fn revoke_pending_restrictions(&mut self) {
         AuthPattern::SentinelOrOwner.require();
 
-        if self.revoke_timelocks(|a| matches!(a, TimelockedAction::RestrictionsChange { .. })) {
+        if self.revoke_timelocks(&TimelockedActionKey::Restrictions) {
             Event::RestrictionsChangeRevoked.emit();
         }
     }
@@ -780,10 +780,10 @@ impl Contract {
                 };
 
                 shared_gov::submission_requires_timelock(shared_gov::timelock_config_decision(
-                    current,
-                    TimestampNs(new),
-                    TimestampNs(MIN_TIMELOCK_NS),
-                    TimestampNs(MAX_TIMELOCK_NS),
+                    DurationNs::from(current),
+                    DurationNs(new),
+                    DurationNs(MIN_TIMELOCK_NS),
+                    DurationNs(MAX_TIMELOCK_NS),
                 ))
                 .unwrap_or_else(|err| {
                     panic_with_message(match err {
@@ -795,14 +795,6 @@ impl Contract {
             TimelockedAction::FeesChange { fees } => {
                 Self::require_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "set_fees");
-
-                require!(
-                    !self
-                        .governance_timelocks
-                        .pending_actions
-                        .has_pending(|p| { matches!(p, TimelockedAction::FeesChange { .. }) }),
-                    "Fee change already pending"
-                );
 
                 let proposed_fees: Fees<Wad> = fees.clone().into();
 
@@ -849,12 +841,6 @@ impl Contract {
 
                 if is_relaxing {
                     AuthPattern::SentinelOrOwner.require();
-                    require!(
-                        !self.governance_timelocks.pending_actions.has_pending(|p| {
-                            matches!(p, TimelockedAction::RestrictionsChange { .. })
-                        }),
-                        "Restrictions change already pending"
-                    );
                     true
                 } else {
                     // Tightening (including emergency pause) is immediate and may be done by the
@@ -875,26 +861,17 @@ impl Contract {
 
                 if let Some(cfg) = cfg {
                     require!(
-                        !self.governance_timelocks.pending_actions.has_pending(|p| {
-                            matches!(
-                                p,
-                                TimelockedAction::MarketRemoval { market: m } if m == market
-                            )
-                        }),
+                        !self.governance_timelocks.pending_actions.has_pending_key(
+                            &TimelockedActionKey::MarketRemoval {
+                                market: market.clone(),
+                            },
+                            TimelockedAction::pending_key,
+                        ),
                         "Market removal pending, cannot change cap"
                     );
                     require!(
                         cfg.removable_at == TimestampNs::ZERO,
                         "Market removal pending, cannot change cap"
-                    );
-                    require!(
-                        !self.governance_timelocks.pending_actions.has_pending(|p| {
-                            matches!(
-                                p,
-                                TimelockedAction::CapChange { market: m, .. } if m == market
-                            )
-                        }),
-                        "Cap change already pending for this market"
                     );
                     shared_gov::submission_requires_timelock(
                         shared_gov::TimelockDecision::from_cap_change(Some(cfg.cap.0), new_cap.0),
@@ -908,17 +885,6 @@ impl Contract {
                 AuthPattern::CuratorOrOwner.require();
                 Abdicator::require_not_abdicated(&self.abdicator, "submit_cap_group_update");
                 self.ensure_idle();
-
-                require!(
-                    !self.governance_timelocks.pending_actions.has_pending(|p| {
-                        matches!(
-                            p,
-                            TimelockedAction::CapGroupChange { cap_group: pending, .. }
-                                if pending == cap_group
-                        )
-                    }),
-                    "Cap group change already pending"
-                );
 
                 let current = self
                     .cap_groups
@@ -938,17 +904,6 @@ impl Contract {
                 self.ensure_idle();
 
                 let new_wad = Wad::from(new_relative_cap.0);
-
-                require!(
-                    !self.governance_timelocks.pending_actions.has_pending(|p| {
-                        matches!(
-                            p,
-                            TimelockedAction::CapGroupRelativeCapChange { cap_group: pending, .. }
-                                if pending == cap_group
-                        )
-                    }),
-                    "Cap group relative cap change already pending"
-                );
 
                 let current = self
                     .cap_groups
@@ -973,22 +928,13 @@ impl Contract {
 
                 let rec = self.market_record_by_id_or_panic(*market);
 
-                let changed = rec.cfg.cap_group_id != *cap_group;
                 let decision = shared_gov::submission_requires_timelock(
-                    shared_gov::TimelockDecision::from_membership_change(changed),
+                    shared_gov::TimelockDecision::from_membership_assignment_change(
+                        rec.cfg.cap_group_id.as_ref(),
+                        cap_group.as_ref(),
+                    ),
                 )
                 .unwrap_or_else(|_| panic_with_message(ERR_MEMBERSHIP_NO_CHANGE));
-
-                require!(
-                    !self.governance_timelocks.pending_actions.has_pending(|p| {
-                        matches!(
-                            p,
-                            TimelockedAction::CapGroupMembership { market: pending, .. }
-                                if pending == market
-                        )
-                    }),
-                    "Cap group membership change already pending"
-                );
 
                 decision
             }
@@ -1001,15 +947,6 @@ impl Contract {
                 let r = self.market_record_by_id_or_panic(market_id);
 
                 require!(
-                    !self.governance_timelocks.pending_actions.has_pending(|p| {
-                        matches!(
-                            p,
-                            TimelockedAction::MarketRemoval { market: m } if m == market
-                        )
-                    }),
-                    "Removal already pending for this market"
-                );
-                require!(
                     r.cfg.removable_at == TimestampNs::ZERO,
                     "Removal already accepted for this market"
                 );
@@ -1018,15 +955,6 @@ impl Contract {
                     "Cannot remove market with non-zero cap (disable deposits first)"
                 );
                 require!(r.cfg.enabled, "Market not enabled or already removed");
-                require!(
-                    !self.governance_timelocks.pending_actions.has_pending(|p| {
-                        matches!(
-                            p,
-                            TimelockedAction::CapChange { market: m, .. } if m == market
-                        )
-                    }),
-                    "Cap change pending for this market"
-                );
                 shared_gov::TimelockDecision::from_requires_timelock(r.principal > 0)
                     .requires_timelock()
             }
@@ -1184,9 +1112,7 @@ impl Contract {
             }
             TimelockedAction::RestrictionsChange { restrictions } => {
                 // Tightening restrictions should invalidate any pending relax/unpause.
-                if self
-                    .revoke_timelocks(|a| matches!(a, TimelockedAction::RestrictionsChange { .. }))
-                {
+                if self.revoke_timelocks(&TimelockedActionKey::Restrictions) {
                     Event::RestrictionsChangeRevoked.emit();
                 }
 
@@ -1330,19 +1256,18 @@ impl Contract {
             "Timelock duration out of bounds"
         );
 
-        require!(
-            !self
-                .governance_timelocks
-                .pending_actions
-                .has_pending(|a| { a == action }),
-            "Change already pending for this action and arguments"
-        );
-
         let now_ns = TimestampNs(env::block_timestamp());
-        let valid_at_ns = now_ns.saturating_add(cur);
-        self.governance_timelocks
+        let scheduled = self
+            .governance_timelocks
             .pending_actions
-            .schedule(action.clone(), now_ns, cur);
+            .schedule_replacing(
+                &action.pending_key(),
+                TimelockedAction::pending_key,
+                action.clone(),
+                now_ns,
+                DurationNs::from(cur),
+            );
+        let valid_at_ns = scheduled.valid_at_ns;
 
         if let TimelockedAction::CapGroupChange { cap_group, new_cap } = action {
             Event::CapGroupRaiseSubmitted {
@@ -1391,21 +1316,23 @@ impl Contract {
     /// Find and consume the first pending action that matches `pred`.
     ///
     /// Returns `None` if no such action exists, or panics if the timelock hasn't elapsed yet.
-    fn take_timelock(
-        &mut self,
-        find_fn: impl Fn(&TimelockedAction) -> bool,
-    ) -> Option<TimelockedAction> {
-        self.governance_timelocks
-            .pending_actions
-            .take_mature(TimestampNs(env::block_timestamp()), find_fn)
-            .unwrap_or_else(|_| panic_with_message("Timelock not elapsed yet"))
+    fn take_timelock(&mut self, key: &TimelockedActionKey) -> Option<TimelockedAction> {
+        match self.governance_timelocks.pending_actions.take_by_key(
+            TimestampNs(env::block_timestamp()),
+            key,
+            TimelockedAction::pending_key,
+        ) {
+            TakePending::Ready(action) => Some(action),
+            TakePending::Missing => None,
+            TakePending::Pending { .. } => panic_with_message("Timelock not elapsed yet"),
+        }
     }
 
-    /// Remove all pending actions that match `pred`.
-    /// Returns `true` if at least one action was removed.
-    fn revoke_timelocks(&mut self, pred: impl Fn(&TimelockedAction) -> bool) -> bool {
-        self.governance_timelocks
+    fn revoke_timelocks(&mut self, key: &TimelockedActionKey) -> bool {
+        !self
+            .governance_timelocks
             .pending_actions
-            .revoke_pending(pred)
+            .revoke_by_key(key, TimelockedAction::pending_key)
+            .is_empty()
     }
 }
