@@ -287,6 +287,7 @@ pub fn complete_allocation(
             // Transition to Withdrawing to process the pending request
             let new_state = OpState::Withdrawing(WithdrawingState {
                 op_id: req.op_id,
+                request_id: req.request_id,
                 index: 0,
                 remaining: req.amount,
                 collected: 0,
@@ -327,6 +328,8 @@ pub fn complete_allocation(
 pub struct WithdrawalRequest {
     /// Unique operation ID.
     pub op_id: u64,
+    /// Unique queue request ID.
+    pub request_id: u64,
     /// Amount of assets to withdraw.
     pub amount: u128,
     /// Receiver of the assets.
@@ -359,6 +362,7 @@ pub fn start_withdrawal(state: OpState, request: WithdrawalRequest) -> Transitio
 
     let new_state = OpState::Withdrawing(WithdrawingState {
         op_id: request.op_id,
+        request_id: request.request_id,
         index: 0,
         remaining: request.amount,
         collected: 0,
@@ -452,6 +456,7 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
 
     let new_state = OpState::Payout(PayoutState {
         op_id: withdraw.op_id,
+        request_id: withdraw.request_id,
         receiver: withdraw.receiver,
         amount: withdraw.collected,
         owner: withdraw.owner,
@@ -489,6 +494,7 @@ pub fn withdrawal_settled(
 
     let new_state = OpState::Payout(PayoutState {
         op_id: withdraw.op_id,
+        request_id: withdraw.request_id,
         receiver: withdraw.receiver,
         amount: withdraw.collected,
         owner: withdraw.owner,

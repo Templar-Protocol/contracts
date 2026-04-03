@@ -36,6 +36,7 @@ fn test_allocating_state() {
 fn test_withdrawing_state() {
     let withdraw = WithdrawingState {
         op_id: 100,
+        request_id: 100,
         index: 1,
         remaining: 500,
         collected: 200,
@@ -73,6 +74,7 @@ fn test_refreshing_state() {
 fn test_payout_state() {
     let payout = PayoutState {
         op_id: 300,
+        request_id: 300,
         receiver: receiver_addr(1),
         amount: 1000,
         owner: owner_addr(1),
@@ -108,6 +110,7 @@ fn test_from_impls() {
     // Test From<WithdrawingState>
     let withdraw = WithdrawingState {
         op_id: 2,
+        request_id: 2,
         index: 0,
         remaining: 50,
         collected: 0,
@@ -130,6 +133,7 @@ fn test_from_impls() {
     // Test From<PayoutState>
     let payout = PayoutState {
         op_id: 4,
+        request_id: 4,
         receiver: receiver_addr(3),
         amount: 100,
         owner: owner_addr(3),

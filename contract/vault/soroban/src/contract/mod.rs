@@ -45,7 +45,6 @@ use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, 
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::actions::AtomicPayoutKind;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{

@@ -84,6 +84,7 @@ pub struct AllocatingState {
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawingState {
     pub op_id: u64,
+    pub request_id: u64,
     pub index: u32,
     pub remaining: u128,
     pub collected: u128,
@@ -118,6 +119,7 @@ pub struct RefreshingState {
 #[derive(Clone, PartialEq, Eq)]
 pub struct PayoutState {
     pub op_id: u64,
+    pub request_id: u64,
     pub receiver: Address,
     pub amount: u128,
     pub owner: Address,
@@ -146,6 +148,7 @@ impl WithdrawingState {
     pub fn advance(self, amount_collected: u128) -> Self {
         Self {
             op_id: self.op_id,
+            request_id: self.request_id,
             index: self.index.saturating_add(1),
             remaining: self.remaining.saturating_sub(amount_collected),
             collected: self.collected.saturating_add(amount_collected),

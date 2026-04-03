@@ -29,9 +29,10 @@ pub enum AuthPolicyClass {
 #[must_use]
 pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
     match action {
-        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::AtomicWithdraw => {
-            AuthPolicyClass::Public
-        }
+        ActionKind::Deposit
+        | ActionKind::RequestWithdraw
+        | ActionKind::AtomicWithdraw
+        | ActionKind::AtomicRedeem => AuthPolicyClass::Public,
         ActionKind::ExecuteWithdraw
         | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
@@ -55,27 +56,22 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
 #[inline]
 #[must_use]
 pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
-    match action {
-        ActionKind::Deposit | ActionKind::RequestWithdraw | ActionKind::AtomicWithdraw => {
-            AuthPolicyClass::Public
-        }
-        ActionKind::ExecuteWithdraw
-        | ActionKind::BeginAllocating
-        | ActionKind::FinishAllocating
-        | ActionKind::SyncExternalAssets
-        | ActionKind::RebalanceWithdraw
-        | ActionKind::BeginRefreshing
-        | ActionKind::FinishRefreshing
-        | ActionKind::RefreshFees
-        | ActionKind::SettlePayout => AuthPolicyClass::Allocator,
-        ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Sentinel,
-        ActionKind::AbortAllocating
-        | ActionKind::AbortWithdrawing
-        | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
-        ActionKind::ManualReconcile | ActionKind::EmergencyReset | ActionKind::PolicyAdmin => {
-            AuthPolicyClass::Curator
-        }
-    }
+    canonical_policy_class(action)
+}
+
+#[inline]
+#[must_use]
+pub const fn allowed_while_paused(action: ActionKind) -> bool {
+    matches!(
+        action,
+        ActionKind::Pause
+            | ActionKind::SetRestrictions
+            | ActionKind::AbortAllocating
+            | ActionKind::AbortWithdrawing
+            | ActionKind::AbortRefreshing
+            | ActionKind::ManualReconcile
+            | ActionKind::EmergencyReset
+    )
 }
 
 /// Kinds of actions that require authorization.
@@ -121,6 +117,7 @@ pub enum ActionKind {
     EmergencyReset,
     /// Atomic withdraw (by assets, idle-only fast path).
     AtomicWithdraw,
+    AtomicRedeem,
 }
 
 impl ActionKind {
@@ -139,6 +136,7 @@ impl From<&KernelAction> for ActionKind {
             KernelAction::BeginAllocating { .. } => Self::BeginAllocating,
             KernelAction::Deposit { .. } => Self::Deposit,
             KernelAction::AtomicWithdraw { .. } => Self::AtomicWithdraw,
+            KernelAction::AtomicRedeem { .. } => Self::AtomicRedeem,
             KernelAction::RequestWithdraw { .. } => Self::RequestWithdraw,
             KernelAction::ExecuteWithdraw { .. } => Self::ExecuteWithdraw,
             KernelAction::BeginRefreshing { .. } => Self::BeginRefreshing,
@@ -177,9 +175,15 @@ pub enum Caller {
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, PartialEq, Eq)]
 pub enum AuthError {
-    NotAuthorized { caller: Caller, action: ActionKind },
+    NotAuthorized {
+        caller: Caller,
+        action: ActionKind,
+    },
     InvalidProof,
-    MissingRole,
+    MissingRole {
+        action: ActionKind,
+        policy_class: AuthPolicyClass,
+    },
     VaultPaused,
 }
 
