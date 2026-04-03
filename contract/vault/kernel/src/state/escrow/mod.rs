@@ -87,7 +87,17 @@ pub fn apply_settlement(
 /// Compute a proportional settlement based on actual vs expected assets.
 #[must_use]
 pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSettlement {
-    if entry.shares == 0 {
+    settle_proportional_raw(entry.shares, entry.expected_assets, actual_assets)
+}
+
+/// Compute a proportional settlement directly from escrow share and asset amounts.
+#[must_use]
+pub fn settle_proportional_raw(
+    shares: u128,
+    expected_assets: u128,
+    actual_assets: u128,
+) -> EscrowSettlement {
+    if shares == 0 {
         return EscrowSettlement {
             to_burn: 0,
             refund: 0,
@@ -95,27 +105,27 @@ pub fn settle_proportional(entry: &EscrowEntry, actual_assets: u128) -> EscrowSe
     }
 
     if actual_assets == 0 {
-        return EscrowSettlement::refund_all(entry.shares);
+        return EscrowSettlement::refund_all(shares);
     }
 
-    if entry.expected_assets == 0 {
-        return EscrowSettlement::refund_all(entry.shares);
+    if expected_assets == 0 {
+        return EscrowSettlement::refund_all(shares);
     }
 
-    if actual_assets >= entry.expected_assets {
-        return EscrowSettlement::burn_all(entry.shares);
+    if actual_assets >= expected_assets {
+        return EscrowSettlement::burn_all(shares);
     }
 
     // Proportional: burn shares proportional to actual/expected ratio.
     // Use ceil to avoid zero-burn partials (assets out without burning shares).
     let to_burn = Number::mul_div_ceil(
-        Number::from(entry.shares),
+        Number::from(shares),
         Number::from(actual_assets),
-        Number::from(entry.expected_assets),
+        Number::from(expected_assets),
     )
     .as_u128_trunc();
 
-    let refund = entry.shares.saturating_sub(to_burn);
+    let refund = shares.saturating_sub(to_burn);
 
     EscrowSettlement::partial(to_burn, refund)
 }

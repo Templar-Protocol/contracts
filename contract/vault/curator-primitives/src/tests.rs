@@ -2162,42 +2162,49 @@ mod policy_cooldown_tests {
 mod policy_lock_filter_tests {
     use alloc::vec;
 
-    use crate::policy::market_lock::{MarketLock, MarketLockSet};
+    use crate::policy::market_lock::{LeaseDurationNs, LeaseOwner, MarketLeaseRegistry};
     use crate::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
     use crate::policy::withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError};
     use templar_vault_kernel::{TargetId, TimestampNs};
 
-    fn lock_set_with_target(target_id: TargetId) -> MarketLockSet {
-        MarketLockSet::default()
-            .acquire(MarketLock::new(target_id, 1_000), 1_000)
-            .expect("lock should be acquirable")
+    fn lease_registry_with_target(target_id: TargetId) -> MarketLeaseRegistry {
+        let (registry, _) = MarketLeaseRegistry::default()
+            .try_acquire(
+                target_id,
+                LeaseOwner(u64::from(target_id)),
+                Some(u64::from(target_id)),
+                TimestampNs(1_000),
+                LeaseDurationNs(1_000),
+            )
+            .expect("lease should be acquirable");
+        registry
     }
 
     #[rstest::fixture]
-    fn lock_set_target_1() -> MarketLockSet {
-        lock_set_with_target(1)
+    fn lease_registry_target_1() -> MarketLeaseRegistry {
+        lease_registry_with_target(1)
     }
 
     #[rstest::fixture]
-    fn lock_set_target_2() -> MarketLockSet {
-        lock_set_with_target(2)
+    fn lease_registry_target_2() -> MarketLeaseRegistry {
+        lease_registry_with_target(2)
     }
 
     #[rstest::rstest]
-    fn filters_targets(lock_set_target_2: MarketLockSet) {
-        let lock_set = lock_set_target_2;
+    fn filters_targets(lease_registry_target_2: MarketLeaseRegistry) {
+        let lease_registry = lease_registry_target_2;
         let targets = vec![1, 2, 3];
         assert_eq!(
-            lock_set.excluding_leased_targets(&targets, TimestampNs(1_500)),
+            lease_registry.excluding_leased_targets(&targets, TimestampNs(1_500)),
             vec![1, 3]
         );
     }
 
     #[rstest::rstest]
     fn excludes_locked_supply_queue_entries_and_preserves_max_length(
-        lock_set_target_2: MarketLockSet,
+        lease_registry_target_2: MarketLeaseRegistry,
     ) {
-        let lock_set = lock_set_target_2;
+        let lease_registry = lease_registry_target_2;
         let queue = SupplyQueue {
             entries: vec![
                 SupplyQueueEntry::new(1, 10),
@@ -2207,7 +2214,7 @@ mod policy_lock_filter_tests {
             max_length: 16,
         };
 
-        let filtered = queue.excluding_leased(&lock_set, TimestampNs(1_500));
+        let filtered = queue.excluding_leased(&lease_registry, TimestampNs(1_500));
 
         assert_eq!(filtered.max_length, 16);
         assert_eq!(filtered.entries.len(), 2);
@@ -2216,17 +2223,20 @@ mod policy_lock_filter_tests {
     }
 
     #[rstest::rstest]
-    fn excluding_leased_targets_can_invalidate_withdraw_route(lock_set_target_1: MarketLockSet) {
-        let lock_set = lock_set_target_1;
-        let route = WithdrawRoute::from_entries(
+    fn excluding_leased_targets_can_invalidate_withdraw_route(
+        lease_registry_target_1: MarketLeaseRegistry,
+    ) {
+        let lease_registry = lease_registry_target_1;
+        let route = WithdrawRoute::new(
             vec![
-                WithdrawRouteEntry::new(1, 100),
-                WithdrawRouteEntry::new(2, 200),
+                WithdrawRouteEntry::new(1, 100).expect("valid route entry"),
+                WithdrawRouteEntry::new(2, 200).expect("valid route entry"),
             ],
             250,
-        );
+        )
+        .expect("valid route");
 
-        let filtered = route.excluding_leased(&lock_set, TimestampNs(1_500));
+        let filtered = route.excluding_leased(&lease_registry, TimestampNs(1_500));
 
         assert!(matches!(
             filtered,
@@ -2239,8 +2249,10 @@ mod policy_lock_filter_tests {
     }
 
     #[rstest::rstest]
-    fn builds_allocation_plan_excluding_leased_targets(lock_set_target_2: MarketLockSet) {
-        let lock_set = lock_set_target_2;
+    fn builds_allocation_plan_excluding_leased_targets(
+        lease_registry_target_2: MarketLeaseRegistry,
+    ) {
+        let lease_registry = lease_registry_target_2;
         let queue = SupplyQueue {
             entries: vec![
                 SupplyQueueEntry::new(1, 10),
@@ -2251,26 +2263,29 @@ mod policy_lock_filter_tests {
         };
 
         assert_eq!(
-            queue.to_allocation_plan_excluding_leased(&lock_set, TimestampNs(1_500)),
+            queue.to_allocation_plan_excluding_leased(&lease_registry, TimestampNs(1_500)),
             vec![(1, 10), (3, 30)]
         );
     }
 
     #[rstest::rstest]
-    fn builds_withdrawal_plan_excluding_leased_targets(lock_set_target_1: MarketLockSet) {
-        let lock_set = lock_set_target_1;
-        let route = WithdrawRoute::from_entries(
+    fn builds_withdrawal_plan_excluding_leased_targets(
+        lease_registry_target_1: MarketLeaseRegistry,
+    ) {
+        let lease_registry = lease_registry_target_1;
+        let route = WithdrawRoute::new(
             vec![
-                WithdrawRouteEntry::new(1, 100),
-                WithdrawRouteEntry::new(2, 200),
-                WithdrawRouteEntry::new(3, 300),
+                WithdrawRouteEntry::new(1, 100).expect("valid route entry"),
+                WithdrawRouteEntry::new(2, 200).expect("valid route entry"),
+                WithdrawRouteEntry::new(3, 300).expect("valid route entry"),
             ],
             450,
-        );
+        )
+        .expect("valid route");
 
         assert_eq!(
             route
-                .to_withdrawal_plan_excluding_leased(&lock_set, TimestampNs(1_500))
+                .to_target_amount_pairs_excluding_leased(&lease_registry, TimestampNs(1_500))
                 .expect("filtered route remains satisfiable"),
             vec![(2, 200), (3, 300)]
         );
@@ -2278,16 +2293,18 @@ mod policy_lock_filter_tests {
 
     #[test]
     fn filtered_withdrawal_plan_errors_when_locks_break_route() {
-        let lock_set = lock_set_with_target(1);
-        let route = WithdrawRoute::from_entries(
+        let lease_registry = lease_registry_with_target(1);
+        let route = WithdrawRoute::new(
             vec![
-                WithdrawRouteEntry::new(1, 100),
-                WithdrawRouteEntry::new(2, 200),
+                WithdrawRouteEntry::new(1, 100).expect("valid route entry"),
+                WithdrawRouteEntry::new(2, 200).expect("valid route entry"),
             ],
             250,
-        );
+        )
+        .expect("valid route");
 
-        let result = route.to_withdrawal_plan_excluding_leased(&lock_set, TimestampNs(1_500));
+        let result =
+            route.to_target_amount_pairs_excluding_leased(&lease_registry, TimestampNs(1_500));
 
         assert!(matches!(
             result,
@@ -2301,405 +2318,273 @@ mod policy_lock_filter_tests {
 
     #[test]
     fn excluding_leased_preserves_original_route_validation_errors() {
-        let lock_set = lock_set_with_target(1);
-        let invalid_route = WithdrawRoute::from_entries(
+        let lease_registry = lease_registry_with_target(1);
+        let invalid_route = WithdrawRoute::new(
             vec![
-                WithdrawRouteEntry::new(1, 100),
-                WithdrawRouteEntry::new(1, 200),
+                WithdrawRouteEntry::new(1, 100).expect("valid route entry"),
+                WithdrawRouteEntry::new(1, 200).expect("valid route entry"),
             ],
             250,
         );
 
-        let result = invalid_route.excluding_leased(&lock_set, TimestampNs(1_500));
-
         assert!(matches!(
-            result,
+            invalid_route,
             Err(WithdrawRouteError::DuplicateTarget { target_id: 1 })
         ));
     }
 
     #[rstest::rstest]
-    fn filters_refresh_targets(lock_set_target_2: MarketLockSet) {
-        let lock_set = lock_set_target_2;
+    fn filters_refresh_targets(lease_registry_target_2: MarketLeaseRegistry) {
+        let lease_registry = lease_registry_target_2;
         let targets = vec![1, 2, 3, 4];
 
         assert_eq!(
-            lock_set.excluding_leased_targets(&targets, TimestampNs(1_500)),
+            lease_registry.excluding_leased_targets(&targets, TimestampNs(1_500)),
             vec![1, 3, 4]
         );
     }
 
     #[rstest::rstest]
-    fn reports_unleased_targets(lock_set_target_2: MarketLockSet) {
-        let lock_set = lock_set_target_2;
+    fn reports_unleased_targets(lease_registry_target_2: MarketLeaseRegistry) {
+        let lease_registry = lease_registry_target_2;
 
-        assert!(lock_set.is_unleased(1, TimestampNs(1_500)));
-        assert!(!lock_set.is_unleased(2, TimestampNs(1_500)));
-        assert!(lock_set.is_unleased(3, TimestampNs(1_500)));
+        assert!(lease_registry.is_unleased(1, TimestampNs(1_500)));
+        assert!(!lease_registry.is_unleased(2, TimestampNs(1_500)));
+        assert!(lease_registry.is_unleased(3, TimestampNs(1_500)));
     }
 }
 
-mod policy_market_lock_tests {
+mod policy_market_lease_tests {
     pub use crate::policy::market_lock::*;
 
-    use alloc::vec;
+    use templar_vault_kernel::TimestampNs;
 
     #[rstest::fixture]
-    fn empty_lock_set() -> MarketLockSet {
-        MarketLockSet::default()
+    fn empty_registry() -> MarketLeaseRegistry {
+        MarketLeaseRegistry::default()
     }
 
     #[rstest::rstest]
-    fn test_new_lock_set_is_empty(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        assert!(set.is_empty());
-        assert_eq!(set.len(), 0);
-        assert_eq!(set.active_count(0), 0);
+    fn test_new_registry_is_empty(empty_registry: MarketLeaseRegistry) {
+        let registry = empty_registry;
+        assert!(registry.is_empty());
+        assert_eq!(registry.stored_len(), 0);
+        assert_eq!(registry.active_len(TimestampNs(0)), 0);
     }
 
     #[rstest::rstest]
-    fn test_acquire_lock(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock = MarketLock::new(1, 1000);
+    fn test_acquire_lease_assigns_token(empty_registry: MarketLeaseRegistry) {
+        let (registry, lease) = empty_registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
 
-        let result = set.acquire(lock, 1000).unwrap();
-
-        assert_eq!(result.len(), 1);
-        assert!(result.is_locked(1, 1000));
+        assert_eq!(registry.stored_len(), 1);
+        assert!(registry.is_leased(1, TimestampNs(1_200)));
+        assert_eq!(lease.fencing_token(), FencingToken(1));
     }
 
     #[rstest::rstest]
-    fn test_acquire_lock_already_locked(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000);
-        let lock2 = MarketLock::new(1, 2000);
+    fn test_acquire_lease_conflicts_for_different_owner(empty_registry: MarketLeaseRegistry) {
+        let (registry, _) = empty_registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
 
-        let set = set.acquire(lock1, 1000).unwrap();
-        let result = set.acquire(lock2, 2000);
+        let result = registry.try_acquire(
+            1,
+            LeaseOwner(20),
+            Some(20),
+            TimestampNs(1_100),
+            LeaseDurationNs(500),
+        );
 
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(AcquireLeaseError::AlreadyLeased { .. })
+        ));
     }
 
     #[rstest::rstest]
-    fn test_acquire_lock_different_target(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000);
-        let lock2 = MarketLock::new(2, 2000);
+    fn test_same_owner_reacquire_refreshes_and_increments_token(
+        empty_registry: MarketLeaseRegistry,
+    ) {
+        let (registry, first_lease) = empty_registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
+        let (registry, second_lease) = registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_100),
+                LeaseDurationNs(700),
+            )
+            .unwrap();
 
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 2000).unwrap();
-
-        assert_eq!(set.len(), 2);
-        assert!(set.is_locked(1, 2000));
-        assert!(set.is_locked(2, 2000));
+        assert_eq!(first_lease.fencing_token(), FencingToken(1));
+        assert_eq!(second_lease.fencing_token(), FencingToken(2));
+        assert!(registry
+            .assert_token_current(1, second_lease.fencing_token(), TimestampNs(1_200))
+            .is_ok());
+        assert!(matches!(
+            registry.assert_token_current(1, first_lease.fencing_token(), TimestampNs(1_200)),
+            Err(FencingError::NotCurrent { .. })
+        ));
     }
 
     #[rstest::rstest]
-    fn test_acquire_lock_after_expiry(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
-        let lock2 = MarketLock::new(1, 3000);
+    fn test_expired_lease_can_be_reacquired_by_new_owner(empty_registry: MarketLeaseRegistry) {
+        let (registry, _) = empty_registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
 
-        let set = set.acquire(lock1, 1000).unwrap();
+        let (registry, lease) = registry
+            .try_acquire(
+                1,
+                LeaseOwner(20),
+                Some(20),
+                TimestampNs(1_500),
+                LeaseDurationNs(300),
+            )
+            .unwrap();
 
-        // Should fail before expiry
-        let result = set.acquire(lock2.clone(), 1500);
-        assert!(result.is_err());
-
-        // Should succeed after expiry
-        let set = set.acquire(lock2, 3000).unwrap();
-        assert_eq!(set.len(), 1); // Old expired lock removed
-        assert!(set.is_locked(1, 3000));
-    }
-
-    #[rstest::rstest]
-    fn test_release_lock(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock = MarketLock::new(1, 1000);
-
-        let set = set.acquire(lock, 1000).unwrap();
-        let set = set.release(1);
-
-        assert!(set.is_empty());
-        assert!(!set.is_locked(1, 2000));
-    }
-
-    #[rstest::rstest]
-    fn test_release_lock_by_op(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(100_u64)
-            .build();
-        let lock2 = MarketLock::builder()
-            .target_id(2_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(200_u64)
-            .build();
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-
-        // Release only the lock held by op 100
-        let set = set.release_by_op(1, 100);
-
-        assert_eq!(set.len(), 1);
-        assert!(!set.is_locked(1, 2000));
-        assert!(set.is_locked(2, 2000));
-    }
-
-    #[rstest::rstest]
-    fn test_release_all_by_op(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(100_u64)
-            .build();
-        let lock2 = MarketLock::builder()
-            .target_id(2_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(100_u64)
-            .build();
-        let lock3 = MarketLock::builder()
-            .target_id(3_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(200_u64)
-            .build();
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-        let set = set.acquire(lock3, 1000).unwrap();
-
-        let set = set.release_all_by_op(100);
-
-        assert_eq!(set.len(), 1);
-        assert!(!set.is_locked(1, 2000));
-        assert!(!set.is_locked(2, 2000));
-        assert!(set.is_locked(3, 2000));
-    }
-
-    #[rstest::rstest]
-    fn test_is_locked_by_op(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(100_u64)
-            .build();
-
-        let set = set.acquire(lock, 1000).unwrap();
-
-        assert!(set.is_locked_by_op(1, 100, 1000));
-        assert!(!set.is_locked_by_op(1, 200, 1000));
-        assert!(!set.is_locked_by_op(2, 100, 1000));
+        assert!(registry.is_leased_by_owner(1, &LeaseOwner(20), TimestampNs(1_600)));
+        assert_eq!(lease.fencing_token(), FencingToken(2));
     }
 
     #[test]
-    fn test_is_locked_by_op_ignores_expired_locks() {
-        let set = MarketLockSet::default();
-        let lock = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(1500_u64)
-            .op_id(100_u64)
-            .build();
+    fn test_zero_ttl_is_rejected() {
+        let result = MarketLeaseRegistry::default().try_acquire(
+            1,
+            LeaseOwner(1),
+            Some(1),
+            TimestampNs(100),
+            LeaseDurationNs(0),
+        );
 
-        let set = set.acquire(lock, 1000).unwrap();
-
-        assert!(set.is_locked_by_op(1, 100, 1499));
-        assert!(!set.is_locked_by_op(1, 100, 1500));
+        assert_eq!(result, Err(AcquireLeaseError::ZeroTtl));
     }
 
     #[test]
-    fn test_lock_expiry() {
-        let lock = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
+    fn test_expiry_overflow_is_rejected() {
+        let result = MarketLeaseRegistry::default().try_acquire(
+            1,
+            LeaseOwner(1),
+            Some(1),
+            TimestampNs(u64::MAX - 5),
+            LeaseDurationNs(10),
+        );
 
-        assert!(!lock.is_expired(1000));
-        assert!(!lock.is_expired(1999));
-        assert!(lock.is_expired(2000));
-        assert!(lock.is_expired(3000));
+        assert_eq!(result, Err(AcquireLeaseError::ExpiryOverflow));
+    }
+
+    #[rstest::rstest]
+    fn test_owner_checked_release(empty_registry: MarketLeaseRegistry) {
+        let (registry, _) = empty_registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
+
+        let error = registry.release_if_owned(1, &LeaseOwner(20)).unwrap_err();
+        assert!(matches!(error, ReleaseLeaseError::OwnerMismatch { .. }));
+
+        let released = registry.release_if_owned(1, &LeaseOwner(10)).unwrap();
+        assert!(!released.is_leased(1, TimestampNs(1_100)));
     }
 
     #[test]
-    fn test_lock_no_expiry() {
-        let lock = MarketLock::new(1, 1000);
+    fn test_force_release_by_op() {
+        let (registry, _) = MarketLeaseRegistry::default()
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
+        let (registry, _) = registry
+            .try_acquire(
+                2,
+                LeaseOwner(20),
+                Some(20),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
 
-        // No expiry means never expires
-        assert!(!lock.is_expired(u64::MAX));
-        assert!(lock.expires_at_ns.is_none());
+        let cleaned = registry.force_release_by_op(10);
+        assert!(!cleaned.is_leased(1, TimestampNs(1_100)));
+        assert!(cleaned.is_leased(2, TimestampNs(1_100)));
     }
 
     #[test]
-    fn test_lock_with_ttl() {
-        let lock = MarketLock::new(1, 1000).with_ttl(500);
-        assert_eq!(lock.expires_at_ns, Some(1500));
+    fn test_cleanup_expired_leases() {
+        let (registry, _) = MarketLeaseRegistry::default()
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
+        let (registry, _) = registry
+            .try_acquire(
+                2,
+                LeaseOwner(20),
+                Some(20),
+                TimestampNs(1_000),
+                LeaseDurationNs(2_000),
+            )
+            .unwrap();
+
+        let cleaned = registry.cleanup_expired(TimestampNs(1_600));
+        assert!(!cleaned.is_leased(1, TimestampNs(1_600)));
+        assert!(cleaned.is_leased(2, TimestampNs(1_600)));
     }
 
     #[test]
-    fn test_lock_remaining() {
-        let lock = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
-        assert_eq!(lock.remaining(1000), Some(1000));
-        assert_eq!(lock.remaining(1500), Some(500));
-        assert_eq!(lock.remaining(2000), Some(0));
+    fn test_clear_registry() {
+        let (registry, _) = MarketLeaseRegistry::default()
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
 
-        let no_expiry = MarketLock::new(1, 1000);
-        assert_eq!(no_expiry.remaining(5000), None);
-    }
-
-    #[rstest::rstest]
-    fn test_cleanup_expired_locks(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
-        let lock2 = MarketLock::builder()
-            .target_id(2_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(3000_u64)
-            .build();
-        let lock3 = MarketLock::new(3, 1000); // no expiry
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-        let set = set.acquire(lock3, 1000).unwrap();
-
-        let cleaned = set.cleanup_expired(2500);
-
-        assert_eq!(cleaned.len(), 2);
-        assert!(!cleaned.is_locked(1, 2500)); // expired
-        assert!(cleaned.is_locked(2, 2500)); // not yet expired
-        assert!(cleaned.is_locked(3, 2500)); // no expiry
-    }
-
-    #[rstest::rstest]
-    fn test_get_locked_targets(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000);
-        let lock2 = MarketLock::builder()
-            .target_id(2_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(1500_u64)
-            .build();
-        let lock3 = MarketLock::new(3, 1000);
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-        let set = set.acquire(lock3, 1000).unwrap();
-
-        let locked = set.locked_targets(2000);
-
-        assert_eq!(locked.len(), 2);
-        assert!(locked.contains(&1));
-        assert!(!locked.contains(&2)); // expired
-        assert!(locked.contains(&3));
-    }
-
-    #[rstest::rstest]
-    fn test_find_locked_targets(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock = MarketLock::new(2, 1000);
-
-        let set = set.acquire(lock, 1000).unwrap();
-
-        let to_check = vec![1, 2, 3, 4];
-        let locked = set.find_locked_targets(&to_check, 2000);
-
-        assert_eq!(locked, vec![2]);
-    }
-
-    #[rstest::rstest]
-    fn test_clear_all_locks(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::new(1, 1000);
-        let lock2 = MarketLock::new(2, 1000);
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-
-        let cleared = set.clear();
-
-        assert!(cleared.is_empty());
-    }
-
-    #[rstest::rstest]
-    fn test_active_count(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
-        let lock2 = MarketLock::builder()
-            .target_id(2_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(3000_u64)
-            .build();
-        let lock3 = MarketLock::new(3, 1000);
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-        let set = set.acquire(lock3, 1000).unwrap();
-
-        assert_eq!(set.len(), 3); // Total locks
-        assert_eq!(set.active_count(1500), 3); // All active
-        assert_eq!(set.active_count(2500), 2); // lock1 expired
-        assert_eq!(set.active_count(3500), 1); // lock1 and lock2 expired
-    }
-
-    #[rstest::rstest]
-    fn test_get_lock(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .op_id(42_u64)
-            .build();
-
-        let set = set.acquire(lock, 1000).unwrap();
-
-        let found = set.get_lock(1, 1500);
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().op_id, Some(42));
-
-        let not_found = set.get_lock(2, 1500);
-        assert!(not_found.is_none());
-    }
-
-    #[rstest::rstest]
-    fn test_is_all_expired(empty_lock_set: MarketLockSet) {
-        let set = empty_lock_set;
-        let lock1 = MarketLock::builder()
-            .target_id(1_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
-        let lock2 = MarketLock::builder()
-            .target_id(2_u32)
-            .locked_at_ns(1000_u64)
-            .expires_at_ns(2000_u64)
-            .build();
-
-        let set = set.acquire(lock1, 1000).unwrap();
-        let set = set.acquire(lock2, 1000).unwrap();
-
-        assert!(!set.is_all_expired(1500));
-        assert!(set.is_all_expired(2500));
+        assert!(registry.clear().is_empty());
     }
 }
 

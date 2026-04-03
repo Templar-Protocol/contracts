@@ -8,13 +8,14 @@ use alloc::vec::Vec;
 use core::mem;
 use soroban_sdk::{Address as SdkAddress, Bytes, Env};
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
-use templar_curator_primitives::policy::market_lock::MarketLockSet;
+use templar_curator_primitives::policy::market_lock::MarketLeaseRegistry;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{
     complete_allocation, start_allocation, Address, AddressBook, AssetId, Restrictions, TargetId,
+    TimestampNs,
 };
 
 pub type AttemptId = u64;
@@ -88,7 +89,7 @@ pub struct MemoryStorage {
     state: Option<VersionedState>,
     initialized: bool,
     paused: bool,
-    policy_locks: Option<MarketLockSet>,
+    policy_locks: Option<MarketLeaseRegistry>,
     policy_supply_queue: Option<SupplyQueue>,
     policy_markets: Option<OrderedMap<TargetId, MarketConfig>>,
     policy_principals: Option<OrderedMap<TargetId, u128>>,
@@ -173,21 +174,21 @@ impl Storage for MemoryStorage {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        Ok(compose_policy_state(
+        compose_policy_state(
             self.policy_markets.clone(),
             self.policy_principals.clone(),
             self.policy_cap_groups.clone(),
             self.policy_locks.clone(),
             self.policy_supply_queue.clone(),
-        ))
+        )
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        self.policy_locks = Some(state.locks.clone());
-        self.policy_supply_queue = Some(state.supply_queue.clone());
-        self.policy_markets = Some(state.markets.clone());
-        self.policy_principals = Some(state.principals.clone());
-        self.policy_cap_groups = Some(state.cap_groups.clone());
+        self.policy_locks = Some(state.leases().clone());
+        self.policy_supply_queue = Some(state.supply_queue().clone());
+        self.policy_markets = Some(state.markets().clone());
+        self.policy_principals = Some(state.principals().clone());
+        self.policy_cap_groups = Some(state.cap_groups().clone());
         Ok(())
     }
 
@@ -222,21 +223,27 @@ struct TestAllocationDecision {
     total_allocated: u128,
 }
 
-fn classify_test_allocation<S, A, E>(
+fn build_partial_allocation_plan_excluding_leased<S, A, E>(
     vault: &CuratorVault<S, A, E>,
     plan: &[(TargetId, u128)],
-    current_ns: u64,
+    now_ns: TimestampNs,
 ) -> TestAllocationDecision
 where
     S: Storage,
     A: AuthAdapter,
     E: EffectInterpreter + AddressRegistrar,
 {
-    let filtered_plan =
-        SupplyQueue::filter_partial_allocation_plan(plan, &vault.policy_state().locks, current_ns)
-            .into_iter()
-            .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
-            .collect::<Vec<_>>();
+    let filtered_plan = plan
+        .iter()
+        .copied()
+        .filter(|(target_id, _)| {
+            vault
+                .policy_state()
+                .leases()
+                .is_unleased(*target_id, now_ns)
+        })
+        .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
+        .collect::<Vec<_>>();
     let total_allocated = filtered_plan.iter().map(|entry| entry.amount).sum();
 
     TestAllocationDecision {
@@ -256,7 +263,8 @@ where
     A: AuthAdapter,
     E: EffectInterpreter + AddressRegistrar,
 {
-    let decision = classify_test_allocation(vault, &plan, current_ns);
+    let decision =
+        build_partial_allocation_plan_excluding_leased(vault, &plan, TimestampNs(current_ns));
     vault.authorize(ActionKind::BeginAllocating, caller)?;
     let op_id = {
         let state = vault.state_mut()?;
