@@ -24,8 +24,8 @@ pub mod recovery;
 pub mod utils;
 
 pub use auth::{
-    boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
-    AuthPolicyClass, AuthResult,
+    allowed_while_paused, boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter,
+    AuthError, AuthPolicyClass, AuthResult,
 };
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
