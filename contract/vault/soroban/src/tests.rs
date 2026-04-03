@@ -969,7 +969,7 @@ mod contract_tests {
                 },
             )
             .unwrap();
-            assert_eq!(result, VaultCommandResult::Unit);
+            assert!(matches!(result, VaultCommandResult::Unit));
 
             assert_eq!(
                 env.storage().instance().get(&VaultDataKey::VirtualShares),
@@ -1865,12 +1865,32 @@ mod storage_tests {
     use crate::storage::{
         SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
     };
-    use crate::test_utils::MemoryStorage;
+    use crate::test_utils::{fuzz_api, MemoryStorage};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Address as SdkAddress, Env, Symbol, Vec as SdkVec};
-    use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
-    use templar_vault_kernel::VaultState;
+    use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
+    use templar_soroban_shared_types::{
+        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+        GOVERNANCE_POLICY_KIND_FEES,
+    };
+    use templar_vault_kernel::{
+        Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
+        PendingWithdrawal, Restrictions, TimestampNs, VaultState, WithdrawQueue, WithdrawingState,
+    };
+
+    fn sdk_text(address: &SdkAddress) -> std::string::String {
+        std::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+    }
+
+    fn execute_command(
+        env: &Env,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+        let payload = Bytes::from_slice(env, &command.encode());
+        let result = SorobanVaultContract::execute(env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| crate::error::ContractError::InvalidInput)
+    }
 
     #[test]
     fn test_storage_version() {
@@ -2152,11 +2172,282 @@ mod storage_tests {
             storage.save_state_blob(&alloc::vec![1, 2, 3, 4, 5]);
 
             let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(
-                err,
-                RuntimeError::storage_error("state blob deserialize failed")
-            );
+            assert_eq!(err, RuntimeError::StorageError);
         });
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_state_blob_manual() {
+        let mut state = VaultState {
+            total_assets: 5_000,
+            total_shares: 4_000,
+            idle_assets: 1_000,
+            external_assets: 4_000,
+            fee_anchor: FeeAccrualAnchor::new(4_500, TimestampNs(123_000)),
+            op_state: OpState::Withdrawing(WithdrawingState {
+                op_id: 7,
+                request_id: 11,
+                index: 1,
+                remaining: 200,
+                collected: 100,
+                receiver: KernelAddress([2u8; 32]),
+                owner: KernelAddress([1u8; 32]),
+                escrow_shares: 300,
+            }),
+            next_op_id: 8,
+            ..Default::default()
+        };
+        state.withdraw_queue = WithdrawQueue::with_state(
+            alloc::vec![(
+                3,
+                PendingWithdrawal::new(
+                    KernelAddress([1u8; 32]),
+                    KernelAddress([2u8; 32]),
+                    300,
+                    350,
+                    TimestampNs(456_000),
+                ),
+            ),],
+            3,
+            4,
+        );
+
+        let versioned = VersionedState::new(state.clone());
+        let encoded = fuzz_api::encode_state_blob_bytes(&versioned);
+        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state roundtrip");
+        assert_eq!(decoded, versioned);
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_restrictions() {
+        let restrictions = Restrictions::blacklist(alloc::vec![
+            KernelAddress([9u8; 32]),
+            KernelAddress([8u8; 32]),
+        ]);
+        let encoded = fuzz_api::encode_restrictions_bytes(&restrictions);
+        let decoded =
+            fuzz_api::decode_restrictions_bytes(&encoded).expect("restrictions roundtrip");
+        assert_eq!(decoded, restrictions);
+    }
+
+    #[rstest]
+    #[case::empty(alloc::vec![])]
+    #[case::tag_only(alloc::vec![0])]
+    #[case::invalid_tag(alloc::vec![2, 0, 0, 0, 0])]
+    #[case::truncated_payload(alloc::vec![1, 2, 0, 0, 0, 1, 2, 3])]
+    fn storage_codec_restrictions_bad_inputs_do_not_panic(#[case] bad: alloc::vec::Vec<u8>) {
+        let _ = fuzz_api::decode_restrictions_bytes(&bad);
+    }
+
+    #[test]
+    fn storage_codec_decode_state_blob_never_panics_on_small_inputs() {
+        for len in 0..128usize {
+            let bytes = alloc::vec![0xA5; len];
+            let _ = fuzz_api::decode_state_blob_bytes(&bytes);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_supply_queue_and_truncated_bytes_fail_cleanly() {
+        let queue =
+            templar_curator_primitives::policy::supply_queue::SupplyQueue::try_from_entries(
+                alloc::vec![
+                    AllocationPlanEntry::new(0, 100).into(),
+                    AllocationPlanEntry::new(1, 200).into(),
+                ]
+                .into_iter()
+                .map(|entry: AllocationPlanEntry| {
+                    templar_curator_primitives::policy::supply_queue::SupplyQueueEntry::new(
+                        entry.target_id,
+                        entry.amount,
+                    )
+                    .expect("valid queue entry")
+                })
+                .collect(),
+                None,
+            )
+            .expect("queue build");
+
+        let encoded = fuzz_api::encode_supply_queue_bytes(&queue);
+        let decoded = fuzz_api::decode_supply_queue_bytes(&encoded).expect("queue roundtrip");
+        assert_eq!(decoded, queue);
+
+        for len in 0..encoded.len() {
+            let _ = fuzz_api::decode_supply_queue_bytes(&encoded[..len]);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_policy_locks_and_truncated_bytes_fail_cleanly() {
+        use templar_curator_primitives::policy::market_lock::{
+            FencingToken, LeaseOwner, MarketLease, MarketLeaseRegistry,
+        };
+        use templar_curator_primitives::policy::state::OrderedMap;
+
+        let mut leases = OrderedMap::new();
+        let _ = leases.insert(
+            7,
+            MarketLease::from_parts(
+                7,
+                LeaseOwner(11),
+                Some(22),
+                TimestampNs(100),
+                TimestampNs(200),
+                FencingToken(1),
+            ),
+        );
+        let _ = leases.insert(
+            8,
+            MarketLease::from_parts(
+                8,
+                LeaseOwner(12),
+                None,
+                TimestampNs(300),
+                TimestampNs(500),
+                FencingToken(2),
+            ),
+        );
+        let registry = MarketLeaseRegistry::from_parts(leases, 9);
+
+        let encoded = fuzz_api::encode_policy_locks_bytes(&registry);
+        let decoded =
+            fuzz_api::decode_policy_locks_bytes(&encoded).expect("policy locks roundtrip");
+        assert_eq!(decoded, registry);
+
+        for len in 0..encoded.len() {
+            let _ = fuzz_api::decode_policy_locks_bytes(&encoded[..len]);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_markets_and_invalid_tags_fail_cleanly() {
+        use alloc::string::String;
+        use templar_curator_primitives::policy::cap_group::CapGroupId;
+        use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
+
+        let mut markets = OrderedMap::new();
+        let _ = markets.insert(1, MarketConfig::new(true, 100, None));
+        let _ = markets.insert(
+            2,
+            MarketConfig::new(
+                false,
+                200,
+                Some(CapGroupId::try_from(String::from("grp-a")).expect("cap group id")),
+            ),
+        );
+
+        let encoded = fuzz_api::encode_markets_bytes(&markets);
+        let decoded = fuzz_api::decode_markets_bytes(&encoded).expect("markets roundtrip");
+        assert_eq!(decoded, markets);
+
+        let mut bad_enabled = encoded.clone();
+        if bad_enabled.len() > 9 {
+            bad_enabled[8] = 2;
+            let _ = fuzz_api::decode_markets_bytes(&bad_enabled);
+        }
+
+        let mut bad_cap_group_tag = encoded.clone();
+        if let Some(last) = bad_cap_group_tag.last_mut() {
+            *last = 2;
+            let _ = fuzz_api::decode_markets_bytes(&bad_cap_group_tag);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_principals_and_truncated_bytes_fail_cleanly() {
+        use templar_curator_primitives::policy::state::OrderedMap;
+
+        let mut principals = OrderedMap::new();
+        let _ = principals.insert(1, 111);
+        let _ = principals.insert(2, u128::MAX - 5);
+
+        let encoded = fuzz_api::encode_principals_bytes(&principals);
+        let decoded = fuzz_api::decode_principals_bytes(&encoded).expect("principals roundtrip");
+        assert_eq!(decoded, principals);
+
+        for len in 0..encoded.len() {
+            let _ = fuzz_api::decode_principals_bytes(&encoded[..len]);
+        }
+    }
+
+    fn storage_codec_roundtrip_state_blob_for_op_state(op_state: OpState) {
+        let withdraw_queue = WithdrawQueue::with_state(
+            alloc::vec![
+                (
+                    1,
+                    PendingWithdrawal::new(
+                        KernelAddress([1u8; 32]),
+                        KernelAddress([2u8; 32]),
+                        10,
+                        15,
+                        TimestampNs(50),
+                    ),
+                ),
+                (
+                    2,
+                    PendingWithdrawal::new(
+                        KernelAddress([3u8; 32]),
+                        KernelAddress([4u8; 32]),
+                        20,
+                        25,
+                        TimestampNs(60),
+                    ),
+                ),
+            ],
+            1,
+            3,
+        );
+
+        let versioned = VersionedState::new(VaultState {
+            total_assets: 1_000,
+            total_shares: 2_000,
+            idle_assets: 300,
+            external_assets: 700,
+            fee_anchor: FeeAccrualAnchor::new(900, TimestampNs(1_000)),
+            op_state,
+            withdraw_queue,
+            next_op_id: 10,
+        });
+
+        let encoded = fuzz_api::encode_state_blob_bytes(&versioned);
+        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state matrix roundtrip");
+        assert_eq!(decoded, versioned);
+    }
+
+    #[rstest]
+    #[case::idle(OpState::Idle)]
+    #[case::allocating(OpState::Allocating(templar_vault_kernel::AllocatingState {
+        op_id: 1,
+        index: 0,
+        remaining: 30,
+        plan: alloc::vec![AllocationPlanEntry::new(9, 30)],
+    }))]
+    #[case::withdrawing(OpState::Withdrawing(WithdrawingState {
+        op_id: 2,
+        request_id: 3,
+        index: 1,
+        remaining: 40,
+        collected: 10,
+        receiver: KernelAddress([5u8; 32]),
+        owner: KernelAddress([6u8; 32]),
+        escrow_shares: 50,
+    }))]
+    #[case::refreshing(OpState::Refreshing(templar_vault_kernel::RefreshingState {
+        op_id: 4,
+        index: 1,
+        plan: alloc::vec![3, 4, 5],
+    }))]
+    #[case::payout(OpState::Payout(templar_vault_kernel::PayoutState {
+        op_id: 5,
+        request_id: 6,
+        receiver: KernelAddress([7u8; 32]),
+        amount: 70,
+        owner: KernelAddress([8u8; 32]),
+        escrow_shares: 80,
+        burn_shares: 60,
+    }))]
+    fn storage_codec_roundtrip_state_blob_op_state_matrix(#[case] op_state: OpState) {
+        storage_codec_roundtrip_state_blob_for_op_state(op_state);
     }
 
     #[rstest]
@@ -2361,7 +2652,7 @@ mod storage_tests {
                 },
             )
             .unwrap();
-            assert_eq!(result, VaultCommandResult::Unit);
+            assert!(matches!(result, VaultCommandResult::Unit));
 
             assert_eq!(
                 env.storage()
@@ -2385,22 +2676,24 @@ mod storage_tests {
                 &governance,
             );
 
-            let err = execute_command(
+            let err = match execute_command(
                 &env,
                 &VaultCommand::SetGovernancePolicy {
                     caller: sdk_text(&governance),
                     kind: GOVERNANCE_POLICY_KIND_FEES,
                     target_ids: None,
                     mode: None,
-                    accounts: Some(vec![sdk_text(&SdkAddress::generate(&env))]),
+                    accounts: Some(alloc::vec![sdk_text(&SdkAddress::generate(&env))]),
                     market_id: None,
                     cap_group_id: None,
                     value: Some(1),
                     value_b: Some(2),
                     value_c: None,
                 },
-            )
-            .unwrap_err();
+            ) {
+                Ok(_) => panic!("expected invalid input error"),
+                Err(err) => err,
+            };
 
             assert_eq!(err, crate::error::ContractError::InvalidInput);
         });
