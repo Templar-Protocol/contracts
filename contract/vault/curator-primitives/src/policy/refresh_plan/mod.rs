@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeSet, vec::Vec};
 use core::num::NonZeroU64;
-use templar_vault_kernel::TargetId;
+use templar_vault_kernel::{DurationNs, TargetId, TimestampNs};
 
 use super::cooldown::Cooldown;
 use super::target_set::find_first_duplicate;
@@ -21,7 +21,7 @@ pub struct RefreshThrottle {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RefreshTargetStatus {
     target_id: TargetId,
-    last_refresh_ns: Option<u64>,
+    last_refresh_at: Option<TimestampNs>,
 }
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
@@ -69,10 +69,10 @@ impl RefreshThrottle {
     }
 
     #[must_use]
-    pub fn new(cooldown_ns: u64, last_refresh_ns: Option<u64>) -> Self {
-        let cooldown = NonZeroU64::new(cooldown_ns)
+    pub fn new(cooldown: DurationNs, last_refresh_at: Option<TimestampNs>) -> Self {
+        let cooldown = NonZeroU64::new(cooldown.as_u64())
             .map_or_else(Cooldown::unlimited, Cooldown::new)
-            .with_last_event_ns(last_refresh_ns);
+            .with_last_event_ns(last_refresh_at.map(TimestampNs::as_u64));
 
         Self { cooldown }
     }
@@ -83,51 +83,63 @@ impl RefreshThrottle {
     }
 
     #[must_use]
-    pub fn is_ready(&self, current_ns: u64) -> bool {
-        self.cooldown.is_ready(current_ns)
+    pub fn is_ready(&self, current_time: TimestampNs) -> bool {
+        self.cooldown.is_ready(current_time.as_u64())
     }
 
-    pub fn check(&self, current_ns: u64) -> Result<(), RefreshPlanError> {
-        self.cooldown.check(current_ns).map_err(|e| match e {
-            super::cooldown::CooldownError::OnCooldown {
-                ready_at_ns,
-                remaining_ns,
-            } => RefreshPlanError::OnCooldown {
-                ready_at_ns,
-                remaining_ns,
-            },
-        })
-    }
-
-    pub fn try_acquire(self, current_ns: u64) -> Result<Self, RefreshPlanError> {
+    pub fn check(&self, current_time: TimestampNs) -> Result<(), RefreshPlanError> {
         self.cooldown
-            .try_acquire(current_ns)
+            .check(current_time.as_u64())
+            .map_err(|e| match e {
+                super::cooldown::CooldownError::OnCooldown {
+                    ready_at_ns,
+                    remaining_ns,
+                } => RefreshPlanError::OnCooldown {
+                    ready_at: TimestampNs(ready_at_ns),
+                    remaining: DurationNs(remaining_ns),
+                },
+            })
+    }
+
+    pub fn try_acquire(self, current_time: TimestampNs) -> Result<Self, RefreshPlanError> {
+        self.cooldown
+            .try_acquire(current_time.as_u64())
             .map(|cooldown| Self { cooldown })
             .map_err(|e| match e {
                 super::cooldown::CooldownError::OnCooldown {
                     ready_at_ns,
                     remaining_ns,
                 } => RefreshPlanError::OnCooldown {
-                    ready_at_ns,
-                    remaining_ns,
+                    ready_at: TimestampNs(ready_at_ns),
+                    remaining: DurationNs(remaining_ns),
                 },
             })
     }
 
     #[must_use]
-    pub fn record_completion(mut self, timestamp_ns: u64) -> Self {
-        self.cooldown = self.cooldown.recorded_at(timestamp_ns);
+    pub fn record_completion(mut self, completed_at: TimestampNs) -> Self {
+        self.cooldown = self.cooldown.recorded_at(completed_at.as_u64());
         self
     }
 
     #[must_use]
+    pub fn cooldown_duration(&self) -> DurationNs {
+        DurationNs(self.cooldown.interval_ns().map_or(0, NonZeroU64::get))
+    }
+
+    #[must_use]
+    pub fn last_refresh_at(&self) -> Option<TimestampNs> {
+        self.cooldown.last_event_ns().map(TimestampNs)
+    }
+
+    #[must_use]
     pub fn cooldown_ns(&self) -> u64 {
-        self.cooldown.interval_ns().map_or(0, NonZeroU64::get)
+        self.cooldown_duration().as_u64()
     }
 
     #[must_use]
     pub fn last_refresh_ns(&self) -> Option<u64> {
-        self.cooldown.last_event_ns()
+        self.last_refresh_at().map(TimestampNs::as_u64)
     }
 }
 
@@ -139,10 +151,10 @@ impl Default for RefreshThrottle {
 
 impl RefreshTargetStatus {
     #[must_use]
-    pub const fn new(target_id: TargetId, last_refresh_ns: Option<u64>) -> Self {
+    pub const fn new(target_id: TargetId, last_refresh_at: Option<TimestampNs>) -> Self {
         Self {
             target_id,
-            last_refresh_ns,
+            last_refresh_at,
         }
     }
 
@@ -152,8 +164,16 @@ impl RefreshTargetStatus {
     }
 
     #[must_use]
+    pub const fn last_refresh_at(&self) -> Option<TimestampNs> {
+        self.last_refresh_at
+    }
+
+    #[must_use]
     pub const fn last_refresh_ns(&self) -> Option<u64> {
-        self.last_refresh_ns
+        match self.last_refresh_at {
+            Some(last_refresh_at) => Some(last_refresh_at.as_u64()),
+            None => None,
+        }
     }
 }
 
@@ -184,8 +204,8 @@ impl RefreshExecutionPlan {
 pub enum RefreshPlanError {
     EmptyPlan,
     OnCooldown {
-        ready_at_ns: u64,
-        remaining_ns: u64,
+        ready_at: TimestampNs,
+        remaining: DurationNs,
     },
     DuplicateTarget {
         target_id: TargetId,
@@ -195,8 +215,8 @@ pub enum RefreshPlanError {
     },
     FutureRefreshTimestamp {
         target_id: TargetId,
-        last_refresh_ns: u64,
-        current_ns: u64,
+        last_refresh_at: TimestampNs,
+        current_time: TimestampNs,
     },
 }
 
@@ -222,21 +242,21 @@ pub fn build_targeted_refresh_plan(
 
 pub fn refresh_execution_plan(
     targets: &[TargetId],
-    cooldown_ns: u64,
-    last_refresh_ns: Option<u64>,
+    cooldown: DurationNs,
+    last_refresh_at: Option<TimestampNs>,
 ) -> Result<RefreshExecutionPlan, RefreshPlanError> {
     let plan = RefreshPlan::new(targets.to_vec())?;
-    let throttle = RefreshThrottle::new(cooldown_ns, last_refresh_ns);
+    let throttle = RefreshThrottle::new(cooldown, last_refresh_at);
     Ok(RefreshExecutionPlan::new(plan, throttle))
 }
 
 pub fn build_stale_refresh_plan(
     all_targets: &[RefreshTargetStatus],
-    max_age_ns: u64,
-    current_ns: u64,
+    max_age: DurationNs,
+    current_time: TimestampNs,
     enabled_targets: &[TargetId],
 ) -> Result<Option<RefreshPlan>, RefreshPlanError> {
-    let stale_targets = filter_stale_targets(all_targets, max_age_ns, current_ns)?;
+    let stale_targets = filter_stale_targets(all_targets, max_age, current_time)?;
     if stale_targets.is_empty() {
         return Ok(None);
     }
@@ -246,22 +266,27 @@ pub fn build_stale_refresh_plan(
 
 pub fn filter_stale_targets(
     all_targets: &[RefreshTargetStatus],
-    max_age_ns: u64,
-    current_ns: u64,
+    max_age: DurationNs,
+    current_time: TimestampNs,
 ) -> Result<Vec<TargetId>, RefreshPlanError> {
     let mut stale_targets = Vec::new();
 
     for target in all_targets {
-        match target.last_refresh_ns() {
+        match target.last_refresh_at() {
             None => stale_targets.push(target.target_id()),
-            Some(last_refresh_ns) if last_refresh_ns > current_ns => {
+            Some(last_refresh_at) if last_refresh_at > current_time => {
                 return Err(RefreshPlanError::FutureRefreshTimestamp {
                     target_id: target.target_id(),
-                    last_refresh_ns,
-                    current_ns,
+                    last_refresh_at,
+                    current_time,
                 });
             }
-            Some(last_refresh_ns) if current_ns - last_refresh_ns > max_age_ns => {
+            Some(last_refresh_at)
+                if current_time
+                    .as_u64()
+                    .saturating_sub(last_refresh_at.as_u64())
+                    > max_age.as_u64() =>
+            {
                 stale_targets.push(target.target_id());
             }
             Some(_) => {}

@@ -645,14 +645,14 @@ impl Contract {
             let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();
             templar_curator_primitives::policy::refresh_plan::refresh_execution_plan(
                 &targets,
-                idle.refresh_cooldown_ns,
-                (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns),
+                idle.refresh_cooldown_ns.into(),
+                (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns.into()),
             )
             .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
         let (refresh_plan, refresh_throttle) = refresh_execution_plan.into_parts();
         let refresh_throttle = refresh_throttle
-            .try_acquire(now)
+            .try_acquire(TimestampNs(now))
             .unwrap_or_else(|_| panic_with_message("Refresh throttled"));
 
         let op_id = idle.next_op_id;
