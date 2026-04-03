@@ -1320,7 +1320,7 @@ mod contract_tests {
             Storage::save_policy_state(&mut storage, &PolicyState::default()).unwrap();
 
             let restrictions =
-                Restrictions::Blacklist(alloc::vec![templar_vault_kernel::Address([9u8; 32])]);
+                Restrictions::blacklist(alloc::vec![templar_vault_kernel::Address([9u8; 32])]);
             Storage::save_restrictions(&mut storage, &Some(restrictions.clone())).unwrap();
 
             let mut vault = CuratorVault::new(

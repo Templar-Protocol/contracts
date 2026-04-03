@@ -3,14 +3,29 @@
 //! Portable across NEAR and Soroban.
 
 #[cfg(feature = "borsh-schema")]
-use alloc::string::ToString;
+use alloc::collections::BTreeMap;
+#[cfg(any(feature = "borsh-schema", feature = "schemars"))]
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[cfg(feature = "schemars")]
 use alloc::{borrow::ToOwned, boxed::Box, vec};
 
-use derive_more::IsVariant;
-
 use crate::types::Address;
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
+use derive_more::IsVariant;
+#[cfg(feature = "schemars")]
+use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
+
+fn normalize_addresses(mut addresses: Vec<Address>) -> Vec<Address> {
+    let mut deduped = Vec::with_capacity(addresses.len());
+    for address in addresses.drain(..) {
+        if !deduped.contains(&address) {
+            deduped.push(address);
+        }
+    }
+    deduped
+}
 
 /// Lightweight tag indicating why an actor was restricted.
 ///
@@ -25,14 +40,9 @@ pub enum RestrictionKind {
     NotWhitelisted,
 }
 
-/// Restrictions that can be applied to the vault.
-///
-/// Supports Pausing, Whitelist, and Blacklist functionality.
 #[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, IsVariant)]
-pub enum Restrictions {
-    /// Vault is paused - all operations blocked.
-    Paused,
+pub enum RestrictionMode {
     /// Blacklist - specified actors are blocked.
     #[cfg_attr(feature = "serde", serde(rename = "BlackList"))]
     Blacklist(Vec<Address>),
@@ -41,30 +51,31 @@ pub enum Restrictions {
     Whitelist(Vec<Address>),
 }
 
-impl Restrictions {
-    #[inline]
-    fn normalize_addresses(addresses: &mut Vec<Address>) {
-        addresses.sort_unstable();
-        addresses.dedup();
+pub type Restrictions = RestrictionMode;
+
+impl RestrictionMode {
+    #[must_use]
+    pub fn blacklist(addresses: Vec<Address>) -> Self {
+        Self::Blacklist(normalize_addresses(addresses))
     }
 
     #[must_use]
-    pub fn normalized(mut self) -> Self {
-        match &mut self {
-            Restrictions::Blacklist(addresses) | Restrictions::Whitelist(addresses) => {
-                Self::normalize_addresses(addresses);
-            }
-            Restrictions::Paused => {}
-        }
-        self
+    pub fn whitelist(addresses: Vec<Address>) -> Self {
+        Self::Whitelist(normalize_addresses(addresses))
     }
 
-    #[inline]
-    fn contains_address(addresses: &[Address], actor_id: &Address) -> bool {
-        if addresses.is_sorted() {
-            addresses.binary_search(actor_id).is_ok()
-        } else {
-            addresses.iter().any(|addr| addr == actor_id)
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Blacklist(addresses) => Self::Blacklist(normalize_addresses(addresses)),
+            Self::Whitelist(addresses) => Self::Whitelist(normalize_addresses(addresses)),
+        }
+    }
+
+    #[must_use]
+    pub fn addresses(&self) -> &[Address] {
+        match self {
+            Self::Blacklist(addresses) | Self::Whitelist(addresses) => addresses,
         }
     }
 
@@ -75,24 +86,34 @@ impl Restrictions {
     ///
     /// # Arguments
     /// * `actor_id` - The actor to check.
-    /// * `self_id` - The vault's own identity (whitelist allows self by default).
-    pub fn is_restricted(&self, actor_id: &Address, self_id: &Address) -> Option<RestrictionKind> {
+    pub fn is_restricted(&self, actor_id: &Address) -> Option<RestrictionKind> {
         match self {
-            Restrictions::Paused => Some(RestrictionKind::Paused),
-            Restrictions::Blacklist(blacklist) => {
-                if Self::contains_address(blacklist, actor_id) {
+            Self::Blacklist(blacklist) => {
+                if blacklist.contains(actor_id) {
                     Some(RestrictionKind::Blacklisted)
                 } else {
                     None
                 }
             }
-            Restrictions::Whitelist(whitelist) => {
-                if Self::contains_address(whitelist, actor_id) || actor_id == self_id {
+            Self::Whitelist(whitelist) => {
+                if whitelist.contains(actor_id) {
                     None
                 } else {
                     Some(RestrictionKind::NotWhitelisted)
                 }
             }
+        }
+    }
+
+    #[must_use]
+    pub fn is_restricted_allowing_self(
+        &self,
+        actor_id: &Address,
+        self_id: &Address,
+    ) -> Option<RestrictionKind> {
+        match self {
+            Self::Whitelist(_) if actor_id == self_id => None,
+            _ => self.is_restricted(actor_id),
         }
     }
 

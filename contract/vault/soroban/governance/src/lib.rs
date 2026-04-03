@@ -5,8 +5,6 @@ extern crate alloc;
 mod types;
 pub use types::*;
 
-use alloc::collections::BTreeSet;
-
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractimpl, Address, BytesN, Env, IntoVal, String as SdkString, Symbol, Val, Vec,
@@ -806,26 +804,23 @@ fn to_shared_restrictions(
 ) -> Option<SharedRestrictions<Address>> {
     match mode {
         RestrictionMode::None => None,
-        RestrictionMode::Paused => Some(SharedRestrictions::Paused),
         RestrictionMode::Blacklist => {
-            Some(SharedRestrictions::Blacklist(accounts_to_set(accounts)))
+            Some(SharedRestrictions::Blacklist(accounts_to_vec(accounts)))
         }
         RestrictionMode::Whitelist => {
-            Some(SharedRestrictions::Whitelist(accounts_to_set(accounts)))
+            Some(SharedRestrictions::Whitelist(accounts_to_vec(accounts)))
         }
     }
 }
 
-#[allow(
-    clippy::mutable_key_type,
-    reason = "Soroban SDK Address is the restriction identity type consumed by shared governance logic"
-)]
-fn accounts_to_set(accounts: &Vec<Address>) -> BTreeSet<Address> {
-    let mut set = BTreeSet::new();
+fn accounts_to_vec(accounts: &Vec<Address>) -> alloc::vec::Vec<Address> {
+    let mut deduped = alloc::vec::Vec::new();
     for account in accounts.iter() {
-        set.insert(account);
+        if !deduped.iter().any(|existing| existing == &account) {
+            deduped.push(account.clone());
+        }
     }
-    set
+    deduped
 }
 
 fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
@@ -887,9 +882,9 @@ fn load_queue(env: &Env) -> PendingActions<QueuedProposal> {
         .get(&DataKey::PendingQueue)
         .unwrap_or_else(|| Vec::new(env));
 
-    let mut entries = alloc::collections::VecDeque::new();
+    let mut entries = alloc::vec::Vec::new();
     for item in stored.iter() {
-        entries.push_back(PendingValue {
+        entries.push(PendingValue {
             value: QueuedProposal {
                 id: item.id,
                 action: item.action.clone(),
@@ -973,12 +968,15 @@ fn revoke_by_action_key(env: &Env, key: &GovernanceActionKey) -> u32 {
 fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
     let mut queue = load_queue(env);
     let mut revoked_ids = Vec::new(env);
-    let mut keys = BTreeSet::new();
+    let mut keys = alloc::vec::Vec::new();
 
     for entry in queue.iter() {
         if pred(&entry.value.action) {
             revoked_ids.push_back(entry.value.id);
-            keys.insert(entry.value.action_key());
+            let key = entry.value.action_key();
+            if !keys.iter().any(|existing| existing == &key) {
+                keys.push(key);
+            }
         }
     }
 

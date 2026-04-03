@@ -757,11 +757,11 @@ impl WithdrawQueue {
         self.cached_total_escrow = self
             .cached_total_escrow
             .checked_sub(withdrawal.escrow_shares)
-            .expect("dequeue: cached_total_escrow underflow - queue cache corrupt");
+            .unwrap();
         self.cached_total_expected = self
             .cached_total_expected
             .checked_sub(withdrawal.expected_assets)
-            .expect("dequeue: cached_total_expected underflow - queue cache corrupt");
+            .unwrap();
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self

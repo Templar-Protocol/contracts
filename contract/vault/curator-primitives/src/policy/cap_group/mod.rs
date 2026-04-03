@@ -3,6 +3,7 @@
 use alloc::string::String;
 #[cfg(feature = "borsh-schema")]
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::str::FromStr;
 #[cfg(not(target_arch = "wasm32"))]
 use derive_more::Display;
@@ -16,9 +17,16 @@ use typed_builder::TypedBuilder;
 pub struct CapGroupId(String);
 
 impl CapGroupId {
+    const POLICY_STATE_SENTINEL: &'static str = "policy-state";
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    #[must_use]
+    pub(crate) fn policy_state_sentinel() -> Self {
+        Self(String::from(Self::POLICY_STATE_SENTINEL))
     }
 
     fn validate(value: &str) -> Result<(), CapGroupIdError> {
@@ -383,14 +391,20 @@ pub fn validate_allocations(
     allocations: &[(&CapGroupId, &CapGroupRecord, u128)],
     total_assets: u128,
 ) -> Result<(), CapGroupError> {
-    use alloc::collections::BTreeMap;
-
-    let mut cumulative: BTreeMap<&CapGroupId, (CapGroupRecord, u128)> = BTreeMap::new();
+    let mut cumulative: Vec<(&CapGroupId, CapGroupRecord, u128)> = Vec::new();
 
     for (group_id, record, amount) in allocations {
-        let (canonical_record, prior_cumulative) = cumulative
-            .entry(group_id)
-            .or_insert_with(|| ((*record).clone(), 0));
+        let existing = cumulative
+            .iter_mut()
+            .find(|(existing_group_id, _, _)| *existing_group_id == *group_id);
+
+        let (_, canonical_record, prior_cumulative) = match existing {
+            Some(existing) => existing,
+            None => {
+                cumulative.push((group_id, (*record).clone(), 0));
+                cumulative.last_mut().unwrap()
+            }
+        };
 
         if canonical_record.principal != record.principal || canonical_record.cap != record.cap {
             return Err(CapGroupError::InconsistentRecord {

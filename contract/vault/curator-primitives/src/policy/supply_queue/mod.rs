@@ -1,9 +1,6 @@
 //! Supply queue for managing pending allocation requests.
 
-use alloc::{
-    collections::{BTreeMap, VecDeque},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use templar_vault_kernel::{TargetId, TimestampNs};
 
@@ -73,7 +70,7 @@ impl TryFrom<(TargetId, u128)> for SupplyQueueEntry {
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SupplyQueue {
-    buckets: Vec<VecDeque<SupplyQueueEntry>>,
+    buckets: Vec<Vec<SupplyQueueEntry>>,
     len: u32,
     max_length: Option<u32>,
 }
@@ -88,7 +85,7 @@ impl SupplyQueue {
     #[must_use]
     pub fn new(max_length: Option<NonZeroU32>) -> Self {
         Self {
-            buckets: alloc::vec![VecDeque::new(); usize::from(u8::MAX) + 1],
+            buckets: alloc::vec![Vec::new(); usize::from(u8::MAX) + 1],
             len: 0,
             max_length: max_length.map(NonZeroU32::get),
         }
@@ -140,7 +137,7 @@ impl SupplyQueue {
         }
 
         for (priority, bucket) in self.buckets.iter().enumerate() {
-            let expected_priority = u8::try_from(priority).expect("bucket index always fits in u8");
+            let expected_priority = u8::try_from(priority).unwrap();
             for entry in bucket {
                 entry.validate()?;
                 if entry.priority() != expected_priority {
@@ -162,8 +159,7 @@ impl SupplyQueue {
 
     #[must_use]
     pub fn len(&self) -> usize {
-        usize::try_from(self.len)
-            .expect("u32 queue length must fit into usize on supported targets")
+        usize::try_from(self.len).unwrap()
     }
 
     #[must_use]
@@ -174,7 +170,11 @@ impl SupplyQueue {
 
     #[must_use]
     pub fn entries(&self) -> Vec<&SupplyQueueEntry> {
-        self.buckets.iter().rev().flat_map(VecDeque::iter).collect()
+        self.buckets
+            .iter()
+            .rev()
+            .flat_map(|bucket| bucket.iter())
+            .collect()
     }
 
     #[must_use]
@@ -187,13 +187,11 @@ impl SupplyQueue {
 
         if self.is_full() {
             return Err(SupplyQueueError::QueueFull {
-                max_length: self
-                    .max_length
-                    .expect("checked is_full implies bounded queue"),
+                max_length: self.max_length.unwrap(),
             });
         }
 
-        self.buckets[usize::from(entry.priority())].push_back(entry);
+        self.buckets[usize::from(entry.priority())].push(entry);
         self.len = self
             .len
             .checked_add(1)
@@ -203,7 +201,8 @@ impl SupplyQueue {
 
     pub fn dequeue(&mut self) -> Result<SupplyQueueEntry, SupplyQueueError> {
         for bucket in self.buckets.iter_mut().rev() {
-            if let Some(entry) = bucket.pop_front() {
+            if !bucket.is_empty() {
+                let entry = bucket.remove(0);
                 self.len -= 1;
                 return Ok(entry);
             }
@@ -214,17 +213,26 @@ impl SupplyQueue {
 
     #[must_use]
     pub fn peek(&self) -> Option<&SupplyQueueEntry> {
-        self.buckets.iter().rev().find_map(VecDeque::front)
+        self.buckets.iter().rev().find_map(|bucket| bucket.first())
     }
 
     pub fn total(&self) -> Result<u128, SupplyQueueError> {
         checked_total_amount(self.entries().into_iter().map(SupplyQueueEntry::amount))
     }
 
-    pub fn totals_by_target(&self) -> Result<BTreeMap<TargetId, u128>, SupplyQueueError> {
-        let mut totals = BTreeMap::new();
+    pub fn totals_by_target(&self) -> Result<Vec<(TargetId, u128)>, SupplyQueueError> {
+        let mut totals: Vec<(TargetId, u128)> = Vec::new();
         for entry in self.entries() {
-            let sum = totals.entry(entry.target_id()).or_insert(0u128);
+            let sum = match totals
+                .iter_mut()
+                .find(|(target_id, _)| *target_id == entry.target_id())
+            {
+                Some((_, total)) => total,
+                None => {
+                    totals.push((entry.target_id(), 0));
+                    &mut totals.last_mut().unwrap().1
+                }
+            };
             *sum = (*sum)
                 .checked_add(entry.amount())
                 .ok_or(SupplyQueueError::AmountOverflow)?;
@@ -249,9 +257,8 @@ impl SupplyQueue {
         let mut filtered = Self::new(self.max_length());
         for entry in self.entries() {
             if leases.is_unleased(entry.target_id(), now_ns) {
-                filtered
-                    .enqueue(entry.clone())
-                    .expect("filtering existing validated entries into same capacity cannot fail");
+                filtered.buckets[usize::from(entry.priority())].push(entry.clone());
+                filtered.len += 1;
             }
         }
         filtered
@@ -271,7 +278,11 @@ impl SupplyQueue {
         let mut plan = Vec::with_capacity(totals.len());
 
         for entry in self.entries() {
-            if let Some(amount) = totals.remove(&entry.target_id()) {
+            if let Some(index) = totals
+                .iter()
+                .position(|(target_id, _)| *target_id == entry.target_id())
+            {
+                let (_, amount) = totals.remove(index);
                 plan.push((entry.target_id(), amount));
             }
         }
