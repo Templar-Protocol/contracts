@@ -1,0 +1,17 @@
+[package]
+name = "blockchain-gateway-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blockchain-gateway-core = { path = "../../gateway/core" }
+blockchain-gateway-near = { path = "../../gateway/near" }
+jsonrpsee = { workspace = true, features = ["server", "macros"] }
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

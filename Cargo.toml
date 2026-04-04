@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "common",
+    "gateway/*",
     "contract/lst-oracle",
     "contract/market",
     "contract/proxy-oracle",
@@ -56,19 +57,23 @@ getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"
+jsonrpsee = "0.26.0"
 k256 = "0.13.4"
 libfuzzer-sys = "0.4"
-near-account-id = "1.1.4"
+near-account-id = { version = "1.1.4", features = ["serde", "schemars"] }
+near-api = "0.8.5"
 near-chain-configs = "0.31.1"
 near-contract-standards = "5.17.2"
 near-crypto = "0.31.1"
 near-fetch = "0.9.0"
+near-gas = { version = "0.3.4", features = ["serde", "schemars"] }
 near-jsonrpc-client = "0.18.0"
 near-jsonrpc-primitives = "0.31.1"
 near-parameters = "0.31.1"
 near-primitives = "0.31.1"
 near-sdk = { version = "5.17.2", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
+near-token = { version = "0.3.3", features = ["serde", "schemars"] }
 near-workspaces = { version = "0.21.0", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
@@ -77,6 +82,15 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "tls-native-tls",
+    "postgres",
+    "derive",
+    "macros",
+    "migrate",
+    "uuid",
+] }
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
@@ -101,6 +115,7 @@ tracing = "0.1.41"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 uniffi = "0.31.0"
+uuid = { version = "1", features = ["serde", "v4"] }
 wiremock = "0.5.22"
 zeroize = "1.8.1"
 

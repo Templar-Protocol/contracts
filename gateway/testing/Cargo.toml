@@ -1,0 +1,13 @@
+[package]
+name = "blockchain-gateway-testing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blockchain-gateway-core = { path = "../core" }
+blockchain-gateway-near = { path = "../near" }
+
+[lints]
+workspace = true

@@ -37,5 +37,6 @@ workspace = true
 
 [features]
 default = []
+abi = ["near-sdk/abi"]
 non-contract-usage = ["near-sdk/non-contract-usage"]
 rpc = ["dep:clap", "dep:near-jsonrpc-client", "dep:near-primitives"]

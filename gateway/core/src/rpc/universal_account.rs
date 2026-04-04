@@ -1,0 +1,68 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    macros::{public_read_method_spec, write_method_spec},
+    rpc::common::{JsonValueResult, WriteOperationResult},
+    PublicReadMethod, RegistryId, UniversalAccountId, UniversalAccountReadMethod,
+    UniversalAccountWriteMethod, WriteMethod,
+};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetKeyArgs {
+    pub key: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetKeyParams {
+    pub account_id: UniversalAccountId,
+    #[serde(flatten)]
+    pub args: GetKeyArgs,
+}
+
+pub type GetKeyResult = JsonValueResult;
+
+public_read_method_spec!(
+    GetKey,
+    "ua.getKey",
+    PublicReadMethod::UniversalAccount(UniversalAccountReadMethod::GetKey),
+    GetKeyParams,
+    GetKeyResult
+);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ExecuteBody {
+    pub account_id: UniversalAccountId,
+    pub args: serde_json::Value,
+}
+
+pub type ExecuteResult = WriteOperationResult;
+
+write_method_spec!(
+    Execute,
+    "ua.execute",
+    WriteMethod::UniversalAccount(UniversalAccountWriteMethod::Execute),
+    ExecuteBody,
+    ExecuteResult
+);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CreateAccountBody {
+    pub registry_id: RegistryId,
+    pub account_name: String,
+    pub key: serde_json::Value,
+    pub chain_id: String,
+    pub execute: Option<serde_json::Value>,
+    pub full_access_keys: Option<Vec<String>>,
+    pub deposit: crate::NearToken,
+}
+
+pub type CreateAccountResult = WriteOperationResult;
+
+write_method_spec!(
+    CreateAccount,
+    "ua.createAccount",
+    WriteMethod::UniversalAccount(UniversalAccountWriteMethod::CreateAccount),
+    CreateAccountBody,
+    CreateAccountResult
+);
