@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{setup_ctx, signer_args};
+use common::{setup_ctx, signer_args, view_json};
 use near_contract_standards::storage_management::StorageBalance;
 use near_sdk::{json_types::U128, serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
@@ -39,14 +39,13 @@ async fn storage_deposit(#[future(awt)] worker: Worker<Sandbox>) {
     .await
     .unwrap();
 
-    let balance: StorageBalance = ctx
-        .near
-        .view(ft.id(), "storage_balance_of")
-        .args_json(json!({ "account_id": user.id() }))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let balance: StorageBalance = view_json(
+        &ctx,
+        ft.id(),
+        "storage_balance_of",
+        json!({ "account_id": user.id() }),
+    )
+    .await;
     assert_eq!(balance.total, STORAGE_DEPOSIT_AMOUNT);
 }
 
@@ -70,14 +69,13 @@ async fn recover_nep141(
     ft.mint(&source, U128(1_000_000)).await;
 
     // Verify source has tokens.
-    let balance: U128 = ctx
-        .near
-        .view(ft.id(), "ft_balance_of")
-        .args_json(json!({ "account_id": source.id() }))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let balance: U128 = view_json(
+        &ctx,
+        ft.id(),
+        "ft_balance_of",
+        json!({ "account_id": source.id() }),
+    )
+    .await;
     assert_eq!(balance.0, 1_000_000);
 
     RecoverNep141 {
@@ -90,23 +88,21 @@ async fn recover_nep141(
     .await
     .unwrap();
 
-    let beneficiary_balance: U128 = ctx
-        .near
-        .view(ft.id(), "ft_balance_of")
-        .args_json(json!({ "account_id": beneficiary.id() }))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let beneficiary_balance: U128 = view_json(
+        &ctx,
+        ft.id(),
+        "ft_balance_of",
+        json!({ "account_id": beneficiary.id() }),
+    )
+    .await;
     assert_eq!(beneficiary_balance.0, 1_000_000);
 
-    let source_storage_balance: Option<StorageBalance> = ctx
-        .near
-        .view(ft.id(), "storage_balance_of")
-        .args_json(json!({ "account_id": source.id() }))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let source_storage_balance: Option<StorageBalance> = view_json(
+        &ctx,
+        ft.id(),
+        "storage_balance_of",
+        json!({ "account_id": source.id() }),
+    )
+    .await;
     assert!(source_storage_balance.is_none());
 }

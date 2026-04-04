@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
@@ -8,6 +7,7 @@ use templar_common::governance::Proposal;
 use templar_common::oracle::proxy::governance::Operation;
 use templar_common::oracle::proxy::Proxy;
 use templar_common::time::Nanoseconds;
+use templar_tools_common::near::{self, Function};
 
 use super::execute::execute_proposal;
 use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;
@@ -162,11 +162,8 @@ impl CreateProposal {
         let id = if let Some(id) = self.id {
             id
         } else {
-            let next_id: u32 = ctx
-                .near
-                .view(&self.oracle_id, "gov_next_id")
-                .await?
-                .json()?;
+            let next_id: u32 =
+                near::view(&ctx.near, &self.oracle_id, "gov_next_id", json!({})).await?;
             tracing::info!(id = next_id, "Auto-fetched next proposal ID");
             next_id
         };
@@ -197,7 +194,7 @@ impl CreateProposal {
                     .args_json(json!({
                         "id": id,
                         "operation": operation,
-                    }))
+                    }))?
                     .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )
@@ -205,12 +202,8 @@ impl CreateProposal {
             .await?;
 
         if self.execute_immediately {
-            let proposal: Option<Proposal<Operation>> = ctx
-                .near
-                .view(&self.oracle_id, "gov_get")
-                .args_json(json!({ "id": id }))
-                .await?
-                .json()?;
+            let proposal: Option<Proposal<Operation>> =
+                near::view(&ctx.near, &self.oracle_id, "gov_get", json!({ "id": id })).await?;
 
             let proposal =
                 proposal.ok_or_else(|| anyhow::anyhow!("created proposal {id} not found"))?;

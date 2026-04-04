@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{no_build_loader, setup_ctx, signer_args};
+use common::{no_build_loader, setup_ctx, signer_args, view_json};
 use near_sdk::{serde_json::json, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
@@ -69,13 +69,7 @@ async fn view_versions(
     ctx: &templar_manager::CliContext,
     registry_id: &near_sdk::AccountId,
 ) -> Vec<String> {
-    ctx.near
-        .view(registry_id, "list_versions")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap()
+    view_json(ctx, registry_id, "list_versions", json!({})).await
 }
 
 // ---------------------------------------------------------------------------

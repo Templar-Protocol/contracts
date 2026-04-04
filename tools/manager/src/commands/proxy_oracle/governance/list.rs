@@ -6,6 +6,7 @@ use near_sdk::AccountId;
 use templar_common::{
     governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
 };
+use templar_tools_common::near;
 
 use crate::{
     util::{OutputArgs, OutputStyle},
@@ -35,12 +36,7 @@ pub struct ListProposals {
 impl ListProposals {
     #[tracing::instrument(skip_all, name = "governance_list", fields(oracle_id = %self.oracle_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let ids: Vec<u32> = ctx
-            .near
-            .view(&self.oracle_id, "gov_list")
-            .args_json(json!({}))
-            .await?
-            .json()?;
+        let ids: Vec<u32> = near::view(&ctx.near, &self.oracle_id, "gov_list", json!({})).await?;
 
         #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         let now = Nanoseconds::from_ms(
@@ -53,12 +49,8 @@ impl ListProposals {
         let mut proposals = Vec::new();
 
         for id in &ids {
-            let proposal: Option<Proposal<Operation>> = ctx
-                .near
-                .view(&self.oracle_id, "gov_get")
-                .args_json(json!({ "id": id }))
-                .await?
-                .json()?;
+            let proposal: Option<Proposal<Operation>> =
+                near::view(&ctx.near, &self.oracle_id, "gov_get", json!({ "id": id })).await?;
 
             let Some(proposal) = proposal else {
                 continue;

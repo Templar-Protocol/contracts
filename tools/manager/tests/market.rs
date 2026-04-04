@@ -1,6 +1,6 @@
 mod common;
 
-use common::{no_build_loader, setup_ctx, signer_args, TestArgsKind};
+use common::{no_build_loader, setup_ctx, signer_args, view_json, TestArgsKind};
 use near_sdk::{AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
@@ -89,13 +89,13 @@ async fn market_deploy(#[future(awt)] worker: Worker<Sandbox>, #[case] input_kin
     .unwrap();
 
     // Verify the contract is deployed by querying its configuration.
-    let stored_config: MarketConfiguration = ctx
-        .near
-        .view(market_account.id(), "get_configuration")
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let stored_config: MarketConfiguration = view_json(
+        &ctx,
+        market_account.id(),
+        "get_configuration",
+        serde_json::json!({}),
+    )
+    .await;
 
     assert_eq!(stored_config, config);
 }
@@ -153,13 +153,8 @@ async fn market_create_from_registry(
     let market_id: AccountId = format!("{market_name}.{}", registry.id()).parse().unwrap();
 
     // Verify market exists by querying configuration
-    let stored_config: MarketConfiguration = ctx
-        .near
-        .view(&market_id, "get_configuration")
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let stored_config: MarketConfiguration =
+        view_json(&ctx, &market_id, "get_configuration", serde_json::json!({})).await;
     assert_eq!(stored_config, config);
 }
 

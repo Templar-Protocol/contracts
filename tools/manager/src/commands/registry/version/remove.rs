@@ -1,7 +1,7 @@
 use anyhow::Context;
-use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
+use templar_tools_common::{near, near::Function};
 
 use crate::util::SignerArgs;
 use crate::CliContext;
@@ -46,14 +46,9 @@ pub(crate) async fn remove_all(
     signer: &SignerArgs,
     registry_id: &AccountId,
 ) -> anyhow::Result<()> {
-    let versions: Vec<String> = ctx
-        .near
-        .view(registry_id, "list_versions")
-        .args_json(json!({}))
+    let versions: Vec<String> = near::view(&ctx.near, registry_id, "list_versions", json!({}))
         .await
-        .context("list_versions")?
-        .json()
-        .context("deserialise versions")?;
+        .context("list_versions")?;
 
     tracing::info!(count = versions.len(), %registry_id, "Removing versions");
     let mut failures = Vec::new();
@@ -91,7 +86,7 @@ async fn remove_one(
     ctx.batch(&s, registry_id)
         .call(
             Function::new("remove_version")
-                .args_json(json!({ "version_key": version_key }))
+                .args_json(json!({ "version_key": version_key }))?
                 .deposit(NearToken::from_yoctonear(1))
                 .max_gas(),
         )

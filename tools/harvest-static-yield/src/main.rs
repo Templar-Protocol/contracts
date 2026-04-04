@@ -10,7 +10,6 @@ use near_contract_standards::{
     storage_management::{StorageBalance, StorageBalanceBounds},
 };
 use near_crypto::{InMemorySigner, SecretKey};
-use near_fetch::signer::{ExposeAccountId, SignerExt};
 use near_primitives::hash::CryptoHash;
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use templar_common::{
@@ -18,6 +17,7 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     market::MarketConfiguration,
 };
+use templar_tools_common::near::{self, Function};
 use templar_tools_common::version::MarketVersion;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -111,26 +111,23 @@ pub async fn main() {
 
     tracing::info!(network = %args.network, rpc_url = %rpc_url, "Connecting to RPC");
 
-    let near = near_fetch::Client::new(rpc_url);
+    let near = near::Client::connect(rpc_url);
 
     let signer = InMemorySigner::from_secret_key(args.account_id.clone(), args.secret_key.clone());
+    let signer_account_id = signer.get_account_id();
 
     let mut markets: HashSet<AccountId> = args.market_id.iter().cloned().collect();
 
     for registry in args.registry_id {
         tracing::info!(%registry, "Loading markets from registry");
-        let deployments = match near
-            .view(&registry, "list_deployments")
-            .args_json(json!({}))
-            .await
-            .and_then(|r| r.json::<Vec<AccountId>>())
-        {
-            Ok(d) => d,
-            Err(error) => {
-                tracing::error!(%registry, %error, "Failed to list deployments on registry");
-                continue;
-            }
-        };
+        let deployments: Vec<AccountId> =
+            match near::view(&near, &registry, "list_deployments", json!({})).await {
+                Ok(d) => d,
+                Err(error) => {
+                    tracing::error!(%registry, %error, "Failed to list deployments on registry");
+                    continue;
+                }
+            };
 
         markets.extend(deployments);
     }
@@ -167,17 +164,16 @@ pub async fn main() {
 
         let asset_contract = configuration.borrow_asset.contract_id().to_owned();
         tracing::info!(%market_id, "Checking storage requirements");
-        if let Ok(storage_balance_bounds) = near
-            .view(&asset_contract, "storage_balance_bounds")
-            .args_json(json!({}))
+        let storage_balance_bounds: anyhow::Result<StorageBalanceBounds> =
+            near::view(&near, &asset_contract, "storage_balance_bounds", json!({})).await;
+        if let Ok(storage_balance_bounds) = storage_balance_bounds {
+            let storage_balance: Option<StorageBalance> = match near::view(
+                &near,
+                &asset_contract,
+                "storage_balance_of",
+                json!({ "account_id": &args.account_id }),
+            )
             .await
-            .and_then(|r| r.json::<StorageBalanceBounds>())
-        {
-            let storage_balance = match near
-                .view(&asset_contract, "storage_balance_of")
-                .args_json(json!({ "account_id": &args.account_id }))
-                .await
-                .and_then(|r| r.json::<Option<StorageBalance>>())
             {
                 Ok(s) => s,
                 Err(error) => {
@@ -203,7 +199,7 @@ pub async fn main() {
             };
         }
 
-        let yield_amount = match get_static_yield(&near, &market_id, signer.account_id()).await {
+        let yield_amount = match get_static_yield(&near, &market_id, &signer_account_id).await {
             Ok(static_yield) => static_yield,
             Err(error) => {
                 tracing::error!(%market_id, %error, "Failed to fetch static yield amount");
@@ -251,13 +247,13 @@ pub async fn main() {
     for (asset, amount) in accumulated_assets {
         let action = asset.transfer_action(&receiver_id, amount);
         tracing::info!(%asset, %receiver_id, %amount, "Sending yield");
-        match near
-            .send_tx(
-                &signer,
-                &asset.contract_id().to_owned(),
-                vec![action.into()],
-            )
-            .await
+        match near::send_tx_checked(
+            &near,
+            &signer,
+            &asset.contract_id().to_owned(),
+            vec![action.into()],
+        )
+        .await
         {
             Ok(result) => {
                 tracing::info!(%asset, %receiver_id, %amount, transaction_hash = %result.transaction.hash, "Transferred to receiver");
@@ -279,46 +275,56 @@ pub async fn main() {
 
 #[tracing::instrument(skip(near, signer))]
 pub async fn withdraw_static_yield(
-    near: &near_fetch::Client,
-    signer: &impl SignerExt,
+    near: &near::Client,
+    signer: &near_crypto::Signer,
     market_id: &AccountId,
 ) -> anyhow::Result<CryptoHash> {
-    let result = near
-        .call(signer, market_id, "withdraw_static_yield")
-        .args_json(json!({}))
-        .max_gas()
-        .transact()
-        .await?;
-    Ok(result.details.transaction.hash)
+    let result = near::send_tx_checked(
+        near,
+        signer,
+        market_id,
+        vec![Function::new("withdraw_static_yield")
+            .args_json(json!({}))?
+            .max_gas()
+            .into()],
+    )
+    .await?;
+    Ok(result.transaction.hash)
 }
 
 #[tracing::instrument(skip(near, signer))]
 pub async fn accumulate_static_yield(
-    near: &near_fetch::Client,
-    signer: &impl SignerExt,
+    near: &near::Client,
+    signer: &near_crypto::Signer,
     market_id: &AccountId,
 ) -> anyhow::Result<()> {
-    near.call(signer, market_id, "accumulate_static_yield")
-        .args_json(json!({}))
-        .max_gas()
-        .transact()
-        .await?
-        .raw_bytes()?;
+    near::send_tx_checked(
+        near,
+        signer,
+        market_id,
+        vec![Function::new("accumulate_static_yield")
+            .args_json(json!({}))?
+            .max_gas()
+            .into()],
+    )
+    .await?;
     Ok(())
 }
 
 #[tracing::instrument(skip(near))]
 pub async fn get_static_yield(
-    near: &near_fetch::Client,
+    near: &near::Client,
     market_id: &AccountId,
     account_id: &AccountId,
 ) -> anyhow::Result<BorrowAssetAmount> {
-    Ok(near
-        .view(market_id, "get_static_yield")
-        .args_json(json!({ "account_id": account_id }))
-        .await?
-        .json::<GetStaticYield>()?
-        .borrow_asset_total())
+    Ok(near::view::<GetStaticYield>(
+        near,
+        market_id,
+        "get_static_yield",
+        json!({ "account_id": account_id }),
+    )
+    .await?
+    .borrow_asset_total())
 }
 
 #[derive(near_sdk::serde::Deserialize)]
@@ -343,14 +349,11 @@ impl GetStaticYield {
 
 #[tracing::instrument(skip(near))]
 pub async fn get_market_version(
-    near: &near_fetch::Client,
+    near: &near::Client,
     market_id: &AccountId,
 ) -> anyhow::Result<MarketVersion> {
-    let metadata = near
-        .view(market_id, "contract_source_metadata")
-        .args_json(json!({}))
-        .await?
-        .json::<ContractSourceMetadata>()?;
+    let metadata: ContractSourceMetadata =
+        near::view(near, market_id, "contract_source_metadata", json!({})).await?;
 
     let Some(version) = metadata.version else {
         anyhow::bail!("No version string in contract source metadata for market {market_id}");
@@ -361,12 +364,8 @@ pub async fn get_market_version(
 
 #[tracing::instrument(skip(near))]
 pub async fn get_market_configuration(
-    near: &near_fetch::Client,
+    near: &near::Client,
     market_id: &AccountId,
 ) -> anyhow::Result<MarketConfiguration> {
-    Ok(near
-        .view(market_id, "get_configuration")
-        .args_json(json!({}))
-        .await?
-        .json::<MarketConfiguration>()?)
+    near::view(near, market_id, "get_configuration", json!({})).await
 }

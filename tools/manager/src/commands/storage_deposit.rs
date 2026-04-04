@@ -1,8 +1,8 @@
 use anyhow::Context;
 use near_contract_standards::storage_management::StorageBalanceBounds;
-use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
+use templar_tools_common::near::{self, Function};
 
 /// `0.00125 NEAR` expressed in yoctoNEAR, a common storage deposit amount.
 pub const STORAGE_DEPOSIT_AMOUNT: NearToken =
@@ -35,12 +35,13 @@ impl StorageDeposit {
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let deposit = if self.registration_only {
             tracing::debug!("Fetching storage balance bounds");
-            let bounds = ctx
-                .near
-                .view(&self.contract_id, "storage_balance_bounds")
-                .args_json(json!({}))
-                .await?
-                .json::<StorageBalanceBounds>()?;
+            let bounds: StorageBalanceBounds = near::view(
+                &ctx.near,
+                &self.contract_id,
+                "storage_balance_bounds",
+                json!({}),
+            )
+            .await?;
             bounds.min
         } else {
             self.deposit.unwrap_or(STORAGE_DEPOSIT_AMOUNT)
@@ -49,11 +50,10 @@ impl StorageDeposit {
 
         let signer = self.signer.signer();
         ctx.batch(&signer, &self.contract_id)
-            .call(
-                Function::new("storage_deposit")
-                    .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
-                    .deposit(deposit),
-            )
+            .call(Function::new("storage_deposit").args_json(
+                json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }),
+            )?
+            .deposit(deposit))
             .transact()
             .await
             .with_context(|| format!("storage_deposit on {}", self.contract_id))?;

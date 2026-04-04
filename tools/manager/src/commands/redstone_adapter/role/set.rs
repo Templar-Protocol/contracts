@@ -1,7 +1,7 @@
-use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, NearToken};
 use templar_common::oracle::redstone::Role;
+use templar_tools_common::near::Function;
 
 use crate::util::SignerArgs;
 use crate::CliContext;
@@ -43,7 +43,7 @@ impl RoleSet {
                         "account_id": self.target_account_id,
                         "role": role,
                         "set": set,
-                    }))
+                    }))?
                     .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )

@@ -4,6 +4,7 @@ use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_tools_common::near;
 
 use crate::{
     util::{OutputArgs, OutputStyle},
@@ -26,12 +27,8 @@ pub struct ListProxies {
 impl ListProxies {
     #[tracing::instrument(skip_all, name = "proxy_list", fields(oracle_id = %self.oracle_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let proxies: Vec<PriceIdentifier> = ctx
-            .near
-            .view(&self.oracle_id, "list_proxies")
-            .args_json(json!({}))
-            .await?
-            .json()?;
+        let proxies: Vec<PriceIdentifier> =
+            near::view(&ctx.near, &self.oracle_id, "list_proxies", json!({})).await?;
 
         let count = proxies.len();
 

@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use clap::{Args, ValueEnum};
-use near_fetch::ops::Function;
+use templar_tools_common::near::Function;
 
 use crate::{
     util::{ContractLoader, LoadArgs, SignerArgs},
