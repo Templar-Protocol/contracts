@@ -6,7 +6,7 @@ use tokio::join;
 use templar_common::{
     market::YieldWeights,
     oracle::{
-        proxy::{aggregator::source::Source, Proxy},
+        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
         OracleRequest,

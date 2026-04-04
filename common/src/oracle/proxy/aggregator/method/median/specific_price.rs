@@ -8,12 +8,12 @@ pub struct SpecificPrice {
 }
 
 impl From<SpecificPrice> for pyth::Price {
-    fn from(s: SpecificPrice) -> Self {
+    fn from(specific_price: SpecificPrice) -> Self {
         Self {
-            price: s.value.into(),
+            price: specific_price.value.into(),
             conf: 0.into(),
-            expo: s.exponent,
-            publish_time: s.publish_time,
+            expo: specific_price.exponent,
+            publish_time: specific_price.publish_time,
         }
     }
 }

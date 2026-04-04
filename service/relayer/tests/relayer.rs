@@ -31,10 +31,7 @@ use tokio::sync::watch;
 use templar_common::{
     oracle::{
         price_transformer,
-        proxy::{
-            aggregator::{source::Source, transformer::ProxyPriceTransformer},
-            Proxy,
-        },
+        proxy::{Proxy, ProxyPriceTransformer, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone, OracleRequest,
     },

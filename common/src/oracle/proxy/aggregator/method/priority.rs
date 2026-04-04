@@ -1,7 +1,7 @@
 use near_sdk::near;
 
 use crate::{
-    oracle::{proxy::aggregator::source::Source, pyth},
+    oracle::{proxy::Source, pyth},
     panic_with_message,
 };
 
@@ -114,17 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_respects_max_age_filter() {
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(0))),
-            Some(price(2_000_000, 0, secs(900))),
-        ];
-        let result = priority(prices.len()).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, 2_000_000);
-    }
-
-    #[test]
-    fn priority_ignores_min_sources_and_returns_first_valid_price() {
+    fn priority_returns_first_valid_price_even_with_multiple_prices() {
         let prices = vec![
             Some(price(1_000_000, 0, secs(0))),
             Some(price(2_000_000, 0, secs(0))),

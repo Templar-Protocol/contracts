@@ -4,16 +4,16 @@ use crate::{oracle::pyth, time::Nanoseconds};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[near(serializers = [json, borsh])]
-pub struct Filter {
-    /// Maximum age of a price in nanoseconds. If a price is older than this, it will be excluded from the aggregation.
+pub struct FreshnessFilter {
+    /// Maximum age of a price in nanoseconds. If a price is older than this, it will be excluded from proxy resolution.
     pub max_age: Option<Nanoseconds>,
     /// Maximum clock drift in nanoseconds. This is the future-analog of `max_age`.
     pub max_clock_drift: Option<Nanoseconds>,
 }
 
-impl Filter {
-    pub fn accepts(&self, p: &pyth::Price, now: Nanoseconds) -> bool {
-        let Some(published) = Nanoseconds::try_from_pyth(p.publish_time) else {
+impl FreshnessFilter {
+    pub fn accepts(&self, price: &pyth::Price, now: Nanoseconds) -> bool {
+        let Some(published) = Nanoseconds::try_from_pyth(price.publish_time) else {
             return false;
         };
 

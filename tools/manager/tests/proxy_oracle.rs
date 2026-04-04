@@ -6,7 +6,12 @@ use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{
-    oracle::{proxy::Proxy, pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
+    oracle::{
+        proxy::{Aggregator, FreshnessFilter, Proxy},
+        pyth::PriceIdentifier,
+        redstone::FeedId,
+        OracleRequest,
+    },
     registry::DeployMode,
     time::Nanoseconds,
 };
@@ -39,7 +44,10 @@ fn sample_price_id() -> CliPriceIdentifier {
 }
 
 fn sample_proxy(oracle_id: AccountId) -> Proxy {
-    Proxy::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()])
+    Proxy::new(
+        Aggregator::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()]),
+        FreshnessFilter::default(),
+    )
 }
 
 /// Helper: deploy a proxy oracle on the given account.

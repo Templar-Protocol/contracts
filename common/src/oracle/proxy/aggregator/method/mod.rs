@@ -1,9 +1,8 @@
 pub mod median;
 pub mod priority;
 
+use crate::oracle::proxy::Source;
 use crate::oracle::pyth;
-
-use super::source::Source;
 
 pub trait Aggregate {
     fn sources(&self) -> Vec<&Source>;

@@ -2,7 +2,7 @@ use near_sdk::near;
 
 use crate::oracle::OracleRequest;
 
-use super::transformer::ProxyPriceTransformer;
+use super::ProxyPriceTransformer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]

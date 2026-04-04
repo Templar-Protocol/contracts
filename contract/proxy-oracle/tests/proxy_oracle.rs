@@ -18,14 +18,9 @@ use templar_common::{
     oracle::{
         price_transformer,
         proxy::{
-            aggregator::{
-                filter::{Filter, IndividualPriceFilter},
-                method::{median_low::MedianLow, priority::Priority, AggregationMethod},
-                source::{Source, WeightedSource},
-                transformer::ProxyPriceTransformer,
-            },
+            aggregator::{method::median::MedianLow, Aggregator},
             governance::{Operation, ProxyGovernanceInterface},
-            Proxy,
+            FreshnessFilter, Proxy, ProxyPriceTransformer, Source, WeightedSource,
         },
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
@@ -388,17 +383,14 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
         };
     }
 
-    let default_filter = Filter {
-        price: IndividualPriceFilter {
-            max_age: Some(Nanoseconds::from_ms(60 * 1000)),
-            max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
-        },
-        min_sources: Some(1),
+    let default_filter = FreshnessFilter {
+        max_age: Some(Nanoseconds::from_ms(60 * 1000)),
+        max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
     };
 
     let btc_proxy_def = match method {
-        TestMethod::MedianLow => Proxy::MedianLow(MedianLow::new(
-            [
+        TestMethod::MedianLow => Proxy::new(
+            Aggregator::MedianLow(MedianLow::new([
                 WeightedSource::new(
                     OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
                     1,
@@ -411,27 +403,26 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
                     OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
                     1,
                 ),
-            ],
+            ])),
             default_filter.clone(),
-        )),
-        TestMethod::Priority => Proxy::Priority(Priority {
-            // Priority returns the first valid source, so order matters.
-            sources: vec![
-                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
-                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
-                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
-            ],
-            filter: default_filter.clone(),
-        }),
+        ),
+        TestMethod::Priority => Proxy::priority([
+            OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
+            OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
+            OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
+        ])
+        .with_freshness_filter(default_filter.clone()),
     };
     let btc_proxy_id = PriceIdentifier([0x01_u8; 32]);
 
     // Single-source proxies: method doesn't affect the result.
     let just_pyth_btc =
-        Proxy::median_low([OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()]);
+        Proxy::median_low([OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()])
+            .with_freshness_filter(default_filter.clone());
     let just_pyth_btc_id = PriceIdentifier([0x02_u8; 32]);
     let just_redstone_eth =
-        Proxy::median_low([OracleRequest::redstone(redstone_adapter.id().clone(), "ETH").into()]);
+        Proxy::median_low([OracleRequest::redstone(redstone_adapter.id().clone(), "ETH").into()])
+            .with_freshness_filter(default_filter.clone());
     let just_redstone_eth_id = PriceIdentifier([0x03_u8; 32]);
 
     proxy_oracle

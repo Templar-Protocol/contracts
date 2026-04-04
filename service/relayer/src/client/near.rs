@@ -37,10 +37,7 @@ use templar_common::{
     number::Decimal,
     oracle::{
         price_transformer::{Call, PriceTransformer},
-        proxy::{
-            aggregator::{method::AggregationMethod as _, source::Source},
-            Proxy,
-        },
+        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier},
         redstone, OracleRequest,
     },
@@ -795,7 +792,7 @@ impl Near {
 
         tracing::debug!(?prices, "Prices to aggregate");
 
-        let price = proxy.aggregate(&prices, Self::system_time()).ok();
+        let price = proxy.resolve(prices, Self::system_time()).ok();
 
         tracing::debug!(?price, "Aggregated price");
 

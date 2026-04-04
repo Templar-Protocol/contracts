@@ -12,11 +12,7 @@ use templar_common::{
     governance::Governance,
     number::Decimal,
     oracle::{
-        proxy::{
-            aggregator::{method::AggregationMethod, source::Source},
-            governance::Operation,
-            Proxy,
-        },
+        proxy::{governance::Operation, Proxy, Source},
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
         OracleRequest,
@@ -105,8 +101,8 @@ impl Contract {
 
             invoked.push((*price_id, proxy.clone()));
 
-            for entry in proxy.sources() {
-                let request = match entry {
+            for source in proxy.sources() {
+                let request = match source {
                     Source::Request(request) => request,
                     Source::Transformer(transformer) => {
                         transformer_promises.push(transformer.call.promise());
@@ -187,8 +183,8 @@ impl Contract {
         for (price_id, proxy) in invoked {
             let mut prices = vec![];
 
-            for entry in proxy.sources() {
-                let entry_result = match entry {
+            for source in proxy.sources() {
+                let source_result = match source {
                     Source::Transformer(transformer) => {
                         let price = callback.get(&transformer.request);
                         let input = callback_result::<Decimal>(i);
@@ -198,13 +194,13 @@ impl Contract {
                             .zip(input)
                             .and_then(|(price, input)| transformer.action.apply(price, input))
                     }
-                    Source::Request(p) => callback.get(p),
+                    Source::Request(request) => callback.get(request),
                 };
 
-                prices.push(entry_result);
+                prices.push(source_result);
             }
 
-            let result = proxy.aggregate(&prices, now);
+            let result = proxy.resolve(prices, now);
 
             if let Err(ref error) = result {
                 near_sdk::log!("Aggregation error: {error}");

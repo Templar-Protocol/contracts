@@ -17,12 +17,7 @@ use templar_common::{
     number::Decimal,
     oracle::{
         price_transformer::PriceTransformer,
-        proxy::{
-            aggregator::{
-                method::AggregationMethod, source::Source, transformer::ProxyPriceTransformer,
-            },
-            Proxy,
-        },
+        proxy::{Proxy, ProxyPriceTransformer, Source},
         pyth::{self, OracleResponse, PriceIdentifier},
         redstone, OracleRequest,
     },
@@ -792,21 +787,22 @@ impl OracleFetcher {
 
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
-            let aggregated = proxy.aggregate(&prices, now).ok();
+            let source_count = prices.iter().filter(|price| price.is_some()).count();
+            let aggregated = proxy.resolve(prices, now).ok();
             result.insert(price_id, aggregated);
 
             if result.get(&price_id).and_then(|p| p.as_ref()).is_some() {
                 tracing::debug!(
                     oracle = %proxy_oracle,
                     price_id = ?price_id,
-                    source_count = prices.iter().filter(|price| price.is_some()).count(),
+                    source_count,
                     "Proxy oracle: aggregated price from underlying sources"
                 );
             } else {
                 tracing::warn!(
                     oracle = %proxy_oracle,
                     price_id = ?price_id,
-                    source_count = prices.iter().filter(|price| price.is_some()).count(),
+                    source_count,
                     "Proxy oracle: aggregation returned no price"
                 );
             }

@@ -4,10 +4,7 @@ use near_jsonrpc_client::JsonRpcClient;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
     price_transformer::{self, PriceTransformer},
-    proxy::{
-        aggregator::{source::Source, transformer::ProxyPriceTransformer},
-        Proxy,
-    },
+    proxy::{Proxy, ProxyPriceTransformer, Source},
     pyth::PriceIdentifier,
     OracleRequest,
 };

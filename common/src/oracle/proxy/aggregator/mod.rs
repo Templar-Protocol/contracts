@@ -1,8 +1,4 @@
-pub mod filter;
 pub mod method;
-pub mod source;
-pub mod specific_price;
-pub mod transformer;
 
 use method::{
     median::{MedianHigh, MedianLow},
@@ -10,9 +6,10 @@ use method::{
     Aggregate,
 };
 use near_sdk::near;
-use source::{Source, WeightedSource};
 
 use crate::oracle::pyth;
+
+use super::{Source, WeightedSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -31,6 +28,18 @@ impl Aggregator {
 
     pub fn priority(entries: impl IntoIterator<Item = Source>) -> Self {
         Self::Priority(Priority::new(entries))
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::MedianLow(_) => "MedianLow",
+            Self::Priority(_) => "Priority",
+            Self::MedianHigh(_) => "MedianHigh",
+        }
+    }
+
+    pub fn sources(&self) -> Vec<&Source> {
+        <Self as Aggregate>::sources(self)
     }
 }
 

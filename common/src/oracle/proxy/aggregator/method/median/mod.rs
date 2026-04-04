@@ -1,19 +1,18 @@
+mod specific_price;
+
 use std::marker::PhantomData;
 
 use near_sdk::near;
 
+use super::Aggregate;
 use crate::{
     oracle::{
-        proxy::aggregator::{
-            source::{Source, WeightedSource},
-            specific_price::SpecificPrice,
-        },
+        proxy::{Source, WeightedSource},
         pyth,
     },
     panic_with_message,
 };
-
-use super::Aggregate;
+use specific_price::SpecificPrice;
 
 /// Calculates the weighted median of a sorted list of weighted items.
 ///
@@ -95,7 +94,7 @@ impl<V: MedianVariant> Median<V> {
 
 impl<V: MedianVariant> Aggregate for Median<V> {
     fn sources(&self) -> Vec<&Source> {
-        self.sources.iter().map(|e| &e.source).collect()
+        self.sources.iter().map(|entry| &entry.source).collect()
     }
 
     fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, super::Error> {
@@ -104,11 +103,12 @@ impl<V: MedianVariant> Aggregate for Median<V> {
         }
 
         let min_sources = self.min_sources.max(1);
+        let valid_sources = prices.iter().filter(|price| price.is_some()).count();
 
-        if prices.len() < min_sources as usize {
+        if valid_sources < min_sources as usize {
             return Err(super::Error::TooFewValidSources {
                 expected: min_sources as usize,
-                actual: prices.len(),
+                actual: valid_sources,
             });
         }
 
@@ -122,10 +122,6 @@ impl<V: MedianVariant> Aggregate for Median<V> {
                 [(lower, source.weight), (upper, source.weight)]
             })
             .collect::<Vec<_>>();
-
-        if values.is_empty() {
-            panic_with_message("Invariant violation: must not be empty after splitting");
-        }
 
         values.sort_unstable();
 
@@ -224,69 +220,6 @@ mod tests {
             Some(price(2_000_000, 0, secs(0))),
         ];
         assert!(median_low(&[1, 1], 2).aggregate(prices).is_ok());
-    }
-
-    #[test]
-    fn aggregate_min_sources_applies_after_time_filtering() {
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(1_000))),
-            Some(price(2_000_000, 0, secs(100))),
-        ];
-        let error = median_low(&[1, 1], 2).aggregate(prices).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::TooFewValidSources {
-                expected: 2,
-                actual: 1,
-            }
-        ));
-    }
-
-    #[rstest::rstest]
-    #[case::one_under_included(501, 1000, 500, true)]
-    #[case::exactly_at_limit_included(500, 1000, 500, true)]
-    #[case::one_over_excluded(499, 1000, 500, false)]
-    fn aggregate_max_age_boundary(
-        #[case] publish_time_s: i64,
-        #[case] now_s: i64,
-        #[case] max_age_s: u64,
-        #[case] included: bool,
-    ) {
-        let now_s_u64 = u64::try_from(now_s).unwrap();
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(publish_time_s))),
-            Some(price(9_999_999, 0, secs(now_s))),
-        ];
-        let result = median_low(&[1, 1], 1).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, if included { 1_000_000 } else { 9_999_999 });
-    }
-
-    #[rstest::rstest]
-    #[case::exactly_at_limit_included(1500, 1000, 500, true)]
-    #[case::one_over_excluded(1501, 1000, 500, false)]
-    fn aggregate_max_clock_drift_boundary(
-        #[case] publish_time_s: i64,
-        #[case] now_s: i64,
-        #[case] max_clock_drift_s: u64,
-        #[case] included: bool,
-    ) {
-        let now_s_u64 = u64::try_from(now_s).unwrap();
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(publish_time_s))),
-            Some(price(9_999_999, 0, secs(now_s))),
-        ];
-        let result = median_low(&[1, 1], 1).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, if included { 1_000_000 } else { 9_999_999 });
-    }
-
-    #[test]
-    fn aggregate_negative_publish_time_excluded() {
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(-1))),
-            Some(price(9_999_999, 0, secs(1000))),
-        ];
-        let result = median_low(&[1, 1], 1).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, 9_999_999);
     }
 
     #[rstest::rstest]
