@@ -13690,6 +13690,7 @@ dependencies = [
  "near-crypto 0.34.7",
  "near-jsonrpc-client 0.20.0",
  "near-jsonrpc-primitives 0.34.7",
+ "near-parameters 0.34.7",
  "near-primitives 0.34.7",
  "near-sdk",
  "near-sdk-contract-tools",

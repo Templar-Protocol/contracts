@@ -7,13 +7,13 @@ use near_jsonrpc_client::{
     methods::{broadcast_tx_commit::RpcBroadcastTxCommitRequest, query::RpcQueryRequest},
     JsonRpcClient,
 };
-use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryResponse};
+use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryError, RpcQueryResponse};
 use near_primitives::{
     transaction::{
         Action, DeleteAccountAction, DeployContractAction, FunctionCallAction, SignedTransaction,
         Transaction, TransactionV0,
     },
-    types::{BlockReference, Finality},
+    types::BlockReference,
     views::{FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest},
 };
 use near_sdk::{
@@ -94,25 +94,21 @@ impl From<Function> for Action {
 ///
 /// Only returns `Err` for unexpected RPC failures; a missing account yields `Ok(false)`.
 pub async fn account_exists(near: &Client, account_id: &AccountId) -> anyhow::Result<bool> {
-    match near
-        .call(RpcQueryRequest {
-            block_reference: Finality::Final.into(),
-            request: QueryRequest::ViewAccount {
-                account_id: account_id.clone(),
-            },
-        })
-        .await
-    {
+    let request = RpcQueryRequest {
+        block_reference: BlockReference::latest(),
+        request: QueryRequest::ViewAccount {
+            account_id: account_id.clone(),
+        },
+    };
+
+    match near.call(request).await {
         Ok(_) => Ok(true),
-        Err(e) => {
-            if e.handler_error().is_some() {
-                Ok(false)
-            } else {
-                Err(anyhow::anyhow!(
-                    "RPC error checking account {account_id}: {e}"
-                ))
-            }
-        }
+        Err(error) => match error.handler_error() {
+            Some(RpcQueryError::UnknownAccount { .. }) => Ok(false),
+            _ => Err(anyhow::anyhow!(
+                "RPC error checking account {account_id}: {error}"
+            )),
+        },
     }
 }
 
@@ -248,7 +244,7 @@ async fn view_access_key_with_retry(
     signer: &Signer,
 ) -> anyhow::Result<RpcQueryResponse> {
     let request = || RpcQueryRequest {
-        block_reference: Finality::Final.into(),
+        block_reference: BlockReference::latest(),
         request: QueryRequest::ViewAccessKey {
             account_id: signer.get_account_id(),
             public_key: signer.public_key(),
