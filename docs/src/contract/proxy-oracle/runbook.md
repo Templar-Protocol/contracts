@@ -162,7 +162,7 @@ Use for direct passthrough.
 ```json
 {
   "aggregator": {
-    "method": "MedianLow",
+    "method": "Priority",
     "filter": {
       "max_age": "60000000000",
       "max_clock_drift": "10000000000",
