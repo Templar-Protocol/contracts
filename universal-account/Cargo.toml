@@ -28,6 +28,7 @@ soroban-client = "0.5.3"
 near-chain-configs.workspace = true
 near-parameters.workspace = true
 near-primitives.workspace = true
+near-primitives-core.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 
 [features]

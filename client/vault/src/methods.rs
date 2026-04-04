@@ -648,7 +648,7 @@ macro_rules! impl_vault_methods {
 
             #[instrument(skip(self))]
             pub async fn refresh_idle_balance(&self) -> Result<ResyncIdleReport, ErrorWrapper> {
-                const RESYNC_IDLE_GAS: Gas = 30_000_000_000_000;
+                const RESYNC_IDLE_GAS: Gas = Gas::from_gas(30_000_000_000_000);
                 let report: templar_common::vault::ResyncIdleReport = self
                     .vault_call_returning("resync_idle_balance", (), Some(RESYNC_IDLE_GAS), None)
                     .await?;

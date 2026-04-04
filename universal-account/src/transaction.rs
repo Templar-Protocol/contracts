@@ -56,8 +56,8 @@ impl From<FunctionCallAction> for near_primitives::action::FunctionCallAction {
         Self {
             method_name: value.function_name,
             args: value.arguments.0,
-            gas: value.gas.as_gas(),
-            deposit: value.amount.as_yoctonear(),
+            gas: near_primitives::gas::Gas::from_gas(value.gas.as_gas()),
+            deposit: value.amount,
         }
     }
 }
@@ -128,15 +128,16 @@ impl Action {
         receiver_id: &near_sdk::AccountIdRef,
         sir: bool,
         protocol_config: &near_chain_configs::ProtocolConfigView,
-    ) -> Gas {
-        let fee =
-            |f: &near_parameters::Fee| f.execution + if sir { f.send_sir } else { f.send_not_sir };
+    ) -> near_primitives::gas::Gas {
+        let fee = |f: &near_parameters::Fee| {
+            f.execution.as_gas() + if sir { f.send_sir } else { f.send_not_sir }.as_gas()
+        };
 
         let costs = &protocol_config
             .runtime_config
             .transaction_costs
             .action_creation_config;
-        Gas::from_gas(match self {
+        near_primitives::gas::Gas::from_gas(match self {
             Self::CreateAccount => fee(&costs.create_account_cost),
             Self::DeployContract { code } => {
                 fee(&costs.deploy_contract_cost)
@@ -244,9 +245,7 @@ impl Action {
             Action::DeployGlobalContractByAccountId { code } => {
                 promise.deploy_global_contract_by_account_id(code.0.clone())
             }
-            Action::UseGlobalContract { code_hash } => {
-                promise.use_global_contract(near_sdk::CryptoHash::from(*code_hash).to_vec())
-            }
+            Action::UseGlobalContract { code_hash } => promise.use_global_contract(*code_hash),
             Action::UseGlobalContractByAccountId { account_id } => {
                 promise.use_global_contract_by_account_id(account_id.clone())
             }
@@ -309,8 +308,8 @@ mod tests {
             near_sdk::serde_json::from_str(config).unwrap();
 
         assert_eq!(
-            action.gas_cost(&receiver_id, sir, &config),
-            near_sdk::Gas::from_gas(expected_cost),
+            action.gas_cost(&receiver_id, sir, &config).as_gas(),
+            expected_cost
         );
     }
 
@@ -383,7 +382,7 @@ mod tests {
             .into(),
         };
 
-        t.to_promise();
+        t.to_promise().detach();
 
         let receipts = test_utils::get_created_receipts();
 

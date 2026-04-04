@@ -222,7 +222,7 @@ pub async fn universal_account(
         key_entry.salt,
         Some(
             env::keccak256_array(
-                &borsh::to_vec(&(key_entry.block_height, key_entry.index)).unwrap()
+                borsh::to_vec(&(key_entry.block_height, key_entry.index)).unwrap()
             )
             .into()
         )

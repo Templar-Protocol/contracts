@@ -173,9 +173,8 @@ impl Near {
     pub async fn fetch_gas_price(&self) -> Result<NearToken, JsonRpcError<RpcGasPriceError>> {
         let method = methods::gas_price::RpcGasPriceRequest { block_id: None };
         let response = self.client.call(method).await?;
-        let price = NearToken::from_yoctonear(response.gas_price);
-        tracing::trace!(gas_price = %price, "Fetched gas price");
-        Ok(price)
+        tracing::trace!(gas_price = %response.gas_price, "Fetched gas price");
+        Ok(response.gas_price)
     }
 
     /// # Errors
@@ -304,9 +303,7 @@ impl Near {
             unreachable!("Invalid response kind");
         };
 
-        Ok(NearToken::from_yoctonear(
-            account.amount.saturating_sub(account.locked),
-        ))
+        Ok(account.amount.saturating_sub(account.locked))
     }
 
     /// # Errors
@@ -363,8 +360,8 @@ impl Near {
                 "account_id": account_id,
             }))
             .unwrap(),
-            gas: STORAGE_DEPOSIT_GAS.as_gas(),
-            deposit: amount.as_yoctonear(),
+            gas: near_primitives::gas::Gas::from_gas(STORAGE_DEPOSIT_GAS.as_gas()),
+            deposit: amount,
         };
 
         Transaction::V0(TransactionV0 {
@@ -396,8 +393,8 @@ impl Near {
         let action = FunctionCallAction {
             method_name: "deploy".to_string(),
             args: serde_json::to_vec(args).unwrap(),
-            gas: DEPLOY_GAS.as_gas(),
-            deposit: 0,
+            gas: near_primitives::gas::Gas::from_gas(DEPLOY_GAS.as_gas()),
+            deposit: NearToken::ZERO,
         };
 
         Transaction::V0(TransactionV0 {
@@ -429,8 +426,8 @@ impl Near {
         let action = FunctionCallAction {
             method_name: "execute".to_string(),
             args: serde_json::to_vec(&json!({ "args": args })).unwrap(),
-            gas,
-            deposit: 0,
+            gas: near_primitives::gas::Gas::from_gas(gas),
+            deposit: NearToken::ZERO,
         };
 
         Transaction::V0(TransactionV0 {

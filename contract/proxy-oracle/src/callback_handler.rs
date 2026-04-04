@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::OnceLock};
 
-use near_sdk::{env, near, serde::de::DeserializeOwned, serde_json, AccountId, PromiseResult};
+use near_sdk::{env, near, serde::de::DeserializeOwned, serde_json, AccountId};
 use templar_common::{
     oracle::{
         pyth::{self, OracleResponse},
@@ -114,8 +114,7 @@ impl<'a> CallbackHandler<'a> {
 }
 
 pub fn callback_result<T: DeserializeOwned>(index: u64) -> Option<T> {
-    match env::promise_result(index) {
-        PromiseResult::Successful(vec) => serde_json::from_slice(&vec).ok(),
-        PromiseResult::Failed => None,
-    }
+    env::promise_result_checked(index, 0x1000)
+        .ok()
+        .and_then(|vec| serde_json::from_slice(&vec).ok())
 }

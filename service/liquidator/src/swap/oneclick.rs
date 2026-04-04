@@ -24,6 +24,7 @@ use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::Action,
+    gas::Gas,
     transaction::{Transaction, TransactionV0},
     types::AccountId,
     views::FinalExecutionStatus,
@@ -31,6 +32,7 @@ use near_primitives::{
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
+    NearToken,
 };
 
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
@@ -566,7 +568,6 @@ impl OneClickSwap {
         account_id: &AccountId,
     ) -> AppResult<()> {
         use near_primitives::transaction::{Action, FunctionCallAction};
-        use near_sdk::Gas;
 
         const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
 
@@ -616,8 +617,8 @@ impl OneClickSwap {
                 "registration_only": true,
             }))
             .map_err(|e| AppError::ValidationError(format!("Failed to serialize args: {e}")))?,
-            gas: Gas::from_tgas(10).as_gas(),
-            deposit: min_deposit,
+            gas: Gas::from_teragas(10),
+            deposit: NearToken::from_yoctonear(min_deposit),
         };
 
         let tx = Transaction::V0(TransactionV0 {
@@ -699,7 +700,7 @@ impl OneClickSwap {
                 signer_id: self.signer.get_account_id(),
                 public_key: self.signer.public_key().clone(),
                 actions: vec![Action::Transfer(near_primitives::action::TransferAction {
-                    deposit: 1, // 1 yoctoNEAR
+                    deposit: NearToken::from_yoctonear(1),
                 })],
             });
 
@@ -762,9 +763,10 @@ impl OneClickSwap {
         match &outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
                 let account_type_str = match deposit_account.get_account_type() {
-                    near_account_id::AccountType::NearImplicitAccount => "implicit",
-                    near_account_id::AccountType::EthImplicitAccount => "eth-implicit",
-                    near_account_id::AccountType::NamedAccount => "named",
+                    AccountType::NamedAccount => "named",
+                    AccountType::NearImplicitAccount => "implicit",
+                    AccountType::EthImplicitAccount => "eth-implicit",
+                    AccountType::NearDeterministicAccount => "deterministic",
                 };
                 tracing::info!(
                     tx_hash = %tx_hash_str,

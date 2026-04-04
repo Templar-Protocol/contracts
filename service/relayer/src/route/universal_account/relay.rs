@@ -143,7 +143,7 @@ pub async fn relay(
                 .iter()
                 .map(|a| a.gas_cost(receiver_id, true, &protocol_config))
                 .reduce(|a, b| a.saturating_add(b))
-                .unwrap_or(near_sdk::Gas::from_gas(0))
+                .unwrap_or(near_primitives::gas::Gas::ZERO)
                 .as_gas();
             tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
             continue;
@@ -187,7 +187,7 @@ pub async fn relay(
             };
         interacted_contract_ids.insert(receiver_id.to_owned());
         interacted_contract_ids.extend(additional_interactions.into_iter());
-        gas += calls.iter().map(|f| f.gas).sum::<u64>();
+        gas += calls.iter().map(|f| f.gas.as_gas()).sum::<u64>();
     }
 
     App::expand_market_related_contracts(&accounts, &mut interacted_contract_ids);

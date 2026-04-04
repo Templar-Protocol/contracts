@@ -9,8 +9,10 @@
 use near_jsonrpc_client::{
     methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest, JsonRpcClient,
 };
-use near_primitives::transaction::{Transaction, TransactionV0};
-use near_sdk::Gas;
+use near_primitives::{
+    gas::Gas,
+    transaction::{Transaction, TransactionV0},
+};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use std::collections::HashMap;
 use templar_common::{
@@ -521,8 +523,8 @@ impl OracleFetcher {
             actions: vec![near_primitives::action::FunctionCallAction {
                 method_name: "update_price_feeds".to_string(),
                 args: json!({ "data": vaa_hex }).to_string().into_bytes(),
-                gas: Gas::from_tgas(100).as_gas(),
-                deposit: NearToken::from_millinear(1).as_yoctonear(),
+                gas: Gas::from_teragas(100),
+                deposit: NearToken::from_millinear(1),
             }
             .into()],
         });
