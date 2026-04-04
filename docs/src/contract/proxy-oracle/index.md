@@ -57,7 +57,16 @@ This avoids a single global policy for all assets.
 
 ### Confidence-Aware Aggregation
 
-The proxy aggregates over source confidence bounds, not just point estimates. This is more conservative than a simple passthrough or first-response model.
+The proxy aggregates over source confidence bounds, not just point estimates. Each source contributes a lower and upper bound derived from its reported price and confidence interval.
+
+The aggregated result is still returned as a Pyth-compatible price object:
+
+- `price`: the selected aggregated scalar value
+- `expo`: the exponent of that selected value
+- `publish_time`: the timestamp carried by that selected value
+- `conf`: for median-style aggregation, `0`, because the confidence interval has already been consumed by the aggregation step
+
+This is more conservative than a simple passthrough or first-response model while still preserving a standard oracle interface for downstream consumers.
 
 ### Layered Freshness Controls
 
