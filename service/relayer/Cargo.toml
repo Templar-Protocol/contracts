@@ -13,7 +13,6 @@ near-contract-standards.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
-near-parameters.workspace = true
 near-primitives.workspace = true
 near-sdk = { workspace = true, features = [
     "non-contract-usage",

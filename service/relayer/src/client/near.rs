@@ -17,7 +17,6 @@ use near_jsonrpc_client::{
     JsonRpcClient,
 };
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_parameters::{RuntimeConfigStore, RuntimeConfigView};
 use near_primitives::{
     action::{delegate::SignedDelegateAction, FunctionCallAction},
     hash::CryptoHash,
@@ -93,8 +92,6 @@ pub struct Near {
 pub enum NearError {
     #[error("Rpc error: {0}")]
     RpcError(#[from] Box<dyn std::error::Error>),
-    #[error("Http error: {0}")]
-    Http(#[from] reqwest::Error),
     #[error("Parse error: {0}")]
     ParseError(#[from] serde_json::Error),
 }
@@ -197,47 +194,10 @@ impl Near {
                 Ok(response)
             }
             Err(error) => {
-                tracing::warn!(%error, "Protocol config RPC deserialization failed, trying compatibility path");
-                let response = self.fetch_protocol_config_compat().await?;
-                tracing::trace!(protocol_config = ?response, "Fetched protocol config via compatibility path");
-                Ok(response)
+                tracing::warn!(%error, "Protocol config RPC deserialization failed");
+                Err(NearError::RpcError(Box::new(error)))
             }
         }
-    }
-
-    async fn fetch_protocol_config_compat(
-        &self,
-    ) -> Result<methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigResponse, NearError> {
-        let method = methods::EXPERIMENTAL_protocol_config::RpcProtocolConfigRequest {
-            block_reference: BlockReference::latest(),
-        };
-        let params = serde_json::to_value(&method)?;
-
-        let response = reqwest::Client::new()
-            .post(self.client.server_addr())
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": "templar-relayer-protocol-config",
-                "method": "EXPERIMENTAL_protocol_config",
-                "params": params,
-            }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<serde_json::Value>()
-            .await?;
-
-        if let Some(error) = response.get("error") {
-            return Err(NearError::RpcError(error.to_string().into()));
-        }
-
-        let mut result = response.get("result").cloned().ok_or_else(|| {
-            NearError::RpcError("Missing result in protocol config response".into())
-        })?;
-
-        patch_protocol_config_compat(&mut result);
-
-        Ok(serde_json::from_value(result)?)
     }
 
     /// # Errors
@@ -1036,26 +996,6 @@ impl Near {
                 .verifying_contract(ua_account_id)
                 .build(),
         }))
-    }
-}
-
-fn patch_protocol_config_compat(value: &mut serde_json::Value) {
-    let protocol_version = value
-        .get("protocol_version")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default();
-
-    let runtime_config = RuntimeConfigView::from(
-        RuntimeConfigStore::new(None)
-            .get_config(protocol_version as u32)
-            .as_ref()
-            .clone(),
-    );
-
-    if let Some(root) = value.as_object_mut() {
-        if let Ok(runtime_config) = serde_json::to_value(runtime_config) {
-            root.insert("runtime_config".to_string(), runtime_config);
-        }
     }
 }
 

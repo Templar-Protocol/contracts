@@ -114,7 +114,8 @@ impl<'a> CallbackHandler<'a> {
 }
 
 pub fn callback_result<T: DeserializeOwned>(index: u64) -> Option<T> {
-    env::promise_result_checked(index, 0x1000)
-        .ok()
-        .and_then(|vec| serde_json::from_slice(&vec).ok())
+    match env::promise_result(index) {
+        near_sdk::PromiseResult::Successful(vec) => serde_json::from_slice(&vec).ok(),
+        near_sdk::PromiseResult::Failed => None,
+    }
 }

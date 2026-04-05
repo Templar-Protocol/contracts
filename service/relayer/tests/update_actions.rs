@@ -32,19 +32,7 @@ async fn requires_network_pyth() {
             .unwrap(),
     );
 
-    let actions = match handle.update_actions(&[price_id]).await {
-        Ok(actions) => actions,
-        Err(error)
-            if error.is_timeout()
-                || error
-                    .status()
-                    .is_some_and(|status| status.is_server_error()) =>
-        {
-            eprintln!("Skipping transient Pyth network failure: {error}");
-            return;
-        }
-        Err(error) => panic!("Pyth update_actions failed: {error}"),
-    };
+    let actions = handle.update_actions(&[price_id]).await.unwrap();
     assert_eq!(actions.len(), 1);
     let Action::FunctionCall(fc) = &actions[0] else {
         panic!("Unexpected action type: {:?}", &actions[0]);
