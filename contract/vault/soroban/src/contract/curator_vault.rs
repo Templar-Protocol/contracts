@@ -31,23 +31,6 @@ struct RefreshCompletionSnapshot {
     markets_refreshed: u32,
 }
 
-#[derive(Clone, Copy)]
-struct RefreshedPosition {
-    market: TargetId,
-    total_assets: u128,
-}
-
-impl RefreshedPosition {
-    #[inline]
-    #[must_use]
-    const fn new(market: TargetId, total_assets: u128) -> Self {
-        Self {
-            market,
-            total_assets,
-        }
-    }
-}
-
 pub struct CuratorVault<S, A, E>
 where
     S: Storage,
@@ -809,6 +792,41 @@ where
         Ok(new_external)
     }
 
+    #[inline]
+    fn classify_refreshed_positions(
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Vec<(TargetId, u128)> {
+        refreshed_positions.to_vec()
+    }
+
+    fn validate_refreshed_positions_against_plan(
+        &self,
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Result<(), RuntimeError> {
+        let refreshing = self
+            .state()?
+            .op_state
+            .as_refreshing()
+            .ok_or_else(|| invalid_state_error(""))?;
+
+        for (market, _) in refreshed_positions {
+            if !refreshing.plan.contains(market) {
+                return Err(RuntimeError::invalid_input(""));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_refreshed_positions(&mut self, refreshed_positions: &[(TargetId, u128)]) {
+        let policy = self.policy_state_mut();
+        for &(market, total_assets) in refreshed_positions {
+            policy
+                .set_principal(market, total_assets)
+                .unwrap_or_else(|_| panic!("refresh principal failed"));
+        }
+    }
+
     pub(crate) fn complete_refresh_with_positions(
         &mut self,
         caller: Address,
@@ -816,28 +834,9 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        let plan_targets: Vec<TargetId> = {
-            let refreshing = self
-                .state()?
-                .op_state
-                .as_refreshing()
-                .ok_or_else(|| invalid_state_error(""))?;
-            refreshing.plan.iter().copied().collect()
-        };
-
-        {
-            let policy = self.policy_state_mut();
-            for &(market, total_assets) in refreshed_positions {
-                if !plan_targets.contains(&market) {
-                    return Err(RuntimeError::invalid_input(""));
-                }
-
-                policy
-                    .set_principal(market, total_assets)
-                    .unwrap_or_else(|_| panic!("refresh principal failed"));
-            }
-        }
-
+        let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
+        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
+        self.apply_refreshed_positions(&refreshed_positions);
         let new_external_assets = self.policy_state().external_assets()?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
