@@ -9,9 +9,9 @@ use super::market_lock::MarketLeaseRegistry;
 #[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SupplyQueueEntry {
-    target_id: TargetId,
-    amount: u128,
-    priority: u8,
+    pub target_id: TargetId,
+    pub amount: u128,
+    pub priority: u8,
 }
 
 impl SupplyQueueEntry {
@@ -41,21 +41,6 @@ impl SupplyQueueEntry {
         }
 
         Ok(())
-    }
-
-    #[must_use]
-    pub fn target_id(&self) -> TargetId {
-        self.target_id
-    }
-
-    #[must_use]
-    pub fn amount(&self) -> u128 {
-        self.amount
-    }
-
-    #[must_use]
-    pub fn priority(&self) -> u8 {
-        self.priority
     }
 }
 
@@ -140,10 +125,10 @@ impl SupplyQueue {
             let expected_priority = u8::try_from(priority).unwrap();
             for entry in bucket {
                 entry.validate()?;
-                if entry.priority() != expected_priority {
+                if entry.priority != expected_priority {
                     return Err(SupplyQueueError::PriorityBucketMismatch {
                         expected_priority,
-                        actual_priority: entry.priority(),
+                        actual_priority: entry.priority,
                     });
                 }
             }
@@ -197,7 +182,7 @@ impl SupplyQueue {
     }
 
     fn push_validated_entry(&mut self, entry: SupplyQueueEntry) -> Option<()> {
-        self.buckets[usize::from(entry.priority())].push(entry);
+        self.buckets[usize::from(entry.priority)].push(entry);
         self.len = self.len.checked_add(1)?;
         Some(())
     }
@@ -220,7 +205,7 @@ impl SupplyQueue {
     }
 
     pub fn total(&self) -> Result<u128, SupplyQueueError> {
-        checked_total_amount(self.entries().into_iter().map(SupplyQueueEntry::amount))
+        checked_total_amount(self.entries().into_iter().map(|entry| entry.amount))
     }
 
     pub fn totals_by_target(&self) -> Result<Vec<(TargetId, u128)>, SupplyQueueError> {
@@ -228,16 +213,16 @@ impl SupplyQueue {
         for entry in self.entries() {
             let sum = match totals
                 .iter_mut()
-                .find(|(target_id, _)| *target_id == entry.target_id())
+                .find(|(target_id, _)| *target_id == entry.target_id)
             {
                 Some((_, total)) => total,
                 None => {
-                    totals.push((entry.target_id(), 0));
+                    totals.push((entry.target_id, 0));
                     &mut totals.last_mut().unwrap().1
                 }
             };
             *sum = (*sum)
-                .checked_add(entry.amount())
+                .checked_add(entry.amount)
                 .ok_or(SupplyQueueError::AmountOverflow)?;
         }
         Ok(totals)
@@ -247,7 +232,7 @@ impl SupplyQueue {
         let mut removed = 0u32;
         for bucket in &mut self.buckets {
             let before = bucket.len();
-            bucket.retain(|entry| entry.target_id() != target_id);
+            bucket.retain(|entry| entry.target_id != target_id);
             let after = bucket.len();
             let diff = before.saturating_sub(after);
             removed = removed.saturating_add(u32::try_from(diff).unwrap_or(u32::MAX));
@@ -259,7 +244,7 @@ impl SupplyQueue {
     pub fn excluding_leased(&self, leases: &MarketLeaseRegistry, now_ns: TimestampNs) -> Self {
         let mut filtered = Self::new(self.max_length());
         for entry in self.entries() {
-            if leases.is_unleased(entry.target_id(), now_ns) {
+            if leases.is_unleased(entry.target_id, now_ns) {
                 filtered.push_validated_entry(entry.clone()).unwrap();
             }
         }
@@ -282,10 +267,10 @@ impl SupplyQueue {
         for entry in self.entries() {
             if let Some(index) = totals
                 .iter()
-                .position(|(target_id, _)| *target_id == entry.target_id())
+                .position(|(target_id, _)| *target_id == entry.target_id)
             {
                 let (_, amount) = totals.remove(index);
-                plan.push((entry.target_id(), amount));
+                plan.push((entry.target_id, amount));
             }
         }
 
@@ -303,8 +288,8 @@ impl SupplyQueue {
     pub fn total_for_target(&self, target_id: TargetId) -> Result<u128, SupplyQueueError> {
         self.entries()
             .into_iter()
-            .filter(|entry| entry.target_id() == target_id)
-            .map(SupplyQueueEntry::amount)
+            .filter(|entry| entry.target_id == target_id)
+            .map(|entry| entry.amount)
             .try_fold(0u128, |acc, amount| {
                 acc.checked_add(amount)
                     .ok_or(SupplyQueueError::AmountOverflow)
@@ -315,7 +300,7 @@ impl SupplyQueue {
     pub fn has_target(&self, target_id: TargetId) -> bool {
         self.entries()
             .into_iter()
-            .any(|entry| entry.target_id() == target_id)
+            .any(|entry| entry.target_id == target_id)
     }
 }
 

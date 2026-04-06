@@ -868,7 +868,7 @@ impl SorobanVaultContract {
         );
         let policy_state = runtime_to_contract(storage.load_policy_state())?.unwrap_or_default();
         for entry in policy_state.supply_queue().entries() {
-            queue.push_back(entry.target_id());
+            queue.push_back(entry.target_id);
         }
         for (id, rec) in policy_state.cap_groups().iter() {
             let sdk_id = soroban_sdk::String::from_str(&env, id.as_str());

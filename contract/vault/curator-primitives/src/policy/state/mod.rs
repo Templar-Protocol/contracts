@@ -468,7 +468,7 @@ impl PolicyState {
         supply_queue: &SupplyQueue,
     ) -> Result<(), PolicyStateError> {
         for entry in supply_queue.entries() {
-            let target_id = entry.target_id();
+            let target_id = entry.target_id;
             let config = self
                 .market_config(target_id)
                 .ok_or(PolicyStateError::SupplyQueueUnknownMarket { target_id })?;

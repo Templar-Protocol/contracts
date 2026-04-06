@@ -194,7 +194,7 @@ pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, C
 
     let policy_state = load_policy_state(env)?;
     for (idx, entry) in policy_state.supply_queue().entries().iter().enumerate() {
-        if entry.target_id() == market {
+        if entry.target_id == market {
             let index = u32::try_from(idx).map_err(|_| ContractError::InvalidInput)?;
             return adapters.get(index).ok_or(ContractError::InvalidInput);
         }

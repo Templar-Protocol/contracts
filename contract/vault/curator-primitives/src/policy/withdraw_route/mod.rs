@@ -7,9 +7,9 @@ use super::{market_lock::MarketLeaseRegistry, target_set::find_first_duplicate};
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawRouteEntry {
-    target_id: TargetId,
-    max_amount: u128,
-    available_liquidity: Option<u128>,
+    pub target_id: TargetId,
+    pub max_amount: u128,
+    pub available_liquidity: Option<u128>,
 }
 
 impl WithdrawRouteEntry {
@@ -37,28 +37,13 @@ impl WithdrawRouteEntry {
         self.available_liquidity = Some(available_liquidity);
         Ok(self)
     }
-
-    #[must_use]
-    pub fn target_id(&self) -> TargetId {
-        self.target_id
-    }
-
-    #[must_use]
-    pub fn max_amount(&self) -> u128 {
-        self.max_amount
-    }
-
-    #[must_use]
-    pub fn available_liquidity(&self) -> Option<u128> {
-        self.available_liquidity
-    }
 }
 
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct WithdrawPlanEntry {
-    target_id: TargetId,
-    max_amount: u128,
+    pub target_id: TargetId,
+    pub max_amount: u128,
 }
 
 impl WithdrawPlanEntry {
@@ -68,16 +53,6 @@ impl WithdrawPlanEntry {
             target_id,
             max_amount,
         }
-    }
-
-    #[must_use]
-    pub const fn target_id(&self) -> TargetId {
-        self.target_id
-    }
-
-    #[must_use]
-    pub const fn max_amount(&self) -> u128 {
-        self.max_amount
     }
 }
 
@@ -128,13 +103,13 @@ impl WithdrawRoute {
     }
 
     pub fn checked_total(&self) -> Result<u128, WithdrawRouteError> {
-        checked_total_amount(self.entries.iter().map(WithdrawRouteEntry::max_amount))
+        checked_total_amount(self.entries.iter().map(|entry| entry.max_amount))
     }
 
     pub fn known_available_liquidity(&self) -> Result<Option<u128>, WithdrawRouteError> {
         self.entries
             .iter()
-            .map(WithdrawRouteEntry::available_liquidity)
+            .map(|entry| entry.available_liquidity)
             .try_fold(Some(0u128), |acc, maybe_liquidity| {
                 match (acc, maybe_liquidity) {
                     (Some(sum), Some(liquidity)) => sum
@@ -149,7 +124,7 @@ impl WithdrawRoute {
     #[must_use]
     pub fn can_satisfy(&self) -> bool {
         reaches_target(
-            self.entries.iter().map(WithdrawRouteEntry::max_amount),
+            self.entries.iter().map(|entry| entry.max_amount),
             self.target_amount,
         )
     }
@@ -164,28 +139,24 @@ impl WithdrawRoute {
         }
 
         for entry in &self.entries {
-            if entry.max_amount() == 0 {
+            if entry.max_amount == 0 {
                 return Err(WithdrawRouteError::ZeroMaxAmount {
-                    target_id: entry.target_id(),
+                    target_id: entry.target_id,
                 });
             }
 
-            if let Some(available_liquidity) = entry.available_liquidity() {
-                if entry.max_amount() > available_liquidity {
+            if let Some(available_liquidity) = entry.available_liquidity {
+                if entry.max_amount > available_liquidity {
                     return Err(WithdrawRouteError::LiquidityLessThanMaxAmount {
-                        target_id: entry.target_id(),
-                        max_amount: entry.max_amount(),
+                        target_id: entry.target_id,
+                        max_amount: entry.max_amount,
                         available_liquidity,
                     });
                 }
             }
         }
 
-        let targets: Vec<TargetId> = self
-            .entries
-            .iter()
-            .map(WithdrawRouteEntry::target_id)
-            .collect();
+        let targets: Vec<TargetId> = self.entries.iter().map(|entry| entry.target_id).collect();
         if let Some(target_id) = find_first_duplicate(&targets) {
             return Err(WithdrawRouteError::DuplicateTarget { target_id });
         }
@@ -193,7 +164,7 @@ impl WithdrawRoute {
         if !self.can_satisfy() {
             return Err(WithdrawRouteError::InsufficientRouteTotal {
                 route_total: capped_total(
-                    self.entries.iter().map(WithdrawRouteEntry::max_amount),
+                    self.entries.iter().map(|entry| entry.max_amount),
                     self.target_amount,
                 ),
                 target_amount: self.target_amount,
@@ -212,7 +183,7 @@ impl WithdrawRoute {
     pub fn withdraw_plan(&self) -> Vec<WithdrawPlanEntry> {
         self.entries
             .iter()
-            .map(|entry| WithdrawPlanEntry::new(entry.target_id(), entry.max_amount()))
+            .map(|entry| WithdrawPlanEntry::new(entry.target_id, entry.max_amount))
             .collect()
     }
 
@@ -220,14 +191,14 @@ impl WithdrawRoute {
     pub fn get_entry(&self, target_id: TargetId) -> Option<&WithdrawRouteEntry> {
         self.entries
             .iter()
-            .find(|entry| entry.target_id() == target_id)
+            .find(|entry| entry.target_id == target_id)
     }
 
     #[must_use]
     pub fn has_target(&self, target_id: TargetId) -> bool {
         self.entries
             .iter()
-            .any(|entry| entry.target_id() == target_id)
+            .any(|entry| entry.target_id == target_id)
     }
 
     #[must_use]
@@ -239,7 +210,7 @@ impl WithdrawRoute {
         let filtered_entries = self
             .entries
             .iter()
-            .filter(|entry| leases.is_unleased(entry.target_id(), now_ns))
+            .filter(|entry| leases.is_unleased(entry.target_id, now_ns))
             .cloned()
             .collect();
 
@@ -406,10 +377,7 @@ pub fn build_withdraw_route_with_liquidity(
         return Err(WithdrawRouteError::EmptyRoute);
     }
 
-    let route_total = capped_total(
-        entries.iter().map(WithdrawRouteEntry::max_amount),
-        target_amount,
-    );
+    let route_total = capped_total(entries.iter().map(|entry| entry.max_amount), target_amount);
     if route_total < target_amount {
         return Err(WithdrawRouteError::InsufficientRouteTotal {
             route_total,
