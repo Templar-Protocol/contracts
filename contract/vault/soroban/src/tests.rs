@@ -619,6 +619,23 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_complete_refresh_with_positions_rejects_targets_outside_active_plan() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+
+        let op_id = vault
+            .begin_refreshing(caller, vec![0, 1], 1_500)
+            .expect("should start refresh");
+
+        let error = vault
+            .complete_refresh_with_positions(caller, &[(0, 100), (2, 300)], op_id, 1_500)
+            .expect_err("extra targets must be rejected");
+
+        assert_eq!(error, RuntimeError::InvalidInput);
+        assert!(vault.state().unwrap().op_state.is_refreshing());
+    }
+
+    #[test]
     fn test_execute_withdraw_respects_min_withdrawal_assets() {
         let mut vault = create_test_vault();
         let allocator = templar_vault_kernel::Address([3u8; 32]);
@@ -1870,12 +1887,16 @@ mod storage_tests {
     use crate::error::RuntimeError;
     use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
     use crate::test_utils::{fuzz_api, MemoryStorage};
+    use alloc::string::{String, ToString};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
+    use templar_curator_primitives::policy::cap_group::CapGroupId;
+    use templar_curator_primitives::policy::state::MarketConfig;
+    use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
         VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-        GOVERNANCE_POLICY_KIND_FEES,
+        GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
@@ -2513,6 +2534,214 @@ mod storage_tests {
             };
 
             assert_eq!(err, crate::error::ContractError::InvalidInput);
+        });
+    }
+
+    #[test]
+    fn test_governance_policy_group_cap_clear_via_none_reaches_policy_layer() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = PolicyState::default();
+            let cap_group_id = CapGroupId::try_from("group-a".to_string()).unwrap();
+            policy_state.set_cap_group_absolute_cap(cap_group_id.clone(), Some(77));
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let err = match execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_GROUP,
+                    target_ids: None,
+                    mode: Some(0),
+                    accounts: None,
+                    market_id: Some(0),
+                    cap_group_id: Some("group-a".to_string()),
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            ) {
+                Ok(_) => panic!("clearing an active cap should remain timelocked"),
+                Err(err) => err,
+            };
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.absolute_cap()),
+                Some(77)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_policy_group_relative_cap_clear_via_none_reaches_policy_layer() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = PolicyState::default();
+            let cap_group_id = CapGroupId::try_from("group-b".to_string()).unwrap();
+            policy_state.set_cap_group_relative_cap(
+                cap_group_id.clone(),
+                Some(templar_vault_kernel::Wad::from(25u128)),
+            );
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let err = match execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_GROUP,
+                    target_ids: None,
+                    mode: Some(1),
+                    accounts: None,
+                    market_id: Some(0),
+                    cap_group_id: Some("group-b".to_string()),
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            ) {
+                Ok(_) => panic!("clearing an active relative cap should remain timelocked"),
+                Err(err) => err,
+            };
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.relative_cap()),
+                Some(templar_vault_kernel::Wad::from(25u128))
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_policy_group_membership_empty_string_clears_membership() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = PolicyState::default();
+            let cap_group_id = CapGroupId::try_from("group-c".to_string()).unwrap();
+            policy_state.set_cap_group_absolute_cap(cap_group_id.clone(), Some(100));
+            policy_state
+                .set_market_config(7, MarketConfig::new(true, 100, Some(cap_group_id.clone())))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let result = execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_GROUP,
+                    target_ids: None,
+                    mode: Some(2),
+                    accounts: None,
+                    market_id: Some(7),
+                    cap_group_id: Some(String::new()),
+                    value: Some(0),
+                    value_b: None,
+                    value_c: None,
+                },
+            )
+            .unwrap();
+
+            assert!(matches!(result, VaultCommandResult::Unit));
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .market_config(7)
+                    .and_then(|config| config.cap_group_id.clone()),
+                None
+            );
         });
     }
 }

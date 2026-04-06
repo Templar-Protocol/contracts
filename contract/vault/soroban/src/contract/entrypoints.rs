@@ -233,11 +233,11 @@ fn apply_group_policy(
     let internal = match mode {
         0 => CapGroupUpdate::SetCap {
             cap_group_id: parsed_cap_group(cap_group_raw.clone())?,
-            new_cap: Some(to_u128(required_i128(value)?)?),
+            new_cap: value.map(to_u128).transpose()?,
         },
         1 => CapGroupUpdate::SetRelativeCap {
             cap_group_id: parsed_cap_group(cap_group_raw.clone())?,
-            new_relative_cap: Some(Wad::from(to_u128(required_i128(value)?)?)),
+            new_relative_cap: value.map(|raw| to_u128(raw).map(Wad::from)).transpose()?,
         },
         2 => {
             let group = if cap_group_raw.is_empty() {
