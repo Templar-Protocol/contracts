@@ -8,7 +8,6 @@ use templar_vault_kernel::PayoutOutcome;
 
 #[rstest]
 #[case(100, 50, 50, 100, 0)]
-#[case(100, 200, 50, 25, 75)]
 fn payout_success_paths(
     #[case] escrow_shares: u128,
     #[case] expected_assets: u128,

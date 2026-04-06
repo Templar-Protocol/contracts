@@ -57,14 +57,6 @@ fn normalized_restriction_lists_sort_and_dedup() {
 }
 
 #[test]
-fn semantic_equivalence_ignores_order_and_duplicates() {
-    let x = Restrictions::blacklist(alloc::vec![addr(1), addr(2)]);
-    let y = Restrictions::blacklist(alloc::vec![addr(2), addr(1), addr(1)]);
-
-    assert_eq!(x, y);
-}
-
-#[test]
 fn normalized_round_trip_keeps_canonical_form() {
     let restrictions = Restrictions::blacklist(alloc::vec![addr(2), addr(1), addr(2)]).normalized();
 

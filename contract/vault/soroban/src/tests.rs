@@ -1680,7 +1680,7 @@ mod effects_tests {
         assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
 
         let events = env.events().all();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.events().len(), 1);
     }
 }
 
