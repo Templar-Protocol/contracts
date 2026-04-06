@@ -751,7 +751,7 @@ where
         for position in refreshed_positions {
             policy
                 .set_principal(position.market, position.total_assets)
-                .unwrap_or_else(|_| panic!());
+                .unwrap_or_else(|_| panic!("refresh principal failed"));
         }
     }
 
@@ -789,9 +789,9 @@ where
 
     fn update_market_principal(&mut self, market: TargetId, principal: u128) {
         let policy = self.policy_state_mut();
-        if policy.set_principal(market, principal).is_err() {
-            panic!();
-        }
+        policy
+            .set_principal(market, principal)
+            .unwrap_or_else(|_| panic!("market principal failed"));
     }
 
     pub(crate) fn complete_supply_allocation(
