@@ -3,6 +3,7 @@ use super::helpers::{
 };
 use super::*;
 use templar_curator_primitives::policy::state::PolicyStateError;
+use templar_vault_kernel::abort;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 #[derive(Clone, Copy)]
@@ -745,7 +746,7 @@ where
         let policy = self.policy_state_mut();
         policy
             .set_principal(market, principal)
-            .unwrap_or_else(|_| panic!("market principal failed"));
+            .unwrap_or_else(|_| abort!("market principal failed"));
     }
 
     pub(crate) fn complete_supply_allocation(
@@ -820,7 +821,7 @@ where
         for &(market, total_assets) in refreshed_positions {
             policy
                 .set_principal(market, total_assets)
-                .unwrap_or_else(|_| panic!("refresh principal failed"));
+                .unwrap_or_else(|_| abort!("refresh principal failed"));
         }
     }
 
