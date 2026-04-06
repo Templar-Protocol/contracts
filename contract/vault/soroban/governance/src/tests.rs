@@ -455,3 +455,26 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
         SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
     });
 }
+
+#[test]
+fn relative_cap_addition_is_immediate_and_removal_is_timelocked() {
+    assert_eq!(
+        TimelockDecision::from_relative_cap_change(None, Some(templar_vault_kernel::Wad::from(1))),
+        Ok(TimelockDecision::Immediate)
+    );
+    assert_eq!(
+        TimelockDecision::from_relative_cap_change(Some(templar_vault_kernel::Wad::from(1)), None,),
+        Ok(TimelockDecision::Timelocked)
+    );
+}
+
+#[test]
+fn empty_group_member_string_is_treated_as_membership_removal() {
+    let empty = SdkString::from_str(&Env::default(), "");
+    let proposed = if empty.is_empty() { None } else { Some(&empty) };
+
+    assert_eq!(
+        TimelockDecision::from_membership_assignment_change::<SdkString>(Some(&empty), proposed),
+        Ok(TimelockDecision::Timelocked)
+    );
+}

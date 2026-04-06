@@ -484,8 +484,8 @@ impl TimelockDecision {
 
         match (current, proposed) {
             (None, None) => Err(RelativeCapChangeError::NoChange),
-            (None, Some(_)) => Ok(Self::Timelocked),
-            (Some(_), None) => Ok(Self::Immediate),
+            (None, Some(_)) => Ok(Self::Immediate),
+            (Some(_), None) => Ok(Self::Timelocked),
             (Some(existing), Some(next)) if next == existing => {
                 Err(RelativeCapChangeError::NoChange)
             }
