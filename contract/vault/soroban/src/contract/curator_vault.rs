@@ -87,10 +87,7 @@ where
 
     #[inline(never)]
     pub fn load_state(&mut self) -> Result<(), RuntimeError> {
-        self.state = Some(match self.storage.load_state()? {
-            Some(state) => state,
-            None => VaultState::default(),
-        });
+        self.state = Some((self.storage.load_state()?).unwrap_or_default());
         self.paused = self.storage.load_paused()?;
         self.policy_state = self
             .storage
