@@ -117,6 +117,15 @@ fn test_settle_proportional_zero_expected_with_positive_assets_burns_all() {
 }
 
 #[test]
+fn test_settle_proportional_zero_expected_zero_actual_refunds_all() {
+    let entry = make_entry(1, 100, 0);
+
+    let settlement = settle_proportional(&entry, 0);
+    assert_eq!(settlement.to_burn, 0);
+    assert_eq!(settlement.refund, 100);
+}
+
+#[test]
 fn test_settle_proportional_partial() {
     let entry = make_entry(1, 100, 1000);
 
