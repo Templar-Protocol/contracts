@@ -5,8 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use derive_more::{From, Into};
-use serde::{de::DeserializeOwned, Serialize};
+use derive_more::From;
 use soroban_sdk::{symbol_short, Address as SdkAddress, Bytes, BytesN, Env, Symbol};
 use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
 use templar_curator_primitives::policy::market_lock::{
@@ -44,7 +43,6 @@ impl SorobanStorageKey {
     pub const PolicyPrincipals: Symbol = symbol_short!("pprncpls");
     pub const PolicyCapGroups: Symbol = symbol_short!("pcapgrps");
     pub const Restrictions: Symbol = symbol_short!("restrict");
-    pub const Version: Symbol = symbol_short!("version");
     pub const Paused: Symbol = symbol_short!("paused_l"); // legacy pause key (migration)
     pub const PausedState: Symbol = symbol_short!("paused_s");
 }
@@ -120,22 +118,6 @@ fn read_address(bytes: &[u8], cursor: &mut usize) -> Result<Address, RuntimeErro
 fn read_bytes<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], RuntimeError> {
     let len = read_u32(bytes, cursor)? as usize;
     read_exact(bytes, cursor, len)
-}
-
-fn encode_legacy_postcard<T: Serialize>(value: &T) -> Result<Vec<u8>, RuntimeError> {
-    postcard::to_allocvec(value).map_err(|_| RuntimeError::storage_error("legacy serialize failed"))
-}
-
-fn decode_legacy_postcard<T: DeserializeOwned>(
-    bytes: &[u8],
-    message: &'static str,
-) -> Result<T, RuntimeError> {
-    let (value, remaining) =
-        postcard::take_from_bytes(bytes).map_err(|_| RuntimeError::storage_error(message))?;
-    if !remaining.is_empty() {
-        return Err(RuntimeError::storage_error(message));
-    }
-    Ok(value)
 }
 
 fn encode_cap_group_id(id: &CapGroupId, out: &mut Vec<u8>) {
@@ -536,25 +518,23 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
     }
 }
 
-pub(crate) fn encode_state_blob(state: &VersionedState) -> Vec<u8> {
+pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
     let mut out = Vec::new();
-    push_u32(&mut out, state.version.number());
-    push_u128(&mut out, state.state.total_assets);
-    push_u128(&mut out, state.state.total_shares);
-    push_u128(&mut out, state.state.idle_assets);
-    push_u128(&mut out, state.state.external_assets);
-    push_u128(&mut out, state.state.fee_anchor.total_assets);
-    push_u64(&mut out, state.state.fee_anchor.timestamp_ns.as_u64());
-    encode_op_state(&state.state.op_state, &mut out);
-    encode_withdraw_queue(&state.state.withdraw_queue, &mut out);
-    push_u64(&mut out, state.state.next_op_id);
+    push_u128(&mut out, state.total_assets);
+    push_u128(&mut out, state.total_shares);
+    push_u128(&mut out, state.idle_assets);
+    push_u128(&mut out, state.external_assets);
+    push_u128(&mut out, state.fee_anchor.total_assets);
+    push_u64(&mut out, state.fee_anchor.timestamp_ns.as_u64());
+    encode_op_state(&state.op_state, &mut out);
+    encode_withdraw_queue(&state.withdraw_queue, &mut out);
+    push_u64(&mut out, state.next_op_id);
     out
 }
 
-pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VersionedState, RuntimeError> {
+pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
     let mut cursor = 0usize;
-    let version = StorageVersion::new(read_u32(bytes, &mut cursor)?);
-    let state = VaultState {
+    Ok(VaultState {
         total_assets: read_u128(bytes, &mut cursor)?,
         total_shares: read_u128(bytes, &mut cursor)?,
         idle_assets: read_u128(bytes, &mut cursor)?,
@@ -566,8 +546,7 @@ pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VersionedState, RuntimeE
         op_state: decode_op_state(bytes, &mut cursor)?,
         withdraw_queue: decode_withdraw_queue(bytes, &mut cursor)?,
         next_op_id: read_u64(bytes, &mut cursor)?,
-    };
-    Ok(VersionedState { version, state })
+    })
 }
 
 pub(crate) fn compose_policy_state(
@@ -722,22 +701,6 @@ impl<'a> SorobanStorage<'a> {
             .remove(&SorobanStorageKey::Restrictions);
     }
 
-    /// Get the storage version.
-    pub fn get_version(&self) -> Option<u32> {
-        self.env
-            .storage()
-            .persistent()
-            .get(&SorobanStorageKey::Version)
-    }
-
-    /// Set the storage version.
-    pub fn set_version(&self, version: u32) {
-        self.env
-            .storage()
-            .persistent()
-            .set(&SorobanStorageKey::Version, &version);
-    }
-
     /// Check if the contract is paused.
     pub fn is_paused(&self) -> bool {
         self.env
@@ -813,7 +776,6 @@ impl<'a> SorobanStorage<'a> {
                 p.extend_ttl(key, threshold, extend_to);
             }
         }
-        p.extend_ttl(&SorobanStorageKey::Version, threshold, extend_to);
     }
 
     fn extend_default_ttl(&self) {
@@ -822,64 +784,23 @@ impl<'a> SorobanStorage<'a> {
 }
 
 impl Storage for SorobanStorage<'_> {
-    fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
+    fn load_state(&self) -> Result<Option<VaultState>, RuntimeError> {
         if let Some(stored) = self.load_state_blob() {
-            let version = SorobanStorage::get_version(self)
-                .ok_or_else(|| RuntimeError::storage_error("state version missing"))?;
-            let stored_version = StorageVersion::new(version);
-
-            if !stored_version.is_compatible() {
-                return Err(RuntimeError::storage_error("unsupported state version"));
-            }
-
-            let versioned = if stored_version.uses_legacy_postcard() {
-                let legacy = decode_legacy_postcard::<VersionedState>(
-                    &stored,
-                    "state blob deserialize failed",
-                )?;
-                if legacy.version != stored_version {
-                    return Err(RuntimeError::storage_error("state version mismatch"));
-                }
-
-                let migrated = VersionedState::new(legacy.state);
-                self.save_state_blob(&encode_state_blob(&migrated));
-                self.set_version(StorageVersion::CURRENT.number());
-                self.extend_default_ttl();
-                migrated
-            } else {
-                decode_state_blob(&stored)?
-            };
-
-            if versioned.version != stored_version && !stored_version.uses_legacy_postcard() {
-                return Err(RuntimeError::storage_error("state version mismatch"));
-            }
-
-            return Ok(Some(versioned));
+            return Ok(Some(decode_state_blob(&stored)?));
         }
 
         Ok(None)
     }
 
-    fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
-        let state_blob = if state.version.uses_legacy_postcard() {
-            encode_legacy_postcard(state)?
-        } else {
-            encode_state_blob(state)
-        };
+    fn save_state(&mut self, state: &VaultState) -> Result<(), RuntimeError> {
+        let state_blob = encode_state_blob(state);
         self.save_state_blob(&state_blob);
-        self.set_version(state.version.number());
         self.extend_default_ttl();
         Ok(())
     }
 
     fn is_initialized(&self) -> bool {
         SorobanStorage::is_initialized(self)
-    }
-
-    fn get_version(&self) -> Result<StorageVersion, RuntimeError> {
-        SorobanStorage::get_version(self)
-            .map(StorageVersion::new)
-            .ok_or_else(|| RuntimeError::storage_error("version not initialized"))
     }
 
     fn load_paused(&self) -> Result<bool, RuntimeError> {
@@ -893,68 +814,28 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        let stored_version = SorobanStorage::get_version(self)
-            .map(StorageVersion::new)
-            .unwrap_or_default();
         let leases = self
             .load_policy_locks()
-            .map(|stored| {
-                if stored_version.uses_legacy_postcard() {
-                    decode_legacy_postcard(&stored, "policy locks deserialize failed")
-                } else {
-                    decode_policy_locks(&stored)
-                }
-            })
+            .map(|stored| decode_policy_locks(&stored))
             .transpose()?;
         let supply_queue = self
             .load_policy_supply_queue()
-            .map(|stored| {
-                if stored_version.uses_legacy_postcard() {
-                    decode_legacy_postcard(&stored, "policy supply queue deserialize failed")
-                } else {
-                    decode_supply_queue(&stored)
-                }
-            })
+            .map(|stored| decode_supply_queue(&stored))
             .transpose()?;
         let markets = self
             .load_policy_markets()
-            .map(|stored| {
-                if stored_version.uses_legacy_postcard() {
-                    decode_legacy_postcard(&stored, "policy markets deserialize failed")
-                } else {
-                    decode_markets(&stored)
-                }
-            })
+            .map(|stored| decode_markets(&stored))
             .transpose()?;
         let principals = self
             .load_policy_principals()
-            .map(|stored| {
-                if stored_version.uses_legacy_postcard() {
-                    decode_legacy_postcard(&stored, "policy principals deserialize failed")
-                } else {
-                    decode_principals(&stored)
-                }
-            })
+            .map(|stored| decode_principals(&stored))
             .transpose()?;
         let cap_groups = self
             .load_policy_cap_groups()
-            .map(|stored| {
-                if stored_version.uses_legacy_postcard() {
-                    decode_legacy_postcard(&stored, "policy cap groups deserialize failed")
-                } else {
-                    decode_cap_groups(&stored)
-                }
-            })
+            .map(|stored| decode_cap_groups(&stored))
             .transpose()?;
 
-        let state = compose_policy_state(markets, principals, cap_groups, leases, supply_queue)?;
-        if stored_version.uses_legacy_postcard() {
-            if let Some(ref state) = state {
-                let mut storage = SorobanStorage::new(self.env);
-                storage.save_policy_state(state)?;
-            }
-        }
-        Ok(state)
+        compose_policy_state(markets, principals, cap_groups, leases, supply_queue)
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
@@ -963,29 +844,14 @@ impl Storage for SorobanStorage<'_> {
         self.save_policy_markets(&encode_markets(state.markets()));
         self.save_policy_principals(&encode_principals(state.principals()));
         self.save_policy_cap_groups(&encode_cap_groups(state.cap_groups()));
-        self.set_version(StorageVersion::CURRENT.number());
         self.extend_default_ttl();
         Ok(())
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        let stored_version = SorobanStorage::get_version(self)
-            .map(StorageVersion::new)
-            .unwrap_or_default();
         let restrictions = SorobanStorage::load_restrictions(self)
-            .map(|stored| {
-                if stored_version.uses_legacy_postcard() {
-                    decode_legacy_postcard(&stored, "restrictions deserialize failed")
-                } else {
-                    decode_restrictions(&stored)
-                }
-            })
+            .map(|stored| decode_restrictions(&stored))
             .transpose()?;
-
-        if stored_version.uses_legacy_postcard() {
-            let mut storage = SorobanStorage::new(self.env);
-            Storage::save_restrictions(&mut storage, &restrictions)?;
-        }
 
         Ok(restrictions)
     }
@@ -999,7 +865,6 @@ impl Storage for SorobanStorage<'_> {
         } else {
             SorobanStorage::clear_restrictions(self);
         }
-        self.set_version(StorageVersion::CURRENT.number());
         self.extend_default_ttl();
         Ok(())
     }
@@ -1018,103 +883,12 @@ impl Storage for SorobanStorage<'_> {
     }
 }
 
-/// Storage version identifier.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(
-    serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, From, Into,
-)]
-pub struct StorageVersion(pub u32);
-
-impl StorageVersion {
-    pub const V0: Self = Self(0);
-
-    /// Initial storage version.
-    pub const V1: Self = Self(1);
-
-    pub const V2: Self = Self(2);
-
-    /// Current storage version.
-    pub const CURRENT: Self = Self::V2;
-
-    /// Create a new storage version.
-    #[inline]
-    #[must_use]
-    pub const fn new(version: u32) -> Self {
-        Self(version)
-    }
-
-    /// Get the version number.
-    #[inline]
-    #[must_use]
-    pub const fn number(&self) -> u32 {
-        self.0
-    }
-
-    /// Check if this version is compatible with the current version.
-    #[inline]
-    #[must_use]
-    pub const fn is_compatible(&self) -> bool {
-        self.0 <= Self::CURRENT.0
-    }
-
-    #[inline]
-    #[must_use]
-    pub const fn uses_legacy_postcard(&self) -> bool {
-        self.0 <= Self::V1.0
-    }
-}
-
-impl Default for StorageVersion {
-    fn default() -> Self {
-        Self::CURRENT
-    }
-}
-
-/// Versioned state wrapper.
-///
-/// Wraps vault state with version information for storage migration support.
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
-pub struct VersionedState {
-    /// Storage schema version.
-    pub version: StorageVersion,
-    /// The vault state.
-    pub state: VaultState,
-}
-
-impl VersionedState {
-    /// Create a new versioned state at the current version.
-    #[inline]
-    #[must_use]
-    pub fn new(state: VaultState) -> Self {
-        Self {
-            version: StorageVersion::CURRENT,
-            state,
-        }
-    }
-
-    /// Create a versioned state with a specific version (for testing/migration).
-    #[inline]
-    #[must_use]
-    pub fn with_version(version: StorageVersion, state: VaultState) -> Self {
-        Self { version, state }
-    }
-}
-
-impl Default for VersionedState {
-    fn default() -> Self {
-        Self::new(VaultState::default())
-    }
-}
-
 /// Storage key types for different data categories.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StorageKey {
     /// Main vault state.
     VaultState,
-    /// Storage version.
-    Version,
     /// Pending withdrawal by ID.
     PendingWithdrawal(u64),
     /// Share balance for an account.
@@ -1128,19 +902,12 @@ pub enum StorageKey {
 /// Implementations of this trait handle the actual persistence to the
 /// Soroban ledger.
 pub trait Storage {
-    /// Load the versioned state from storage.
-    ///
-    /// Returns `None` if no state exists (fresh deployment).
-    fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError>;
+    fn load_state(&self) -> Result<Option<VaultState>, RuntimeError>;
 
-    /// Save the versioned state to storage.
-    fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError>;
+    fn save_state(&mut self, state: &VaultState) -> Result<(), RuntimeError>;
 
     /// Check if storage has been initialized.
     fn is_initialized(&self) -> bool;
-
-    /// Get the storage version.
-    fn get_version(&self) -> Result<StorageVersion, RuntimeError>;
 
     /// Load the paused flag for the vault.
     fn load_paused(&self) -> Result<bool, RuntimeError>;

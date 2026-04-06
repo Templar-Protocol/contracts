@@ -289,7 +289,7 @@ mod contract_tests {
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
     use crate::error::RuntimeError;
-    use crate::storage::{SorobanStorage, Storage, VersionedState};
+    use crate::storage::{SorobanStorage, Storage};
     use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
     use alloc::collections::BTreeMap;
     use alloc::vec;
@@ -1091,13 +1091,13 @@ mod contract_tests {
                 ),
                 None,
             ));
-            let mut storage = MemoryStorage::with_state(VersionedState::new(VaultState {
+            let mut storage = MemoryStorage::with_state(VaultState {
                 total_assets: 1_500,
                 total_shares: 1_000,
                 idle_assets: 1_500,
                 fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
                 ..Default::default()
-            }));
+            });
             storage
                 .save_address(
                     &kernel_address_from_sdk(&env, &mgmt_recipient),
@@ -1199,9 +1199,7 @@ mod contract_tests {
                 idle_assets: 1_500,
                 ..Default::default()
             };
-            storage
-                .save_state(&VersionedState::new(state))
-                .expect("save state");
+            storage.save_state(&state).expect("save state");
         });
 
         asset_admin_client.mint(&contract_id, &1_500);
@@ -1348,8 +1346,7 @@ mod contract_tests {
             .unwrap();
 
             let mut storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            storage.save_state(&versioned).unwrap();
+            storage.save_state(&VaultState::default()).unwrap();
             storage.save_paused(false).unwrap();
 
             Storage::save_policy_state(&mut storage, &PolicyState::default()).unwrap();
@@ -1871,9 +1868,7 @@ mod storage_tests {
     use crate::contract::helpers::set_config_address;
     use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
-    use crate::storage::{
-        SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
-    };
+    use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
     use crate::test_utils::{fuzz_api, MemoryStorage};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
@@ -1902,24 +1897,6 @@ mod storage_tests {
     }
 
     #[test]
-    fn test_storage_version() {
-        let v1 = StorageVersion::V1;
-        assert_eq!(v1.number(), 1);
-        assert!(v1.is_compatible());
-
-        let current = StorageVersion::CURRENT;
-        assert_eq!(current, StorageVersion::V2);
-    }
-
-    #[test]
-    fn test_versioned_state_new() {
-        let state = VaultState::default();
-        let versioned = VersionedState::new(state);
-
-        assert_eq!(versioned.version, StorageVersion::CURRENT);
-    }
-
-    #[test]
     fn test_memory_storage_empty() {
         let storage = MemoryStorage::new();
         assert!(!storage.is_initialized());
@@ -1929,7 +1906,7 @@ mod storage_tests {
     #[test]
     fn test_memory_storage_save_load() {
         let mut storage = MemoryStorage::new();
-        let state = VersionedState::default();
+        let state = VaultState::default();
 
         storage.save_state(&state).unwrap();
         assert!(storage.is_initialized());
@@ -1941,7 +1918,7 @@ mod storage_tests {
 
     #[test]
     fn test_memory_storage_with_state() {
-        let state = VersionedState::default();
+        let state = VaultState::default();
         let storage = MemoryStorage::with_state(state.clone());
 
         assert!(storage.is_initialized());
@@ -1950,7 +1927,7 @@ mod storage_tests {
 
     #[test]
     fn test_memory_storage_clear() {
-        let state = VersionedState::default();
+        let state = VaultState::default();
         let mut storage = MemoryStorage::with_state(state);
 
         storage.clear();
@@ -1975,20 +1952,19 @@ mod storage_tests {
     #[test]
     fn test_storage_key_variants() {
         let key1 = SorobanStorageKey::StateBlob;
-        let key2 = SorobanStorageKey::Version;
-        let key3 = SorobanStorageKey::Paused;
-        let key4 = SorobanStorageKey::PausedState;
-        let key5 = SorobanStorageKey::Restrictions;
+        let key2 = SorobanStorageKey::Paused;
+        let key3 = SorobanStorageKey::PausedState;
+        let key4 = SorobanStorageKey::Restrictions;
 
         assert_ne!(key1, key2);
         assert_ne!(key3, key4);
-        assert_ne!(key4, key5);
+        assert_ne!(key2, key4);
     }
 
     #[test]
     fn test_soroban_storage_key_constants_are_distinct() {
         // All Symbol constants should be distinct from each other
-        let keys: [Symbol; 9] = [
+        let keys: [Symbol; 8] = [
             SorobanStorageKey::StateBlob,
             SorobanStorageKey::PolicyLocks,
             SorobanStorageKey::PolicySupplyQueue,
@@ -1996,7 +1972,6 @@ mod storage_tests {
             SorobanStorageKey::PolicyPrincipals,
             SorobanStorageKey::PolicyCapGroups,
             SorobanStorageKey::Restrictions,
-            SorobanStorageKey::Version,
             SorobanStorageKey::Paused,
         ];
         for i in 0..keys.len() {
@@ -2034,7 +2009,6 @@ mod storage_tests {
 
             // Fresh storage should not be initialized
             assert!(!storage.is_initialized());
-            assert!(storage.get_version().is_none());
             assert!(storage.load_state_blob().is_none());
 
             // Save state
@@ -2046,24 +2020,19 @@ mod storage_tests {
                 next_op_id: 1,
                 ..Default::default()
             };
-            let versioned = VersionedState::new(kernel);
             let mut storage_mut = SorobanStorage::new(&env);
-            Storage::save_state(&mut storage_mut, &versioned).unwrap();
+            Storage::save_state(&mut storage_mut, &kernel).unwrap();
 
             // Now storage should be initialized
             assert!(storage.is_initialized());
-            assert_eq!(
-                storage.get_version(),
-                Some(StorageVersion::CURRENT.number())
-            );
 
             // Load and verify
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.state.total_assets, 10000);
-            assert_eq!(loaded.state.total_shares, 5000);
-            assert_eq!(loaded.state.idle_assets, 2000);
-            assert_eq!(loaded.state.external_assets, 8000);
-            assert_eq!(loaded.state.next_op_id, 1);
+            assert_eq!(loaded.total_assets, 10000);
+            assert_eq!(loaded.total_shares, 5000);
+            assert_eq!(loaded.idle_assets, 2000);
+            assert_eq!(loaded.external_assets, 8000);
+            assert_eq!(loaded.next_op_id, 1);
         });
     }
 
@@ -2130,11 +2099,10 @@ mod storage_tests {
             state.external_assets = 900;
             state.next_op_id = 8;
 
-            let versioned = VersionedState::new(state.clone());
-            storage.save_state(&versioned).unwrap();
+            storage.save_state(&state).unwrap();
 
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.state, state);
+            assert_eq!(loaded, state);
         });
     }
 
@@ -2149,25 +2117,13 @@ mod storage_tests {
             assert!(storage.load_state().unwrap().is_none());
 
             // Save state via trait
-            let versioned = VersionedState::default();
-            storage.save_state(&versioned).unwrap();
+            let state = VaultState::default();
+            storage.save_state(&state).unwrap();
 
             // Verify via trait
             assert!(Storage::is_initialized(&storage));
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::CURRENT);
-        });
-    }
-
-    #[rstest]
-    fn test_storage_trait_get_version_fails_when_uninitialized(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let err = Storage::get_version(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::storage_error("version not initialized"));
+            assert_eq!(loaded, state);
         });
     }
 
@@ -2221,10 +2177,9 @@ mod storage_tests {
             4,
         );
 
-        let versioned = VersionedState::new(state.clone());
-        let encoded = fuzz_api::encode_state_blob_bytes(&versioned);
+        let encoded = fuzz_api::encode_state_blob_bytes(&state);
         let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state roundtrip");
-        assert_eq!(decoded, versioned);
+        assert_eq!(decoded, state);
     }
 
     #[test]
@@ -2407,7 +2362,7 @@ mod storage_tests {
             3,
         );
 
-        let versioned = VersionedState::new(VaultState {
+        let state = VaultState {
             total_assets: 1_000,
             total_shares: 2_000,
             idle_assets: 300,
@@ -2416,11 +2371,11 @@ mod storage_tests {
             op_state,
             withdraw_queue,
             next_op_id: 10,
-        });
+        };
 
-        let encoded = fuzz_api::encode_state_blob_bytes(&versioned);
+        let encoded = fuzz_api::encode_state_blob_bytes(&state);
         let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state matrix roundtrip");
-        assert_eq!(decoded, versioned);
+        assert_eq!(decoded, state);
     }
 
     #[rstest]
@@ -2466,167 +2421,13 @@ mod storage_tests {
         let (env, contract_id) = contract_env;
         env.as_contract(&contract_id, || {
             let storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            let mut bytes = postcard::to_allocvec(&versioned).unwrap();
+            let mut bytes = fuzz_api::encode_state_blob_bytes(&VaultState::default());
             bytes.push(0xff);
             storage.save_state_blob(&bytes);
 
             let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(
-                err,
-                RuntimeError::storage_error("state blob deserialize failed")
-            );
+            assert_eq!(err, RuntimeError::StorageError);
         });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_missing_version_key(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            let bytes = postcard::to_allocvec(&versioned).unwrap();
-            storage.save_state_blob(&bytes);
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::storage_error("state version missing"));
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_mismatched_version(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            let bytes = postcard::to_allocvec(&versioned).unwrap();
-            storage.save_state_blob(&bytes);
-            storage.set_version(StorageVersion::new(2).number());
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::storage_error("state version mismatch"));
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_incompatible_version(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned =
-                VersionedState::with_version(StorageVersion::new(2), VaultState::default());
-            let bytes = postcard::to_allocvec(&versioned).unwrap();
-            storage.save_state_blob(&bytes);
-            storage.set_version(StorageVersion::new(2).number());
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(
-                err,
-                RuntimeError::storage_error("unsupported state version")
-            );
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_loads_legacy_version_state(contract_env: (Env, soroban_sdk::Address)) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let mut storage = SorobanStorage::new(&env);
-            let state = VaultState {
-                total_assets: 42,
-                ..Default::default()
-            };
-            let legacy = VersionedState::with_version(StorageVersion::V0, state.clone());
-            storage.save_state_blob(&postcard::to_allocvec(&legacy).unwrap());
-            storage.set_version(StorageVersion::V0.number());
-
-            let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::CURRENT);
-            assert_eq!(loaded.state.total_assets, 42);
-            assert_eq!(
-                storage.get_version(),
-                Some(StorageVersion::CURRENT.number())
-            );
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_migrates_legacy_state_with_active_op(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        use alloc::collections::BTreeMap;
-        use templar_vault_kernel::state::queue::{PendingWithdrawal, WithdrawQueue};
-        use templar_vault_kernel::{OpState, WithdrawingState};
-
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let mut storage = SorobanStorage::new(&env);
-            let mut state = VaultState::default();
-
-            let owner = templar_vault_kernel::Address([1u8; 32]);
-            let receiver = templar_vault_kernel::Address([2u8; 32]);
-            state.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id: 11,
-                request_id: 11,
-                index: 1,
-                remaining: 500,
-                collected: 200,
-                receiver,
-                owner,
-                escrow_shares: 700,
-            });
-
-            let mut pending = BTreeMap::new();
-            pending.insert(
-                3,
-                PendingWithdrawal::new(
-                    owner,
-                    receiver,
-                    700,
-                    800,
-                    templar_vault_kernel::TimestampNs(123),
-                ),
-            );
-            state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
-            state.total_assets = 1000;
-            state.total_shares = 900;
-            state.idle_assets = 100;
-            state.external_assets = 900;
-            state.next_op_id = 12;
-
-            let legacy = VersionedState::with_version(StorageVersion::V0, state.clone());
-            storage.save_state_blob(&postcard::to_allocvec(&legacy).unwrap());
-            storage.set_version(StorageVersion::V0.number());
-
-            let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::CURRENT);
-            assert_eq!(loaded.state, state);
-
-            let migrated = VersionedState::new(loaded.state.clone());
-            storage.save_state(&migrated).unwrap();
-            let reloaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(reloaded.version, StorageVersion::CURRENT);
-            assert_eq!(reloaded.state, state);
-        });
-    }
-
-    #[rstest]
-    #[case(StorageVersion::V0, true)]
-    #[case(StorageVersion::V1, true)]
-    #[case(StorageVersion::V2, true)]
-    #[case(StorageVersion::new(3), false)]
-    #[case(StorageVersion::new(u32::MAX), false)]
-    fn test_storage_version_compatibility_cases(
-        #[case] version: StorageVersion,
-        #[case] expected: bool,
-    ) {
-        assert_eq!(version.is_compatible(), expected);
     }
 
     #[rstest]

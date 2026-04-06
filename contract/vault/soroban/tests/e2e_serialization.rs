@@ -2,7 +2,7 @@ use soroban_sdk::{contract, contractimpl, Env};
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_runtime::{
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
-    storage::{SorobanStorage, VersionedState},
+    storage::SorobanStorage,
     Storage,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
@@ -61,14 +61,14 @@ fn assert_accounting_invariant(vault: &SorobanTestVault<'_>) {
 }
 
 fn assert_state_roundtrip(vault: &SorobanTestVault<'_>) {
-    let persisted: VersionedState = vault
+    let persisted = vault
         .storage
         .load_state()
         .unwrap()
         .expect("state must be persisted");
     assert_eq!(
-        persisted.state.total_assets,
-        persisted.state.idle_assets + persisted.state.external_assets
+        persisted.total_assets,
+        persisted.idle_assets + persisted.external_assets
     );
 }
 

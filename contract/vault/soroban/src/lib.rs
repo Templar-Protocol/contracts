@@ -5,7 +5,6 @@
 //!
 //! - Effect interpreter for processing kernel effects
 //! - Auth adapter interface for pluggable authorization (RBAC, Merkle)
-//! - Storage versioning wrapper for state persistence
 //! - SEP-41 token integration helpers
 //! - Curator vault contract with entrypoints
 //!
@@ -54,7 +53,7 @@ pub use {
     market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets, SorobanMarketMethod},
     rbac::{RbacAuth, RbacConfig, Role, RoleAssignment},
     soroban_sdk::{Address, Bytes, Env},
-    storage::{SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState},
+    storage::{SorobanStorage, SorobanStorageKey, Storage},
     templar_curator_primitives::policy::market_lock::{MarketLease, MarketLeaseRegistry},
 };
 

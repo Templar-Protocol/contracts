@@ -12,7 +12,7 @@ use std::string::String;
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
-    storage::{SorobanStorage, VersionedState},
+    storage::SorobanStorage,
     test_utils::{begin_allocating, finish_allocating, MemoryStorage},
     EffectContext,
     EffectInterpreter,
@@ -335,8 +335,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let empty_state = VaultState::default();
-        let versioned = VersionedState::new(empty_state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&empty_state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(empty_state, assets_in, 0, 0);
@@ -351,8 +350,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
             idle_assets: 10_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(state, assets_in, 0, 0);
@@ -392,8 +390,7 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
             idle_assets: 10_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(state, assets_in, virtual_shares, virtual_assets);
@@ -441,9 +438,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
             fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
             ..Default::default()
         };
-        storage
-            .save_state(&VersionedState::new(state.clone()))
-            .unwrap();
+        storage.save_state(&state).unwrap();
 
         let config = VaultConfig {
             fees,
@@ -490,8 +485,7 @@ fn soroban_contract_preview_withdraw_matches_kernel(
             idle_assets: 20_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
 
         let assets_in: i128 = 1000;
         let shares_burned = proxy.preview_withdraw(assets_in).unwrap();
@@ -540,8 +534,7 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
             ..Default::default()
         };
         let mut storage = SorobanStorage::new(&env);
-        let versioned = VersionedState::new(state);
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
     });
 
     env.as_contract(&contract_id, || {
@@ -849,8 +842,8 @@ fn test_state_persists_after_deposit(mut vault: TestVault) {
 
     // Verify storage was updated
     let stored = vault.storage.load_state().unwrap().unwrap();
-    assert_eq!(stored.state.total_assets, 1000);
-    assert_eq!(stored.state.total_shares, 1000);
+    assert_eq!(stored.total_assets, 1000);
+    assert_eq!(stored.total_shares, 1000);
 }
 
 #[rstest]
@@ -873,8 +866,8 @@ fn test_state_persists_after_allocation(mut vault: TestVault) {
         .unwrap();
 
     let stored = vault.storage.load_state().unwrap().unwrap();
-    assert_eq!(stored.state.external_assets, 5000);
-    assert!(stored.state.op_state.is_idle());
+    assert_eq!(stored.external_assets, 5000);
+    assert!(stored.op_state.is_idle());
 }
 
 // Effect Execution Tests
@@ -1590,9 +1583,7 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
             fee_anchor: FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0)),
             ..Default::default()
         };
-        storage
-            .save_state(&VersionedState::new(state))
-            .expect("save state");
+        storage.save_state(&state).expect("save state");
     });
 
     asset_admin_client.mint(&contract_id, &500);

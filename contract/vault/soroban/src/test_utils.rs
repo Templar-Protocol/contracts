@@ -7,7 +7,7 @@ use crate::storage::{
     compose_policy_state, decode_markets, decode_policy_locks, decode_principals,
     decode_restrictions, decode_state_blob, decode_supply_queue, encode_markets,
     encode_policy_locks, encode_principals, encode_restrictions, encode_state_blob,
-    encode_supply_queue, Storage, StorageVersion, VersionedState,
+    encode_supply_queue, Storage,
 };
 use alloc::vec::Vec;
 use core::mem;
@@ -72,11 +72,13 @@ pub mod fuzz_api {
         decode_policy_locks(bytes)
     }
 
-    pub fn encode_state_blob_bytes(value: &VersionedState) -> Vec<u8> {
+    pub fn encode_state_blob_bytes(value: &templar_vault_kernel::VaultState) -> Vec<u8> {
         encode_state_blob(value)
     }
 
-    pub fn decode_state_blob_bytes(bytes: &[u8]) -> Result<VersionedState, RuntimeError> {
+    pub fn decode_state_blob_bytes(
+        bytes: &[u8],
+    ) -> Result<templar_vault_kernel::VaultState, RuntimeError> {
         decode_state_blob(bytes)
     }
 }
@@ -147,7 +149,7 @@ impl From<MarketRef> for (TargetId, AssetId) {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct MemoryStorage {
-    state: Option<VersionedState>,
+    state: Option<templar_vault_kernel::VaultState>,
     initialized: bool,
     paused: bool,
     policy_locks: Option<MarketLeaseRegistry>,
@@ -168,7 +170,7 @@ impl MemoryStorage {
 
     #[inline]
     #[must_use]
-    pub fn with_state(state: VersionedState) -> Self {
+    pub fn with_state(state: templar_vault_kernel::VaultState) -> Self {
         Self {
             state: Some(state),
             initialized: true,
@@ -185,7 +187,7 @@ impl MemoryStorage {
 
     #[inline]
     #[must_use]
-    pub fn get_state(&self) -> Option<&VersionedState> {
+    pub fn get_state(&self) -> Option<&templar_vault_kernel::VaultState> {
         self.state.as_ref()
     }
 
@@ -204,11 +206,11 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
+    fn load_state(&self) -> Result<Option<templar_vault_kernel::VaultState>, RuntimeError> {
         Ok(self.state.clone())
     }
 
-    fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
+    fn save_state(&mut self, state: &templar_vault_kernel::VaultState) -> Result<(), RuntimeError> {
         self.state = Some(state.clone());
         self.initialized = true;
         Ok(())
@@ -216,13 +218,6 @@ impl Storage for MemoryStorage {
 
     fn is_initialized(&self) -> bool {
         self.initialized
-    }
-
-    fn get_version(&self) -> Result<StorageVersion, RuntimeError> {
-        self.state
-            .as_ref()
-            .map(|s| s.version)
-            .ok_or_else(|| RuntimeError::storage_error("state not initialized"))
     }
 
     fn load_paused(&self) -> Result<bool, RuntimeError> {
@@ -250,9 +245,6 @@ impl Storage for MemoryStorage {
         self.policy_markets = Some(state.markets().clone());
         self.policy_principals = Some(state.principals().clone());
         self.policy_cap_groups = Some(state.cap_groups().clone());
-        if let Some(versioned_state) = &mut self.state {
-            versioned_state.version = StorageVersion::CURRENT;
-        }
         Ok(())
     }
 
@@ -265,9 +257,6 @@ impl Storage for MemoryStorage {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         self.restrictions = restrictions.clone();
-        if let Some(versioned_state) = &mut self.state {
-            versioned_state.version = StorageVersion::CURRENT;
-        }
         Ok(())
     }
 
