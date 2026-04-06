@@ -641,6 +641,26 @@ impl Contract {
         plan.sort_unstable();
         plan.dedup();
 
+        if plan.is_empty() {
+            let report = idle.build_real_assets_report();
+            idle.last_refresh_ns = u64::from(report.refreshed_at);
+            Event::RefreshStarted {
+                op_id: idle.next_op_id.into(),
+                markets: Vec::new(),
+                caller: env::predecessor_account_id(),
+            }
+            .emit();
+            Event::RefreshCompleted {
+                op_id: idle.next_op_id.into(),
+                markets: Vec::new(),
+                total_assets: report.total_assets,
+                refreshed_at: report.refreshed_at,
+            }
+            .emit();
+            idle.next_op_id = idle.next_op_id.saturating_add(1);
+            return PromiseOrValue::Value(report);
+        }
+
         let now = env::block_timestamp();
         let refresh_execution_plan = {
             let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();

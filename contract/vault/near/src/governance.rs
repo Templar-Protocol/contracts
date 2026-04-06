@@ -731,7 +731,10 @@ impl Contract {
     }
 
     pub fn get_restrictions(&self) -> Option<Restrictions> {
-        self.gate.restrictions.clone()
+        self.gate
+            .paused
+            .then_some(Restrictions::Paused)
+            .or_else(|| self.gate.restrictions.clone())
     }
 }
 

@@ -1466,7 +1466,7 @@ fn rebalance_balance_read_failure_stops_operation() {
 
     let op_id = 11;
 
-    c.market_execution_lock.lock(market_id, op_id, u64::MAX / 2);
+    let lease = c.market_execution_lock.lock(market_id, op_id, u64::MAX / 2);
     c.op_state = OpState::Allocating(AllocatingState {
         op_id,
         index: 0,
@@ -1478,7 +1478,7 @@ fn rebalance_balance_read_failure_stops_operation() {
         Err(near_sdk::PromiseError::Failed),
         op_id,
         market_id,
-        U64(0),
+        U64(lease.fencing_token.0),
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
