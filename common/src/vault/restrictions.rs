@@ -25,8 +25,8 @@ impl Restrictions {
 impl From<RestrictionMode> for Restrictions {
     fn from(value: RestrictionMode) -> Self {
         match value {
-            RestrictionMode::Blacklist(addresses) => Self::Blacklist(addresses.into_vec()),
-            RestrictionMode::Whitelist(addresses) => Self::Whitelist(addresses.into_vec()),
+            RestrictionMode::Blacklist(addresses) => Self::Blacklist(addresses),
+            RestrictionMode::Whitelist(addresses) => Self::Whitelist(addresses),
         }
     }
 }

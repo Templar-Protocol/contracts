@@ -35,6 +35,7 @@ const MAX_TIMELOCK_NS: u64 = u64::MAX;
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum ProposalKey {
     ProposalId(u64),
+    #[allow(dead_code)]
     Action(GovernanceActionKey),
 }
 
@@ -518,18 +519,6 @@ impl SorobanVaultGovernanceContract {
 
         let id = next_proposal_id(&env)?;
         let decision = decide_submission(&env, &action)?;
-
-        if matches!(decision, TimelockDecision::Immediate) {
-            execute_action(&env, &action)?;
-            ProposalSubmitted {
-                id,
-                valid_after_ns: 0,
-            }
-            .publish(&env);
-            ProposalAccepted { id }.publish(&env);
-            return Ok(id);
-        }
-
         let now_ns = ledger_timestamp_ns(&env)?;
         let timelock_ns = DurationNs(load_timelocks(&env).get(timelock_kind_for_action(&action)));
         let mut queue = load_queue(&env);
@@ -543,12 +532,24 @@ impl SorobanVaultGovernanceContract {
             now_ns,
             timelock_ns,
         );
-        let valid_after_ns = scheduled.ready_at_ns;
         save_queue(&env, &queue);
 
-        for replaced in scheduled.replaced.into_iter() {
+        for replaced in scheduled.replaced.iter() {
             ProposalRevoked { id: replaced.id }.publish(&env);
         }
+
+        if matches!(decision, TimelockDecision::Immediate) {
+            execute_action(&env, &action)?;
+            ProposalSubmitted {
+                id,
+                valid_after_ns: 0,
+            }
+            .publish(&env);
+            ProposalAccepted { id }.publish(&env);
+            return Ok(id);
+        }
+
+        let valid_after_ns = scheduled.ready_at_ns;
 
         ProposalSubmitted {
             id,

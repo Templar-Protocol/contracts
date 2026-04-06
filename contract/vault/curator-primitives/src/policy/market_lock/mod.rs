@@ -82,6 +82,11 @@ pub enum ReleaseLeaseError {
         expected_owner: LeaseOwner,
         actual_owner: LeaseOwner,
     },
+    TokenMismatch {
+        target_id: TargetId,
+        expected_token: FencingToken,
+        actual_token: FencingToken,
+    },
 }
 
 #[templar_vault_macros::vault_derive]
@@ -226,7 +231,7 @@ impl MarketLeaseRegistry {
         let cleaned = self.cleanup_expired(now);
 
         if let Some(existing) = cleaned.get_active(target_id, now) {
-            if &existing.owner != &owner {
+            if existing.owner != owner {
                 return Err(AcquireLeaseError::AlreadyLeased {
                     existing: existing.clone(),
                 });
@@ -267,6 +272,37 @@ impl MarketLeaseRegistry {
                 target_id,
                 expected_owner: existing.owner.clone(),
                 actual_owner: owner.clone(),
+            });
+        }
+
+        let mut next = self.clone();
+        next.leases_by_target.remove(&target_id);
+        Ok(next)
+    }
+
+    pub fn release_if_owned_with_token(
+        &self,
+        target_id: TargetId,
+        owner: &LeaseOwner,
+        token: FencingToken,
+    ) -> Result<Self, ReleaseLeaseError> {
+        let Some(existing) = self.leases_by_target.get(&target_id) else {
+            return Err(ReleaseLeaseError::NotFound { target_id });
+        };
+
+        if &existing.owner != owner {
+            return Err(ReleaseLeaseError::OwnerMismatch {
+                target_id,
+                expected_owner: existing.owner.clone(),
+                actual_owner: owner.clone(),
+            });
+        }
+
+        if existing.fencing_token != token {
+            return Err(ReleaseLeaseError::TokenMismatch {
+                target_id,
+                expected_token: existing.fencing_token,
+                actual_token: token,
             });
         }
 

@@ -25,10 +25,6 @@ pub struct Cooldown {
 impl Cooldown {
     #[must_use]
     fn normalized(last_event_ns: Option<u64>, interval_ns: Option<NonZeroU64>) -> Self {
-        if interval_ns.is_none() {
-            return Self::unlimited();
-        }
-
         Self {
             last_event_ns,
             interval_ns,
@@ -92,7 +88,6 @@ impl Cooldown {
         self.gate().is_ready(TimestampNs(current_ns))
     }
 
-    #[must_use]
     pub fn try_acquire(self, current_ns: u64) -> Result<Self, CooldownError> {
         match self.ready_at() {
             Some(ready_at_ns) if current_ns < ready_at_ns => Err(CooldownError::OnCooldown {

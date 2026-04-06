@@ -6,6 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use derive_more::{From, Into};
+use serde::{de::DeserializeOwned, Serialize};
 use soroban_sdk::{symbol_short, Address as SdkAddress, Bytes, BytesN, Env, Symbol};
 use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
 use templar_curator_primitives::policy::market_lock::{
@@ -119,6 +120,22 @@ fn read_address(bytes: &[u8], cursor: &mut usize) -> Result<Address, RuntimeErro
 fn read_bytes<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], RuntimeError> {
     let len = read_u32(bytes, cursor)? as usize;
     read_exact(bytes, cursor, len)
+}
+
+fn encode_legacy_postcard<T: Serialize>(value: &T) -> Result<Vec<u8>, RuntimeError> {
+    postcard::to_allocvec(value).map_err(|_| RuntimeError::storage_error("legacy serialize failed"))
+}
+
+fn decode_legacy_postcard<T: DeserializeOwned>(
+    bytes: &[u8],
+    message: &'static str,
+) -> Result<T, RuntimeError> {
+    let (value, remaining) =
+        postcard::take_from_bytes(bytes).map_err(|_| RuntimeError::storage_error(message))?;
+    if !remaining.is_empty() {
+        return Err(RuntimeError::storage_error(message));
+    }
+    Ok(value)
 }
 
 fn encode_cap_group_id(id: &CapGroupId, out: &mut Vec<u8>) {
@@ -807,18 +824,34 @@ impl<'a> SorobanStorage<'a> {
 impl Storage for SorobanStorage<'_> {
     fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
         if let Some(stored) = self.load_state_blob() {
-            let versioned = decode_state_blob(&stored)?;
-
             let version = SorobanStorage::get_version(self)
                 .ok_or_else(|| RuntimeError::storage_error("state version missing"))?;
             let stored_version = StorageVersion::new(version);
 
-            if versioned.version != stored_version {
-                return Err(RuntimeError::storage_error("state version mismatch"));
+            if !stored_version.is_compatible() {
+                return Err(RuntimeError::storage_error("unsupported state version"));
             }
 
-            if !versioned.version.is_compatible() {
-                return Err(RuntimeError::storage_error("unsupported state version"));
+            let versioned = if stored_version.uses_legacy_postcard() {
+                let legacy = decode_legacy_postcard::<VersionedState>(
+                    &stored,
+                    "state blob deserialize failed",
+                )?;
+                if legacy.version != stored_version {
+                    return Err(RuntimeError::storage_error("state version mismatch"));
+                }
+
+                let migrated = VersionedState::new(legacy.state);
+                self.save_state_blob(&encode_state_blob(&migrated));
+                self.set_version(StorageVersion::CURRENT.number());
+                self.extend_default_ttl();
+                migrated
+            } else {
+                decode_state_blob(&stored)?
+            };
+
+            if versioned.version != stored_version && !stored_version.uses_legacy_postcard() {
+                return Err(RuntimeError::storage_error("state version mismatch"));
             }
 
             return Ok(Some(versioned));
@@ -828,7 +861,11 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
-        let state_blob = encode_state_blob(state);
+        let state_blob = if state.version.uses_legacy_postcard() {
+            encode_legacy_postcard(state)?
+        } else {
+            encode_state_blob(state)
+        };
         self.save_state_blob(&state_blob);
         self.set_version(state.version.number());
         self.extend_default_ttl();
@@ -856,28 +893,68 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
+        let stored_version = SorobanStorage::get_version(self)
+            .map(StorageVersion::new)
+            .unwrap_or_default();
         let leases = self
             .load_policy_locks()
-            .map(|stored| decode_policy_locks(&stored))
+            .map(|stored| {
+                if stored_version.uses_legacy_postcard() {
+                    decode_legacy_postcard(&stored, "policy locks deserialize failed")
+                } else {
+                    decode_policy_locks(&stored)
+                }
+            })
             .transpose()?;
         let supply_queue = self
             .load_policy_supply_queue()
-            .map(|stored| decode_supply_queue(&stored))
+            .map(|stored| {
+                if stored_version.uses_legacy_postcard() {
+                    decode_legacy_postcard(&stored, "policy supply queue deserialize failed")
+                } else {
+                    decode_supply_queue(&stored)
+                }
+            })
             .transpose()?;
         let markets = self
             .load_policy_markets()
-            .map(|stored| decode_markets(&stored))
+            .map(|stored| {
+                if stored_version.uses_legacy_postcard() {
+                    decode_legacy_postcard(&stored, "policy markets deserialize failed")
+                } else {
+                    decode_markets(&stored)
+                }
+            })
             .transpose()?;
         let principals = self
             .load_policy_principals()
-            .map(|stored| decode_principals(&stored))
+            .map(|stored| {
+                if stored_version.uses_legacy_postcard() {
+                    decode_legacy_postcard(&stored, "policy principals deserialize failed")
+                } else {
+                    decode_principals(&stored)
+                }
+            })
             .transpose()?;
         let cap_groups = self
             .load_policy_cap_groups()
-            .map(|stored| decode_cap_groups(&stored))
+            .map(|stored| {
+                if stored_version.uses_legacy_postcard() {
+                    decode_legacy_postcard(&stored, "policy cap groups deserialize failed")
+                } else {
+                    decode_cap_groups(&stored)
+                }
+            })
             .transpose()?;
 
-        compose_policy_state(markets, principals, cap_groups, leases, supply_queue)
+        let state = compose_policy_state(markets, principals, cap_groups, leases, supply_queue)?;
+        if stored_version.uses_legacy_postcard() {
+            if let Some(ref state) = state {
+                let mut storage = SorobanStorage::new(self.env);
+                storage.save_policy_state(state)?;
+            }
+        }
+        Ok(state)
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
@@ -886,14 +963,31 @@ impl Storage for SorobanStorage<'_> {
         self.save_policy_markets(&encode_markets(state.markets()));
         self.save_policy_principals(&encode_principals(state.principals()));
         self.save_policy_cap_groups(&encode_cap_groups(state.cap_groups()));
+        self.set_version(StorageVersion::CURRENT.number());
         self.extend_default_ttl();
         Ok(())
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        self.load_restrictions()
-            .map(|stored| decode_restrictions(&stored))
-            .transpose()
+        let stored_version = SorobanStorage::get_version(self)
+            .map(StorageVersion::new)
+            .unwrap_or_default();
+        let restrictions = SorobanStorage::load_restrictions(self)
+            .map(|stored| {
+                if stored_version.uses_legacy_postcard() {
+                    decode_legacy_postcard(&stored, "restrictions deserialize failed")
+                } else {
+                    decode_restrictions(&stored)
+                }
+            })
+            .transpose()?;
+
+        if stored_version.uses_legacy_postcard() {
+            let mut storage = SorobanStorage::new(self.env);
+            Storage::save_restrictions(&mut storage, &restrictions)?;
+        }
+
+        Ok(restrictions)
     }
 
     fn save_restrictions(
@@ -905,6 +999,7 @@ impl Storage for SorobanStorage<'_> {
         } else {
             SorobanStorage::clear_restrictions(self);
         }
+        self.set_version(StorageVersion::CURRENT.number());
         self.extend_default_ttl();
         Ok(())
     }
@@ -931,11 +1026,15 @@ impl Storage for SorobanStorage<'_> {
 pub struct StorageVersion(pub u32);
 
 impl StorageVersion {
+    pub const V0: Self = Self(0);
+
     /// Initial storage version.
     pub const V1: Self = Self(1);
 
+    pub const V2: Self = Self(2);
+
     /// Current storage version.
-    pub const CURRENT: Self = Self::V1;
+    pub const CURRENT: Self = Self::V2;
 
     /// Create a new storage version.
     #[inline]
@@ -956,6 +1055,12 @@ impl StorageVersion {
     #[must_use]
     pub const fn is_compatible(&self) -> bool {
         self.0 <= Self::CURRENT.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn uses_legacy_postcard(&self) -> bool {
+        self.0 <= Self::V1.0
     }
 }
 

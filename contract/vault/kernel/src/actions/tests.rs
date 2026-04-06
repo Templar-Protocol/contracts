@@ -474,6 +474,76 @@ fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
         Some(KernelEffect::BurnSharesFrom { spender, owner: effect_owner, shares: 100 })
             if *spender == operator && *effect_owner == owner
     ));
+    assert!(matches!(
+        result.effects.get(1),
+        Some(KernelEffect::TransferAssets { to, amount: 100 }) if *to == receiver
+    ));
+    assert!(matches!(
+        result.effects.get(2),
+        Some(KernelEffect::EmitEvent {
+            event: KernelEvent::AtomicWithdrawProcessed {
+                owner: event_owner,
+                receiver: event_receiver,
+                shares_burned: 100,
+                assets_out: 100,
+            }
+        }) if *event_owner == owner && *event_receiver == receiver
+    ));
+}
+
+#[test]
+fn atomic_withdraw_slippage_reports_user_limit_as_minimum() {
+    let state = idle_state(1_000, 1_000);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(3),
+            assets_out: 100,
+            max_shares_burned: 99,
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::Slippage {
+            min: 99,
+            actual: 100
+        })
+    ));
+}
+
+#[test]
+fn request_withdraw_blocked_by_restrictions_paused() {
+    let state = idle_state(1_000, 1_000);
+    let mut config = test_config();
+    config.paused = true;
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert_eq!(
+        result,
+        Err(KernelError::Restricted(RestrictionKind::Paused))
+    );
 }
 
 #[test]
