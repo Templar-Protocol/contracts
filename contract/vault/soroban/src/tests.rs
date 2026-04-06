@@ -1453,8 +1453,17 @@ mod effects_tests {
     use crate::error::RuntimeError;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::Events;
+    use soroban_sdk::{contract, contractimpl};
     use soroban_sdk::{Address, Env};
     use templar_vault_kernel::effects::KernelEffect;
+
+    #[contract]
+    struct EventTestContract;
+
+    #[contractimpl]
+    impl EventTestContract {
+        pub fn noop(_env: Env) {}
+    }
 
     #[derive(Clone, Debug, Default)]
     struct TestSep41Token {
@@ -1663,9 +1672,9 @@ mod effects_tests {
         use templar_vault_kernel::effects::KernelEvent;
 
         let env = test_env();
+        let contract_id = env.register(EventTestContract, ());
         let share = TestSep41Token::new();
         let asset = TestSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&env, &share, &asset);
         let ctx = test_context();
 
         let effect = KernelEffect::EmitEvent {
@@ -1677,9 +1686,12 @@ mod effects_tests {
             },
         };
 
-        assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
+        env.as_contract(&contract_id, || {
+            let mut interpreter = SorobanEffectInterpreter::new(&env, &share, &asset);
+            assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
+        });
 
-        let events = env.events().all();
+        let events = env.events().all().filter_by_contract(&contract_id);
         assert_eq!(events.events().len(), 1);
     }
 }
