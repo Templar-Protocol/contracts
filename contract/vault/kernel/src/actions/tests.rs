@@ -2100,7 +2100,8 @@ fn settle_payout_failure() {
     .unwrap();
 
     assert!(result.state.is_idle());
-    assert_eq!(result.state.idle_assets, 500); // 400 + 100 restored
+    assert_eq!(result.state.idle_assets, 400);
+    assert_eq!(result.state.total_assets, 900);
     assert_eq!(result.state.total_shares, 1_000); // Not changed
     assert!(matches!(
         result.effects.first(),
