@@ -387,9 +387,6 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
 pub(crate) type ContractVaultCallback<'a> =
     dyn for<'b> FnMut(&mut ContractVault<'b>) -> Result<(), RuntimeError> + 'a;
 
-pub(crate) type ContractVaultValueCallback<'a, T> =
-    dyn for<'b> FnMut(&mut ContractVault<'b>) -> Result<T, RuntimeError> + 'a;
-
 fn load_rbac_addresses(env: &Env, key: &soroban_sdk::Symbol, role: Role, config: &mut RbacConfig) {
     let addresses: Option<soroban_sdk::Vec<SdkAddress>> = env.storage().instance().get(key);
     if let Some(addresses) = addresses {
@@ -400,10 +397,10 @@ fn load_rbac_addresses(env: &Env, key: &soroban_sdk::Symbol, role: Role, config:
 }
 
 #[inline(never)]
-fn with_contract_vault_value<T>(
+pub(crate) fn with_contract_vault(
     env: &Env,
-    f: &mut ContractVaultValueCallback<'_, T>,
-) -> Result<T, RuntimeError> {
+    f: &mut ContractVaultCallback<'_>,
+) -> Result<(), RuntimeError> {
     let bootstrap = load_vault_bootstrap(env)?;
     let share_adapter = ShareTokenAdapter::new(env, &bootstrap.share_token);
     let asset_adapter = SdkTokenAdapter::new(env, &bootstrap.asset_token);
@@ -417,15 +414,6 @@ fn with_contract_vault_value<T>(
     );
     vault.load_state()?;
     f(&mut vault)
-}
-
-#[inline(never)]
-pub(crate) fn with_contract_vault(
-    env: &Env,
-    f: &mut ContractVaultCallback<'_>,
-) -> Result<(), RuntimeError> {
-    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> { f(vault) };
-    with_contract_vault_value(env, &mut call)
 }
 
 #[inline]
