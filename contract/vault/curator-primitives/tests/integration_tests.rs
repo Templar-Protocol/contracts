@@ -18,7 +18,7 @@ fn payout_success_paths(
 ) {
     let outcome = compute_payout_success_outcome(escrow_shares, expected_assets, settled_assets)
         .expect("integration payout success inputs should be valid");
-    let _expected_share_split = (burn_shares, refund_shares);
+    let _ = (burn_shares, refund_shares);
     assert_eq!(outcome, PayoutOutcome::Success);
 }
 
@@ -30,7 +30,8 @@ fn payout_failure_refunds_escrow(
     #[case] restore_idle: u128,
     #[case] refund_shares: u128,
 ) {
-    let outcome = compute_payout_failure_outcome(escrow_shares, restore_idle);
-    let _expected_failure_values = (restore_idle, refund_shares);
+    let outcome = compute_payout_failure_outcome(escrow_shares, restore_idle, restore_idle)
+        .expect("integration payout failure inputs should be representable");
+    let _ = refund_shares;
     assert_eq!(outcome, PayoutOutcome::Failure);
 }
