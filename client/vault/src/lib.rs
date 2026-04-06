@@ -121,7 +121,7 @@ macro_rules! define_uniffi_wrapper {
 
 define_uniffi_wrapper!(MarketId, u32, [Copy], templar_common::vault::MarketId);
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CapGroupId(pub String);
+pub struct CapGroupId(String);
 
 uniffi::custom_type!(CapGroupId, String);
 
@@ -132,6 +132,13 @@ impl TryFrom<String> for CapGroupId {
         templar_common::vault::CapGroupId::try_from(value.clone())
             .map(Into::into)
             .map_err(|err| anyhow::anyhow!("Invalid CapGroupId '{value}': {err:?}"))
+    }
+}
+
+impl CapGroupId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -1376,7 +1383,7 @@ mod tests {
     #[test]
     fn cap_group_update_try_into_common_maps_variants() {
         let set_cap = CapGroupUpdate::SetCap {
-            cap_group_id: CapGroupId("group-a".to_string()),
+            cap_group_id: CapGroupId::try_from("group-a".to_string()).unwrap(),
             new_cap: Some("10".to_string()),
         };
         let common: templar_common::vault::CapGroupUpdate = set_cap.try_into().unwrap();
@@ -1387,7 +1394,7 @@ mod tests {
         ));
 
         let set_relative = CapGroupUpdate::SetRelativeCap {
-            cap_group_id: CapGroupId("group-b".to_string()),
+            cap_group_id: CapGroupId::try_from("group-b".to_string()).unwrap(),
             new_relative_cap: Some("20".to_string()),
         };
         let common: templar_common::vault::CapGroupUpdate = set_relative.try_into().unwrap();
@@ -1400,7 +1407,7 @@ mod tests {
 
         let set_membership = CapGroupUpdate::SetMembership {
             market_id: MarketId(7),
-            cap_group_id: Some(CapGroupId("group-c".to_string())),
+            cap_group_id: Some(CapGroupId::try_from("group-c".to_string()).unwrap()),
         };
         let common: templar_common::vault::CapGroupUpdate = set_membership.try_into().unwrap();
         assert!(matches!(
@@ -1414,7 +1421,7 @@ mod tests {
     #[test]
     fn cap_group_update_try_into_common_rejects_invalid_u128() {
         let update = CapGroupUpdate::SetCap {
-            cap_group_id: CapGroupId("group-a".to_string()),
+            cap_group_id: CapGroupId::try_from("group-a".to_string()).unwrap(),
             new_cap: Some("not-a-number".to_string()),
         };
         let err = templar_common::vault::CapGroupUpdate::try_from(update).unwrap_err();
@@ -1452,7 +1459,7 @@ mod tests {
         assert!(matches!(
             action,
             TimelockedAction::CapGroupChange { cap_group, new_cap }
-                if cap_group.0 == "group-z" && new_cap.as_deref() == Some("44")
+                if cap_group.as_str() == "group-z" && new_cap.as_deref() == Some("44")
         ));
 
         let action = TimelockedAction::from(TimelockedActionSerde::CapGroupRelativeCapChange {
@@ -1464,7 +1471,7 @@ mod tests {
             TimelockedAction::CapGroupRelativeCapChange {
                 cap_group,
                 new_relative_cap: None,
-            } if cap_group.0 == "group-z"
+            } if cap_group.as_str() == "group-z"
         ));
 
         let action = TimelockedAction::from(TimelockedActionSerde::CapGroupMembership {
@@ -1477,7 +1484,7 @@ mod tests {
             action,
             TimelockedAction::CapGroupMembership { market, cap_group }
                 if market.0 == 9
-                    && cap_group.as_ref().map(|id| id.0.as_str()) == Some("group-z")
+                    && cap_group.as_ref().map(CapGroupId::as_str) == Some("group-z")
         ));
     }
 
