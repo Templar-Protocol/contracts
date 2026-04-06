@@ -148,8 +148,9 @@ impl std::fmt::Display for ErrorPhase {
 impl LiquidatorError {
     /// Classifies the error by pipeline phase.
     ///
-    /// Only `Execution` errors trigger Telegram notifications — these mean a
-    /// liquidation or swap transaction was actually submitted to the network.
+    /// Only `Execution` errors trigger the "Liquidation Failed" Telegram
+    /// notification (successful liquidations and swap issues have their own
+    /// dedicated notifications sent elsewhere).
     /// `OracleUpdateError` is classified as `Preparation` because oracle price
     /// pushes are best-effort and swallowed before execution; they never
     /// propagate to callers in practice.
@@ -175,10 +176,6 @@ impl LiquidatorError {
         }
     }
 
-    /// Returns `true` for errors where a transaction was submitted to the network.
-    pub const fn is_execution_error(&self) -> bool {
-        matches!(self.phase(), ErrorPhase::Execution)
-    }
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
@@ -900,7 +897,7 @@ impl Liquidator {
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
                     let phase = e.phase();
-                    if e.is_execution_error() {
+                    if phase == ErrorPhase::Execution {
                         tracing::error!(borrower = %account, phase = %phase, error = %e, "Liquidation failed");
                         self.notifier.notify_liquidation_failed(
                             self.market.as_ref(),
