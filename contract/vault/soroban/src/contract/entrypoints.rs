@@ -157,7 +157,7 @@ fn apply_supply_queue_policy(
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let targets = queue_targets
             .take()
-            .ok_or_else(|| RuntimeError::invalid_state("supply queue already consumed"))?;
+            .ok_or_else(|| RuntimeError::invalid_state(""))?;
         vault.set_supply_queue(caller_kernel, targets)
     };
     with_contract_vault_contract_error(env, &mut call)
@@ -206,7 +206,7 @@ fn apply_restrictions_policy(
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let next_restrictions = restrictions
             .take()
-            .ok_or_else(|| RuntimeError::invalid_state("restrictions already consumed"))?;
+            .ok_or_else(|| RuntimeError::invalid_state(""))?;
         vault.set_restrictions(caller_kernel, next_restrictions)?;
         Ok(())
     };
@@ -256,7 +256,7 @@ fn apply_group_policy(
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let update = internal
             .take()
-            .ok_or_else(|| RuntimeError::invalid_state("cap group update already consumed"))?;
+            .ok_or_else(|| RuntimeError::invalid_state(""))?;
         vault.update_cap_group(caller_kernel, update)
     };
     with_contract_vault_contract_error(env, &mut call)
@@ -473,7 +473,7 @@ fn refresh_markets_impl(
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let markets = markets_vec
             .take()
-            .ok_or_else(|| RuntimeError::invalid_state("refresh plan already consumed"))?;
+            .ok_or_else(|| RuntimeError::invalid_state(""))?;
         let op_id = vault.begin_refreshing(caller_kernel, markets, now_ns)?;
         let result = vault.complete_refresh_with_positions(
             caller_kernel,
@@ -622,7 +622,7 @@ fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
         let state = vault.state_mut()?;
         let before_idle = state.idle_assets;
         if !state.op_state.is_idle() {
-            return Err(RuntimeError::invalid_state("only one op in flight"));
+            return Err(RuntimeError::invalid_state(""));
         }
 
         state.idle_assets = actual_balance;

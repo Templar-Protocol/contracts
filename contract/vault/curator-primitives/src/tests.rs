@@ -1261,13 +1261,7 @@ mod recovery_unit_tests {
     #[test]
     fn test_compute_payout_success_outcome_maps_settlement() {
         let err = compute_payout_success_outcome(1000, 500, 250).unwrap_err();
-        assert_eq!(
-            err,
-            RecoveryError::UnrepresentableSuccessEvidence {
-                payout_amount: 500,
-                collected_amount: 250,
-            }
-        );
+        assert_eq!(err, RecoveryError::InvalidPayoutEvidence);
     }
 
     #[test]
@@ -1280,13 +1274,7 @@ mod recovery_unit_tests {
     #[test]
     fn test_compute_payout_failure_outcome_rejects_partial_restore() {
         let err = compute_payout_failure_outcome(1000, 500, 250).unwrap_err();
-        assert_eq!(
-            err,
-            RecoveryError::UnrepresentableFailureEvidence {
-                payout_amount: 500,
-                restore_idle: 250,
-            }
-        );
+        assert_eq!(err, RecoveryError::InvalidPayoutEvidence);
     }
 
     #[test]
