@@ -948,7 +948,7 @@ impl LiquidatorService {
                         if is_rate_limit_error(&e) {
                             tracing::error!(
                                 market = %market,
-                                phase,
+                                phase = %phase,
                                 error = %e,
                                 "Rate limited — sleeping 60s before next market"
                             );
@@ -956,7 +956,7 @@ impl LiquidatorService {
                         } else {
                             tracing::warn!(
                                 market = %market,
-                                phase,
+                                phase = %phase,
                                 error = %e,
                                 "Market skipped"
                             );

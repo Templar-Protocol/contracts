@@ -118,41 +118,66 @@ pub enum LiquidatorError {
     InsufficientBalance,
 }
 
-impl LiquidatorError {
-    /// Returns `true` when the error occurred during actual liquidation execution
-    /// (transaction submission, on-chain failure, swap after liquidation).
-    /// Pre-execution errors (scanning, balance checks, price fetches) return `false`.
-    pub const fn is_execution_error(&self) -> bool {
-        matches!(
-            self,
-            Self::LiquidationTransactionError(_)
-                | Self::TransactionFailed(_)
-                | Self::SwapProviderError(_)
-        )
-    }
+/// Classifies where in the liquidation pipeline an error occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorPhase {
+    /// Reading on-chain state, fetching prices, listing positions.
+    Scan,
+    /// Decided to liquidate but haven't submitted a tx yet (nonce, serialization, strategy).
+    Preparation,
+    /// Liquidation or swap transaction was submitted to the network.
+    Execution,
+}
 
-    /// Short human-readable phase label for log messages.
-    pub const fn phase(&self) -> &'static str {
+impl ErrorPhase {
+    pub const fn as_str(self) -> &'static str {
         match self {
-            // Scan phase — reading on-chain state, fetching prices
+            Self::Scan => "scan",
+            Self::Preparation => "preparation",
+            Self::Execution => "execution",
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl LiquidatorError {
+    /// Classifies the error by pipeline phase.
+    ///
+    /// Only `Execution` errors trigger Telegram notifications — these mean a
+    /// liquidation or swap transaction was actually submitted to the network.
+    /// `OracleUpdateError` is classified as `Preparation` because oracle price
+    /// pushes are best-effort and swallowed before execution; they never
+    /// propagate to callers in practice.
+    pub const fn phase(&self) -> ErrorPhase {
+        match self {
             Self::FetchBorrowStatus(_)
             | Self::PricePairError(_)
             | Self::PriceFetchError(_)
             | Self::ListBorrowPositionsError(_)
             | Self::ListDeploymentsError(_)
             | Self::GetConfigurationError(_)
-            | Self::FetchBalanceError(_) => "scan",
-            // Preparation — decided to liquidate but haven't submitted tx yet
+            | Self::FetchBalanceError(_) => ErrorPhase::Scan,
+
             Self::AccessKeyDataError(_)
             | Self::SerializeError(_)
             | Self::StrategyError(_)
             | Self::InsufficientBalance
-            | Self::OracleUpdateError(_) => "preparation",
-            // Execution — transaction was submitted or on-chain action attempted
+            | Self::OracleUpdateError(_) => ErrorPhase::Preparation,
+
             Self::LiquidationTransactionError(_)
             | Self::TransactionFailed(_)
-            | Self::SwapProviderError(_) => "execution",
+            | Self::SwapProviderError(_) => ErrorPhase::Execution,
         }
+    }
+
+    /// Returns `true` for errors where a transaction was submitted to the network.
+    pub const fn is_execution_error(&self) -> bool {
+        matches!(self.phase(), ErrorPhase::Execution)
     }
 }
 
@@ -876,14 +901,14 @@ impl Liquidator {
                 Err(e) => {
                     let phase = e.phase();
                     if e.is_execution_error() {
-                        tracing::error!(borrower = %account, phase, error = %e, "Liquidation failed");
+                        tracing::error!(borrower = %account, phase = %phase, error = %e, "Liquidation failed");
                         self.notifier.notify_liquidation_failed(
                             self.market.as_ref(),
                             account.as_ref(),
                             &e.to_string(),
                         );
                     } else {
-                        tracing::warn!(borrower = %account, phase, error = %e, "Skipped position");
+                        tracing::warn!(borrower = %account, phase = %phase, error = %e, "Skipped position");
                     }
                     failed += 1;
                 }
