@@ -111,16 +111,17 @@ impl MarketExecutionLock {
         lease
     }
 
-    pub fn unlock(&mut self, market: MarketId, op_id: u64) {
+    pub fn unlock(&mut self, market: MarketId, op_id: u64, token: FencingToken) {
+        self.inner = self
+            .inner
+            .release_if_owned_with_token(market.into_target_id(), &Self::lease_owner(op_id), token)
+            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED));
+
         Event::LockChange {
             is_locked: false,
             market,
         }
         .emit();
-        self.inner = self
-            .inner
-            .release_if_owned(market.into_target_id(), &Self::lease_owner(op_id))
-            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED));
     }
 
     pub fn clear(&mut self) {
@@ -133,7 +134,7 @@ impl MarketExecutionLock {
     }
 
     pub fn assert_current(&self, market: MarketId, lease: &MarketLease) {
-        self.assert_current_token(market, lease.fencing_token());
+        self.assert_current_token(market, lease.fencing_token);
     }
 
     pub fn assert_current_token(&self, market: MarketId, token: FencingToken) {
@@ -144,6 +145,17 @@ impl MarketExecutionLock {
                 TimestampNs(env::block_timestamp()),
             )
             .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED));
+    }
+
+    #[must_use]
+    pub fn is_current_token(&self, market: MarketId, token: FencingToken) -> bool {
+        self.inner
+            .assert_token_current(
+                market.into_target_id(),
+                token,
+                TimestampNs(env::block_timestamp()),
+            )
+            .is_ok()
     }
 
     pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {

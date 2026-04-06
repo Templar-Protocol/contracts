@@ -122,7 +122,8 @@ impl SupplyQueue {
         }
 
         for (priority, bucket) in self.buckets.iter().enumerate() {
-            let expected_priority = u8::try_from(priority).unwrap();
+            let expected_priority =
+                u8::try_from(priority).map_err(|_| SupplyQueueError::LengthOverflow)?;
             for entry in bucket {
                 entry.validate()?;
                 if entry.priority != expected_priority {
@@ -254,7 +255,7 @@ impl SupplyQueue {
     pub fn drain(&mut self) -> Vec<SupplyQueueEntry> {
         let mut drained = Vec::with_capacity(self.len());
         for bucket in self.buckets.iter_mut().rev() {
-            drained.extend(bucket.drain(..));
+            drained.append(bucket);
         }
         self.len = 0;
         drained

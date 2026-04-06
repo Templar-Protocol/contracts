@@ -750,12 +750,9 @@ where
     fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
         let policy = self.policy_state_mut();
         for position in refreshed_positions {
-            if policy
+            policy
                 .set_principal(position.market, position.total_assets)
-                .is_err()
-            {
-                panic!();
-            }
+                .unwrap_or_else(|_| panic!());
         }
     }
 
@@ -810,7 +807,7 @@ where
         let new_external = self.sync_external_assets(
             caller,
             op_id,
-            self.policy_state().external_assets(),
+            self.policy_state().external_assets()?,
             now_ns,
         )?;
         self.finish_allocation_internal(caller, op_id, now_ns)?;
@@ -848,7 +845,7 @@ where
     ) -> Result<RefreshResult, RuntimeError> {
         let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
         self.apply_refreshed_positions(&refreshed_positions);
-        let new_external_assets = self.policy_state().external_assets();
+        let new_external_assets = self.policy_state().external_assets()?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
         self.storage.save_policy_state(&self.policy_state)?;
