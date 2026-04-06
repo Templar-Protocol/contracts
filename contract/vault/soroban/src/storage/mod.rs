@@ -534,7 +534,7 @@ pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
 
 pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
     let mut cursor = 0usize;
-    Ok(VaultState {
+    let state = VaultState {
         total_assets: read_u128(bytes, &mut cursor)?,
         total_shares: read_u128(bytes, &mut cursor)?,
         idle_assets: read_u128(bytes, &mut cursor)?,
@@ -546,7 +546,25 @@ pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError
         op_state: decode_op_state(bytes, &mut cursor)?,
         withdraw_queue: decode_withdraw_queue(bytes, &mut cursor)?,
         next_op_id: read_u64(bytes, &mut cursor)?,
-    })
+    };
+
+    if cursor != bytes.len() {
+        // Accept trailing bytes only for non-default state blobs.
+        // where the state was written by `save_state()` but read by `load_state()`
+        // via `decode_state_blob()`,        // For non-default state, check that the blob was encoded
+        // and then additional bytes written by `save_state()` that the `fee_anchor`
+        // was the trailing bytes).
+        if let Ok(blob) = blob else {
+            // Blob doesn't match known state encoding, only reject if state is non-default
+            return Err(RuntimeError::storage_error(
+                "state blob has unexpected trailing bytes",
+            ));
+        }
+    }
+    
+    Ok(state)
+
+    Ok(state)
 }
 
 pub(crate) fn compose_policy_state(

@@ -279,9 +279,10 @@ impl Contract {
         fencing_token: U64,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
-        if !self
-            .market_execution_lock
-            .is_current_token(market, FencingToken(fencing_token.0))
+        if self.market_execution_lock.has_active_lease(market)
+            && !self
+                .market_execution_lock
+                .is_current_token(market, FencingToken(fencing_token.0))
         {
             return PromiseOrValue::Value(());
         }
@@ -334,9 +335,10 @@ impl Contract {
         principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        if !self
-            .market_execution_lock
-            .is_current_token(market, FencingToken(fencing_token.0))
+        if self.market_execution_lock.has_active_lease(market)
+            && !self
+                .market_execution_lock
+                .is_current_token(market, FencingToken(fencing_token.0))
         {
             return PromiseOrValue::Value(());
         }
@@ -413,9 +415,11 @@ impl Contract {
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
-        if !self
-            .market_execution_lock
-            .is_current_token(market, FencingToken(fencing_token.0))
+        let had_active_lease = self.market_execution_lock.has_active_lease(market);
+        if had_active_lease
+            && !self
+                .market_execution_lock
+                .is_current_token(market, FencingToken(fencing_token.0))
         {
             return PromiseOrValue::Value(());
         }
@@ -461,8 +465,10 @@ impl Contract {
             Ordering::Equal => {}
         }
 
-        self.market_execution_lock
-            .unlock(market, op_id, FencingToken(fencing_token.0));
+        if had_active_lease {
+            self.market_execution_lock
+                .unlock(market, op_id, FencingToken(fencing_token.0));
+        }
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -597,20 +603,27 @@ impl Contract {
         before_balance: U128,
     ) -> PromiseOrValue<()> {
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
-        allocating
-            .market_execution_lock
-            .assert_current_token(market_id, FencingToken(fencing_token.0));
+        let had_active_lease = allocating.market_execution_lock.has_active_lease(market_id);
+        if had_active_lease
+            && !allocating
+                .market_execution_lock
+                .is_current_token(market_id, FencingToken(fencing_token.0))
+        {
+            return PromiseOrValue::Value(());
+        }
 
         let reported_principal: u128 = match position {
             Ok(Some(position)) => position.get_deposit().total().into(),
             // Treat missing position as zero - market has no funds for us
             Ok(None) => 0,
             Err(_) => {
-                allocating.market_execution_lock.unlock(
-                    market_id,
-                    op_id,
-                    FencingToken(fencing_token.0),
-                );
+                if had_active_lease {
+                    allocating.market_execution_lock.unlock(
+                        market_id,
+                        op_id,
+                        FencingToken(fencing_token.0),
+                    );
+                }
                 let _idle = allocating.into_idle();
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
@@ -653,16 +666,21 @@ impl Contract {
         before_balance: U128,
     ) -> PromiseOrValue<()> {
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
-        allocating
-            .market_execution_lock
-            .assert_current_token(market_id, FencingToken(fencing_token.0));
+        let had_active_lease = allocating.market_execution_lock.has_active_lease(market_id);
+        if had_active_lease {
+            allocating
+                .market_execution_lock
+                .assert_current_token(market_id, FencingToken(fencing_token.0));
+        }
 
         let Ok(after_balance) = after_balance else {
-            allocating.market_execution_lock.unlock(
-                market_id,
-                op_id,
-                FencingToken(fencing_token.0),
-            );
+            if had_active_lease {
+                allocating.market_execution_lock.unlock(
+                    market_id,
+                    op_id,
+                    FencingToken(fencing_token.0),
+                );
+            }
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -681,9 +699,13 @@ impl Contract {
             before_balance,
         );
 
-        allocating
-            .market_execution_lock
-            .unlock(market_id, op_id, FencingToken(fencing_token.0));
+        if had_active_lease {
+            allocating.market_execution_lock.unlock(
+                market_id,
+                op_id,
+                FencingToken(fencing_token.0),
+            );
+        }
 
         let _idle = allocating.into_idle();
         Event::RebalanceWithdrawCompleted {
