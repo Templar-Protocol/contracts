@@ -135,7 +135,7 @@ where
     pub fn state(&self) -> Result<&VaultState, RuntimeError> {
         match self.state.as_ref() {
             Some(state) => Ok(state),
-            None => Err(RuntimeError::storage_error("vault state not loaded")),
+            None => Err(RuntimeError::storage_error("")),
         }
     }
 
@@ -143,7 +143,7 @@ where
     pub fn state_mut(&mut self) -> Result<&mut VaultState, RuntimeError> {
         match self.state.as_mut() {
             Some(state) => Ok(state),
-            None => Err(RuntimeError::storage_error("vault state not loaded")),
+            None => Err(RuntimeError::storage_error("")),
         }
     }
 
@@ -201,7 +201,7 @@ where
         let state = self
             .state
             .take()
-            .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))?;
+            .ok_or_else(|| RuntimeError::storage_error(""))?;
         let result = match transition_to_runtime(apply_action(
             state.clone(),
             &config,
@@ -402,8 +402,7 @@ where
         let owner_kernel = self.register_sdk_address(env, owner)?;
         let receiver_kernel = self.register_sdk_address(env, receiver)?;
         let operator_kernel = self.register_sdk_address(env, operator)?;
-        let now_ns = ledger_timestamp_ns(env)
-            .map_err(|_| RuntimeError::invalid_input("timestamp overflow"))?;
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
 
         let fees_active = !self.config.fees.management.fee_wad.is_zero()
             || !self.config.fees.performance.fee_wad.is_zero();
@@ -474,7 +473,7 @@ where
         operator: SdkAddress,
     ) -> Result<i128, RuntimeError> {
         if assets <= 0 {
-            return Err(RuntimeError::invalid_input("amount must be > 0"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
         let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
@@ -484,12 +483,11 @@ where
             owner_kernel,
             receiver_kernel,
             operator_kernel,
-            to_u128(assets).map_err(|_| RuntimeError::invalid_input("invalid assets"))?,
-            to_u128(max_shares_burned)
-                .map_err(|_| RuntimeError::invalid_input("invalid max shares burned"))?,
+            to_u128(assets).map_err(|_| RuntimeError::invalid_input(""))?,
+            to_u128(max_shares_burned).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
         )?;
-        to_i128(burned.shares_burned).map_err(|_| RuntimeError::invalid_input("burn overflow"))
+        to_i128(burned.shares_burned).map_err(|_| RuntimeError::invalid_input(""))
     }
 
     #[inline(never)]
@@ -503,7 +501,7 @@ where
         operator: SdkAddress,
     ) -> Result<i128, RuntimeError> {
         if shares <= 0 {
-            return Err(RuntimeError::invalid_input("amount must be > 0"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
         let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
@@ -513,13 +511,11 @@ where
             owner_kernel,
             receiver_kernel,
             operator_kernel,
-            to_u128(shares).map_err(|_| RuntimeError::invalid_input("invalid shares"))?,
-            to_u128(min_assets_out)
-                .map_err(|_| RuntimeError::invalid_input("invalid min assets out"))?,
+            to_u128(shares).map_err(|_| RuntimeError::invalid_input(""))?,
+            to_u128(min_assets_out).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
         )?;
-        to_i128(summary.assets_transferred)
-            .map_err(|_| RuntimeError::invalid_input("asset overflow"))
+        to_i128(summary.assets_transferred).map_err(|_| RuntimeError::invalid_input(""))
     }
 
     #[inline(never)]
@@ -667,7 +663,7 @@ where
     #[inline]
     fn require_positive_allocation_amount(amount: u128) -> Result<(), RuntimeError> {
         if amount == 0 {
-            return Err(RuntimeError::invalid_input("amount must be > 0"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
         Ok(())
@@ -704,7 +700,7 @@ where
             .excluding_leased_targets(plan, TimestampNs(current_ns));
 
         if markets.is_empty() {
-            return Err(RuntimeError::invalid_input("empty refresh plan"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
         Ok(RefreshPlanDecision { markets })
@@ -730,45 +726,6 @@ where
             op_id,
             markets_refreshed,
             new_external_assets,
-        }
-    }
-
-    #[inline]
-    fn classify_refreshed_positions(
-        refreshed_positions: &[(TargetId, u128)],
-    ) -> Vec<RefreshedPosition> {
-        refreshed_positions
-            .iter()
-            .map(|&(market, total_assets)| RefreshedPosition::new(market, total_assets))
-            .collect()
-    }
-
-    fn validate_refreshed_positions_against_plan(
-        &self,
-        refreshed_positions: &[RefreshedPosition],
-    ) -> Result<(), RuntimeError> {
-        let refreshing =
-            self.state()?.op_state.as_refreshing().ok_or_else(|| {
-                invalid_state_error("refresh completion requires refreshing state")
-            })?;
-
-        for position in refreshed_positions {
-            if !refreshing.plan.contains(&position.market) {
-                return Err(RuntimeError::invalid_input(
-                    "refreshed position target not present in active refresh plan",
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
-        let policy = self.policy_state_mut();
-        for position in refreshed_positions {
-            policy
-                .set_principal(position.market, position.total_assets)
-                .unwrap_or_else(|_| panic!("refresh principal failed"));
         }
     }
 
@@ -859,9 +816,28 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
-        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
-        self.apply_refreshed_positions(&refreshed_positions);
+        let plan_targets: Vec<TargetId> = {
+            let refreshing = self
+                .state()?
+                .op_state
+                .as_refreshing()
+                .ok_or_else(|| invalid_state_error(""))?;
+            refreshing.plan.iter().copied().collect()
+        };
+
+        {
+            let policy = self.policy_state_mut();
+            for &(market, total_assets) in refreshed_positions {
+                if !plan_targets.contains(&market) {
+                    return Err(RuntimeError::invalid_input(""));
+                }
+
+                policy
+                    .set_principal(market, total_assets)
+                    .unwrap_or_else(|_| panic!("refresh principal failed"));
+            }
+        }
+
         let new_external_assets = self.policy_state().external_assets()?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
@@ -1028,12 +1004,12 @@ where
             let config = self
                 .policy_state
                 .market_config(target_id)
-                .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
+                .ok_or_else(|| RuntimeError::invalid_input(""))?;
             if !config.enabled {
-                return Err(RuntimeError::invalid_input("market disabled"));
+                return Err(RuntimeError::invalid_input(""));
             }
             if config.cap == 0 {
-                return Err(RuntimeError::invalid_input("unauthorized market"));
+                return Err(RuntimeError::invalid_input(""));
             }
 
             if entries
@@ -1045,17 +1021,16 @@ where
                 ));
             }
             entries.push(
-                SupplyQueueEntry::new(target_id, 1)
-                    .map_err(|_| RuntimeError::invalid_input("invalid supply queue entry"))?,
+                SupplyQueueEntry::new(target_id, 1).map_err(|_| RuntimeError::invalid_input(""))?,
             );
         }
 
         self.policy_state
             .replace_supply_queue(
                 SupplyQueue::try_from_entries(entries, None)
-                    .map_err(|_| RuntimeError::invalid_input("invalid supply queue"))?,
+                    .map_err(|_| RuntimeError::invalid_input(""))?,
             )
-            .map_err(|_| RuntimeError::invalid_input("invalid supply queue"))?;
+            .map_err(|_| RuntimeError::invalid_input(""))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1070,7 +1045,7 @@ where
 
         let current_cap = self.policy_state.market_config(market_id).map(|m| m.cap);
         let decision = TimelockDecision::from_cap_change(current_cap, new_cap)
-            .map_err(|_| RuntimeError::invalid_input("cap unchanged"))?;
+            .map_err(|_| RuntimeError::invalid_input(""))?;
         if matches!(decision, TimelockDecision::Timelocked) {
             return Err(RuntimeError::invalid_input(
                 "cap increase or new market requires timelock",
@@ -1079,7 +1054,7 @@ where
 
         self.policy_state
             .set_market_cap(market_id, new_cap)
-            .map_err(|_| RuntimeError::invalid_input("market not found"))?;
+            .map_err(|_| RuntimeError::invalid_input(""))?;
 
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
@@ -1094,7 +1069,7 @@ where
 
         let principal = self.policy_state.principal_for(market_id).unwrap_or(0);
         let Some(config) = self.policy_state.market_config(market_id) else {
-            return Err(RuntimeError::invalid_input("market not found"));
+            return Err(RuntimeError::invalid_input(""));
         };
         if config.cap > 0 {
             return Err(RuntimeError::invalid_input(
@@ -1102,7 +1077,7 @@ where
             ));
         }
         if !config.enabled {
-            return Err(RuntimeError::invalid_input("market already removed"));
+            return Err(RuntimeError::invalid_input(""));
         }
         if TimelockDecision::from_requires_timelock(principal > 0).requires_timelock() {
             return Err(RuntimeError::invalid_input(
@@ -1113,7 +1088,7 @@ where
         let _ = self
             .policy_state
             .remove_market(market_id)
-            .map_err(|_| RuntimeError::invalid_input("market not found"))?;
+            .map_err(|_| RuntimeError::invalid_input(""))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1136,7 +1111,7 @@ where
                     .cap_group(&cap_group_id)
                     .and_then(|record| record.cap.absolute_cap());
                 let decision = TimelockDecision::from_cap_group_cap_change(current, new_cap)
-                    .map_err(|_| RuntimeError::invalid_input("cap group cap unchanged"))?;
+                    .map_err(|_| RuntimeError::invalid_input(""))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
                         "cap group cap increase requires timelock",
@@ -1156,9 +1131,7 @@ where
                     .cap_group(&cap_group_id)
                     .and_then(|record| record.cap.relative_cap());
                 let decision = TimelockDecision::from_relative_cap_change(current, proposed)
-                    .map_err(|_| {
-                        RuntimeError::invalid_input("invalid cap group relative cap change")
-                    })?;
+                    .map_err(|_| RuntimeError::invalid_input(""))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
                         "cap group relative cap increase requires timelock",
@@ -1175,22 +1148,22 @@ where
                 let market = self
                     .policy_state
                     .market_config(market_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
+                    .ok_or_else(|| RuntimeError::invalid_input(""))?;
                 let _decision = TimelockDecision::from_membership_assignment_change(
                     market.cap_group_id.as_ref(),
                     cap_group_id.as_ref(),
                 )
-                .map_err(|_| RuntimeError::invalid_input("membership unchanged"))?;
+                .map_err(|_| RuntimeError::invalid_input(""))?;
 
                 self.policy_state
                     .set_market_cap_group(market_id, cap_group_id)
                     .map_err(|error| match error {
                         templar_curator_primitives::policy::state::PolicyStateError::UnknownCapGroup {
                             ..
-                        } => RuntimeError::invalid_input("cap group not found"),
+                        } => RuntimeError::invalid_input(""),
                         templar_curator_primitives::policy::state::PolicyStateError::CapGroupInUse {
                             ..
-                        } => RuntimeError::invalid_input("cap group in use"),
+                        } => RuntimeError::invalid_input(""),
                         templar_curator_primitives::policy::state::PolicyStateError::UnknownMarket {
                             ..
                         }
@@ -1208,7 +1181,7 @@ where
                         }
                         | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueUnauthorizedMarket {
                             ..
-                        } => RuntimeError::invalid_input("market not found"),
+                        } => RuntimeError::invalid_input(""),
                     })?;
             }
         }

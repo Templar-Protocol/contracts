@@ -9,6 +9,7 @@ use soroban_sdk::{
     Bytes, Env,
 };
 use std::string::String;
+use templar_curator_primitives::policy::state::MarketConfig;
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
@@ -424,10 +425,15 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
             FeeSlot::new(Wad::one() / 5, Address([2u8; 32])),
             None,
         );
-        let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
         env.storage().instance().set(
             &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
-            &bytes,
+            &Bytes::from_slice(&env, &bytes),
         );
 
         let mut storage = SorobanStorage::new(&env);
@@ -556,6 +562,18 @@ fn create_test_vault() -> TestVault {
     );
     vault.load_state().unwrap();
     vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
 }
 
 #[fixture]
@@ -577,6 +595,10 @@ fn create_rbac_vault() -> RbacVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 
@@ -655,6 +677,15 @@ fn test_allocation_flow_basic(mut vault: TestVault) {
 
     let allocator = allocator_addr();
     let user = user_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().idle_assets, 10000);
@@ -784,6 +815,11 @@ fn test_rbac_curator_can_do_everything(mut rbac_vault: RbacVault) {
 
     let curator = curator_addr();
 
+    rbac_vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     rbac_vault.deposit(curator, curator, 10000, 0, 100).unwrap();
 
     rbac_vault
@@ -898,6 +934,15 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().total_assets, 10000);
@@ -1089,6 +1134,11 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().total_assets, 10000);
     assert_eq!(vault.state().unwrap().total_shares, 10000);
@@ -1122,6 +1172,11 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
 
@@ -1257,6 +1312,19 @@ fn test_allocation_multiple_markets(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     vault
@@ -1297,6 +1365,11 @@ fn test_allocate_withdraw_uses_allocation_lifecycle(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
     let supply_result = vault

@@ -155,14 +155,7 @@ pub enum RecoveryError {
         expected_amount: u128,
         collected_amount: u128,
     },
-    UnrepresentableFailureEvidence {
-        payout_amount: u128,
-        restore_idle: u128,
-    },
-    UnrepresentableSuccessEvidence {
-        payout_amount: u128,
-        collected_amount: u128,
-    },
+    InvalidPayoutEvidence,
 }
 
 /// Result of planning a recovery operation.
@@ -300,10 +293,7 @@ pub fn compute_payout_success_outcome(
 ) -> Result<PayoutOutcome, RecoveryError> {
     compute_settlement_shares(escrow_shares, expected_amount, collected_amount)?;
     if collected_amount != expected_amount {
-        return Err(RecoveryError::UnrepresentableSuccessEvidence {
-            payout_amount: expected_amount,
-            collected_amount,
-        });
+        return Err(RecoveryError::InvalidPayoutEvidence);
     }
     Ok(PayoutOutcome::Success)
 }
@@ -316,10 +306,7 @@ pub fn compute_payout_failure_outcome(
 ) -> Result<PayoutOutcome, RecoveryError> {
     let _ = escrow_shares;
     if restore_idle != 0 && restore_idle != payout_amount {
-        return Err(RecoveryError::UnrepresentableFailureEvidence {
-            payout_amount,
-            restore_idle,
-        });
+        return Err(RecoveryError::InvalidPayoutEvidence);
     }
     Ok(PayoutOutcome::Failure)
 }

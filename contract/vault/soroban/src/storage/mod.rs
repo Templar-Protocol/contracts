@@ -75,10 +75,10 @@ fn read_exact<'a>(
 ) -> Result<&'a [u8], RuntimeError> {
     let end = cursor
         .checked_add(len)
-        .ok_or_else(|| RuntimeError::storage_error("binary decode overflow"))?;
+        .ok_or_else(|| RuntimeError::storage_error(""))?;
     let slice = bytes
         .get(*cursor..end)
-        .ok_or_else(|| RuntimeError::storage_error("binary decode truncated"))?;
+        .ok_or_else(|| RuntimeError::storage_error(""))?;
     *cursor = end;
     Ok(slice)
 }
@@ -126,9 +126,8 @@ fn encode_cap_group_id(id: &CapGroupId, out: &mut Vec<u8>) {
 
 fn decode_cap_group_id(bytes: &[u8], cursor: &mut usize) -> Result<CapGroupId, RuntimeError> {
     let raw = read_bytes(bytes, cursor)?;
-    let id = String::from_utf8(raw.to_vec())
-        .map_err(|_| RuntimeError::storage_error("cap group id utf8 invalid"))?;
-    CapGroupId::try_from(id).map_err(|_| RuntimeError::storage_error("cap group id invalid"))
+    let id = String::from_utf8(raw.to_vec()).map_err(|_| RuntimeError::storage_error(""))?;
+    CapGroupId::try_from(id).map_err(|_| RuntimeError::storage_error(""))
 }
 
 pub(crate) fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
@@ -163,7 +162,7 @@ pub(crate) fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeE
     match tag {
         0 => Ok(Restrictions::blacklist(addresses)),
         1 => Ok(Restrictions::whitelist(addresses)),
-        _ => Err(RuntimeError::storage_error("restrictions tag invalid")),
+        _ => Err(RuntimeError::storage_error("")),
     }
 }
 
@@ -191,12 +190,11 @@ pub(crate) fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeEr
         let amount = read_u128(bytes, &mut cursor)?;
         let priority = read_u8(bytes, &mut cursor)?;
         let entry = SupplyQueueEntry::new_with_priority(target_id, amount, priority)
-            .map_err(|_| RuntimeError::storage_error("policy supply queue invalid"))?;
+            .map_err(|_| RuntimeError::storage_error(""))?;
         entries.push(entry);
     }
     let max_length = core::num::NonZeroU32::new(max_length);
-    SupplyQueue::try_from_entries(entries, max_length)
-        .map_err(|_| RuntimeError::storage_error("policy supply queue invalid"))
+    SupplyQueue::try_from_entries(entries, max_length).map_err(|_| RuntimeError::storage_error(""))
 }
 
 fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
@@ -285,13 +283,13 @@ pub(crate) fn decode_markets(
         let enabled = match read_u8(bytes, &mut cursor)? {
             0 => false,
             1 => true,
-            _ => return Err(RuntimeError::storage_error("market enabled flag invalid")),
+            _ => return Err(RuntimeError::storage_error("")),
         };
         let cap = read_u128(bytes, &mut cursor)?;
         let cap_group_id = match read_u8(bytes, &mut cursor)? {
             0 => None,
             1 => Some(decode_cap_group_id(bytes, &mut cursor)?),
-            _ => return Err(RuntimeError::storage_error("market cap group tag invalid")),
+            _ => return Err(RuntimeError::storage_error("")),
         };
         let _ = markets.insert(target_id, MarketConfig::new(enabled, cap, cap_group_id));
     }
@@ -514,7 +512,7 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
             escrow_shares: read_u128(bytes, cursor)?,
             burn_shares: read_u128(bytes, cursor)?,
         })),
-        _ => Err(RuntimeError::storage_error("op state tag invalid")),
+        _ => Err(RuntimeError::storage_error("")),
     }
 }
 
@@ -549,20 +547,10 @@ pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError
     };
 
     if cursor != bytes.len() {
-        // Accept trailing bytes only for non-default state blobs.
-        // where the state was written by `save_state()` but read by `load_state()`
-        // via `decode_state_blob()`,        // For non-default state, check that the blob was encoded
-        // and then additional bytes written by `save_state()` that the `fee_anchor`
-        // was the trailing bytes).
-        if let Ok(blob) = blob else {
-            // Blob doesn't match known state encoding, only reject if state is non-default
-            return Err(RuntimeError::storage_error(
-                "state blob has unexpected trailing bytes",
-            ));
-        }
+        return Err(RuntimeError::storage_error(
+            "state blob trailing bytes are invalid",
+        ));
     }
-    
-    Ok(state)
 
     Ok(state)
 }
@@ -590,7 +578,7 @@ pub(crate) fn compose_policy_state(
         leases.unwrap_or_default(),
         supply_queue.unwrap_or_default(),
     )
-    .map_err(|_| RuntimeError::storage_error("policy state invariant violation"))?;
+    .map_err(|_| RuntimeError::storage_error(""))?;
 
     Ok(Some(state))
 }

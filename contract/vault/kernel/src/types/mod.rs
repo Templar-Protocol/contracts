@@ -151,6 +151,24 @@ mod address_serde_impl {
                         .map_err(|_| E::custom("expected exactly 32 bytes for Address"))?;
                     Ok(Address(bytes))
                 }
+
+                fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                where
+                    A: de::SeqAccess<'de>,
+                {
+                    let mut bytes = [0u8; 32];
+                    for byte in &mut bytes {
+                        *byte = seq.next_element()?.ok_or_else(|| {
+                            de::Error::custom("expected exactly 32 bytes for Address")
+                        })?;
+                    }
+
+                    if seq.next_element::<u8>()?.is_some() {
+                        return Err(de::Error::custom("expected exactly 32 bytes for Address"));
+                    }
+
+                    Ok(Address(bytes))
+                }
             }
 
             deserializer.deserialize_bytes(AddressVisitor)
@@ -210,6 +228,24 @@ mod address_postcard_serde_impl {
                         let bytes: [u8; 32] = v
                             .try_into()
                             .map_err(|_| E::custom("expected exactly 32 bytes for Address"))?;
+                        Ok(Address(bytes))
+                    }
+
+                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: de::SeqAccess<'de>,
+                    {
+                        let mut bytes = [0u8; 32];
+                        for byte in &mut bytes {
+                            *byte = seq.next_element()?.ok_or_else(|| {
+                                de::Error::custom("expected exactly 32 bytes for Address")
+                            })?;
+                        }
+
+                        if seq.next_element::<u8>()?.is_some() {
+                            return Err(de::Error::custom("expected exactly 32 bytes for Address"));
+                        }
+
                         Ok(Address(bytes))
                     }
                 }

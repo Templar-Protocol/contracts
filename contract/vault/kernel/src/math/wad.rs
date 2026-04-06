@@ -195,7 +195,7 @@ impl Wad {
     #[inline]
     #[must_use]
     pub fn apply_floored(self, amount: Number) -> Number {
-        Number::mul_div_floor(amount, self.0, Number::from(Self::SCALE))
+        mul_wad_floor(amount, self)
     }
 }
 
