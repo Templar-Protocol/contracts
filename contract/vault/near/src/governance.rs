@@ -130,19 +130,13 @@ fn to_shared_restrictions(
     match restrictions {
         None => None,
         Some(Restrictions::Paused) => Some(shared_gov::Restrictions::Paused),
-        Some(Restrictions::Blacklist(list)) => Some(shared_gov::Restrictions::Blacklist(
-            list.iter().copied().collect(),
-        )),
-        Some(Restrictions::Whitelist(list)) => Some(shared_gov::Restrictions::Whitelist(
-            list.iter().copied().collect(),
-        )),
+        Some(Restrictions::Blacklist(list)) => {
+            Some(shared_gov::Restrictions::Blacklist(list.clone()))
+        }
+        Some(Restrictions::Whitelist(list)) => {
+            Some(shared_gov::Restrictions::Whitelist(list.clone()))
+        }
     }
-}
-
-fn to_kernel_restrictions(
-    restrictions: Option<&Restrictions>,
-) -> Option<templar_vault_kernel::Restrictions> {
-    restrictions.and_then(Restrictions::to_kernel_mode)
 }
 
 #[near(serializers = [borsh])]
@@ -795,18 +789,22 @@ impl Contract {
                 };
 
                 shared_gov::timelock_config_decision(
-                    DurationNs::from(current),
-                    DurationNs(new),
+                    DurationNs::from(current.as_u64()),
+                    DurationNs::from(new),
                     DurationNs(MIN_TIMELOCK_NS),
                     DurationNs(MAX_TIMELOCK_NS),
                 )
-                .map(shared_gov::TimelockDecision::requires_timelock)
-                .unwrap_or_else(|err| {
-                    panic_with_message(match err {
-                        shared_gov::TimelockConfigError::NoChange => ERR_TIMELOCK_NO_CHANGE,
-                        shared_gov::TimelockConfigError::OutOfBounds => ERR_TIMELOCK_OUT_OF_BOUNDS,
-                    })
-                })
+                .map_or_else(
+                    |err| {
+                        panic_with_message(match err {
+                            shared_gov::TimelockConfigError::NoChange => ERR_TIMELOCK_NO_CHANGE,
+                            shared_gov::TimelockConfigError::OutOfBounds => {
+                                ERR_TIMELOCK_OUT_OF_BOUNDS
+                            }
+                        })
+                    },
+                    shared_gov::TimelockDecision::requires_timelock,
+                )
             }
             TimelockedAction::FeesChange { fees } => {
                 Self::require_owner();
@@ -895,8 +893,10 @@ impl Contract {
                         "Market removal pending, cannot change cap"
                     );
                     shared_gov::TimelockDecision::from_cap_change(Some(cfg.cap.0), new_cap.0)
-                        .map(shared_gov::TimelockDecision::requires_timelock)
-                        .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
+                        .map_or_else(
+                            |_| panic_with_message(ERR_CAP_NO_CHANGE),
+                            shared_gov::TimelockDecision::requires_timelock,
+                        )
                 } else {
                     true
                 }
@@ -914,8 +914,10 @@ impl Contract {
                     current,
                     new_cap.map(|cap| cap.0),
                 )
-                .map(shared_gov::TimelockDecision::requires_timelock)
-                .unwrap_or_else(|_| panic_with_message(ERR_CAP_NO_CHANGE))
+                .map_or_else(
+                    |_| panic_with_message(ERR_CAP_NO_CHANGE),
+                    shared_gov::TimelockDecision::requires_timelock,
+                )
             }
             TimelockedAction::CapGroupRelativeCapChange {
                 cap_group,
@@ -933,15 +935,19 @@ impl Contract {
                     current,
                     new_relative_cap.map(|cap| Wad::from(cap.0)),
                 )
-                .map(shared_gov::TimelockDecision::requires_timelock)
-                .unwrap_or_else(|err| {
-                    panic_with_message(match err {
-                        shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
-                            ERR_RELATIVE_CAP_TOO_HIGH
-                        }
-                        shared_gov::RelativeCapChangeError::NoChange => ERR_RELATIVE_CAP_NO_CHANGE,
-                    })
-                })
+                .map_or_else(
+                    |err| {
+                        panic_with_message(match err {
+                            shared_gov::RelativeCapChangeError::RelativeCapTooHigh => {
+                                ERR_RELATIVE_CAP_TOO_HIGH
+                            }
+                            shared_gov::RelativeCapChangeError::NoChange => {
+                                ERR_RELATIVE_CAP_NO_CHANGE
+                            }
+                        })
+                    },
+                    shared_gov::TimelockDecision::requires_timelock,
+                )
             }
             TimelockedAction::CapGroupMembership { market, cap_group } => {
                 AuthPattern::CuratorOrOwner.require();
@@ -954,8 +960,10 @@ impl Contract {
                     rec.cfg.cap_group_id.as_ref(),
                     cap_group.as_ref(),
                 )
-                .map(shared_gov::TimelockDecision::requires_timelock)
-                .unwrap_or_else(|_| panic_with_message(ERR_MEMBERSHIP_NO_CHANGE));
+                .map_or_else(
+                    |_| panic_with_message(ERR_MEMBERSHIP_NO_CHANGE),
+                    shared_gov::TimelockDecision::requires_timelock,
+                );
 
                 decision
             }
@@ -1195,7 +1203,7 @@ impl Contract {
                 }
                 Event::CapGroupSet {
                     cap_group: cap_group.clone(),
-                    new_cap: new_cap.map_or(U128(0), |cap| *cap),
+                    new_cap: new_cap.map_or(U128(0), |cap| cap),
                 }
                 .emit();
             }
@@ -1221,7 +1229,7 @@ impl Contract {
                 Event::CapGroupRelativeCapSet {
                     cap_group: cap_group.clone(),
                     new_relative_cap: new_relative_cap
-                        .map_or(U128(u128::from(Wad::one())), |cap| *cap),
+                        .map_or(U128(u128::from(Wad::one())), |cap| cap),
                 }
                 .emit();
             }
@@ -1307,14 +1315,14 @@ impl Contract {
                 TimelockedAction::pending_key,
                 action.clone(),
                 now_ns,
-                DurationNs::from(cur),
+                DurationNs::from(cur.as_u64()),
             );
         let ready_at_ns = scheduled.ready_at_ns;
 
         if let TimelockedAction::CapGroupChange { cap_group, new_cap } = action {
             Event::CapGroupRaiseSubmitted {
                 cap_group: cap_group.clone(),
-                new_cap: new_cap.map_or(U128(0), |cap| *cap),
+                new_cap: new_cap.map_or(U128(0), |cap| cap),
                 valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();
@@ -1327,7 +1335,7 @@ impl Contract {
         {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
-                new_relative_cap: new_relative_cap.map_or(U128(u128::from(Wad::one())), |cap| *cap),
+                new_relative_cap: new_relative_cap.map_or(U128(u128::from(Wad::one())), |cap| cap),
                 valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();

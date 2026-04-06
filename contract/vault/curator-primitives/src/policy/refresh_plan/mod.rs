@@ -57,6 +57,11 @@ impl RefreshPlan {
     }
 
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    #[must_use]
     pub fn targets(&self) -> &[TargetId] {
         &self.targets
     }

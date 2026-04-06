@@ -79,11 +79,11 @@ mod postcard_serde_impl {
         {
             #[cfg(feature = "soroban")]
             {
-                return Number::as_u128_if_fits(self.0)
+                Number::as_u128_if_fits(self.0)
                     .ok_or_else(|| {
                         serde::ser::Error::custom("Number exceeds u128 for Soroban postcard")
                     })
-                    .and_then(|value| serializer.serialize_u128(value));
+                    .and_then(|value| serializer.serialize_u128(value))
             }
 
             #[cfg(not(feature = "soroban"))]
@@ -102,7 +102,7 @@ mod postcard_serde_impl {
         {
             #[cfg(feature = "soroban")]
             {
-                return u128::deserialize(deserializer).map(Number::from);
+                u128::deserialize(deserializer).map(Number::from)
             }
 
             #[cfg(not(feature = "soroban"))]

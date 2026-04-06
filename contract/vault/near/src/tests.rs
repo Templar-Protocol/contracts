@@ -20,7 +20,10 @@ use near_sdk::test_utils::accounts;
 use near_sdk::NearToken;
 use near_sdk::PromiseOrValue;
 use near_sdk::PromiseResult;
-use near_sdk::{json_types::U128, AccountId};
+use near_sdk::{
+    json_types::{U128, U64},
+    AccountId,
+};
 use near_sdk_contract_tools::ft::Nep141 as _;
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
@@ -452,9 +455,9 @@ fn prop_get_max_deposit_matches_bruteforce() {
                 }
 
                 let group_ids = [
-                    CapGroupId("prop-group-0".to_string()),
-                    CapGroupId("prop-group-1".to_string()),
-                    CapGroupId("prop-group-2".to_string()),
+                    CapGroupId::try_from("prop-group-0".to_string()).unwrap(),
+                    CapGroupId::try_from("prop-group-1".to_string()).unwrap(),
+                    CapGroupId::try_from("prop-group-2".to_string()).unwrap(),
                 ];
 
                 let mut group_principal = [0u128; 3];
@@ -2501,7 +2504,10 @@ fn restrictions_pause_is_immediate_for_sentinel(owner_env: OwnerEnv) {
     set_ctx(&vault_id, &sentinel, None, None);
     contract.set_restrictions(Some(Restrictions::Paused));
 
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
     assert_eq!(contract.governance_timelocks.pending_len(), 0);
 }
 
@@ -2511,16 +2517,22 @@ fn restrictions_unpause_is_timelocked(owner_env: OwnerEnv) {
 
     // Emergency pause applies immediately.
     contract.set_restrictions(Some(Restrictions::Paused));
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
 
     // Unpause is a relax, so it must be timelocked.
     contract.set_restrictions(None);
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
     assert_eq!(contract.governance_timelocks.pending_len(), 1);
 
     contract.accept_restrictions();
 
-    assert_eq!(contract.get_restrictions(), None);
+    assert!(contract.get_restrictions().is_none());
     assert_eq!(contract.governance_timelocks.pending_len(), 0);
 }
 
@@ -2539,7 +2551,10 @@ fn restrictions_unpause_by_sentinel_is_timelocked(owner_env: OwnerEnv) {
 
     contract.set_restrictions(None);
 
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
     assert_eq!(contract.governance_timelocks.pending_len(), 1);
 }
 
@@ -2975,7 +2990,7 @@ fn cap_group_limits_total_room() {
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let group = CapGroupId("group-a".to_string());
+    let group = CapGroupId::try_from("group-a".to_string()).unwrap();
     c.cap_groups
         .insert(group.clone(), cap_group_record(150, Wad::one(), 0));
 
@@ -3003,8 +3018,8 @@ fn cap_group_relative_caps_scale_with_aum() {
 
     let half = Wad::one() / 2;
 
-    let group_a = CapGroupId("group-ra".to_string());
-    let group_b = CapGroupId("group-rb".to_string());
+    let group_a = CapGroupId::try_from("group-ra".to_string()).unwrap();
+    let group_b = CapGroupId::try_from("group-rb".to_string()).unwrap();
 
     c.cap_groups
         .insert(group_a.clone(), cap_group_record(10_000, half, 0));
@@ -3054,7 +3069,7 @@ fn cap_group_refunds_when_saturated() {
     let asset: AccountId = c.underlying_asset.contract_id().into();
     setup_env(&vault_id, &asset, vec![]);
 
-    let group = CapGroupId("group-b".to_string());
+    let group = CapGroupId::try_from("group-b".to_string()).unwrap();
     c.cap_groups
         .insert(group.clone(), cap_group_record(50, Wad::one(), 0));
 
@@ -3647,8 +3662,8 @@ fn cap_group_membership_moves_principal() {
         TimestampNs::ZERO,
     );
 
-    let group_a = CapGroupId("ga".to_string());
-    let group_b = CapGroupId("gb".to_string());
+    let group_a = CapGroupId::try_from("ga".to_string()).unwrap();
+    let group_b = CapGroupId::try_from("gb".to_string()).unwrap();
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group_a.clone(),
@@ -3709,7 +3724,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         TimestampNs::ZERO,
     );
 
-    let group = CapGroupId("gr".to_string());
+    let group = CapGroupId::try_from("gr".to_string()).unwrap();
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group.clone(),
