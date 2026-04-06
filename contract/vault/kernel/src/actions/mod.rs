@@ -1513,8 +1513,6 @@ fn apply_payout_settlement(
             .checked_sub(payout.amount)
             .ok_or_else(|| KernelError::from(InvalidStateCode::PayoutFailureRestoreIdleMismatch))?;
         state.sync_total_assets();
-    } else {
-        state.restore_to_idle(payout.amount);
     }
 
     state.op_state = OpState::Idle;
