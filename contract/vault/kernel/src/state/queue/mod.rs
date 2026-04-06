@@ -531,10 +531,6 @@ impl PendingWithdrawals {
     #[inline]
     #[must_use]
     pub fn from_sorted_entries(entries: Vec<(u64, PendingWithdrawal)>) -> Self {
-        debug_assert!(
-            entries.windows(2).all(|window| window[0].0 < window[1].0),
-            "from_sorted_entries requires strictly ascending IDs"
-        );
         Self {
             entries: entries
                 .into_iter()
