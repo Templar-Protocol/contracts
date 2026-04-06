@@ -2,6 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
+use templar_curator_primitives::policy::cap_group::CapGroupId;
 use templar_curator_primitives::policy::market_lock::{
     FencingToken, LeaseOwner, MarketLease, MarketLeaseRegistry,
 };
@@ -63,8 +64,13 @@ fn build_supply_queue(input: &StorageCodecInput) -> SupplyQueue {
 
 fn build_markets(input: &StorageCodecInput) -> OrderedMap<TargetId, MarketConfig> {
     let mut out = OrderedMap::new();
-    for (target_id, enabled, cap, _cap_group_bytes) in &input.market_entries {
-        let _ = out.insert(*target_id, MarketConfig::new(*enabled, *cap, None));
+    for (target_id, enabled, cap, cap_group_bytes) in &input.market_entries {
+        let cap_group_id = cap_group_bytes
+            .as_ref()
+            .and_then(|raw| core::str::from_utf8(raw).ok())
+            .map(str::to_owned)
+            .and_then(|raw| CapGroupId::try_from(raw).ok());
+        let _ = out.insert(*target_id, MarketConfig::new(*enabled, *cap, cap_group_id));
     }
     out
 }
