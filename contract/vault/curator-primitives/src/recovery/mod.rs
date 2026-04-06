@@ -155,6 +155,14 @@ pub enum RecoveryError {
         expected_amount: u128,
         collected_amount: u128,
     },
+    UnrepresentableFailureEvidence {
+        payout_amount: u128,
+        restore_idle: u128,
+    },
+    UnrepresentableSuccessEvidence {
+        payout_amount: u128,
+        collected_amount: u128,
+    },
 }
 
 /// Result of planning a recovery operation.
@@ -291,14 +299,29 @@ pub fn compute_payout_success_outcome(
     collected_amount: u128,
 ) -> Result<PayoutOutcome, RecoveryError> {
     compute_settlement_shares(escrow_shares, expected_amount, collected_amount)?;
+    if collected_amount != expected_amount {
+        return Err(RecoveryError::UnrepresentableSuccessEvidence {
+            payout_amount: expected_amount,
+            collected_amount,
+        });
+    }
     Ok(PayoutOutcome::Success)
 }
 
 /// Compute a failure payout outcome from escrow shares and idle restore amount.
-#[must_use]
-pub fn compute_payout_failure_outcome(escrow_shares: u128, restore_idle: u128) -> PayoutOutcome {
-    let _inputs = (escrow_shares, restore_idle);
-    PayoutOutcome::Failure
+pub fn compute_payout_failure_outcome(
+    escrow_shares: u128,
+    payout_amount: u128,
+    restore_idle: u128,
+) -> Result<PayoutOutcome, RecoveryError> {
+    let _ = escrow_shares;
+    if restore_idle != 0 && restore_idle != payout_amount {
+        return Err(RecoveryError::UnrepresentableFailureEvidence {
+            payout_amount,
+            restore_idle,
+        });
+    }
+    Ok(PayoutOutcome::Failure)
 }
 
 /// Compute recovery statistics from the current state.
@@ -423,7 +446,7 @@ fn settle_payout_action(
 ) -> Result<KernelAction, RecoveryError> {
     let outcome = match evidence {
         PayoutRecoveryEvidence::Failure { restore_idle } => {
-            compute_payout_failure_outcome(state.escrow_shares, restore_idle)
+            compute_payout_failure_outcome(state.escrow_shares, state.amount, restore_idle)?
         }
         PayoutRecoveryEvidence::Success { collected_amount } => {
             compute_payout_success_outcome(state.escrow_shares, state.amount, collected_amount)?
