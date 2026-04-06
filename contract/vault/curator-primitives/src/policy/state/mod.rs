@@ -263,10 +263,14 @@ impl PolicyState {
         config: MarketConfig,
     ) -> Result<(), PolicyStateError> {
         self.ensure_known_cap_group(config.cap_group_id.as_ref())?;
+        let should_purge_queue = !config.enabled || config.cap == 0;
         self.markets.insert(target_id, config);
         let _ = self
             .principals
             .insert(target_id, self.principal_entry(target_id).unwrap_or(0));
+        if should_purge_queue {
+            self.supply_queue.remove_target(target_id);
+        }
         self.recompute_cap_group_principals()
     }
 
@@ -364,18 +368,21 @@ impl PolicyState {
     }
 
     /// Compute total external assets from all principals.
-    #[must_use]
-    pub fn external_assets(&self) -> u128 {
+    pub fn external_assets(&self) -> Result<u128, PolicyStateError> {
         self.principals
-            .values()
-            .fold(0u128, |acc, p| acc.checked_add(*p).unwrap())
+            .iter()
+            .try_fold(0u128, |acc, (target_id, principal)| {
+                acc.checked_add(*principal)
+                    .ok_or(PolicyStateError::PrincipalOverflow {
+                        target_id: *target_id,
+                    })
+            })
     }
 
     /// Compute principal totals per cap group.
     ///
     /// Aggregates principals for all markets assigned to each cap group.
-    #[must_use]
-    pub fn compute_cap_group_totals(&self) -> Vec<(CapGroupId, u128)> {
+    pub fn compute_cap_group_totals(&self) -> Result<Vec<(CapGroupId, u128)>, PolicyStateError> {
         let mut totals: Vec<(CapGroupId, u128)> = Vec::new();
 
         for (target_id, config) in self.markets.iter() {
@@ -388,13 +395,17 @@ impl PolicyState {
                 .iter_mut()
                 .find(|(existing_group_id, _)| *existing_group_id == group_id)
             {
-                *sum = sum.checked_add(principal).unwrap();
+                *sum = sum
+                    .checked_add(principal)
+                    .ok_or(PolicyStateError::PrincipalOverflow {
+                        target_id: *target_id,
+                    })?;
             } else {
                 totals.push((group_id, principal));
             }
         }
 
-        totals
+        Ok(totals)
     }
 
     pub fn ensure_cap_group(&mut self, cap_group_id: CapGroupId) {
@@ -423,7 +434,7 @@ impl PolicyState {
 
     pub fn recompute_cap_group_principals(&mut self) -> Result<(), PolicyStateError> {
         self.validate_cap_group_memberships()?;
-        let totals = self.compute_cap_group_totals();
+        let totals = self.compute_cap_group_totals()?;
 
         for (group_id, record) in self.cap_groups.iter_mut() {
             let total = totals

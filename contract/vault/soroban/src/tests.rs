@@ -297,8 +297,7 @@ mod contract_tests {
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
-        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_FEES,
+        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
@@ -885,9 +884,10 @@ mod contract_tests {
 
         env.as_contract(&contract_id, || {
             let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
-            env.storage()
-                .instance()
-                .set(&VaultDataKey::FeesSpec, &bytes);
+            env.storage().instance().set(
+                &VaultDataKey::FeesSpec,
+                &soroban_sdk::Bytes::from_slice(&env, &bytes),
+            );
         });
 
         env.as_contract(&contract_id, || {
@@ -1102,9 +1102,10 @@ mod contract_tests {
                 None,
             );
             let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
-            env.storage()
-                .instance()
-                .set(&VaultDataKey::FeesSpec, &bytes);
+            env.storage().instance().set(
+                &VaultDataKey::FeesSpec,
+                &soroban_sdk::Bytes::from_slice(&env, &bytes),
+            );
 
             let mut storage = SorobanStorage::new(&env);
             storage.save_address(
@@ -1899,7 +1900,7 @@ mod storage_tests {
         assert!(v1.is_compatible());
 
         let current = StorageVersion::CURRENT;
-        assert_eq!(current, StorageVersion::V1);
+        assert_eq!(current, StorageVersion::V2);
     }
 
     #[test]
@@ -2252,8 +2253,8 @@ mod storage_tests {
         let queue =
             templar_curator_primitives::policy::supply_queue::SupplyQueue::try_from_entries(
                 alloc::vec![
-                    AllocationPlanEntry::new(0, 100).into(),
-                    AllocationPlanEntry::new(1, 200).into(),
+                    AllocationPlanEntry::new(0, 100),
+                    AllocationPlanEntry::new(1, 200),
                 ]
                 .into_iter()
                 .map(|entry: AllocationPlanEntry| {
@@ -2533,12 +2534,17 @@ mod storage_tests {
                 total_assets: 42,
                 ..Default::default()
             };
-            let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
-            storage.save_state(&legacy).unwrap();
+            let legacy = VersionedState::with_version(StorageVersion::V0, state.clone());
+            storage.save_state_blob(&postcard::to_allocvec(&legacy).unwrap());
+            storage.set_version(StorageVersion::V0.number());
 
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::new(0));
+            assert_eq!(loaded.version, StorageVersion::CURRENT);
             assert_eq!(loaded.state.total_assets, 42);
+            assert_eq!(
+                storage.get_version(),
+                Some(StorageVersion::CURRENT.number())
+            );
         });
     }
 
@@ -2586,11 +2592,12 @@ mod storage_tests {
             state.external_assets = 900;
             state.next_op_id = 12;
 
-            let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
-            storage.save_state(&legacy).unwrap();
+            let legacy = VersionedState::with_version(StorageVersion::V0, state.clone());
+            storage.save_state_blob(&postcard::to_allocvec(&legacy).unwrap());
+            storage.set_version(StorageVersion::V0.number());
 
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::new(0));
+            assert_eq!(loaded.version, StorageVersion::CURRENT);
             assert_eq!(loaded.state, state);
 
             let migrated = VersionedState::new(loaded.state.clone());
@@ -2602,9 +2609,10 @@ mod storage_tests {
     }
 
     #[rstest]
-    #[case(StorageVersion::new(0), true)]
+    #[case(StorageVersion::V0, true)]
     #[case(StorageVersion::V1, true)]
-    #[case(StorageVersion::new(2), false)]
+    #[case(StorageVersion::V2, true)]
+    #[case(StorageVersion::new(3), false)]
     #[case(StorageVersion::new(u32::MAX), false)]
     fn test_storage_version_compatibility_cases(
         #[case] version: StorageVersion,

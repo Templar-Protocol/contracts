@@ -88,18 +88,21 @@ fn arb_refresh_plan(max_len: usize) -> impl Strategy<Value = Vec<u32>> {
 /// Generate a withdrawal request
 fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
     (
-        1u64..u64::MAX,            // op_id
+        1u64..u64::MAX, // op_id
+        1u64..u64::MAX,
         1u128..=1_000_000_000u128, // amount
         1u128..=1_000_000_000u128, // escrow_shares
     )
-        .prop_map(|(op_id, amount, escrow_shares)| WithdrawalRequest {
-            op_id,
-            request_id: op_id,
-            amount,
-            receiver: receiver_addr(op_id),
-            owner: owner_addr(op_id),
-            escrow_shares,
-        })
+        .prop_map(
+            |(op_id, request_id, amount, escrow_shares)| WithdrawalRequest {
+                op_id,
+                request_id,
+                amount,
+                receiver: receiver_addr(op_id),
+                owner: owner_addr(op_id),
+                escrow_shares,
+            },
+        )
 }
 
 /// Generate a pending withdrawal
@@ -3077,8 +3080,6 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
     state.total_assets = 10_000;
 
     let plan = vec![alloc_step(0, 3_000), alloc_step(1, 2_000)];
-    let alloc_total: u128 = plan.iter().map(|step| step.amount).sum();
-
     // --- Kernel: BeginAllocating decrements idle_assets ---
     let result = apply_action(
         state,

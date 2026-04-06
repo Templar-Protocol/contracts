@@ -9,6 +9,7 @@ pub enum CodecError {
     Truncated,
     InvalidUtf8,
     InvalidTag,
+    InvalidEncoding,
 }
 
 fn push_u8(out: &mut Vec<u8>, value: u8) {
@@ -158,7 +159,7 @@ fn read_option_string(bytes: &[u8], cursor: &mut usize) -> Result<Option<String>
 
 fn read_u32_vec(bytes: &[u8], cursor: &mut usize) -> Result<Vec<u32>, CodecError> {
     let len = read_u32(bytes, cursor)? as usize;
-    let mut values = Vec::with_capacity(len);
+    let mut values = Vec::new();
     for _ in 0..len {
         values.push(read_u32(bytes, cursor)?);
     }
@@ -167,7 +168,7 @@ fn read_u32_vec(bytes: &[u8], cursor: &mut usize) -> Result<Vec<u32>, CodecError
 
 fn read_string_vec(bytes: &[u8], cursor: &mut usize) -> Result<Vec<String>, CodecError> {
     let len = read_u32(bytes, cursor)? as usize;
-    let mut values = Vec::with_capacity(len);
+    let mut values = Vec::new();
     for _ in 0..len {
         values.push(read_string(bytes, cursor)?);
     }
@@ -382,7 +383,7 @@ impl VaultCommand {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
         let mut cursor = 0usize;
-        match read_u8(bytes, &mut cursor)? {
+        let command = match read_u8(bytes, &mut cursor)? {
             0 => Ok(Self::DepositWithMin {
                 owner: read_string(bytes, &mut cursor)?,
                 receiver: read_string(bytes, &mut cursor)?,
@@ -402,7 +403,11 @@ impl VaultCommand {
                 caller: read_string(bytes, &mut cursor)?,
                 market: read_u32(bytes, &mut cursor)?,
                 amount: read_i128(bytes, &mut cursor)?,
-                supply: read_u8(bytes, &mut cursor)? != 0,
+                supply: match read_u8(bytes, &mut cursor)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(CodecError::InvalidEncoding),
+                },
             }),
             4 => Ok(Self::RefreshMarkets {
                 caller: read_string(bytes, &mut cursor)?,
@@ -438,7 +443,13 @@ impl VaultCommand {
             }),
             10 => Ok(Self::ExtendTtl),
             _ => Err(CodecError::InvalidTag),
+        }?;
+
+        if cursor != bytes.len() {
+            return Err(CodecError::InvalidEncoding);
         }
+
+        Ok(command)
     }
 }
 
@@ -462,11 +473,17 @@ impl VaultCommandResult {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
         let mut cursor = 0usize;
-        match read_u8(bytes, &mut cursor)? {
+        let result = match read_u8(bytes, &mut cursor)? {
             0 => Ok(Self::Unit),
             1 => Ok(Self::I128(read_i128(bytes, &mut cursor)?)),
             2 => Ok(Self::U64(read_u64(bytes, &mut cursor)?)),
             _ => Err(CodecError::InvalidTag),
+        }?;
+
+        if cursor != bytes.len() {
+            return Err(CodecError::InvalidEncoding);
         }
+
+        Ok(result)
     }
 }

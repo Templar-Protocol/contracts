@@ -78,8 +78,8 @@ fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
 }
 
 fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
-    const FIXED_LEN_NO_GROWTH: usize = 81;
-    const FIXED_LEN_WITH_GROWTH: usize = 97;
+    const FIXED_LEN_NO_GROWTH: usize = 97;
+    const FIXED_LEN_WITH_GROWTH: usize = 113;
 
     if bytes.len() != FIXED_LEN_NO_GROWTH && bytes.len() != FIXED_LEN_WITH_GROWTH {
         return Err(RuntimeError::storage_error("fees deserialize failed"));

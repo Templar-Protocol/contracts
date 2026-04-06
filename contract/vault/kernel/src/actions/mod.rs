@@ -1011,8 +1011,8 @@ fn handle_atomic_withdraw(
     }
     if shares > max_shares_burned {
         return Err(KernelError::Slippage {
-            min: shares,
-            actual: max_shares_burned,
+            min: max_shares_burned,
+            actual: shares,
         });
     }
 

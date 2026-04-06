@@ -12,7 +12,9 @@ use crate::{
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
-    env, json_types::U128, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
+    env,
+    json_types::{U128, U64},
+    AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
 };
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
 
@@ -277,9 +279,13 @@ impl Contract {
         fencing_token: U64,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
+        if !self
+            .market_execution_lock
+            .is_current_token(market, FencingToken(fencing_token.0))
+        {
+            return PromiseOrValue::Value(());
+        }
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
-        self.market_execution_lock
-            .assert_current_token(market, FencingToken(fencing_token.0));
 
         let Ok(before_balance) = before_balance else {
             return self.stop_and_exit(Some(&Error::BalanceReadFailed));
@@ -328,9 +334,13 @@ impl Contract {
         principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
+        if !self
+            .market_execution_lock
+            .is_current_token(market, FencingToken(fencing_token.0))
+        {
+            return PromiseOrValue::Value(());
+        }
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
-        self.market_execution_lock
-            .assert_current_token(market, FencingToken(fencing_token.0));
 
         let reported_principal: u128 = match position {
             Ok(Some(position)) => {
@@ -403,9 +413,13 @@ impl Contract {
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
+        if !self
+            .market_execution_lock
+            .is_current_token(market, FencingToken(fencing_token.0))
+        {
+            return PromiseOrValue::Value(());
+        }
         let ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
-        self.market_execution_lock
-            .assert_current_token(market, FencingToken(fencing_token.0));
 
         let Ok(after_balance) = after_balance else {
             return self.stop_and_exit(Some(&Error::BalanceReadFailed));
@@ -447,7 +461,8 @@ impl Contract {
             Ordering::Equal => {}
         }
 
-        self.market_execution_lock.unlock(market, op_id);
+        self.market_execution_lock
+            .unlock(market, op_id, FencingToken(fencing_token.0));
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -534,7 +549,11 @@ impl Contract {
             .assert_current_token(market_id, FencingToken(fencing_token.0));
 
         let Ok(before_balance) = before_balance else {
-            allocating.market_execution_lock.unlock(market_id, op_id);
+            allocating.market_execution_lock.unlock(
+                market_id,
+                op_id,
+                FencingToken(fencing_token.0),
+            );
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -587,7 +606,11 @@ impl Contract {
             // Treat missing position as zero - market has no funds for us
             Ok(None) => 0,
             Err(_) => {
-                allocating.market_execution_lock.unlock(market_id, op_id);
+                allocating.market_execution_lock.unlock(
+                    market_id,
+                    op_id,
+                    FencingToken(fencing_token.0),
+                );
                 let _idle = allocating.into_idle();
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
@@ -635,7 +658,11 @@ impl Contract {
             .assert_current_token(market_id, FencingToken(fencing_token.0));
 
         let Ok(after_balance) = after_balance else {
-            allocating.market_execution_lock.unlock(market_id, op_id);
+            allocating.market_execution_lock.unlock(
+                market_id,
+                op_id,
+                FencingToken(fencing_token.0),
+            );
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -654,7 +681,9 @@ impl Contract {
             before_balance,
         );
 
-        allocating.market_execution_lock.unlock(market_id, op_id);
+        allocating
+            .market_execution_lock
+            .unlock(market_id, op_id, FencingToken(fencing_token.0));
 
         let _idle = allocating.into_idle();
         Event::RebalanceWithdrawCompleted {

@@ -250,6 +250,9 @@ impl Storage for MemoryStorage {
         self.policy_markets = Some(state.markets().clone());
         self.policy_principals = Some(state.principals().clone());
         self.policy_cap_groups = Some(state.cap_groups().clone());
+        if let Some(versioned_state) = &mut self.state {
+            versioned_state.version = StorageVersion::CURRENT;
+        }
         Ok(())
     }
 
@@ -262,6 +265,9 @@ impl Storage for MemoryStorage {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         self.restrictions = restrictions.clone();
+        if let Some(versioned_state) = &mut self.state {
+            versioned_state.version = StorageVersion::CURRENT;
+        }
         Ok(())
     }
 

@@ -87,8 +87,8 @@ fn near_snapshot() -> NearVaultSnapshot {
 
 mod auth_unit_tests {
     use crate::auth::{
-        boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
-        AuthPolicyClass, AuthResult, Caller,
+        allowed_while_paused, boundary_policy_class, canonical_policy_class, ActionKind,
+        AuthAdapter, AuthError, AuthPolicyClass, AuthResult, Caller,
     };
     use templar_vault_kernel::Address;
 
@@ -454,7 +454,7 @@ fn golden_supply_queue_priority_ordering() {
     let entries: Vec<u32> = queue
         .entries()
         .iter()
-        .map(SupplyQueueEntry::target_id)
+        .map(|entry| entry.target_id)
         .collect();
     assert_eq!(entries, vec![2, 1, 3, 0]);
 }
@@ -479,9 +479,9 @@ fn golden_withdraw_route_from_principals(near_snapshot: NearVaultSnapshot) {
 
     // Markets should be sorted by principal (largest first)
     // Expected order: 0 (3M), 1 (2.5M), 2 (1.5M)
-    assert_eq!(route.entries()[0].target_id(), 0);
-    assert_eq!(route.entries()[1].target_id(), 1);
-    assert_eq!(route.entries()[2].target_id(), 2);
+    assert_eq!(route.entries()[0].target_id, 0);
+    assert_eq!(route.entries()[1].target_id, 1);
+    assert_eq!(route.entries()[2].target_id, 2);
 }
 
 #[test]
@@ -916,8 +916,8 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_validate_allocations() {
-        let group1 = CapGroupId::from("group1");
-        let group2 = CapGroupId::from("group2");
+        let group1 = CapGroupId::try_from("group1").unwrap();
+        let group2 = CapGroupId::try_from("group2").unwrap();
 
         let cap1 = CapGroupRecord {
             cap: CapGroup::builder().absolute_cap(1000).build(),
@@ -940,7 +940,7 @@ mod cap_group_unit_tests {
     #[test]
     fn test_validate_allocations_cumulative_breach() {
         // CR-069: Test that multiple allocations to the same group are tracked cumulatively
-        let group1 = CapGroupId::from("group1");
+        let group1 = CapGroupId::try_from("group1").unwrap();
 
         let cap1 = CapGroupRecord {
             cap: CapGroup::builder().absolute_cap(1000).build(),
@@ -995,7 +995,7 @@ mod cap_group_unit_tests {
 
     #[test]
     fn test_validate_allocations_rejects_inconsistent_records() {
-        let group = CapGroupId::from("group1");
+        let group = CapGroupId::try_from("group1").unwrap();
         let canonical = CapGroupRecord {
             cap: CapGroup::builder().absolute_cap(1000).build(),
             principal: 90,
@@ -1085,12 +1085,8 @@ mod recovery_unit_tests {
             .expect("expected action");
 
         match action {
-            KernelAction::AbortAllocating {
-                op_id,
-                restore_idle,
-            } => {
+            KernelAction::AbortAllocating { op_id } => {
                 assert_eq!(op_id, 1);
-                assert_eq!(restore_idle, 500);
             }
             _ => panic!("Expected AbortAllocating"),
         }
@@ -1152,12 +1148,8 @@ mod recovery_unit_tests {
             .expect("expected action");
 
         match action {
-            KernelAction::AbortWithdrawing {
-                op_id,
-                refund_shares,
-            } => {
+            KernelAction::AbortWithdrawing { op_id } => {
                 assert_eq!(op_id, 2);
-                assert_eq!(refund_shares, 1000);
             }
             _ => panic!("Expected AbortWithdrawing"),
         }
@@ -1210,7 +1202,6 @@ mod recovery_unit_tests {
     fn test_determine_recovery_action_payout_with_failure_evidence() {
         let state = OpState::Payout(PayoutState {
             op_id: 4,
-            request_id: 4,
             request_id: 4,
             receiver: receiver_addr(1),
             amount: 1000,
@@ -1319,12 +1310,8 @@ mod recovery_unit_tests {
         assert!(outcome.planned);
         assert_eq!(outcome.message, Some(String::from("Market unavailable")));
         match outcome.action {
-            KernelAction::AbortAllocating {
-                op_id,
-                restore_idle,
-            } => {
+            KernelAction::AbortAllocating { op_id } => {
                 assert_eq!(op_id, 1);
-                assert_eq!(restore_idle, 500);
             }
             _ => panic!("Expected AbortAllocating"),
         }
@@ -1347,12 +1334,8 @@ mod recovery_unit_tests {
 
         assert!(outcome.planned);
         match outcome.action {
-            KernelAction::AbortWithdrawing {
-                op_id,
-                refund_shares,
-            } => {
+            KernelAction::AbortWithdrawing { op_id } => {
                 assert_eq!(op_id, 2);
-                assert_eq!(refund_shares, 1000);
             }
             _ => panic!("Expected AbortWithdrawing"),
         }
@@ -1562,11 +1545,10 @@ mod recovery_unit_tests {
 
 mod governance_module_tests {
     pub use crate::governance::*;
-    use alloc::collections::BTreeSet;
     use templar_vault_kernel::{DurationNs, TimestampNs, Wad};
 
     fn identity_key<'a>(value: &&'a str) -> &'a str {
-        *value
+        value
     }
 
     #[test]
@@ -1583,13 +1565,10 @@ mod governance_module_tests {
 
     #[test]
     fn queue_take_by_key_enforces_timelock() {
-        let mut queue =
-            PendingActions::from_restored_entries(alloc::collections::VecDeque::from([
-                PendingValue {
-                    value: "change",
-                    ready_at_ns: TimestampNs(1_000),
-                },
-            ]));
+        let mut queue = PendingActions::from_restored_entries(vec![PendingValue {
+            value: "change",
+            ready_at_ns: TimestampNs(1_000),
+        }]);
 
         let not_ready = queue.take_by_key(TimestampNs(999), &"change", identity_key);
         assert_eq!(
@@ -1805,7 +1784,7 @@ mod governance_module_tests {
     #[test]
     fn determine_relaxed_paused_to_empty_whitelist_is_not_relaxing() {
         let current = Some(Restrictions::<&str>::Paused);
-        let next = Some(Restrictions::Whitelist(BTreeSet::new()));
+        let next = Some(Restrictions::Whitelist(Vec::new()));
 
         assert!(!Restrictions::determine_relaxed(&current, &next));
     }
@@ -1813,15 +1792,15 @@ mod governance_module_tests {
     #[test]
     fn determine_relaxed_paused_to_nonempty_whitelist_is_relaxing() {
         let current = Some(Restrictions::<&str>::Paused);
-        let next = Some(Restrictions::Whitelist(BTreeSet::from(["alice"])));
+        let next = Some(Restrictions::Whitelist(vec!["alice"]));
 
         assert!(Restrictions::determine_relaxed(&current, &next));
     }
 }
 
 mod rbac_module_tests {
-    use crate::auth::{ActionKind, AuthAdapter, AuthError};
     pub use crate::rbac::*;
+    use crate::{ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult};
     use templar_vault_kernel::Address;
 
     #[rstest::fixture]
@@ -2254,19 +2233,20 @@ mod utils_module_tests {
 
 mod policy_cap_group_update_tests {
     use crate::policy::cap_group::{CapGroupId, CapGroupUpdate, CapGroupUpdateKey};
+    use templar_vault_kernel::Wad;
 
     #[test]
     fn cap_group_update_uses_canonical_set_cap_shape() {
         let update = CapGroupUpdate::SetCap {
-            cap_group_id: CapGroupId::from("group-a"),
-            new_cap: 123,
+            cap_group_id: CapGroupId::try_from("group-a").unwrap(),
+            new_cap: Some(123),
         };
 
         assert_eq!(
             update,
             CapGroupUpdate::SetCap {
-                cap_group_id: CapGroupId::from("group-a"),
-                new_cap: 123,
+                cap_group_id: CapGroupId::try_from("group-a").unwrap(),
+                new_cap: Some(123),
             }
         );
     }
@@ -2274,14 +2254,14 @@ mod policy_cap_group_update_tests {
     #[test]
     fn cap_group_update_uses_canonical_set_relative_cap_shape() {
         let update = CapGroupUpdate::SetRelativeCap {
-            cap_group_id: CapGroupId::from("group-b"),
+            cap_group_id: CapGroupId::try_from("group-b").unwrap(),
             new_relative_cap: Some(Wad::from(999u128)),
         };
 
         assert_eq!(
             update,
             CapGroupUpdate::SetRelativeCap {
-                cap_group_id: CapGroupId::from("group-b"),
+                cap_group_id: CapGroupId::try_from("group-b").unwrap(),
                 new_relative_cap: Some(Wad::from(999u128)),
             }
         );
@@ -2291,14 +2271,14 @@ mod policy_cap_group_update_tests {
     fn cap_group_update_uses_canonical_membership_shape() {
         let update = CapGroupUpdate::SetMembership {
             market_id: 77,
-            cap_group_id: Some(CapGroupId::from("group-c")),
+            cap_group_id: Some(CapGroupId::try_from("group-c").unwrap()),
         };
 
         assert_eq!(
             update,
             CapGroupUpdate::SetMembership {
                 market_id: 77,
-                cap_group_id: Some(CapGroupId::from("group-c")),
+                cap_group_id: Some(CapGroupId::try_from("group-c").unwrap()),
             }
         );
     }
@@ -2306,12 +2286,12 @@ mod policy_cap_group_update_tests {
     #[test]
     fn cap_group_update_key_uses_canonical_shape() {
         let key = CapGroupUpdateKey::SetRelativeCap {
-            cap_group_id: CapGroupId::from("group-key"),
+            cap_group_id: CapGroupId::try_from("group-key").unwrap(),
         };
         assert_eq!(
             key,
             CapGroupUpdateKey::SetRelativeCap {
-                cap_group_id: CapGroupId::from("group-key"),
+                cap_group_id: CapGroupId::try_from("group-key").unwrap(),
             }
         );
     }
@@ -2330,7 +2310,7 @@ mod policy_cap_group_adapter_tests {
             .absolute_cap(1_000)
             .relative_cap(Wad::from(WAD / 2))
             .build();
-        assert_eq!(cap.absolute_cap().map(|v| v.get()), Some(1_000));
+        assert_eq!(cap.absolute_cap(), Some(1_000));
         assert_eq!(cap.relative_cap(), Some(Wad::from(WAD / 2)));
 
         let record = CapGroupRecord {
@@ -2338,7 +2318,7 @@ mod policy_cap_group_adapter_tests {
             principal: 300,
         };
         assert_eq!(record.principal, 300);
-        assert_eq!(record.cap.absolute_cap().map(|v| v.get()), Some(1_000));
+        assert_eq!(record.cap.absolute_cap(), Some(1_000));
     }
 
     #[test]
@@ -2560,8 +2540,8 @@ mod policy_lock_filter_tests {
             Some(16)
         );
         assert_eq!(filtered.entries().len(), 2);
-        assert_eq!(filtered.entries()[0].target_id(), 1);
-        assert_eq!(filtered.entries()[1].target_id(), 3);
+        assert_eq!(filtered.entries()[0].target_id, 1);
+        assert_eq!(filtered.entries()[1].target_id, 3);
     }
 
     #[rstest::rstest]
@@ -2730,7 +2710,7 @@ mod policy_market_lease_tests {
 
         assert_eq!(registry.stored_len(), 1);
         assert!(registry.is_leased(1, TimestampNs(1_200)));
-        assert_eq!(lease.fencing_token(), FencingToken(1));
+        assert_eq!(lease.fencing_token, FencingToken(1));
     }
 
     #[rstest::rstest]
@@ -2782,13 +2762,13 @@ mod policy_market_lease_tests {
             )
             .unwrap();
 
-        assert_eq!(first_lease.fencing_token(), FencingToken(1));
-        assert_eq!(second_lease.fencing_token(), FencingToken(2));
+        assert_eq!(first_lease.fencing_token, FencingToken(1));
+        assert_eq!(second_lease.fencing_token, FencingToken(2));
         assert!(registry
-            .assert_token_current(1, second_lease.fencing_token(), TimestampNs(1_200))
+            .assert_token_current(1, second_lease.fencing_token, TimestampNs(1_200))
             .is_ok());
         assert!(matches!(
-            registry.assert_token_current(1, first_lease.fencing_token(), TimestampNs(1_200)),
+            registry.assert_token_current(1, first_lease.fencing_token, TimestampNs(1_200)),
             Err(FencingError::NotCurrent { .. })
         ));
     }
@@ -2816,7 +2796,7 @@ mod policy_market_lease_tests {
             .unwrap();
 
         assert!(registry.is_leased_by_owner(1, &LeaseOwner(20), TimestampNs(1_600)));
-        assert_eq!(lease.fencing_token(), FencingToken(2));
+        assert_eq!(lease.fencing_token, FencingToken(2));
     }
 
     #[test]
@@ -2861,6 +2841,28 @@ mod policy_market_lease_tests {
         assert!(matches!(error, ReleaseLeaseError::OwnerMismatch { .. }));
 
         let released = registry.release_if_owned(1, &LeaseOwner(10)).unwrap();
+        assert!(!released.is_leased(1, TimestampNs(1_100)));
+
+        let token_error = registry
+            .release_if_owned_with_token(1, &LeaseOwner(10), FencingToken(999))
+            .unwrap_err();
+        assert!(matches!(
+            token_error,
+            ReleaseLeaseError::TokenMismatch { .. }
+        ));
+
+        let (registry, lease) = empty_registry
+            .try_acquire(
+                1,
+                LeaseOwner(10),
+                Some(10),
+                TimestampNs(1_000),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
+        let released = registry
+            .release_if_owned_with_token(1, &LeaseOwner(10), lease.fencing_token)
+            .unwrap();
         assert!(!released.is_leased(1, TimestampNs(1_100)));
     }
 
@@ -3174,14 +3176,14 @@ mod policy_state_tests {
         state.set_principal(2, 250).unwrap();
         state.set_principal(3, 50).unwrap();
 
-        assert_eq!(state.external_assets(), 400);
+        assert_eq!(state.external_assets().unwrap(), 400);
     }
 
     #[test]
     fn cap_group_totals_aggregate_by_group() {
         let mut state = PolicyState::default();
-        let group_a: CapGroupId = "group-a".into();
-        let group_b: CapGroupId = "group-b".into();
+        let group_a = CapGroupId::try_from("group-a").unwrap();
+        let group_b = CapGroupId::try_from("group-b").unwrap();
 
         state.ensure_cap_group(group_a.clone());
         state.ensure_cap_group(group_b.clone());
@@ -3199,7 +3201,7 @@ mod policy_state_tests {
         state.set_principal(2, 20).unwrap();
         state.set_principal(3, 40).unwrap();
 
-        let totals = state.compute_cap_group_totals();
+        let totals = state.compute_cap_group_totals().unwrap();
         let total_for = |group_id: &CapGroupId| {
             totals
                 .iter()
@@ -3214,7 +3216,7 @@ mod policy_state_tests {
     #[test]
     fn recompute_cap_group_principals_updates_records() {
         let mut state = PolicyState::default();
-        let group: CapGroupId = String::from("group").into();
+        let group = CapGroupId::try_from(String::from("group")).unwrap();
         state.ensure_cap_group(group.clone());
         state
             .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
@@ -3239,7 +3241,7 @@ mod policy_state_tests {
     #[test]
     fn set_market_config_rejects_unknown_cap_group() {
         let mut state = PolicyState::default();
-        let missing_group: CapGroupId = "missing".into();
+        let missing_group = CapGroupId::try_from("missing").unwrap();
 
         let err = state
             .set_market_config(1, MarketConfig::new(true, 0, Some(missing_group.clone())))
@@ -3251,7 +3253,7 @@ mod policy_state_tests {
     #[test]
     fn remove_market_prunes_its_principal_and_group_total() {
         let mut state = PolicyState::default();
-        let group: CapGroupId = "group".into();
+        let group = CapGroupId::try_from("group").unwrap();
         state.ensure_cap_group(group.clone());
         state
             .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
@@ -3289,8 +3291,8 @@ mod policy_state_tests {
     #[test]
     fn prune_unused_cap_groups_removes_unreferenced_groups() {
         let mut state = PolicyState::default();
-        let used_group: CapGroupId = "used".into();
-        let unused_group: CapGroupId = "unused".into();
+        let used_group = CapGroupId::try_from("used").unwrap();
+        let unused_group = CapGroupId::try_from("unused").unwrap();
         state.ensure_cap_group(used_group.clone());
         state.ensure_cap_group(unused_group.clone());
         state
@@ -3306,7 +3308,7 @@ mod policy_state_tests {
     #[test]
     fn remove_cap_group_rejects_groups_still_in_use() {
         let mut state = PolicyState::default();
-        let group: CapGroupId = "group".into();
+        let group = CapGroupId::try_from("group").unwrap();
         state.ensure_cap_group(group.clone());
         state
             .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
@@ -3371,7 +3373,7 @@ mod policy_state_tests {
         let markets = OrderedMap::from_iter([(1, MarketConfig::new(true, 5, None))]);
         let principals = OrderedMap::default();
         let cap_groups = OrderedMap::default();
-        let leases = MarketLeaseRegistry::default();
+        let leases = crate::MarketLeaseRegistry::default();
         let supply_queue =
             SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(2, 1).unwrap()], None)
                 .unwrap();
@@ -3509,17 +3511,17 @@ mod policy_supply_queue_tests {
         empty_queue.enqueue(medium).unwrap();
 
         let entries = empty_queue.entries();
-        assert_eq!(entries[0].target_id(), 2);
-        assert_eq!(entries[1].target_id(), 3);
-        assert_eq!(entries[2].target_id(), 1);
+        assert_eq!(entries[0].target_id, 2);
+        assert_eq!(entries[1].target_id, 3);
+        assert_eq!(entries[2].target_id, 1);
     }
 
     #[rstest::rstest]
     fn test_dequeue_supply(mut queue_two_entries: SupplyQueue) {
         let dequeued = queue_two_entries.dequeue().unwrap();
 
-        assert_eq!(dequeued.target_id(), 1);
-        assert_eq!(dequeued.amount(), 100);
+        assert_eq!(dequeued.target_id, 1);
+        assert_eq!(dequeued.amount, 100);
         assert_eq!(queue_two_entries.len(), 1);
     }
 
@@ -3553,8 +3555,14 @@ mod policy_supply_queue_tests {
         let totals = queue.totals_by_target().unwrap();
 
         assert_eq!(totals.len(), 2);
-        assert_eq!(totals.get(&1), Some(&150));
-        assert_eq!(totals.get(&2), Some(&200));
+        let total_for = |target_id| {
+            totals
+                .iter()
+                .find(|(candidate, _)| *candidate == target_id)
+                .map(|(_, total)| *total)
+        };
+        assert_eq!(total_for(1), Some(150));
+        assert_eq!(total_for(2), Some(200));
     }
 
     #[rstest::rstest]
@@ -3562,7 +3570,7 @@ mod policy_supply_queue_tests {
         queue_with_repeated_target.remove_target(1);
 
         assert_eq!(queue_with_repeated_target.len(), 1);
-        assert_eq!(queue_with_repeated_target.entries()[0].target_id(), 2);
+        assert_eq!(queue_with_repeated_target.entries()[0].target_id, 2);
     }
 
     #[rstest::rstest]
@@ -3603,9 +3611,9 @@ mod policy_supply_queue_tests {
     fn test_entry_construction_with_priority() {
         let entry = SupplyQueueEntry::new_with_priority(1, 100, 5).unwrap();
 
-        assert_eq!(entry.target_id(), 1);
-        assert_eq!(entry.amount(), 100);
-        assert_eq!(entry.priority(), 5);
+        assert_eq!(entry.target_id, 1);
+        assert_eq!(entry.amount, 100);
+        assert_eq!(entry.priority, 5);
     }
 }
 
@@ -3775,9 +3783,9 @@ mod policy_withdraw_route_tests {
     fn test_entry_builder() {
         let entry = route_entry_with_liquidity(1, 400, 400);
 
-        assert_eq!(entry.target_id(), 1);
-        assert_eq!(entry.max_amount(), 400);
-        assert_eq!(entry.available_liquidity(), Some(400));
+        assert_eq!(entry.target_id, 1);
+        assert_eq!(entry.max_amount, 400);
+        assert_eq!(entry.available_liquidity, Some(400));
     }
 
     #[rstest::rstest]
@@ -3885,9 +3893,9 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route(&principals, 800).unwrap();
 
-        assert_eq!(route.entries()[0].target_id(), 1);
-        assert_eq!(route.entries()[1].target_id(), 2);
-        assert_eq!(route.entries()[2].target_id(), 3);
+        assert_eq!(route.entries()[0].target_id, 1);
+        assert_eq!(route.entries()[1].target_id, 2);
+        assert_eq!(route.entries()[2].target_id, 3);
         assert_eq!(route.target_amount(), 800);
     }
 
@@ -3897,9 +3905,9 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route(&principals, 100).unwrap();
 
-        assert_eq!(route.entries()[0].target_id(), 1);
-        assert_eq!(route.entries()[1].target_id(), 2);
-        assert_eq!(route.entries()[2].target_id(), 3);
+        assert_eq!(route.entries()[0].target_id, 1);
+        assert_eq!(route.entries()[1].target_id, 2);
+        assert_eq!(route.entries()[2].target_id, 3);
     }
 
     #[test]
@@ -3918,7 +3926,7 @@ mod policy_withdraw_route_tests {
     fn test_build_withdraw_route_caps_satisfiability_without_overflow() {
         let route = build_withdraw_route(&[(1, u128::MAX), (2, 1)], 1).unwrap();
 
-        assert_eq!(route.entries()[0].target_id(), 1);
+        assert_eq!(route.entries()[0].target_id, 1);
         assert!(route.can_satisfy());
     }
 
@@ -3928,9 +3936,9 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route_with_liquidity(&market_data, 500).unwrap();
 
-        assert_eq!(route.entries()[0].target_id(), 1);
-        assert_eq!(route.entries()[0].max_amount(), 800);
-        assert_eq!(route.entries()[0].available_liquidity(), Some(800));
+        assert_eq!(route.entries()[0].target_id, 1);
+        assert_eq!(route.entries()[0].max_amount, 800);
+        assert_eq!(route.entries()[0].available_liquidity, Some(800));
     }
 
     #[test]
@@ -3939,9 +3947,9 @@ mod policy_withdraw_route_tests {
 
         let route = build_withdraw_route_with_liquidity(&market_data, 100).unwrap();
 
-        assert_eq!(route.entries()[0].target_id(), 2);
-        assert_eq!(route.entries()[1].target_id(), 1);
-        assert_eq!(route.entries()[2].target_id(), 3);
+        assert_eq!(route.entries()[0].target_id, 2);
+        assert_eq!(route.entries()[1].target_id, 1);
+        assert_eq!(route.entries()[2].target_id, 3);
     }
 
     #[rstest::rstest]
@@ -3951,7 +3959,7 @@ mod policy_withdraw_route_tests {
                 .entries()
                 .iter()
                 .cloned()
-                .map(|entry| match entry.target_id() {
+                .map(|entry| match entry.target_id {
                     1 => entry.with_liquidity(500).unwrap(),
                     3 => entry.with_liquidity(200).unwrap(),
                     _ => entry,
@@ -3977,10 +3985,10 @@ mod policy_withdraw_route_tests {
         let plan = route.withdraw_plan();
 
         assert_eq!(plan.len(), 2);
-        assert_eq!(plan[0].target_id(), 1);
-        assert_eq!(plan[0].max_amount(), 500);
-        assert_eq!(plan[1].target_id(), 2);
-        assert_eq!(plan[1].max_amount(), 300);
+        assert_eq!(plan[0].target_id, 1);
+        assert_eq!(plan[0].max_amount, 500);
+        assert_eq!(plan[1].target_id, 2);
+        assert_eq!(plan[1].max_amount, 300);
     }
 
     #[rstest::rstest]
@@ -4007,7 +4015,7 @@ mod policy_withdraw_route_tests {
 
         let entry = route.get_entry(1);
         assert!(entry.is_some());
-        assert_eq!(entry.unwrap().max_amount(), 500);
+        assert_eq!(entry.unwrap().max_amount, 500);
 
         assert!(route.get_entry(3).is_none());
     }
