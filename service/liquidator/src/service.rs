@@ -102,6 +102,8 @@ pub struct ServiceConfig {
     pub swap_retry_config: crate::swap::SwapRetryConfig,
     /// Shared notifier for Telegram alerts
     pub notifier: crate::notifier::SharedNotifier,
+    /// Consecutive scan failures before sending a Telegram alert (0 = disabled)
+    pub scan_failure_notify_threshold: u32,
 }
 
 /// Liquidator service that manages the bot lifecycle
@@ -119,6 +121,8 @@ pub struct LiquidatorService {
     collateral_price_map: HashMap<String, CollateralPriceInfo>,
     /// Shared nonce tracker for all transactions from this signer
     nonce_tracker: crate::rpc::NonceTracker,
+    /// Consecutive scan failure count per market (reset on success)
+    scan_failure_counts: HashMap<AccountId, u32>,
 }
 
 impl LiquidatorService {
@@ -185,6 +189,7 @@ impl LiquidatorService {
             oracle_fetcher,
             collateral_price_map: HashMap::new(),
             nonce_tracker,
+            scan_failure_counts: HashMap::new(),
         }
     }
 
@@ -924,11 +929,17 @@ impl LiquidatorService {
     }
 
     /// Run a single liquidation round across all markets
-    async fn run_liquidation_round(&self) {
+    async fn run_liquidation_round(&mut self) {
         let liquidation_span = tracing::debug_span!("liquidation_round");
+        let market_ids: Vec<AccountId> = self.markets.keys().cloned().collect();
+        let market_count = market_ids.len();
+        let threshold = self.config.scan_failure_notify_threshold;
 
         async {
-            for (i, (market, liquidator)) in self.markets.iter().enumerate() {
+            for (i, market) in market_ids.iter().enumerate() {
+                let Some(liquidator) = self.markets.get(market) else {
+                    continue;
+                };
                 let market_span = tracing::debug_span!("market", market = %market);
 
                 let result = async {
@@ -938,9 +949,21 @@ impl LiquidatorService {
                 .instrument(market_span)
                 .await;
 
-                // Handle errors gracefully
+                // Handle errors gracefully and track consecutive failures
                 match result {
                     Ok(()) => {
+                        // Reset failure counter; notify recovery if we previously alerted
+                        let prev = self
+                            .scan_failure_counts
+                            .remove(market)
+                            .unwrap_or(0);
+                        if threshold > 0 && prev >= threshold {
+                            tracing::info!(market = %market, prev_failures = prev, "Market recovered");
+                            self.config.notifier.notify_scan_recovered(
+                                market.as_ref(),
+                                prev,
+                            );
+                        }
                         tracing::info!(market = %market, "Market scan completed");
                     }
                     Err(e) => {
@@ -961,11 +984,25 @@ impl LiquidatorService {
                                 "Market skipped"
                             );
                         }
+
+                        // Track consecutive scan failures and notify at threshold
+                        let count = self
+                            .scan_failure_counts
+                            .entry(market.clone())
+                            .or_insert(0);
+                        *count += 1;
+                        if threshold > 0 && *count == threshold {
+                            self.config.notifier.notify_scan_failures(
+                                market.as_ref(),
+                                *count,
+                                &e.to_string(),
+                            );
+                        }
                     }
                 }
 
                 // Add delay between markets to avoid rate limiting (except after last market)
-                if i < self.markets.len() - 1 {
+                if i < market_count - 1 {
                     let delay_seconds = 5;
                     tracing::debug!(
                         "Waiting {}s before next market to avoid rate limits",

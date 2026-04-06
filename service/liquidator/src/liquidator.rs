@@ -926,3 +926,33 @@ impl Liquidator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_phase_scan() {
+        let err = LiquidatorError::FetchBorrowStatus(rpc::RpcError::TimeoutError(30, 30));
+        assert_eq!(err.phase(), ErrorPhase::Scan);
+    }
+
+    #[test]
+    fn test_error_phase_preparation() {
+        let err = LiquidatorError::InsufficientBalance;
+        assert_eq!(err.phase(), ErrorPhase::Preparation);
+    }
+
+    #[test]
+    fn test_error_phase_execution() {
+        let err = LiquidatorError::TransactionFailed("receipt failed".to_string());
+        assert_eq!(err.phase(), ErrorPhase::Execution);
+    }
+
+    #[test]
+    fn test_error_phase_display() {
+        assert_eq!(ErrorPhase::Scan.to_string(), "scan");
+        assert_eq!(ErrorPhase::Preparation.to_string(), "preparation");
+        assert_eq!(ErrorPhase::Execution.to_string(), "execution");
+    }
+}
