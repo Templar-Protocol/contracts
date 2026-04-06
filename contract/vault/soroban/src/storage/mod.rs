@@ -820,26 +820,26 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        let leases = self
-            .load_policy_locks()
-            .map(|stored| decode_policy_locks(&stored))
-            .transpose()?;
-        let supply_queue = self
-            .load_policy_supply_queue()
-            .map(|stored| decode_supply_queue(&stored))
-            .transpose()?;
-        let markets = self
-            .load_policy_markets()
-            .map(|stored| decode_markets(&stored))
-            .transpose()?;
-        let principals = self
-            .load_policy_principals()
-            .map(|stored| decode_principals(&stored))
-            .transpose()?;
-        let cap_groups = self
-            .load_policy_cap_groups()
-            .map(|stored| decode_cap_groups(&stored))
-            .transpose()?;
+        let leases = match self.load_policy_locks() {
+            Some(stored) => Some(decode_policy_locks(&stored)?),
+            None => None,
+        };
+        let supply_queue = match self.load_policy_supply_queue() {
+            Some(stored) => Some(decode_supply_queue(&stored)?),
+            None => None,
+        };
+        let markets = match self.load_policy_markets() {
+            Some(stored) => Some(decode_markets(&stored)?),
+            None => None,
+        };
+        let principals = match self.load_policy_principals() {
+            Some(stored) => Some(decode_principals(&stored)?),
+            None => None,
+        };
+        let cap_groups = match self.load_policy_cap_groups() {
+            Some(stored) => Some(decode_cap_groups(&stored)?),
+            None => None,
+        };
 
         compose_policy_state(markets, principals, cap_groups, leases, supply_queue)
     }
@@ -855,9 +855,10 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        let restrictions = SorobanStorage::load_restrictions(self)
-            .map(|stored| decode_restrictions(&stored))
-            .transpose()?;
+        let restrictions = match SorobanStorage::load_restrictions(self) {
+            Some(stored) => Some(decode_restrictions(&stored)?),
+            None => None,
+        };
 
         Ok(restrictions)
     }
