@@ -543,7 +543,7 @@ impl Contract {
                         .execute_withdraw_01_execute_withdraw_fetch_position(
                             op_id.into(),
                             market,
-                            lease.fencing_token().0.into(),
+                            lease.fencing_token.0.into(),
                             batch_limit,
                         ),
                 ),
@@ -622,9 +622,9 @@ impl Contract {
                         .rebalance_withdraw_01_execute_withdraw_fetch_position(
                             op_id,
                             market_id,
-                            lease.fencing_token().0.into(),
-                            U128(principal),
+                            lease.fencing_token.0.into(),
                             batch_limit,
+                            U128(principal),
                         ),
                 ),
         )
@@ -656,7 +656,7 @@ impl Contract {
             .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
         let (refresh_plan, refresh_throttle) = refresh_execution_plan.into_parts();
-        let refresh_throttle = refresh_throttle
+        let _refresh_throttle = refresh_throttle
             .try_acquire(TimestampNs(now))
             .unwrap_or_else(|_| panic_with_message("Refresh throttled"));
 
@@ -774,11 +774,10 @@ impl Contract {
             OpState::Allocating(state) => RecoveryProgress::new(state.op_id, now),
             OpState::Withdrawing(state) => RecoveryProgress::new(state.op_id, now),
             OpState::Refreshing(state) => RecoveryProgress::new(state.op_id, now),
-            OpState::Payout(_) => return PromiseOrValue::Value(()),
-            OpState::Idle => return PromiseOrValue::Value(()),
+            OpState::Payout(_) | OpState::Idle => return PromiseOrValue::Value(()),
         };
-        let Some(action) = determine_recovery_action(&kernel_state, &context, &progress, None)
-            .unwrap_or_else(|_| None)
+        let Some(action) =
+            determine_recovery_action(&kernel_state, &context, &progress, None).unwrap_or(None)
         else {
             return PromiseOrValue::Value(());
         };
@@ -828,7 +827,7 @@ impl Contract {
                 .emit();
 
                 match outcome {
-                    PayoutOutcome::Success { .. } => {
+                    PayoutOutcome::Success => {
                         let (receiver, amount) = match &self.op_state {
                             OpState::Payout(s) => (s.receiver, s.amount),
                             _ => return PromiseOrValue::Value(()),
@@ -841,7 +840,7 @@ impl Contract {
                         );
                         PromiseOrValue::Value(())
                     }
-                    PayoutOutcome::Failure { .. } => {
+                    PayoutOutcome::Failure => {
                         // Treat stuck payout as failure, but re-sync idle_balance using
                         // the actual underlying FT balance held by the vault account.
                         PromiseOrValue::Promise(
@@ -2176,11 +2175,13 @@ impl Contract {
         burn_shares: u128,
     ) -> PromiseOrValue<()> {
         let receiver_account = self.resolve_account(receiver);
-        let withdrawing = unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
+        let withdrawing: crate::op_guard::OpGuard<'_, crate::op_guard::WithdrawingSpec> =
+            unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
+        let request_id = withdrawing.state().request_id;
 
         let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
-            request_id: withdrawing.request_id,
+            request_id,
             receiver: *receiver,
             amount,
             owner: *owner,

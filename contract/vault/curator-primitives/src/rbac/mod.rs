@@ -174,12 +174,6 @@ impl RbacConfig {
 
     #[inline]
     #[must_use]
-    fn is_curator(&self, address: &Address) -> bool {
-        self.has_role(address, Role::Curator)
-    }
-
-    #[inline]
-    #[must_use]
     fn curator_count(&self) -> usize {
         self.assignments
             .iter()

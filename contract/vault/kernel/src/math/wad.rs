@@ -63,7 +63,7 @@ mod postcard_serde_impl {
         {
             #[cfg(feature = "soroban")]
             {
-                return self.0.serialize(serializer);
+                self.0.serialize(serializer)
             }
 
             #[cfg(not(feature = "soroban"))]
@@ -80,7 +80,7 @@ mod postcard_serde_impl {
         {
             #[cfg(feature = "soroban")]
             {
-                return u128::deserialize(deserializer).map(|value| Wad(Number::from(value)));
+                u128::deserialize(deserializer).map(|value| Wad(Number::from(value)))
             }
 
             #[cfg(not(feature = "soroban"))]

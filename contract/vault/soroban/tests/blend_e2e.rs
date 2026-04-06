@@ -8,8 +8,12 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, String,
 };
 use std::string::String as StdString;
+use templar_curator_primitives::MarketConfig;
 use templar_soroban_blend_adapter::BlendAdapterContract;
-use templar_soroban_runtime::contract::SorobanVaultContract;
+use templar_soroban_runtime::{
+    contract::SorobanVaultContract,
+    storage::{SorobanStorage, Storage},
+};
 use templar_soroban_shared_types::{
     VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
@@ -155,6 +159,14 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         )
         .unwrap();
         assert!(matches!(result, VaultCommandResult::Unit));
+    });
+    env.as_contract(&vault, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut policy_state = storage.load_policy_state().unwrap().unwrap_or_default();
+        policy_state
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+        storage.save_policy_state(&policy_state).unwrap();
     });
     env.as_contract(&vault, || {
         let result = execute_command(

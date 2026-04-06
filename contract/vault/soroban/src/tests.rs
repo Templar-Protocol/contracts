@@ -883,11 +883,7 @@ mod contract_tests {
         );
 
         env.as_contract(&contract_id, || {
-            let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
-            env.storage().instance().set(
-                &VaultDataKey::FeesSpec,
-                &soroban_sdk::Bytes::from_slice(&env, &bytes),
-            );
+            crate::contract::store_fees_spec(&env, &fees).expect("store fees spec");
         });
 
         env.as_contract(&contract_id, || {
@@ -1054,7 +1050,6 @@ mod contract_tests {
     #[test]
     fn test_atomic_withdraw_refreshes_fees() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-        use soroban_sdk::token::StellarAssetClient;
         use templar_vault_kernel::fee::FeeSlot;
         use templar_vault_kernel::math::wad::Wad;
 
@@ -1068,17 +1063,8 @@ mod contract_tests {
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
-
-        let asset_admin = soroban_sdk::Address::generate(&env);
-        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
-        let asset = asset_sac.address();
-        let asset_admin_client = StellarAssetClient::new(&env, &asset);
-
-        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
-        let share = share_sac.address();
-        let share_admin_client = StellarAssetClient::new(&env, &share);
-        let proxy = VaultProxy::new(&env);
-
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
         let owner = soroban_sdk::Address::generate(&env);
         let receiver = soroban_sdk::Address::generate(&env);
         let operator = owner.clone();
@@ -1086,11 +1072,15 @@ mod contract_tests {
         let perf_recipient = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            proxy
-                .initialize(curator.clone(), curator, asset.clone(), share.clone())
-                .unwrap();
-
-            let fees = FeesSpec::new(
+            let config = ContractConfig::new(
+                kernel_address_from_sdk(&env, &curator),
+                kernel_address_from_sdk(&env, &contract_id),
+                vec![],
+                vec![],
+                kernel_address_from_sdk(&env, &asset),
+                kernel_address_from_sdk(&env, &share),
+            )
+            .with_fees(FeesSpec::new(
                 FeeSlot::new(
                     Wad::one() / 10,
                     kernel_address_from_sdk(&env, &perf_recipient),
@@ -1100,54 +1090,72 @@ mod contract_tests {
                     kernel_address_from_sdk(&env, &mgmt_recipient),
                 ),
                 None,
-            );
-            let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
-            env.storage().instance().set(
-                &VaultDataKey::FeesSpec,
-                &soroban_sdk::Bytes::from_slice(&env, &bytes),
-            );
-
-            let mut storage = SorobanStorage::new(&env);
-            storage.save_address(
-                &kernel_address_from_sdk(&env, &mgmt_recipient),
-                &mgmt_recipient,
-            );
-            storage.save_address(
-                &kernel_address_from_sdk(&env, &perf_recipient),
-                &perf_recipient,
-            );
-
-            let state = VaultState {
+            ));
+            let mut storage = MemoryStorage::with_state(VersionedState::new(VaultState {
                 total_assets: 1_500,
                 total_shares: 1_000,
                 idle_assets: 1_500,
                 fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
                 ..Default::default()
-            };
+            }));
             storage
-                .save_state(&VersionedState::new(state))
-                .expect("save state");
-        });
+                .save_address(
+                    &kernel_address_from_sdk(&env, &mgmt_recipient),
+                    &mgmt_recipient,
+                )
+                .expect("save management recipient address");
+            storage
+                .save_address(
+                    &kernel_address_from_sdk(&env, &perf_recipient),
+                    &perf_recipient,
+                )
+                .expect("save performance recipient address");
+            let mut vault =
+                CuratorVault::new(config, storage, TestPermissiveAuth, MockInterpreter::new());
+            vault.load_state().expect("load state");
 
-        asset_admin_client.mint(&contract_id, &1_500);
-        share_admin_client.mint(&owner, &1_000);
+            let burned = vault
+                .atomic_withdraw(
+                    &env,
+                    500,
+                    i128::MAX,
+                    receiver.clone(),
+                    owner.clone(),
+                    operator,
+                )
+                .expect("withdraw should succeed");
+            assert!(burned > 0);
 
-        let burned = env
-            .as_contract(&contract_id, || {
-                proxy.withdraw(&receiver, &owner, &operator, 500)
-            })
-            .expect("withdraw should succeed");
-        assert!(burned > 0);
+            let minted_effects: Vec<_> = vault
+                .interpreter
+                .effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    KernelEffect::MintShares { owner, shares } => Some((*owner, *shares)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(minted_effects.len(), 2);
+            assert!(minted_effects.iter().any(|(owner, shares)| {
+                *owner == kernel_address_from_sdk(&env, &perf_recipient) && *shares > 0
+            }));
+            assert!(minted_effects.iter().any(|(owner, shares)| {
+                *owner == kernel_address_from_sdk(&env, &mgmt_recipient) && *shares > 0
+            }));
 
-        let share_client = soroban_sdk::token::Client::new(&env, &share);
-        assert!(share_client.balance(&perf_recipient) > 0);
+            let burned_effect = vault.interpreter.effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    KernelEffect::BurnShares { owner: effect_owner, shares }
+                        if *effect_owner == kernel_address_from_sdk(&env, &owner) && *shares > 0
+                )
+            });
+            assert!(burned_effect);
 
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned = storage.load_state().unwrap().expect("state");
-            assert_eq!(versioned.state.fee_anchor.total_assets, 1_500);
+            let state = vault.state().expect("state loaded");
+            assert_eq!(state.fee_anchor.total_assets, 1_500);
             assert_eq!(
-                versioned.state.fee_anchor.timestamp_ns,
+                state.fee_anchor.timestamp_ns,
                 templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
             );
         });

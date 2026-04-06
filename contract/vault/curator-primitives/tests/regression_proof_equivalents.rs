@@ -44,11 +44,11 @@ fn settlement_conserves_escrow() {
 fn withdraw_route_ordering_tie_breaker() {
     let principals = vec![(2_u32, 100_u128), (1_u32, 100_u128)];
     let route = build_withdraw_route(&principals, 1).unwrap();
-    assert_eq!(route.entries()[0].target_id(), 1);
-    assert_eq!(route.entries()[1].target_id(), 2);
+    assert_eq!(route.entries()[0].target_id, 1);
+    assert_eq!(route.entries()[1].target_id, 2);
 
     let market_data = vec![(2_u32, 100_u128, 50_u128), (1_u32, 10_u128, 50_u128)];
     let route = build_withdraw_route_with_liquidity(&market_data, 1).unwrap();
-    assert_eq!(route.entries()[0].target_id(), 2);
-    assert_eq!(route.entries()[1].target_id(), 1);
+    assert_eq!(route.entries()[0].target_id, 2);
+    assert_eq!(route.entries()[1].target_id, 1);
 }

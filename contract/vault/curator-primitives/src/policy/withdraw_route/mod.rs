@@ -201,7 +201,6 @@ impl WithdrawRoute {
             .any(|entry| entry.target_id == target_id)
     }
 
-    #[must_use]
     pub fn excluding_leased(
         &self,
         leases: &MarketLeaseRegistry,
@@ -221,7 +220,6 @@ impl WithdrawRoute {
         })
     }
 
-    #[must_use]
     pub fn to_target_amount_pairs_excluding_leased(
         &self,
         leases: &MarketLeaseRegistry,
@@ -234,7 +232,6 @@ impl WithdrawRoute {
             .collect())
     }
 
-    #[must_use]
     pub fn withdraw_plan_excluding_leased(
         &self,
         leases: &MarketLeaseRegistry,

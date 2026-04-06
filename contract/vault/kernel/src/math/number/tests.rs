@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(all(feature = "postcard", feature = "soroban"))]
+use alloc::string::ToString;
 use proptest::prelude::*;
 
 fn expected_floor(x: u128, y: u128, denom: u128) -> U256 {
