@@ -24,12 +24,12 @@ pub struct LeaseDurationNs(pub u64);
 #[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct MarketLease {
-    target_id: TargetId,
-    owner: LeaseOwner,
-    op_id: Option<u64>,
-    acquired_at: TimestampNs,
-    expires_at: TimestampNs,
-    fencing_token: FencingToken,
+    pub target_id: TargetId,
+    pub owner: LeaseOwner,
+    pub op_id: Option<u64>,
+    pub acquired_at: TimestampNs,
+    pub expires_at: TimestampNs,
+    pub fencing_token: FencingToken,
 }
 
 impl MarketLease {
@@ -50,36 +50,6 @@ impl MarketLease {
             expires_at,
             fencing_token,
         }
-    }
-
-    #[must_use]
-    pub fn target_id(&self) -> TargetId {
-        self.target_id
-    }
-
-    #[must_use]
-    pub fn owner(&self) -> &LeaseOwner {
-        &self.owner
-    }
-
-    #[must_use]
-    pub fn op_id(&self) -> Option<u64> {
-        self.op_id
-    }
-
-    #[must_use]
-    pub fn acquired_at(&self) -> TimestampNs {
-        self.acquired_at
-    }
-
-    #[must_use]
-    pub fn expires_at(&self) -> TimestampNs {
-        self.expires_at
-    }
-
-    #[must_use]
-    pub fn fencing_token(&self) -> FencingToken {
-        self.fencing_token
     }
 
     #[must_use]
@@ -201,7 +171,7 @@ impl MarketLeaseRegistry {
         now: TimestampNs,
     ) -> bool {
         self.get_active(target_id, now)
-            .is_some_and(|lease| lease.owner() == owner)
+            .is_some_and(|lease| &lease.owner == owner)
     }
 
     #[must_use]
@@ -256,7 +226,7 @@ impl MarketLeaseRegistry {
         let cleaned = self.cleanup_expired(now);
 
         if let Some(existing) = cleaned.get_active(target_id, now) {
-            if existing.owner() != &owner {
+            if &existing.owner != &owner {
                 return Err(AcquireLeaseError::AlreadyLeased {
                     existing: existing.clone(),
                 });
@@ -292,10 +262,10 @@ impl MarketLeaseRegistry {
             return Err(ReleaseLeaseError::NotFound { target_id });
         };
 
-        if existing.owner() != owner {
+        if &existing.owner != owner {
             return Err(ReleaseLeaseError::OwnerMismatch {
                 target_id,
-                expected_owner: existing.owner().clone(),
+                expected_owner: existing.owner.clone(),
                 actual_owner: owner.clone(),
             });
         }
@@ -316,7 +286,7 @@ impl MarketLeaseRegistry {
     pub fn force_release_by_op(&self, op_id: u64) -> Self {
         let mut next = self.clone();
         next.leases_by_target
-            .retain(|_, lease| lease.op_id() != Some(op_id));
+            .retain(|_, lease| lease.op_id != Some(op_id));
         next
     }
 
@@ -330,11 +300,11 @@ impl MarketLeaseRegistry {
             return Err(FencingError::NotFound { target_id });
         };
 
-        if current.fencing_token() != token {
+        if current.fencing_token != token {
             return Err(FencingError::NotCurrent {
                 target_id,
                 presented: token,
-                current: current.fencing_token(),
+                current: current.fencing_token,
             });
         }
 
