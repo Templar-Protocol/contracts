@@ -944,18 +944,21 @@ impl LiquidatorService {
                         tracing::info!(market = %market, "Market scan completed");
                     }
                     Err(e) => {
+                        let phase = e.phase();
                         if is_rate_limit_error(&e) {
                             tracing::error!(
                                 market = %market,
+                                phase,
                                 error = %e,
-                                "Rate limit hit while scanning market, sleeping 60 seconds before continuing"
+                                "Rate limited — sleeping 60s before next market"
                             );
                             sleep(Duration::from_secs(60)).await;
                         } else {
-                            tracing::error!(
+                            tracing::warn!(
                                 market = %market,
+                                phase,
                                 error = %e,
-                                "Failed to scan market, continuing to next market"
+                                "Market skipped"
                             );
                         }
                     }

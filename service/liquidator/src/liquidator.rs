@@ -118,6 +118,44 @@ pub enum LiquidatorError {
     InsufficientBalance,
 }
 
+impl LiquidatorError {
+    /// Returns `true` when the error occurred during actual liquidation execution
+    /// (transaction submission, on-chain failure, swap after liquidation).
+    /// Pre-execution errors (scanning, balance checks, price fetches) return `false`.
+    pub const fn is_execution_error(&self) -> bool {
+        matches!(
+            self,
+            Self::LiquidationTransactionError(_)
+                | Self::TransactionFailed(_)
+                | Self::SwapProviderError(_)
+        )
+    }
+
+    /// Short human-readable phase label for log messages.
+    pub const fn phase(&self) -> &'static str {
+        match self {
+            // Scan phase — reading on-chain state, fetching prices
+            Self::FetchBorrowStatus(_)
+            | Self::PricePairError(_)
+            | Self::PriceFetchError(_)
+            | Self::ListBorrowPositionsError(_)
+            | Self::ListDeploymentsError(_)
+            | Self::GetConfigurationError(_)
+            | Self::FetchBalanceError(_) => "scan",
+            // Preparation — decided to liquidate but haven't submitted tx yet
+            Self::AccessKeyDataError(_)
+            | Self::SerializeError(_)
+            | Self::StrategyError(_)
+            | Self::InsufficientBalance
+            | Self::OracleUpdateError(_) => "preparation",
+            // Execution — transaction was submitted or on-chain action attempted
+            Self::LiquidationTransactionError(_)
+            | Self::TransactionFailed(_)
+            | Self::SwapProviderError(_) => "execution",
+        }
+    }
+}
+
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
 
 /// Collateral management strategy
@@ -836,12 +874,17 @@ impl Liquidator {
                 Ok(LiquidationOutcome::NotLiquidatable) => not_liquidatable += 1,
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
-                    tracing::warn!(borrower = %account, error = %e, "Liquidation failed");
-                    self.notifier.notify_liquidation_failed(
-                        self.market.as_ref(),
-                        account.as_ref(),
-                        &e.to_string(),
-                    );
+                    let phase = e.phase();
+                    if e.is_execution_error() {
+                        tracing::error!(borrower = %account, phase, error = %e, "Liquidation failed");
+                        self.notifier.notify_liquidation_failed(
+                            self.market.as_ref(),
+                            account.as_ref(),
+                            &e.to_string(),
+                        );
+                    } else {
+                        tracing::warn!(borrower = %account, phase, error = %e, "Skipped position");
+                    }
                     failed += 1;
                 }
             }
