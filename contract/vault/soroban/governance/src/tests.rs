@@ -9,8 +9,8 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
 };
 use templar_soroban_shared_types::{
-    GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_FEES,
-    GOVERNANCE_POLICY_KIND_PAUSED,
+    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
 };
 
 #[contract]
@@ -26,6 +26,70 @@ enum MockVaultKey {
 
 #[contractimpl]
 impl MockVault {
+    pub fn execute(env: Env, payload: Bytes) -> Bytes {
+        let command = match VaultCommand::decode(&payload.to_alloc_vec()) {
+            Ok(command) => command,
+            Err(_) => panic!("decode command failed"),
+        };
+
+        match command {
+            VaultCommand::SetGovernanceConfig {
+                caller,
+                kind,
+                primary,
+                many,
+                value_a,
+                value_b,
+            } => {
+                Self::set_governance_config(
+                    env.clone(),
+                    sdk_address(&env, &caller),
+                    kind,
+                    primary.as_ref().map(|value| sdk_address(&env, value)),
+                    many.as_ref().map(|items| sdk_address_vec(&env, items)),
+                    value_a,
+                    value_b,
+                );
+            }
+            VaultCommand::SetGovernancePolicy {
+                caller,
+                kind,
+                target_ids,
+                mode,
+                accounts,
+                market_id,
+                cap_group_id,
+                value,
+                value_b,
+                value_c,
+            } => {
+                Self::set_governance_policy(
+                    env.clone(),
+                    sdk_address(&env, &caller),
+                    kind,
+                    target_ids.as_ref().map(|items| sdk_u32_vec(&env, items)),
+                    mode,
+                    accounts.as_ref().map(|items| sdk_address_vec(&env, items)),
+                    market_id,
+                    cap_group_id
+                        .as_ref()
+                        .map(|value| SdkString::from_str(&env, value)),
+                    value,
+                    value_b,
+                    value_c,
+                );
+            }
+            VaultCommand::Skim { caller, token } => Self::skim(
+                env.clone(),
+                sdk_address(&env, &caller),
+                sdk_address(&env, &token),
+            ),
+            other => panic!("unexpected command: {:?}", other.encode()),
+        }
+
+        Bytes::from_slice(&env, &VaultCommandResult::Unit.encode())
+    }
+
     pub fn set_paused(env: Env, _caller: Address, paused: bool) {
         env.storage().instance().set(&MockVaultKey::Paused, &paused);
     }
@@ -103,6 +167,26 @@ impl MockVault {
     }
 
     pub fn skim(_env: Env, _caller: Address, _token: Address) {}
+}
+
+fn sdk_address(env: &Env, value: &str) -> Address {
+    Address::from_string(&SdkString::from_str(env, value))
+}
+
+fn sdk_address_vec(env: &Env, values: &[String]) -> Vec<Address> {
+    let mut addresses = Vec::new(env);
+    for value in values {
+        addresses.push_back(sdk_address(env, value));
+    }
+    addresses
+}
+
+fn sdk_u32_vec(env: &Env, values: &[u32]) -> Vec<u32> {
+    let mut entries = Vec::new(env);
+    for value in values {
+        entries.push_back(*value);
+    }
+    entries
 }
 
 #[test]

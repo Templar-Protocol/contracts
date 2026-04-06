@@ -635,13 +635,6 @@ fn golden_recovery_payout_state() {
     600_000_000_000,
     400_000_000_000
 )] // partial
-#[case(
-    1_000_000_000_000,
-    500_000_000_000,
-    600_000_000_000,
-    1_000_000_000_000,
-    0
-)] // over
 fn golden_settlement_shares_cases(
     #[case] escrow: u128,
     #[case] expected: u128,
@@ -653,6 +646,21 @@ fn golden_settlement_shares_cases(
         .expect("golden settlement inputs should be valid");
     assert_eq!(settlement.to_burn, expected_burn);
     assert_eq!(settlement.refund, expected_refund);
+}
+
+#[cfg(feature = "recovery")]
+#[test]
+fn golden_settlement_shares_rejects_over_collection() {
+    let error = compute_settlement_shares(1_000_000_000_000, 500_000_000_000, 600_000_000_000)
+        .expect_err("over-collection should be rejected");
+
+    assert_eq!(
+        error,
+        crate::recovery::RecoveryError::CollectedExceedsExpected {
+            expected_amount: 500_000_000_000,
+            collected_amount: 600_000_000_000,
+        }
+    );
 }
 
 #[cfg(feature = "recovery")]

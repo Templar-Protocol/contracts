@@ -1658,7 +1658,7 @@ mod effects_tests {
     }
 
     #[test]
-    fn test_emit_event_serializes_without_address_mapping() {
+    fn test_emit_event_publishes_compact_payload_without_address_mapping() {
         use templar_vault_kernel::effects::KernelEvent;
 
         let env = test_env();
@@ -1677,6 +1677,9 @@ mod effects_tests {
         };
 
         assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
     }
 }
 
