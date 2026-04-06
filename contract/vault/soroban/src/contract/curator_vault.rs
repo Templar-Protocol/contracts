@@ -2,6 +2,7 @@ use super::helpers::{
     contract_error, invalid_state_error, kernel_address_from_sdk, require_signed,
 };
 use super::*;
+use templar_curator_primitives::policy::state::PolicyStateError;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 #[derive(Clone, Copy)]
@@ -143,9 +144,7 @@ where
         let vault_sdk = env.current_contract_address();
         let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
         if vault_kernel != self.config.vault_address {
-            return Err(RuntimeError::contract_error(
-                "vault address mismatch for effect mapping",
-            ));
+            return Err(RuntimeError::contract_error("address mismatch"));
         }
         self.register_address(vault_kernel, vault_sdk)?;
         Ok(())
@@ -262,7 +261,7 @@ where
     ) -> Result<DepositResult, RuntimeError> {
         self.authorize(ActionKind::Deposit, caller)?;
         if self.paused {
-            return Err(contract_error("vault is paused"));
+            return Err(contract_error("paused"));
         }
 
         let summary = self.apply_kernel_action(
@@ -310,7 +309,7 @@ where
 
         let state = self.state()?;
         if state.total_shares == 0 {
-            return Err(contract_error("no shares in vault"));
+            return Err(contract_error("no shares"));
         }
 
         let request_id = state.withdraw_queue.next_pending_withdrawal_id;
@@ -344,9 +343,7 @@ where
         {
             let op_state = &self.state()?.op_state;
             if !op_state.is_idle() && !op_state.is_withdrawing() {
-                return Err(contract_error(
-                    "vault not in idle or withdrawing state for withdrawal",
-                ));
+                return Err(contract_error("not idle or withdrawing"));
             }
         }
         if self.state()?.op_state.is_idle() {
@@ -1113,7 +1110,7 @@ where
                     .map_err(|_| RuntimeError::invalid_input(""))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
-                        "cap group cap increase requires timelock",
+                        "cap increase requires timelock",
                     ));
                 }
 
@@ -1133,7 +1130,7 @@ where
                     .map_err(|_| RuntimeError::invalid_input(""))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
-                        "cap group relative cap increase requires timelock",
+                        "cap increase requires timelock",
                     ));
                 }
 
@@ -1157,30 +1154,16 @@ where
                 self.policy_state
                     .set_market_cap_group(market_id, cap_group_id)
                     .map_err(|error| match error {
-                        templar_curator_primitives::policy::state::PolicyStateError::UnknownCapGroup {
-                            ..
-                        } => RuntimeError::invalid_input(""),
-                        templar_curator_primitives::policy::state::PolicyStateError::CapGroupInUse {
-                            ..
-                        } => RuntimeError::invalid_input(""),
-                        templar_curator_primitives::policy::state::PolicyStateError::UnknownMarket {
-                            ..
+                        PolicyStateError::UnknownCapGroup { .. }
+                        | PolicyStateError::CapGroupInUse { .. }
+                        | PolicyStateError::UnknownMarket { .. }
+                        | PolicyStateError::PrincipalOverflow { .. }
+                        | PolicyStateError::InvalidSupplyQueue { .. }
+                        | PolicyStateError::SupplyQueueUnknownMarket { .. }
+                        | PolicyStateError::SupplyQueueDisabledMarket { .. }
+                        | PolicyStateError::SupplyQueueUnauthorizedMarket { .. } => {
+                            RuntimeError::invalid_input("")
                         }
-                        | templar_curator_primitives::policy::state::PolicyStateError::PrincipalOverflow {
-                            ..
-                        }
-                        | templar_curator_primitives::policy::state::PolicyStateError::InvalidSupplyQueue {
-                            ..
-                        }
-                        | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueUnknownMarket {
-                            ..
-                        }
-                        | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueDisabledMarket {
-                            ..
-                        }
-                        | templar_curator_primitives::policy::state::PolicyStateError::SupplyQueueUnauthorizedMarket {
-                            ..
-                        } => RuntimeError::invalid_input(""),
                     })?;
             }
         }
