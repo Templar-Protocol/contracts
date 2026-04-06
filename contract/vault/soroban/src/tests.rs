@@ -1135,13 +1135,13 @@ mod contract_tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(minted_effects.len(), 2);
+            assert_eq!(minted_effects.len(), 1);
             assert!(minted_effects.iter().any(|(owner, shares)| {
                 *owner == kernel_address_from_sdk(&env, &perf_recipient) && *shares > 0
             }));
-            assert!(minted_effects.iter().any(|(owner, shares)| {
-                *owner == kernel_address_from_sdk(&env, &mgmt_recipient) && *shares > 0
-            }));
+            assert!(!minted_effects
+                .iter()
+                .any(|(owner, _)| { *owner == kernel_address_from_sdk(&env, &mgmt_recipient) }));
 
             let burned_effect = vault.interpreter.effects.iter().any(|effect| {
                 matches!(
