@@ -539,6 +539,9 @@ impl SorobanVaultGovernanceContract {
         }
 
         if matches!(decision, TimelockDecision::Immediate) {
+            let _removed =
+                queue.revoke_by_key(&ProposalKey::ProposalId(id), queued_proposal_key_by_id);
+            save_queue(&env, &queue);
             execute_action(&env, &action)?;
             ProposalSubmitted {
                 id,
