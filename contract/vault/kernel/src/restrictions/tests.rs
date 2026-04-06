@@ -47,12 +47,12 @@ fn whitelist_self_bypass_is_explicit() {
 }
 
 #[test]
-fn normalized_restriction_lists_sort_and_dedup() {
+fn normalized_restriction_lists_dedup_preserves_order() {
     let restrictions = Restrictions::blacklist(alloc::vec![addr(3), addr(1), addr(3), addr(2)]);
 
     assert_eq!(
         restrictions,
-        Restrictions::blacklist(alloc::vec![addr(1), addr(2), addr(3)])
+        Restrictions::blacklist(alloc::vec![addr(3), addr(1), addr(2)])
     );
 }
 
@@ -62,6 +62,6 @@ fn normalized_round_trip_keeps_canonical_form() {
 
     assert_eq!(
         restrictions,
-        Restrictions::blacklist(alloc::vec![addr(1), addr(2)])
+        Restrictions::blacklist(alloc::vec![addr(2), addr(1)])
     );
 }
