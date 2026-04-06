@@ -979,9 +979,11 @@ mod cap_group_unit_tests {
     }
 
     #[test]
-    fn test_zero_absolute_cap_is_unlimited() {
+    fn test_zero_absolute_cap_is_preserved() {
         let cap = CapGroup::builder().absolute_cap(0).build();
-        assert!(cap.absolute_cap().is_none());
+
+        assert_eq!(cap.absolute_cap(), Some(0));
+        assert!(!cap.is_unlimited());
     }
 
     #[test]
@@ -1258,14 +1260,33 @@ mod recovery_unit_tests {
 
     #[test]
     fn test_compute_payout_success_outcome_maps_settlement() {
-        let outcome = compute_payout_success_outcome(1000, 500, 250).expect("valid payout success");
-        assert_eq!(outcome, PayoutOutcome::Success);
+        let err = compute_payout_success_outcome(1000, 500, 250).unwrap_err();
+        assert_eq!(
+            err,
+            RecoveryError::UnrepresentableSuccessEvidence {
+                payout_amount: 500,
+                collected_amount: 250,
+            }
+        );
     }
 
     #[test]
     fn test_compute_payout_failure_outcome_refunds_all() {
-        let outcome = compute_payout_failure_outcome(1000, 250);
+        let outcome = compute_payout_failure_outcome(1000, 250, 250)
+            .expect("full restore should remain representable");
         assert_eq!(outcome, PayoutOutcome::Failure);
+    }
+
+    #[test]
+    fn test_compute_payout_failure_outcome_rejects_partial_restore() {
+        let err = compute_payout_failure_outcome(1000, 500, 250).unwrap_err();
+        assert_eq!(
+            err,
+            RecoveryError::UnrepresentableFailureEvidence {
+                payout_amount: 500,
+                restore_idle: 250,
+            }
+        );
     }
 
     #[test]
@@ -1545,6 +1566,8 @@ mod recovery_unit_tests {
 
 mod governance_module_tests {
     pub use crate::governance::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use templar_vault_kernel::{DurationNs, TimestampNs, Wad};
 
     fn identity_key<'a>(value: &&'a str) -> &'a str {
@@ -1716,7 +1739,7 @@ mod governance_module_tests {
         assert_eq!(from_none, Ok(TimelockDecision::Immediate));
 
         let from_zero = TimelockDecision::from_cap_group_cap_change(Some(0), Some(100));
-        assert_eq!(from_zero, Ok(TimelockDecision::Immediate));
+        assert_eq!(from_zero, Ok(TimelockDecision::Timelocked));
     }
 
     #[test]
@@ -1801,6 +1824,7 @@ mod governance_module_tests {
 mod rbac_module_tests {
     pub use crate::rbac::*;
     use crate::{ActionKind, AuthAdapter, AuthError, AuthPolicyClass, AuthResult};
+    use alloc::vec;
     use templar_vault_kernel::Address;
 
     #[rstest::fixture]
@@ -2459,12 +2483,12 @@ mod policy_cooldown_tests {
     }
 
     #[test]
-    fn test_unlimited_state_is_canonical_after_recording() {
+    fn test_unlimited_state_retains_last_event_after_recording() {
         let unlimited = Cooldown::unlimited();
         let recorded = unlimited.recorded_at(123);
 
-        assert_eq!(recorded, Cooldown::unlimited());
-        assert_eq!(recorded.last_event_ns(), None);
+        assert_eq!(recorded.interval_ns(), None);
+        assert_eq!(recorded.last_event_ns(), Some(123));
     }
 
     #[test]
@@ -3256,7 +3280,7 @@ mod policy_state_tests {
         let group = CapGroupId::try_from("group").unwrap();
         state.ensure_cap_group(group.clone());
         state
-            .set_market_config(1, MarketConfig::new(true, 0, Some(group.clone())))
+            .set_market_config(1, MarketConfig::new(true, 100, Some(group.clone())))
             .unwrap();
         state.set_principal(1, 25).unwrap();
         state
@@ -3948,8 +3972,8 @@ mod policy_withdraw_route_tests {
         let route = build_withdraw_route_with_liquidity(&market_data, 100).unwrap();
 
         assert_eq!(route.entries()[0].target_id, 2);
-        assert_eq!(route.entries()[1].target_id, 1);
-        assert_eq!(route.entries()[2].target_id, 3);
+        assert_eq!(route.entries()[1].target_id, 3);
+        assert_eq!(route.entries()[2].target_id, 1);
     }
 
     #[rstest::rstest]
