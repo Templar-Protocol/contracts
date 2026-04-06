@@ -195,7 +195,7 @@ impl Wad {
     #[inline]
     #[must_use]
     pub fn apply_floored(self, amount: Number) -> Number {
-        mul_wad_floor(amount, self)
+        Number::mul_div_floor(amount, self.0, Number::from(Self::SCALE))
     }
 }
 
@@ -276,7 +276,7 @@ pub fn compute_fee_shares_from_assets(
 #[inline]
 #[must_use]
 pub fn mul_wad_floor(x: Number, y: Wad) -> Number {
-    y.apply_floored(x)
+    Number::mul_div_floor(x, y.0, Number::from(Wad::SCALE))
 }
 
 /// Multiplies and divides with flooring: floor(x * y / denom).
