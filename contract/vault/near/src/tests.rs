@@ -5162,7 +5162,7 @@ fn unbrick_noop_when_not_withdrawing() {
 }
 
 #[test]
-fn unbrick_noop_when_payout_state_is_ambiguous() {
+fn unbrick_payout_reaches_recovery_path() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
@@ -5202,8 +5202,8 @@ fn unbrick_noop_when_payout_state_is_ambiguous() {
 
     let res = c.unbrick();
     match res {
-        PromiseOrValue::Value(()) => {}
-        _ => panic!("Expected Value(()) from unbrick"),
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise(_) from payout unbrick"),
     }
 
     assert!(matches!(
