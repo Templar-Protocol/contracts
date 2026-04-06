@@ -829,8 +829,7 @@ impl SorobanVaultContract {
         runtime_to_contract(store_fees_spec(&env, &FeesSpec::zero()))?;
 
         let mut storage = SorobanStorage::new(&env);
-        let versioned = VersionedState::new(VaultState::default());
-        runtime_to_contract(storage.save_state(&versioned))?;
+        runtime_to_contract(storage.save_state(&VaultState::default()))?;
         runtime_to_contract(storage.save_paused(false))?;
         Ok(())
     }
