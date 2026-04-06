@@ -158,6 +158,12 @@ impl MarketExecutionLock {
             .is_ok()
     }
 
+    #[must_use]
+    pub fn has_active_lease(&self, market: MarketId) -> bool {
+        self.inner
+            .is_leased(market.into_target_id(), TimestampNs(env::block_timestamp()))
+    }
+
     pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
         let mut registry = MarketLeaseRegistry::default();
         for (index, market) in markets.into_iter().enumerate() {
