@@ -53,6 +53,7 @@ use templar_common::{
     },
 };
 pub use templar_curator_primitives::rbac::Role;
+use templar_curator_primitives::PayoutRecoveryEvidence;
 use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
@@ -774,10 +775,18 @@ impl Contract {
             OpState::Allocating(state) => RecoveryProgress::new(state.op_id, now),
             OpState::Withdrawing(state) => RecoveryProgress::new(state.op_id, now),
             OpState::Refreshing(state) => RecoveryProgress::new(state.op_id, now),
-            OpState::Payout(_) | OpState::Idle => return PromiseOrValue::Value(()),
+            OpState::Payout(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Idle => return PromiseOrValue::Value(()),
+        };
+        let payout_evidence = match &kernel_state {
+            OpState::Payout(state) => Some(PayoutRecoveryEvidence::Failure {
+                restore_idle: state.amount,
+            }),
+            _ => None,
         };
         let Some(action) =
-            determine_recovery_action(&kernel_state, &context, &progress, None).unwrap_or(None)
+            determine_recovery_action(&kernel_state, &context, &progress, payout_evidence)
+                .unwrap_or(None)
         else {
             return PromiseOrValue::Value(());
         };
