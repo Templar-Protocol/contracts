@@ -85,8 +85,7 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         return Err(RuntimeError::storage_error(""));
     }
 
-    let mut cursor = 0usize;
-    let read_u128 = |cursor: &mut usize| -> Result<u128, RuntimeError> {
+    fn read_u128(bytes: &[u8], cursor: &mut usize) -> Result<u128, RuntimeError> {
         let end = *cursor + 16;
         let raw = bytes
             .get(*cursor..end)
@@ -95,8 +94,9 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         array.copy_from_slice(raw);
         *cursor = end;
         Ok(u128::from_le_bytes(array))
-    };
-    let read_address = |cursor: &mut usize| -> Result<Address, RuntimeError> {
+    }
+
+    fn read_address(bytes: &[u8], cursor: &mut usize) -> Result<Address, RuntimeError> {
         let end = *cursor + 32;
         let raw = bytes
             .get(*cursor..end)
@@ -105,15 +105,17 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         array.copy_from_slice(raw);
         *cursor = end;
         Ok(Address(array))
-    };
+    }
+
+    let mut cursor = 0usize;
 
     let performance = FeeSlot::new(
-        Wad::from(read_u128(&mut cursor)?),
-        read_address(&mut cursor)?,
+        Wad::from(read_u128(bytes, &mut cursor)?),
+        read_address(bytes, &mut cursor)?,
     );
     let management = FeeSlot::new(
-        Wad::from(read_u128(&mut cursor)?),
-        read_address(&mut cursor)?,
+        Wad::from(read_u128(bytes, &mut cursor)?),
+        read_address(bytes, &mut cursor)?,
     );
     let max_total_assets_growth_rate = match *bytes
         .get(cursor)
@@ -122,7 +124,7 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         0 => None,
         1 => {
             cursor += 1;
-            Some(Wad::from(read_u128(&mut cursor)?))
+            Some(Wad::from(read_u128(bytes, &mut cursor)?))
         }
         _ => return Err(RuntimeError::storage_error("")),
     };
@@ -136,10 +138,10 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
 
 pub(crate) fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
     let stored: Option<Bytes> = env.storage().instance().get(&VaultDataKey::FeesSpec);
-    stored.map_or_else(
-        || Ok(FeesSpec::zero()),
-        |bytes| deserialize_fees_spec(&bytes.to_alloc_vec()),
-    )
+    match stored {
+        Some(bytes) => deserialize_fees_spec(&bytes.to_alloc_vec()),
+        None => Ok(FeesSpec::zero()),
+    }
 }
 
 pub(crate) fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
