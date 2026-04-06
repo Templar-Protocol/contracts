@@ -1452,6 +1452,7 @@ mod effects_tests {
     use crate::effects::*;
     use crate::error::RuntimeError;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Events;
     use soroban_sdk::{Address, Env};
     use templar_vault_kernel::effects::KernelEffect;
 
