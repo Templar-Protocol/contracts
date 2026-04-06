@@ -88,7 +88,7 @@ where
     #[inline(never)]
     pub fn load_state(&mut self) -> Result<(), RuntimeError> {
         self.state = Some(match self.storage.load_state()? {
-            Some(versioned) => versioned.state,
+            Some(state) => state,
             None => VaultState::default(),
         });
         self.paused = self.storage.load_paused()?;
@@ -112,9 +112,8 @@ where
 
     pub fn save_state(&mut self) -> Result<(), RuntimeError> {
         if let Some(state) = self.state.take() {
-            let versioned = VersionedState::new(state);
-            let result = self.storage.save_state(&versioned);
-            self.state = Some(versioned.state);
+            let result = self.storage.save_state(&state);
+            self.state = Some(state);
             result
         } else {
             Ok(())

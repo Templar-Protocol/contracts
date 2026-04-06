@@ -28,9 +28,7 @@ use crate::effects::{
 use crate::error::{ContractError, RuntimeError};
 use crate::fungible_vault::{load_state_and_config, share_balance};
 use crate::market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets};
-use crate::storage::{
-    SorobanStorage, Storage, VersionedState, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
-};
+use crate::storage::{SorobanStorage, Storage, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 use alloc::string::String as AllocString;
 use alloc::vec;
 use alloc::vec::Vec;

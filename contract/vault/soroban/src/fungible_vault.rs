@@ -82,9 +82,7 @@ fn preview_state_with_fee_accrual(
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
     let stored_state = storage.load_state();
-    let state = runtime_to_contract(stored_state)?
-        .map(|v| v.state)
-        .unwrap_or_default();
+    let state = runtime_to_contract(stored_state)?.unwrap_or_default();
     let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
     let config = VaultConfig {
         fees: runtime_to_contract(load_fees_spec(env))?,
