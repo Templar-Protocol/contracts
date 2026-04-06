@@ -1024,7 +1024,7 @@ where
 
             if entries
                 .iter()
-                .any(|entry: &SupplyQueueEntry| entry.target_id() == target_id)
+                .any(|entry: &SupplyQueueEntry| entry.target_id == target_id)
             {
                 return Err(RuntimeError::invalid_input(
                     "duplicate market in supply queue",
@@ -1208,7 +1208,7 @@ where
             .supply_queue()
             .entries()
             .iter()
-            .map(|entry| entry.target_id())
+            .map(|entry| entry.target_id)
             .collect()
     }
 }

@@ -175,9 +175,9 @@ pub(crate) fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
     let entries = queue.entries();
     push_u32(&mut out, entries.len() as u32);
     for entry in entries {
-        push_u32(&mut out, entry.target_id());
-        push_u128(&mut out, entry.amount());
-        push_u8(&mut out, entry.priority());
+        push_u32(&mut out, entry.target_id);
+        push_u128(&mut out, entry.amount);
+        push_u8(&mut out, entry.priority);
     }
     out
 }
@@ -326,18 +326,18 @@ pub(crate) fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
     push_u32(&mut out, leases.stored_len() as u32);
     push_u64(&mut out, leases.next_fencing_token());
     for (_, lease) in leases.iter() {
-        push_u32(&mut out, lease.target_id());
-        push_u64(&mut out, lease.owner().0);
-        match lease.op_id() {
+        push_u32(&mut out, lease.target_id);
+        push_u64(&mut out, lease.owner.0);
+        match lease.op_id {
             Some(op_id) => {
                 push_u8(&mut out, 1);
                 push_u64(&mut out, op_id);
             }
             None => push_u8(&mut out, 0),
         }
-        push_u64(&mut out, lease.acquired_at().as_u64());
-        push_u64(&mut out, lease.expires_at().as_u64());
-        push_u64(&mut out, lease.fencing_token().0);
+        push_u64(&mut out, lease.acquired_at.as_u64());
+        push_u64(&mut out, lease.expires_at.as_u64());
+        push_u64(&mut out, lease.fencing_token.0);
     }
     out
 }
