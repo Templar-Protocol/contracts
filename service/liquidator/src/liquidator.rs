@@ -175,7 +175,6 @@ impl LiquidatorError {
             | Self::SwapProviderError(_) => ErrorPhase::Execution,
         }
     }
-
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
