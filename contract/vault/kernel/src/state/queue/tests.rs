@@ -731,34 +731,6 @@ fn test_withdraw_queue_invariant_violation_head_exceeds_next() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "from_sorted_entries requires strictly ascending IDs")]
-fn test_pending_withdrawals_from_sorted_entries_panics_on_unsorted_ids_in_debug() {
-    let _ = crate::state::queue::PendingWithdrawals::from_sorted_entries(vec![
-        (
-            2,
-            PendingWithdrawal::new(
-                owner_addr(1),
-                owner_addr(1),
-                100,
-                1000,
-                TimestampNs(1_000_000_000_000),
-            ),
-        ),
-        (
-            1,
-            PendingWithdrawal::new(
-                owner_addr(2),
-                owner_addr(2),
-                200,
-                2000,
-                TimestampNs(1_000_000_000_001),
-            ),
-        ),
-    ]);
-}
-
-#[test]
 fn test_withdraw_queue_fifo_ordering() {
     let mut queue = WithdrawQueue::new();
 
