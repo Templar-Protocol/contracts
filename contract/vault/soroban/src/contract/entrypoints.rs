@@ -223,27 +223,34 @@ fn apply_group_policy(
     cap_group_id: Option<soroban_sdk::String>,
     value: Option<i128>,
 ) -> Result<(), ContractError> {
+    fn parse_cap_group(raw: alloc::string::String) -> Result<CapGroupId, ContractError> {
+        CapGroupId::try_from(raw).map_err(|_| ContractError::InvalidInput)
+    }
+
     let market_id = market_id.unwrap_or(0);
     let cap_group_raw = sdk_string_to_alloc(
         cap_group_id.unwrap_or_else(|| soroban_sdk::String::from_str(env, "")),
     )?;
-    let parsed_cap_group = |raw: alloc::string::String| {
-        CapGroupId::try_from(raw).map_err(|_| ContractError::InvalidInput)
-    };
     let internal = match mode {
         0 => CapGroupUpdate::SetCap {
-            cap_group_id: parsed_cap_group(cap_group_raw.clone())?,
-            new_cap: value.map(to_u128).transpose()?,
+            cap_group_id: parse_cap_group(cap_group_raw.clone())?,
+            new_cap: match value {
+                Some(raw) => Some(to_u128(raw)?),
+                None => None,
+            },
         },
         1 => CapGroupUpdate::SetRelativeCap {
-            cap_group_id: parsed_cap_group(cap_group_raw.clone())?,
-            new_relative_cap: value.map(|raw| to_u128(raw).map(Wad::from)).transpose()?,
+            cap_group_id: parse_cap_group(cap_group_raw.clone())?,
+            new_relative_cap: match value {
+                Some(raw) => Some(Wad::from(to_u128(raw)?)),
+                None => None,
+            },
         },
         2 => {
             let group = if cap_group_raw.is_empty() {
                 None
             } else {
-                Some(parsed_cap_group(cap_group_raw)?)
+                Some(parse_cap_group(cap_group_raw)?)
             };
             CapGroupUpdate::SetMembership {
                 market_id,
