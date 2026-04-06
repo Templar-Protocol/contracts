@@ -1,7 +1,7 @@
 //! Effect interpreter for kernel effects on Soroban.
 
 use soroban_sdk::{symbol_short, token::StellarAssetClient, Address, Bytes, Env};
-use templar_vault_kernel::effects::{KernelEffect, KernelEvent};
+use templar_vault_kernel::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use templar_vault_kernel::{AddressBook, TimestampNs};
 
 use crate::convert::u128_to_i128_effect;
@@ -13,6 +13,216 @@ pub(crate) fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
     u128_to_i128_effect(value, "event amount overflow")
 }
 
+#[inline]
+fn event_push_u8(out: &mut alloc::vec::Vec<u8>, value: u8) {
+    out.push(value);
+}
+
+#[inline]
+fn event_push_bool(out: &mut alloc::vec::Vec<u8>, value: bool) {
+    out.push(u8::from(value));
+}
+
+#[inline]
+fn event_push_u32(out: &mut alloc::vec::Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+#[inline]
+fn event_push_u64(out: &mut alloc::vec::Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+#[inline]
+fn event_push_u128(out: &mut alloc::vec::Vec<u8>, value: u128) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+#[inline]
+fn event_push_address(out: &mut alloc::vec::Vec<u8>, value: &templar_vault_kernel::Address) {
+    out.extend_from_slice(value.as_bytes());
+}
+
+#[inline(never)]
+fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
+    let mut payload = alloc::vec::Vec::new();
+    match event {
+        KernelEvent::AllocationStarted {
+            op_id,
+            total,
+            plan_len,
+        } => {
+            event_push_u8(&mut payload, 0);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u128(&mut payload, *total);
+            event_push_u32(&mut payload, *plan_len);
+        }
+        KernelEvent::AllocationStepFailed {
+            op_id,
+            index,
+            remaining,
+            total_allocated,
+        } => {
+            event_push_u8(&mut payload, 1);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u32(&mut payload, *index);
+            event_push_u128(&mut payload, *remaining);
+            event_push_u128(&mut payload, *total_allocated);
+        }
+        KernelEvent::AllocationCompleted {
+            op_id,
+            has_withdrawal,
+        } => {
+            event_push_u8(&mut payload, 2);
+            event_push_u64(&mut payload, *op_id);
+            event_push_bool(&mut payload, *has_withdrawal);
+        }
+        KernelEvent::WithdrawalStarted {
+            op_id,
+            amount,
+            escrow_shares,
+            owner,
+            receiver,
+        } => {
+            event_push_u8(&mut payload, 3);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u128(&mut payload, *amount);
+            event_push_u128(&mut payload, *escrow_shares);
+            event_push_address(&mut payload, owner);
+            event_push_address(&mut payload, receiver);
+        }
+        KernelEvent::WithdrawalCollected {
+            op_id,
+            burn_shares,
+            collected,
+        } => {
+            event_push_u8(&mut payload, 4);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u128(&mut payload, *burn_shares);
+            event_push_u128(&mut payload, *collected);
+        }
+        KernelEvent::WithdrawalStopped {
+            op_id,
+            escrow_shares,
+        } => {
+            event_push_u8(&mut payload, 5);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u128(&mut payload, *escrow_shares);
+        }
+        KernelEvent::WithdrawalSkipped {
+            id,
+            owner,
+            receiver,
+            escrow_shares,
+            expected_assets,
+            reason,
+        } => {
+            event_push_u8(&mut payload, 6);
+            event_push_u64(&mut payload, *id);
+            event_push_address(&mut payload, owner);
+            event_push_address(&mut payload, receiver);
+            event_push_u128(&mut payload, *escrow_shares);
+            event_push_u128(&mut payload, *expected_assets);
+            event_push_u8(
+                &mut payload,
+                match reason {
+                    WithdrawalSkipReason::ZeroExpectedAssets => 0,
+                    WithdrawalSkipReason::Restricted => 1,
+                },
+            );
+        }
+        KernelEvent::RefreshStarted { op_id, plan_len } => {
+            event_push_u8(&mut payload, 7);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u32(&mut payload, *plan_len);
+        }
+        KernelEvent::RefreshCompleted { op_id } => {
+            event_push_u8(&mut payload, 8);
+            event_push_u64(&mut payload, *op_id);
+        }
+        KernelEvent::PayoutCompleted {
+            op_id,
+            success,
+            burn_shares,
+            refund_shares,
+            amount,
+        } => {
+            event_push_u8(&mut payload, 9);
+            event_push_u64(&mut payload, *op_id);
+            event_push_bool(&mut payload, *success);
+            event_push_u128(&mut payload, *burn_shares);
+            event_push_u128(&mut payload, *refund_shares);
+            event_push_u128(&mut payload, *amount);
+        }
+        KernelEvent::DepositProcessed {
+            owner,
+            receiver,
+            assets_in,
+            shares_out,
+        } => {
+            event_push_u8(&mut payload, 10);
+            event_push_address(&mut payload, owner);
+            event_push_address(&mut payload, receiver);
+            event_push_u128(&mut payload, *assets_in);
+            event_push_u128(&mut payload, *shares_out);
+        }
+        KernelEvent::AtomicWithdrawProcessed {
+            owner,
+            receiver,
+            shares_burned,
+            assets_out,
+        } => {
+            event_push_u8(&mut payload, 11);
+            event_push_address(&mut payload, owner);
+            event_push_address(&mut payload, receiver);
+            event_push_u128(&mut payload, *shares_burned);
+            event_push_u128(&mut payload, *assets_out);
+        }
+        KernelEvent::WithdrawalRequested {
+            id,
+            owner,
+            receiver,
+            shares,
+            expected_assets,
+        } => {
+            event_push_u8(&mut payload, 12);
+            event_push_u64(&mut payload, *id);
+            event_push_address(&mut payload, owner);
+            event_push_address(&mut payload, receiver);
+            event_push_u128(&mut payload, *shares);
+            event_push_u128(&mut payload, *expected_assets);
+        }
+        KernelEvent::ExternalAssetsSynced {
+            op_id,
+            new_external_assets,
+            total_assets,
+        } => {
+            event_push_u8(&mut payload, 13);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u128(&mut payload, *new_external_assets);
+            event_push_u128(&mut payload, *total_assets);
+        }
+        KernelEvent::FeesRefreshed {
+            now_ns,
+            total_assets,
+        } => {
+            event_push_u8(&mut payload, 14);
+            event_push_u64(&mut payload, *now_ns);
+            event_push_u128(&mut payload, *total_assets);
+        }
+        KernelEvent::PauseUpdated { paused } => {
+            event_push_u8(&mut payload, 15);
+            event_push_bool(&mut payload, *paused);
+        }
+        KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
+            event_push_u8(&mut payload, 16);
+            event_push_u64(&mut payload, *op_id);
+            event_push_u32(&mut payload, *from_state);
+        }
+    }
+    payload
+}
+
 /// Publish a KernelEvent via postcard serialization as a raw Soroban event.
 ///
 /// Uses a single `symbol_short!("kernel")` topic with a postcard-encoded
@@ -21,8 +231,7 @@ pub(crate) fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
 #[inline(never)]
 #[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
 pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
-    let payload = postcard::to_allocvec(event)
-        .map_err(|_| RuntimeError::effect_failed("kernel event serialize failed"))?;
+    let payload = encode_kernel_event(event);
     env.events()
         .publish((symbol_short!("kernel"),), Bytes::from_slice(env, &payload));
     Ok(())
