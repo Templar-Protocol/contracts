@@ -766,14 +766,16 @@ impl WithdrawQueue {
         let head_id = self.next_withdraw_to_execute;
         let withdrawal = self.pending_withdrawals.remove(&head_id)?;
 
-        self.cached_total_escrow = self
-            .cached_total_escrow
-            .checked_sub(withdrawal.escrow_shares)
-            .unwrap();
-        self.cached_total_expected = self
-            .cached_total_expected
-            .checked_sub(withdrawal.expected_assets)
-            .unwrap();
+        self.cached_total_escrow = crate::unwrap_abort!(
+            self.cached_total_escrow
+                .checked_sub(withdrawal.escrow_shares),
+            crate::abort::OVERFLOW,
+        );
+        self.cached_total_expected = crate::unwrap_abort!(
+            self.cached_total_expected
+                .checked_sub(withdrawal.expected_assets),
+            crate::abort::OVERFLOW,
+        );
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self
