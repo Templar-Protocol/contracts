@@ -66,13 +66,6 @@ impl RestrictionMode {
         }
     }
 
-    #[must_use]
-    pub fn addresses(&self) -> &[Address] {
-        match self {
-            Self::Blacklist(addresses) | Self::Whitelist(addresses) => addresses,
-        }
-    }
-
     /// Check if the given actor is restricted.
     ///
     /// Returns `Some(kind)` if blocked, `None` if allowed.

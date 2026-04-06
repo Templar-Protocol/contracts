@@ -82,7 +82,7 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
     const FIXED_LEN_WITH_GROWTH: usize = 113;
 
     if bytes.len() != FIXED_LEN_NO_GROWTH && bytes.len() != FIXED_LEN_WITH_GROWTH {
-        return Err(RuntimeError::storage_error("fees deserialize failed"));
+        return Err(RuntimeError::storage_error(""));
     }
 
     let mut cursor = 0usize;
@@ -90,7 +90,7 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         let end = *cursor + 16;
         let raw = bytes
             .get(*cursor..end)
-            .ok_or_else(|| RuntimeError::storage_error("fees deserialize failed"))?;
+            .ok_or_else(|| RuntimeError::storage_error(""))?;
         let mut array = [0u8; 16];
         array.copy_from_slice(raw);
         *cursor = end;
@@ -100,7 +100,7 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         let end = *cursor + 32;
         let raw = bytes
             .get(*cursor..end)
-            .ok_or_else(|| RuntimeError::storage_error("fees deserialize failed"))?;
+            .ok_or_else(|| RuntimeError::storage_error(""))?;
         let mut array = [0u8; 32];
         array.copy_from_slice(raw);
         *cursor = end;
@@ -117,14 +117,14 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
     );
     let max_total_assets_growth_rate = match *bytes
         .get(cursor)
-        .ok_or_else(|| RuntimeError::storage_error("fees deserialize failed"))?
+        .ok_or_else(|| RuntimeError::storage_error(""))?
     {
         0 => None,
         1 => {
             cursor += 1;
             Some(Wad::from(read_u128(&mut cursor)?))
         }
-        _ => return Err(RuntimeError::storage_error("fees deserialize failed")),
+        _ => return Err(RuntimeError::storage_error("")),
     };
 
     Ok(FeesSpec::new(
