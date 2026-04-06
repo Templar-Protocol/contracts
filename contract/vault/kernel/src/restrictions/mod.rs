@@ -2,20 +2,14 @@
 //!
 //! Portable across NEAR and Soroban.
 
-#[cfg(feature = "borsh-schema")]
-use alloc::collections::BTreeMap;
 #[cfg(any(feature = "borsh-schema", feature = "schemars"))]
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 #[cfg(feature = "schemars")]
 use alloc::{borrow::ToOwned, boxed::Box, vec};
 
 use crate::types::Address;
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
 use derive_more::IsVariant;
-#[cfg(feature = "schemars")]
-use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 
 fn normalize_addresses(mut addresses: Vec<Address>) -> Vec<Address> {
     let mut deduped = Vec::with_capacity(addresses.len());

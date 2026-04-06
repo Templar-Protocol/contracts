@@ -109,3 +109,9 @@ impl From<crate::auth::AuthError> for RuntimeError {
         }
     }
 }
+
+impl From<templar_curator_primitives::policy::state::PolicyStateError> for RuntimeError {
+    fn from(_err: templar_curator_primitives::policy::state::PolicyStateError) -> Self {
+        RuntimeError::InvalidState
+    }
+}

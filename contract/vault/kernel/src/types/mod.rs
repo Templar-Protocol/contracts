@@ -113,6 +113,51 @@ impl AsRef<[u8]> for Address {
     }
 }
 
+#[cfg(all(feature = "serde", not(feature = "postcard")))]
+mod address_serde_impl {
+    use super::*;
+    use serde::de;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    impl Serialize for Address {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_bytes(&self.0)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Address {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct AddressVisitor;
+
+            impl<'de> de::Visitor<'de> for AddressVisitor {
+                type Value = Address;
+
+                fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                    formatter.write_str("exactly 32 bytes for Address")
+                }
+
+                fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    let bytes: [u8; 32] = v
+                        .try_into()
+                        .map_err(|_| E::custom("expected exactly 32 bytes for Address"))?;
+                    Ok(Address(bytes))
+                }
+            }
+
+            deserializer.deserialize_bytes(AddressVisitor)
+        }
+    }
+}
+
 #[cfg(feature = "postcard")]
 mod address_postcard_serde_impl {
     use super::*;
@@ -127,7 +172,7 @@ mod address_postcard_serde_impl {
         {
             #[cfg(feature = "soroban")]
             {
-                return self.0.serialize(serializer);
+                self.0.serialize(serializer)
             }
 
             #[cfg(not(feature = "soroban"))]
@@ -144,7 +189,7 @@ mod address_postcard_serde_impl {
         {
             #[cfg(feature = "soroban")]
             {
-                return <[u8; 32]>::deserialize(deserializer).map(Address);
+                <[u8; 32]>::deserialize(deserializer).map(Address)
             }
 
             #[cfg(not(feature = "soroban"))]

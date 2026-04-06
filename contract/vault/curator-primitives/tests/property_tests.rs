@@ -75,7 +75,7 @@ proptest! {
         let ordered: Vec<(u32, u128)> = route
             .entries()
             .iter()
-            .map(|entry| (entry.target_id(), entry.max_amount()))
+            .map(|entry| (entry.target_id, entry.max_amount))
             .collect();
         assert_route_order_by_principal(&ordered);
     }
@@ -105,10 +105,10 @@ proptest! {
         for window in route.entries().windows(2) {
             let a = &window[0];
             let b = &window[1];
-            let a_cap = a.max_amount();
-            let b_cap = b.max_amount();
+            let a_cap = a.max_amount;
+            let b_cap = b.max_amount;
             if a_cap == b_cap {
-                prop_assert!(a.target_id() <= b.target_id());
+                prop_assert!(a.target_id <= b.target_id);
             } else {
                 prop_assert!(a_cap >= b_cap);
             }
