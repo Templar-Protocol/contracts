@@ -743,6 +743,26 @@ where
             .collect()
     }
 
+    fn validate_refreshed_positions_against_plan(
+        &self,
+        refreshed_positions: &[RefreshedPosition],
+    ) -> Result<(), RuntimeError> {
+        let refreshing =
+            self.state()?.op_state.as_refreshing().ok_or_else(|| {
+                invalid_state_error("refresh completion requires refreshing state")
+            })?;
+
+        for position in refreshed_positions {
+            if !refreshing.plan.contains(&position.market) {
+                return Err(RuntimeError::invalid_input(
+                    "refreshed position target not present in active refresh plan",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
         let policy = self.policy_state_mut();
         for position in refreshed_positions {
@@ -840,6 +860,7 @@ where
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
         let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
+        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
         self.apply_refreshed_positions(&refreshed_positions);
         let new_external_assets = self.policy_state().external_assets()?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;

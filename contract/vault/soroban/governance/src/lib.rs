@@ -1233,6 +1233,11 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             );
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            let encoded_cap_group_id = if cap_group_id.is_empty() {
+                None
+            } else {
+                Some(sdk_string_text(cap_group_id))
+            };
             authorize_and_execute(
                 env,
                 &vault,
@@ -1243,7 +1248,7 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                     mode: Some(2),
                     accounts: None,
                     market_id: Some(*market_id),
-                    cap_group_id: Some(sdk_string_text(cap_group_id)),
+                    cap_group_id: encoded_cap_group_id,
                     value: Some(0),
                     value_b: None,
                     value_c: None,
