@@ -1,7 +1,4 @@
 #[derive(Debug, thiserror::Error)]
-pub enum CoreError {
-    #[error("unauthorized")]
-    Unauthorized,
-}
+pub enum CoreError {}
 
 pub type CoreResult<T> = Result<T, CoreError>;

@@ -1,5 +1,5 @@
 use blockchain_gateway_core::universal_account;
-use serde_json::Value;
+use templar_universal_account::PayloadExecutionParameters;
 
 use crate::client::{macros::contract_views, NearReadClient};
 
@@ -23,6 +23,6 @@ impl ContractClient for UniversalAccountClient<'_> {
 
 impl UniversalAccountClient<'_> {
     contract_views! {
-        pub fn get_key(universal_account::GetKeyArgs) -> Value;
+        pub fn get_key(universal_account::GetKeyArgs) -> Option<PayloadExecutionParameters>;
     }
 }

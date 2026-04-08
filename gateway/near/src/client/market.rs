@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use blockchain_gateway_core::common::Pagination;
+use templar_common::borrow::BorrowPosition;
 use templar_common::market::MarketConfiguration;
 
 use crate::client::{macros::contract_views, NearReadClient};
@@ -24,6 +27,6 @@ impl ContractClient for MarketClient<'_> {
 impl MarketClient<'_> {
     contract_views! {
         pub fn get_configuration(()) -> MarketConfiguration;
-        pub fn list_borrow_positions(Pagination) -> Vec<near_account_id::AccountId>;
+        pub fn list_borrow_positions(Pagination) -> HashMap<near_account_id::AccountId, BorrowPosition>;
     }
 }

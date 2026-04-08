@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use templar_common::borrow::BorrowPosition;
 use templar_common::market::MarketConfiguration;
 
 use crate::{
-    macros::public_read_method_spec,
-    rpc::common::{JsonValueResult, Pagination},
-    MarketId, MarketReadMethod, PublicReadMethod,
+    macros::public_read_method_spec, rpc::common::Pagination, MarketId, MarketReadMethod,
+    PublicReadMethod,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -30,7 +32,10 @@ pub struct ListBorrowPositionsParams {
     pub args: Pagination,
 }
 
-pub type ListBorrowPositionsResult = JsonValueResult;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ListBorrowPositionsResult {
+    pub positions: HashMap<near_account_id::AccountId, BorrowPosition>,
+}
 
 public_read_method_spec!(
     ListBorrowPositions,

@@ -1,4 +1,5 @@
-use blockchain_gateway_core::{common, storage};
+use blockchain_gateway_core::storage;
+use near_contract_standards::storage_management::{StorageBalance, StorageBalanceBounds};
 
 use crate::client::{macros::contract_views, NearReadClient};
 
@@ -22,7 +23,7 @@ impl ContractClient for StorageClient<'_> {
 
 impl StorageClient<'_> {
     contract_views! {
-        pub fn storage_balance_bounds(storage::GetBalanceBoundsArgs) -> common::StorageBalanceBounds;
-        pub fn storage_balance_of(storage::GetBalanceOfArgs) -> common::StorageBalance;
+        pub fn storage_balance_bounds(storage::GetBalanceBoundsArgs) -> StorageBalanceBounds;
+        pub fn storage_balance_of(storage::GetBalanceOfArgs) -> Option<StorageBalance>;
     }
 }

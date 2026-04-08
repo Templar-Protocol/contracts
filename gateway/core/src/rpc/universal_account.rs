@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
-    rpc::common::{JsonValueResult, WriteOperationResult},
+    rpc::common::WriteOperationResult,
     PublicReadMethod, RegistryId, UniversalAccountId, UniversalAccountReadMethod,
     UniversalAccountWriteMethod, WriteMethod,
 };
@@ -20,7 +20,22 @@ pub struct GetKeyParams {
     pub args: GetKeyArgs,
 }
 
-pub type GetKeyResult = JsonValueResult;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PayloadExecutionParametersView {
+    pub block_height: u64,
+    pub index: u64,
+    pub nonce: u64,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub chain_id: Option<u128>,
+    pub verifying_contract: near_account_id::AccountId,
+    pub salt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetKeyResult {
+    pub parameters: Option<PayloadExecutionParametersView>,
+}
 
 public_read_method_spec!(
     GetKey,

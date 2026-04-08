@@ -1,6 +1,5 @@
 mod macros;
 
-pub mod auth;
 pub mod error;
 pub mod method;
 pub mod operation;
@@ -8,7 +7,6 @@ pub mod primitive;
 pub mod rpc;
 pub mod spec;
 
-pub use auth::{AllowedWriteMethod, GenericCallConstraint, PrincipalId, PrincipalPolicy};
 pub use error::{CoreError, CoreResult};
 pub use method::{
     ChainReadMethod, GenericWriteMethod, MarketReadMethod, MarketWriteMethod, PublicReadMethod,

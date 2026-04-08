@@ -127,7 +127,6 @@ This crate is the JSON-RPC server binary.
 Responsibilities:
 
 - configure and start the RPC server
-- extract auth credentials
 - deserialize JSON-RPC requests into internal typed requests
 - dispatch into `gateway/near`
 - encode results and errors back into JSON-RPC responses
@@ -137,17 +136,17 @@ Requirements:
 - this is the only crate allowed to depend on `jsonrpsee`
 - no business logic here
 - no direct NEAR execution logic here
-- no auth policy evaluation beyond calling into internal logic
+- authentication and permissioning are handled outside the gateway
 
 ## API Design Principles
 
 ### Reads vs Writes
 
-Reads are public and should not require auth because blockchain data is public.
+Reads and writes are unauthenticated at the gateway layer.
 
-Writes require auth.
+Authentication and permissioning are handled outside the blockchain gateway.
 
-The auth policy surface should therefore whitelist write methods only, plus any future admin-only internal methods if such methods are added.
+The gateway still distinguishes reads from writes semantically, but not for access control.
 
 ### Typed Domain Methods
 
@@ -175,7 +174,7 @@ Include a generic write method for now:
 
 But this is a temporary escape hatch. The long-term goal is to remove or de-emphasize it once typed methods cover all necessary interactions.
 
-If present, it must be tightly constrained by auth policy.
+If present, any restrictions are enforced outside the gateway.
 
 ### All Writes Are Operations
 
@@ -202,32 +201,18 @@ Reason:
 
 The gateway therefore needs durable operation tracking and idempotency records for write requests.
 
-## Auth Model
+## Auth Scope
 
-Auth is whitelist-only and deny-by-default.
+Authentication and permissioning are explicitly out of scope for the blockchain gateway.
 
-If a method is not explicitly enabled for a token, it is not allowed.
+The surrounding service layer or deployment environment is responsible for ensuring that only authorized callers can invoke the gateway.
 
-Auth is account-scoped.
+The gateway does not:
 
-Requirements:
-
-- a token may only submit transactions for an explicitly allowed set of signer accounts
-- a token may be authorized for more than one signer account
-- every write request must include the signer account the caller wants the service to use
-
-Examples:
-
-- the relayer token may only be allowed to sign for `registry.near`
-- the accumulator token may only be allowed to sign for `accumulator.near`
-
-Auth policy should be expressive enough to capture:
-
-- allowed signer accounts
-- allowed typed write methods
-- constraints for generic function calls such as allowed receivers and allowed on-chain method names
-
-Reads should generally remain unauthenticated.
+- store auth tokens or principals
+- enforce method allowlists
+- enforce signer-account permissions
+- evaluate request authentication
 
 Secrets must not be stored in the database.
 
@@ -253,7 +238,6 @@ This is already a reasonable dependency in this repository because the relayer a
 
 Persist in Postgres:
 
-- auth tokens / principals / policy
 - managed account metadata
 - managed key metadata only
 - operation records

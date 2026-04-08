@@ -150,7 +150,7 @@ macro_rules! impl_versioned_state {
         #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
         #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
         pub fn migrate() {
-            use ::near_sdk::env;
+            use near_sdk::env;
             env::setup_panic_hook();
 
             ::near_sdk::require!(

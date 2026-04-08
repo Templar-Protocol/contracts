@@ -10,11 +10,13 @@ async-trait.workspace = true
 blockchain-gateway-core = { path = "../core" }
 near-api.workspace = true
 near-account-id = { version = "2.6.0", features = ["serde", "schemars"] }
+near-contract-standards.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 templar-common = { workspace = true, features = ["abi"] }
+templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

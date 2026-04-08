@@ -71,7 +71,7 @@ near-jsonrpc-client = "0.18.0"
 near-jsonrpc-primitives = "0.31.1"
 near-parameters = "0.31.1"
 near-primitives = "0.31.1"
-near-sdk = { version = "5.17.2", features = ["unstable"] }
+near-sdk = { version = "5.25", features = ["unstable"] }
 near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
 near-token = { version = "0.3.3", features = ["serde", "schemars"] }
 near-workspaces = { version = "0.21.0", features = ["unstable"] }
