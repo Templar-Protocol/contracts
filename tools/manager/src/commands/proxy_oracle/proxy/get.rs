@@ -51,15 +51,15 @@ impl OutputStyle for Proxy {
 
         writeln!(out, "{}: {aggregator_name}", style("Aggregator").bold())?;
 
-        if let Some(max_age) = self.freshness_filter.max_age {
-            writeln!(out, "  {}: {max_age}", style("max_age").dim())?;
+        if let Some(max_age_ns) = self.freshness_filter.max_age_ns {
+            writeln!(out, "  {}: {max_age_ns}", style("max_age_ns").dim())?;
         }
 
-        if let Some(max_clock_drift) = self.freshness_filter.max_clock_drift {
+        if let Some(max_clock_drift_ns) = self.freshness_filter.max_clock_drift_ns {
             writeln!(
                 out,
-                "  {}: {max_clock_drift}",
-                style("max_clock_drift").dim()
+                "  {}: {max_clock_drift_ns}",
+                style("max_clock_drift_ns").dim()
             )?;
         }
 

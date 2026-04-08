@@ -122,8 +122,8 @@ mod tests {
     fn resolve_applies_min_sources_after_filtering() {
         let proxy = median_proxy(
             FreshnessFilter {
-                max_age: Some(Nanoseconds::from_secs(500)),
-                max_clock_drift: None,
+                max_age_ns: Some(Nanoseconds::from_secs(500)),
+                max_clock_drift_ns: None,
             },
             2,
         );
@@ -157,8 +157,8 @@ mod tests {
     ) {
         let proxy = median_proxy(
             FreshnessFilter {
-                max_age: Some(Nanoseconds::from_secs(max_age_s)),
-                max_clock_drift: None,
+                max_age_ns: Some(Nanoseconds::from_secs(max_age_s)),
+                max_clock_drift_ns: None,
             },
             1,
         );
@@ -184,8 +184,8 @@ mod tests {
     ) {
         let proxy = median_proxy(
             FreshnessFilter {
-                max_age: None,
-                max_clock_drift: Some(Nanoseconds::from_secs(max_clock_drift_s)),
+                max_age_ns: None,
+                max_clock_drift_ns: Some(Nanoseconds::from_secs(max_clock_drift_s)),
             },
             1,
         );
@@ -204,8 +204,8 @@ mod tests {
     fn resolve_excludes_negative_publish_times() {
         let proxy = median_proxy(
             FreshnessFilter {
-                max_age: Some(Nanoseconds::from_ms(500)),
-                max_clock_drift: None,
+                max_age_ns: Some(Nanoseconds::from_ms(500)),
+                max_clock_drift_ns: None,
             },
             1,
         );

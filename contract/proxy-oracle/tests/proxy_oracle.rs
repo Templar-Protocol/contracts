@@ -384,8 +384,8 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     }
 
     let default_filter = FreshnessFilter {
-        max_age: Some(Nanoseconds::from_ms(60 * 1000)),
-        max_clock_drift: Some(Nanoseconds::from_ms(10 * 1000)),
+        max_age_ns: Some(Nanoseconds::from_ms(60 * 1000)),
+        max_clock_drift_ns: Some(Nanoseconds::from_ms(10 * 1000)),
     };
 
     let btc_proxy_def = match method {
