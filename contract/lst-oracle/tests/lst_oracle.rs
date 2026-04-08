@@ -14,12 +14,12 @@ use templar_common::{
 use test_utils::*;
 
 fn redemption_rate_call(account_id: &near_sdk::AccountIdRef) -> Call {
-    Call {
-        account_id: account_id.into(),
-        method_name: "redemption_rate".to_string(),
-        args: near_sdk::json_types::Base64VecU8(vec![]),
-        gas: near_sdk::Gas::from_tgas(3).as_gas().into(),
-    }
+    Call::new(
+        account_id,
+        "redemption_rate",
+        near_sdk::serde_json::Value::Null,
+        near_sdk::Gas::from_tgas(3),
+    )
 }
 
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
