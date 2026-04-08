@@ -55,7 +55,7 @@ pub fn workspace_root() -> &'static Path {
 
 #[rstest::fixture]
 pub async fn worker() -> Worker<Sandbox> {
-    near_workspaces::sandbox_with_version("2.8.0")
+    near_workspaces::sandbox_with_version("2.10.7")
         .await
         .unwrap()
 }
