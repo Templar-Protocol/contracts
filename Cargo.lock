@@ -13486,7 +13486,7 @@ dependencies = [
  "stellar-strkey 0.0.8",
  "stellar-xdr 24.0.1",
  "templar-common",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-test",
  "tower 0.5.3",

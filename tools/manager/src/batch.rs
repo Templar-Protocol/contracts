@@ -58,6 +58,10 @@ impl<'a> BoundBatch<'a> {
     /// Execute the transaction, log its hash and explorer URL, and return an error
     /// if execution failed.
     pub async fn transact(self) -> anyhow::Result<()> {
+        if self.actions.is_empty() {
+            anyhow::bail!("empty batch");
+        }
+
         let result =
             near::send_tx_checked(self.near, self.signer, &self.receiver_id, self.actions).await?;
         let hash = &result.transaction.hash;

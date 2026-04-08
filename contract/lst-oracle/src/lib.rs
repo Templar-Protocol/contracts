@@ -146,13 +146,11 @@ impl Contract {
         original_price_ids: Vec<PriceIdentifier>,
     ) -> OracleResponse {
         fn callback_result<T: DeserializeOwned>(index: u64) -> T {
-            match env::promise_result(index) {
-                near_sdk::PromiseResult::Successful(vec) => serde_json::from_slice(&vec)
-                    .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string())),
-                near_sdk::PromiseResult::Failed => {
-                    templar_common::panic_with_message(&format!("Promise index {index} failed"))
-                }
-            }
+            let vec = env::promise_result_checked(index, 0x1000).unwrap_or_else(|e| {
+                templar_common::panic_with_message(&format!("Promise index {index} failed: {e}"))
+            });
+            serde_json::from_slice(&vec)
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
         }
 
         let oracle_result = callback_result::<OracleResponse>(0);

@@ -239,7 +239,12 @@ pub async fn relay(
     // Send the user's transaction
     let signed_transaction = app
         .relay_near
-        .construct_ua_execute_transaction(&app.cache, account_id.clone(), &args_raw, gas)
+        .construct_ua_execute_transaction(
+            &app.cache,
+            account_id.clone(),
+            &args_raw,
+            near_primitives::gas::Gas::from_gas(gas),
+        )
         .await;
     let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
         tracing::error!("Failed to estimate cost of gas");

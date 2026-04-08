@@ -419,7 +419,7 @@ impl Near {
         cache: &Cache,
         ua_account_id: AccountId,
         args: &serde_json::Value,
-        gas: u64,
+        gas: near_primitives::gas::Gas,
     ) -> SignedTransaction {
         let signer = self.next_signer();
         let public_key = signer.public_key();
@@ -431,7 +431,7 @@ impl Near {
         let action = FunctionCallAction {
             method_name: "execute".to_string(),
             args: serde_json::to_vec(&json!({ "args": args })).unwrap(),
-            gas: near_primitives::gas::Gas::from_gas(gas),
+            gas,
             deposit: NearToken::ZERO,
         };
 
