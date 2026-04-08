@@ -51,7 +51,6 @@ for required_file in "${required_files[@]}"; do
 done
 
 # derived values
-MARKET_ID="$MARKET_NAME.$REGISTRY_ID"
 PROXY_ORACLE_NAME="proxy-oracle-$MARKET_NAME"
 PROXY_ORACLE_ID="$PROXY_ORACLE_NAME.$REGISTRY_ID"
 
