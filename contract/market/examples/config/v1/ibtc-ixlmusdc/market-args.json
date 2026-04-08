@@ -16,7 +16,7 @@
       }
     },
     "price_oracle_configuration": {
-      "account_id": "pyth-oracle.near",
+      "account_id": "proxy-oracle-ibtc-ixlmusdc.v1.tmplr.near",
       "collateral_asset_price_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "collateral_asset_decimals": 8,
       "borrow_asset_price_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
