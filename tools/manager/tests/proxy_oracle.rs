@@ -46,7 +46,7 @@ fn sample_price_id() -> CliPriceIdentifier {
 fn sample_proxy(oracle_id: AccountId) -> Proxy {
     Proxy::new(
         Aggregator::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()]),
-        FreshnessFilter::default(),
+        FreshnessFilter::empty(),
     )
 }
 

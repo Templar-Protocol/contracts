@@ -32,13 +32,19 @@ impl Proxy {
     }
 
     #[must_use]
-    pub fn median_low(sources: impl IntoIterator<Item = Source>) -> Self {
-        Self::new(Aggregator::median_low(sources), FreshnessFilter::default())
+    pub fn median_low(
+        sources: impl IntoIterator<Item = Source>,
+        freshness_filter: FreshnessFilter,
+    ) -> Self {
+        Self::new(Aggregator::median_low(sources), freshness_filter)
     }
 
     #[must_use]
-    pub fn priority(sources: impl IntoIterator<Item = Source>) -> Self {
-        Self::new(Aggregator::priority(sources), FreshnessFilter::default())
+    pub fn priority(
+        sources: impl IntoIterator<Item = Source>,
+        freshness_filter: FreshnessFilter,
+    ) -> Self {
+        Self::new(Aggregator::priority(sources), freshness_filter)
     }
 
     #[must_use]

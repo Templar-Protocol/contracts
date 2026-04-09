@@ -58,7 +58,7 @@ mod tests {
             id: PriceIdentifier([0xaa; 32]),
             proxy: Some(Proxy::new(
                 Aggregator::median_low([]),
-                FreshnessFilter::default(),
+                FreshnessFilter::empty(),
             )),
         }
     }
@@ -72,7 +72,7 @@ mod tests {
                     PriceIdentifier([0xdd; 32]),
                 )
                 .into()]),
-                FreshnessFilter::default(),
+                FreshnessFilter::empty(),
             )),
         }
     }

@@ -31,7 +31,7 @@ use tokio::sync::watch;
 use templar_common::{
     oracle::{
         price_transformer,
-        proxy::{Proxy, ProxyPriceTransformer, Source},
+        proxy::{FreshnessFilter, Proxy, ProxyPriceTransformer, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone, OracleRequest,
     },
@@ -360,7 +360,7 @@ async fn set_proxy(
         .set_proxy(
             proxy_oracle.account(),
             price_id,
-            Some(Proxy::median_low([source.into()])),
+            Some(Proxy::median_low([source.into()], FreshnessFilter::empty())),
         )
         .await;
 }

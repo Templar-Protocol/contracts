@@ -6,7 +6,7 @@ use tokio::join;
 use templar_common::{
     market::YieldWeights,
     oracle::{
-        proxy::{Proxy, Source},
+        proxy::{FreshnessFilter, Proxy, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
         OracleRequest,
@@ -114,7 +114,10 @@ async fn proxy_oracle(
         .set_proxy(
             proxy_oracle.account(),
             DEFAULT_COLLATERAL_PRICE_ID,
-            Some(Proxy::median_low(oracle_requests_collateral)),
+            Some(Proxy::median_low(
+                oracle_requests_collateral,
+                FreshnessFilter::empty(),
+            )),
         )
         .await;
 
@@ -129,7 +132,10 @@ async fn proxy_oracle(
         .set_proxy(
             proxy_oracle.account(),
             DEFAULT_BORROW_PRICE_ID,
-            Some(Proxy::median_low(oracle_requests_borrow)),
+            Some(Proxy::median_low(
+                oracle_requests_borrow,
+                FreshnessFilter::empty(),
+            )),
         )
         .await;
 
