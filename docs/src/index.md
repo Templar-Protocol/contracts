@@ -9,6 +9,7 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 - **[Smart Contract Addresses](./deployments.md)** - Official contract addresses and verification
 - **[Protocol Governance](./governance.md)** - Administrative controls and upgrade mechanisms
 - **[Oracle System](./oracles.md)** - Price feed infrastructure and monitoring
+- **[Proxy Oracle Architecture](./contract/proxy-oracle/index.md)** - Multi-source oracle design and backup-feed architecture
 - **[Security Reporting](./security.md)** - Security practices and vulnerability reporting
 - **[Monitoring and Risk Management](./monitoring.md)** - Protocol health monitoring systems
 - **[Testing and Coverage](./testing.md)** - Comprehensive test suite documentation

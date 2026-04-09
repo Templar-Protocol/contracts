@@ -10,8 +10,8 @@ use near_sdk::AccountId;
 #[derive(clap::Args, Clone)]
 pub struct SignerArgs {
     /// Account ID used to sign transactions; some commands also act on this same account
-    #[arg(long = "signer-id", env = "SIGNER_ID")]
-    pub account_id: AccountId,
+    #[arg(long, env = "SIGNER_ID")]
+    pub signer_id: AccountId,
 
     /// Ed25519 private key for signing (ed25519:...)
     #[arg(long, env = "SECRET_KEY")]
@@ -21,7 +21,7 @@ pub struct SignerArgs {
 impl std::fmt::Debug for SignerArgs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignerArgs")
-            .field("account_id", &self.account_id)
+            .field("signer_id", &self.signer_id)
             .field("secret_key", &"***")
             .finish()
     }
@@ -29,19 +29,19 @@ impl std::fmt::Debug for SignerArgs {
 
 impl std::fmt::Display for SignerArgs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.account_id.as_str())
+        f.write_str(self.signer_id.as_str())
     }
 }
 
 impl SignerArgs {
-    pub fn new(account_id: AccountId, secret_key: SecretKey) -> Self {
+    pub fn new(signer_id: AccountId, secret_key: SecretKey) -> Self {
         Self {
-            account_id,
+            signer_id,
             secret_key,
         }
     }
 
     pub fn signer(&self) -> Signer {
-        InMemorySigner::from_secret_key(self.account_id.clone(), self.secret_key.clone())
+        InMemorySigner::from_secret_key(self.signer_id.clone(), self.secret_key.clone())
     }
 }

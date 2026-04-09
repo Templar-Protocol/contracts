@@ -59,7 +59,7 @@ impl<C: DeploymentSpec> Runner<()> for Direct<C> {
     async fn run(&self, ctx: &crate::CliContext, _input: &()) -> anyhow::Result<Self::Output> {
         let args = self.args.load_vec()?;
 
-        ctx.batch(&self.signer.signer(), &self.signer.account_id)
+        ctx.batch(&self.signer.signer(), &self.signer.signer_id)
             .deploy(&self.loader.load::<C::Version>(C::PACKAGE_ID)?.wasm_bytes)
             .call(Function::new("new").args(args).max_gas())
             .transact()

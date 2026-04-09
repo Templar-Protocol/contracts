@@ -2,6 +2,8 @@
 
 Templar Protocol relies on external price oracles to determine asset valuations when calculating collateralization ratios and performing liquidations.
 
+For a high-level overview of Templar's multi-source proxy oracle architecture, see [Proxy Oracle Architecture](./contract/proxy-oracle/index.md).
+
 [Pyth Network](https://pyth.network/) is the primary oracle provider ([documentation](https://docs.pyth.network/)).
 
 Pyth is a **pull oracle**, meaning that the price feeds are updated as-needed instead of continuously. As such, interactions with Templar markets should always be preceded by a call to the appropriate oracle contract to update the necessary asset prices using a proof provided by Pyth.
@@ -22,6 +24,12 @@ Price identifiers for Pyth Network assets can be found on [their documentation s
 ## LST Oracle Adapter
 
 For Liquid Staking Tokens (LSTs), Templar uses [a custom oracle adapter](./contract/lst-oracle.md) ([`lst.oracle.tmplr.near`](https://nearblocks.io/address/lst.oracle.tmplr.near)) to derive the LST price from the underlying asset price(s).
+
+## Proxy Oracle
+
+Templar also supports [proxy oracles](./contract/proxy-oracle/index.md), which present a Pyth-compatible interface to markets while allowing a single market-facing price identifier to be sourced from multiple underlying oracle feeds.
+
+This is the production mechanism used to support backup oracle paths and asset-specific aggregation policies.
 
 ## Price Feed Configuration
 
@@ -58,7 +66,7 @@ Markets validate price freshness before use. If prices are stale, users must pus
 - Operations that require prices (borrow, liquidate) will fail.
 - Users must push updates for fresh price data.
 
-There is currently no backup oracle available.
+Backup oracle support is available through the proxy oracle architecture. A market can continue pointing at the same oracle endpoint while the proxied feed uses one or more underlying sources.
 
 ## Oracle Security Measures
 

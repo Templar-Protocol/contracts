@@ -14,7 +14,7 @@ pub struct RedStoneAdapterRemove {
 }
 
 impl RedStoneAdapterRemove {
-    #[tracing::instrument(skip_all, name = "redstone_adapter_remove", fields(account_id = %self.signer.account_id, beneficiary_id = %self.beneficiary_id))]
+    #[tracing::instrument(skip_all, name = "redstone_adapter_remove", fields(signer_id = %self.signer.signer_id, beneficiary_id = %self.beneficiary_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         commands::delete_account(ctx, &self.signer, &self.beneficiary_id).await?;
         Ok(())

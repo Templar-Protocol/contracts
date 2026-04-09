@@ -31,7 +31,7 @@ pub struct StorageDeposit {
 }
 
 impl StorageDeposit {
-    #[tracing::instrument(skip_all, name = "storage_deposit", fields(account_id = %self.signer.account_id, contract_id = %self.contract_id))]
+    #[tracing::instrument(skip_all, name = "storage_deposit", fields(signer_id = %self.signer.signer_id, contract_id = %self.contract_id))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let deposit = if self.registration_only {
             tracing::debug!("Fetching storage balance bounds");
@@ -51,7 +51,7 @@ impl StorageDeposit {
         ctx.batch(&signer, &self.contract_id)
             .call(
                 Function::new("storage_deposit")
-                    .args_json(json!({ "account_id": &self.signer.account_id, "registration_only": self.registration_only }))
+                    .args_json(json!({ "account_id": &self.signer.signer_id, "registration_only": self.registration_only }))
                     .deposit(deposit),
             )
             .transact()

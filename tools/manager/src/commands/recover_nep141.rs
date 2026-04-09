@@ -37,7 +37,7 @@ async fn ft_balance_of(
 }
 
 impl RecoverNep141 {
-    #[tracing::instrument(skip_all, name = "recover_nep141", fields(account_id = %self.signer.account_id, token_id = %self.token_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
+    #[tracing::instrument(skip_all, name = "recover_nep141", fields(signer_id = %self.signer.signer_id, token_id = %self.token_id, beneficiary_id = %self.beneficiary_id, force = self.force))]
     pub async fn run(&self, ctx: &crate::CliContext) -> anyhow::Result<()> {
         let signer = &self.signer.signer();
 
