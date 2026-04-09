@@ -13531,12 +13531,13 @@ dependencies = [
  "solana-sdk",
  "soroban-client",
  "stellar-strkey 0.0.14",
+ "templar-common",
  "thiserror 2.0.17",
 ]
 
 [[package]]
 name = "templar-universal-account-contract"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "getrandom 0.2.15",
  "near-sdk",

@@ -167,6 +167,30 @@ fn format_swap_unsupported_message(
     )
 }
 
+/// Format a repeated scan failure message.
+fn format_scan_failures_message(market: &str, count: u32, last_error: &str) -> String {
+    format!(
+        "🔴 <b>Market Scan Failing</b>\n\
+         \n\
+         Market: <code>{}</code>\n\
+         Consecutive failures: {count}\n\
+         Last error: {}",
+        html_escape(market),
+        html_escape(last_error),
+    )
+}
+
+/// Format a market recovery message.
+fn format_scan_recovered_message(market: &str, prev_failures: u32) -> String {
+    format!(
+        "🟢 <b>Market Recovered</b>\n\
+         \n\
+         Market: <code>{}</code>\n\
+         After {prev_failures} consecutive failures.",
+        html_escape(market),
+    )
+}
+
 impl Notifier {
     /// Creates a new notifier. Pass `None` to disable notifications.
     pub fn new(telegram: Option<TelegramConfig>) -> Self {
@@ -222,6 +246,16 @@ impl Notifier {
         self.spawn_send(format_swap_failed_message(
             market, from_asset, to_asset, amount, error,
         ));
+    }
+
+    /// Notify about repeated scan failures for a market.
+    pub fn notify_scan_failures(self: &Arc<Self>, market: &str, count: u32, last_error: &str) {
+        self.spawn_send(format_scan_failures_message(market, count, last_error));
+    }
+
+    /// Notify that a market recovered after consecutive scan failures.
+    pub fn notify_scan_recovered(self: &Arc<Self>, market: &str, prev_failures: u32) {
+        self.spawn_send(format_scan_recovered_message(market, prev_failures));
     }
 
     /// Notify when a swap is skipped because the asset pair is unsupported.
@@ -473,6 +507,30 @@ mod tests {
     }
 
     #[test]
+    fn test_format_scan_failures_message() {
+        let msg = format_scan_failures_message("market.near", 3, "Timeout exceeded after 30s");
+        assert!(msg.contains("🔴 <b>Market Scan Failing</b>"));
+        assert!(msg.contains("<code>market.near</code>"));
+        assert!(msg.contains("Consecutive failures: 3"));
+        assert!(msg.contains("Timeout exceeded after 30s"));
+    }
+
+    #[test]
+    fn test_format_scan_failures_escapes_html() {
+        let msg = format_scan_failures_message("m<arket", 2, "err <&> stuff");
+        assert!(msg.contains("m&lt;arket"));
+        assert!(msg.contains("err &lt;&amp;&gt; stuff"));
+    }
+
+    #[test]
+    fn test_format_scan_recovered_message() {
+        let msg = format_scan_recovered_message("market.near", 5);
+        assert!(msg.contains("🟢 <b>Market Recovered</b>"));
+        assert!(msg.contains("<code>market.near</code>"));
+        assert!(msg.contains("After 5 consecutive failures"));
+    }
+
+    #[test]
     fn test_spawn_send_noop_when_disabled() {
         let notifier = Arc::new(Notifier::new(None));
         // Should not panic or spawn anything
@@ -480,5 +538,7 @@ mod tests {
         notifier.notify_liquidation_failed("m", "b", "err");
         notifier.notify_swap_failed("m", "a", "b", "1", "err");
         notifier.notify_swap_unsupported("m", "a", "b", "1");
+        notifier.notify_scan_failures("m", 2, "err");
+        notifier.notify_scan_recovered("m", 3);
     }
 }

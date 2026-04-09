@@ -15,13 +15,16 @@ fn parse_configurations() {
             read.extend(std::fs::read_dir(entry.path()).unwrap());
         } else if t.is_file() {
             let path = entry.path();
-            eprint!("Parsing {}: ", path.display());
-            let file = std::fs::File::open(&path).unwrap();
-            // Attempt to parse:
-            serde_json::from_reader::<_, MarketConfiguration>(file)
-                .unwrap_or_else(|e| panic!("Failed: {e}"));
-            eprintln!("Success!");
-            total += 1;
+            let display = path.display();
+            if display.to_string().ends_with(".near.json") {
+                eprint!("Parsing {display}: ");
+                let file = std::fs::File::open(&path).unwrap();
+                // Attempt to parse:
+                serde_json::from_reader::<_, MarketConfiguration>(file)
+                    .unwrap_or_else(|e| panic!("Failed: {e}"));
+                eprintln!("Success!");
+                total += 1;
+            }
         }
     }
 

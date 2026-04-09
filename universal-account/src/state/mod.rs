@@ -1,9 +1,7 @@
 use near_sdk::{near, store::IterableMap};
+use templar_common::versioned_state::{StateVersion, VersionedState};
 
-use crate::{
-    contract_state::{StateVersion, VersionedState},
-    KeyId, KeyParameters,
-};
+use crate::{KeyId, KeyParameters};
 
 pub mod migration;
 pub use migration::Migration;
