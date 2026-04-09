@@ -1,22 +1,29 @@
+use std::marker::PhantomData;
+
 use near_crypto::Signer;
-use near_primitives::transaction::Action;
+use near_primitives::transaction::{Action, DeleteAccountAction};
 use near_sdk::AccountId;
 use templar_tools_common::near::{self, Client, Function};
 
+/// Typestate for a batch that can still accept actions.
+pub struct Open;
+
+/// Typestate for a batch whose terminal action has already been added.
+pub struct Closed;
+
 /// A NEAR batch transaction bound to a specific context.
 ///
-/// Obtain one via [`crate::CliContext::batch`]. Chain actions with [`call`](Self::call),
-/// [`deploy`](Self::deploy), or [`delete_account`](Self::delete_account), then call
-/// [`transact`](Self::transact) to execute, log the hash, and propagate failures.
-pub struct BoundBatch<'a> {
+/// Obtain one via [`crate::CliContext::batch`].
+pub struct BoundBatch<'a, State = Open> {
     transaction_url_prefix: String,
     near: &'a Client,
     signer: &'a Signer,
     receiver_id: AccountId,
     actions: Vec<Action>,
+    state: PhantomData<State>,
 }
 
-impl<'a> BoundBatch<'a> {
+impl<'a> BoundBatch<'a, Open> {
     pub(crate) fn new(
         transaction_url_prefix: String,
         near: &'a Client,
@@ -29,6 +36,7 @@ impl<'a> BoundBatch<'a> {
             signer,
             receiver_id: receiver_id.clone(),
             actions: Vec::new(),
+            state: PhantomData,
         }
     }
 
@@ -45,16 +53,27 @@ impl<'a> BoundBatch<'a> {
     }
 
     #[must_use]
-    pub fn delete_account(mut self, beneficiary_id: &AccountId) -> Self {
+    pub fn delete_account(mut self, beneficiary_id: &AccountId) -> BoundBatch<'a, Closed> {
         self.actions
-            .push(near_primitives::transaction::Action::DeleteAccount(
-                near_primitives::transaction::DeleteAccountAction {
-                    beneficiary_id: beneficiary_id.clone(),
-                },
-            ));
-        self
+            .push(Action::DeleteAccount(DeleteAccountAction {
+                beneficiary_id: beneficiary_id.clone(),
+            }));
+        self.close()
     }
 
+    fn close(self) -> BoundBatch<'a, Closed> {
+        BoundBatch {
+            transaction_url_prefix: self.transaction_url_prefix,
+            near: self.near,
+            signer: self.signer,
+            receiver_id: self.receiver_id,
+            actions: self.actions,
+            state: PhantomData,
+        }
+    }
+}
+
+impl<State> BoundBatch<'_, State> {
     /// Execute the transaction, log its hash and explorer URL, and return an error
     /// if execution failed.
     pub async fn transact(self) -> anyhow::Result<()> {
