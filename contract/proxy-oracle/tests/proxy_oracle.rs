@@ -559,3 +559,111 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
         Some(80_000),
     );
 }
+
+#[rstest::rstest]
+#[case::median_low(TestMethod::MedianLow, 100_000)]
+#[case::priority(TestMethod::Priority, 100_000)]
+#[tokio::test]
+async fn proxy_oracle_enforces_freshness_filter(
+    #[future(awt)] worker: Worker<Sandbox>,
+    #[case] method: TestMethod,
+    #[case] expected_price: u64,
+) {
+    accounts!(worker, actor, redstone_adapter, proxy_oracle, pyth_oracle, pyth_oracle2);
+    let pyth_oracle = MockOracleController::deploy(pyth_oracle);
+    let pyth_oracle2 = MockOracleController::deploy(pyth_oracle2);
+    let redstone_adapter = MockOracleController::deploy(redstone_adapter);
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
+    let (pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle) =
+        tokio::join!(pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle);
+
+    let default_filter = FreshnessFilter::new(
+        Some(Nanoseconds::from_secs(10)),
+        Some(Nanoseconds::from_secs(10)),
+    );
+
+    let btc_proxy_def = match method {
+        TestMethod::MedianLow => Proxy::new(
+            Aggregator::MedianLow(MedianLow::new([
+                WeightedSource::new(
+                    OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
+                    1,
+                ),
+                WeightedSource::new(
+                    OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
+                    1,
+                ),
+                WeightedSource::new(
+                    OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
+                    1,
+                ),
+            ])),
+            default_filter,
+        ),
+        TestMethod::Priority => Proxy::priority(
+            [
+                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
+                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
+                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
+            ],
+            default_filter,
+        ),
+    };
+    let btc_proxy_id = PriceIdentifier([0x09_u8; 32]);
+    proxy_oracle
+        .set_proxy(
+            proxy_oracle.account(),
+            btc_proxy_id,
+            Some(btc_proxy_def.clone()),
+        )
+        .await;
+
+    let now = Nanoseconds::from_ms(std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64);
+    let stale_time = now.saturating_sub(Nanoseconds::from_secs(30));
+    let future_time = now.saturating_add(Nanoseconds::from_secs(20));
+
+    pyth_oracle
+        .set_pyth_price(
+            &actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(expected_price as i64),
+                conf: U64(0),
+                expo: 0,
+                publish_time: now.try_to_pyth().unwrap(),
+            }),
+        )
+        .await;
+    pyth_oracle2
+        .set_pyth_price(
+            &actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(80_000),
+                conf: U64(0),
+                expo: 0,
+                publish_time: future_time.try_to_pyth().unwrap(),
+            }),
+        )
+        .await;
+    redstone_adapter
+        .set_redstone_price(
+            &actor,
+            "BTC",
+            Some(FeedData {
+                price: primitive_types::U256::from(90_000_u128 * 100_000_000_u128).into(),
+                package_timestamp: stale_time,
+                write_timestamp: stale_time,
+            }),
+        )
+        .await;
+
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id], 60_u32)
+        .await;
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
+        Some(expected_price)
+    );
+}
