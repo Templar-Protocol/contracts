@@ -13531,6 +13531,7 @@ dependencies = [
  "solana-sdk",
  "soroban-client",
  "stellar-strkey 0.0.14",
+ "templar-common",
  "thiserror 2.0.17",
 ]
 

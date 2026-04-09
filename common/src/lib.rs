@@ -20,6 +20,7 @@ pub mod time_chunk;
 #[cfg(feature = "rpc")]
 pub mod utils;
 pub mod vault;
+pub mod versioned_state;
 pub mod withdrawal_queue;
 
 pub use primitive_types;
