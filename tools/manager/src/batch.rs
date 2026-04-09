@@ -62,14 +62,14 @@ impl<'a> BoundBatch<'a> {
             anyhow::bail!("empty batch");
         }
 
-        let result =
-            near::send_tx_checked(self.near, self.signer, &self.receiver_id, self.actions).await?;
+        let result = near::send_tx(self.near, self.signer, &self.receiver_id, self.actions).await?;
         let hash = &result.transaction.hash;
         tracing::info!(
             transaction_hash = %hash,
             url = %format!("{}{}", self.transaction_url_prefix, hash),
             "Transaction submitted"
         );
+        near::require_success_status(&result)?;
         Ok(())
     }
 }

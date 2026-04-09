@@ -231,7 +231,7 @@ pub fn deploy_action(code: &[u8]) -> Action {
     })
 }
 
-fn require_success_status(outcome: &FinalExecutionOutcomeView) -> anyhow::Result<()> {
+pub fn require_success_status(outcome: &FinalExecutionOutcomeView) -> anyhow::Result<()> {
     match &outcome.status {
         FinalExecutionStatus::SuccessValue(_) => Ok(()),
         FinalExecutionStatus::Failure(error) => anyhow::bail!("Transaction failed: {error:?}"),
