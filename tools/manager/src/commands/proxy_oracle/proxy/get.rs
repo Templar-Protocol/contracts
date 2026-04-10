@@ -3,10 +3,10 @@ use std::io::Write;
 use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::oracle::{
+use templar_common::oracle::pyth::PriceIdentifier;
+use templar_proxy_oracle_kernel::{
     proxy::{Aggregator, Proxy, Source, WeightedSource},
-    pyth::PriceIdentifier,
-    OracleRequest,
+    request::OracleRequest,
 };
 
 use super::CliPriceIdentifier;

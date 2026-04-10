@@ -2,9 +2,10 @@
 resolver = "3"
 members = [
     "common",
-    "contract/lst-oracle",
     "contract/market",
-    "contract/proxy-oracle",
+    "contract/proxy-oracle/kernel",
+    "contract/proxy-oracle/near/contract",
+    "contract/proxy-oracle/near/lst-contract",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -80,6 +81,8 @@ serde_json = "1"
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 templar-common = { path = "./common" }
+templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel" }
+templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }

@@ -6,10 +6,12 @@ use near_primitives::views::TxExecutionStatus;
 use near_sdk::NearToken;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
-    proxy::{FreshnessFilter, Proxy},
     pyth::PriceIdentifier,
     redstone::{self, FeedId},
-    OracleRequest,
+};
+use templar_proxy_oracle_kernel::{
+    proxy::{FreshnessFilter, Proxy},
+    request::OracleRequest,
 };
 use templar_relayer::{
     app::args,

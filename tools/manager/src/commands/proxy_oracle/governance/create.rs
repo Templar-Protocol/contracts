@@ -5,9 +5,8 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
 use templar_common::governance::Proposal;
-use templar_common::oracle::proxy::governance::Operation;
-use templar_common::oracle::proxy::Proxy;
 use templar_common::time::Nanoseconds;
+use templar_proxy_oracle_kernel::proxy::{governance::Operation, Proxy};
 
 use super::execute::execute_proposal;
 use crate::commands::proxy_oracle::proxy::CliPriceIdentifier;

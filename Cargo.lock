@@ -13258,6 +13258,7 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -13276,6 +13277,7 @@ dependencies = [
  "near-workspaces 0.21.0",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "test-utils",
  "tokio",
 ]
@@ -13303,6 +13305,7 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "templar-redstone-bridge",
  "templar-tools-common",
  "test-utils",
@@ -13354,8 +13357,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-proxy-oracle-contract"
-version = "0.1.0"
+name = "templar-proxy-oracle-kernel"
+version = "1.2.1"
+dependencies = [
+ "hex-literal",
+ "near-primitives 0.31.1",
+ "near-sdk",
+ "near-workspaces 0.21.0",
+ "rstest",
+ "templar-common",
+ "test-utils",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
+name = "templar-proxy-oracle-near-contract"
+version = "1.2.1"
 dependencies = [
  "getrandom 0.2.15",
  "hex-literal",
@@ -13365,6 +13383,7 @@ dependencies = [
  "near-workspaces 0.21.0",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "test-utils",
  "tokio",
 ]
@@ -13432,6 +13451,7 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "templar-redstone-bridge",
  "templar-universal-account",
  "test-utils",
@@ -13657,7 +13677,9 @@ dependencies = [
  "near-workspaces 0.21.0",
  "p256",
  "rstest",
+ "serde",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "templar-universal-account",
  "tokio",
 ]

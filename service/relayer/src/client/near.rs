@@ -36,12 +36,15 @@ use templar_common::{
     market::MarketConfiguration,
     number::Decimal,
     oracle::{
-        price_transformer::{Call, PriceTransformer},
-        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier},
-        redstone, OracleRequest,
+        redstone,
     },
     time::Nanoseconds,
+};
+use templar_proxy_oracle_kernel::{
+    price_transformer::{Call, PriceTransformer},
+    proxy::{Proxy, Source},
+    request::OracleRequest,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 

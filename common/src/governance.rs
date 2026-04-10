@@ -207,7 +207,7 @@ impl<T: Clone + Serialize + BorshSerialize + BorshDeserialize + Validatable> Gov
     ///
     /// ```rust
     /// # use near_sdk::{env, near};
-    /// # use templar_common::oracle::proxy::governance::Governance;
+    /// # use templar_proxy_oracle_kernel::proxy::governance::Governance;
     /// # #[derive(Debug, Clone)]
     /// # #[near(serializers = [borsh, json])]
     /// enum Op {

@@ -16,12 +16,15 @@ use std::collections::HashMap;
 use templar_common::{
     number::Decimal,
     oracle::{
-        price_transformer::PriceTransformer,
-        proxy::{Proxy, ProxyPriceTransformer, Source},
         pyth::{self, OracleResponse, PriceIdentifier},
-        redstone, OracleRequest,
+        redstone,
     },
     time::Nanoseconds,
+};
+use templar_proxy_oracle_kernel::{
+    price_transformer::PriceTransformer,
+    proxy::{Proxy, ProxyPriceTransformer, Source},
+    request::OracleRequest,
 };
 
 use crate::{
@@ -976,7 +979,7 @@ impl OracleFetcher {
     /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
     async fn fetch_transformer_input(
         &self,
-        call: &templar_common::oracle::price_transformer::Call,
+        call: &templar_proxy_oracle_kernel::price_transformer::Call,
     ) -> Result<Decimal, RpcError> {
         // Use the rpc_call() method to create a view query
         let query = call.rpc_call();

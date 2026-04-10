@@ -23,7 +23,7 @@ impl Package {
         match self {
             Self::Registry => "templar-registry-contract",
             Self::Market => "templar-market-contract",
-            Self::ProxyOracle => "templar-proxy-oracle-contract",
+            Self::ProxyOracle => "templar-proxy-oracle-near-contract",
             Self::RedStoneAdapter => "templar-redstone-adapter-contract",
         }
     }

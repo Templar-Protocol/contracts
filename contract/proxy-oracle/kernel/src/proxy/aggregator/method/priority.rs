@@ -1,0 +1,124 @@
+use near_sdk::near;
+use templar_common::{oracle::pyth, panic_with_message};
+
+use crate::proxy::Source;
+
+use super::Aggregate;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct Priority {
+    pub sources: Vec<Source>,
+}
+
+impl Priority {
+    pub fn new(sources: impl IntoIterator<Item = Source>) -> Self {
+        Self {
+            sources: sources.into_iter().collect(),
+        }
+    }
+}
+
+impl Aggregate for Priority {
+    fn sources(&self) -> Vec<&Source> {
+        self.sources.iter().collect()
+    }
+
+    fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, super::Error> {
+        if prices.len() != self.sources.len() {
+            panic_with_message("Invariant violation: length mismatch");
+        }
+
+        prices
+            .iter()
+            .find_map(|p| p.clone())
+            .ok_or(super::Error::TooFewValidSources {
+                expected: 1,
+                actual: 0,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::json_types::{I64, U64};
+    use templar_common::oracle::pyth::PythTimestamp;
+
+    use crate::request::OracleRequest;
+
+    use super::*;
+
+    fn price(value: i64, conf: u64, publish_time: PythTimestamp) -> pyth::Price {
+        pyth::Price {
+            price: I64(value),
+            conf: U64(conf),
+            expo: -6,
+            publish_time,
+        }
+    }
+
+    fn secs(s: i64) -> PythTimestamp {
+        PythTimestamp::from_secs(s)
+    }
+
+    fn priority(count: usize) -> Priority {
+        Priority {
+            sources: (0..count)
+                .map(|_| OracleRequest::redstone("oracle.near".parse().unwrap(), "BTC").into())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn priority_empty_returns_too_few_valid_sources() {
+        let error = Priority { sources: vec![] }.aggregate(vec![]).unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::Error::TooFewValidSources {
+                expected: 1,
+                actual: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn priority_single_price() {
+        let result = priority(1)
+            .aggregate(vec![Some(price(1_000_000, 0, secs(0)))])
+            .unwrap();
+        assert_eq!(result.price.0, 1_000_000);
+    }
+
+    #[test]
+    fn priority_selects_first_valid_price() {
+        let prices = vec![
+            None,
+            Some(price(2_000_000, 0, secs(0))),
+            Some(price(3_000_000, 0, secs(0))),
+        ];
+        let result = priority(prices.len()).aggregate(prices).unwrap();
+        assert_eq!(result.price.0, 2_000_000);
+    }
+
+    #[test]
+    fn priority_preserves_original_price_with_confidence() {
+        let result = priority(2)
+            .aggregate(vec![
+                Some(price(1_000, 100, secs(0))),
+                Some(price(2_000, 0, secs(0))),
+            ])
+            .unwrap();
+        assert_eq!(result.price.0, 1_000);
+        assert_eq!(result.conf.0, 100);
+    }
+
+    #[test]
+    fn priority_returns_first_valid_price_even_with_multiple_prices() {
+        let prices = vec![
+            Some(price(1_000_000, 0, secs(0))),
+            Some(price(2_000_000, 0, secs(0))),
+        ];
+        let result = priority(prices.len()).aggregate(prices).unwrap();
+        assert_eq!(result.price.0, 1_000_000);
+    }
+}

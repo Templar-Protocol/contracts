@@ -12,7 +12,7 @@ use crate::{
 
 const MARKET_PACKAGE: &str = "templar-market-contract";
 const UAC_PACKAGE: &str = "templar-universal-account-contract";
-const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-contract";
+const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-near-contract";
 const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
 
 const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);

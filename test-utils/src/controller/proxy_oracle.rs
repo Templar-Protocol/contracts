@@ -5,17 +5,17 @@ use near_sdk::{
 use near_workspaces::{Account, Contract};
 use templar_common::{
     governance,
-    oracle::{
-        proxy::{self, governance::Operation, Proxy},
-        pyth::{OracleResponse, PriceIdentifier},
-    },
+    oracle::pyth::{OracleResponse, PriceIdentifier},
     time::Nanoseconds,
+};
+use templar_proxy_oracle_kernel::proxy::{
+    self, governance::Operation, migration::MigrationArgs, Proxy,
 };
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
 
-use super::ContractController;
+use super::{migration::MigrationController, ContractController};
 
 pub struct ProxyOracleController {
     pub contract: Contract,
@@ -27,15 +27,29 @@ impl ContractController for ProxyOracleController {
     }
 }
 
+impl MigrationController for ProxyOracleController {
+    type Migration = MigrationArgs;
+}
+
 impl ProxyOracleController {
-    pub async fn deploy(account: Account) -> Self {
+    pub const fn wasm_v0() -> &'static [u8] {
+        include_bytes!("wasm/proxy_oracle_v0.wasm")
+    }
+
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| get_contract("templar_proxy_oracle_contract", "contract/proxy-oracle"))
-            .await;
+        WASM.get_or_init(|| {
+            get_contract(
+                "templar_proxy_oracle_near_contract",
+                "contract/proxy-oracle/near/contract",
+            )
+        })
+        .await
+    }
 
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
+    pub async fn deploy(account: Account) -> Self {
+        let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
         contract
             .call("new")
             .args_json(json!({}))

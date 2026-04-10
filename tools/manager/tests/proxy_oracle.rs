@@ -6,12 +6,7 @@ use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{
-    oracle::{
-        proxy::{Aggregator, FreshnessFilter, Proxy},
-        pyth::PriceIdentifier,
-        redstone::FeedId,
-        OracleRequest,
-    },
+    oracle::{pyth::PriceIdentifier, redstone::FeedId},
     registry::DeployMode,
     time::Nanoseconds,
 };
@@ -35,6 +30,10 @@ use templar_manager::commands::{
     },
 };
 use templar_manager::util::{EmptyArgsLoader, OutputArgs};
+use templar_proxy_oracle_kernel::{
+    proxy::{Aggregator, FreshnessFilter, Proxy},
+    request::OracleRequest,
+};
 use test_utils::{accounts, worker};
 
 fn sample_price_id() -> CliPriceIdentifier {

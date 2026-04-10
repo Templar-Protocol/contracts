@@ -27,6 +27,7 @@ near-sdk = { workspace = true, features = ["non-contract-usage"] }
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 templar-common = { workspace = true, features = ["rpc"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["rpc"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

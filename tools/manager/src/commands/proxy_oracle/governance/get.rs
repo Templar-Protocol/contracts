@@ -3,9 +3,8 @@ use std::io::Write;
 use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::{
-    governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
-};
+use templar_common::{governance::Proposal, time::Nanoseconds};
+use templar_proxy_oracle_kernel::proxy::governance::Operation;
 
 use crate::{
     util::{OutputArgs, OutputStyle},
