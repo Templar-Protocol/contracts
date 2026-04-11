@@ -38,7 +38,6 @@ use test_utils::{
     pyth_price_id::{self, stable::CRYPTO_BTC_USD},
     worker, ContractController, MockOracleController,
 };
-use tokio::task::Id;
 
 fn norm_price(price: &pyth::Price) -> u64 {
     let p = u64::try_from(price.price.0).unwrap();

@@ -4,6 +4,7 @@ use rstest::rstest;
 use tokio::join;
 
 use templar_common::{
+    asset::CollateralAssetAmount,
     market::YieldWeights,
     oracle::{
         pyth::{self, PriceIdentifier, PythTimestamp},
@@ -11,6 +12,10 @@ use templar_common::{
     },
     primitive_types::U256,
     time::Nanoseconds,
+};
+use templar_proxy_oracle_kernel::{
+    proxy::{FreshnessFilter, Proxy, Source},
+    request::OracleRequest,
 };
 use test_utils::*;
 
@@ -50,8 +55,6 @@ async fn proxy_oracle(
     #[values(true, false)] proxy_borrow_pyth_first: bool,
     #[values(true, false)] proxy_collateral_pyth_first: bool,
 ) {
-    use templar_common::asset::CollateralAssetAmount;
-
     const PYTH_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier([0xb7_u8; 32]);
     const PYTH_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier([0xc7_u8; 32]);
     const REDSTONE_BORROW_FEED_ID: &str = "BORROW/USD";

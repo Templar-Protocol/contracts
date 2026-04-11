@@ -2,8 +2,6 @@ pub mod aggregator;
 pub mod freshness_filter;
 pub mod governance;
 pub mod input;
-pub mod legacy;
-pub mod migration;
 
 use near_sdk::near;
 use templar_common::{oracle::pyth, time::Nanoseconds};

@@ -8,8 +8,9 @@ use templar_common::{
     oracle::pyth::{OracleResponse, PriceIdentifier},
     time::Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{
-    self, governance::Operation, migration::MigrationArgs, Proxy,
+use templar_proxy_oracle_kernel::{
+    proxy::{self, governance::Operation, Proxy},
+    state,
 };
 use tokio::sync::OnceCell;
 
@@ -28,7 +29,7 @@ impl ContractController for ProxyOracleController {
 }
 
 impl MigrationController for ProxyOracleController {
-    type Migration = MigrationArgs;
+    type Migration = state::migration::Migration;
 }
 
 impl ProxyOracleController {

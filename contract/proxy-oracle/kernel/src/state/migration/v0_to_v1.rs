@@ -1,21 +1,137 @@
 use near_sdk::near;
-use templar_common::{governance::Governance, versioned_state::StateTransformer};
+use templar_common::{
+    governance::{Governance, Proposal},
+    oracle::pyth::PriceIdentifier,
+    versioned_state::StateTransformer,
+};
 
-use crate::proxy::migration::{snapshot_proposals, snapshot_proxies, MigrationError};
-use crate::state::{self, storage::StorageKey, V1};
+use crate::{
+    proxy::{
+        aggregator::method::{median::MedianLow, priority::Priority},
+        governance, Aggregator, FreshnessFilter, Proxy, ProxyPriceTransformer, Source,
+        WeightedSource,
+    },
+    state::{self, legacy::v0, v1},
+};
+
+impl From<v0::ProxyPriceTransformer> for ProxyPriceTransformer {
+    fn from(value: v0::ProxyPriceTransformer) -> Self {
+        Self {
+            request: value.request,
+            call: value.call,
+            action: value.action,
+        }
+    }
+}
+
+impl From<v0::LegacySource> for Source {
+    fn from(value: v0::LegacySource) -> Self {
+        match value {
+            v0::LegacySource::Request(request) => Self::Request(request),
+            v0::LegacySource::Transformer(transformer) => Self::Transformer(transformer.into()),
+        }
+    }
+}
+
+impl From<v0::Entry> for WeightedSource {
+    fn from(value: v0::Entry) -> Self {
+        Self::new(Source::from(value.source), value.weight)
+    }
+}
+
+impl From<v0::Filter> for FreshnessFilter {
+    fn from(value: v0::Filter) -> Self {
+        Self::new(value.max_age, value.max_clock_drift)
+    }
+}
+
+impl From<v0::Proxy> for Proxy {
+    fn from(value: v0::Proxy) -> Self {
+        let freshness_filter = FreshnessFilter::from(value.aggregator.filter.clone());
+
+        let aggregator = match value.aggregator.method {
+            v0::AggregationMethod::MedianLow => {
+                let mut aggregator =
+                    MedianLow::new(value.entries.into_iter().map(WeightedSource::from));
+                aggregator.min_sources = value.aggregator.filter.min_sources.unwrap_or(1).max(1);
+                Aggregator::MedianLow(aggregator)
+            }
+            v0::AggregationMethod::Priority => {
+                let mut sources = value.entries.into_iter().enumerate().collect::<Vec<_>>();
+                sources.sort_by(|(left_index, left), (right_index, right)| {
+                    right
+                        .weight
+                        .cmp(&left.weight)
+                        .then(left_index.cmp(right_index))
+                });
+                let ordered_sources = sources
+                    .into_iter()
+                    .map(|(_, entry)| Source::from(entry.source));
+
+                Aggregator::Priority(Priority::new(ordered_sources))
+            }
+        };
+
+        Proxy::new(aggregator, freshness_filter)
+    }
+}
+
+impl From<v0::Operation> for governance::Operation {
+    fn from(value: v0::Operation) -> Self {
+        match value {
+            v0::Operation::SetProxy { id, proxy } => Self::SetProxy {
+                id,
+                proxy: proxy.map(Proxy::from),
+            },
+            v0::Operation::SetActionTtl { new_ttl } => Self::SetActionTtl { new_ttl },
+        }
+    }
+}
+
+fn migrate_proposal(proposal: Proposal<v0::Operation>) -> Proposal<governance::Operation> {
+    Proposal {
+        operation: proposal.operation.into(),
+        created_at: proposal.created_at,
+        ttl: proposal.ttl,
+        created_by: proposal.created_by,
+    }
+}
+
+fn snapshot_proposals(
+    governance: &Governance<v0::Operation>,
+) -> Vec<(u32, Proposal<governance::Operation>)> {
+    (0..governance.next_id)
+        .filter_map(|proposal_id| {
+            governance
+                .proposals
+                .get(&proposal_id)
+                .cloned()
+                .map(|proposal| (proposal_id, migrate_proposal(proposal)))
+        })
+        .collect()
+}
+
+fn snapshot_proxies(
+    proxies: &near_sdk::collections::UnorderedMap<PriceIdentifier, v0::Proxy>,
+) -> Vec<(PriceIdentifier, Proxy)> {
+    proxies
+        .iter()
+        .map(|(price_id, proxy)| (price_id, Proxy::from(proxy)))
+        .collect()
+}
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
-pub struct V0;
+pub struct V0ToV1;
 
-impl StateTransformer for V0 {
-    type Input = state::V0;
-    type Output = V1;
-    type Error = MigrationError;
+impl StateTransformer for V0ToV1 {
+    type Input = v0::State;
+    type Output = v1::State;
+    type Error = ();
 
     fn transform(&self, mut input: Self::Input) -> Result<Self::Output, Self::Error> {
-        let proposals = snapshot_proposals(&input.governance)?;
-        let proxies_snapshot = snapshot_proxies(&input.proxies)?;
+        let proposals = snapshot_proposals(&input.governance);
+        let proxies_snapshot = snapshot_proxies(&input.proxies);
         let next_id = input.governance.next_id;
         let ttl = input.governance.ttl;
 
@@ -24,7 +140,7 @@ impl StateTransformer for V0 {
         input.proxies.clear();
         drop(input);
 
-        let mut governance = Governance::new(StorageKey::Governance);
+        let mut governance = Governance::new(v1::StorageKey::Governance);
         governance.next_id = next_id;
         governance.ttl = ttl;
 
@@ -32,12 +148,12 @@ impl StateTransformer for V0 {
             governance.proposals.insert(proposal_id, proposal);
         }
 
-        let mut proxies = near_sdk::collections::UnorderedMap::new(StorageKey::Proxies);
+        let mut proxies = near_sdk::collections::UnorderedMap::new(v1::StorageKey::Proxies);
         for (price_id, proxy) in proxies_snapshot {
             proxies.insert(&price_id, &proxy);
         }
 
-        Ok(V1 {
+        Ok(state::v1::State {
             governance,
             proxies,
         })
@@ -56,12 +172,11 @@ mod tests {
         versioned_state::{read_state_version, write_state_version, StateTransformer},
     };
 
-    use crate::proxy::{
-        governance::Operation, legacy::v0, migration::MigrationError, Aggregator, FreshnessFilter,
-        Proxy, Source,
+    use crate::{
+        proxy::{governance::Operation, Aggregator, FreshnessFilter, Proxy, Source},
+        request::OracleRequest,
+        state::{legacy::v0, migration::v0_to_v1::V0ToV1},
     };
-    use crate::request::OracleRequest;
-    use crate::state::{self, migration::v0_to_v1::V0, storage::StorageKey};
 
     fn context() {
         testing_env!(VMContextBuilder::new().build());
@@ -84,7 +199,7 @@ mod tests {
             near_sdk::env::storage_write(&key, &value);
         }
 
-        let state = near_sdk::env::state_read::<state::V0>().unwrap();
+        let state = near_sdk::env::state_read::<v0::State>().unwrap();
         assert_eq!(state.governance.next_id, 6);
         assert_eq!(state.proxies.len(), 3);
         assert_eq!(state.governance.proposals.iter().count(), 2);
@@ -100,9 +215,9 @@ mod tests {
         let governance_id = 7;
         let created_by = account("owner.near");
 
-        let mut old = state::V0 {
-            governance: Governance::new(StorageKey::Governance),
-            proxies: near_sdk::collections::UnorderedMap::new(StorageKey::Proxies),
+        let mut old = v0::State {
+            governance: Governance::new(v0::StorageKey::Governance),
+            proxies: near_sdk::collections::UnorderedMap::new(v0::StorageKey::Proxies),
         };
         old.governance.next_id = 9;
         old.governance.ttl = Nanoseconds::from_secs(55);
@@ -122,7 +237,7 @@ mod tests {
             aggregator: v0::Aggregator::priority(v0::Filter {
                 max_age: Some(Nanoseconds::from_secs(70)),
                 max_clock_drift: Some(Nanoseconds::from_secs(20)),
-                min_sources: Some(1),
+                min_sources: Some(99),
             }),
             entries: vec![
                 v0::Entry::new(OracleRequest::redstone(account("redstone.near"), "ETH"), 7),
@@ -135,7 +250,7 @@ mod tests {
         old.governance.proposals.insert(
             governance_id,
             Proposal {
-                operation: v0::governance::Operation::SetProxy {
+                operation: v0::Operation::SetProxy {
                     id: eth,
                     proxy: Some(priority_proxy.clone()),
                 },
@@ -149,7 +264,7 @@ mod tests {
         near_sdk::env::state_write(&old);
         write_state_version(0);
 
-        let new = V0.run().unwrap();
+        let new = V0ToV1.run().unwrap();
 
         assert_eq!(read_state_version().unwrap(), 1);
         assert_eq!(new.governance.next_id, 9);
@@ -214,10 +329,10 @@ mod tests {
     }
 
     #[test]
-    fn v0_to_v1_rejects_priority_min_sources_over_one() {
+    fn v0_to_v1_ignores_priority_min_sources_over_one() {
         context();
 
-        let error = Proxy::try_from(v0::Proxy {
+        let proxy = Proxy::from(v0::Proxy {
             aggregator: v0::Aggregator::priority(v0::Filter {
                 max_age: None,
                 max_clock_drift: None,
@@ -227,9 +342,8 @@ mod tests {
                 OracleRequest::redstone(account("redstone.near"), "BTC"),
                 1,
             )],
-        })
-        .unwrap_err();
+        });
 
-        assert_eq!(error, MigrationError::UnsupportedPriorityMinSources(2));
+        assert!(matches!(proxy.aggregator, Aggregator::Priority(_)));
     }
 }

@@ -13327,6 +13327,7 @@ dependencies = [
  "near-workspaces 0.21.0",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-kernel",
  "templar-relayer",
  "test-utils",
  "tokio",

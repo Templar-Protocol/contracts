@@ -27,14 +27,14 @@ mod callback_handler;
 use callback_handler::{callback_result, CallbackHandler, OracleType};
 mod impl_governance;
 
-type State = state::V1;
+type State = state::v1::State;
 
 #[derive(Debug, Owner, PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
     pub state: VersionedState<State>,
 }
-impl_versioned_state!(Contract, State, state::Migration);
+impl_versioned_state!(Contract, State, state::migration::Migration);
 
 impl Deref for Contract {
     type Target = State;

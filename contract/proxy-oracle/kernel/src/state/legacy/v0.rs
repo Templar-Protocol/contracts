@@ -1,13 +1,54 @@
-use near_sdk::near;
+use near_sdk::{borsh::BorshSerialize, collections::UnorderedMap, near, BorshStorageKey};
 use templar_common::{
-    oracle::pyth::{self, PythTimestamp},
+    governance::Governance,
+    oracle::pyth::{self, PriceIdentifier, PythTimestamp},
     time::Nanoseconds,
+    versioned_state::{StateVersion, VersionedState},
 };
 
 use crate::{
     price_transformer::{Action, Call},
     request::OracleRequest,
 };
+
+#[derive(BorshSerialize, BorshStorageKey)]
+#[borsh(crate = "near_sdk::borsh")]
+pub enum StorageKey {
+    Governance,
+    Proxies,
+}
+
+#[derive(Debug)]
+#[near(serializers = [borsh])]
+pub struct State {
+    pub governance: Governance<Operation>,
+    pub proxies: UnorderedMap<PriceIdentifier, Proxy>,
+}
+
+impl StateVersion for State {
+    const VERSION: u32 = 0;
+
+    type NewArgs = ();
+
+    fn new((): Self::NewArgs) -> VersionedState<Self> {
+        VersionedState::new(Self {
+            governance: Governance::new(StorageKey::Governance),
+            proxies: UnorderedMap::new(StorageKey::Proxies),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum Operation {
+    SetProxy {
+        id: PriceIdentifier,
+        proxy: Option<Proxy>,
+    },
+    SetActionTtl {
+        new_ttl: Nanoseconds,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]

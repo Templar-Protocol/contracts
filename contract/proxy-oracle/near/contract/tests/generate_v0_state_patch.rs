@@ -4,7 +4,7 @@ use std::fs;
 
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::time::Nanoseconds;
-use templar_proxy_oracle_kernel::proxy::legacy::v0;
+use templar_proxy_oracle_kernel::state::legacy::v0;
 use test_utils::{worker, ProxyOracleController};
 
 #[path = "support/migration_fixture.rs"]
@@ -31,7 +31,7 @@ async fn generate_v0_state_patch(#[future(awt)] worker: Worker<Sandbox>) {
     fixture::gov_create(
         &contract,
         0,
-        &v0::governance::Operation::SetProxy {
+        &v0::Operation::SetProxy {
             id: fixture::BTC_PRICE_ID,
             proxy: Some(fixture::executed_btc_proxy(&accounts)),
         },
@@ -42,7 +42,7 @@ async fn generate_v0_state_patch(#[future(awt)] worker: Worker<Sandbox>) {
     fixture::gov_create(
         &contract,
         1,
-        &v0::governance::Operation::SetProxy {
+        &v0::Operation::SetProxy {
             id: fixture::ETH_PRICE_ID,
             proxy: Some(fixture::executed_eth_proxy(&accounts)),
         },
@@ -53,7 +53,7 @@ async fn generate_v0_state_patch(#[future(awt)] worker: Worker<Sandbox>) {
     fixture::gov_create(
         &contract,
         2,
-        &v0::governance::Operation::SetProxy {
+        &v0::Operation::SetProxy {
             id: fixture::STNEAR_PRICE_ID,
             proxy: Some(fixture::executed_stnear_proxy(&accounts)),
         },
@@ -64,7 +64,7 @@ async fn generate_v0_state_patch(#[future(awt)] worker: Worker<Sandbox>) {
     fixture::gov_create(
         &contract,
         3,
-        &v0::governance::Operation::SetActionTtl {
+        &v0::Operation::SetActionTtl {
             new_ttl: Nanoseconds::from_secs(30),
         },
     )
@@ -74,7 +74,7 @@ async fn generate_v0_state_patch(#[future(awt)] worker: Worker<Sandbox>) {
     fixture::gov_create(
         &contract,
         4,
-        &v0::governance::Operation::SetProxy {
+        &v0::Operation::SetProxy {
             id: fixture::PENDING_PRICE_ID,
             proxy: Some(fixture::pending_proxy(&accounts)),
         },
@@ -83,7 +83,7 @@ async fn generate_v0_state_patch(#[future(awt)] worker: Worker<Sandbox>) {
     fixture::gov_create(
         &contract,
         5,
-        &v0::governance::Operation::SetActionTtl {
+        &v0::Operation::SetActionTtl {
             new_ttl: Nanoseconds::from_secs(90),
         },
     )

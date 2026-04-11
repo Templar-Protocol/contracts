@@ -2,10 +2,11 @@
 
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::time::Nanoseconds;
-use templar_proxy_oracle_kernel::proxy::{
-    governance::Operation, migration::MigrationArgs, Aggregator, FreshnessFilter, Source,
-};
 use templar_proxy_oracle_kernel::request::OracleRequest;
+use templar_proxy_oracle_kernel::{
+    proxy::{governance::Operation, Aggregator, FreshnessFilter, Source},
+    state,
+};
 use test_utils::{
     assert_all_outcomes_success, controller::migration::MigrationController, worker,
     ContractController, GovernanceController, ProxyOracleController,
@@ -34,7 +35,10 @@ async fn migrate_accepts_v0_patch(#[future(awt)] worker: Worker<Sandbox>) {
     assert!(proxy.needs_migration().await);
 
     let result = proxy
-        .migrate(proxy.contract().as_account(), MigrationArgs::V0)
+        .migrate(
+            proxy.contract().as_account(),
+            state::migration::Migration::from(state::migration::V0ToV1),
+        )
         .await;
 
     assert_all_outcomes_success(&result);
@@ -174,7 +178,10 @@ async fn migrate_accepts_mainnet_patch(#[future(awt)] worker: Worker<Sandbox>) {
     assert!(proxy.needs_migration().await);
 
     let result = proxy
-        .migrate(proxy.contract().as_account(), MigrationArgs::V0)
+        .migrate(
+            proxy.contract().as_account(),
+            state::migration::Migration::from(state::migration::V0ToV1),
+        )
         .await;
 
     assert_all_outcomes_success(&result);
@@ -210,7 +217,7 @@ async fn migrate_is_private(#[future(awt)] worker: Worker<Sandbox>) {
 
     caller
         .call(proxy.contract().id(), "migrate")
-        .args_json(MigrationArgs::V0)
+        .args_json(state::migration::Migration::from(state::migration::V0ToV1))
         .max_gas()
         .transact()
         .await

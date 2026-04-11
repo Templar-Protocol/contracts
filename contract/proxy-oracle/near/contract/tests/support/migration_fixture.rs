@@ -6,9 +6,8 @@ use near_sdk::serde_json::json;
 use near_sdk::{borsh, json_types::Base64VecU8, NearToken};
 use near_workspaces::{network::Sandbox, Contract, Worker};
 use templar_common::{oracle::pyth::PriceIdentifier, time::Nanoseconds};
-use templar_proxy_oracle_kernel::{
-    price_transformer::Call, proxy::legacy::v0, request::OracleRequest,
-};
+use templar_proxy_oracle_kernel::state::legacy::v0;
+use templar_proxy_oracle_kernel::{price_transformer::Call, request::OracleRequest};
 use test_utils::{workspace_root, ContractController, MockOracleController, ProxyOracleController};
 
 pub type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
@@ -77,7 +76,7 @@ pub async fn deploy_patched(worker: &Worker<Sandbox>) -> ProxyOracleController {
     deploy_patched_with_state_patch(worker, load_state_patch()).await
 }
 
-pub async fn gov_create(contract: &Contract, id: u32, operation: &v0::governance::Operation) {
+pub async fn gov_create(contract: &Contract, id: u32, operation: &v0::Operation) {
     contract
         .as_account()
         .call(contract.id(), "gov_create")
