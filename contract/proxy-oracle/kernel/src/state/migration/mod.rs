@@ -30,3 +30,16 @@ impl Migrator for Migration {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::serde_json;
+
+    use super::*;
+
+    #[test]
+    fn serialization() {
+        let s = serde_json::to_string(&Migration::V0(V0ToV1)).unwrap();
+        assert_eq!(s, r#"{"from_version":"v0"}"#);
+    }
+}
