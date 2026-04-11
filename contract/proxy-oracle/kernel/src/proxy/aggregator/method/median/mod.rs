@@ -11,14 +11,30 @@ use specific_price::SpecificPrice;
 
 /// Calculates the weighted median of a sorted list of weighted items.
 ///
-/// If all of the weights are zero, returns the first item.
+/// If all of the weights are equal (including zero), returns ordinary positional median.
 ///
 /// Only definitely correct for lists where `sum(weights)` does not overflow `u32`.
+///
+/// # Panics
+///
+/// If the list is empty.
 fn median<T>(sorted_weighted_items: &[(T, u32)]) -> (usize, usize) {
     if sorted_weighted_items.len() == 1 {
         return (0, 0);
     }
 
+    // case: all weights are equal (including zero)
+    let first_weight = sorted_weighted_items[0].1;
+    if sorted_weighted_items[1..]
+        .iter()
+        .all(|(_, weight)| *weight == first_weight)
+    {
+        let hi = sorted_weighted_items.len() / 2;
+        let lo = sorted_weighted_items.len().saturating_sub(1) / 2;
+        return (lo, hi);
+    }
+
+    // case: weights are different
     let mut lo = 0;
     let mut hi = sorted_weighted_items.len() - 1;
     let mut acc: u32 = 0;
@@ -220,6 +236,21 @@ mod tests {
         assert!(median_low(&[1, 1], 2).aggregate(prices).is_ok());
     }
 
+    #[test]
+    fn raw_weighted_median_handles_zero_and_simple_edges() {
+        assert_eq!(median(&[("a", 0_u32), ("b", 0_u32)]), (0, 1));
+        assert_eq!(median(&[("a", 1_u32)]), (0, 0));
+        assert_eq!(median(&[("a", 1_u32), ("b", 1_u32), ("c", 1_u32)]), (1, 1));
+        assert_eq!(
+            median(&[("a", 1_u32), ("b", 100_u32), ("c", 1_u32)]),
+            (1, 1)
+        );
+        assert_eq!(
+            median(&[("a", 0_u32), ("b", 0_u32), ("c", 0_u32), ("d", 0_u32)]),
+            (1, 2)
+        );
+    }
+
     #[rstest::rstest]
     #[case(&[("a", 1)], "a")]
     #[case(&[("a", 1), ("b", 1), ("c", 1)], "b")]
@@ -231,11 +262,24 @@ mod tests {
     #[case(&[("a", 2), ("b", 1), ("c", 1)], "a")]
     #[case(&[("a", u32::MAX), ("b", u32::MAX), ("c", u32::MAX)], "b")]
     #[case(&[("a", u32::MAX), ("b", 0), ("c", u32::MAX)], "a")]
-    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 0)], "a")]
+    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 0)], "b")]
+    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 0), ("e", 0)], "c")]
     #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 1)], "d")]
     #[case(&[("a", 0), ("b", 1), ("c", 0), ("d", 1)], "b")]
     fn weighted_median_low(#[case] list: &[(&str, u32)], #[case] expected: &str) {
         let item = list[Low::median(list)].0;
+        assert_eq!(item, expected);
+    }
+
+    #[rstest::rstest]
+    #[case(&[("a", 0), ("b", 0)], "b")]
+    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 0)], "c")]
+    #[case(&[("a", 0), ("b", 0), ("c", 0), ("d", 0), ("e", 0)], "c")]
+    fn weighted_median_high_all_zero_uses_upper_middle(
+        #[case] list: &[(&str, u32)],
+        #[case] expected: &str,
+    ) {
+        let item = list[High::median(list)].0;
         assert_eq!(item, expected);
     }
 }
