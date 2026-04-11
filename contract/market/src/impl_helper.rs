@@ -164,6 +164,7 @@ impl Contract {
         };
 
         let proof = borrow_position.accumulate_interest();
+        #[allow(deprecated)]
         let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
         borrow_position.record_borrow_final(
             snapshot,
@@ -186,6 +187,7 @@ impl Contract {
         let snapshot = self.snapshot();
 
         for (i, resolution) in resolutions.iter().enumerate() {
+            #[allow(deprecated)]
             let succeeded = matches!(env::promise_result(i as u64), PromiseResult::Successful(_));
 
             if let Some(mut position) =
@@ -372,6 +374,7 @@ impl Contract {
         account_id: AccountId,
         amount: CollateralAssetAmount,
     ) {
+        #[allow(deprecated)]
         let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
 
         let snapshot = self.snapshot();
@@ -401,6 +404,7 @@ impl Contract {
         account_id: AccountId,
         amount: BorrowAssetAmount,
     ) {
+        #[allow(deprecated)]
         if matches!(env::promise_result(0), PromiseResult::Failed) {
             let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
                 templar_common::panic_with_message(
