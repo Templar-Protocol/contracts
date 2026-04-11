@@ -207,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn v0_to_v1_migrates_proxy_map_and_governance() {
         context();
 

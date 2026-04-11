@@ -40,7 +40,6 @@ hex-literal.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 rstest.workspace = true
-templar-common = { workspace = true, features = ["rpc"] }
 templar-proxy-oracle-kernel = { workspace = true, features = ["rpc"] }
 test-utils.workspace = true
 tokio.workspace = true
