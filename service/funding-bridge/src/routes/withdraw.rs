@@ -53,6 +53,7 @@ fn parse_amount(amount_str: &str, decimals: u8) -> Result<u128, String> {
         amount = %req.amount
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) -> Response {
     // Parse destination chain - support both "ethereum" and "eth:1" formats
     let (chain_id, chain_name) = match parse_chain(&req.destination_chain) {

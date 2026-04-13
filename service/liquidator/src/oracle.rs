@@ -432,6 +432,7 @@ impl OracleFetcher {
     ///
     /// Returns `Ok(true)` if update was sent, `Ok(false)` if no signer configured.
     #[tracing::instrument(skip(self), level = "info")]
+    #[allow(clippy::too_many_lines)]
     async fn update_pyth_prices(
         &self,
         oracle: &AccountId,
@@ -605,6 +606,7 @@ impl OracleFetcher {
 
     /// Fetches prices from LST oracle by calling underlying Pyth oracle and applying transformers.
     #[tracing::instrument(skip(self), level = "debug")]
+    #[allow(clippy::too_many_lines)]
     async fn get_oracle_prices_with_transformers(
         &self,
         lst_oracle: AccountId,

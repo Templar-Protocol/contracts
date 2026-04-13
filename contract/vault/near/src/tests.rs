@@ -3901,7 +3901,8 @@ fn after_supply_1_check_allocating_not_allocating_index() {
         0,
         Default::default(),
         Default::default(),
-    );
+    )
+    .detach();
 
     assert_eq!(c.op_state, OpState::Idle);
 }
@@ -3938,7 +3939,8 @@ fn after_supply_1_check_allocating() {
         0,
         Default::default(),
         Default::default(),
-    );
+    )
+    .detach();
 
     assert_eq!(
         c.op_state,

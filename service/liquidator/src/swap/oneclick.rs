@@ -413,6 +413,7 @@ impl OneClickSwap {
 
     /// Requests a quote from the 1-Click API.
     #[tracing::instrument(skip(self), level = "debug")]
+    #[allow(clippy::too_many_lines)]
     async fn request_quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,

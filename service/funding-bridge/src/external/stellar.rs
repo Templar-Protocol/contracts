@@ -206,6 +206,7 @@ impl StellarHandler {
     }
 
     /// Build and submit Stellar payment transaction via Horizon API
+    #[allow(clippy::too_many_lines)]
     async fn submit_payment(
         &self,
         destination: &str,

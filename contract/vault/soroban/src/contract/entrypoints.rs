@@ -693,6 +693,7 @@ impl SorobanVaultContract {
         clippy::type_complexity,
         reason = "proxy view is a compact ABI surface consumed by tests and tooling"
     )]
+    #[allow(clippy::too_many_lines)]
     pub fn proxy_view(
         env: Env,
         owner: soroban_sdk::Address,
