@@ -6670,8 +6670,9 @@ dependencies = [
 
 [[package]]
 name = "near-sdk-contract-tools"
-version = "3.0.2"
-source = "git+https://github.com/near/near-sdk-contract-tools?branch=140-nep-245-multitoken-component#32431e86afe0cea055591fde3f5143a8cc260ac3"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1941cbe2d88ff64fc2bb6f018350540d2aa36881a805205ee5fc8146f14bde7d"
 dependencies = [
  "near-sdk",
  "near-sdk-contract-tools-macros",
@@ -6680,10 +6681,11 @@ dependencies = [
 
 [[package]]
 name = "near-sdk-contract-tools-macros"
-version = "3.0.2"
-source = "git+https://github.com/near/near-sdk-contract-tools?branch=140-nep-245-multitoken-component#32431e86afe0cea055591fde3f5143a8cc260ac3"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "531de8f0499ca74be088c38dd56b9a49bbe7640f92ef834218777ba6a311fbc0"
 dependencies = [
- "darling 0.20.11",
+ "darling 0.21.3",
  "heck 0.5.0",
  "proc-macro2",
  "quote",

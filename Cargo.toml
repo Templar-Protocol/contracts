@@ -68,7 +68,7 @@ near-parameters = "0.34.7"
 near-primitives = "0.34.7"
 near-primitives-core = "0.34.7"
 near-sdk = { version = "5.25", features = ["unstable"] }
-near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
+near-sdk-contract-tools = "4.0.0"
 near-workspaces = { version = "0.22.1", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
