@@ -1,9 +1,7 @@
 use near_sdk::{env, json_types::U128, near};
+use templar_common::versioned_state::{Migrator, StateTransformer, StateVersion};
 
-use crate::{
-    contract_state::{Migrator, StateTransformer, StateVersion},
-    state,
-};
+use crate::state;
 
 #[near(serializers = [json])]
 pub struct V0 {
@@ -99,13 +97,13 @@ impl Migrator for Migration {
 #[cfg(test)]
 mod tests {
     use near_sdk::{env, store::IterableMap, test_utils::VMContextBuilder, testing_env};
+    use templar_common::versioned_state::{read_state_version, write_state_version};
 
     use crate::{
         authentication::{
             ed25519::raw,
             passkey::{self},
         },
-        contract_state::{read_state_version, write_state_version},
         KeyId, KeyParameters,
     };
 

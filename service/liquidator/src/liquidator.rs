@@ -118,6 +118,65 @@ pub enum LiquidatorError {
     InsufficientBalance,
 }
 
+/// Classifies where in the liquidation pipeline an error occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorPhase {
+    /// Reading on-chain state, fetching prices, listing positions.
+    Scan,
+    /// Decided to liquidate but haven't submitted a tx yet (nonce, serialization, strategy).
+    Preparation,
+    /// Liquidation or swap transaction was submitted to the network.
+    Execution,
+}
+
+impl ErrorPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::Preparation => "preparation",
+            Self::Execution => "execution",
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl LiquidatorError {
+    /// Classifies the error by pipeline phase.
+    ///
+    /// Only `Execution` errors trigger the "Liquidation Failed" Telegram
+    /// notification (successful liquidations and swap issues have their own
+    /// dedicated notifications sent elsewhere).
+    /// `OracleUpdateError` is classified as `Preparation` because oracle price
+    /// pushes are best-effort and swallowed before execution; they never
+    /// propagate to callers in practice.
+    pub const fn phase(&self) -> ErrorPhase {
+        match self {
+            Self::FetchBorrowStatus(_)
+            | Self::PricePairError(_)
+            | Self::PriceFetchError(_)
+            | Self::ListBorrowPositionsError(_)
+            | Self::ListDeploymentsError(_)
+            | Self::GetConfigurationError(_)
+            | Self::FetchBalanceError(_) => ErrorPhase::Scan,
+
+            Self::AccessKeyDataError(_)
+            | Self::SerializeError(_)
+            | Self::StrategyError(_)
+            | Self::InsufficientBalance
+            | Self::OracleUpdateError(_) => ErrorPhase::Preparation,
+
+            Self::LiquidationTransactionError(_)
+            | Self::TransactionFailed(_)
+            | Self::SwapProviderError(_) => ErrorPhase::Execution,
+        }
+    }
+}
+
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
 
 /// Collateral management strategy
@@ -837,12 +896,17 @@ impl Liquidator {
                 Ok(LiquidationOutcome::NotLiquidatable) => not_liquidatable += 1,
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
-                    tracing::warn!(borrower = %account, error = %e, "Liquidation failed");
-                    self.notifier.notify_liquidation_failed(
-                        self.market.as_ref(),
-                        account.as_ref(),
-                        &e.to_string(),
-                    );
+                    let phase = e.phase();
+                    if phase == ErrorPhase::Execution {
+                        tracing::error!(borrower = %account, phase = %phase, error = %e, "Liquidation failed");
+                        self.notifier.notify_liquidation_failed(
+                            self.market.as_ref(),
+                            account.as_ref(),
+                            &e.to_string(),
+                        );
+                    } else {
+                        tracing::warn!(borrower = %account, phase = %phase, error = %e, "Skipped position");
+                    }
                     failed += 1;
                 }
             }
@@ -861,5 +925,35 @@ impl Liquidator {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_phase_scan() {
+        let err = LiquidatorError::FetchBorrowStatus(rpc::RpcError::TimeoutError(30, 30));
+        assert_eq!(err.phase(), ErrorPhase::Scan);
+    }
+
+    #[test]
+    fn test_error_phase_preparation() {
+        let err = LiquidatorError::InsufficientBalance;
+        assert_eq!(err.phase(), ErrorPhase::Preparation);
+    }
+
+    #[test]
+    fn test_error_phase_execution() {
+        let err = LiquidatorError::TransactionFailed("receipt failed".to_string());
+        assert_eq!(err.phase(), ErrorPhase::Execution);
+    }
+
+    #[test]
+    fn test_error_phase_display() {
+        assert_eq!(ErrorPhase::Scan.to_string(), "scan");
+        assert_eq!(ErrorPhase::Preparation.to_string(), "preparation");
+        assert_eq!(ErrorPhase::Execution.to_string(), "execution");
     }
 }
