@@ -1,6 +1,7 @@
 use crate::{rpc::view, CliError, CliResult};
 use near_jsonrpc_client::{methods::query::RpcQueryRequest, JsonRpcClient};
-use near_primitives::types::{AccountId, Finality};
+use near_jsonrpc_primitives::types::query::RpcQueryError;
+use near_primitives::types::{AccountId, BlockReference};
 use near_sdk::serde_json::json;
 use templar_common::{market::MarketConfiguration, utils::Network};
 
@@ -42,7 +43,7 @@ impl ContractReader {
     /// # Errors
     pub async fn contract_exists(&self, contract_id: AccountId) -> CliResult<bool> {
         let request = RpcQueryRequest {
-            block_reference: Finality::Final.into(),
+            block_reference: BlockReference::latest(),
             request: near_primitives::views::QueryRequest::ViewAccount {
                 account_id: contract_id,
             },
@@ -50,7 +51,10 @@ impl ContractReader {
 
         match self.client.call(request).await {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(error) => match error.handler_error() {
+                Some(RpcQueryError::UnknownAccount { .. }) => Ok(false),
+                _ => Err(error.into()),
+            },
         }
     }
 }

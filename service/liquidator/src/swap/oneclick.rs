@@ -24,6 +24,7 @@ use near_crypto::Signer;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{
     action::Action,
+    gas::Gas,
     transaction::{Transaction, TransactionV0},
     types::AccountId,
     views::FinalExecutionStatus,
@@ -31,6 +32,7 @@ use near_primitives::{
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
+    NearToken,
 };
 
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
@@ -411,6 +413,7 @@ impl OneClickSwap {
 
     /// Requests a quote from the 1-Click API.
     #[tracing::instrument(skip(self), level = "debug")]
+    #[allow(clippy::too_many_lines)]
     async fn request_quote<F: AssetClass, T: AssetClass>(
         &self,
         from_asset: &FungibleAsset<F>,
@@ -566,7 +569,6 @@ impl OneClickSwap {
         account_id: &AccountId,
     ) -> AppResult<()> {
         use near_primitives::transaction::{Action, FunctionCallAction};
-        use near_sdk::Gas;
 
         const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
 
@@ -616,8 +618,8 @@ impl OneClickSwap {
                 "registration_only": true,
             }))
             .map_err(|e| AppError::ValidationError(format!("Failed to serialize args: {e}")))?,
-            gas: Gas::from_tgas(10).as_gas(),
-            deposit: min_deposit,
+            gas: Gas::from_teragas(10),
+            deposit: NearToken::from_yoctonear(min_deposit),
         };
 
         let tx = Transaction::V0(TransactionV0 {
@@ -680,47 +682,61 @@ impl OneClickSwap {
             AppError::ValidationError(format!("Invalid deposit address: {e}"))
         })?;
 
-        // For implicit accounts, we need to ensure they exist first
-        // by sending a small amount of NEAR to create the account
-        if deposit_account.get_account_type() == AccountType::NearImplicitAccount {
-            tracing::debug!(
-                deposit_account = %deposit_account,
-                "Creating implicit account"
-            );
+        match deposit_account.get_account_type() {
+            AccountType::NearDeterministicAccount => {
+                tracing::error!(
+                    deposit_account = %deposit_account,
+                    deposit_address = %deposit_address,
+                    "Deterministic 1-Click deposit addresses are not supported"
+                );
+                return Err(AppError::ValidationError(
+                    "Deterministic 1-Click deposit addresses are not supported".to_string(),
+                ));
+            }
+            // For implicit accounts, we need to ensure they exist first
+            // by sending a small amount of NEAR to create the account.
+            AccountType::NearImplicitAccount => {
+                tracing::debug!(
+                    deposit_account = %deposit_account,
+                    "Creating implicit account"
+                );
 
-            let (nonce, block_hash) =
-                get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
+                let (nonce, block_hash) =
+                    get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker))
+                        .await?;
 
-            // Send 1 yoctoNEAR to create the implicit account (minimum amount needed)
-            let create_account_tx = Transaction::V0(TransactionV0 {
-                nonce,
-                receiver_id: deposit_account.clone(),
-                block_hash,
-                signer_id: self.signer.get_account_id(),
-                public_key: self.signer.public_key().clone(),
-                actions: vec![Action::Transfer(near_primitives::action::TransferAction {
-                    deposit: 1, // 1 yoctoNEAR
-                })],
-            });
+                // Send 1 yoctoNEAR to create the implicit account (minimum amount needed)
+                let create_account_tx = Transaction::V0(TransactionV0 {
+                    nonce,
+                    receiver_id: deposit_account.clone(),
+                    block_hash,
+                    signer_id: self.signer.get_account_id(),
+                    public_key: self.signer.public_key().clone(),
+                    actions: vec![Action::Transfer(near_primitives::action::TransferAction {
+                        deposit: NearToken::from_yoctonear(1),
+                    })],
+                });
 
-            // Send transaction but don't fail if account already exists
-            match send_tx(&self.client, &self.signer, self.timeout, create_account_tx).await {
-                Ok(_) => {
-                    tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
+                // Send transaction but don't fail if account already exists
+                match send_tx(&self.client, &self.signer, self.timeout, create_account_tx).await {
+                    Ok(_) => {
+                        tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
 
-                    // Wait for account creation to propagate (1-2 blocks)
-                    // This prevents race conditions with storage registration
-                    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
-                }
-                Err(e) => {
-                    // If account already exists, that's fine
-                    tracing::warn!(
-                        deposit_account = %deposit_account,
-                        error = ?e,
-                        "Failed to create implicit account (may already exist)"
-                    );
+                        // Wait for account creation to propagate (1-2 blocks)
+                        // This prevents race conditions with storage registration
+                        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+                    }
+                    Err(e) => {
+                        // If account already exists, that's fine
+                        tracing::warn!(
+                            deposit_account = %deposit_account,
+                            error = ?e,
+                            "Failed to create implicit account (may already exist)"
+                        );
+                    }
                 }
             }
+            _ => {}
         }
 
         // Ensure the deposit address is registered for storage
@@ -762,9 +778,10 @@ impl OneClickSwap {
         match &outcome.status {
             FinalExecutionStatus::SuccessValue(_) => {
                 let account_type_str = match deposit_account.get_account_type() {
-                    near_account_id::AccountType::NearImplicitAccount => "implicit",
-                    near_account_id::AccountType::EthImplicitAccount => "eth-implicit",
-                    near_account_id::AccountType::NamedAccount => "named",
+                    AccountType::NamedAccount => "named",
+                    AccountType::NearImplicitAccount => "implicit",
+                    AccountType::EthImplicitAccount => "eth-implicit",
+                    AccountType::NearDeterministicAccount => "deterministic",
                 };
                 tracing::info!(
                     tx_hash = %tx_hash_str,

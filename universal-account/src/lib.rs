@@ -7,9 +7,7 @@ use near_sdk::{
 pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
 pub const NEAR_TESTNET_CHAIN_ID: u128 = 398;
 
-// #[macro_use]
 pub mod authentication;
-pub mod contract_state;
 pub mod encoding;
 mod event;
 pub use event::Event;
@@ -300,7 +298,7 @@ impl PayloadExecutionParametersBuilder<u64, u64, u64, AccountId, ()> {
     pub fn build_salt(self) -> PayloadExecutionParameters {
         let salt = Base58CryptoHash::from(near_sdk::env::keccak256_array(
             #[allow(clippy::unwrap_used, reason = "Infallible")]
-            &near_sdk::borsh::to_vec(&(U64(self.block_height), U64(self.index))).unwrap(),
+            near_sdk::borsh::to_vec(&(U64(self.block_height), U64(self.index))).unwrap(),
         ));
 
         PayloadExecutionParameters {

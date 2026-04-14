@@ -173,6 +173,11 @@ pub struct Args {
     #[arg(long, env = "SWAP_RETRY_BASE_DELAY_MS", default_value_t = 2000)]
     pub swap_retry_base_delay_ms: u64,
 
+    /// Number of consecutive scan failures before sending a Telegram alert.
+    /// Set to 0 to disable scan failure notifications.
+    #[arg(long, env = "SCAN_FAILURE_NOTIFY_THRESHOLD", default_value_t = 2)]
+    pub scan_failure_notify_threshold: u32,
+
     /// Telegram bot token for notifications (leave empty to disable)
     #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
     pub telegram_bot_token: String,
@@ -386,6 +391,7 @@ impl Args {
                 base_delay_ms: self.swap_retry_base_delay_ms,
             },
             notifier,
+            scan_failure_notify_threshold: self.scan_failure_notify_threshold,
         }
     }
 
@@ -441,6 +447,7 @@ mod tests {
             batch_swap_on_cycle_start: true,
             swap_retry_attempts: 3,
             swap_retry_base_delay_ms: 2000,
+            scan_failure_notify_threshold: 2,
             telegram_bot_token: String::new(),
             telegram_chat_id: String::new(),
             telegram_thread_id: String::new(),
@@ -650,5 +657,29 @@ mod tests {
         args.telegram_thread_id = String::new();
         let config = args.build_config();
         assert!(config.notifier.is_enabled());
+    }
+
+    #[test]
+    fn test_scan_failure_threshold_default() {
+        let args = create_test_args();
+        assert_eq!(args.scan_failure_notify_threshold, 2);
+        let config = args.build_config();
+        assert_eq!(config.scan_failure_notify_threshold, 2);
+    }
+
+    #[test]
+    fn test_scan_failure_threshold_disabled() {
+        let mut args = create_test_args();
+        args.scan_failure_notify_threshold = 0;
+        let config = args.build_config();
+        assert_eq!(config.scan_failure_notify_threshold, 0);
+    }
+
+    #[test]
+    fn test_scan_failure_threshold_custom() {
+        let mut args = create_test_args();
+        args.scan_failure_notify_threshold = 5;
+        let config = args.build_config();
+        assert_eq!(config.scan_failure_notify_threshold, 5);
     }
 }

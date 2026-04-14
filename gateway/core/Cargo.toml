@@ -7,8 +7,8 @@ repository.workspace = true
 
 [dependencies]
 base64.workspace = true
-near-account-id = { version = "2.6.0", features = ["serde", "schemars"] }
-near-gas.workspace = true
+near-account-id = { workspace = true, features = ["serde", "schemars"] }
+near-gas = { workspace = true, features = ["serde", "schemars"] }
 near-token.workspace = true
 schemars.workspace = true
 serde.workspace = true

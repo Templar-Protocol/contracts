@@ -6,7 +6,7 @@ edition.workspace = true
 version = "1.2.1"
 
 [dependencies]
-alloy = { workspace = true, default-features = false, features = ["eip712", "signers", "sol-types"] }
+alloy = { workspace = true, features = ["eip712", "signers", "sol-types"] }
 alloy-primitives = { workspace = true, default-features = false, features = ["borsh"] }
 borsh.workspace = true
 hex.workspace = true
@@ -14,11 +14,12 @@ near-account-id.workspace = true
 near-sdk = { workspace = true, features = ["global-contracts"] }
 p256.workspace = true
 schemars.workspace = true
-stellar-strkey = { version = "0.0.14", default-features = false, features = ["serde"] }
+stellar-strkey = { workspace = true, features = ["serde"] }
+templar-common.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-alloy = { workspace = true, default-features = false, features = ["signer-local"] }
+alloy = { workspace = true, features = ["signer-local"] }
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 rstest.workspace = true
 solana-sdk.workspace = true
@@ -28,6 +29,7 @@ soroban-client = "0.5.3"
 near-chain-configs.workspace = true
 near-parameters.workspace = true
 near-primitives.workspace = true
+near-primitives-core.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 
 [features]

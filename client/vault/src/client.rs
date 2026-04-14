@@ -10,9 +10,9 @@ use tracing::instrument;
 
 const ONE_YOCTO: u128 = 1;
 
-const FT_TRANSFER_CALL_GAS: Gas = 100_000_000_000_000;
-const FT_TRANSFER_GAS: Gas = 30_000_000_000_000;
-const STORAGE_DEPOSIT_GAS: Gas = 30_000_000_000_000;
+const FT_TRANSFER_CALL_GAS: Gas = Gas::from_gas(100_000_000_000_000);
+const FT_TRANSFER_GAS: Gas = Gas::from_gas(30_000_000_000_000);
+const STORAGE_DEPOSIT_GAS: Gas = Gas::from_gas(30_000_000_000_000);
 
 #[allow(unused_imports)]
 use crate::{

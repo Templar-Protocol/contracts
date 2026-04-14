@@ -8,12 +8,12 @@ use near_sdk::{
     near, require, PanicOnDefault, Promise,
 };
 
-use templar_common::contract::list;
+use templar_common::{
+    contract::list,
+    versioned_state::{impl_versioned_state, StateVersion as _, VersionedState},
+};
 use templar_universal_account::{
-    contract_state::{StateVersion, VersionedState},
-    impl_versioned_state, state,
-    transaction::Transaction,
-    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
+    state, transaction::Transaction, ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
 };
 
 type State = state::V2;
@@ -60,7 +60,7 @@ impl Contract {
 
         if let Some(transactions) = execute.filter(|e| !e.is_empty()) {
             let p = transactions_to_promise(&transactions);
-            p.as_return();
+            p.as_return().detach();
         }
 
         self_

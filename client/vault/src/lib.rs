@@ -1072,7 +1072,7 @@ pub struct StorageBalance {
     pub available: ForeignU128,
 }
 
-pub const DEFAULT_GAS: Gas = 300_000_000_000_000;
+pub const DEFAULT_GAS: Gas = Gas::from_gas(300_000_000_000_000);
 pub const MAX_POLL_INTERVAL_MILLIS: u64 = 1000;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -1299,7 +1299,7 @@ mod tests {
 
     #[test]
     fn default_gas_is_nonzero() {
-        assert_ne!(super::DEFAULT_GAS, 0);
+        assert_ne!(super::DEFAULT_GAS, Gas::ZERO);
     }
 
     #[rstest]

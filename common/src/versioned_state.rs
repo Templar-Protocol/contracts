@@ -5,12 +5,12 @@ use near_sdk::{env, ext_contract, near};
 
 const VERSION_KEY: &[u8] = b"__v";
 
-#[doc(hidden)]
+/// Writes the state version to storage.
 pub fn write_state_version(version: u32) {
     env::storage_write(VERSION_KEY, &version.to_le_bytes());
 }
 
-#[doc(hidden)]
+/// Reads the state version from storage.
 pub fn read_state_version() -> Result<u32, std::io::Error> {
     let Some(bytes) = env::storage_read(VERSION_KEY) else {
         return Ok(0);
@@ -131,18 +131,18 @@ pub trait MigrateExternalInterface {
 macro_rules! impl_versioned_state {
     ($contract: ident, $current_state: ty, $migrations: ty) => {
         #[::near_sdk::near]
-        impl $crate::contract_state::MigrateExternalInterface for $contract {
+        impl $crate::versioned_state::MigrateExternalInterface for $contract {
             fn get_stored_state_version() -> u32 {
-                $crate::contract_state::read_state_version()
+                $crate::versioned_state::read_state_version()
                     .unwrap_or_else(|e| ::near_sdk::env::panic_str(&e.to_string()))
             }
 
             fn get_target_state_version() -> u32 {
-                <$current_state as $crate::contract_state::StateVersion>::VERSION
+                <$current_state as $crate::versioned_state::StateVersion>::VERSION
             }
 
             fn needs_migration() -> bool {
-                <$current_state as $crate::contract_state::StateVersion>::needs_migration()
+                <$current_state as $crate::versioned_state::StateVersion>::needs_migration()
                     .unwrap_or_else(|e| ::near_sdk::env::panic_str(&e.to_string()))
             }
         }
@@ -163,10 +163,11 @@ macro_rules! impl_versioned_state {
             let args: $migrations = ::near_sdk::serde_json::from_slice(&input)
                 .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-            $crate::contract_state::Migrator::run(args);
+            $crate::versioned_state::Migrator::run(args);
         }
     };
 }
+pub use impl_versioned_state;
 
 #[cfg(test)]
 mod tests {

@@ -9,8 +9,10 @@
 use near_jsonrpc_client::{
     methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest, JsonRpcClient,
 };
-use near_primitives::transaction::{Transaction, TransactionV0};
-use near_sdk::Gas;
+use near_primitives::{
+    gas::Gas,
+    transaction::{Transaction, TransactionV0},
+};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use std::collections::HashMap;
 use templar_common::{
@@ -430,6 +432,7 @@ impl OracleFetcher {
     ///
     /// Returns `Ok(true)` if update was sent, `Ok(false)` if no signer configured.
     #[tracing::instrument(skip(self), level = "info")]
+    #[allow(clippy::too_many_lines)]
     async fn update_pyth_prices(
         &self,
         oracle: &AccountId,
@@ -521,8 +524,8 @@ impl OracleFetcher {
             actions: vec![near_primitives::action::FunctionCallAction {
                 method_name: "update_price_feeds".to_string(),
                 args: json!({ "data": vaa_hex }).to_string().into_bytes(),
-                gas: Gas::from_tgas(100).as_gas(),
-                deposit: NearToken::from_millinear(1).as_yoctonear(),
+                gas: Gas::from_teragas(100),
+                deposit: NearToken::from_millinear(1),
             }
             .into()],
         });
@@ -603,6 +606,7 @@ impl OracleFetcher {
 
     /// Fetches prices from LST oracle by calling underlying Pyth oracle and applying transformers.
     #[tracing::instrument(skip(self), level = "debug")]
+    #[allow(clippy::too_many_lines)]
     async fn get_oracle_prices_with_transformers(
         &self,
         lst_oracle: AccountId,

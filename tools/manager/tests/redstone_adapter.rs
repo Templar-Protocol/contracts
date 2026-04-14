@@ -4,7 +4,7 @@ mod common;
 use std::collections::HashMap;
 
 use base64::prelude::*;
-use common::{no_build_loader, setup_ctx, signer_args, write_json_file};
+use common::{no_build_loader, setup_ctx, signer_args, view_json, write_json_file};
 use hex_literal::hex;
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
@@ -81,13 +81,7 @@ async fn redstone_adapter_deploy(#[future(awt)] worker: Worker<Sandbox>) {
     worker.view_account(adapter.id()).await.unwrap();
 
     // Verify config view call works.
-    let config: Config = ctx
-        .near
-        .view(adapter.id(), "get_config")
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let config: Config = view_json(&ctx, adapter.id(), "get_config", json!({})).await;
 
     // The test config should have some signers configured.
     assert!(!config.signers.is_empty());
@@ -118,13 +112,7 @@ async fn redstone_adapter_deploy_from_configuration_file(#[future(awt)] worker: 
     .await
     .unwrap();
 
-    let stored_config: Config = ctx
-        .near
-        .view(adapter.id(), "get_config")
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let stored_config: Config = view_json(&ctx, adapter.id(), "get_config", json!({})).await;
 
     assert_eq!(
         serde_json::to_value(&stored_config).unwrap(),
@@ -255,14 +243,13 @@ async fn redstone_adapter_role_lifecycle(#[future(awt)] worker: Worker<Sandbox>)
     .unwrap();
 
     // List role members — target should appear.
-    let members: Vec<AccountId> = ctx
-        .near
-        .view(&adapter_id, "list_role")
-        .args_json(json!({ "role": templar_common::oracle::redstone::Role::TrustedUpdater }))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let members: Vec<AccountId> = view_json(
+        &ctx,
+        &adapter_id,
+        "list_role",
+        json!({ "role": templar_common::oracle::redstone::Role::TrustedUpdater }),
+    )
+    .await;
     assert!(members.contains(&target_id));
 
     // RoleList command should succeed.
@@ -287,14 +274,13 @@ async fn redstone_adapter_role_lifecycle(#[future(awt)] worker: Worker<Sandbox>)
     .unwrap();
 
     // Verify the role is gone.
-    let members: Vec<AccountId> = ctx
-        .near
-        .view(&adapter_id, "list_role")
-        .args_json(json!({ "role": templar_common::oracle::redstone::Role::TrustedUpdater }))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let members: Vec<AccountId> = view_json(
+        &ctx,
+        &adapter_id,
+        "list_role",
+        json!({ "role": templar_common::oracle::redstone::Role::TrustedUpdater }),
+    )
+    .await;
     assert!(!members.contains(&target_id));
 }
 
@@ -359,16 +345,15 @@ async fn redstone_adapter_write_prices(#[future(awt)] worker: Worker<Sandbox>) {
 
     // #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
 
-    let read_prices = ctx
-        .near
-        .view(adapter.id(), "read_prices")
-        .args_json(json!({
+    let read_prices: HashMap<FeedId, SerializableU256> = view_json(
+        &ctx,
+        adapter.id(),
+        "read_prices",
+        json!({
             "feed_ids": ["ETH", "BTC"],
-        }))
-        .await
-        .unwrap()
-        .json::<HashMap<FeedId, SerializableU256>>()
-        .unwrap();
+        }),
+    )
+    .await;
 
     assert_eq!(
         read_prices.get(&"ETH".into()).unwrap().to_u256(),

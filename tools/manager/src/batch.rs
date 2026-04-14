@@ -1,68 +1,94 @@
-use near_fetch::ops::Function;
-use near_primitives::views::FinalExecutionStatus;
+use std::marker::PhantomData;
+
+use near_crypto::Signer;
+use near_primitives::transaction::{Action, DeleteAccountAction};
 use near_sdk::AccountId;
+use templar_tools_common::near::{self, Client, Function};
+
+/// Typestate for a batch that can still accept actions.
+pub struct Open;
+
+/// Typestate for a batch whose terminal action has already been added.
+pub struct Closed;
 
 /// A NEAR batch transaction bound to a specific context.
 ///
-/// Obtain one via [`crate::CliContext::batch`]. Chain actions with [`call`](Self::call),
-/// [`deploy`](Self::deploy), or [`delete_account`](Self::delete_account), then call
-/// [`transact`](Self::transact) to execute, log the hash, and propagate failures.
-pub struct BoundBatch<'a> {
+/// Obtain one via [`crate::CliContext::batch`].
+pub struct BoundBatch<'a, State = Open> {
     transaction_url_prefix: String,
-    tx: near_fetch::ops::Transaction<'a>,
+    near: &'a Client,
+    signer: &'a Signer,
+    receiver_id: AccountId,
+    actions: Vec<Action>,
+    state: PhantomData<State>,
 }
 
-impl<'a> BoundBatch<'a> {
+impl<'a> BoundBatch<'a, Open> {
     pub(crate) fn new(
         transaction_url_prefix: String,
-        tx: near_fetch::ops::Transaction<'a>,
+        near: &'a Client,
+        signer: &'a Signer,
+        receiver_id: &AccountId,
     ) -> Self {
         Self {
             transaction_url_prefix,
-            tx,
+            near,
+            signer,
+            receiver_id: receiver_id.clone(),
+            actions: Vec::new(),
+            state: PhantomData,
         }
     }
 
     #[must_use]
-    pub fn call(self, function: Function) -> Self {
-        Self {
-            tx: self.tx.call(function),
-            transaction_url_prefix: self.transaction_url_prefix,
-        }
+    pub fn call(mut self, function: Function) -> Self {
+        self.actions.push(function.into());
+        self
     }
 
     #[must_use]
-    pub fn deploy(self, code: &[u8]) -> Self {
-        Self {
-            tx: self.tx.deploy(code),
-            transaction_url_prefix: self.transaction_url_prefix,
-        }
+    pub fn deploy(mut self, code: &[u8]) -> Self {
+        self.actions.push(near::deploy_action(code));
+        self
     }
 
     #[must_use]
-    pub fn delete_account(self, beneficiary_id: &AccountId) -> Self {
-        Self {
-            tx: self.tx.delete_account(beneficiary_id),
-            transaction_url_prefix: self.transaction_url_prefix,
-        }
+    pub fn delete_account(mut self, beneficiary_id: &AccountId) -> BoundBatch<'a, Closed> {
+        self.actions
+            .push(Action::DeleteAccount(DeleteAccountAction {
+                beneficiary_id: beneficiary_id.clone(),
+            }));
+        self.close()
     }
 
+    fn close(self) -> BoundBatch<'a, Closed> {
+        BoundBatch {
+            transaction_url_prefix: self.transaction_url_prefix,
+            near: self.near,
+            signer: self.signer,
+            receiver_id: self.receiver_id,
+            actions: self.actions,
+            state: PhantomData,
+        }
+    }
+}
+
+impl<State> BoundBatch<'_, State> {
     /// Execute the transaction, log its hash and explorer URL, and return an error
     /// if execution failed.
     pub async fn transact(self) -> anyhow::Result<()> {
-        let result = self.tx.transact().await?;
+        if self.actions.is_empty() {
+            anyhow::bail!("empty batch");
+        }
+
+        let result = near::send_tx(self.near, self.signer, &self.receiver_id, self.actions).await?;
         let hash = &result.transaction.hash;
         tracing::info!(
             transaction_hash = %hash,
             url = %format!("{}{}", self.transaction_url_prefix, hash),
             "Transaction submitted"
         );
-        match result.status {
-            FinalExecutionStatus::SuccessValue(_) => Ok(()),
-            FinalExecutionStatus::Failure(e) => anyhow::bail!("Transaction failed: {e:?}"),
-            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                anyhow::bail!("Unexpected transaction status: {:?}", result.status)
-            }
-        }
+        near::require_success_status(&result)?;
+        Ok(())
     }
 }

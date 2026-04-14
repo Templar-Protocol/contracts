@@ -1,0 +1,65 @@
+{
+  "configuration": {
+    "time_chunk_configuration": {
+      "duration_ms": "600000"
+    },
+    "borrow_asset": {
+      "Nep245": {
+        "contract_id": "intents.near",
+        "token_id": "nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+      }
+    },
+    "collateral_asset": {
+      "Nep245": {
+        "contract_id": "intents.near",
+        "token_id": "nep141:doge.omft.near"
+      }
+    },
+    "price_oracle_configuration": {
+      "account_id": "proxy-oracle-idoge-ixlmusdc.v1.tmplr.near",
+      "collateral_asset_price_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "collateral_asset_decimals": 8,
+      "borrow_asset_price_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "borrow_asset_decimals": 7,
+      "price_maximum_age_s": 60
+    },
+    "borrow_mcr_maintenance": "1.25",
+    "borrow_mcr_liquidation": "1.2",
+    "borrow_asset_maximum_usage_ratio": "0.99",
+    "borrow_origination_fee": { "Flat": "0" },
+    "borrow_interest_rate_strategy": {
+      "Piecewise": {
+        "base": "0",
+        "optimal": "0.9",
+        "rate_1": "0.06666666666666666666666666666666666667",
+        "rate_2": "1.8"
+      }
+    },
+    "borrow_maximum_duration_ms": null,
+    "borrow_range": {
+      "minimum": "1",
+      "maximum": null
+    },
+    "supply_range": {
+      "minimum": "400000",
+      "maximum": null
+    },
+    "supply_withdrawal_range": {
+      "minimum": "400000",
+      "maximum": null
+    },
+    "supply_withdrawal_fee": {
+      "fee": {
+        "Flat": "0"
+      },
+      "duration": "0",
+      "behavior": "Fixed"
+    },
+    "yield_weights": {
+      "supply": 4,
+      "static": { "revenue.tmplr.near": 1 }
+    },
+    "protocol_account_id": "revenue.tmplr.near",
+    "liquidation_maximum_spread": "0.1"
+  }
+}
