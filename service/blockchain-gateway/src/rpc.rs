@@ -67,3 +67,35 @@ pub fn attach_gateway(
 
     Ok(m)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_gateway() -> GatewayService {
+        let network = near_api::NetworkConfig::from_rpc_url(
+            "test",
+            "http://127.0.0.1:3030".parse().expect("valid url"),
+        );
+        let near = blockchain_gateway_near::NearReadClient::new(network);
+        GatewayService::new(near)
+    }
+
+    #[tokio::test]
+    async fn chain_view_account_method_is_registered() {
+        let module = attach_gateway(test_gateway()).expect("module should register");
+
+        let (response, _stream) = module
+            .raw_json_request(
+                r#"{"jsonrpc":"2.0","method":"chain.viewAccount","params":{},"id":1}"#,
+                1,
+            )
+            .await
+            .expect("raw request should return a response");
+
+        assert!(
+            response.get().contains("-32602"),
+            "unexpected response: {response:?}"
+        );
+    }
+}
