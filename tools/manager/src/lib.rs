@@ -84,7 +84,7 @@ impl VerbosityArgs {
 
 impl Cli {
     fn make_context(&self) -> CliContext {
-        let near = near_fetch::Client::new(
+        let near = near_jsonrpc_client::JsonRpcClient::connect(
             self.rpc_url
                 .as_deref()
                 .unwrap_or_else(|| self.network.rpc_url()),
@@ -105,20 +105,22 @@ impl Cli {
 
 pub struct CliContext {
     pub transaction_url_prefix: String,
-    pub near: near_fetch::Client,
+    pub near: near_jsonrpc_client::JsonRpcClient,
 }
 
 impl CliContext {
     /// Create a [`batch::BoundBatch`] that automatically logs the transaction hash and
     /// propagates execution failures when [`batch::BoundBatch::transact`] is called.
     pub fn batch<'a>(
-        &self,
+        &'a self,
         signer: &'a near_crypto::Signer,
         receiver_id: &near_sdk::AccountId,
     ) -> batch::BoundBatch<'a> {
         batch::BoundBatch::new(
             self.transaction_url_prefix.clone(),
-            self.near.batch(signer, receiver_id),
+            &self.near,
+            signer,
+            receiver_id,
         )
     }
 }

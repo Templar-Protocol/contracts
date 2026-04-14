@@ -9,6 +9,7 @@ use near_primitives::{
     transaction::{Action, FunctionCallAction, SignedTransaction, Transaction, TransactionV0},
     types::AccountId,
 };
+use near_sdk::NearToken;
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -17,7 +18,7 @@ use crate::error::{ChainError, ChainResult};
 /// NEAR chain handler
 pub struct NearHandler {
     treasury_account: AccountId,
-    signer: Arc<near_crypto::InMemorySigner>,
+    signer: Arc<near_crypto::Signer>,
     rpc_client: JsonRpcClient,
     enabled: bool,
     dry_run: bool,
@@ -78,8 +79,8 @@ impl NearHandler {
             })
             .to_string()
             .into_bytes(),
-            gas: 50_000_000_000_000, // 50 TGas
-            deposit: 1,              // 1 yoctoNEAR for security
+            gas: near_primitives::gas::Gas::from_teragas(50), // 50 TGas
+            deposit: NearToken::from_yoctonear(1),            // 1 yoctoNEAR for security
         }));
 
         // Get access key
@@ -87,7 +88,7 @@ impl NearHandler {
             block_reference: near_primitives::types::BlockReference::latest(),
             request: near_primitives::views::QueryRequest::ViewAccessKey {
                 account_id: self.treasury_account.clone(),
-                public_key: self.signer.public_key.clone(),
+                public_key: self.signer.public_key(),
             },
         };
 
@@ -120,7 +121,7 @@ impl NearHandler {
         // Create and sign transaction
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.treasury_account.clone(),
-            public_key: self.signer.public_key.clone(),
+            public_key: self.signer.public_key(),
             nonce,
             receiver_id: token_contract.clone(),
             block_hash: block.header.hash,
@@ -254,8 +255,8 @@ impl NearHandler {
         let action = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "execute_intents".to_string(),
             args: args_json,
-            gas: 100_000_000_000_000, // 100 TGas for intent execution
-            deposit: 0,               // No deposit required
+            gas: near_primitives::gas::Gas::from_teragas(100), // 100 TGas for intent execution
+            deposit: NearToken::ZERO,                          // No deposit required
         }));
 
         // Get access key
@@ -263,7 +264,7 @@ impl NearHandler {
             block_reference: near_primitives::types::BlockReference::latest(),
             request: near_primitives::views::QueryRequest::ViewAccessKey {
                 account_id: self.treasury_account.clone(),
-                public_key: self.signer.public_key.clone(),
+                public_key: self.signer.public_key(),
             },
         };
 
@@ -296,7 +297,7 @@ impl NearHandler {
         // Create and sign transaction
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.treasury_account.clone(),
-            public_key: self.signer.public_key.clone(),
+            public_key: self.signer.public_key(),
             nonce,
             receiver_id: intents_contract,
             block_hash: block.header.hash,
@@ -332,9 +333,9 @@ impl NearHandler {
         Ok(result.transaction.hash.to_string())
     }
 
-    /// Get the signer key for intent signing
-    pub fn signer_key(&self) -> &SecretKey {
-        &self.signer.secret_key
+    /// Get the signer for intent signing
+    pub fn treasury_signer(&self) -> Arc<near_crypto::Signer> {
+        Arc::clone(&self.signer)
     }
 
     /// Get the treasury account ID
@@ -406,7 +407,7 @@ impl NearHandler {
         &self,
         token_contract: &AccountId,
         account_id: Option<&AccountId>,
-        storage_deposit: u128,
+        storage_deposit: NearToken,
     ) -> ChainResult<String> {
         if self.dry_run {
             info!(
@@ -437,7 +438,7 @@ impl NearHandler {
         let action = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "storage_deposit".to_string(),
             args: args.to_string().into_bytes(),
-            gas: 30_000_000_000_000, // 30 TGas
+            gas: near_primitives::gas::Gas::from_teragas(30), // 30 TGas
             deposit: storage_deposit,
         }));
 
@@ -446,7 +447,7 @@ impl NearHandler {
             block_reference: near_primitives::types::BlockReference::latest(),
             request: near_primitives::views::QueryRequest::ViewAccessKey {
                 account_id: self.treasury_account.clone(),
-                public_key: self.signer.public_key.clone(),
+                public_key: self.signer.public_key(),
             },
         };
 
@@ -479,7 +480,7 @@ impl NearHandler {
         // Create and sign transaction
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.treasury_account.clone(),
-            public_key: self.signer.public_key.clone(),
+            public_key: self.signer.public_key(),
             nonce,
             receiver_id: token_contract.clone(),
             block_hash: block.header.hash,

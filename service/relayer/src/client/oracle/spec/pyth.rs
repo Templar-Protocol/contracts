@@ -109,8 +109,8 @@ impl Spec for PythSpec {
         Ok(vec![FunctionCallAction {
             method_name: "update_price_feeds".to_string(),
             args,
-            gas: self.config.update_gas.as_gas(),
-            deposit: self.config.update_deposit.as_yoctonear(),
+            gas: near_primitives::gas::Gas::from_gas(self.config.update_gas.as_gas()),
+            deposit: self.config.update_deposit,
         }
         .into()])
     }

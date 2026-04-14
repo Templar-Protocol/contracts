@@ -102,6 +102,7 @@ fn vault_snapshot(env: &Env, vault: &Address) -> (i128, i128, i128) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn vault_allocates_supply_to_blend_and_withdraws_back() {
     let env = Env::default();
     env.mock_all_auths();

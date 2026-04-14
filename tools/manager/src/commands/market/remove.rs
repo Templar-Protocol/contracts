@@ -34,11 +34,13 @@ impl MarketRemove {
             return Ok(());
         }
 
-        let configuration = ctx
-            .near
-            .view(&self.signer.account_id, "get_configuration")
-            .await
-            .and_then(|r| r.json::<MarketConfiguration>());
+        let configuration: anyhow::Result<MarketConfiguration> = near::view(
+            &ctx.near,
+            &self.signer.account_id,
+            "get_configuration",
+            serde_json::json!({}),
+        )
+        .await;
 
         match configuration {
             Ok(c) => {
@@ -49,9 +51,7 @@ impl MarketRemove {
             }
             Err(error) => {
                 if !self.force {
-                    return Err(
-                        anyhow::Error::new(error).context("Failed to fetch market configuration")
-                    );
+                    return Err(error.context("Failed to fetch market configuration"));
                 }
                 tracing::warn!(%error, "Failed to fetch market configuration");
             }

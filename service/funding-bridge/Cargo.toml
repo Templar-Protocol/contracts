@@ -1,7 +1,9 @@
 [package]
 name = "templar-funding-bridge"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "funding-bridge"
@@ -13,53 +15,53 @@ path = "src/lib.rs"
 
 [dependencies]
 # Workspace dependencies
-templar-common = { path = "../../common" }
+templar-common.workspace = true
 
 # HTTP server
-axum = "0.7"
-tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["cors", "trace"] }
 
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
-async-trait = "0.1"
+tokio = { workspace = true, features = ["full"] }
+async-trait.workspace = true
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 # CLI
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { workspace = true, features = ["derive", "env"] }
 
 # Error handling
-thiserror = "1.0"
-anyhow = "1.0"
+thiserror.workspace = true
+anyhow.workspace = true
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Metrics
 prometheus = "0.13"
 lazy_static = "1.4"
 
 # NEAR (non-contract usage)
-near-sdk = { version = "5.5", features = ["unstable", "non-contract-usage"] }
-near-crypto = "0.26"
-near-primitives = "0.26"
-near-jsonrpc-client = "0.13"
-near-jsonrpc-primitives = "0.26"
-borsh = "1.5"
+near-sdk = { workspace = true, features = ["unstable", "non-contract-usage"] }
+near-crypto.workspace = true
+near-primitives.workspace = true
+near-jsonrpc-client.workspace = true
+near-jsonrpc-primitives.workspace = true
+borsh.workspace = true
 
 # Cryptography and encoding (for NEAR Intents integration)
-base64 = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-sha2 = "0.10"
-bs58 = "0.5"
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+base64.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+sha2.workspace = true
+bs58.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand = "0.8"
 
 # Ethereum client (for automated deposits)
@@ -67,24 +69,24 @@ ethers = { version = "2.0", features = ["abigen", "ws"] }
 
 # Solana client (for automated SPL token deposits)
 # Using v3.0.0 which has modular dependencies and resolved zeroize conflicts
-solana-sdk = { version = "3.0", default-features = true }
+solana-sdk = { workspace = true, default-features = true }
 solana-rpc-client = { version = "3.1" }
 spl-token = { version = "7.0", default-features = false }
 spl-associated-token-account = { version = "6.0", default-features = false }
 
 # Stellar client (for automated Stellar asset deposits and withdrawals)
-stellar-strkey = "0.0.8"
+stellar-strkey.workspace = true
 stellar-base = "0.7"
 # For Soroban smart contract interactions
-stellar-xdr = { version = "24.0", default-features = false, features = ["curr", "std"] }
+stellar-xdr = { version = "26.0", default-features = false, features = ["curr", "std"] }
 
 # Utilities
 ulid = "1.1"
-hex = "0.4"
+hex.workspace = true
 
 [dev-dependencies]
-axum-test = "15.0"
+axum-test = "20.0"
 # Testing
-near-workspaces = "0.14"
-wiremock = { workspace = true }
+near-workspaces.workspace = true
+wiremock.workspace = true
 tokio-test = "0.4"

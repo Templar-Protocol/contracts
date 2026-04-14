@@ -34,22 +34,19 @@ pub struct ListDeployments {
 impl ListDeployments {
     #[tracing::instrument(skip_all, name = "list_deployments", fields(registry_id = %self.registry_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let deployments: Vec<AccountId> = ctx
-            .near
-            .view(&self.registry_id, "list_deployments")
-            .args_json(json!({}))
-            .await?
-            .json()?;
+        let deployments: Vec<AccountId> =
+            near::view(&ctx.near, &self.registry_id, "list_deployments", json!({})).await?;
 
         let mut entries = Vec::with_capacity(deployments.len());
 
         for deployment in &deployments {
-            let info: Option<Deployment> = ctx
-                .near
-                .view(&self.registry_id, "get_deployment")
-                .args_json(json!({ "account_id": deployment }))
-                .await?
-                .json()?;
+            let info: Option<Deployment> = near::view(
+                &ctx.near,
+                &self.registry_id,
+                "get_deployment",
+                json!({ "account_id": deployment }),
+            )
+            .await?;
 
             let exists = near::account_exists(&ctx.near, deployment).await?;
             entries.push(DeploymentListEntry {

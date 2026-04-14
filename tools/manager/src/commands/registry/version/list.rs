@@ -2,6 +2,7 @@ use std::io::Write;
 
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
+use templar_tools_common::near;
 
 use crate::{
     util::{OutputArgs, OutputStyle},
@@ -24,12 +25,8 @@ pub struct ListVersions {
 impl ListVersions {
     #[tracing::instrument(skip_all, name = "list_versions", fields(registry_id = %self.registry_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let versions: Vec<String> = ctx
-            .near
-            .view(&self.registry_id, "list_versions")
-            .args_json(json!({}))
-            .await?
-            .json()?;
+        let versions: Vec<String> =
+            near::view(&ctx.near, &self.registry_id, "list_versions", json!({})).await?;
 
         let output = VersionListOutput { versions };
         self.output.print(&output)?;

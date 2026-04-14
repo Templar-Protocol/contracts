@@ -1,8 +1,10 @@
 use near_crypto::PublicKey;
-use near_fetch::ops::Function;
 use near_sdk::{json_types::Base64VecU8, AccountId, NearToken};
 use serde_json::json;
-use templar_tools_common::{near::contract_version, version::RegistryVersion};
+use templar_tools_common::{
+    near::{contract_version, Function},
+    version::RegistryVersion,
+};
 
 use crate::{
     util::{LoadArgs, SignerArgs},
@@ -90,7 +92,7 @@ impl<C: DeploymentSpec> Runner<()> for FromRegistry<C> {
                         "version_key": self.version_key,
                         "init_args": Base64VecU8(args),
                         "full_access_keys": full_access_keys,
-                    })),
+                    }))?,
             )
             .transact()
             .await

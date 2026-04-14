@@ -91,13 +91,7 @@ fn percentile(samples: &[Duration], p: f64) -> Duration {
     if samples.is_empty() {
         return Duration::from_secs(0);
     }
-    let clamped = if p < 0.0 {
-        0.0
-    } else if p > 1.0 {
-        1.0
-    } else {
-        p
-    };
+    let clamped = p.clamp(0.0, 1.0);
     let idx = ((samples.len() - 1) as f64 * clamped).round() as usize;
     samples[idx]
 }

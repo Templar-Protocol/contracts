@@ -1,6 +1,7 @@
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::redstone::Role;
+use templar_tools_common::near;
 
 use crate::CliContext;
 
@@ -21,12 +22,13 @@ impl RoleList {
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let role: Role = self.role.clone().into();
 
-        let members: Vec<AccountId> = ctx
-            .near
-            .view(&self.adapter_id, "list_role")
-            .args_json(json!({ "role": role }))
-            .await?
-            .json()?;
+        let members: Vec<AccountId> = near::view(
+            &ctx.near,
+            &self.adapter_id,
+            "list_role",
+            json!({ "role": role }),
+        )
+        .await?;
 
         if members.is_empty() {
             println!("No accounts with this role");

@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use base64::prelude::*;
-use near_fetch::ops::Function;
 use near_sdk::{json_types::Base64VecU8, serde_json::json, AccountId, NearToken};
 use templar_common::oracle::redstone::FeedId;
+use templar_tools_common::near::Function;
 
 use crate::util::{load_text, SignerArgs};
 use crate::CliContext;
@@ -50,7 +50,7 @@ impl WritePrices {
                     .args_json(json!({
                         "feed_ids": self.feed_id,
                         "payload": Base64VecU8(payload_bytes),
-                    }))
+                    }))?
                     .deposit(NearToken::from_yoctonear(0))
                     .max_gas(),
             )

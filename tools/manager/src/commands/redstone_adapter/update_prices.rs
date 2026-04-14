@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use near_fetch::ops::Function;
 use near_sdk::{json_types::Base64VecU8, serde_json::json, AccountId, NearToken};
 use templar_common::oracle::redstone::FeedId;
 use templar_redstone_bridge::Bridge;
+use templar_tools_common::near::Function;
 use tokio::sync::watch;
 
 use crate::{util::SignerArgs, CliContext};
@@ -40,7 +40,7 @@ impl UpdatePrices {
                     .args_json(json!({
                         "feed_ids": self.feed_id,
                         "payload": Base64VecU8(payload_bytes),
-                    }))
+                    }))?
                     .deposit(NearToken::from_yoctonear(0))
                     .max_gas(),
             )

@@ -35,14 +35,16 @@ version = "1.2.1"
 [workspace.dependencies]
 alloy = { version = "1", default-features = false }
 alloy-primitives = { version = "1", default-features = false }
-anyhow = "1.0.95"
+anyhow = "1.0.102"
 arbitrary = { version = "1", features = ["derive"] }
-async-trait = "0.1.88"
+async-trait = "0.1.89"
+axum = "0.8.8"
 base64 = "0.22.1"
 borsh = { version = "1.5", features = ["unstable__schema"] }
+bs58 = "0.5.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-clap = { version = "4.5.23", features = ["derive", "env"] }
-console = "0.16.2"
+clap = { version = "4.6.0", features = ["derive", "env"] }
+console = "0.16.3"
 dirs = "6"
 ed25519-dalek = "2.2.0"
 futures = "0.3.31"
@@ -58,27 +60,29 @@ hex-literal = "0.4"
 itertools = "0.14.0"
 k256 = "0.13.4"
 libfuzzer-sys = "0.4"
-near-account-id = "1.1.4"
-near-chain-configs = "0.31.1"
-near-contract-standards = "5.17.2"
-near-crypto = "0.31.1"
-near-fetch = "0.9.0"
-near-jsonrpc-client = "0.18.0"
-near-jsonrpc-primitives = "0.31.1"
-near-parameters = "0.31.1"
-near-primitives = "0.31.1"
-near-sdk = { version = "5.17.2", features = ["unstable"] }
-near-sdk-contract-tools = { git = "https://github.com/near/near-sdk-contract-tools", branch = "140-nep-245-multitoken-component" }
-near-workspaces = { version = "0.21.0", features = ["unstable"] }
+near-account-id = "2.6"
+near-chain-configs = "0.34.7"
+near-contract-standards = "5.25"
+near-crypto = "0.34.7"
+near-jsonrpc-client = "0.20.0"
+near-jsonrpc-primitives = "0.34.7"
+near-parameters = "0.34.7"
+near-primitives = "0.34.7"
+near-primitives-core = "0.34.7"
+near-sdk = { version = "5.25", features = ["unstable"] }
+near-sdk-contract-tools = "4.0.0"
+near-workspaces = { version = "0.22.1", features = ["unstable"] }
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
 redstone = { git = "https://github.com/redstone-finance/rust-sdk", tag = "3.1.0-pre1", default-features = false }
+reqwest = "0.12.28"
 rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
+stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
@@ -93,16 +97,16 @@ templar-vault-kernel = { path = "./contract/vault/kernel", features = [
 ] }
 templar-vault-macros = { path = "./contract/vault/macros" }
 test-utils = { path = "./test-utils" }
-thiserror = "2.0.11"
-tokio = { version = "1.30.0", features = ["full"] }
-tower = "0.4.13"
-tower-http = { version = "0.6.6", features = ["full"] }
-tracing = "0.1.41"
+thiserror = "2.0.18"
+tokio = { version = "1.51.0", features = ["full"] }
+tower = "0.5.3"
+tower-http = { version = "0.6.8", features = ["full"] }
+tracing = "0.1.44"
 tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uniffi = "0.31.0"
 wiremock = "0.5.22"
-zeroize = "1.8.1"
+zeroize = "1.8.2"
 
 stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
 stellar-tokens = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-tokens", branch = "templar/rust-1.86-compat", default-features = false }

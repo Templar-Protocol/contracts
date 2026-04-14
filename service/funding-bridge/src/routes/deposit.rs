@@ -30,6 +30,7 @@ use super::models::{DepositRequest, DepositResponse};
         amount = %req.amount
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) -> Response {
     let chain_id = normalize_chain_id(&req.source_chain);
 

@@ -166,8 +166,8 @@ impl<T: AssetClass> FungibleAsset<T> {
             method_name: method_name.to_string(),
             #[allow(clippy::unwrap_used)]
             args: serde_json::to_vec(&args).unwrap(),
-            gas: gas.as_gas(),
-            deposit: 1, // 1 yoctoNEAR for security
+            gas: near_primitives::gas::Gas::from_gas(gas.as_gas()),
+            deposit: NearToken::from_yoctonear(1), // 1 yoctoNEAR for security
         }
     }
 
@@ -205,8 +205,8 @@ impl<T: AssetClass> FungibleAsset<T> {
                 reason = "All of the types have infallible serialization"
             )]
             args: serde_json::to_vec(&args).unwrap(),
-            gas: gas.as_gas(),
-            deposit: NearToken::from_yoctonear(1).as_yoctonear(),
+            gas: near_primitives::gas::Gas::from_gas(gas.as_gas()),
+            deposit: NearToken::from_yoctonear(1),
         }
     }
 
@@ -235,8 +235,8 @@ impl<T: AssetClass> FungibleAsset<T> {
                 reason = "All of the types have infallible serialization"
             )]
             args: serde_json::to_vec(&args).unwrap(),
-            gas: Gas::from_tgas(3).as_gas(),
-            deposit: 0,
+            gas: near_primitives::gas::Gas::from_teragas(3),
+            deposit: NearToken::ZERO,
         }
     }
 
