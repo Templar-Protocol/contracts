@@ -13241,7 +13241,9 @@ dependencies = [
 name = "templar-vault-counterparty-contract"
 version = "0.1.0"
 dependencies = [
+ "bs58 0.5.1",
  "near-sdk",
+ "stellar-xdr",
 ]
 
 [[package]]
