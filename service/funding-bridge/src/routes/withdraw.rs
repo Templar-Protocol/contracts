@@ -261,10 +261,8 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     let near_token_id = token_info.near_token_id.clone();
 
     // Build withdrawal intent using NEAR Intents protocol for cross-chain transfers
-    let intent_builder = crate::intents::WithdrawalIntentBuilder::new(
-        app.near_handler.treasury_account().to_string(),
-        app.near_handler.signer_key().clone(),
-    );
+    let intent_builder =
+        crate::intents::WithdrawalIntentBuilder::new(app.near_handler.treasury_signer());
 
     // Detect token type and use appropriate withdrawal method
     let is_nep245 = token_info.is_nep245();

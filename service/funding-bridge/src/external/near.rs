@@ -11,6 +11,7 @@ use near_primitives::{
     transaction::{Action, FunctionCallAction, SignedTransaction, Transaction, TransactionV0},
     types::AccountId,
 };
+use near_sdk::NearToken;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -117,7 +118,7 @@ impl NearConfig {
 /// NEAR chain handler for external wallet deposits
 pub struct NearExternalHandler {
     config: NearConfig,
-    signer: Arc<near_crypto::InMemorySigner>,
+    signer: Arc<near_crypto::Signer>,
     rpc_client: JsonRpcClient,
 }
 
@@ -222,8 +223,8 @@ impl NearExternalHandler {
             })
             .to_string()
             .into_bytes(),
-            gas: 30_000_000_000_000,                // 30 TGas
-            deposit: 1_250_000_000_000_000_000_000, // 0.00125 NEAR
+            gas: near_primitives::gas::Gas::from_teragas(30), // 30 TGas
+            deposit: NearToken::from_yoctonear(1_250_000_000_000_000_000_000), // 0.00125 NEAR
         }));
 
         self.execute_transaction(token_contract, vec![storage_deposit_action])
@@ -243,8 +244,8 @@ impl NearExternalHandler {
         let access_key_query = methods::query::RpcQueryRequest {
             block_reference: near_primitives::types::BlockReference::latest(),
             request: near_primitives::views::QueryRequest::ViewAccessKey {
-                account_id: self.signer.account_id.clone(),
-                public_key: self.signer.public_key.clone(),
+                account_id: self.signer.get_account_id(),
+                public_key: self.signer.public_key(),
             },
         };
 
@@ -271,8 +272,8 @@ impl NearExternalHandler {
         })?;
 
         let transaction = Transaction::V0(TransactionV0 {
-            signer_id: self.signer.account_id.clone(),
-            public_key: self.signer.public_key.clone(),
+            signer_id: self.signer.get_account_id(),
+            public_key: self.signer.public_key(),
             nonce,
             receiver_id: receiver_id.clone(),
             block_hash: block.header.hash,
@@ -326,8 +327,8 @@ impl NearExternalHandler {
             })
             .to_string()
             .into_bytes(),
-            gas: 30_000_000_000_000, // 30 TGas
-            deposit: 1,              // 1 yoctoNEAR
+            gas: near_primitives::gas::Gas::from_teragas(30), // 30 TGas
+            deposit: NearToken::from_yoctonear(1),            // 1 yoctoNEAR
         }));
 
         let tx_hash = self
@@ -372,8 +373,8 @@ impl NearExternalHandler {
             })
             .to_string()
             .into_bytes(),
-            gas: 100_000_000_000_000, // 100 TGas
-            deposit: 1,               // 1 yoctoNEAR
+            gas: near_primitives::gas::Gas::from_teragas(100), // 100 TGas
+            deposit: NearToken::from_yoctonear(1),             // 1 yoctoNEAR
         }));
 
         let tx_hash = self
@@ -500,7 +501,7 @@ pub fn near_handler_from_env() -> Option<Box<dyn ExternalChainHandler>> {
                     info!(
                         chain_id = %handler.config.chain_id,
                         rpc_url = %handler.config.rpc_url,
-                        account = %handler.signer.account_id,
+                        account = %handler.signer.get_account_id(),
                         "Configured NEAR external handler"
                     );
                     Some(Box::new(handler))

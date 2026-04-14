@@ -38,8 +38,10 @@ alloy-primitives = { version = "1", default-features = false }
 anyhow = "1.0.102"
 arbitrary = { version = "1", features = ["derive"] }
 async-trait = "0.1.89"
+axum = "0.8.8"
 base64 = "0.22.1"
 borsh = { version = "1.5", features = ["unstable__schema"] }
+bs58 = "0.5.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
 console = "0.16.3"
@@ -80,6 +82,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
+stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
@@ -96,7 +99,7 @@ templar-vault-macros = { path = "./contract/vault/macros" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.18"
 tokio = { version = "1.51.0", features = ["full"] }
-tower = "0.4.13"
+tower = "0.5.3"
 tower-http = { version = "0.6.8", features = ["full"] }
 tracing = "0.1.44"
 tracing-appender = "0.2"
