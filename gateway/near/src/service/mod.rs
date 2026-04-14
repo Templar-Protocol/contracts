@@ -5,24 +5,30 @@ pub mod storage;
 pub mod tx;
 pub mod universal_account;
 
-use crate::{NearReadClient, NearWriteClient};
+use crate::{
+    actor::{read::ReadHandle, write::WriteHandle},
+    NearReadClient, NearWriteClient,
+};
 
 #[derive(Clone)]
 pub struct GatewayService {
-    near: NearReadClient,
-    writer: NearWriteClient,
+    read: ReadHandle,
+    write: WriteHandle,
 }
 
 impl GatewayService {
     pub fn new(near: NearReadClient, writer: NearWriteClient) -> Self {
-        Self { near, writer }
+        Self {
+            read: crate::actor::read::spawn(near),
+            write: crate::actor::write::spawn(writer),
+        }
     }
 
-    pub fn near(&self) -> &NearReadClient {
-        &self.near
+    pub fn read(&self) -> &ReadHandle {
+        &self.read
     }
 
-    pub fn writer(&self) -> &NearWriteClient {
-        &self.writer
+    pub fn write(&self) -> &WriteHandle {
+        &self.write
     }
 }

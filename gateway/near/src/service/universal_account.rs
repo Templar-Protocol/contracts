@@ -4,7 +4,7 @@ use templar_universal_account::PayloadExecutionParameters;
 
 use crate::GatewayService;
 
-fn into_parameters_view(
+pub(crate) fn into_parameters_view(
     parameters: PayloadExecutionParameters,
 ) -> universal_account::PayloadExecutionParametersView {
     universal_account::PayloadExecutionParametersView {
@@ -26,14 +26,5 @@ pub fn get_key(
     service: &GatewayService,
     params: universal_account::GetKeyParams,
 ) -> BoxFuture<'_, crate::GatewayResult<universal_account::GetKeyResult>> {
-    Box::pin(async move {
-        let parameters = service
-            .near()
-            .universal_account(params.account_id)
-            .get_key(params.args)
-            .await?
-            .map(into_parameters_view);
-
-        Ok(universal_account::GetKeyResult { parameters })
-    })
+    Box::pin(async move { service.read().request(params).await })
 }

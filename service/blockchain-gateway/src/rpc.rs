@@ -66,7 +66,7 @@ pub fn attach_gateway(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     fn test_gateway() -> GatewayService {
         let network = near_api::NetworkConfig::from_rpc_url(
@@ -82,7 +82,7 @@ mod tests {
         .expect("signer should initialize");
         let writer = blockchain_gateway_near::NearWriteClient::new(
             network,
-            BTreeMap::from([(
+            HashMap::from([(
                 "test.near".parse().expect("valid signer account id"),
                 signer,
             )]),

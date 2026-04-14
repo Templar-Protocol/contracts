@@ -2,7 +2,7 @@ mod config;
 mod logging;
 mod rpc;
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
@@ -12,8 +12,8 @@ use crate::config::Config;
 
 async fn build_signers(
     config: &Config,
-) -> BTreeMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>> {
-    let mut signers = BTreeMap::new();
+) -> HashMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>> {
+    let mut signers = HashMap::new();
 
     for managed_signer in &config.managed_signers {
         let mut secret_keys = managed_signer.secret_keys.iter().cloned();

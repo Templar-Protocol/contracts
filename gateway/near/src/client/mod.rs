@@ -13,7 +13,7 @@ use near_account_id::{AccountId, AccountIdRef};
 use near_api::{types::Data, Contract, NetworkConfig};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use crate::error::{GatewayError, GatewayResult};
 
@@ -37,7 +37,7 @@ pub struct NearReadClient {
 #[derive(Clone)]
 pub struct NearWriteClient {
     network: NetworkConfig,
-    signers: BTreeMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
+    signers: HashMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
 }
 
 impl NearReadClient {
@@ -137,7 +137,7 @@ impl NearReadClient {
 impl NearWriteClient {
     pub fn new(
         network: NetworkConfig,
-        signers: BTreeMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
+        signers: HashMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
     ) -> Self {
         Self { network, signers }
     }

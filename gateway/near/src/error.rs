@@ -10,6 +10,8 @@ pub enum GatewayError {
     UnsupportedSignerAccount(String),
     #[error("near transaction failed: {0}")]
     NearTransaction(String),
+    #[error("actor unavailable: {0}")]
+    ActorUnavailable(&'static str),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;
