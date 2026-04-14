@@ -1,4 +1,5 @@
 use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 
 use blockchain_gateway_core::{chain, market, registry, storage, universal_account};
 use futures::future::BoxFuture;
@@ -10,6 +11,7 @@ use crate::{
 };
 
 const READ_ACTOR_NAME: &str = "read-actor";
+const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
 
 #[derive(Clone)]
 pub struct ReadHandle {
@@ -256,11 +258,17 @@ async fn dispatch(client: &NearReadClient, message: ReadMessage) {
 
 pub fn spawn(client: NearReadClient) -> ReadHandle {
     let (sender, mut receiver) = mpsc::channel(64);
+    let semaphore = std::sync::Arc::new(Semaphore::new(READ_ACTOR_MAX_CONCURRENCY));
 
     tokio::spawn(async move {
         while let Some(message) = receiver.recv().await {
             let client = client.clone();
+            let semaphore = semaphore.clone();
             tokio::spawn(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .expect("read actor semaphore should remain available while actor is alive");
                 dispatch(&client, message).await;
             });
         }

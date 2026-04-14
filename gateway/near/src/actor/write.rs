@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
+use tokio::sync::Semaphore;
 
 use blockchain_gateway_core::{
     operation::{
@@ -6,7 +9,7 @@ use blockchain_gateway_core::{
         TransactionStepRecord,
     },
     rpc::common::{ContractArgs, WriteOperationResult, WriteRequest},
-    storage, tx, ContractMethodName, NearGas,
+    storage, tx, ContractMethodName, ManagedAccountId, NearGas,
 };
 use futures::future::BoxFuture;
 use near_api::types::transaction::result::TransactionResult;
@@ -21,16 +24,19 @@ const WRITE_ACTOR_NAME: &str = "write-actor";
 
 #[derive(Clone)]
 pub struct WriteHandle {
-    sender: mpsc::Sender<WriteMessage>,
+    senders: std::collections::HashMap<ManagedAccountId, mpsc::Sender<WriteMessage>>,
 }
 
 impl WriteHandle {
-    pub async fn request<Request>(&self, params: Request) -> GatewayResult<Request::Response>
+    pub async fn request<T>(&self, params: WriteRequest<T>) -> GatewayResult<WriteOperationResult>
     where
-        Request: ActorRequest<Actor = NearWriteClient>,
-        WriteMessage: From<MessageEnvelope<Request>>,
+        WriteRequest<T>: ActorRequest<Actor = NearWriteClient, Response = WriteOperationResult>,
+        WriteMessage: From<MessageEnvelope<WriteRequest<T>>>,
     {
-        request::request(&self.sender, WRITE_ACTOR_NAME, params).await
+        let sender = self.senders.get(&params.signer_account_id).ok_or_else(|| {
+            crate::GatewayError::UnsupportedSignerAccount(params.signer_account_id.0.to_string())
+        })?;
+        request::request(sender, WRITE_ACTOR_NAME, params).await
     }
 }
 
@@ -154,13 +160,30 @@ async fn dispatch(actor: &NearWriteClient, message: WriteMessage) {
 }
 
 pub fn spawn(client: NearWriteClient) -> WriteHandle {
-    let (sender, mut receiver) = mpsc::channel(64);
+    let senders = client
+        .signers()
+        .iter()
+        .map(|(account_id, signer_entry)| {
+            let (sender, mut receiver) = mpsc::channel(64);
+            let client = client.clone();
+            let semaphore = Arc::new(Semaphore::new(signer_entry.key_count));
 
-    tokio::spawn(async move {
-        while let Some(message) = receiver.recv().await {
-            dispatch(&client, message).await;
-        }
-    });
+            tokio::spawn(async move {
+                while let Some(message) = receiver.recv().await {
+                    let client = client.clone();
+                    let semaphore = semaphore.clone();
+                    tokio::spawn(async move {
+                        let _permit = semaphore.acquire_owned().await.expect(
+                            "write actor semaphore should remain available while actor is alive",
+                        );
+                        dispatch(&client, message).await;
+                    });
+                }
+            });
 
-    WriteHandle { sender }
+            (account_id.clone(), sender)
+        })
+        .collect();
+
+    WriteHandle { senders }
 }

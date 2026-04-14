@@ -7,13 +7,13 @@ mod tx;
 mod universal_account;
 
 use blockchain_gateway_core::{
-    rpc::common::ContractArgs, MarketId, RegistryId, UniversalAccountId,
+    rpc::common::ContractArgs, ManagedAccountId, MarketId, RegistryId, UniversalAccountId,
 };
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::{types::Data, Contract, NetworkConfig};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::error::{GatewayError, GatewayResult};
 
@@ -35,9 +35,28 @@ pub struct NearReadClient {
 }
 
 #[derive(Clone)]
+pub struct ManagedSigner {
+    pub signer: Arc<near_api::Signer>,
+    pub key_count: usize,
+}
+
+impl ManagedSigner {
+    pub async fn new(secret_keys: impl IntoIterator<Item = near_api::SecretKey>) -> Option<Self> {
+        let mut secret_keys = secret_keys.into_iter();
+        let signer = near_api::Signer::from_secret_key(secret_keys.next()?).ok()?;
+        let mut key_count = 1;
+        for secret_key in secret_keys {
+            signer.add_secret_key_to_pool(secret_key).await.ok()?;
+            key_count += 1;
+        }
+        Some(Self { signer, key_count })
+    }
+}
+
+#[derive(Clone)]
 pub struct NearWriteClient {
     network: NetworkConfig,
-    signers: HashMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
+    signers: HashMap<ManagedAccountId, ManagedSigner>,
 }
 
 impl NearReadClient {
@@ -67,7 +86,7 @@ impl NearReadClient {
         }
     }
 
-    pub fn storage(&self, contract_id: near_account_id::AccountId) -> StorageClient<'_> {
+    pub fn storage(&self, contract_id: AccountId) -> StorageClient<'_> {
         StorageClient {
             inner: self,
             contract_id,
@@ -135,10 +154,7 @@ impl NearReadClient {
 }
 
 impl NearWriteClient {
-    pub fn new(
-        network: NetworkConfig,
-        signers: HashMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
-    ) -> Self {
+    pub fn new(network: NetworkConfig, signers: HashMap<ManagedAccountId, ManagedSigner>) -> Self {
         Self { network, signers }
     }
 
@@ -146,14 +162,15 @@ impl NearWriteClient {
         &self.network
     }
 
-    pub fn tx(
-        &self,
-        signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    ) -> GatewayResult<TxClient<'_>> {
+    pub fn signers(&self) -> &HashMap<ManagedAccountId, ManagedSigner> {
+        &self.signers
+    }
+
+    pub fn tx(&self, signer_account_id: ManagedAccountId) -> GatewayResult<TxClient<'_>> {
         let signer = self
             .signers
-            .get(&signer_account_id.0)
-            .cloned()
+            .get(&signer_account_id)
+            .map(|entry| entry.signer.clone())
             .ok_or_else(|| {
                 GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
             })?;

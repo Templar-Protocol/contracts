@@ -65,6 +65,8 @@ pub fn attach_gateway(
 
 #[cfg(test)]
 mod tests {
+    use blockchain_gateway_core::ManagedAccountId;
+
     use super::*;
     use std::collections::HashMap;
 
@@ -80,11 +82,15 @@ mod tests {
                 .expect("valid test secret key"),
         )
         .expect("signer should initialize");
+        let account_id = ManagedAccountId("test.near".parse().expect("valid signer account id"));
         let writer = blockchain_gateway_near::NearWriteClient::new(
             network,
             HashMap::from([(
-                "test.near".parse().expect("valid signer account id"),
-                signer,
+                account_id,
+                blockchain_gateway_near::ManagedSigner {
+                    signer,
+                    key_count: 1,
+                },
             )]),
         );
         GatewayService::new(near, writer)

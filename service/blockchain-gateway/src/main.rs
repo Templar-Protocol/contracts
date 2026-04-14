@@ -4,33 +4,23 @@ mod rpc;
 
 use std::collections::HashMap;
 
+use blockchain_gateway_core::ManagedAccountId;
+use blockchain_gateway_near::ManagedSigner;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use tokio::signal;
 
 use crate::config::Config;
 
-async fn build_signers(
-    config: &Config,
-) -> HashMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>> {
+async fn build_signers(config: &Config) -> HashMap<ManagedAccountId, ManagedSigner> {
     let mut signers = HashMap::new();
 
-    for managed_signer in &config.managed_signers {
-        let mut secret_keys = managed_signer.secret_keys.iter().cloned();
-        let first_secret_key = secret_keys
-            .next()
-            .expect("managed signer config should contain at least one secret key");
-        let signer = near_api::Signer::from_secret_key(first_secret_key)
-            .expect("failed to create signer from secret key");
-
-        for secret_key in secret_keys {
-            signer
-                .add_secret_key_to_pool(secret_key)
-                .await
-                .expect("failed to add secret key to signer pool");
-        }
-
-        signers.insert(managed_signer.account_id.clone(), signer);
+    for config in &config.managed_signers {
+        let secret_keys = config.secret_keys.iter().cloned();
+        let entry = ManagedSigner::new(secret_keys)
+            .await
+            .expect("failed to initialize signer");
+        signers.insert(ManagedAccountId(config.account_id.clone()), entry);
     }
 
     signers
@@ -46,8 +36,8 @@ async fn main() {
 
     let network = near_api::NetworkConfig::from_rpc_url("gateway", config.near_rpc_url.clone());
     let near = blockchain_gateway_near::NearReadClient::new(network.clone());
-    let writer =
-        blockchain_gateway_near::NearWriteClient::new(network, build_signers(&config).await);
+    let signers = build_signers(&config).await;
+    let writer = blockchain_gateway_near::NearWriteClient::new(network, signers);
     let gateway = blockchain_gateway_near::GatewayService::new(near, writer);
 
     let server = ServerBuilder::default()
