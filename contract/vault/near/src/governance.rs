@@ -1,5 +1,5 @@
 use templar_common::vault::{
-    prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
+    prelude::{MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
     CapGroupUpdate, CapGroupUpdateKey, TimelockKind, TimestampNs, MAX_QUEUE_LEN,
 };
 
@@ -813,7 +813,7 @@ impl Contract {
                 Self::require_owner();
                 Abdicator::require_not_abdicated(&self.abdicator, "set_fees");
 
-                let proposed_fees: Fees<Wad> = fees.clone().into();
+                let proposed_fees = kernel_fees_from_u128(fees.clone());
 
                 let current = shared_gov::FeeConfig {
                     performance_fee: self.fees.performance.fee,
@@ -936,7 +936,7 @@ impl Contract {
                     .map(templar_curator_primitives::cap_group_record_relative_cap);
                 shared_gov::TimelockDecision::from_relative_cap_change(
                     current,
-                    new_relative_cap.map(|cap| Wad::from(cap.0)),
+                    new_relative_cap.map(|cap| KernelWad::from(cap.0)),
                 )
                 .map_or_else(
                     |err| {
@@ -1040,7 +1040,7 @@ impl Contract {
                 .emit();
             }
             TimelockedAction::FeesChange { fees } => {
-                let proposed_fees: Fees<Wad> = fees.clone().into();
+                let proposed_fees = kernel_fees_from_u128(fees.clone());
                 let performance_fee = proposed_fees.performance.fee;
                 let management_fee = proposed_fees.management.fee;
 
@@ -1220,8 +1220,8 @@ impl Contract {
                     .or_insert_with(Self::default_cap_group_record);
                 match new_relative_cap {
                     Some(new_relative_cap) => {
-                        let new_wad = Wad::from(new_relative_cap.0);
-                        require!(new_wad <= Wad::one(), "relative cap too high");
+                        let new_wad = KernelWad::from(new_relative_cap.0);
+                        require!(new_wad <= KernelWad::one(), "relative cap too high");
                         templar_curator_primitives::set_cap_group_record_relative_cap(
                             record, new_wad,
                         );

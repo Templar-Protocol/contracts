@@ -19,7 +19,7 @@ pub use templar_vault_kernel::state::op_state::{
     AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
-use templar_vault_kernel::Wad;
+use crate::vault::wad::Wad;
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -34,6 +34,7 @@ pub mod gas;
 pub mod lock;
 pub mod params;
 pub mod restrictions;
+pub mod wad;
 
 pub use errors::Error;
 pub use gas::*;
@@ -60,8 +61,8 @@ pub mod prelude {
         IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId,
         PendingWithdrawal, RealAssetsReport, ResyncIdleReport, TimestampNs, VaultConfiguration,
     };
-    pub use templar_vault_kernel::math::number::{Number, WIDE};
-    pub use templar_vault_kernel::{
+    pub use super::wad::{Number, WIDE};
+    pub use super::wad::{
         compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
         mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
     };
@@ -384,7 +385,7 @@ mod tests {
     use super::{Fee, Fees, MarketId};
     use near_sdk::json_types::U128;
     use near_sdk::AccountId;
-    use templar_vault_kernel::Wad;
+    use crate::vault::wad::Wad;
 
     #[test]
     fn market_id_try_from_u64_accepts_u32_range() {
