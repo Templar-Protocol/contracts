@@ -13,7 +13,7 @@ use near_api::types::transaction::result::TransactionResult;
 use uuid::Uuid;
 
 use crate::{
-    actor::request::{self, ActorRequest, MessageEnvelope},
+    actor::request::{self, respond, ActorRequest, MessageEnvelope},
     GatewayResult, NearWriteClient,
 };
 
@@ -148,12 +148,8 @@ impl From<MessageEnvelope<WriteRequest<storage::DepositBody>>> for WriteMessage 
 
 async fn dispatch(actor: &NearWriteClient, message: WriteMessage) {
     match message {
-        WriteMessage::FunctionCall(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(actor).await);
-        }
-        WriteMessage::StorageDeposit(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(actor).await);
-        }
+        WriteMessage::FunctionCall(envelope) => respond(actor, envelope).await,
+        WriteMessage::StorageDeposit(envelope) => respond(actor, envelope).await,
     }
 }
 

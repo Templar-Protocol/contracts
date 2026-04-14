@@ -4,7 +4,7 @@ use blockchain_gateway_core::{chain, market, registry, storage, universal_accoun
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::request::{self, ActorRequest, MessageEnvelope},
+    actor::request::{self, respond, ActorRequest, MessageEnvelope},
     service::universal_account::into_parameters_view,
     GatewayResult, NearReadClient,
 };
@@ -241,36 +241,16 @@ impl From<MessageEnvelope<universal_account::GetKeyParams>> for ReadMessage {
 
 async fn dispatch(client: &NearReadClient, message: ReadMessage) {
     match message {
-        ReadMessage::ViewAccount(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::ViewFunction(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::GetTransaction(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::ListDeployments(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::ListVersions(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::GetConfiguration(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::ListBorrowPositions(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::GetBalanceBounds(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::GetBalanceOf(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
-        ReadMessage::GetKey(envelope) => {
-            let _ = envelope.reply.send(envelope.params.dispatch(client).await);
-        }
+        ReadMessage::ViewAccount(envelope) => respond(client, envelope).await,
+        ReadMessage::ViewFunction(envelope) => respond(client, envelope).await,
+        ReadMessage::GetTransaction(envelope) => respond(client, envelope).await,
+        ReadMessage::ListDeployments(envelope) => respond(client, envelope).await,
+        ReadMessage::ListVersions(envelope) => respond(client, envelope).await,
+        ReadMessage::GetConfiguration(envelope) => respond(client, envelope).await,
+        ReadMessage::ListBorrowPositions(envelope) => respond(client, envelope).await,
+        ReadMessage::GetBalanceBounds(envelope) => respond(client, envelope).await,
+        ReadMessage::GetBalanceOf(envelope) => respond(client, envelope).await,
+        ReadMessage::GetKey(envelope) => respond(client, envelope).await,
     }
 }
 
@@ -279,7 +259,10 @@ pub fn spawn(client: NearReadClient) -> ReadHandle {
 
     tokio::spawn(async move {
         while let Some(message) = receiver.recv().await {
-            dispatch(&client, message).await;
+            let client = client.clone();
+            tokio::spawn(async move {
+                dispatch(&client, message).await;
+            });
         }
     });
 

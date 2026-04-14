@@ -39,3 +39,10 @@ where
         .await
         .map_err(|_| GatewayError::ActorUnavailable(actor_name))?
 }
+
+pub async fn respond<Request>(actor: &Request::Actor, envelope: MessageEnvelope<Request>)
+where
+    Request: ActorRequest,
+{
+    let _ = envelope.reply.send(envelope.params.dispatch(actor).await);
+}
