@@ -470,8 +470,8 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
         actions: vec![Action::from(FunctionCallAction {
             method_name: "apply_interest".to_string(),
             args: b"{}".to_vec(),
-            gas: 30 * 10_u64.pow(12),
-            deposit: 0,
+            gas: near_primitives::gas::Gas::from_teragas(30),
+            deposit: NearToken::ZERO,
         })
         .try_into()
         .unwrap()],
@@ -851,7 +851,7 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: In
     .unwrap();
 
     let challenge = sha256_array(
-        &[
+        [
             b"\x19UAccount Signed Message:\n".to_vec(),
             message.as_bytes().to_vec(),
         ]

@@ -136,7 +136,7 @@ impl StellarKeypair {
                 // Encode public key as Stellar G... address
                 let public_strkey =
                     Strkey::PublicKeyEd25519(stellar_strkey::ed25519::PublicKey(public_key_bytes));
-                let public_key = public_strkey.to_string();
+                let public_key = public_strkey.to_string().to_string();
 
                 Ok(Self {
                     secret_key,
@@ -206,6 +206,7 @@ impl StellarHandler {
     }
 
     /// Build and submit Stellar payment transaction via Horizon API
+    #[allow(clippy::too_many_lines)]
     async fn submit_payment(
         &self,
         destination: &str,

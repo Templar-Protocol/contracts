@@ -35,9 +35,7 @@ struct Args {
     #[arg(long, default_value_t = 50)]
     pub tgas: u64,
     #[arg(long)]
-    pub near: Option<u128>,
-    #[arg(long)]
-    pub yocto: Option<u128>,
+    pub near: Option<NearToken>,
 }
 
 #[tokio::main]
@@ -77,12 +75,8 @@ pub async fn main() {
         actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: args.method_name,
             args: call_args,
-            gas: near_sdk::Gas::from_tgas(args.tgas).as_gas(),
-            deposit: args
-                .near
-                .map(|n| NearToken::from_near(n).as_yoctonear())
-                .or(args.yocto)
-                .unwrap_or(0),
+            gas: near_primitives::gas::Gas::from_teragas(args.tgas),
+            deposit: args.near.unwrap_or(NearToken::ZERO),
         }))
         .try_into()
         .unwrap()],

@@ -1,7 +1,7 @@
-use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
+use templar_tools_common::near::Function;
 
 use crate::util::SignerArgs;
 use crate::CliContext;
@@ -17,7 +17,7 @@ pub async fn execute_proposal(
     ctx.batch(&signer, oracle_id)
         .call(
             Function::new("gov_execute")
-                .args_json(json!({ "id": id }))
+                .args_json(json!({ "id": id }))?
                 .deposit(NearToken::from_yoctonear(1))
                 .max_gas(),
         )

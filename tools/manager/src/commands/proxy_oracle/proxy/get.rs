@@ -8,6 +8,7 @@ use templar_proxy_oracle_kernel::{
     proxy::{Aggregator, Proxy, Source, WeightedSource},
     request::OracleRequest,
 };
+use templar_tools_common::near;
 
 use super::CliPriceIdentifier;
 use crate::{
@@ -31,12 +32,13 @@ impl GetProxy {
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let price_id: PriceIdentifier = self.price_id.into();
 
-        let proxy: Option<Proxy> = ctx
-            .near
-            .view(&self.oracle_id, "get_proxy")
-            .args_json(json!({ "id": price_id }))
-            .await?
-            .json()?;
+        let proxy: Option<Proxy> = near::view(
+            &ctx.near,
+            &self.oracle_id,
+            "get_proxy",
+            json!({ "id": price_id }),
+        )
+        .await?;
 
         self.output.print_optional(proxy.as_ref(), |out| {
             writeln!(out, "Proxy not found for price ID {}", self.price_id)?;

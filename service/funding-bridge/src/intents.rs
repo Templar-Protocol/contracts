@@ -6,11 +6,11 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{Duration, Utc};
-use near_crypto::{PublicKey, SecretKey, Signature};
+use near_crypto::{PublicKey, Signature};
 use near_sdk::borsh::{self, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 /// Verifier contract on NEAR
 pub const INTENTS_CONTRACT: &str = "intents.near";
@@ -170,17 +170,15 @@ pub struct ExecuteIntentsArgs {
 
 /// Builder for creating withdrawal intents
 pub struct WithdrawalIntentBuilder {
-    signer_id: String,
-    signer_key: SecretKey,
+    signer: Arc<near_crypto::Signer>,
     deadline_minutes: i64,
 }
 
 impl WithdrawalIntentBuilder {
     /// Create a new withdrawal intent builder
-    pub fn new(signer_id: String, signer_key: SecretKey) -> Self {
+    pub fn new(signer: Arc<near_crypto::Signer>) -> Self {
         Self {
-            signer_id,
-            signer_key,
+            signer,
             deadline_minutes: 5, // Default 5 minute deadline
         }
     }
@@ -272,7 +270,7 @@ impl WithdrawalIntentBuilder {
         // Create the message
         let deadline = Utc::now() + Duration::minutes(self.deadline_minutes);
         let message = IntentMessage {
-            signer_id: self.signer_id.clone(),
+            signer_id: self.signer.get_account_id().to_string(),
             deadline: deadline.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
             intents: vec![intent],
             nonce: None,
@@ -305,7 +303,7 @@ impl WithdrawalIntentBuilder {
         let data = format!(
             "{}{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0),
-            self.signer_id
+            self.signer.get_account_id(),
         );
         let hash = Sha256::digest(data.as_bytes());
         nonce.copy_from_slice(&hash[..32]);
@@ -330,15 +328,15 @@ impl WithdrawalIntentBuilder {
         let hash = Sha256::digest(&prehash);
 
         // Sign the hash
-        let signature = self.signer_key.sign(&hash);
-        let public_key = self.signer_key.public_key();
+        let signature = self.signer.sign(&hash);
+        let public_key = self.signer.public_key();
 
         // Debug logging
         tracing::debug!(
             prehash_len = prehash.len(),
             hash_hex = %hex::encode(hash),
             public_key = %format_public_key(&public_key),
-            signer_id = %self.signer_id,
+            signer_id = %self.signer.get_account_id(),
             message_preview = %&payload.message[..payload.message.len().min(100)],
             "Signed NEP-413 payload"
         );
@@ -420,8 +418,15 @@ mod tests {
     use super::*;
     use near_crypto::KeyType;
 
-    fn test_key() -> SecretKey {
-        SecretKey::from_seed(KeyType::ED25519, "test-seed")
+    fn test_key() -> near_crypto::SecretKey {
+        near_crypto::SecretKey::from_seed(KeyType::ED25519, "test-seed")
+    }
+
+    fn test_signer(id: impl Into<String>) -> Arc<near_crypto::Signer> {
+        Arc::new(near_crypto::InMemorySigner::from_secret_key(
+            id.into().parse().unwrap(),
+            test_key(),
+        ))
     }
 
     #[test]
@@ -450,13 +455,13 @@ mod tests {
 
     #[test]
     fn test_withdrawal_intent_builder_creation() {
-        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
-        assert_eq!(builder.signer_id, "test.near");
+        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
+        assert_eq!(builder.signer.get_account_id(), "test.near");
     }
 
     #[test]
     fn test_build_withdrawal_intent() {
-        let builder = WithdrawalIntentBuilder::new("treasury.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("treasury.near"));
 
         let args = builder
             .build_withdrawal(
@@ -538,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_deadline_calculation() {
-        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
         let args = builder
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
@@ -591,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_build_mt_withdrawal() {
-        let builder = WithdrawalIntentBuilder::new("treasury.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("treasury.near"));
 
         let args = builder
             .build_mt_withdrawal(
@@ -637,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_build_mt_withdrawal_invalid_format() {
-        let builder = WithdrawalIntentBuilder::new("treasury.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("treasury.near"));
 
         // Missing nep245: prefix
         let result = builder.build_mt_withdrawal(
@@ -681,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_nonce_generation() {
-        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
 
         let nonce1 = builder.generate_nonce();
         let nonce2 = builder.generate_nonce();
@@ -729,7 +734,7 @@ mod tests {
 
     #[test]
     fn test_signed_payload_structure() {
-        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
         let args = builder
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
@@ -747,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_execute_intents_args_serialization() {
-        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
         let args = builder
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
@@ -797,7 +802,7 @@ mod tests {
     fn test_multiple_intents_in_one_transaction() {
         // Note: While technically possible, the current builder only supports single intents
         // This test verifies the data structure can handle multiple intents
-        let builder = WithdrawalIntentBuilder::new("test.near".to_string(), test_key());
+        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
 
         let intent1 = Intent::FtWithdraw {
             token: "eth.omft.near".to_string(),
@@ -815,7 +820,7 @@ mod tests {
 
         let deadline = Utc::now() + Duration::minutes(5);
         let message = IntentMessage {
-            signer_id: builder.signer_id.clone(),
+            signer_id: builder.signer.get_account_id().to_string(),
             deadline: deadline.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
             intents: vec![intent1, intent2],
             nonce: None,

@@ -6,9 +6,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use near_sdk::AccountId;
 use near_workspaces::{network::Sandbox, Account, Worker};
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use templar_manager::{
+    near,
     util::{ContractLoader, GeneralArgsLoader, SignerArgs},
     CliContext,
 };
@@ -18,7 +20,7 @@ use templar_manager::{
 pub fn setup_ctx(worker: &Worker<Sandbox>) -> CliContext {
     CliContext {
         transaction_url_prefix: String::new(),
-        near: near_fetch::Client::new(&worker.rpc_addr()),
+        near: near_jsonrpc_client::JsonRpcClient::connect(worker.rpc_addr()),
     }
 }
 
@@ -39,6 +41,17 @@ pub fn signer_args(account: &Account) -> SignerArgs {
         account.id().clone(),
         account.secret_key().to_string().parse().unwrap(),
     )
+}
+
+pub async fn view_json<T: DeserializeOwned>(
+    ctx: &CliContext,
+    account_id: &AccountId,
+    method: &str,
+    args: impl Serialize,
+) -> T {
+    near::view(&ctx.near, account_id, method, args)
+        .await
+        .unwrap()
 }
 
 pub fn write_json_file<T: Serialize>(prefix: &str, value: &T) -> PathBuf {

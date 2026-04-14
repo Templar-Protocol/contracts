@@ -60,7 +60,7 @@ impl Contract {
 
         if let Some(transactions) = execute.filter(|e| !e.is_empty()) {
             let p = transactions_to_promise(&transactions);
-            p.as_return();
+            p.as_return().detach();
         }
 
         self_

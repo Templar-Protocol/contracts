@@ -1867,6 +1867,7 @@ mod dispatch {
     use super::*;
 
     #[allow(unused_mut)]
+    #[allow(clippy::too_many_lines)]
     pub(super) fn apply_action(
         mut state: VaultState,
         config: &VaultConfig,

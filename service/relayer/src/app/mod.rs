@@ -564,7 +564,7 @@ impl App {
         let (interacted_contract_ids, market_ids) =
             Self::derive_sda_interactions(&accounts, receiver_id, additional_interactions);
 
-        let gas_total = calls.iter().map(|call| call.gas).sum();
+        let gas_total = calls.iter().map(|call| call.gas.as_gas()).sum();
 
         Ok(SdaCheckResult {
             gas: near_sdk::Gas::from_gas(gas_total),

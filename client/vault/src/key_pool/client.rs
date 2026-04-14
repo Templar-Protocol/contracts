@@ -23,7 +23,10 @@ use near_primitives::{
     types::Gas,
     views::{FinalExecutionStatus, TxExecutionStatus},
 };
-use near_sdk::json_types::{U128, U64};
+use near_sdk::{
+    json_types::{U128, U64},
+    NearToken,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, instrument, warn};
 use zeroize::Zeroize;
@@ -275,7 +278,7 @@ impl KeyPoolClient {
                     method_name: function_name.to_string(),
                     args: args_bytes.clone(),
                     gas: gas.unwrap_or(DEFAULT_GAS),
-                    deposit: deposit.unwrap_or(0),
+                    deposit: NearToken::from_yoctonear(deposit.unwrap_or(0)),
                 }))],
             });
 

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 mod common;
 
-use common::{no_build_loader, setup_ctx, signer_args};
+use common::{no_build_loader, setup_ctx, signer_args, view_json};
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
@@ -81,14 +81,8 @@ async fn proxy_oracle_deploy(#[future(awt)] worker: Worker<Sandbox>) {
     worker.view_account(oracle.id()).await.unwrap();
 
     // Verify contract responds to view call.
-    let proxies: Vec<serde_json::Value> = ctx
-        .near
-        .view(oracle.id(), "list_proxies")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let proxies: Vec<serde_json::Value> =
+        view_json(&ctx, oracle.id(), "list_proxies", json!({})).await;
     assert!(proxies.is_empty());
 }
 
@@ -212,14 +206,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
     .unwrap();
 
     // List proposals — should have 1.
-    let ids: Vec<u32> = ctx
-        .near
-        .view(&oracle_id, "gov_list")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let ids: Vec<u32> = view_json(&ctx, &oracle_id, "gov_list", json!({})).await;
     assert_eq!(ids, vec![0]);
 
     // Get proposal details (command should succeed).
@@ -252,14 +239,7 @@ async fn proxy_oracle_governance_lifecycle(#[future(awt)] worker: Worker<Sandbox
     .unwrap();
 
     // Verify proposal is gone.
-    let ids: Vec<u32> = ctx
-        .near
-        .view(&oracle_id, "gov_list")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let ids: Vec<u32> = view_json(&ctx, &oracle_id, "gov_list", json!({})).await;
     assert!(ids.is_empty());
 }
 
@@ -318,24 +298,10 @@ async fn proxy_oracle_governance_execute(#[future(awt)] worker: Worker<Sandbox>)
     .unwrap();
 
     // Verify the proposal was executed (no longer in the list).
-    let ids: Vec<u32> = ctx
-        .near
-        .view(&oracle_id, "gov_list")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let ids: Vec<u32> = view_json(&ctx, &oracle_id, "gov_list", json!({})).await;
     assert!(ids.is_empty());
 
-    let new_ttl = ctx
-        .near
-        .view(&oracle_id, "gov_ttl_ns")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<Nanoseconds>()
-        .unwrap();
+    let new_ttl: Nanoseconds = view_json(&ctx, &oracle_id, "gov_ttl_ns", json!({})).await;
     assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
 }
 
@@ -361,24 +327,10 @@ async fn proxy_oracle_governance_create_and_execute_immediately(
     .await
     .unwrap();
 
-    let ids: Vec<u32> = ctx
-        .near
-        .view(&oracle_id, "gov_list")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let ids: Vec<u32> = view_json(&ctx, &oracle_id, "gov_list", json!({})).await;
     assert!(ids.is_empty());
 
-    let new_ttl = ctx
-        .near
-        .view(&oracle_id, "gov_ttl_ns")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<Nanoseconds>()
-        .unwrap();
+    let new_ttl: Nanoseconds = view_json(&ctx, &oracle_id, "gov_ttl_ns", json!({})).await;
     assert_eq!(new_ttl, Nanoseconds::from_ms(5000));
 }
 
@@ -419,24 +371,10 @@ async fn proxy_oracle_governance_create_and_execute_immediately_requires_zero_tt
         .to_string()
         .contains("cannot immediately execute proposal 1"));
 
-    let ids: Vec<u32> = ctx
-        .near
-        .view(&oracle_id, "gov_list")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    let ids: Vec<u32> = view_json(&ctx, &oracle_id, "gov_list", json!({})).await;
     assert_eq!(ids, vec![1]);
 
-    let ttl = ctx
-        .near
-        .view(&oracle_id, "gov_ttl_ns")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<Nanoseconds>()
-        .unwrap();
+    let ttl: Nanoseconds = view_json(&ctx, &oracle_id, "gov_ttl_ns", json!({})).await;
     assert_eq!(ttl, Nanoseconds::from_ms(5000));
 }
 
@@ -466,15 +404,14 @@ async fn proxy_oracle_governance_proxy_action_flags(#[future(awt)] worker: Worke
     .await
     .unwrap();
 
-    let get_proxy = ctx
-        .near
-        .view(&oracle_id, "get_proxy")
-        .args_json(json!({ "id": PriceIdentifier::from(price_id) }))
-        .await
-        .unwrap()
-        .json::<Option<Proxy>>()
-        .unwrap()
-        .unwrap();
+    let get_proxy = view_json::<Option<Proxy>>(
+        &ctx,
+        &oracle_id,
+        "get_proxy",
+        json!({ "id": PriceIdentifier::from(price_id) }),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(get_proxy, proxy);
 
@@ -489,14 +426,13 @@ async fn proxy_oracle_governance_proxy_action_flags(#[future(awt)] worker: Worke
     .await
     .unwrap();
 
-    let get_proxy = ctx
-        .near
-        .view(&oracle_id, "get_proxy")
-        .args_json(json!({ "id": PriceIdentifier::from(price_id) }))
-        .await
-        .unwrap()
-        .json::<Option<Proxy>>()
-        .unwrap();
+    let get_proxy: Option<Proxy> = view_json(
+        &ctx,
+        &oracle_id,
+        "get_proxy",
+        json!({ "id": PriceIdentifier::from(price_id) }),
+    )
+    .await;
 
     assert_eq!(get_proxy, None);
 }

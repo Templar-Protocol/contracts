@@ -150,11 +150,11 @@ impl ConfigValidator {
             ("protocol", config.protocol_account_id.to_string()),
             (
                 "borrow asset",
-                config.borrow_asset.contract_id().as_ref().to_string(),
+                config.borrow_asset.contract_id().to_string(),
             ),
             (
                 "collateral asset",
-                config.collateral_asset.contract_id().as_ref().to_string(),
+                config.collateral_asset.contract_id().to_string(),
             ),
         ];
         let mut accounts = accounts;
@@ -295,12 +295,7 @@ pub async fn fetch_metadata<T: templar_common::asset::AssetClass>(
         }
     }
 
-    let id: AccountId = asset.contract_id().as_ref().parse().map_err(|e| {
-        CliError::Other(format!(
-            "Unable to parse account_id '{}': {e}",
-            asset.contract_id().as_ref()
-        ))
-    })?;
+    let id: AccountId = asset.contract_id().to_owned();
 
     let metadata = ft_metadata(client, id).await?;
     Ok(TokenMetadata::Nep141(metadata))
@@ -353,12 +348,7 @@ pub async fn check_asset_existence<T: templar_common::asset::AssetClass>(
     }
 
     // NEP-141
-    let account_id: AccountId = asset.contract_id().as_ref().parse().map_err(|e| {
-        CliError::Other(format!(
-            "Unable to parse account_id '{}': {e}",
-            asset.contract_id().as_ref()
-        ))
-    })?;
+    let account_id: AccountId = asset.contract_id().to_owned();
     view_account(client, account_id.clone())
         .await
         .map_err(|e| {

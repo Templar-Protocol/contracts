@@ -273,7 +273,7 @@ pub fn gas() {
     eprintln!("Gas used: {gas}");
     assert!(gas <= Gas::from_tgas(15));
 
-    c.list_ema_prices_no_older_than(price_ids, 60);
+    c.list_ema_prices_no_older_than(price_ids, 60).detach();
 
     for receipt in near_sdk::test_utils::get_created_receipts() {
         println!("Receipt to {}", receipt.receiver_id);

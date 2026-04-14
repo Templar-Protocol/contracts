@@ -672,7 +672,8 @@ fn start_allocation_reserves_only_amount(
     let market_id = c
         .market_id_of(&m1)
         .unwrap_or_else(|| templar_common::panic_with_message("market missing"));
-    c.allocate(AllocationDelta::Supply(Delta::new(market_id, total)));
+    c.allocate(AllocationDelta::Supply(Delta::new(market_id, total)))
+        .detach();
 
     let rec = c
         .markets
@@ -1641,7 +1642,7 @@ fn refresh_markets_throttles_without_time_advance() {
         None,
         Some(near_sdk::Gas::from_tgas(300)),
     );
-    c.refresh_markets(vec![market_id]);
+    c.refresh_markets(vec![market_id]).detach();
 }
 
 #[test]
@@ -3043,7 +3044,8 @@ fn ft_on_transfer_zero_amount_returns_zero_refund(
 
     let sender: AccountId = c.underlying_asset.contract_id().into();
 
-    c.ft_on_transfer(sender.clone(), U128(0), supply_msg());
+    c.ft_on_transfer(sender.clone(), U128(0), supply_msg())
+        .detach();
 }
 
 #[test]
@@ -3863,7 +3865,8 @@ fn after_supply_1_check_allocating_not_allocating(c_max: Contract) {
         2,
         Default::default(),
         Default::default(),
-    );
+    )
+    .detach();
 
     assert_eq!(c.op_state, OpState::Idle);
 }
@@ -3898,7 +3901,8 @@ fn after_supply_1_check_allocating_not_allocating_index() {
         0,
         Default::default(),
         Default::default(),
-    );
+    )
+    .detach();
 
     assert_eq!(c.op_state, OpState::Idle);
 }
@@ -3935,7 +3939,8 @@ fn after_supply_1_check_allocating() {
         0,
         Default::default(),
         Default::default(),
-    );
+    )
+    .detach();
 
     assert_eq!(
         c.op_state,
@@ -4548,7 +4553,8 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
         U128(record_principal), // before_principal
         U128(0),
         U128(before_balance),
-    );
+    )
+    .detach();
 
     match &c.op_state {
         OpState::Payout(PayoutState {

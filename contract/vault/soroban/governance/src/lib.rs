@@ -548,6 +548,7 @@ fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn decide_submission(
     env: &Env,
     action: &GovernanceAction,
@@ -882,6 +883,7 @@ fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
     revoked_ids.len()
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
     let governance = env.current_contract_address();
     let vault = get_address(env, DataKey::Vault)?;

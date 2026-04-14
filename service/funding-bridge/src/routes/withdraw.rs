@@ -53,6 +53,7 @@ fn parse_amount(amount_str: &str, decimals: u8) -> Result<u128, String> {
         amount = %req.amount
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) -> Response {
     // Parse destination chain - support both "ethereum" and "eth:1" formats
     let (chain_id, chain_name) = match parse_chain(&req.destination_chain) {
@@ -260,10 +261,8 @@ pub async fn withdraw(State(app): State<App>, Json(req): Json<WithdrawRequest>) 
     let near_token_id = token_info.near_token_id.clone();
 
     // Build withdrawal intent using NEAR Intents protocol for cross-chain transfers
-    let intent_builder = crate::intents::WithdrawalIntentBuilder::new(
-        app.near_handler.treasury_account().to_string(),
-        app.near_handler.signer_key().clone(),
-    );
+    let intent_builder =
+        crate::intents::WithdrawalIntentBuilder::new(app.near_handler.treasury_signer());
 
     // Detect token type and use appropriate withdrawal method
     let is_nep245 = token_info.is_nep245();

@@ -313,7 +313,7 @@ pub async fn create(
             .transaction
             .actions()
             .iter()
-            .map(|a| a.get_prepaid_gas())
+            .map(|a| a.get_prepaid_gas().as_gas())
             .sum(),
     );
 

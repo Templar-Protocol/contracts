@@ -147,6 +147,7 @@ impl LiquidationExecutor {
     /// 3. Handle collateral based on strategy
     /// 4. Release inventory on failure
     #[tracing::instrument(skip(self, borrow_asset, collateral_asset), level = "info")]
+    #[allow(clippy::too_many_lines)]
     pub async fn execute_liquidation(
         &self,
         borrow_account: &AccountId,

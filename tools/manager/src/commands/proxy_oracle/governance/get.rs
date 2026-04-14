@@ -5,6 +5,7 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::{governance::Proposal, time::Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::governance::Operation;
+use templar_tools_common::near;
 
 use crate::{
     util::{OutputArgs, OutputStyle},
@@ -25,12 +26,13 @@ pub struct GetProposal {
 impl GetProposal {
     #[tracing::instrument(skip_all, name = "governance_get", fields(oracle_id = %self.oracle_id, id = self.id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let proposal: Option<Proposal<Operation>> = ctx
-            .near
-            .view(&self.oracle_id, "gov_get")
-            .args_json(json!({ "id": self.id }))
-            .await?
-            .json()?;
+        let proposal: Option<Proposal<Operation>> = near::view(
+            &ctx.near,
+            &self.oracle_id,
+            "gov_get",
+            json!({ "id": self.id }),
+        )
+        .await?;
 
         self.output.print_optional(proposal.as_ref(), |out| {
             writeln!(out, "Proposal {} not found", self.id)?;

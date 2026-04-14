@@ -1,7 +1,7 @@
-use near_fetch::ops::Function;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
+use templar_tools_common::near::Function;
 
 use crate::util::SignerArgs;
 use crate::CliContext;
@@ -25,7 +25,7 @@ impl CancelProposal {
         ctx.batch(&signer, &self.oracle_id)
             .call(
                 Function::new("gov_cancel")
-                    .args_json(json!({ "id": self.id }))
+                    .args_json(json!({ "id": self.id }))?
                     .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
             )

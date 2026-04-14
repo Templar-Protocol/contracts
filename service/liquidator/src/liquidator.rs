@@ -364,6 +364,7 @@ impl Liquidator {
         borrower = %borrow_account,
         market = %self.market
     ))]
+    #[allow(clippy::too_many_lines)]
     pub async fn liquidate(
         &self,
         borrow_account: AccountId,

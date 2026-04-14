@@ -6,6 +6,7 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::redstone::{FeedData, FeedId, DECIMALS};
 use templar_common::primitive_types::U256;
+use templar_tools_common::near;
 
 use crate::{
     util::{OutputArgs, OutputStyle},
@@ -63,12 +64,13 @@ impl FeedGet {
             .map(|s| FeedId::from(s.as_str()))
             .collect();
 
-        let data: HashMap<FeedId, FeedData> = ctx
-            .near
-            .view(&self.adapter_id, "read_price_data")
-            .args_json(json!({ "feed_ids": feed_ids }))
-            .await?
-            .json()?;
+        let data: HashMap<FeedId, FeedData> = near::view(
+            &ctx.near,
+            &self.adapter_id,
+            "read_price_data",
+            json!({ "feed_ids": feed_ids }),
+        )
+        .await?;
 
         self.output.print(&FeedDataOutput { data })
     }
