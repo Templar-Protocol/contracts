@@ -6,6 +6,10 @@ pub enum GatewayError {
     InvalidTransactionHash(String),
     #[error("near query failed: {0}")]
     NearQuery(String),
+    #[error("unsupported signer account: {0}")]
+    UnsupportedSignerAccount(String),
+    #[error("near transaction failed: {0}")]
+    NearTransaction(String),
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

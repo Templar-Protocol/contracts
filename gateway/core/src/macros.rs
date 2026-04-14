@@ -40,7 +40,7 @@ macro_rules! write_method_spec {
         pub struct $name;
 
         impl $crate::MethodSpec for $name {
-            type Input = $input;
+            type Input = $crate::common::WriteRequest<$input>;
             type Output = $output;
 
             const RPC_METHOD: &'static str = $rpc_method_name;

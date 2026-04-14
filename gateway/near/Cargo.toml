@@ -21,6 +21,7 @@ templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

@@ -1749,6 +1749,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -1762,6 +1763,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "jsonrpsee",
+ "near-account-id",
  "near-api",
  "serde",
  "tokio",

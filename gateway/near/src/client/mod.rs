@@ -3,6 +3,7 @@ mod macros;
 mod market;
 mod registry;
 mod storage;
+mod tx;
 mod universal_account;
 
 use blockchain_gateway_core::{
@@ -12,6 +13,7 @@ use near_account_id::{AccountId, AccountIdRef};
 use near_api::{types::Data, Contract, NetworkConfig};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::error::{GatewayError, GatewayResult};
 
@@ -19,6 +21,7 @@ pub use chain::ChainClient;
 pub use market::MarketClient;
 pub use registry::RegistryClient;
 pub use storage::StorageClient;
+pub use tx::TxClient;
 pub use universal_account::UniversalAccountClient;
 
 trait ContractClient {
@@ -29,6 +32,12 @@ trait ContractClient {
 #[derive(Debug, Clone)]
 pub struct NearReadClient {
     network: NetworkConfig,
+}
+
+#[derive(Clone)]
+pub struct NearWriteClient {
+    network: NetworkConfig,
+    signers: BTreeMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
 }
 
 impl NearReadClient {
@@ -120,6 +129,76 @@ impl NearReadClient {
             ContractArgs::Raw(bytes) => {
                 self.view_raw(contract_id, method_name, bytes.0.clone())
                     .await
+            }
+        }
+    }
+}
+
+impl NearWriteClient {
+    pub fn new(
+        network: NetworkConfig,
+        signers: BTreeMap<near_account_id::AccountId, std::sync::Arc<near_api::Signer>>,
+    ) -> Self {
+        Self { network, signers }
+    }
+
+    pub fn network(&self) -> &NetworkConfig {
+        &self.network
+    }
+
+    pub fn tx(
+        &self,
+        signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    ) -> GatewayResult<TxClient<'_>> {
+        let signer = self
+            .signers
+            .get(&signer_account_id.0)
+            .cloned()
+            .ok_or_else(|| {
+                GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
+            })?;
+
+        Ok(TxClient {
+            inner: self,
+            signer_account_id,
+            signer,
+        })
+    }
+}
+
+fn contract_args_bytes(args: blockchain_gateway_core::common::ContractArgs) -> Vec<u8> {
+    match args {
+        blockchain_gateway_core::common::ContractArgs::Json(value) => {
+            serde_json::to_vec(&value).expect("contract args should serialize")
+        }
+        blockchain_gateway_core::common::ContractArgs::Raw(bytes) => bytes.0,
+    }
+}
+
+trait IntoNearTxExecutionStatus {
+    fn into_near(self) -> near_api::types::TxExecutionStatus;
+}
+
+impl IntoNearTxExecutionStatus for blockchain_gateway_core::common::TxExecutionStatus {
+    fn into_near(self) -> near_api::types::TxExecutionStatus {
+        match self {
+            blockchain_gateway_core::common::TxExecutionStatus::None => {
+                near_api::types::TxExecutionStatus::None
+            }
+            blockchain_gateway_core::common::TxExecutionStatus::Included => {
+                near_api::types::TxExecutionStatus::Included
+            }
+            blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic => {
+                near_api::types::TxExecutionStatus::ExecutedOptimistic
+            }
+            blockchain_gateway_core::common::TxExecutionStatus::IncludedFinal => {
+                near_api::types::TxExecutionStatus::IncludedFinal
+            }
+            blockchain_gateway_core::common::TxExecutionStatus::Executed => {
+                near_api::types::TxExecutionStatus::Executed
+            }
+            blockchain_gateway_core::common::TxExecutionStatus::Final => {
+                near_api::types::TxExecutionStatus::Final
             }
         }
     }

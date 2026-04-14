@@ -13,6 +13,7 @@ dirs.workspace = true
 dotenvy.workspace = true
 futures.workspace = true
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
+near-account-id.workspace = true
 near-api.workspace = true
 serde.workspace = true
 tokio.workspace = true

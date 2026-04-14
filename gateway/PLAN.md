@@ -250,9 +250,9 @@ Do not persist in Postgres:
 - private keys
 - raw secret values
 - ephemeral block hash caches
-- ephemeral in-memory lane scheduling state
+- ephemeral in-memory `near-api` signer nonce cache state
 
-The volatile runtime should reconstruct signer and lane state on startup from durable metadata plus host-provided secrets.
+The volatile runtime should reconstruct signer state on startup from durable metadata plus host-provided secrets.
 
 ## Actor Model
 
@@ -264,30 +264,9 @@ At minimum, the architecture should preserve actor-like ownership boundaries.
 
 Current intended actors:
 
-1. `ManagedAccountActor`
-2. `KeyLaneActor`
-3. `RpcActor`
-4. domain actors such as `RegistryActor`, `MarketActor`, `UniversalAccountActor`, `StorageActor`
-5. `OperationActor`
-
-### `ManagedAccountActor`
-
-Owns one managed signer account and routes writes across its configured keys.
-
-### `KeyLaneActor`
-
-Owns one `(account_id, public_key)` lane.
-
-This is the fundamental nonce lane because NEAR nonces are per access key, not per account globally.
-
-Responsibilities:
-
-- allocate nonces for that key
-- refresh access key state
-- sign transactions
-- submit transactions
-- track in-flight transactions
-- reconcile state after timeout/failure
+1. `RpcActor`
+2. domain actors such as `RegistryActor`, `MarketActor`, `UniversalAccountActor`, `StorageActor`
+3. `OperationActor`
 
 ### `RpcActor`
 
@@ -307,57 +286,22 @@ Coordinates multi-step operations and records durable progress.
 
 ## Nonce Management
 
-The current repository contains two relevant patterns:
+For v1, the gateway relies on `near-api`'s built-in signer functionality for:
 
-### Liquidator `NonceTracker`
+- nonce caching per `(account_id, public_key)`
+- finalized access-key nonce fetching
+- access-key pooling across multiple keys
+- transaction signing and submission
 
-The liquidator currently has a small atomic nonce tracker.
+This means the gateway does not currently implement a custom nonce manager.
 
-It:
+Important implications:
 
-- tracks the highest locally used nonce
-- combines that with the RPC-reported access-key nonce
-- allocates `max(rpc_nonce, tracked_nonce) + 1`
-- uses CAS to guarantee process-local uniqueness under concurrency
+- all writes for a managed account should flow through the same shared `Arc<near_api::Signer>` instance
+- the gateway still owns operation semantics, idempotency, and higher-level workflow control
+- if stronger restart recovery or multi-instance coordination becomes necessary later, a custom nonce-management layer can still be added on top
 
-This is useful as a primitive, but it is not a full nonce manager.
-
-It does not by itself provide:
-
-- reservation lifecycle tracking
-- submitted vs reserved distinction
-- restart recovery
-- per-key operation reconciliation
-- robust stale block hash handling
-
-### Relayer Cache Service
-
-The relayer has a more actor-like cache service that also serves nonce-related state and a block hash.
-
-This centralizes access but mixes caching and sequencing concerns.
-
-### Desired Direction
-
-The gateway should treat each access key as its own serialized nonce lane.
-
-The service should support multiple keys per managed account and use those lanes for parallelism.
-
-Do not expose raw nonce reservation or raw signing as public RPC methods.
-
-Reason:
-
-- signing is tightly coupled to nonce reservation, block hash freshness, and submission
-- exposing `sign.transaction` or `reserve_nonce` would create ambiguity if the caller never submits or submits out of band
-
-Instead:
-
-- the nonce manager should be internally separate as an actor
-- but externally hidden behind write operations that sign and submit as one service-owned flow
-
-Important conclusion:
-
-- public raw signing primitives are dangerous for logical consistency
-- signing and submission should remain tightly integrated
+The gateway should not expose raw nonce reservation or raw signing as public RPC methods.
 
 ## Method Taxonomy
 
