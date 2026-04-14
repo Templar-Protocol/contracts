@@ -33,10 +33,6 @@ use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
 // Import NEAR-specific math types for share math
 use templar_common::supply::SupplyPosition;
-use templar_common::vault::prelude::{
-    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
-    MAX_PERFORMANCE_FEE_WAD,
-};
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
 use templar_common::vault::DepositMsg;
@@ -52,6 +48,10 @@ use templar_common::vault::{
     WithdrawingState, MAX_TIMELOCK_NS, YEAR_NS,
 };
 use templar_vault_kernel::TimestampNs;
+use templar_vault_kernel::{
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
+    MAX_PERFORMANCE_FEE_WAD,
+};
 
 #[fixture]
 fn vault_id() -> AccountId {
@@ -2581,7 +2581,7 @@ fn init_rejects_management_fee_above_cap(vault_id: AccountId) {
         fee_recipient,
     );
 
-    cfg.fees.management.fee = Wad::from(MAX_MANAGEMENT_FEE_WAD + 1);
+    cfg.fees.management.fee = templar_common::vault::wad::Wad::from(MAX_MANAGEMENT_FEE_WAD + 1);
 
     let _ = Contract::new(cfg);
 }
@@ -2610,7 +2610,7 @@ fn init_rejects_performance_fee_above_cap(vault_id: AccountId) {
         fee_recipient,
     );
 
-    cfg.fees.performance.fee = Wad::from(MAX_PERFORMANCE_FEE_WAD + 1);
+    cfg.fees.performance.fee = templar_common::vault::wad::Wad::from(MAX_PERFORMANCE_FEE_WAD + 1);
 
     let _ = Contract::new(cfg);
 }
