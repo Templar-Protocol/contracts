@@ -38,10 +38,6 @@ use templar_common::{
     market::ext_market,
     panic_with_message,
     vault::{
-        prelude::{
-            compute_fee_shares, compute_fee_shares_from_assets, MAX_MANAGEMENT_FEE_WAD,
-            MAX_PERFORMANCE_FEE_WAD,
-        },
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, CapGroupId,
         CapGroupRecord, Error, Event, FeeAccrualAnchor, Fees, IdleBalanceDelta,
         MarketConfiguration, MarketId, OpState, PayoutState, PendingWithdrawal, QueueAction,
@@ -58,18 +54,80 @@ use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
+use templar_vault_kernel::math::wad::Wad as KernelWad;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::state::queue::{
     compute_idle_settlement, is_past_cooldown, DEFAULT_COOLDOWN_NS,
 };
-use templar_vault_kernel::{Address, KernelAction, PayoutOutcome, TimestampNs};
+use templar_vault_kernel::{
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, Address,
+    KernelAction, PayoutOutcome, TimestampNs, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120_000_000_000;
 const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
 const ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS: &str = "Missing address mapping for withdrawal queue";
 
-pub use templar_common::vault::prelude::{mul_div_ceil, mul_div_floor, Number, Wad};
+pub use templar_vault_kernel::math::number::Number;
+
+type BoundaryWad = templar_common::vault::wad::Wad;
+
+fn kernel_wad_from_boundary(value: BoundaryWad) -> KernelWad {
+    KernelWad::from(u128::from(value))
+}
+
+fn boundary_wad_from_kernel(value: KernelWad) -> BoundaryWad {
+    BoundaryWad::from(u128::from(value))
+}
+
+fn kernel_fees_from_boundary(fees: Fees<BoundaryWad>) -> Fees<KernelWad> {
+    Fees {
+        performance: templar_common::vault::Fee {
+            fee: kernel_wad_from_boundary(fees.performance.fee),
+            recipient: fees.performance.recipient,
+        },
+        management: templar_common::vault::Fee {
+            fee: kernel_wad_from_boundary(fees.management.fee),
+            recipient: fees.management.recipient,
+        },
+        max_total_assets_growth_rate: fees
+            .max_total_assets_growth_rate
+            .map(kernel_wad_from_boundary),
+    }
+}
+
+fn boundary_fees_from_kernel(fees: Fees<KernelWad>) -> Fees<BoundaryWad> {
+    Fees {
+        performance: templar_common::vault::Fee {
+            fee: boundary_wad_from_kernel(fees.performance.fee),
+            recipient: fees.performance.recipient,
+        },
+        management: templar_common::vault::Fee {
+            fee: boundary_wad_from_kernel(fees.management.fee),
+            recipient: fees.management.recipient,
+        },
+        max_total_assets_growth_rate: fees
+            .max_total_assets_growth_rate
+            .map(boundary_wad_from_kernel),
+    }
+}
+
+fn kernel_fees_from_u128(fees: Fees<U128>) -> Fees<KernelWad> {
+    Fees {
+        performance: templar_common::vault::Fee {
+            fee: KernelWad::from(fees.performance.fee.0),
+            recipient: fees.performance.recipient,
+        },
+        management: templar_common::vault::Fee {
+            fee: KernelWad::from(fees.management.fee.0),
+            recipient: fees.management.recipient,
+        },
+        max_total_assets_growth_rate: fees
+            .max_total_assets_growth_rate
+            .map(|rate| KernelWad::from(rate.0)),
+    }
+}
 
 pub mod aum;
 pub(crate) mod convert;
@@ -261,6 +319,8 @@ impl Contract {
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&initial_timelock_ns.0),
             "timelock bounds"
         );
+
+        let fees = kernel_fees_from_boundary(fees);
 
         require!(
             fees.management.fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
@@ -1017,7 +1077,7 @@ impl Contract {
             sentinel: role_member(&Role::Sentinel, "Sentinel"),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: u64::from(self.governance_timelocks.timelock_config_ns).into(),
-            fees: self.fees.clone(),
+            fees: boundary_fees_from_kernel(self.fees.clone()),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
             symbol: meta.symbol,
@@ -1063,7 +1123,7 @@ impl Contract {
     }
 
     pub fn get_fees(&self) -> Fees<U128> {
-        self.fees.clone().into()
+        boundary_fees_from_kernel(self.fees.clone()).into()
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
