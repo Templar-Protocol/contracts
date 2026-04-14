@@ -31,7 +31,6 @@ container_build_command = [
 getrandom.workspace = true
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
-near-contract-standards.workspace = true
 templar-common.workspace = true
 templar-proxy-oracle-kernel.workspace = true
 
