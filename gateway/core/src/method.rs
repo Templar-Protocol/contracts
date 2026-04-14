@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
+pub enum MethodSelector {
+    Read(PublicReadMethod),
+    Write(WriteMethod),
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 pub enum PublicReadMethod {
     Chain(ChainReadMethod),
     Registry(RegistryReadMethod),

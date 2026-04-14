@@ -1,12 +1,9 @@
-pub mod chain;
-pub mod market;
-pub mod registry;
-pub mod storage;
-pub mod tx;
-pub mod universal_account;
-
 use crate::{
-    actor::{read::ReadHandle, write::WriteHandle},
+    actor::{
+        Actor, ActorGroup,
+        read::{ReadActor, ReadHandle},
+        write::{WriteActors, WriteHandle},
+    },
     NearReadClient, NearWriteClient,
 };
 
@@ -16,12 +13,29 @@ pub struct GatewayService {
     write: WriteHandle,
 }
 
+pub struct GatewayRuntime {
+    actors: ActorGroup,
+}
+
+impl GatewayRuntime {
+    pub async fn shutdown(self) {
+        self.actors.shutdown_and_wait().await;
+    }
+}
+
 impl GatewayService {
-    pub fn new(near: NearReadClient, writer: NearWriteClient) -> Self {
-        Self {
-            read: crate::actor::read::spawn(near),
-            write: crate::actor::write::spawn(writer),
-        }
+    pub fn spawn(near: NearReadClient, writer: NearWriteClient) -> (Self, GatewayRuntime) {
+        let (read, read_task) = ReadActor::new(near).spawn();
+        let (write, write_tasks) = WriteActors::new(writer).spawn();
+
+        let mut actors = ActorGroup::new();
+        actors.push(read_task);
+        actors.extend_group(write_tasks);
+
+        (
+            Self { read, write },
+            GatewayRuntime { actors },
+        )
     }
 
     pub fn read(&self) -> &ReadHandle {

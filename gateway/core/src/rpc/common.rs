@@ -33,6 +33,13 @@ pub enum ContractArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ReadRequest<T> {
+    #[serde(flatten)]
+    pub body: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteRequest<T> {
     pub signer_account_id: ManagedAccountId,
     #[serde(default, skip_serializing_if = "Option::is_none")]

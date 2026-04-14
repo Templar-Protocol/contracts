@@ -22,4 +22,4 @@ pub use primitive::{
     NearToken, RegistryId, UniversalAccountId,
 };
 pub use rpc::{chain, common, market, registry, storage, tx, universal_account};
-pub use spec::{MethodKind, MethodSpec, ReadMethodSpec, WriteMethodSpec};
+pub use spec::{MethodKind, MethodSpec};

@@ -23,14 +23,12 @@ macro_rules! public_read_method_spec {
         pub struct $name;
 
         impl $crate::MethodSpec for $name {
-            type Input = $input;
+            type Input = $crate::common::ReadRequest<$input>;
             type Output = $output;
 
             const RPC_METHOD: &'static str = $rpc_method_name;
-        }
-
-        impl $crate::ReadMethodSpec for $name {
-            const IDENTIFIER: $crate::PublicReadMethod = $method_identifier;
+            const IDENTIFIER: $crate::method::MethodSelector =
+                $crate::method::MethodSelector::Read($method_identifier);
         }
     };
 }
@@ -44,10 +42,8 @@ macro_rules! write_method_spec {
             type Output = $output;
 
             const RPC_METHOD: &'static str = $rpc_method_name;
-        }
-
-        impl $crate::WriteMethodSpec for $name {
-            const IDENTIFIER: $crate::WriteMethod = $method_identifier;
+            const IDENTIFIER: $crate::method::MethodSelector =
+                $crate::method::MethodSelector::Write($method_identifier);
         }
     };
 }

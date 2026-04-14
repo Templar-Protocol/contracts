@@ -1,17 +1,50 @@
 use tokio::sync::mpsc;
-use tokio::sync::Semaphore;
 
-use blockchain_gateway_core::{chain, market, registry, storage, universal_account};
+use blockchain_gateway_core::{
+    chain, common::ReadRequest, market, registry, storage, universal_account,
+};
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::request::{self, respond, ActorRequest, MessageEnvelope},
-    service::universal_account::into_parameters_view,
+    actor::request::{respond, Actor, ActorRequest, MessageEnvelope, RequestHandle},
     GatewayResult, NearReadClient,
 };
 
 const READ_ACTOR_NAME: &str = "read-actor";
 const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
+
+fn into_parameters_view(
+    parameters: templar_universal_account::PayloadExecutionParameters,
+) -> universal_account::PayloadExecutionParametersView {
+    universal_account::PayloadExecutionParametersView {
+        block_height: parameters.block_height.0,
+        index: parameters.index.0,
+        nonce: parameters.nonce.0,
+        name: parameters.name,
+        version: parameters.version,
+        chain_id: parameters.chain_id.map(|value| value.0),
+        verifying_contract: parameters
+            .verifying_contract
+            .to_string()
+            .parse()
+            .expect("templar universal account should emit valid account ids"),
+        salt: parameters
+            .salt
+            .and_then(|value| serde_json::to_value(value).ok())
+            .and_then(|value| value.as_str().map(str::to_owned)),
+    }
+}
+
+#[derive(Clone)]
+pub struct ReadActor {
+    client: NearReadClient,
+}
+
+impl ReadActor {
+    pub fn new(client: NearReadClient) -> Self {
+        Self { client }
+    }
+}
 
 #[derive(Clone)]
 pub struct ReadHandle {
@@ -19,12 +52,23 @@ pub struct ReadHandle {
 }
 
 impl ReadHandle {
-    pub async fn request<Request>(&self, params: Request) -> GatewayResult<Request::Response>
+    pub async fn request<Request>(
+        &self,
+        params: ReadRequest<Request>,
+    ) -> GatewayResult<Request::Response>
     where
         Request: ActorRequest<Actor = NearReadClient>,
         ReadMessage: From<MessageEnvelope<Request>>,
     {
-        request::request(&self.sender, READ_ACTOR_NAME, params).await
+        <Self as RequestHandle<ReadMessage>>::request(self, params.body).await
+    }
+}
+
+impl RequestHandle<ReadMessage> for ReadHandle {
+    const ACTOR_NAME: &'static str = READ_ACTOR_NAME;
+
+    fn sender(&self) -> &mpsc::Sender<ReadMessage> {
+        &self.sender
     }
 }
 
@@ -256,23 +300,22 @@ async fn dispatch(client: &NearReadClient, message: ReadMessage) {
     }
 }
 
-pub fn spawn(client: NearReadClient) -> ReadHandle {
-    let (sender, mut receiver) = mpsc::channel(64);
-    let semaphore = std::sync::Arc::new(Semaphore::new(READ_ACTOR_MAX_CONCURRENCY));
+impl Actor for ReadActor {
+    type Message = ReadMessage;
+    type Handle = ReadHandle;
 
-    tokio::spawn(async move {
-        while let Some(message) = receiver.recv().await {
-            let client = client.clone();
-            let semaphore = semaphore.clone();
-            tokio::spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
-                    .await
-                    .expect("read actor semaphore should remain available while actor is alive");
-                dispatch(&client, message).await;
-            });
-        }
-    });
+    const NAME: &'static str = READ_ACTOR_NAME;
+    const CHANNEL_CAPACITY: usize = 64;
 
-    ReadHandle { sender }
+    fn concurrency(&self) -> usize {
+        READ_ACTOR_MAX_CONCURRENCY
+    }
+
+    fn into_handle(sender: mpsc::Sender<Self::Message>) -> Self::Handle {
+        ReadHandle { sender }
+    }
+
+    fn on_message(&self, message: Self::Message) -> BoxFuture<'_, ()> {
+        Box::pin(async move { dispatch(&self.client, message).await })
+    }
 }

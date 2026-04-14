@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
-use tokio::sync::Semaphore;
 
 use blockchain_gateway_core::{
     operation::{
@@ -16,11 +13,53 @@ use near_api::types::transaction::result::TransactionResult;
 use uuid::Uuid;
 
 use crate::{
-    actor::request::{self, respond, ActorRequest, MessageEnvelope},
+    actor::request::{respond, Actor, ActorGroup, ActorRequest, MessageEnvelope, RequestHandle},
     GatewayResult, NearWriteClient,
 };
 
 const WRITE_ACTOR_NAME: &str = "write-actor";
+
+pub struct WriteActors {
+    client: NearWriteClient,
+}
+
+impl WriteActors {
+    pub fn new(client: NearWriteClient) -> Self {
+        Self { client }
+    }
+
+    pub fn spawn(self) -> (WriteHandle, ActorGroup) {
+        let mut tasks = ActorGroup::new();
+        let senders = self
+            .client
+            .signers()
+            .iter()
+            .map(|(account_id, signer_entry)| {
+                let (sender, task) = AccountWriteActor::new(
+                    self.client.clone(),
+                    signer_entry.key_count,
+                )
+                .spawn();
+                tasks.push(task);
+                (account_id.clone(), sender)
+            })
+            .collect();
+
+        (WriteHandle { senders }, tasks)
+    }
+}
+
+#[derive(Clone)]
+struct AccountWriteActor {
+    client: NearWriteClient,
+    concurrency: usize,
+}
+
+impl AccountWriteActor {
+    fn new(client: NearWriteClient, concurrency: usize) -> Self {
+        Self { client, concurrency }
+    }
+}
 
 #[derive(Clone)]
 pub struct WriteHandle {
@@ -33,10 +72,25 @@ impl WriteHandle {
         WriteRequest<T>: ActorRequest<Actor = NearWriteClient, Response = WriteOperationResult>,
         WriteMessage: From<MessageEnvelope<WriteRequest<T>>>,
     {
-        let sender = self.senders.get(&params.signer_account_id).ok_or_else(|| {
-            crate::GatewayError::UnsupportedSignerAccount(params.signer_account_id.0.to_string())
-        })?;
-        request::request(sender, WRITE_ACTOR_NAME, params).await
+        let sender = self.sender_for(&params.signer_account_id)?;
+        <Self as RequestHandle<WriteMessage>>::request_on(self, sender, params).await
+    }
+
+    fn sender_for(
+        &self,
+        signer_account_id: &ManagedAccountId,
+    ) -> GatewayResult<&mpsc::Sender<WriteMessage>> {
+        self.senders.get(signer_account_id).ok_or_else(|| {
+            crate::GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
+        })
+    }
+}
+
+impl RequestHandle<WriteMessage> for WriteHandle {
+    const ACTOR_NAME: &'static str = WRITE_ACTOR_NAME;
+
+    fn sender(&self) -> &mpsc::Sender<WriteMessage> {
+        unreachable!("write handle requires signer-based routing")
     }
 }
 
@@ -159,31 +213,21 @@ async fn dispatch(actor: &NearWriteClient, message: WriteMessage) {
     }
 }
 
-pub fn spawn(client: NearWriteClient) -> WriteHandle {
-    let senders = client
-        .signers()
-        .iter()
-        .map(|(account_id, signer_entry)| {
-            let (sender, mut receiver) = mpsc::channel(64);
-            let client = client.clone();
-            let semaphore = Arc::new(Semaphore::new(signer_entry.key_count));
+impl Actor for AccountWriteActor {
+    type Message = WriteMessage;
+    type Handle = mpsc::Sender<WriteMessage>;
 
-            tokio::spawn(async move {
-                while let Some(message) = receiver.recv().await {
-                    let client = client.clone();
-                    let semaphore = semaphore.clone();
-                    tokio::spawn(async move {
-                        let _permit = semaphore.acquire_owned().await.expect(
-                            "write actor semaphore should remain available while actor is alive",
-                        );
-                        dispatch(&client, message).await;
-                    });
-                }
-            });
+    const NAME: &'static str = WRITE_ACTOR_NAME;
 
-            (account_id.clone(), sender)
-        })
-        .collect();
+    fn concurrency(&self) -> usize {
+        self.concurrency
+    }
 
-    WriteHandle { senders }
+    fn into_handle(sender: mpsc::Sender<Self::Message>) -> Self::Handle {
+        sender
+    }
+
+    fn on_message(&self, message: Self::Message) -> BoxFuture<'_, ()> {
+        Box::pin(async move { dispatch(&self.client, message).await })
+    }
 }
