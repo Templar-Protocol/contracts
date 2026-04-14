@@ -1,38 +1,43 @@
 use blockchain_gateway_core::storage;
+use futures::future::BoxFuture;
 
-use crate::{GatewayResult, GatewayService};
+use crate::GatewayService;
 
-pub async fn get_balance_bounds(
+pub fn get_balance_bounds(
     service: &GatewayService,
     params: storage::GetBalanceBoundsParams,
-) -> GatewayResult<storage::GetBalanceBoundsResult> {
-    let bounds = service
-        .near()
-        .storage(params.contract_id)
-        .storage_balance_bounds(params.args)
-        .await?;
+) -> BoxFuture<'_, crate::GatewayResult<storage::GetBalanceBoundsResult>> {
+    Box::pin(async move {
+        let bounds = service
+            .near()
+            .storage(params.contract_id)
+            .storage_balance_bounds(params.args)
+            .await?;
 
-    Ok(storage::GetBalanceBoundsResult {
-        bounds: blockchain_gateway_core::common::StorageBalanceBounds {
-            min: bounds.min,
-            max: bounds.max,
-        },
+        Ok(storage::GetBalanceBoundsResult {
+            bounds: blockchain_gateway_core::common::StorageBalanceBounds {
+                min: bounds.min,
+                max: bounds.max,
+            },
+        })
     })
 }
 
-pub async fn get_balance_of(
+pub fn get_balance_of(
     service: &GatewayService,
     params: storage::GetBalanceOfParams,
-) -> GatewayResult<storage::GetBalanceOfResult> {
-    let balance = service
-        .near()
-        .storage(params.contract_id)
-        .storage_balance_of(params.args)
-        .await?
-        .map(|balance| blockchain_gateway_core::common::StorageBalance {
-            total: balance.total,
-            available: balance.available,
-        });
+) -> BoxFuture<'_, crate::GatewayResult<storage::GetBalanceOfResult>> {
+    Box::pin(async move {
+        let balance = service
+            .near()
+            .storage(params.contract_id)
+            .storage_balance_of(params.args)
+            .await?
+            .map(|balance| blockchain_gateway_core::common::StorageBalance {
+                total: balance.total,
+                available: balance.available,
+            });
 
-    Ok(storage::GetBalanceOfResult { balance })
+        Ok(storage::GetBalanceOfResult { balance })
+    })
 }

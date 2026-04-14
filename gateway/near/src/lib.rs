@@ -3,7 +3,7 @@ pub mod client;
 pub mod error;
 pub mod operation;
 pub mod service;
-pub mod store ;
+pub mod store;
 
 pub use client::NearReadClient;
 pub use error::{GatewayError, GatewayResult};

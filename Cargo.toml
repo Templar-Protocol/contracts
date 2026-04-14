@@ -55,6 +55,7 @@ derive_more = { version = "1", default-features = false, features = [
     "display",
     "is_variant",
 ] }
+dotenvy = "0.15.7"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
@@ -119,6 +120,7 @@ tracing = "0.1.44"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uniffi = "0.31.0"
+url = "2.5"
 uuid = { version = "1", features = ["serde", "v4"] }
 wiremock = "0.5.22"
 zeroize = "1.8.2"

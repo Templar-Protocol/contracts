@@ -1,24 +1,25 @@
 use blockchain_gateway_core::chain;
+use futures::future::BoxFuture;
 
-use crate::{GatewayResult, GatewayService};
+use crate::GatewayService;
 
-pub async fn view_account(
+pub fn view_account(
     service: &GatewayService,
     params: chain::ViewAccountParams,
-) -> GatewayResult<chain::ViewAccountResult> {
-    service.near().chain().view_account(params).await
+) -> BoxFuture<'_, crate::GatewayResult<chain::ViewAccountResult>> {
+    Box::pin(async move { service.near().chain().view_account(params).await })
 }
 
-pub async fn view_function(
+pub fn view_function(
     service: &GatewayService,
     params: chain::ViewFunctionParams,
-) -> GatewayResult<chain::ViewFunctionResult> {
-    service.near().chain().view_function(params).await
+) -> BoxFuture<'_, crate::GatewayResult<chain::ViewFunctionResult>> {
+    Box::pin(async move { service.near().chain().view_function(params).await })
 }
 
-pub async fn get_transaction(
+pub fn get_transaction(
     service: &GatewayService,
     params: chain::GetTransactionParams,
-) -> GatewayResult<chain::GetTransactionResult> {
-    service.near().chain().get_transaction(params).await
+) -> BoxFuture<'_, crate::GatewayResult<chain::GetTransactionResult>> {
+    Box::pin(async move { service.near().chain().get_transaction(params).await })
 }

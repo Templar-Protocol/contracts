@@ -1736,6 +1736,7 @@ version = "1.2.1"
 dependencies = [
  "async-trait",
  "blockchain-gateway-core",
+ "futures",
  "near-account-id",
  "near-api",
  "near-contract-standards",
@@ -1756,10 +1757,18 @@ version = "1.2.1"
 dependencies = [
  "blockchain-gateway-core",
  "blockchain-gateway-near",
+ "clap",
+ "dirs 6.0.0",
+ "dotenvy",
+ "futures",
  "jsonrpsee",
+ "near-api",
  "serde",
  "tokio",
  "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
