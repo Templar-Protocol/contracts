@@ -10,6 +10,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 near-sdk.workspace = true
+bs58 = "0.5"
+stellar-xdr = { version = "24.0", default-features = false, features = ["curr", "std"] }
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }

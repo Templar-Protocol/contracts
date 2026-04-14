@@ -7,6 +7,8 @@ use near_sdk::{
     serde_json::{self, json},
     AccountId, Gas, NearToken, PanicOnDefault, Promise,
 };
+use std::str::FromStr;
+use stellar_xdr::curr::{Limited, Limits, ScAddress, ScVal, WriteXdr};
 
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 const GAS_MT_TRANSFER: Gas = Gas::from_tgas(50);
@@ -71,7 +73,7 @@ impl Contract {
             "mt_transfer",
             json!({
                 "receiver_id": self.near_market,
-                "token_id": self.omni_token_id,
+                "token_id": self.omni_token_id_for_contract(),
                 "amount": amount,
             }),
             GAS_MT_TRANSFER,
@@ -85,8 +87,8 @@ impl Contract {
         self.call_omni(
             "withdraw",
             json!({
-                "token_id": self.omni_token_id,
-                "receiver_id": self.stellar_receiver,
+                "token_id": self.omni_token_id_for_contract(),
+                "receiver_id": self.encoded_stellar_receiver(),
                 "amount": amount,
             }),
             GAS_WITHDRAW,
@@ -159,6 +161,34 @@ impl Contract {
         require!(amount.0 > 0, "amount must be > 0");
     }
 
+    fn omni_token_id_for_contract(&self) -> String {
+        let wrapped_prefix = format!("nep245:{}:", self.omni_contract);
+        self.omni_token_id
+            .strip_prefix(&wrapped_prefix)
+            .unwrap_or(&self.omni_token_id)
+            .to_string()
+    }
+
+    fn encoded_stellar_receiver(&self) -> String {
+        let sc_address = self.parse_stellar_receiver();
+        Self::encode_stellar_sc_address(&sc_address)
+    }
+
+    fn parse_stellar_receiver(&self) -> ScAddress {
+        ScAddress::from_str(&self.stellar_receiver)
+            .unwrap_or_else(|_| env::panic_str("invalid stellar receiver"))
+    }
+
+    fn encode_stellar_sc_address(sc_address: &ScAddress) -> String {
+        let sc_val = ScVal::Address(sc_address.clone());
+        let mut xdr_bytes = Vec::new();
+        let mut limited_writer = Limited::new(&mut xdr_bytes, Limits::none());
+        sc_val
+            .write_xdr(&mut limited_writer)
+            .unwrap_or_else(|_| env::panic_str("failed to encode stellar receiver"));
+        bs58::encode(xdr_bytes).into_string()
+    }
+
     fn assert_token_id(token_id: &str) {
         require!(!token_id.trim().is_empty(), "token_id cannot be empty");
         require!(
@@ -209,7 +239,7 @@ mod tests {
 
     fn test_contract() -> Contract {
         Contract::new(
-            "GCYV3WBXWJY4UVQZ6X3I6LBKAKP4YB6ESQOKJP4MZ2S2BFOFGB2P4D7F".to_string(),
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
             account("templar-market.near"),
             "1100_stellar_usdc".to_string(),
             account("v2_1.omni.hot.tg"),
@@ -266,6 +296,28 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_token_id_is_normalized_for_omni_calls() {
+        let contract = Contract::new(
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
+            account("templar-market.near"),
+            "nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
+                .to_string(),
+            account("v2_1.omni.hot.tg"),
+            account("curator.near"),
+            account("owner.near"),
+        );
+        context(&account("curator.near"));
+
+        contract.withdraw_to_stellar(U128(1));
+
+        let (_, _, args, _, _) = first_function_call();
+        assert_eq!(
+            args["token_id"],
+            "1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
+        );
+    }
+
+    #[test]
     fn withdraw_to_stellar_uses_hardcoded_receiver_and_token() {
         let contract = test_contract();
         context(&account("curator.near"));
@@ -279,7 +331,10 @@ mod tests {
         assert_eq!(prepaid_gas, GAS_WITHDRAW);
         assert_eq!(
             args["receiver_id"],
-            "GCYV3WBXWJY4UVQZ6X3I6LBKAKP4YB6ESQOKJP4MZ2S2BFOFGB2P4D7F"
+            Contract::encode_stellar_sc_address(
+                &ScAddress::from_str("GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV")
+                    .unwrap_or_else(|_| panic!("invalid test stellar receiver"))
+            )
         );
         assert_eq!(args["token_id"], "1100_stellar_usdc");
         assert_eq!(args["amount"], "999");
