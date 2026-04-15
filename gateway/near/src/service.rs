@@ -1,8 +1,8 @@
-use std::thread::JoinHandle;
+use std::{collections::HashMap, sync::Arc, thread::JoinHandle};
 
 use actix::Addr;
-
 use blockchain_gateway_core::ManagedAccountId;
+use tokio::sync::Mutex;
 
 use crate::{
     actor::{
@@ -16,13 +16,13 @@ use crate::{
 
 #[derive(Clone)]
 pub struct GatewayService {
-    inner: std::sync::Arc<GatewayInner>,
-    runtime: std::sync::Arc<std::sync::Mutex<Option<GatewayRuntime>>>,
+    inner: Arc<GatewayInner>,
+    runtime: Arc<Mutex<Option<GatewayRuntime>>>,
 }
 
 struct GatewayInner {
     read: Addr<ReadActor>,
-    write: std::collections::HashMap<ManagedAccountId, Addr<AccountWriteActor>>,
+    write: HashMap<ManagedAccountId, Addr<AccountWriteActor>>,
 }
 
 struct GatewayRuntime {
@@ -32,11 +32,7 @@ struct GatewayRuntime {
 
 impl GatewayService {
     pub async fn shutdown(self) {
-        let runtime = self
-            .runtime
-            .lock()
-            .expect("gateway runtime lock poisoned")
-            .take();
+        let runtime = self.runtime.lock().await.take();
         if let Some(runtime) = runtime {
             runtime.system.stop();
             let _ = runtime.thread.join();
@@ -67,11 +63,8 @@ impl GatewayService {
             .expect("gateway actor runtime should initialize before use");
 
         Self {
-            inner: std::sync::Arc::new(GatewayInner { read, write }),
-            runtime: std::sync::Arc::new(std::sync::Mutex::new(Some(GatewayRuntime {
-                system,
-                thread,
-            }))),
+            inner: Arc::new(GatewayInner { read, write }),
+            runtime: Arc::new(Mutex::new(Some(GatewayRuntime { system, thread }))),
         }
     }
 
