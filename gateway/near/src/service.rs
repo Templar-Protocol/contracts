@@ -9,9 +9,9 @@ use crate::{
         map_mailbox_error,
         read::{ReadActor, ReadRpcRequest},
         rpc::RpcMessage,
-        write::{sender_for, AccountWriteActor, WriteActors, WriteRpcRequest},
+        write::{WriteActors, WriteRpcRequest},
     },
-    GatewayResult, NearReadClient, NearWriteClient,
+    GatewayResult, ManagedSigner, NearClient,
 };
 
 #[derive(Clone)]
@@ -22,7 +22,7 @@ pub struct GatewayService {
 
 struct GatewayInner {
     read: Addr<ReadActor>,
-    write: HashMap<ManagedAccountId, Addr<AccountWriteActor>>,
+    write: WriteActors,
 }
 
 struct GatewayRuntime {
@@ -39,18 +39,18 @@ impl GatewayService {
         }
     }
 
-    pub fn spawn(near: NearReadClient, writer: NearWriteClient) -> Self {
+    pub fn spawn(near: NearClient, signers: HashMap<ManagedAccountId, ManagedSigner>) -> Self {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
             let runner = actix::System::new();
             let system = actix::System::current();
             let arbiter = system.arbiter().clone();
 
-            let read_addr = ReadActor::spawn(&arbiter, near);
-            let write = WriteActors::new(writer).spawn(&arbiter);
+            let write = WriteActors::spawn(&arbiter, &near, signers);
+            let read = ReadActor::spawn(&arbiter, near);
 
             ready_tx
-                .send((system, read_addr, write))
+                .send((system, read, write))
                 .expect("gateway actor runtime receiver should be available during startup");
 
             runner
@@ -89,13 +89,7 @@ impl GatewayService {
     ) -> GatewayResult<Request::Output>
     where
         Request: WriteRpcRequest,
-        AccountWriteActor: actix::Handler<RpcMessage<Request>>,
     {
-        let signer_id = Request::signer_account_id(&params);
-        let sender = sender_for(&self.inner.write, signer_id)?;
-        sender
-            .send(RpcMessage(params))
-            .await
-            .map_err(|error| map_mailbox_error(error, "write-actor"))?
+        self.inner.write.request::<Request>(params).await
     }
 }

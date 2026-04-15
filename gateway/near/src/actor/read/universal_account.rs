@@ -1,7 +1,7 @@
 use blockchain_gateway_core::universal_account;
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearReadClient};
+use crate::{GatewayResult, NearClient};
 
 use super::ReadRpcRequest;
 use crate::actor::rpc::RpcMessage;
@@ -31,7 +31,7 @@ fn into_parameters_view(
 impl ReadRpcRequest for universal_account::GetKey {
     fn dispatch(
         params: RpcMessage<Self>,
-        client: NearReadClient,
+        client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = params.0.body;

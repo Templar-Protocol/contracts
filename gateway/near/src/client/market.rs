@@ -4,18 +4,18 @@ use blockchain_gateway_core::common::Pagination;
 use templar_common::borrow::BorrowPosition;
 use templar_common::market::MarketConfiguration;
 
-use crate::client::{macros::contract_views, NearReadClient};
+use crate::client::{macros::contract_views, NearClient};
 
 use super::ContractClient;
 
 #[derive(Clone)]
 pub struct MarketClient<'a> {
-    pub(crate) inner: &'a NearReadClient,
+    pub(crate) inner: &'a NearClient,
     pub(crate) contract_id: blockchain_gateway_core::MarketId,
 }
 
 impl ContractClient for MarketClient<'_> {
-    fn client(&self) -> &NearReadClient {
+    fn client(&self) -> &NearClient {
         self.inner
     }
 

@@ -2,13 +2,13 @@ use blockchain_gateway_core::tx;
 use near_api::{types::transaction::result::TransactionResult, Contract};
 
 use crate::{
-    client::{contract_args_bytes, IntoNearTxExecutionStatus, NearWriteClient},
+    client::{contract_args_bytes, IntoNearTxExecutionStatus, NearClient},
     GatewayError, GatewayResult,
 };
 
 #[derive(Clone)]
 pub struct TxClient<'a> {
-    pub(crate) inner: &'a NearWriteClient,
+    pub(crate) inner: &'a NearClient,
     pub(crate) signer_account_id: blockchain_gateway_core::ManagedAccountId,
     pub(crate) signer: std::sync::Arc<near_api::Signer>,
 }

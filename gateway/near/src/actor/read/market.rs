@@ -1,7 +1,7 @@
 use blockchain_gateway_core::market;
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearReadClient};
+use crate::{GatewayResult, NearClient};
 
 use super::ReadRpcRequest;
 use crate::actor::rpc::RpcMessage;
@@ -9,7 +9,7 @@ use crate::actor::rpc::RpcMessage;
 impl ReadRpcRequest for market::GetConfiguration {
     fn dispatch(
         params: RpcMessage<Self>,
-        client: NearReadClient,
+        client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             client
@@ -23,7 +23,7 @@ impl ReadRpcRequest for market::GetConfiguration {
 impl ReadRpcRequest for market::ListBorrowPositions {
     fn dispatch(
         params: RpcMessage<Self>,
-        client: NearReadClient,
+        client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = params.0.body;

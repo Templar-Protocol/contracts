@@ -11,7 +11,7 @@ use blockchain_gateway_core::MethodSpec;
 use futures::future::BoxFuture;
 use tokio::sync::Semaphore;
 
-use crate::{GatewayError, GatewayResult, NearReadClient};
+use crate::{GatewayError, GatewayResult, NearClient};
 
 use super::rpc::RpcMessage;
 
@@ -21,25 +21,25 @@ const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
 pub trait ReadRpcRequest: MethodSpec + Sized + Send + 'static {
     fn dispatch(
         params: RpcMessage<Self>,
-        client: NearReadClient,
+        client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
 }
 
 #[derive(Clone)]
 pub struct ReadActor {
-    client: NearReadClient,
+    client: NearClient,
     semaphore: Arc<Semaphore>,
 }
 
 impl ReadActor {
-    fn new(client: NearReadClient) -> Self {
+    fn new(client: NearClient) -> Self {
         Self {
             client,
             semaphore: Arc::new(Semaphore::new(READ_ACTOR_MAX_CONCURRENCY)),
         }
     }
 
-    pub(crate) fn spawn(arbiter: &ArbiterHandle, client: NearReadClient) -> Addr<Self> {
+    pub(crate) fn spawn(arbiter: &ArbiterHandle, client: NearClient) -> Addr<Self> {
         Self::start_in_arbiter(arbiter, move |_ctx| Self::new(client))
     }
 }

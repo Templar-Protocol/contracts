@@ -22,7 +22,6 @@ fn register_write<Spec: WriteRpcRequest>(
     module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
         let params: Spec::Input = params.parse()?;
         let result = service
-            .as_ref()
             .request_write::<Spec>(params)
             .await
             .map_err(map_gateway_error)?;
@@ -38,7 +37,6 @@ fn register_read<Spec: ReadRpcRequest>(
     module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
         let params: Spec::Input = params.parse()?;
         let result = service
-            .as_ref()
             .request_read::<Spec>(params)
             .await
             .map_err(map_gateway_error)?;
@@ -81,7 +79,7 @@ mod tests {
             "test",
             "http://127.0.0.1:3030".parse().expect("valid url"),
         );
-        let near = blockchain_gateway_near::NearReadClient::new(network.clone());
+        let near = blockchain_gateway_near::NearClient::new(network);
         let signer = near_api::Signer::from_secret_key(
             "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
                 .parse()
@@ -89,8 +87,8 @@ mod tests {
         )
         .expect("signer should initialize");
         let account_id = ManagedAccountId("test.near".parse().expect("valid signer account id"));
-        let writer = blockchain_gateway_near::NearWriteClient::new(
-            network,
+        GatewayService::spawn(
+            near,
             HashMap::from([(
                 account_id,
                 blockchain_gateway_near::ManagedSigner {
@@ -98,8 +96,7 @@ mod tests {
                     key_count: 1,
                 },
             )]),
-        );
-        GatewayService::spawn(near, writer)
+        )
     }
 
     #[tokio::test]

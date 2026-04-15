@@ -1,18 +1,18 @@
 use blockchain_gateway_core::universal_account;
 use templar_universal_account::PayloadExecutionParameters;
 
-use crate::client::{macros::contract_views, NearReadClient};
+use crate::client::{macros::contract_views, NearClient};
 
 use super::ContractClient;
 
 #[derive(Clone)]
 pub struct UniversalAccountClient<'a> {
-    pub(crate) inner: &'a NearReadClient,
+    pub(crate) inner: &'a NearClient,
     pub(crate) contract_id: blockchain_gateway_core::UniversalAccountId,
 }
 
 impl ContractClient for UniversalAccountClient<'_> {
-    fn client(&self) -> &NearReadClient {
+    fn client(&self) -> &NearClient {
         self.inner
     }
 

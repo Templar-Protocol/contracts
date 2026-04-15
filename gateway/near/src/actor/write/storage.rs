@@ -3,20 +3,21 @@ use blockchain_gateway_core::{
 };
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearWriteClient};
+use crate::{GatewayResult, NearClient};
 
-use super::{operation_outcome_from_transaction_result, WriteRpcRequest};
+use super::{WriteRpcRequest, operation_outcome_from_transaction_result};
 
 impl WriteRpcRequest for storage::Deposit {
     fn dispatch(
         request: Self::Input,
-        client: NearWriteClient,
+        client: NearClient,
+        signer: std::sync::Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let tx_result = client
-                .tx(request.signer_account_id)?
+                .tx(request.signer_account_id, signer)
                 .function_call(
                     tx::FunctionCallBody {
                         receiver_id: body.contract_id,

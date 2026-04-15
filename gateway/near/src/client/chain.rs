@@ -8,13 +8,13 @@ use near_api::{
 use serde_json::json;
 
 use crate::{
-    client::NearReadClient,
+    client::NearClient,
     error::{GatewayError, GatewayResult},
 };
 
 #[derive(Clone, Copy)]
 pub struct ChainClient<'a> {
-    pub(crate) inner: &'a NearReadClient,
+    pub(crate) inner: &'a NearClient,
 }
 
 impl ChainClient<'_> {

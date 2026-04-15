@@ -13,7 +13,7 @@ use near_account_id::{AccountId, AccountIdRef};
 use near_api::{types::Data, Contract, NetworkConfig};
 use serde::Serialize;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::error::{GatewayError, GatewayResult};
 
@@ -25,12 +25,12 @@ pub use tx::TxClient;
 pub use universal_account::UniversalAccountClient;
 
 trait ContractClient {
-    fn client(&self) -> &NearReadClient;
+    fn client(&self) -> &NearClient;
     fn contract_id(&self) -> &AccountIdRef;
 }
 
 #[derive(Debug, Clone)]
-pub struct NearReadClient {
+pub struct NearClient {
     network: NetworkConfig,
 }
 
@@ -53,13 +53,7 @@ impl ManagedSigner {
     }
 }
 
-#[derive(Clone)]
-pub struct NearWriteClient {
-    network: NetworkConfig,
-    signers: HashMap<ManagedAccountId, ManagedSigner>,
-}
-
-impl NearReadClient {
+impl NearClient {
     pub fn new(network: NetworkConfig) -> Self {
         Self { network }
     }
@@ -97,6 +91,18 @@ impl NearReadClient {
         UniversalAccountClient {
             inner: self,
             contract_id,
+        }
+    }
+
+    pub fn tx(
+        &self,
+        signer_account_id: ManagedAccountId,
+        signer: Arc<near_api::Signer>,
+    ) -> TxClient<'_> {
+        TxClient {
+            inner: self,
+            signer_account_id,
+            signer,
         }
     }
 
@@ -150,36 +156,6 @@ impl NearReadClient {
                     .await
             }
         }
-    }
-}
-
-impl NearWriteClient {
-    pub fn new(network: NetworkConfig, signers: HashMap<ManagedAccountId, ManagedSigner>) -> Self {
-        Self { network, signers }
-    }
-
-    pub fn network(&self) -> &NetworkConfig {
-        &self.network
-    }
-
-    pub fn signers(&self) -> &HashMap<ManagedAccountId, ManagedSigner> {
-        &self.signers
-    }
-
-    pub fn tx(&self, signer_account_id: ManagedAccountId) -> GatewayResult<TxClient<'_>> {
-        let signer = self
-            .signers
-            .get(&signer_account_id)
-            .map(|entry| entry.signer.clone())
-            .ok_or_else(|| {
-                GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
-            })?;
-
-        Ok(TxClient {
-            inner: self,
-            signer_account_id,
-            signer,
-        })
     }
 }
 

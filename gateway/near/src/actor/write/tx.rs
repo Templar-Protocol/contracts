@@ -1,21 +1,20 @@
-use blockchain_gateway_core::{
-    tx,
-};
+use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearWriteClient};
+use crate::{GatewayResult, NearClient};
 
-use super::{WriteRpcRequest, operation_outcome_from_transaction_result};
+use super::{operation_outcome_from_transaction_result, WriteRpcRequest};
 
 impl WriteRpcRequest for tx::FunctionCall {
     fn dispatch(
         request: Self::Input,
-        client: NearWriteClient,
+        client: NearClient,
+        signer: std::sync::Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let tx_result = client
-                .tx(request.signer_account_id.clone())?
+                .tx(request.signer_account_id.clone(), signer)
                 .function_call(request.body, request.wait_until)
                 .await?;
 

@@ -5,6 +5,6 @@ pub mod operation;
 pub mod service;
 pub mod store;
 
-pub use client::{ManagedSigner, NearReadClient, NearWriteClient};
+pub use client::{ManagedSigner, NearClient};
 pub use error::{GatewayError, GatewayResult};
 pub use service::GatewayService;

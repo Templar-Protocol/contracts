@@ -35,10 +35,9 @@ async fn main() {
     let _log_guard = logging::init();
 
     let network = near_api::NetworkConfig::from_rpc_url("gateway", config.near_rpc_url.clone());
-    let near = blockchain_gateway_near::NearReadClient::new(network.clone());
+    let near = blockchain_gateway_near::NearClient::new(network);
     let signers = build_signers(&config).await;
-    let writer = blockchain_gateway_near::NearWriteClient::new(network, signers);
-    let gateway = blockchain_gateway_near::GatewayService::spawn(near, writer);
+    let gateway = blockchain_gateway_near::GatewayService::spawn(near, signers);
 
     let server = ServerBuilder::default()
         .build(config.listen_addr)
