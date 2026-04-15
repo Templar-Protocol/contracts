@@ -98,3 +98,36 @@ If transport changes later, implement a new relayer adapter behind the same trai
     - `v2_1.omni.hot.tg` transferred that amount to `intents.near`
     - `intents.near` minted `nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz` to `carrion256.near`
     - minted amount on `carrion256.near`: `1000000`
+
+## Withdrawal Notes
+
+- Initial direct withdrawal attempt from `carrion256.near` to HOT failed because the counterparty passed the raw Stellar `G...` address into HOT `withdraw(...)`.
+  - failure mode: HOT parse error on receiver format
+  - fix: encode the Stellar receiver as base58 XDR `ScVal(Address)` before calling HOT
+- After fixing receiver encoding, the direct withdrawal attempt still failed because the counterparty passed the wrapped intents token ID (`nep245:v2_1.omni.hot.tg:...`) into HOT `withdraw(...)`.
+  - failure mode: `Failed to parse chain ID 'nep245:v2'`
+  - fix: normalize the wrapped token ID down to the raw HOT omni token ID before direct HOT calls
+- Updated counterparty contract with both fixes:
+  - deploy tx: `AGhfPGre4pcpgxAEchV4cMEtsMCSThSXLjJHno2BUuFV`
+  - resulting on-chain code hash: `9Sct9sHHWK3VA6Qr9z4qgT1bSxTztecnY3VPh1fLg3cX`
+- Even after those fixes, direct `withdraw_to_stellar` from the counterparty still failed with `Not enough balance`.
+  - root cause: the bridged asset balance lives on `intents.near` as a NEP-245 wrapped token, not as a raw balance directly owned by `carrion256.near` on `v2_1.omni.hot.tg`
+  - verification:
+    - `intents.near mt_balance_of(carrion256.near, nep245:...) = 1000000`
+    - `v2_1.omni.hot.tg mt_balance_of(carrion256.near, 1100_...) = 0`
+- Direct withdrawal from the correct layer succeeded using `intents.near mt_withdraw` with the raw HOT token contract + token id:
+  - tx: `FZixtw3Sr97TWD7dnmDJApX5yGCXEbXTdzbB1fsGEenx`
+  - args shape that worked:
+    - `token = "v2_1.omni.hot.tg"`
+    - `token_ids = ["1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"]`
+    - `receiver_id = "bridge-refuel.hot.tg"`
+    - `msg.receiver_id = "1114wxgAxsZMgcipUZ92Tv8iTpTqiyZMoQqC9kWRbj8jVURaZcnBS1uQCiL"`
+  - on-chain effects:
+    - `intents.near` burned `500000` of `nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz` from `carrion256.near`
+    - `v2_1.omni.hot.tg` transferred `500000` of raw omni token `1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz` to `bridge-refuel.hot.tg`
+    - `v2_1.omni.hot.tg` emitted `mt_burn` from `bridge-refuel.hot.tg` with memo / withdrawal nonce `1776177129000001087571`
+- Final target-chain unlock is still blocked on HOT backend exposure of that withdrawal nonce:
+  - `rpc1.hotdao.ai/withdraw/sign` and `rpc2.hotdao.ai/withdraw/sign` both return `404 {"detail":"Nonce not found or vas already cleared"}` for nonce `1776177129000001087571`
+  - `clear_completed_withdrawal` returns `false`
+  - `v2_1.omni.hot.tg.get_withdrawals_by_receiver(...)` returns `[]`
+  - current interpretation: NEAR-side burn/handoff succeeded, but HOT has not yet surfaced a signer-ready Stellar withdrawal record for the nonce
