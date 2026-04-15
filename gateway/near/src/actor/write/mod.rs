@@ -1,3 +1,4 @@
+mod signer;
 mod storage;
 mod tx;
 
@@ -17,9 +18,11 @@ use near_api::types::transaction::result::TransactionResult;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use crate::{GatewayError, GatewayResult, ManagedSigner, NearClient};
+use crate::{GatewayError, GatewayResult, NearClient};
 
-use super::rpc::RpcMessage;
+use super::RpcMessage;
+
+pub use signer::ManagedSigner;
 
 pub trait WriteRpcRequest: MethodSpec + Sized + Send + 'static {
     fn dispatch(

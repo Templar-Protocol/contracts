@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 
 use crate::{GatewayError, GatewayResult, NearClient};
 
-use super::rpc::RpcMessage;
+use super::RpcMessage;
 
 const READ_ACTOR_NAME: &str = "read-actor";
 const READ_ACTOR_MAX_CONCURRENCY: usize = 64;

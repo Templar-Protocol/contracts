@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 use crate::{GatewayResult, NearClient};
 
 use super::ReadRpcRequest;
-use crate::actor::rpc::RpcMessage;
+use crate::actor::RpcMessage;
 
 fn into_parameters_view(
     parameters: templar_universal_account::PayloadExecutionParameters,
