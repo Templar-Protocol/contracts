@@ -69,7 +69,7 @@ impl ContractArgs {
 #[serde(transparent)]
 pub struct ReadRequest<T> {
     #[serde(flatten)]
-    pub body: T,
+    pub params: T,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

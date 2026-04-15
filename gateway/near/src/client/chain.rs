@@ -1,6 +1,6 @@
 use blockchain_gateway_core::chain;
 use near_api::{
-    types::{account::ContractState, errors::ExecutionError, TxExecutionStatus},
+    types::{account::ContractState, errors::ExecutionError},
     Account, Transaction,
 };
 
@@ -70,10 +70,11 @@ impl ChainClient<'_> {
         &self,
         params: chain::GetTransactionParams,
     ) -> GatewayResult<chain::GetTransactionResult> {
+        let wait_until = params.wait_until.unwrap_or_default();
         let result = Transaction::status_with_options(
             params.sender_account_id,
             params.tx_hash.into(),
-            TxExecutionStatus::Final,
+            wait_until.into(),
         )
         .fetch_from(self.inner.network())
         .await

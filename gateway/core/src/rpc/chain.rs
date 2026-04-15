@@ -3,8 +3,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::public_read_method_spec, rpc::common::ContractArgs, ChainReadMethod,
-    ContractMethodName, CryptoHash, NearGas, NearToken, PublicReadMethod,
+    macros::public_read_method_spec,
+    rpc::common::{ContractArgs, TxExecutionStatus},
+    ChainReadMethod, ContractMethodName, CryptoHash, NearGas, NearToken, PublicReadMethod,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -52,8 +53,18 @@ public_read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetTransactionParams {
+    /// Transaction hash to query.
     pub tx_hash: CryptoHash,
+    /// Original signer account for the transaction.
     pub sender_account_id: AccountId,
+    /// Desired execution status / finality depth for the query.
+    ///
+    /// If omitted, the gateway queries at `FINAL`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_until: Option<TxExecutionStatus>,
+    /// Preferred decoding for the execution return value.
+    ///
+    /// Even for successful transactions, the return value may be absent.
     #[serde(default)]
     pub encoding: ValueEncoding,
 }
@@ -83,9 +94,17 @@ pub enum TransactionStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GetTransactionResult {
+    /// Gateway-level summary of the transaction execution state.
     pub status: TransactionStatus,
+    /// Total gas burnt across the execution outcome observed by the query.
     pub total_gas_burnt: NearGas,
+    /// Logs emitted by the execution outcomes included in the queried result.
+    ///
+    /// Successful transactions may still return an empty log list.
     pub logs: Vec<String>,
+    /// Decoded execution return value, if one exists.
+    ///
+    /// Successful transactions may not produce return bytes, so this field is optional.
     pub return_value: Option<TransactionReturnValue>,
 }
 

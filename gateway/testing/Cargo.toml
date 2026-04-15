@@ -6,8 +6,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 blockchain-gateway-core = { path = "../core" }
 blockchain-gateway-near = { path = "../near" }
+near-api.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing"] }
+near-sandbox = "0.3.9"
+near-token.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+templar-common.workspace = true
+templar-universal-account.workspace = true
+test-utils.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

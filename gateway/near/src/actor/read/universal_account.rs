@@ -34,7 +34,7 @@ impl ReadRpcRequest for universal_account::GetKey {
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.body;
+            let params = params.0.params;
             client
                 .universal_account(params.account_id)
                 .get_key(params.args)

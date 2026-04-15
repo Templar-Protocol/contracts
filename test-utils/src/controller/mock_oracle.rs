@@ -24,12 +24,15 @@ impl ContractController for MockOracleController {
 impl RedStoneAdapterInterface for MockOracleController {}
 
 impl MockOracleController {
-    pub async fn deploy(account: Account) -> Self {
-        static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM_MOCK_ORACLE
-            .get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
-            .await;
+        WASM.get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
+            .await
+    }
+
+    pub async fn deploy(account: Account) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract

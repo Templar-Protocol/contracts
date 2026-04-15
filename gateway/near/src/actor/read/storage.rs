@@ -12,7 +12,7 @@ impl ReadRpcRequest for storage::GetBalanceBounds {
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.body;
+            let params = params.0.params;
             client
                 .storage(params.contract_id)
                 .storage_balance_bounds(params.args)
@@ -33,7 +33,7 @@ impl ReadRpcRequest for storage::GetBalanceOf {
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.body;
+            let params = params.0.params;
             client
                 .storage(params.contract_id)
                 .storage_balance_of(params.args)

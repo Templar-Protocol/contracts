@@ -12,7 +12,7 @@ impl ReadRpcRequest for registry::ListDeployments {
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.body;
+            let params = params.0.params;
             client
                 .registry(params.registry_id)
                 .list_deployments(params.args)
@@ -28,7 +28,7 @@ impl ReadRpcRequest for registry::ListVersions {
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.body;
+            let params = params.0.params;
             client
                 .registry(params.registry_id)
                 .list_versions(params.args)

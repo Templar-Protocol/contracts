@@ -11,7 +11,7 @@ impl ReadRpcRequest for chain::ViewAccount {
         params: RpcMessage<Self>,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { client.chain().view_account(params.0.body).await })
+        Box::pin(async move { client.chain().view_account(params.0.params).await })
     }
 }
 
@@ -20,7 +20,7 @@ impl ReadRpcRequest for chain::ViewFunction {
         params: RpcMessage<Self>,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { client.chain().view_function(params.0.body).await })
+        Box::pin(async move { client.chain().view_function(params.0.params).await })
     }
 }
 
@@ -29,6 +29,6 @@ impl ReadRpcRequest for chain::GetTransaction {
         params: RpcMessage<Self>,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { client.chain().get_transaction(params.0.body).await })
+        Box::pin(async move { client.chain().get_transaction(params.0.params).await })
     }
 }

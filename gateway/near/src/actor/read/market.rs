@@ -13,7 +13,7 @@ impl ReadRpcRequest for market::GetConfiguration {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             client
-                .market(params.0.body.market_id)
+                .market(params.0.params.market_id)
                 .get_configuration(())
                 .await
         })
@@ -26,7 +26,7 @@ impl ReadRpcRequest for market::ListBorrowPositions {
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.body;
+            let params = params.0.params;
             client
                 .market(params.market_id)
                 .list_borrow_positions(params.args)
