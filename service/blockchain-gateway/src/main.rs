@@ -38,7 +38,7 @@ async fn main() {
     let near = blockchain_gateway_near::NearReadClient::new(network.clone());
     let signers = build_signers(&config).await;
     let writer = blockchain_gateway_near::NearWriteClient::new(network, signers);
-    let (gateway, runtime) = blockchain_gateway_near::GatewayService::spawn(near, writer);
+    let gateway = blockchain_gateway_near::GatewayService::spawn(near, writer);
 
     let server = ServerBuilder::default()
         .build(config.listen_addr)
@@ -47,7 +47,7 @@ async fn main() {
     let local_addr = server
         .local_addr()
         .expect("server should have a bound local address");
-    let module = rpc::attach_gateway(gateway).expect("failed to attach RPC methods");
+    let module = rpc::attach_gateway(gateway.clone()).expect("failed to attach RPC methods");
     let handle = server.start(module);
 
     tracing::info!(%local_addr, "blockchain gateway service listening");
@@ -57,7 +57,7 @@ async fn main() {
         .stop()
         .expect("blockchain gateway server should stop cleanly");
     handle.stopped().await;
-    runtime.shutdown().await;
+    gateway.shutdown().await;
 }
 
 #[allow(clippy::expect_used, reason = "fail fast")]

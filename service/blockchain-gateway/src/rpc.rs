@@ -1,15 +1,8 @@
-use blockchain_gateway_core::{
-    chain,
-    common::ReadRequest,
-    market, registry,
-    rpc::common::{WriteOperationResult, WriteRequest},
-    storage, tx, universal_account, MethodSpec,
-};
+use blockchain_gateway_core::{chain, market, registry, storage, tx, universal_account};
 use blockchain_gateway_near::{
-    actor::{read::ReadMessage, write::WriteMessage, ActorRequest, MessageEnvelope},
-    GatewayError, GatewayResult, GatewayService, NearReadClient, NearWriteClient,
+    actor::{read::ReadRpcRequest, write::WriteRpcRequest},
+    GatewayError, GatewayService,
 };
-use futures::future::BoxFuture;
 use jsonrpsee::{
     core::{RegisterMethodError, RpcResult},
     types::ErrorObjectOwned,
@@ -23,16 +16,14 @@ fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(GATEWAY_SERVER_ERROR_CODE, error.to_string(), None::<()>)
 }
 
-fn register<Spec>(module: &mut RpcModule<GatewayService>) -> Result<(), RegisterMethodError>
-where
-    Spec: MethodSpec,
-    Spec::Input: DirectRequest + Send + 'static,
-    Spec::Output: Clone + Send + Sync + 'static,
-{
+fn register_write<Spec: WriteRpcRequest>(
+    module: &mut RpcModule<GatewayService>,
+) -> Result<(), RegisterMethodError> {
     module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
         let params: Spec::Input = params.parse()?;
-        let result = params
-            .request(service.as_ref())
+        let result = service
+            .as_ref()
+            .request_write::<Spec>(params)
             .await
             .map_err(map_gateway_error)?;
         RpcResult::Ok(result)
@@ -41,36 +32,20 @@ where
     Ok(())
 }
 
-trait DirectRequest {
-    type Output: Clone + serde::Serialize;
-    fn request(self, service: &GatewayService) -> BoxFuture<'_, GatewayResult<Self::Output>>;
-}
+fn register_read<Spec: ReadRpcRequest>(
+    module: &mut RpcModule<GatewayService>,
+) -> Result<(), RegisterMethodError> {
+    module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
+        let params: Spec::Input = params.parse()?;
+        let result = service
+            .as_ref()
+            .request_read::<Spec>(params)
+            .await
+            .map_err(map_gateway_error)?;
+        RpcResult::Ok(result)
+    })?;
 
-impl<I, O> DirectRequest for ReadRequest<I>
-where
-    I: Send + 'static,
-    O: Send + 'static + serde::Serialize + Clone,
-    I: ActorRequest<Actor = NearReadClient, Response = O>,
-    ReadMessage: From<MessageEnvelope<I>>,
-{
-    type Output = O;
-
-    fn request(self, service: &GatewayService) -> BoxFuture<'_, GatewayResult<Self::Output>> {
-        Box::pin(async move { service.read().request(self).await })
-    }
-}
-
-impl<T> DirectRequest for WriteRequest<T>
-where
-    T: Send + 'static,
-    WriteRequest<T>: ActorRequest<Actor = NearWriteClient, Response = WriteOperationResult>,
-    WriteMessage: From<MessageEnvelope<WriteRequest<T>>>,
-{
-    type Output = WriteOperationResult;
-
-    fn request(self, service: &GatewayService) -> BoxFuture<'_, GatewayResult<Self::Output>> {
-        Box::pin(async move { service.write().request(self).await })
-    }
+    Ok(())
 }
 
 pub fn attach_gateway(
@@ -78,18 +53,18 @@ pub fn attach_gateway(
 ) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
     let mut m = RpcModule::new(service);
 
-    register::<chain::ViewAccount>(&mut m)?;
-    register::<chain::ViewFunction>(&mut m)?;
-    register::<chain::GetTransaction>(&mut m)?;
-    register::<registry::ListDeployments>(&mut m)?;
-    register::<registry::ListVersions>(&mut m)?;
-    register::<market::GetConfiguration>(&mut m)?;
-    register::<market::ListBorrowPositions>(&mut m)?;
-    register::<storage::GetBalanceBounds>(&mut m)?;
-    register::<storage::GetBalanceOf>(&mut m)?;
-    register::<storage::Deposit>(&mut m)?;
-    register::<universal_account::GetKey>(&mut m)?;
-    register::<tx::FunctionCall>(&mut m)?;
+    register_read::<chain::ViewAccount>(&mut m)?;
+    register_read::<chain::ViewFunction>(&mut m)?;
+    register_read::<chain::GetTransaction>(&mut m)?;
+    register_read::<registry::ListDeployments>(&mut m)?;
+    register_read::<registry::ListVersions>(&mut m)?;
+    register_read::<market::GetConfiguration>(&mut m)?;
+    register_read::<market::ListBorrowPositions>(&mut m)?;
+    register_read::<storage::GetBalanceBounds>(&mut m)?;
+    register_read::<storage::GetBalanceOf>(&mut m)?;
+    register_write::<storage::Deposit>(&mut m)?;
+    register_read::<universal_account::GetKey>(&mut m)?;
+    register_write::<tx::FunctionCall>(&mut m)?;
 
     Ok(m)
 }
@@ -124,7 +99,7 @@ mod tests {
                 },
             )]),
         );
-        GatewayService::spawn(near, writer).0
+        GatewayService::spawn(near, writer)
     }
 
     #[tokio::test]

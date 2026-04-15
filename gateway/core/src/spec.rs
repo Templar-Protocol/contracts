@@ -10,8 +10,8 @@ pub enum MethodKind {
 }
 
 pub trait MethodSpec {
-    type Input: Serialize + DeserializeOwned + JsonSchema;
-    type Output: Serialize + JsonSchema;
+    type Input: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
+    type Output: Serialize + JsonSchema + Clone + Send + 'static;
 
     const RPC_METHOD: &'static str;
     const IDENTIFIER: MethodSelector;

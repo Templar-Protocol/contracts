@@ -7,4 +7,4 @@ pub mod store;
 
 pub use client::{ManagedSigner, NearReadClient, NearWriteClient};
 pub use error::{GatewayError, GatewayResult};
-pub use service::{GatewayRuntime, GatewayService};
+pub use service::GatewayService;

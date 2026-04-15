@@ -52,7 +52,11 @@ pub struct Config {
     pub listen_addr: SocketAddr,
 
     /// NEAR RPC endpoint used by the gateway for on-chain reads and writes.
-    #[arg(long, env = "NEAR_RPC_URL")]
+    #[arg(
+        long,
+        env = "NEAR_RPC_URL",
+        default_value = "https://rpc.testnet.near.org"
+    )]
     pub near_rpc_url: Url,
 
     /// Managed signer entries as <account_id>=<secret_key>[,<secret_key>...].

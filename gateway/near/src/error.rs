@@ -12,6 +12,12 @@ pub enum GatewayError {
     NearTransaction(String),
     #[error("actor unavailable: {0}")]
     ActorUnavailable(&'static str),
+    #[error("actor error ({actor}): {source}")]
+    ActorError {
+        actor: &'static str,
+        #[source]
+        source: actix::MailboxError,
+    },
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

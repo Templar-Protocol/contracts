@@ -1,23 +1,33 @@
-use tokio::sync::mpsc;
+use std::{collections::HashMap, sync::Arc};
 
+use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
 use blockchain_gateway_core::{
     operation::{
         OperationId, OperationOutcome, OperationRecord, OperationStatus, StepStatus,
         TransactionStepRecord,
     },
-    rpc::common::{ContractArgs, WriteOperationResult, WriteRequest},
-    storage, tx, ContractMethodName, ManagedAccountId, NearGas,
+    rpc::common::{ContractArgs, WriteOperationResult},
+    storage, tx, ContractMethodName, ManagedAccountId, MethodSpec, NearGas,
 };
 use futures::future::BoxFuture;
 use near_api::types::transaction::result::TransactionResult;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use crate::{
-    actor::request::{respond, Actor, ActorGroup, ActorRequest, MessageEnvelope, RequestHandle},
-    GatewayResult, NearWriteClient,
-};
+use crate::{GatewayError, GatewayResult, NearWriteClient};
+
+use super::rpc::RpcMessage;
 
 const WRITE_ACTOR_NAME: &str = "write-actor";
+
+pub trait WriteRpcRequest: MethodSpec + Sized + Send + 'static {
+    fn dispatch(
+        params: Self::Input,
+        client: NearWriteClient,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
+
+    fn signer_account_id(params: &Self::Input) -> &ManagedAccountId;
+}
 
 pub struct WriteActors {
     client: NearWriteClient,
@@ -28,75 +38,71 @@ impl WriteActors {
         Self { client }
     }
 
-    pub fn spawn(self) -> (WriteHandle, ActorGroup) {
-        let mut tasks = ActorGroup::new();
-        let senders = self
-            .client
+    pub(crate) fn spawn(
+        self,
+        arbiter: &ArbiterHandle,
+    ) -> HashMap<ManagedAccountId, Addr<AccountWriteActor>> {
+        self.client
             .signers()
             .iter()
             .map(|(account_id, signer_entry)| {
-                let (sender, task) = AccountWriteActor::new(
-                    self.client.clone(),
-                    signer_entry.key_count,
-                )
-                .spawn();
-                tasks.push(task);
-                (account_id.clone(), sender)
+                let actor =
+                    AccountWriteActor::spawn(arbiter, self.client.clone(), signer_entry.key_count);
+                (account_id.clone(), actor)
             })
-            .collect();
-
-        (WriteHandle { senders }, tasks)
+            .collect()
     }
 }
 
-#[derive(Clone)]
-struct AccountWriteActor {
+pub struct AccountWriteActor {
     client: NearWriteClient,
-    concurrency: usize,
+    semaphore: Arc<Semaphore>,
 }
 
 impl AccountWriteActor {
     fn new(client: NearWriteClient, concurrency: usize) -> Self {
-        Self { client, concurrency }
+        Self {
+            client,
+            semaphore: Arc::new(Semaphore::new(concurrency)),
+        }
+    }
+
+    fn spawn(arbiter: &ArbiterHandle, client: NearWriteClient, concurrency: usize) -> Addr<Self> {
+        Self::start_in_arbiter(arbiter, move |_ctx| Self::new(client, concurrency))
     }
 }
 
-#[derive(Clone)]
-pub struct WriteHandle {
-    senders: std::collections::HashMap<ManagedAccountId, mpsc::Sender<WriteMessage>>,
+pub(crate) fn sender_for<'a>(
+    senders: &'a HashMap<ManagedAccountId, Addr<AccountWriteActor>>,
+    signer_account_id: &ManagedAccountId,
+) -> GatewayResult<&'a Addr<AccountWriteActor>> {
+    senders.get(signer_account_id).ok_or_else(|| {
+        crate::GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
+    })
 }
 
-impl WriteHandle {
-    pub async fn request<T>(&self, params: WriteRequest<T>) -> GatewayResult<WriteOperationResult>
-    where
-        WriteRequest<T>: ActorRequest<Actor = NearWriteClient, Response = WriteOperationResult>,
-        WriteMessage: From<MessageEnvelope<WriteRequest<T>>>,
-    {
-        let sender = self.sender_for(&params.signer_account_id)?;
-        <Self as RequestHandle<WriteMessage>>::request_on(self, sender, params).await
-    }
+impl<Request> Handler<RpcMessage<Request>> for AccountWriteActor
+where
+    Request: WriteRpcRequest,
+{
+    type Result = ResponseFuture<GatewayResult<Request::Output>>;
 
-    fn sender_for(
-        &self,
-        signer_account_id: &ManagedAccountId,
-    ) -> GatewayResult<&mpsc::Sender<WriteMessage>> {
-        self.senders.get(signer_account_id).ok_or_else(|| {
-            crate::GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
+    fn handle(
+        &mut self,
+        RpcMessage(message): RpcMessage<Request>,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let client = self.client.clone();
+        let semaphore = self.semaphore.clone();
+
+        Box::pin(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
+            Request::dispatch(message, client).await
         })
     }
-}
-
-impl RequestHandle<WriteMessage> for WriteHandle {
-    const ACTOR_NAME: &'static str = WRITE_ACTOR_NAME;
-
-    fn sender(&self) -> &mpsc::Sender<WriteMessage> {
-        unreachable!("write handle requires signer-based routing")
-    }
-}
-
-pub enum WriteMessage {
-    FunctionCall(MessageEnvelope<WriteRequest<tx::FunctionCallBody>>),
-    StorageDeposit(MessageEnvelope<WriteRequest<storage::DepositBody>>),
 }
 
 fn operation_outcome_from_transaction_result(
@@ -141,16 +147,16 @@ fn operation_outcome_from_transaction_result(
     }
 }
 
-impl ActorRequest for WriteRequest<tx::FunctionCallBody> {
-    type Actor = NearWriteClient;
-    type Response = tx::FunctionCallResult;
-
-    fn dispatch(self, actor: &Self::Actor) -> BoxFuture<'_, GatewayResult<Self::Response>> {
+impl WriteRpcRequest for tx::FunctionCall {
+    fn dispatch(
+        request: Self::Input,
+        client: NearWriteClient,
+    ) -> BoxFuture<'static, GatewayResult<WriteOperationResult>> {
         Box::pin(async move {
-            let signer_account_id = self.signer_account_id.clone();
-            let tx_result = actor
-                .tx(self.signer_account_id.clone())?
-                .function_call(self.body, self.wait_until)
+            let signer_account_id = request.signer_account_id.clone();
+            let tx_result = client
+                .tx(request.signer_account_id.clone())?
+                .function_call(request.body, request.wait_until)
                 .await?;
 
             Ok(operation_outcome_from_transaction_result(
@@ -159,24 +165,22 @@ impl ActorRequest for WriteRequest<tx::FunctionCallBody> {
             ))
         })
     }
-}
 
-impl From<MessageEnvelope<WriteRequest<tx::FunctionCallBody>>> for WriteMessage {
-    fn from(envelope: MessageEnvelope<WriteRequest<tx::FunctionCallBody>>) -> Self {
-        WriteMessage::FunctionCall(envelope)
+    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
+        &request.signer_account_id
     }
 }
 
-impl ActorRequest for WriteRequest<storage::DepositBody> {
-    type Actor = NearWriteClient;
-    type Response = storage::DepositResult;
-
-    fn dispatch(self, actor: &Self::Actor) -> BoxFuture<'_, GatewayResult<Self::Response>> {
+impl WriteRpcRequest for storage::Deposit {
+    fn dispatch(
+        request: Self::Input,
+        client: NearWriteClient,
+    ) -> BoxFuture<'static, GatewayResult<WriteOperationResult>> {
         Box::pin(async move {
-            let signer_account_id = self.signer_account_id.clone();
-            let body = self.body;
-            let tx_result = actor
-                .tx(self.signer_account_id)?
+            let signer_account_id = request.signer_account_id.clone();
+            let body = request.body;
+            let tx_result = client
+                .tx(request.signer_account_id)?
                 .function_call(
                     tx::FunctionCallBody {
                         receiver_id: body.contract_id,
@@ -188,7 +192,7 @@ impl ActorRequest for WriteRequest<storage::DepositBody> {
                         gas: NearGas::from_tgas(100),
                         deposit: body.deposit,
                     },
-                    self.wait_until,
+                    request.wait_until,
                 )
                 .await?;
 
@@ -198,36 +202,16 @@ impl ActorRequest for WriteRequest<storage::DepositBody> {
             ))
         })
     }
-}
 
-impl From<MessageEnvelope<WriteRequest<storage::DepositBody>>> for WriteMessage {
-    fn from(envelope: MessageEnvelope<WriteRequest<storage::DepositBody>>) -> Self {
-        WriteMessage::StorageDeposit(envelope)
-    }
-}
-
-async fn dispatch(actor: &NearWriteClient, message: WriteMessage) {
-    match message {
-        WriteMessage::FunctionCall(envelope) => respond(actor, envelope).await,
-        WriteMessage::StorageDeposit(envelope) => respond(actor, envelope).await,
+    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
+        &request.signer_account_id
     }
 }
 
 impl Actor for AccountWriteActor {
-    type Message = WriteMessage;
-    type Handle = mpsc::Sender<WriteMessage>;
+    type Context = Context<Self>;
 
-    const NAME: &'static str = WRITE_ACTOR_NAME;
-
-    fn concurrency(&self) -> usize {
-        self.concurrency
-    }
-
-    fn into_handle(sender: mpsc::Sender<Self::Message>) -> Self::Handle {
-        sender
-    }
-
-    fn on_message(&self, message: Self::Message) -> BoxFuture<'_, ()> {
-        Box::pin(async move { dispatch(&self.client, message).await })
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.set_mailbox_capacity(64);
     }
 }
