@@ -1,10 +1,7 @@
 use blockchain_gateway_core::tx;
 use near_api::{types::transaction::result::TransactionResult, Contract};
 
-use crate::{
-    client::{contract_args_bytes, IntoNearTxExecutionStatus, NearClient},
-    GatewayError, GatewayResult,
-};
+use crate::{client::NearClient, GatewayError, GatewayResult};
 
 #[derive(Clone)]
 pub struct TxClient<'a> {
@@ -20,12 +17,12 @@ impl TxClient<'_> {
         wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     ) -> GatewayResult<TransactionResult> {
         Contract(body.receiver_id)
-            .call_function_raw(&body.method_name.0, contract_args_bytes(body.args))
+            .call_function_raw(&body.method_name.0, body.args.try_into_bytes()?)
             .transaction()
             .gas(body.gas)
             .deposit(body.deposit)
             .with_signer(self.signer_account_id.0.clone(), self.signer.clone())
-            .wait_until(wait_until.into_near())
+            .wait_until(wait_until.into())
             .send_to(self.inner.network())
             .await
             .map_err(|error| GatewayError::NearTransaction(error.to_string()))

@@ -5,7 +5,7 @@ use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::{WriteRpcRequest, operation_outcome_from_transaction_result};
+use super::{operation_outcome_from_transaction_result, WriteRpcRequest};
 
 impl WriteRpcRequest for storage::Deposit {
     fn dispatch(

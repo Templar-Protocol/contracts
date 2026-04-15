@@ -1,11 +1,10 @@
 use near_account_id::AccountId;
+use near_openapi_types::TxExecutionStatus as NearTxExecutionStatus;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{IdempotencyKey, ManagedAccountId, OperationOutcome};
 
-// Keep a gateway-owned mirror of NEAR's execution status so `gateway/core` stays decoupled
-// from NEAR RPC/openapi type dependencies and their schema-version mismatches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TxExecutionStatus {
@@ -16,6 +15,32 @@ pub enum TxExecutionStatus {
     IncludedFinal,
     Executed,
     Final,
+}
+
+impl From<TxExecutionStatus> for NearTxExecutionStatus {
+    fn from(value: TxExecutionStatus) -> Self {
+        match value {
+            TxExecutionStatus::None => Self::None,
+            TxExecutionStatus::Included => Self::Included,
+            TxExecutionStatus::ExecutedOptimistic => Self::ExecutedOptimistic,
+            TxExecutionStatus::IncludedFinal => Self::IncludedFinal,
+            TxExecutionStatus::Executed => Self::Executed,
+            TxExecutionStatus::Final => Self::Final,
+        }
+    }
+}
+
+impl From<NearTxExecutionStatus> for TxExecutionStatus {
+    fn from(value: NearTxExecutionStatus) -> Self {
+        match value {
+            NearTxExecutionStatus::None => Self::None,
+            NearTxExecutionStatus::Included => Self::Included,
+            NearTxExecutionStatus::ExecutedOptimistic => Self::ExecutedOptimistic,
+            NearTxExecutionStatus::IncludedFinal => Self::IncludedFinal,
+            NearTxExecutionStatus::Executed => Self::Executed,
+            NearTxExecutionStatus::Final => Self::Final,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
@@ -30,6 +55,15 @@ pub struct Pagination {
 pub enum ContractArgs {
     Json(serde_json::Value),
     Raw(crate::Base64Bytes),
+}
+
+impl ContractArgs {
+    pub fn try_into_bytes(self) -> Result<Vec<u8>, serde_json::Error> {
+        match self {
+            Self::Json(value) => serde_json::to_vec(&value),
+            Self::Raw(bytes) => Ok(bytes.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

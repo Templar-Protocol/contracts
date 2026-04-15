@@ -39,9 +39,11 @@ impl ReadRpcRequest for storage::GetBalanceOf {
                 .storage_balance_of(params.args)
                 .await
                 .map(|balance| storage::GetBalanceOfResult {
-                    balance: balance.map(|balance| blockchain_gateway_core::common::StorageBalance {
-                        total: balance.total,
-                        available: balance.available,
+                    balance: balance.map(|balance| {
+                        blockchain_gateway_core::common::StorageBalance {
+                            total: balance.total,
+                            available: balance.available,
+                        }
                     }),
                 })
         })
