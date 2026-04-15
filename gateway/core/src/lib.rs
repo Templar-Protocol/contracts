@@ -18,8 +18,8 @@ pub use operation::{
     TransactionStepRecord,
 };
 pub use primitive::{
-    Base64Bytes, ContractMethodName, IdempotencyKey, ManagedAccountId, MarketId, NearGas,
-    NearToken, RegistryId, UniversalAccountId,
+    Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, MarketId,
+    NearGas, NearToken, RegistryId, UniversalAccountId,
 };
 pub use rpc::{chain, common, market, registry, storage, tx, universal_account};
 pub use spec::{MethodKind, MethodSpec};

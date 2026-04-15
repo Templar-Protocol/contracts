@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use near_account_id::AccountId;
+use near_api_types::CryptoHash as NearCryptoHash;
 pub use near_gas::NearGas;
 pub use near_token::NearToken;
 use schemars::{
@@ -29,6 +30,41 @@ transparent_newtype!(
 transparent_newtype!(
     pub struct IdempotencyKey(String);
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CryptoHash(pub NearCryptoHash);
+
+impl From<NearCryptoHash> for CryptoHash {
+    fn from(value: NearCryptoHash) -> Self {
+        Self(value)
+    }
+}
+
+impl From<CryptoHash> for NearCryptoHash {
+    fn from(value: CryptoHash) -> Self {
+        value.0
+    }
+}
+
+impl JsonSchema for CryptoHash {
+    fn schema_name() -> String {
+        "CryptoHash".to_owned()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        Schema::Object(SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            string: Some(Box::new(StringValidation::default())),
+            metadata: Some(Box::new(Metadata {
+                title: Some("Crypto Hash".to_owned()),
+                description: Some("Base58-encoded NEAR crypto hash.".to_owned()),
+                ..Metadata::default()
+            })),
+            ..SchemaObject::default()
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Base64Bytes(pub Vec<u8>);

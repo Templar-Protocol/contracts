@@ -1776,6 +1776,7 @@ version = "1.2.1"
 dependencies = [
  "base64 0.22.1",
  "near-account-id",
+ "near-api-types",
  "near-gas",
  "near-openapi-types",
  "near-token",

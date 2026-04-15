@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
-    rpc::common::{AccountIdList, Pagination, StringList, WriteOperationResult},
+    rpc::common::{Pagination, WriteOperationResult},
     Base64Bytes, PublicReadMethod, RegistryId, RegistryReadMethod, RegistryWriteMethod,
     WriteMethod,
 };
@@ -15,7 +15,10 @@ pub struct ListDeploymentsParams {
     pub args: Pagination,
 }
 
-pub type ListDeploymentsResult = AccountIdList;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ListDeploymentsResult {
+    pub account_ids: Vec<near_account_id::AccountId>,
+}
 
 public_read_method_spec!(
     ListDeployments,
@@ -32,7 +35,10 @@ pub struct ListVersionsParams {
     pub args: Pagination,
 }
 
-pub type ListVersionsResult = StringList;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ListVersionsResult {
+    pub values: Vec<String>,
+}
 
 public_read_method_spec!(
     ListVersions,

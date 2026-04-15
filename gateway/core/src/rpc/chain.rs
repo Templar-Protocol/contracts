@@ -3,9 +3,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::public_read_method_spec,
-    rpc::common::{ContractArgs, JsonValueResult},
-    ChainReadMethod, ContractMethodName, PublicReadMethod,
+    macros::public_read_method_spec, rpc::common::ContractArgs, ChainReadMethod,
+    ContractMethodName, CryptoHash, NearGas, NearToken, PublicReadMethod,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -13,7 +12,15 @@ pub struct ViewAccountParams {
     pub account_id: AccountId,
 }
 
-pub type ViewAccountResult = JsonValueResult;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewAccountResult {
+    pub amount: NearToken,
+    pub locked: NearToken,
+    pub code_hash: String,
+    pub storage_usage: u64,
+    pub global_contract_hash: Option<String>,
+    pub global_contract_account_id: Option<AccountId>,
+}
 
 public_read_method_spec!(
     ViewAccount,
@@ -30,7 +37,10 @@ pub struct ViewFunctionParams {
     pub args: ContractArgs,
 }
 
-pub type ViewFunctionResult = JsonValueResult;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewFunctionResult {
+    pub value: serde_json::Value,
+}
 
 public_read_method_spec!(
     ViewFunction,
@@ -42,11 +52,42 @@ public_read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetTransactionParams {
-    pub tx_hash: String,
+    pub tx_hash: CryptoHash,
     pub sender_account_id: AccountId,
+    #[serde(default)]
+    pub encoding: ValueEncoding,
 }
 
-pub type GetTransactionResult = JsonValueResult;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ValueEncoding {
+    #[default]
+    Json,
+    Base64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "encoding", content = "value", rename_all = "snake_case")]
+pub enum TransactionReturnValue {
+    Json(serde_json::Value),
+    Base64(crate::Base64Bytes),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionStatus {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetTransactionResult {
+    pub status: TransactionStatus,
+    pub total_gas_burnt: NearGas,
+    pub logs: Vec<String>,
+    pub return_value: Option<TransactionReturnValue>,
+}
 
 public_read_method_spec!(
     GetTransaction,

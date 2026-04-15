@@ -1,4 +1,3 @@
-use near_account_id::AccountId;
 use near_openapi_types::TxExecutionStatus as NearTxExecutionStatus;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -99,24 +98,4 @@ pub struct StorageBalanceBounds {
 pub struct StorageBalance {
     pub total: crate::NearToken,
     pub available: crate::NearToken,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AccountIdList {
-    pub account_ids: Vec<AccountId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StringList {
-    pub values: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct JsonValueResult {
-    pub value: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct JsonValueListResult {
-    pub values: Vec<serde_json::Value>,
 }
