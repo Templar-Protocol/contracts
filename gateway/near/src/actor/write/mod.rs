@@ -1,3 +1,6 @@
+mod storage;
+mod tx;
+
 use std::{collections::HashMap, sync::Arc};
 
 use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
@@ -6,8 +9,8 @@ use blockchain_gateway_core::{
         OperationId, OperationOutcome, OperationRecord, OperationStatus, StepStatus,
         TransactionStepRecord,
     },
-    rpc::common::{ContractArgs, WriteOperationResult},
-    storage, tx, ContractMethodName, ManagedAccountId, MethodSpec, NearGas,
+    rpc::common::WriteOperationResult,
+    ManagedAccountId, MethodSpec,
 };
 use futures::future::BoxFuture;
 use near_api::types::transaction::result::TransactionResult;
@@ -81,32 +84,8 @@ pub(crate) fn sender_for<'a>(
     })
 }
 
-impl<Request> Handler<RpcMessage<Request>> for AccountWriteActor
-where
-    Request: WriteRpcRequest,
-{
-    type Result = ResponseFuture<GatewayResult<Request::Output>>;
-
-    fn handle(
-        &mut self,
-        RpcMessage(message): RpcMessage<Request>,
-        _ctx: &mut Self::Context,
-    ) -> Self::Result {
-        let client = self.client.clone();
-        let semaphore = self.semaphore.clone();
-
-        Box::pin(async move {
-            let _permit = semaphore
-                .acquire_owned()
-                .await
-                .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
-            Request::dispatch(message, client).await
-        })
-    }
-}
-
-fn operation_outcome_from_transaction_result(
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+pub(super) fn operation_outcome_from_transaction_result(
+    signer_account_id: ManagedAccountId,
     tx_result: TransactionResult,
 ) -> WriteOperationResult {
     let (status, step_status, tx_hash) = if let Some(full) = tx_result.into_full() {
@@ -147,64 +126,27 @@ fn operation_outcome_from_transaction_result(
     }
 }
 
-impl WriteRpcRequest for tx::FunctionCall {
-    fn dispatch(
-        request: Self::Input,
-        client: NearWriteClient,
-    ) -> BoxFuture<'static, GatewayResult<WriteOperationResult>> {
+impl<Request> Handler<RpcMessage<Request>> for AccountWriteActor
+where
+    Request: WriteRpcRequest,
+{
+    type Result = ResponseFuture<GatewayResult<Request::Output>>;
+
+    fn handle(
+        &mut self,
+        RpcMessage(message): RpcMessage<Request>,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let client = self.client.clone();
+        let semaphore = self.semaphore.clone();
+
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
-                .tx(request.signer_account_id.clone())?
-                .function_call(request.body, request.wait_until)
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
+            Request::dispatch(message, client).await
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
-    }
-}
-
-impl WriteRpcRequest for storage::Deposit {
-    fn dispatch(
-        request: Self::Input,
-        client: NearWriteClient,
-    ) -> BoxFuture<'static, GatewayResult<WriteOperationResult>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let body = request.body;
-            let tx_result = client
-                .tx(request.signer_account_id)?
-                .function_call(
-                    tx::FunctionCallBody {
-                        receiver_id: body.contract_id,
-                        method_name: ContractMethodName("storage_deposit".to_owned()),
-                        args: ContractArgs::Json(serde_json::json!({
-                            "account_id": body.beneficiary_id,
-                            "registration_only": body.registration_only,
-                        })),
-                        gas: NearGas::from_tgas(100),
-                        deposit: body.deposit,
-                    },
-                    request.wait_until,
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
