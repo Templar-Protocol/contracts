@@ -1,15 +1,27 @@
+use std::sync::Arc;
+
 use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearClient};
+use crate::{
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    GatewayResult, NearClient,
+};
 
-use super::{operation_outcome_from_transaction_result, DispatchWrite};
+impl DispatchRead for tx::Get {
+    fn dispatch(
+        params: RpcMessage<Self>,
+        client: NearClient,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move { client.chain().get_transaction(params.0.params).await })
+    }
+}
 
 impl DispatchWrite for tx::FunctionCall {
     fn dispatch(
         request: Self::Input,
         client: NearClient,
-        signer: std::sync::Arc<near_api::Signer>,
+        signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();

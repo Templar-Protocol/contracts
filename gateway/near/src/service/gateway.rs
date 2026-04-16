@@ -6,10 +6,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     actor::{
+        DispatchRead, DispatchWrite, ManagedSigner, ReadActor, RpcMessage, WriteActors,
         map_mailbox_error,
-        read::{DispatchRead, ReadActor},
-        write::{DispatchWrite, ManagedSigner, WriteActors},
-        RpcMessage,
     },
     GatewayResult,
 };

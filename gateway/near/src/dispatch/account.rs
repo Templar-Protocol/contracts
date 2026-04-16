@@ -1,16 +1,28 @@
+use std::sync::Arc;
+
 use blockchain_gateway_core::account;
 use futures::future::BoxFuture;
 use near_api::Account;
 
-use crate::{GatewayError, GatewayResult, NearClient};
+use crate::{
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    GatewayResult, NearClient,
+};
 
-use super::{operation_outcome_from_transaction_result, DispatchWrite};
+impl DispatchRead for account::Get {
+    fn dispatch(
+        params: RpcMessage<Self>,
+        client: NearClient,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move { client.account().get(params.0.params).await })
+    }
+}
 
 impl DispatchWrite for account::Delete {
     fn dispatch(
         request: Self::Input,
         client: NearClient,
-        signer: std::sync::Arc<near_api::Signer>,
+        signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
@@ -20,7 +32,7 @@ impl DispatchWrite for account::Delete {
                 .wait_until(request.wait_until.into())
                 .send_to(client.network())
                 .await
-                .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
+                .map_err(|error| crate::GatewayError::NearTransaction(error.to_string()))?;
 
             Ok(operation_outcome_from_transaction_result(
                 signer_account_id,

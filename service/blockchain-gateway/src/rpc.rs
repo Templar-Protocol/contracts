@@ -2,7 +2,7 @@ use blockchain_gateway_core::{
     account, contract, ft, market, registry, storage, tx, universal_account,
 };
 use blockchain_gateway_near::{
-    actor::{read::DispatchRead, write::DispatchWrite},
+    actor::{DispatchRead, DispatchWrite},
     GatewayError, GatewayService,
 };
 use jsonrpsee::{

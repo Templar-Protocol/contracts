@@ -4,10 +4,7 @@ use actix::Addr;
 use blockchain_gateway_core::ManagedAccountId;
 
 use crate::{
-    actor::{
-        read::ReadActor,
-        write::{ManagedSigner, WriteActors},
-    },
+    actor::{ManagedSigner, ReadActor, WriteActors},
     NearClient,
 };
 

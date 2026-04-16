@@ -1,17 +1,41 @@
+use std::sync::Arc;
+
 use blockchain_gateway_core::ft;
 use futures::future::BoxFuture;
 
-use crate::{client::ContractWriteOptions, GatewayResult, NearClient};
+use crate::{
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    client::{
+        ft::{GetBalanceOfArgs, TransferArgs},
+        ContractWriteOptions,
+    },
+    GatewayResult, NearClient,
+};
 
-use crate::client::ft::TransferArgs;
+impl DispatchRead for ft::GetBalanceOf {
+    fn dispatch(
+        params: RpcMessage<Self>,
+        client: NearClient,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let params = params.0.params;
+            let balance = client
+                .ft(params.token_id)
+                .ft_balance_of(GetBalanceOfArgs {
+                    account_id: params.account_id,
+                })
+                .await?;
 
-use super::{operation_outcome_from_transaction_result, DispatchWrite};
+            Ok(ft::GetBalanceOfResult { balance })
+        })
+    }
+}
 
 impl DispatchWrite for ft::Transfer {
     fn dispatch(
         request: Self::Input,
         client: NearClient,
-        signer: std::sync::Arc<near_api::Signer>,
+        signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();

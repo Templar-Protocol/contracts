@@ -1,10 +1,3 @@
-mod account;
-mod ft;
-mod registry;
-mod signer;
-mod storage;
-mod tx;
-
 use std::{collections::HashMap, sync::Arc};
 
 use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
@@ -23,9 +16,34 @@ use uuid::Uuid;
 
 use crate::{GatewayError, GatewayResult, NearClient};
 
-use super::RpcMessage;
+use super::ManagedSigner;
 
-pub use signer::ManagedSigner;
+const READ_ACTOR_NAME: &str = "read-actor";
+const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
+const WRITE_ACTOR_NAME: &str = "write-actor";
+
+pub struct RpcMessage<Spec: MethodSpec>(pub Spec::Input);
+
+impl<Spec: MethodSpec> actix::Message for RpcMessage<Spec> {
+    type Result = GatewayResult<Spec::Output>;
+}
+
+pub(crate) fn map_mailbox_error(
+    error: actix::MailboxError,
+    actor_name: &'static str,
+) -> crate::GatewayError {
+    crate::GatewayError::ActorError {
+        actor: actor_name,
+        source: error,
+    }
+}
+
+pub trait DispatchRead: MethodSpec + Sized + Send + 'static {
+    fn dispatch(
+        params: RpcMessage<Self>,
+        client: NearClient,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
+}
 
 pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
     fn dispatch(
@@ -35,6 +53,53 @@ pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
 
     fn signer_account_id(params: &Self::Input) -> &ManagedAccountId;
+}
+
+#[derive(Clone)]
+pub struct ReadActor {
+    client: NearClient,
+    semaphore: Arc<Semaphore>,
+}
+
+impl ReadActor {
+    fn new(client: NearClient) -> Self {
+        Self {
+            client,
+            semaphore: Arc::new(Semaphore::new(READ_ACTOR_MAX_CONCURRENCY)),
+        }
+    }
+
+    pub(crate) fn spawn(arbiter: &ArbiterHandle, client: NearClient) -> Addr<Self> {
+        Self::start_in_arbiter(arbiter, move |_ctx| Self::new(client))
+    }
+}
+
+impl<Spec> Handler<RpcMessage<Spec>> for ReadActor
+where
+    Spec: DispatchRead,
+{
+    type Result = ResponseFuture<GatewayResult<Spec::Output>>;
+
+    fn handle(&mut self, message: RpcMessage<Spec>, _ctx: &mut Self::Context) -> Self::Result {
+        let client = self.client.clone();
+        let semaphore = self.semaphore.clone();
+
+        Box::pin(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|_error| GatewayError::ActorUnavailable(READ_ACTOR_NAME))?;
+            Spec::dispatch(message, client).await
+        })
+    }
+}
+
+impl Actor for ReadActor {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.set_mailbox_capacity(64);
+    }
 }
 
 pub struct WriteActors {
@@ -75,7 +140,7 @@ impl WriteActors {
         sender
             .send(RpcMessage(params))
             .await
-            .map_err(|error| crate::actor::map_mailbox_error(error, "write-actor"))?
+            .map_err(|error| map_mailbox_error(error, WRITE_ACTOR_NAME))?
     }
 
     fn sender_for(
@@ -88,7 +153,7 @@ impl WriteActors {
     }
 }
 
-pub struct AccountWriteActor {
+pub(crate) struct AccountWriteActor {
     client: NearClient,
     signer: Arc<near_api::Signer>,
     semaphore: Arc<Semaphore>,
@@ -113,7 +178,7 @@ impl AccountWriteActor {
     }
 }
 
-pub(super) fn operation_outcome_from_transaction_result(
+pub(crate) fn operation_outcome_from_transaction_result(
     signer_account_id: ManagedAccountId,
     tx_result: TransactionResult,
 ) -> WriteOperationResult {
@@ -174,7 +239,7 @@ where
             let _permit = semaphore
                 .acquire_owned()
                 .await
-                .map_err(|_error| GatewayError::ActorUnavailable("write-actor"))?;
+                .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
             Request::dispatch(message, client, signer).await
         })
     }

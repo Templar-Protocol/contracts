@@ -1,10 +1,7 @@
 use blockchain_gateway_core::market;
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearClient};
-
-use super::DispatchRead;
-use crate::actor::RpcMessage;
+use crate::{GatewayResult, NearClient, actor::{DispatchRead, RpcMessage}};
 
 impl DispatchRead for market::GetConfiguration {
     fn dispatch(
