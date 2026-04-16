@@ -75,11 +75,23 @@ write_method_spec!(
 pub struct EnsureDepositBody {
     pub contract_id: AccountId,
     pub account_id: AccountId,
-    #[serde(default)]
-    pub registration_only: bool,
+    pub mode: EnsureDepositMode,
 }
 
-pub type EnsureDepositResult = WriteOperationResult;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "operation")]
+pub enum EnsureDepositResult {
+    NoOp,
+    Operation(WriteOperationResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "mode", content = "amount")]
+pub enum EnsureDepositMode {
+    Registered,
+    MinimumTotal(crate::NearToken),
+    MinimumAvailable(crate::NearToken),
+}
 
 write_method_spec!(
     EnsureDeposit,

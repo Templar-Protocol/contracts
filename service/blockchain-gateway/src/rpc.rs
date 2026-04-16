@@ -70,6 +70,7 @@ pub fn attach_gateway(
     register_read::<storage::GetBalanceBounds>(&mut m)?;
     register_read::<storage::GetBalanceOf>(&mut m)?;
     register_write::<storage::Deposit>(&mut m)?;
+    register_write::<storage::EnsureDeposit>(&mut m)?;
     register_write::<storage::Unregister>(&mut m)?;
     register_read::<tx::Get>(&mut m)?;
     register_write::<tx::FunctionCall>(&mut m)?;
@@ -386,6 +387,46 @@ mod tests {
             unregister_result.return_value,
             Some(tx::ReturnValue::Base64(_))
         ));
+
+        stack.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result<()> {
+        let stack = TestStack::start().await?;
+
+        let first = stack
+            .controller
+            .request::<storage::EnsureDeposit>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: storage::EnsureDepositBody {
+                    contract_id: stack.harness.ft_contract_id.clone(),
+                    account_id: stack.harness.beneficiary_account_id.clone(),
+                    mode: storage::EnsureDepositMode::Registered,
+                },
+            })
+            .await?;
+
+        assert!(matches!(first, storage::EnsureDepositResult::Operation(_)));
+
+        let second = stack
+            .controller
+            .request::<storage::EnsureDeposit>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: storage::EnsureDepositBody {
+                    contract_id: stack.harness.ft_contract_id.clone(),
+                    account_id: stack.harness.beneficiary_account_id.clone(),
+                    mode: storage::EnsureDepositMode::Registered,
+                },
+            })
+            .await?;
+
+        assert!(matches!(second, storage::EnsureDepositResult::NoOp));
 
         stack.shutdown().await;
         Ok(())
