@@ -3,7 +3,7 @@ use templar_universal_account::PayloadExecutionParameters;
 
 use crate::client::{macros::contract_views, NearClient};
 
-use super::ContractClient;
+use super::BoundContractClient;
 
 #[derive(Clone)]
 pub struct UniversalAccountClient<'a> {
@@ -11,7 +11,7 @@ pub struct UniversalAccountClient<'a> {
     pub(crate) contract_id: blockchain_gateway_core::UniversalAccountId,
 }
 
-impl ContractClient for UniversalAccountClient<'_> {
+impl BoundContractClient for UniversalAccountClient<'_> {
     fn client(&self) -> &NearClient {
         self.inner
     }

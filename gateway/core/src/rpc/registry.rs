@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
+    primitive::PublicKey,
     rpc::common::{Pagination, WriteOperationResult},
-    Base64Bytes, PublicReadMethod, RegistryId, RegistryReadMethod, RegistryWriteMethod,
-    WriteMethod,
+    Base64Bytes, NearToken, RegistryId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -23,7 +23,6 @@ pub struct ListDeploymentsResult {
 public_read_method_spec!(
     ListDeployments,
     "registry.listDeployments",
-    PublicReadMethod::Registry(RegistryReadMethod::ListDeployments),
     ListDeploymentsParams,
     ListDeploymentsResult
 );
@@ -43,9 +42,44 @@ pub struct ListVersionsResult {
 public_read_method_spec!(
     ListVersions,
     "registry.listVersions",
-    PublicReadMethod::Registry(RegistryReadMethod::ListVersions),
     ListVersionsParams,
     ListVersionsResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetDeploymentParams {
+    pub registry_id: RegistryId,
+    pub account_id: near_account_id::AccountId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetDeploymentResult {
+    pub deployment: Option<templar_common::registry::Deployment>,
+}
+
+public_read_method_spec!(
+    GetDeployment,
+    "registry.getDeployment",
+    GetDeploymentParams,
+    GetDeploymentResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AddVersionBody {
+    pub registry_id: RegistryId,
+    pub version_key: String,
+    pub deploy_mode: templar_common::registry::DeployMode,
+    pub code: Base64Bytes,
+    pub deposit: NearToken,
+}
+
+pub type AddVersionResult = WriteOperationResult;
+
+write_method_spec!(
+    AddVersion,
+    "registry.addVersion",
+    AddVersionBody,
+    AddVersionResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -54,16 +88,26 @@ pub struct DeployBody {
     pub name: String,
     pub version_key: String,
     pub init_args: Base64Bytes,
-    pub full_access_keys: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_access_keys: Option<Vec<PublicKey>>,
     pub deposit: crate::NearToken,
 }
 
 pub type DeployResult = WriteOperationResult;
 
+write_method_spec!(Deploy, "registry.deploy", DeployBody, DeployResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RemoveVersionBody {
+    pub registry_id: RegistryId,
+    pub version_key: String,
+}
+
+pub type RemoveVersionResult = WriteOperationResult;
+
 write_method_spec!(
-    Deploy,
-    "registry.deploy",
-    WriteMethod::Registry(RegistryWriteMethod::Deploy),
-    DeployBody,
-    DeployResult
+    RemoveVersion,
+    "registry.removeVersion",
+    RemoveVersionBody,
+    RemoveVersionResult
 );

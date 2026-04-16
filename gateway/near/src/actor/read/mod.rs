@@ -1,4 +1,6 @@
+mod account;
 mod chain;
+mod contract;
 mod market;
 mod registry;
 mod storage;

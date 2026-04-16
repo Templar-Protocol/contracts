@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
     rpc::common::WriteOperationResult,
-    PublicReadMethod, RegistryId, UniversalAccountId, UniversalAccountReadMethod,
-    UniversalAccountWriteMethod, WriteMethod,
+    RegistryId, UniversalAccountId,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -37,13 +36,7 @@ pub struct GetKeyResult {
     pub parameters: Option<PayloadExecutionParametersView>,
 }
 
-public_read_method_spec!(
-    GetKey,
-    "ua.getKey",
-    PublicReadMethod::UniversalAccount(UniversalAccountReadMethod::GetKey),
-    GetKeyParams,
-    GetKeyResult
-);
+public_read_method_spec!(GetKey, "ua.getKey", GetKeyParams, GetKeyResult);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecuteBody {
@@ -53,13 +46,7 @@ pub struct ExecuteBody {
 
 pub type ExecuteResult = WriteOperationResult;
 
-write_method_spec!(
-    Execute,
-    "ua.execute",
-    WriteMethod::UniversalAccount(UniversalAccountWriteMethod::Execute),
-    ExecuteBody,
-    ExecuteResult
-);
+write_method_spec!(Execute, "ua.execute", ExecuteBody, ExecuteResult);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CreateAccountBody {
@@ -77,7 +64,6 @@ pub type CreateAccountResult = WriteOperationResult;
 write_method_spec!(
     CreateAccount,
     "ua.createAccount",
-    WriteMethod::UniversalAccount(UniversalAccountWriteMethod::CreateAccount),
     CreateAccountBody,
     CreateAccountResult
 );

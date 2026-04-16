@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
     rpc::common::{StorageBalance, StorageBalanceBounds, WriteOperationResult},
-    PublicReadMethod, StorageReadMethod, StorageWriteMethod, WriteMethod,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -26,7 +25,6 @@ pub struct GetBalanceBoundsResult {
 public_read_method_spec!(
     GetBalanceBounds,
     "storage.getBalanceBounds",
-    PublicReadMethod::Storage(StorageReadMethod::GetBalanceBounds),
     GetBalanceBoundsParams,
     GetBalanceBoundsResult
 );
@@ -51,7 +49,6 @@ pub struct GetBalanceOfResult {
 public_read_method_spec!(
     GetBalanceOf,
     "storage.getBalanceOf",
-    PublicReadMethod::Storage(StorageReadMethod::GetBalanceOf),
     GetBalanceOfParams,
     GetBalanceOfResult
 );
@@ -67,12 +64,22 @@ pub struct DepositBody {
 
 pub type DepositResult = WriteOperationResult;
 
+write_method_spec!(Deposit, "storage.deposit", DepositBody, DepositResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UnregisterBody {
+    pub contract_id: AccountId,
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub type UnregisterResult = WriteOperationResult;
+
 write_method_spec!(
-    Deposit,
-    "storage.deposit",
-    WriteMethod::Storage(StorageWriteMethod::Deposit),
-    DepositBody,
-    DepositResult
+    Unregister,
+    "storage.unregister",
+    UnregisterBody,
+    UnregisterResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -88,7 +95,6 @@ pub type EnsureDepositResult = WriteOperationResult;
 write_method_spec!(
     EnsureDeposit,
     "storage.ensureDeposit",
-    WriteMethod::Storage(StorageWriteMethod::EnsureDeposit),
     EnsureDepositBody,
     EnsureDepositResult
 );

@@ -1,7 +1,9 @@
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
-    #[error("serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
+    #[error("json serialization error: {0}")]
+    JsonSerialization(#[from] serde_json::Error),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("invalid transaction hash: {0}")]
     InvalidTransactionHash(String),
     #[error("near query failed: {0}")]

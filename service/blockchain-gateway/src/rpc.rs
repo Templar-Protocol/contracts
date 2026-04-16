@@ -1,4 +1,6 @@
-use blockchain_gateway_core::{chain, market, registry, storage, tx, universal_account};
+use blockchain_gateway_core::{
+    account, chain, contract, market, registry, storage, tx, universal_account,
+};
 use blockchain_gateway_near::{
     actor::{read::ReadRpcRequest, write::WriteRpcRequest},
     GatewayError, GatewayService,
@@ -51,18 +53,26 @@ pub fn attach_gateway(
 ) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
     let mut m = RpcModule::new(service);
 
-    register_read::<chain::ViewAccount>(&mut m)?;
-    register_read::<chain::ViewFunction>(&mut m)?;
+    register_read::<account::Get>(&mut m)?;
     register_read::<chain::GetTransaction>(&mut m)?;
+    register_read::<contract::ViewFunction>(&mut m)?;
+    register_read::<contract::GetVersion>(&mut m)?;
+    register_write::<account::Delete>(&mut m)?;
+    register_read::<registry::GetDeployment>(&mut m)?;
     register_read::<registry::ListDeployments>(&mut m)?;
     register_read::<registry::ListVersions>(&mut m)?;
+    register_write::<registry::AddVersion>(&mut m)?;
+    register_write::<registry::RemoveVersion>(&mut m)?;
+    register_write::<registry::Deploy>(&mut m)?;
     register_read::<market::GetConfiguration>(&mut m)?;
     register_read::<market::ListBorrowPositions>(&mut m)?;
     register_read::<storage::GetBalanceBounds>(&mut m)?;
     register_read::<storage::GetBalanceOf>(&mut m)?;
     register_write::<storage::Deposit>(&mut m)?;
+    register_write::<storage::Unregister>(&mut m)?;
     register_read::<universal_account::GetKey>(&mut m)?;
     register_write::<tx::FunctionCall>(&mut m)?;
+    register_write::<tx::TransferNep141>(&mut m)?;
 
     Ok(m)
 }
@@ -71,9 +81,10 @@ pub fn attach_gateway(
 mod tests {
     use anyhow::Result;
     use blockchain_gateway_core::{
+        account,
         chain::{self, GetTransactionParams, TransactionReturnValue, TransactionStatus},
         common::{ContractArgs, ReadRequest, WriteRequest},
-        storage, tx, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+        contract, storage, tx, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
     };
     use blockchain_gateway_testing::{SandboxHarness, TestController};
     use jsonrpsee::server::{ServerBuilder, ServerHandle};
@@ -160,8 +171,8 @@ mod tests {
 
         let result = stack
             .controller
-            .request::<chain::ViewAccount>(&ReadRequest {
-                params: chain::ViewAccountParams {
+            .request::<account::Get>(&ReadRequest {
+                params: account::GetParams {
                     account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 },
             })
@@ -198,8 +209,8 @@ mod tests {
 
         let counter = stack
             .controller
-            .request::<chain::ViewFunction>(&ReadRequest {
-                params: chain::ViewFunctionParams {
+            .request::<contract::ViewFunction>(&ReadRequest {
+                params: contract::ViewFunctionParams {
                     contract_id: stack.harness.ft_contract_id.clone(),
                     method_name: ContractMethodName("redemption_rate".to_owned()),
                     args: ContractArgs::Raw(Base64Bytes(Vec::new())),
@@ -390,6 +401,24 @@ mod tests {
         let stack = TestStack::start().await?;
         let registry_id = stack.harness.deploy_registry().await?;
 
+        let version_key = "mock-ft@1.0.0".to_owned();
+        let write_result = stack
+            .controller
+            .request::<registry::AddVersion>(&WriteRequest {
+                signer_account_id: stack.harness.registry_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: registry::AddVersionBody {
+                    registry_id: registry_id.clone(),
+                    version_key: version_key.clone(),
+                    deploy_mode: templar_common::registry::DeployMode::Normal,
+                    code: Base64Bytes(stack.harness.ft_wasm().await),
+                    deposit: NearToken::from_yoctonear(1),
+                },
+            })
+            .await?;
+        eprintln!("{write_result:?}");
+
         let versions = stack
             .controller
             .request::<registry::ListVersions>(&ReadRequest {
@@ -400,18 +429,85 @@ mod tests {
             })
             .await?;
 
+        assert_eq!(versions.values, vec![version_key.clone()]);
+
+        let deploy = stack
+            .controller
+            .request::<registry::Deploy>(&WriteRequest {
+                signer_account_id: stack.harness.registry_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: registry::DeployBody {
+                    registry_id: registry_id.clone(),
+                    name: "deployed-ft".to_owned(),
+                    version_key: version_key.clone(),
+                    init_args: Base64Bytes(serde_json::to_vec(&serde_json::json!({
+                        "name": "Deployed FT",
+                        "symbol": "DFT",
+                    }))?),
+                    full_access_keys: None,
+                    deposit: NearToken::from_near(6),
+                },
+            })
+            .await?;
+
+        let deployed_account_id: near_account_id::AccountId =
+            format!("deployed-ft.{}", registry_id.0)
+                .parse()
+                .expect("deployed registry subaccount should be valid");
+
+        let deployment = stack
+            .controller
+            .request::<registry::GetDeployment>(&ReadRequest {
+                params: registry::GetDeploymentParams {
+                    registry_id: registry_id.clone(),
+                    account_id: deployed_account_id.clone(),
+                },
+            })
+            .await?;
+
         let deployments = stack
             .controller
             .request::<registry::ListDeployments>(&ReadRequest {
                 params: registry::ListDeploymentsParams {
-                    registry_id,
+                    registry_id: registry_id.clone(),
                     args: blockchain_gateway_core::common::Pagination::default(),
                 },
             })
             .await?;
 
-        assert!(versions.values.is_empty());
-        assert!(deployments.account_ids.is_empty());
+        let version = stack
+            .controller
+            .request::<contract::GetVersion>(&ReadRequest {
+                params: contract::GetVersionParams {
+                    contract_id: deployed_account_id,
+                },
+            })
+            .await?;
+
+        let _ = stack
+            .controller
+            .request::<registry::RemoveVersion>(&WriteRequest {
+                signer_account_id: stack.harness.registry_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: registry::RemoveVersionBody {
+                    registry_id: registry_id.clone(),
+                    version_key: version_key.clone(),
+                },
+            })
+            .await?;
+
+        assert_eq!(
+            deployments.account_ids,
+            vec![format!("deployed-ft.{}", registry_id.0).parse::<near_account_id::AccountId>()?]
+        );
+        assert!(deployment.deployment.is_some());
+        assert!(!version.version_string.is_empty());
+        assert_eq!(
+            deploy.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
 
         stack.shutdown().await;
         Ok(())
@@ -464,6 +560,134 @@ mod tests {
             .await?;
 
         assert!(result.parameters.is_some());
+
+        stack.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbox() -> Result<()>
+    {
+        let stack = TestStack::start().await?;
+
+        let _ = register_gateway_signer_for_ft(&stack).await?;
+
+        let _ = stack
+            .controller
+            .request::<storage::Deposit>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: storage::DepositBody {
+                    contract_id: stack.harness.ft_contract_id.clone(),
+                    beneficiary_id: Some(stack.harness.beneficiary_account_id.clone()),
+                    registration_only: false,
+                    deposit: NearToken::from_near(1),
+                },
+            })
+            .await?;
+
+        let _ = stack
+            .controller
+            .request::<tx::FunctionCall>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: tx::FunctionCallBody {
+                    receiver_id: stack.harness.ft_contract_id.clone(),
+                    method_name: ContractMethodName("mint".to_owned()),
+                    args: ContractArgs::Json(serde_json::json!({ "amount": "3" })),
+                    gas: NearGas::from_tgas(100),
+                    deposit: NearToken::from_yoctonear(0),
+                },
+            })
+            .await?;
+
+        let _ = stack
+            .controller
+            .request::<tx::TransferNep141>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: tx::TransferNep141Body {
+                    token_id: stack.harness.ft_contract_id.clone(),
+                    receiver_id: stack.harness.beneficiary_account_id.clone(),
+                    amount: blockchain_gateway_core::U128(3),
+                },
+            })
+            .await?;
+
+        let balance = stack
+            .controller
+            .request::<contract::ViewFunction>(&ReadRequest {
+                params: contract::ViewFunctionParams {
+                    contract_id: stack.harness.ft_contract_id.clone(),
+                    method_name: ContractMethodName("ft_balance_of".to_owned()),
+                    args: ContractArgs::Json(serde_json::json!({
+                        "account_id": stack.harness.gateway_signer_account_id.0,
+                    })),
+                },
+            })
+            .await?;
+
+        assert_eq!(balance.value, serde_json::json!("0"));
+
+        let _ = stack
+            .controller
+            .request::<storage::Unregister>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: storage::UnregisterBody {
+                    contract_id: stack.harness.ft_contract_id.clone(),
+                    force: false,
+                },
+            })
+            .await?;
+
+        let storage_balance = stack
+            .controller
+            .request::<storage::GetBalanceOf>(&ReadRequest {
+                params: storage::GetBalanceOfParams {
+                    contract_id: stack.harness.ft_contract_id.clone(),
+                    args: storage::GetBalanceOfArgs {
+                        account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                    },
+                },
+            })
+            .await?;
+
+        assert!(storage_balance.balance.is_none());
+
+        let _ = stack
+            .controller
+            .request::<account::Delete>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: account::DeleteBody {
+                    beneficiary_id: stack.harness.beneficiary_account_id.clone(),
+                },
+            })
+            .await?;
+
+        let deleted = stack
+            .controller
+            .request::<chain::GetTransaction>(&ReadRequest {
+                params: GetTransactionParams {
+                    tx_hash: CryptoHash(
+                        "11111111111111111111111111111111"
+                            .parse()
+                            .expect("valid dummy hash"),
+                    ),
+                    sender_account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+                    wait_until: Some(blockchain_gateway_core::common::TxExecutionStatus::None),
+                    encoding: chain::ValueEncoding::Json,
+                },
+            })
+            .await;
+
+        assert!(deleted.is_err());
 
         stack.shutdown().await;
         Ok(())

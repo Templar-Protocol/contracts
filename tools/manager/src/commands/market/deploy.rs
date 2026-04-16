@@ -1,5 +1,5 @@
+use blockchain_gateway_core::MarketVersion;
 use templar_common::market::MarketConfiguration;
-use templar_tools_common::version::MarketVersion;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},

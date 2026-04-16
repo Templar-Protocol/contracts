@@ -1,5 +1,7 @@
+pub mod account;
 pub mod chain;
 pub mod common;
+pub mod contract;
 pub mod market;
 pub mod registry;
 pub mod storage;

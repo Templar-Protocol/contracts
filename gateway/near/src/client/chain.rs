@@ -1,8 +1,5 @@
 use blockchain_gateway_core::chain;
-use near_api::{
-    types::{account::ContractState, errors::ExecutionError},
-    Account, Transaction,
-};
+use near_api::{types::errors::ExecutionError, Transaction};
 
 use crate::{
     client::NearClient,
@@ -15,57 +12,6 @@ pub struct ChainClient<'a> {
 }
 
 impl ChainClient<'_> {
-    pub async fn view_account(
-        &self,
-        params: chain::ViewAccountParams,
-    ) -> GatewayResult<chain::ViewAccountResult> {
-        let account = Account(params.account_id)
-            .view()
-            .fetch_from(self.inner.network())
-            .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-        let (code_hash, global_contract_hash, global_contract_account_id) =
-            match account.data.contract_state {
-                ContractState::LocalHash(hash) => (hash.to_string(), None, None),
-                ContractState::GlobalHash(hash) => (
-                    near_api::types::CryptoHash::default().to_string(),
-                    Some(hash.to_string()),
-                    None,
-                ),
-                ContractState::GlobalAccountId(account_id) => (
-                    near_api::types::CryptoHash::default().to_string(),
-                    None,
-                    Some(account_id),
-                ),
-                ContractState::None => (
-                    near_api::types::CryptoHash::default().to_string(),
-                    None,
-                    None,
-                ),
-            };
-
-        Ok(chain::ViewAccountResult {
-            amount: account.data.amount,
-            locked: account.data.locked,
-            code_hash,
-            storage_usage: account.data.storage_usage,
-            global_contract_hash,
-            global_contract_account_id,
-        })
-    }
-
-    pub async fn view_function(
-        &self,
-        params: chain::ViewFunctionParams,
-    ) -> GatewayResult<chain::ViewFunctionResult> {
-        let result = self
-            .inner
-            .view_value(params.contract_id, &params.method_name.0, &params.args)
-            .await?;
-
-        Ok(chain::ViewFunctionResult { value: result.data })
-    }
-
     pub async fn get_transaction(
         &self,
         params: chain::GetTransactionParams,

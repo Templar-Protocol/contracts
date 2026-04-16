@@ -5,10 +5,7 @@ use serde::{Deserialize, Serialize};
 use templar_common::borrow::BorrowPosition;
 use templar_common::market::MarketConfiguration;
 
-use crate::{
-    macros::public_read_method_spec, rpc::common::Pagination, MarketId, MarketReadMethod,
-    PublicReadMethod,
-};
+use crate::{macros::public_read_method_spec, rpc::common::Pagination, MarketId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetConfigurationParams {
@@ -20,7 +17,6 @@ pub type GetConfigurationResult = MarketConfiguration;
 public_read_method_spec!(
     GetConfiguration,
     "market.getConfiguration",
-    PublicReadMethod::Market(MarketReadMethod::GetConfiguration),
     GetConfigurationParams,
     GetConfigurationResult
 );
@@ -40,7 +36,6 @@ pub struct ListBorrowPositionsResult {
 public_read_method_spec!(
     ListBorrowPositions,
     "market.listBorrowPositions",
-    PublicReadMethod::Market(MarketReadMethod::ListBorrowPositions),
     ListBorrowPositionsParams,
     ListBorrowPositionsResult
 );

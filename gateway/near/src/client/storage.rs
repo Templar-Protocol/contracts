@@ -3,7 +3,7 @@ use near_contract_standards::storage_management::{StorageBalance, StorageBalance
 
 use crate::client::{macros::contract_views, NearClient};
 
-use super::ContractClient;
+use super::BoundContractClient;
 
 #[derive(Clone)]
 pub struct StorageClient<'a> {
@@ -11,7 +11,7 @@ pub struct StorageClient<'a> {
     pub(crate) contract_id: near_account_id::AccountId,
 }
 
-impl ContractClient for StorageClient<'_> {
+impl BoundContractClient for StorageClient<'_> {
     fn client(&self) -> &NearClient {
         self.inner
     }

@@ -6,7 +6,7 @@ use templar_common::market::MarketConfiguration;
 
 use crate::client::{macros::contract_views, NearClient};
 
-use super::ContractClient;
+use super::BoundContractClient;
 
 #[derive(Clone)]
 pub struct MarketClient<'a> {
@@ -14,7 +14,7 @@ pub struct MarketClient<'a> {
     pub(crate) contract_id: blockchain_gateway_core::MarketId,
 }
 
-impl ContractClient for MarketClient<'_> {
+impl BoundContractClient for MarketClient<'_> {
     fn client(&self) -> &NearClient {
         self.inner
     }

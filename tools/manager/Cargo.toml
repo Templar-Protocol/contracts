@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+blockchain-gateway-core = { path = "../../gateway/core" }
 borsh.workspace = true
 chrono.workspace = true
 clap.workspace = true

@@ -19,7 +19,7 @@ macro_rules! transparent_newtype {
 }
 
 macro_rules! public_read_method_spec {
-    ($name:ident, $rpc_method_name:literal, $method_identifier:expr, $input:ty, $output:ty) => {
+    ($name:ident, $rpc_method_name:literal, $input:ty, $output:ty) => {
         pub struct $name;
 
         impl $crate::MethodSpec for $name {
@@ -27,14 +27,12 @@ macro_rules! public_read_method_spec {
             type Output = $output;
 
             const RPC_METHOD: &'static str = $rpc_method_name;
-            const IDENTIFIER: $crate::method::MethodSelector =
-                $crate::method::MethodSelector::Read($method_identifier);
         }
     };
 }
 
 macro_rules! write_method_spec {
-    ($name:ident, $rpc_method_name:literal, $method_identifier:expr, $input:ty, $output:ty) => {
+    ($name:ident, $rpc_method_name:literal, $input:ty, $output:ty) => {
         pub struct $name;
 
         impl $crate::MethodSpec for $name {
@@ -42,8 +40,6 @@ macro_rules! write_method_spec {
             type Output = $output;
 
             const RPC_METHOD: &'static str = $rpc_method_name;
-            const IDENTIFIER: $crate::method::MethodSelector =
-                $crate::method::MethodSelector::Write($method_identifier);
         }
     };
 }

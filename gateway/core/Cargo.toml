@@ -11,6 +11,7 @@ near-api-types = "0.8.5"
 near-openapi-types.workspace = true
 near-account-id = { workspace = true, features = ["serde", "schemars"] }
 near-gas = { workspace = true, features = ["serde", "schemars"] }
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
 near-token.workspace = true
 schemars.workspace = true
 serde.workspace = true

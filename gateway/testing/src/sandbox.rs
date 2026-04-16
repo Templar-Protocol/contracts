@@ -19,6 +19,8 @@ pub struct SandboxHarness {
     pub sandbox: Sandbox,
     pub network: NetworkConfig,
     pub gateway_signer_account_id: ManagedAccountId,
+    pub cleanup_signer_account_id: ManagedAccountId,
+    pub registry_signer_account_id: ManagedAccountId,
     pub gateway_signers: HashMap<ManagedAccountId, ManagedSigner>,
     pub ft_contract_id: AccountId,
     pub beneficiary_account_id: AccountId,
@@ -41,7 +43,30 @@ impl SandboxHarness {
         let gateway_signer = ManagedSigner::new([gateway_secret_key])
             .await
             .context("failed to initialize gateway signer")?;
-        let gateway_signers = HashMap::from([(gateway_signer_account_id.clone(), gateway_signer)]);
+
+        let cleanup_signer_account_id = ManagedAccountId("cleanup.near".parse()?);
+        let cleanup_secret_key = test_secret_key()?;
+        sandbox
+            .create_account(cleanup_signer_account_id.0.clone())
+            .initial_balance(NearToken::from_near(100))
+            .public_key(cleanup_secret_key.public_key().to_string())
+            .send()
+            .await?;
+        let cleanup_signer = ManagedSigner::new([cleanup_secret_key])
+            .await
+            .context("failed to initialize cleanup signer")?;
+
+        let registry_signer_account_id = ManagedAccountId("registry.near".parse()?);
+        let registry_secret_key = test_secret_key()?;
+        let registry_signer = ManagedSigner::new([registry_secret_key])
+            .await
+            .context("failed to initialize registry signer")?;
+
+        let gateway_signers = HashMap::from([
+            (gateway_signer_account_id.clone(), gateway_signer),
+            (cleanup_signer_account_id.clone(), cleanup_signer),
+            (registry_signer_account_id.clone(), registry_signer),
+        ]);
 
         let ft_contract_id: AccountId = "mock-ft.near".parse()?;
         let ft_signer =
@@ -70,6 +95,8 @@ impl SandboxHarness {
             sandbox,
             network,
             gateway_signer_account_id,
+            cleanup_signer_account_id,
+            registry_signer_account_id,
             gateway_signers,
             ft_contract_id,
             beneficiary_account_id,
@@ -78,6 +105,10 @@ impl SandboxHarness {
 
     pub fn gateway_client(&self) -> NearClient {
         NearClient::new(self.network.clone())
+    }
+
+    pub async fn ft_wasm(&self) -> Vec<u8> {
+        FtController::wasm().await.to_vec()
     }
 
     pub async fn deploy_registry(&self) -> Result<RegistryId> {

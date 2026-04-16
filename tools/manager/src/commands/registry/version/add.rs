@@ -1,11 +1,9 @@
 use anyhow::Context;
+use blockchain_gateway_core::RegistryVersion;
 use clap::Args;
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
-use templar_tools_common::{
-    near::{self, Function},
-    version::RegistryVersion,
-};
+use templar_tools_common::near::{self, Function};
 
 use crate::{
     util::{ContractLoader, SignerArgs},

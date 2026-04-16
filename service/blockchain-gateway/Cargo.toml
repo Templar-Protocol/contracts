@@ -27,6 +27,7 @@ anyhow.workspace = true
 blockchain-gateway-testing = { path = "../../gateway/testing" }
 jsonrpsee = { workspace = true, features = ["server"] }
 serde_json.workspace = true
+templar-common.workspace = true
 
 [lints]
 workspace = true

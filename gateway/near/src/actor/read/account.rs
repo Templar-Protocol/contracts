@@ -1,4 +1,4 @@
-use blockchain_gateway_core::chain;
+use blockchain_gateway_core::account;
 use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
@@ -6,11 +6,11 @@ use crate::{GatewayResult, NearClient};
 use super::ReadRpcRequest;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for chain::GetTransaction {
+impl ReadRpcRequest for account::Get {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { client.chain().get_transaction(params.0.params).await })
+        Box::pin(async move { client.account().get(params.0.params).await })
     }
 }

@@ -1,0 +1,35 @@
+use near_account_id::AccountId;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    macros::{public_read_method_spec, write_method_spec},
+    rpc::common::WriteOperationResult,
+    NearToken,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetParams {
+    pub account_id: AccountId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetResult {
+    pub amount: NearToken,
+    pub locked: NearToken,
+    pub code_hash: String,
+    pub storage_usage: u64,
+    pub global_contract_hash: Option<String>,
+    pub global_contract_account_id: Option<AccountId>,
+}
+
+public_read_method_spec!(Get, "account.get", GetParams, GetResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeleteBody {
+    pub beneficiary_id: AccountId,
+}
+
+pub type DeleteResult = WriteOperationResult;
+
+write_method_spec!(Delete, "account.delete", DeleteBody, DeleteResult);

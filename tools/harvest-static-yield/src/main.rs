@@ -4,6 +4,7 @@ use std::{
     str::FromStr,
 };
 
+use blockchain_gateway_core::MarketVersion;
 use clap::Parser;
 use near_contract_standards::{
     contract_metadata::ContractSourceMetadata,
@@ -18,7 +19,6 @@ use templar_common::{
     market::MarketConfiguration,
 };
 use templar_tools_common::near::{self, Function};
-use templar_tools_common::version::MarketVersion;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone, Debug)]

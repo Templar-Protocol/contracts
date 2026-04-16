@@ -1,3 +1,5 @@
+mod account;
+mod registry;
 mod signer;
 mod storage;
 mod tx;

@@ -2,54 +2,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    macros::public_read_method_spec,
-    rpc::common::{ContractArgs, TxExecutionStatus},
-    ChainReadMethod, ContractMethodName, CryptoHash, NearGas, NearToken, PublicReadMethod,
-};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ViewAccountParams {
-    pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ViewAccountResult {
-    pub amount: NearToken,
-    pub locked: NearToken,
-    pub code_hash: String,
-    pub storage_usage: u64,
-    pub global_contract_hash: Option<String>,
-    pub global_contract_account_id: Option<AccountId>,
-}
-
-public_read_method_spec!(
-    ViewAccount,
-    "chain.viewAccount",
-    PublicReadMethod::Chain(ChainReadMethod::ViewAccount),
-    ViewAccountParams,
-    ViewAccountResult
-);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ViewFunctionParams {
-    pub contract_id: AccountId,
-    pub method_name: ContractMethodName,
-    pub args: ContractArgs,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ViewFunctionResult {
-    pub value: serde_json::Value,
-}
-
-public_read_method_spec!(
-    ViewFunction,
-    "chain.viewFunction",
-    PublicReadMethod::Chain(ChainReadMethod::ViewFunction),
-    ViewFunctionParams,
-    ViewFunctionResult
-);
+use crate::{macros::public_read_method_spec, rpc::common::TxExecutionStatus, CryptoHash, NearGas};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetTransactionParams {
@@ -111,7 +64,6 @@ pub struct GetTransactionResult {
 public_read_method_spec!(
     GetTransaction,
     "chain.getTransaction",
-    PublicReadMethod::Chain(ChainReadMethod::GetTransaction),
     GetTransactionParams,
     GetTransactionResult
 );
