@@ -1,7 +1,10 @@
 use blockchain_gateway_core::universal_account;
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearClient, actor::{DispatchRead, RpcMessage}};
+use crate::{
+    actor::{DispatchRead, RpcMessage},
+    GatewayResult, NearClient,
+};
 
 fn into_parameters_view(
     parameters: templar_universal_account::PayloadExecutionParameters,

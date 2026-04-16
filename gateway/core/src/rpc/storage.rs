@@ -8,13 +8,8 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceBoundsArgs {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBalanceBoundsParams {
     pub contract_id: AccountId,
-    #[serde(flatten)]
-    pub args: GetBalanceBoundsArgs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -30,15 +25,9 @@ public_read_method_spec!(
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfArgs {
-    pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBalanceOfParams {
     pub contract_id: AccountId,
-    #[serde(flatten)]
-    pub args: GetBalanceOfArgs,
+    pub account_id: AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

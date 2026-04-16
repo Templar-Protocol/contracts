@@ -1,7 +1,10 @@
-use blockchain_gateway_core::{Version, contract};
+use blockchain_gateway_core::{contract, Version};
 use futures::future::BoxFuture;
 
-use crate::{GatewayResult, NearClient, actor::{DispatchRead, RpcMessage}};
+use crate::{
+    actor::{DispatchRead, RpcMessage},
+    GatewayResult, NearClient,
+};
 
 impl DispatchRead for contract::ViewFunction {
     fn dispatch(

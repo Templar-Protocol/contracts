@@ -1,9 +1,28 @@
-use blockchain_gateway_core::storage;
 use near_contract_standards::storage_management::{StorageBalance, StorageBalanceBounds};
+use near_sdk::AccountId;
 
-use crate::client::{macros::contract_views, NearClient};
+use crate::client::{
+    macros::{contract_views, contract_writes},
+    NearClient,
+};
 
 use super::BoundContractClient;
+
+#[derive(serde::Serialize)]
+pub struct StorageBalanceOfArgs {
+    pub account_id: AccountId,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct StorageDepositArgs {
+    pub account_id: Option<near_account_id::AccountId>,
+    pub registration_only: bool,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct StorageUnregisterArgs {
+    pub force: bool,
+}
 
 #[derive(Clone)]
 pub struct StorageClient<'a> {
@@ -23,7 +42,12 @@ impl BoundContractClient for StorageClient<'_> {
 
 impl StorageClient<'_> {
     contract_views! {
-        pub fn storage_balance_bounds(storage::GetBalanceBoundsArgs) -> StorageBalanceBounds;
-        pub fn storage_balance_of(storage::GetBalanceOfArgs) -> Option<StorageBalance>;
+        pub fn storage_balance_bounds(()) -> StorageBalanceBounds;
+        pub fn storage_balance_of(StorageBalanceOfArgs) -> Option<StorageBalance>;
+    }
+
+    contract_writes! {
+        pub(crate) fn storage_deposit(StorageDepositArgs);
+        pub(crate) fn storage_unregister(StorageUnregisterArgs);
     }
 }

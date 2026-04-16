@@ -134,7 +134,6 @@ mod tests {
             .request::<storage::GetBalanceBounds>(&ReadRequest {
                 params: storage::GetBalanceBoundsParams {
                     contract_id: stack.harness.ft_contract_id.clone(),
-                    args: storage::GetBalanceBoundsArgs {},
                 },
             })
             .await?;
@@ -238,9 +237,7 @@ mod tests {
             .request::<storage::GetBalanceOf>(&ReadRequest {
                 params: storage::GetBalanceOfParams {
                     contract_id: stack.harness.ft_contract_id.clone(),
-                    args: storage::GetBalanceOfArgs {
-                        account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                    },
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 },
             })
             .await?;
@@ -267,9 +264,7 @@ mod tests {
             .request::<storage::GetBalanceOf>(&ReadRequest {
                 params: storage::GetBalanceOfParams {
                     contract_id: stack.harness.ft_contract_id.clone(),
-                    args: storage::GetBalanceOfArgs {
-                        account_id: stack.harness.beneficiary_account_id.clone(),
-                    },
+                    account_id: stack.harness.beneficiary_account_id.clone(),
                 },
             })
             .await?;
@@ -647,9 +642,7 @@ mod tests {
             .request::<storage::GetBalanceOf>(&ReadRequest {
                 params: storage::GetBalanceOfParams {
                     contract_id: stack.harness.ft_contract_id.clone(),
-                    args: storage::GetBalanceOfArgs {
-                        account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                    },
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 },
             })
             .await?;

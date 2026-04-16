@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
-use blockchain_gateway_core::{storage, tx, ContractMethodName};
+use blockchain_gateway_core::storage;
 use futures::future::BoxFuture;
 
 use crate::{
     actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    client::{
+        storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
+        ContractWriteOptions,
+    },
     GatewayResult, NearClient,
 };
 
@@ -17,7 +21,7 @@ impl DispatchRead for storage::GetBalanceBounds {
             let params = params.0.params;
             client
                 .storage(params.contract_id)
-                .storage_balance_bounds(params.args)
+                .storage_balance_bounds(())
                 .await
                 .map(|bounds| storage::GetBalanceBoundsResult {
                     bounds: blockchain_gateway_core::common::StorageBalanceBounds {
@@ -38,7 +42,9 @@ impl DispatchRead for storage::GetBalanceOf {
             let params = params.0.params;
             client
                 .storage(params.contract_id)
-                .storage_balance_of(params.args)
+                .storage_balance_of(StorageBalanceOfArgs {
+                    account_id: params.account_id,
+                })
                 .await
                 .map(|balance| storage::GetBalanceOfResult {
                     balance: balance.map(|balance| {
@@ -62,21 +68,16 @@ impl DispatchWrite for storage::Deposit {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let tx_result = client
-                .tx(request.signer_account_id, signer)
-                .function_call(
-                    tx::FunctionCallBody {
-                        receiver_id: body.contract_id,
-                        method_name: ContractMethodName("storage_deposit".to_owned()),
-                        args: blockchain_gateway_core::common::ContractArgs::Json(
-                            serde_json::json!({
-                                "account_id": body.beneficiary_id,
-                                "registration_only": body.registration_only,
-                            }),
-                        ),
-                        gas: blockchain_gateway_core::NearGas::from_tgas(100),
-                        deposit: body.deposit,
+                .storage(body.contract_id)
+                .storage_deposit(
+                    ContractWriteOptions::new(request.signer_account_id, signer)
+                        .wait_until(request.wait_until)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(body.deposit),
+                    StorageDepositArgs {
+                        account_id: body.beneficiary_id,
+                        registration_only: body.registration_only,
                     },
-                    request.wait_until,
                 )
                 .await?;
 
@@ -102,20 +103,13 @@ impl DispatchWrite for storage::Unregister {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let tx_result = client
-                .tx(request.signer_account_id, signer)
-                .function_call(
-                    tx::FunctionCallBody {
-                        receiver_id: body.contract_id,
-                        method_name: ContractMethodName("storage_unregister".to_owned()),
-                        args: blockchain_gateway_core::common::ContractArgs::Json(
-                            serde_json::json!({
-                                "force": body.force,
-                            }),
-                        ),
-                        gas: blockchain_gateway_core::NearGas::from_tgas(100),
-                        deposit: blockchain_gateway_core::NearToken::from_yoctonear(1),
-                    },
-                    request.wait_until,
+                .storage(body.contract_id)
+                .storage_unregister(
+                    ContractWriteOptions::new(request.signer_account_id, signer)
+                        .wait_until(request.wait_until)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
+                    StorageUnregisterArgs { force: body.force },
                 )
                 .await?;
 
