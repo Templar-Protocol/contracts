@@ -1,8 +1,8 @@
 use blockchain_gateway_core::{
-    account, chain, contract, market, registry, storage, tx, universal_account,
+    account, contract, ft, market, registry, storage, tx, universal_account,
 };
 use blockchain_gateway_near::{
-    actor::{read::ReadRpcRequest, write::WriteRpcRequest},
+    actor::{read::DispatchRead, write::DispatchWrite},
     GatewayError, GatewayService,
 };
 use jsonrpsee::{
@@ -18,7 +18,7 @@ fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(GATEWAY_SERVER_ERROR_CODE, error.to_string(), None::<()>)
 }
 
-fn register_write<Spec: WriteRpcRequest>(
+fn register_write<Spec: DispatchWrite>(
     module: &mut RpcModule<GatewayService>,
 ) -> Result<(), RegisterMethodError> {
     module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
@@ -33,7 +33,7 @@ fn register_write<Spec: WriteRpcRequest>(
     Ok(())
 }
 
-fn register_read<Spec: ReadRpcRequest>(
+fn register_read<Spec: DispatchRead>(
     module: &mut RpcModule<GatewayService>,
 ) -> Result<(), RegisterMethodError> {
     module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
@@ -54,25 +54,26 @@ pub fn attach_gateway(
     let mut m = RpcModule::new(service);
 
     register_read::<account::Get>(&mut m)?;
-    register_read::<chain::GetTransaction>(&mut m)?;
+    register_write::<account::Delete>(&mut m)?;
     register_read::<contract::ViewFunction>(&mut m)?;
     register_read::<contract::GetVersion>(&mut m)?;
-    register_write::<account::Delete>(&mut m)?;
+    register_read::<ft::GetBalanceOf>(&mut m)?;
+    register_write::<ft::Transfer>(&mut m)?;
+    register_read::<market::GetConfiguration>(&mut m)?;
+    register_read::<market::ListBorrowPositions>(&mut m)?;
     register_read::<registry::GetDeployment>(&mut m)?;
     register_read::<registry::ListDeployments>(&mut m)?;
     register_read::<registry::ListVersions>(&mut m)?;
     register_write::<registry::AddVersion>(&mut m)?;
     register_write::<registry::RemoveVersion>(&mut m)?;
     register_write::<registry::Deploy>(&mut m)?;
-    register_read::<market::GetConfiguration>(&mut m)?;
-    register_read::<market::ListBorrowPositions>(&mut m)?;
     register_read::<storage::GetBalanceBounds>(&mut m)?;
     register_read::<storage::GetBalanceOf>(&mut m)?;
     register_write::<storage::Deposit>(&mut m)?;
     register_write::<storage::Unregister>(&mut m)?;
-    register_read::<universal_account::GetKey>(&mut m)?;
+    register_read::<tx::Get>(&mut m)?;
     register_write::<tx::FunctionCall>(&mut m)?;
-    register_write::<tx::TransferNep141>(&mut m)?;
+    register_read::<universal_account::GetKey>(&mut m)?;
 
     Ok(m)
 }
@@ -82,9 +83,8 @@ mod tests {
     use anyhow::Result;
     use blockchain_gateway_core::{
         account,
-        chain::{self, GetTransactionParams, TransactionReturnValue, TransactionStatus},
         common::{ContractArgs, ReadRequest, WriteRequest},
-        contract, storage, tx, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+        contract, ft, storage, tx, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
     };
     use blockchain_gateway_testing::{SandboxHarness, TestController};
     use jsonrpsee::server::{ServerBuilder, ServerHandle};
@@ -278,20 +278,20 @@ mod tests {
 
         let deposit_transaction = stack
             .controller
-            .request::<chain::GetTransaction>(&ReadRequest {
-                params: GetTransactionParams {
+            .request::<tx::Get>(&ReadRequest {
+                params: tx::GetParams {
                     tx_hash: tx_hash(&beneficiary_deposit),
                     sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                     wait_until: None,
-                    encoding: chain::ValueEncoding::Json,
+                    encoding: tx::ValueEncoding::Json,
                 },
             })
             .await?;
 
-        assert_eq!(deposit_transaction.status, TransactionStatus::Succeeded);
+        assert_eq!(deposit_transaction.status, tx::Status::Succeeded);
         assert!(matches!(
             deposit_transaction.return_value,
-            Some(TransactionReturnValue::Json(_))
+            Some(tx::ReturnValue::Json(_))
         ));
 
         let mint_transaction = stack
@@ -312,17 +312,17 @@ mod tests {
 
         let mint_status = stack
             .controller
-            .request::<chain::GetTransaction>(&ReadRequest {
-                params: GetTransactionParams {
+            .request::<tx::Get>(&ReadRequest {
+                params: tx::GetParams {
                     tx_hash: tx_hash(&mint_transaction),
                     sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                     wait_until: None,
-                    encoding: chain::ValueEncoding::Json,
+                    encoding: tx::ValueEncoding::Json,
                 },
             })
             .await?;
 
-        assert_eq!(mint_status.status, TransactionStatus::Succeeded);
+        assert_eq!(mint_status.status, tx::Status::Succeeded);
 
         let transfer_transaction = stack
             .controller
@@ -345,17 +345,17 @@ mod tests {
 
         let transfer_result = stack
             .controller
-            .request::<chain::GetTransaction>(&ReadRequest {
-                params: GetTransactionParams {
+            .request::<tx::Get>(&ReadRequest {
+                params: tx::GetParams {
                     tx_hash: tx_hash(&transfer_transaction),
                     sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                     wait_until: None,
-                    encoding: chain::ValueEncoding::Json,
+                    encoding: tx::ValueEncoding::Json,
                 },
             })
             .await?;
 
-        assert_eq!(transfer_result.status, TransactionStatus::Succeeded);
+        assert_eq!(transfer_result.status, tx::Status::Succeeded);
         assert!(!transfer_result.logs.is_empty());
 
         let unregister_transaction = stack
@@ -376,20 +376,20 @@ mod tests {
 
         let unregister_result = stack
             .controller
-            .request::<chain::GetTransaction>(&ReadRequest {
-                params: GetTransactionParams {
+            .request::<tx::Get>(&ReadRequest {
+                params: tx::GetParams {
                     tx_hash: tx_hash(&unregister_transaction),
                     sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                     wait_until: None,
-                    encoding: chain::ValueEncoding::Base64,
+                    encoding: tx::ValueEncoding::Base64,
                 },
             })
             .await?;
 
-        assert_eq!(unregister_result.status, TransactionStatus::Succeeded);
+        assert_eq!(unregister_result.status, tx::Status::Succeeded);
         assert!(matches!(
             unregister_result.return_value,
-            Some(TransactionReturnValue::Base64(_))
+            Some(tx::ReturnValue::Base64(_))
         ));
 
         stack.shutdown().await;
@@ -605,11 +605,11 @@ mod tests {
 
         let _ = stack
             .controller
-            .request::<tx::TransferNep141>(&WriteRequest {
+            .request::<ft::Transfer>(&WriteRequest {
                 signer_account_id: stack.harness.gateway_signer_account_id.clone(),
                 idempotency_key: None,
                 wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
-                body: tx::TransferNep141Body {
+                body: ft::TransferBody {
                     token_id: stack.harness.ft_contract_id.clone(),
                     receiver_id: stack.harness.beneficiary_account_id.clone(),
                     amount: blockchain_gateway_core::U128(3),
@@ -619,18 +619,15 @@ mod tests {
 
         let balance = stack
             .controller
-            .request::<contract::ViewFunction>(&ReadRequest {
-                params: contract::ViewFunctionParams {
-                    contract_id: stack.harness.ft_contract_id.clone(),
-                    method_name: ContractMethodName("ft_balance_of".to_owned()),
-                    args: ContractArgs::Json(serde_json::json!({
-                        "account_id": stack.harness.gateway_signer_account_id.0,
-                    })),
+            .request::<ft::GetBalanceOf>(&ReadRequest {
+                params: ft::GetBalanceOfParams {
+                    token_id: stack.harness.ft_contract_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 },
             })
             .await?;
 
-        assert_eq!(balance.value, serde_json::json!("0"));
+        assert_eq!(balance.balance, blockchain_gateway_core::U128(0));
 
         let _ = stack
             .controller
@@ -673,8 +670,8 @@ mod tests {
 
         let deleted = stack
             .controller
-            .request::<chain::GetTransaction>(&ReadRequest {
-                params: GetTransactionParams {
+            .request::<tx::Get>(&ReadRequest {
+                params: tx::GetParams {
                     tx_hash: CryptoHash(
                         "11111111111111111111111111111111"
                             .parse()
@@ -682,7 +679,7 @@ mod tests {
                     ),
                     sender_account_id: stack.harness.cleanup_signer_account_id.0.clone(),
                     wait_until: Some(blockchain_gateway_core::common::TxExecutionStatus::None),
-                    encoding: chain::ValueEncoding::Json,
+                    encoding: tx::ValueEncoding::Json,
                 },
             })
             .await;

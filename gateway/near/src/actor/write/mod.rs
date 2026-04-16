@@ -1,4 +1,5 @@
 mod account;
+mod ft;
 mod registry;
 mod signer;
 mod storage;
@@ -26,7 +27,7 @@ use super::RpcMessage;
 
 pub use signer::ManagedSigner;
 
-pub trait WriteRpcRequest: MethodSpec + Sized + Send + 'static {
+pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
     fn dispatch(
         params: Self::Input,
         client: NearClient,
@@ -67,7 +68,7 @@ impl WriteActors {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: WriteRpcRequest,
+        Request: DispatchWrite,
         AccountWriteActor: Handler<RpcMessage<Request>>,
     {
         let sender = self.sender_for(Request::signer_account_id(&params))?;
@@ -156,7 +157,7 @@ pub(super) fn operation_outcome_from_transaction_result(
 
 impl<Request> Handler<RpcMessage<Request>> for AccountWriteActor
 where
-    Request: WriteRpcRequest,
+    Request: DispatchWrite,
 {
     type Result = ResponseFuture<GatewayResult<Request::Output>>;
 

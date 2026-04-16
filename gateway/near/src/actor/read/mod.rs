@@ -1,9 +1,10 @@
 mod account;
-mod chain;
 mod contract;
+mod ft;
 mod market;
 mod registry;
 mod storage;
+mod tx;
 mod universal_account;
 
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use super::RpcMessage;
 const READ_ACTOR_NAME: &str = "read-actor";
 const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
 
-pub trait ReadRpcRequest: MethodSpec + Sized + Send + 'static {
+pub trait DispatchRead: MethodSpec + Sized + Send + 'static {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
@@ -48,7 +49,7 @@ impl ReadActor {
 
 impl<Spec> Handler<RpcMessage<Spec>> for ReadActor
 where
-    Spec: ReadRpcRequest,
+    Spec: DispatchRead,
 {
     type Result = ResponseFuture<GatewayResult<Spec::Output>>;
 

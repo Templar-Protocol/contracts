@@ -1,12 +1,12 @@
-use blockchain_gateway_core::chain;
+use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for chain::GetTransaction {
+impl DispatchRead for tx::Get {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,

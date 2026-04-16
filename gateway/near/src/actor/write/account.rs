@@ -4,9 +4,9 @@ use near_api::Account;
 
 use crate::{GatewayError, GatewayResult, NearClient};
 
-use super::{operation_outcome_from_transaction_result, WriteRpcRequest};
+use super::{operation_outcome_from_transaction_result, DispatchWrite};
 
-impl WriteRpcRequest for account::Delete {
+impl DispatchWrite for account::Delete {
     fn dispatch(
         request: Self::Input,
         client: NearClient,

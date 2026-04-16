@@ -3,10 +3,10 @@ use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for contract::ViewFunction {
+impl DispatchRead for contract::ViewFunction {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
@@ -20,7 +20,7 @@ impl ReadRpcRequest for contract::ViewFunction {
     }
 }
 
-impl ReadRpcRequest for contract::GetVersion {
+impl DispatchRead for contract::GetVersion {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,

@@ -3,7 +3,7 @@ use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
 fn into_parameters_view(
@@ -28,7 +28,7 @@ fn into_parameters_view(
     }
 }
 
-impl ReadRpcRequest for universal_account::GetKey {
+impl DispatchRead for universal_account::GetKey {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,

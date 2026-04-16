@@ -3,10 +3,10 @@ use futures::future::BoxFuture;
 
 use crate::{client::registry::GetDeploymentArgs, GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for registry::ListDeployments {
+impl DispatchRead for registry::ListDeployments {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
@@ -22,7 +22,7 @@ impl ReadRpcRequest for registry::ListDeployments {
     }
 }
 
-impl ReadRpcRequest for registry::GetDeployment {
+impl DispatchRead for registry::GetDeployment {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
@@ -40,7 +40,7 @@ impl ReadRpcRequest for registry::GetDeployment {
     }
 }
 
-impl ReadRpcRequest for registry::ListVersions {
+impl DispatchRead for registry::ListVersions {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,

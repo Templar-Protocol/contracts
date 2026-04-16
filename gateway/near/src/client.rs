@@ -1,6 +1,7 @@
 pub mod account;
 pub mod chain;
 pub mod contract;
+pub mod ft;
 pub mod macros;
 pub mod market;
 pub mod registry;
@@ -15,6 +16,7 @@ use blockchain_gateway_core::{
 };
 use chain::ChainClient;
 use contract::ContractClient;
+use ft::FtClient;
 use market::MarketClient;
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::{types::Data, Contract, NetworkConfig};
@@ -111,6 +113,13 @@ impl NearClient {
 
     pub fn contract(&self, contract_id: AccountId) -> ContractClient<'_> {
         ContractClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn ft(&self, contract_id: AccountId) -> FtClient<'_> {
+        FtClient {
             inner: self,
             contract_id,
         }

@@ -3,10 +3,10 @@ use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for market::GetConfiguration {
+impl DispatchRead for market::GetConfiguration {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
@@ -20,7 +20,7 @@ impl ReadRpcRequest for market::GetConfiguration {
     }
 }
 
-impl ReadRpcRequest for market::ListBorrowPositions {
+impl DispatchRead for market::ListBorrowPositions {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,

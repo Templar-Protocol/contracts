@@ -9,9 +9,9 @@ use crate::{
     GatewayResult, NearClient,
 };
 
-use super::{operation_outcome_from_transaction_result, WriteRpcRequest};
+use super::{operation_outcome_from_transaction_result, DispatchWrite};
 
-impl WriteRpcRequest for registry::AddVersion {
+impl DispatchWrite for registry::AddVersion {
     fn dispatch(
         request: Self::Input,
         client: NearClient,
@@ -49,7 +49,7 @@ impl WriteRpcRequest for registry::AddVersion {
     }
 }
 
-impl WriteRpcRequest for registry::Deploy {
+impl DispatchWrite for registry::Deploy {
     fn dispatch(
         request: Self::Input,
         client: NearClient,
@@ -92,7 +92,7 @@ impl WriteRpcRequest for registry::Deploy {
     }
 }
 
-impl WriteRpcRequest for registry::RemoveVersion {
+impl DispatchWrite for registry::RemoveVersion {
     fn dispatch(
         request: Self::Input,
         client: NearClient,

@@ -3,10 +3,10 @@ use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for account::Get {
+impl DispatchRead for account::Get {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,

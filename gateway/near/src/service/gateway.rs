@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 use crate::{
     actor::{
         map_mailbox_error,
-        read::{ReadActor, ReadRpcRequest},
-        write::{ManagedSigner, WriteActors, WriteRpcRequest},
+        read::{DispatchRead, ReadActor},
+        write::{DispatchWrite, ManagedSigner, WriteActors},
         RpcMessage,
     },
     GatewayResult,
@@ -51,7 +51,7 @@ impl GatewayService {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: ReadRpcRequest,
+        Request: DispatchRead,
         ReadActor: actix::Handler<RpcMessage<Request>>,
     {
         self.inner
@@ -66,7 +66,7 @@ impl GatewayService {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: WriteRpcRequest,
+        Request: DispatchWrite,
     {
         self.inner.write.request::<Request>(params).await
     }

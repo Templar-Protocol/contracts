@@ -3,10 +3,10 @@ use futures::future::BoxFuture;
 
 use crate::{GatewayResult, NearClient};
 
-use super::ReadRpcRequest;
+use super::DispatchRead;
 use crate::actor::RpcMessage;
 
-impl ReadRpcRequest for storage::GetBalanceBounds {
+impl DispatchRead for storage::GetBalanceBounds {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
@@ -27,7 +27,7 @@ impl ReadRpcRequest for storage::GetBalanceBounds {
     }
 }
 
-impl ReadRpcRequest for storage::GetBalanceOf {
+impl DispatchRead for storage::GetBalanceOf {
     fn dispatch(
         params: RpcMessage<Self>,
         client: NearClient,
