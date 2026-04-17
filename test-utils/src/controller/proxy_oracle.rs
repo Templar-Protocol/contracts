@@ -28,12 +28,15 @@ impl ContractController for ProxyOracleController {
 }
 
 impl ProxyOracleController {
-    pub async fn deploy(account: Account) -> Self {
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| get_contract("templar_proxy_oracle_contract", "contract/proxy-oracle"))
-            .await;
+        WASM.get_or_init(|| get_contract("templar_proxy_oracle_contract", "contract/proxy-oracle"))
+            .await
+    }
+
+    pub async fn deploy(account: Account) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract

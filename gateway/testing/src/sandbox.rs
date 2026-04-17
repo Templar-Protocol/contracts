@@ -10,7 +10,7 @@ use templar_common::{market::MarketConfiguration, market::YieldWeights};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     market_configuration, test_signer::TestSigner, FtController, MarketController,
-    MockOracleController, RegistryController, UniversalAccountController,
+    MockOracleController, ProxyOracleController, RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -20,6 +20,7 @@ pub struct SandboxHarness {
     pub cleanup_signer_account_id: ManagedAccountId,
     pub registry_signer_account_id: ManagedAccountId,
     pub universal_account_signer_account_id: ManagedAccountId,
+    pub proxy_oracle_signer_account_id: ManagedAccountId,
     pub gateway_signers: HashMap<ManagedAccountId, ManagedSigner>,
     pub ft_contract_id: AccountId,
     pub beneficiary_account_id: AccountId,
@@ -73,6 +74,18 @@ impl SandboxHarness {
             .await
             .context("failed to initialize universal account signer")?;
 
+        let proxy_oracle_signer_account_id = ManagedAccountId("proxy-oracle.near".parse()?);
+        let proxy_oracle_secret_key = test_secret_key()?;
+        sandbox
+            .create_account(proxy_oracle_signer_account_id.0.clone())
+            .initial_balance(NearToken::from_near(100))
+            .public_key(proxy_oracle_secret_key.public_key().to_string())
+            .send()
+            .await?;
+        let proxy_oracle_signer = ManagedSigner::new([proxy_oracle_secret_key])
+            .await
+            .context("failed to initialize proxy oracle signer")?;
+
         let gateway_signers = HashMap::from([
             (gateway_signer_account_id.clone(), gateway_signer),
             (cleanup_signer_account_id.clone(), cleanup_signer),
@@ -81,6 +94,7 @@ impl SandboxHarness {
                 universal_account_signer_account_id.clone(),
                 universal_account_signer,
             ),
+            (proxy_oracle_signer_account_id.clone(), proxy_oracle_signer),
         ]);
 
         let ft_contract_id: AccountId = "mock-ft.near".parse()?;
@@ -113,6 +127,7 @@ impl SandboxHarness {
             cleanup_signer_account_id,
             registry_signer_account_id,
             universal_account_signer_account_id,
+            proxy_oracle_signer_account_id,
             gateway_signers,
             ft_contract_id,
             beneficiary_account_id,
@@ -240,6 +255,24 @@ impl SandboxHarness {
         .await?;
 
         Ok((UniversalAccountId(account_id), test_signer))
+    }
+
+    pub async fn deploy_proxy_oracle(&self) -> Result<AccountId> {
+        let account_id = self.proxy_oracle_signer_account_id.0.clone();
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize proxy oracle deploy signer")?;
+
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            ProxyOracleController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+
+        Ok(account_id)
     }
 }
 

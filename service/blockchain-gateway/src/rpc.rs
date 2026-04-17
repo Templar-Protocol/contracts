@@ -1,5 +1,6 @@
 use blockchain_gateway_core::{
-    account, contract, ft, market, registry, storage, tx, universal_account,
+    account, contract, ft, market, proxy_oracle, proxy_oracle_governance, proxy_oracle_owner,
+    registry, storage, tx, universal_account,
 };
 use blockchain_gateway_near::{
     actor::{DispatchRead, DispatchWrite},
@@ -60,7 +61,46 @@ pub fn attach_gateway(
     register_read::<ft::GetBalanceOf>(&mut m)?;
     register_write::<ft::Transfer>(&mut m)?;
     register_read::<market::GetConfiguration>(&mut m)?;
+    register_read::<market::GetCurrentSnapshot>(&mut m)?;
+    register_read::<market::GetFinalizedSnapshotsLen>(&mut m)?;
+    register_read::<market::ListFinalizedSnapshots>(&mut m)?;
+    register_read::<market::GetBorrowAssetMetrics>(&mut m)?;
     register_read::<market::ListBorrowPositions>(&mut m)?;
+    register_read::<market::GetBorrowPosition>(&mut m)?;
+    register_read::<market::GetBorrowPositionPendingInterest>(&mut m)?;
+    register_read::<market::GetBorrowStatus>(&mut m)?;
+    register_read::<market::ListSupplyPositions>(&mut m)?;
+    register_read::<market::GetSupplyPosition>(&mut m)?;
+    register_read::<market::GetSupplyPositionPendingYield>(&mut m)?;
+    register_read::<market::GetSupplyWithdrawalRequestStatus>(&mut m)?;
+    register_read::<market::GetSupplyWithdrawalQueueStatus>(&mut m)?;
+    register_read::<market::GetLastYieldRate>(&mut m)?;
+    register_read::<market::GetStaticYield>(&mut m)?;
+    register_write::<market::Borrow>(&mut m)?;
+    register_write::<market::WithdrawCollateral>(&mut m)?;
+    register_write::<market::ApplyInterest>(&mut m)?;
+    register_write::<market::CreateSupplyWithdrawalRequest>(&mut m)?;
+    register_write::<market::CancelSupplyWithdrawalRequest>(&mut m)?;
+    register_write::<market::ExecuteNextSupplyWithdrawalRequest>(&mut m)?;
+    register_write::<market::HarvestYield>(&mut m)?;
+    register_write::<market::AccumulateStaticYield>(&mut m)?;
+    register_write::<market::WithdrawStaticYield>(&mut m)?;
+    register_read::<proxy_oracle::ListProxies>(&mut m)?;
+    register_read::<proxy_oracle::GetProxy>(&mut m)?;
+    register_read::<proxy_oracle::PriceFeedExists>(&mut m)?;
+    register_read::<proxy_oracle_governance::GetNextId>(&mut m)?;
+    register_read::<proxy_oracle_governance::GetTtl>(&mut m)?;
+    register_read::<proxy_oracle_governance::GetCount>(&mut m)?;
+    register_read::<proxy_oracle_governance::List>(&mut m)?;
+    register_read::<proxy_oracle_governance::Get>(&mut m)?;
+    register_write::<proxy_oracle_governance::Create>(&mut m)?;
+    register_write::<proxy_oracle_governance::Cancel>(&mut m)?;
+    register_write::<proxy_oracle_governance::Execute>(&mut m)?;
+    register_read::<proxy_oracle_owner::GetOwner>(&mut m)?;
+    register_read::<proxy_oracle_owner::GetProposedOwner>(&mut m)?;
+    register_write::<proxy_oracle_owner::ProposeOwner>(&mut m)?;
+    register_write::<proxy_oracle_owner::AcceptOwner>(&mut m)?;
+    register_write::<proxy_oracle_owner::RenounceOwner>(&mut m)?;
     register_read::<registry::GetDeployment>(&mut m)?;
     register_read::<registry::ListDeployments>(&mut m)?;
     register_read::<registry::ListVersions>(&mut m)?;
@@ -87,15 +127,16 @@ mod tests {
     use blockchain_gateway_core::{
         account,
         common::{ContractArgs, ReadRequest, WriteRequest},
-        contract, ft, storage, tx, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+        contract, ft, market, proxy_oracle, proxy_oracle_governance, proxy_oracle_owner, storage,
+        tx, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
     };
     use blockchain_gateway_testing::{SandboxHarness, TestController};
     use jsonrpsee::server::{ServerBuilder, ServerHandle};
     use templar_universal_account::{
-        KeyParameters, NEAR_TESTNET_CHAIN_ID,
-        authentication::Payload,
         authentication::with_raw_string::WithRawString,
+        authentication::Payload,
         transaction::{FunctionCallAction, Transaction},
+        KeyParameters, NEAR_TESTNET_CHAIN_ID,
     };
 
     use super::*;
@@ -688,7 +729,11 @@ mod tests {
                     registry_id: registry_id.clone(),
                     version_key: "ua@1.0.0".to_owned(),
                     deploy_mode: templar_common::registry::DeployMode::Normal,
-                    code: Base64Bytes(test_utils::UniversalAccountController::wasm().await.to_vec()),
+                    code: Base64Bytes(
+                        test_utils::UniversalAccountController::wasm()
+                            .await
+                            .to_vec(),
+                    ),
                     deposit: NearToken::from_yoctonear(1),
                 },
             })
@@ -718,9 +763,10 @@ mod tests {
             blockchain_gateway_core::OperationStatus::Succeeded
         );
 
-        let created_account_id: near_account_id::AccountId = format!("ua-created.{}", registry_id.0)
-            .parse()
-            .expect("created universal account id should be valid");
+        let created_account_id: near_account_id::AccountId =
+            format!("ua-created.{}", registry_id.0)
+                .parse()
+                .expect("created universal account id should be valid");
 
         let created_key = stack
             .controller
@@ -856,6 +902,438 @@ mod tests {
             .await;
 
         assert!(deleted.is_err());
+
+        stack.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
+        let stack = TestStack::start().await?;
+        let (market_id, _configuration) = stack.harness.deploy_market().await?;
+
+        let _ = stack
+            .controller
+            .request::<market::GetCurrentSnapshot>(&ReadRequest {
+                params: market::GetCurrentSnapshotParams {
+                    market_id: market_id.clone(),
+                },
+            })
+            .await?;
+        let finalized_len = stack
+            .controller
+            .request::<market::GetFinalizedSnapshotsLen>(&ReadRequest {
+                params: market::GetFinalizedSnapshotsLenParams {
+                    market_id: market_id.clone(),
+                },
+            })
+            .await?;
+        let finalized = stack
+            .controller
+            .request::<market::ListFinalizedSnapshots>(&ReadRequest {
+                params: market::ListFinalizedSnapshotsParams {
+                    market_id: market_id.clone(),
+                    args: blockchain_gateway_core::common::Pagination::default(),
+                },
+            })
+            .await?;
+        let metrics = stack
+            .controller
+            .request::<market::GetBorrowAssetMetrics>(&ReadRequest {
+                params: market::GetBorrowAssetMetricsParams {
+                    market_id: market_id.clone(),
+                },
+            })
+            .await?;
+        let empty_borrow_position = stack
+            .controller
+            .request::<market::GetBorrowPosition>(&ReadRequest {
+                params: market::GetBorrowPositionParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        let empty_borrow_interest = stack
+            .controller
+            .request::<market::GetBorrowPositionPendingInterest>(&ReadRequest {
+                params: market::GetBorrowPositionPendingInterestParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                    snapshot_limit: Some(1),
+                },
+            })
+            .await?;
+        let empty_borrow_status = stack
+            .controller
+            .request::<market::GetBorrowStatus>(&ReadRequest {
+                params: market::GetBorrowStatusParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                    oracle_response: templar_common::oracle::pyth::OracleResponse::new(),
+                },
+            })
+            .await?;
+        let supply_positions = stack
+            .controller
+            .request::<market::ListSupplyPositions>(&ReadRequest {
+                params: market::ListSupplyPositionsParams {
+                    market_id: market_id.clone(),
+                    args: blockchain_gateway_core::common::Pagination::default(),
+                },
+            })
+            .await?;
+        let empty_supply_position = stack
+            .controller
+            .request::<market::GetSupplyPosition>(&ReadRequest {
+                params: market::GetSupplyPositionParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        let empty_supply_yield = stack
+            .controller
+            .request::<market::GetSupplyPositionPendingYield>(&ReadRequest {
+                params: market::GetSupplyPositionPendingYieldParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                    snapshot_limit: Some(1),
+                },
+            })
+            .await?;
+        let empty_withdrawal_request = stack
+            .controller
+            .request::<market::GetSupplyWithdrawalRequestStatus>(&ReadRequest {
+                params: market::GetSupplyWithdrawalRequestStatusParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        let queue = stack
+            .controller
+            .request::<market::GetSupplyWithdrawalQueueStatus>(&ReadRequest {
+                params: market::GetSupplyWithdrawalQueueStatusParams {
+                    market_id: market_id.clone(),
+                },
+            })
+            .await?;
+        let last_yield = stack
+            .controller
+            .request::<market::GetLastYieldRate>(&ReadRequest {
+                params: market::GetLastYieldRateParams {
+                    market_id: market_id.clone(),
+                },
+            })
+            .await?;
+        let static_yield = stack
+            .controller
+            .request::<market::GetStaticYield>(&ReadRequest {
+                params: market::GetStaticYieldParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        let _ = stack
+            .controller
+            .request::<market::ApplyInterest>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::ApplyInterestBody {
+                    market_id: market_id.clone(),
+                    account_id: None,
+                    snapshot_limit: Some(1),
+                },
+            })
+            .await?;
+        let _ = stack
+            .controller
+            .request::<market::AccumulateStaticYield>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::AccumulateStaticYieldBody {
+                    market_id,
+                    account_id: Some(stack.harness.gateway_signer_account_id.0.clone()),
+                    snapshot_limit: Some(1),
+                },
+            })
+            .await?;
+
+        assert_eq!(finalized_len as usize, finalized.snapshots.len());
+        assert!(empty_borrow_position.position.is_none());
+        assert!(empty_borrow_interest.amount.is_none());
+        assert!(empty_borrow_status.status.is_none());
+        assert!(supply_positions.positions.is_empty());
+        assert!(empty_supply_position.position.is_none());
+        assert!(empty_supply_yield.amount.is_none());
+        assert!(empty_withdrawal_request.status.is_none());
+        assert_eq!(
+            queue.depth,
+            templar_common::asset::BorrowAssetAmount::zero()
+        );
+        assert_eq!(last_yield, templar_common::number::Decimal::ZERO);
+        assert!(static_yield.accumulator.is_none());
+        assert_eq!(
+            metrics.borrowed,
+            templar_common::asset::BorrowAssetAmount::zero()
+        );
+
+        stack.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
+        let stack = TestStack::start().await?;
+        let oracle_id = stack.harness.deploy_proxy_oracle().await?;
+
+        let owner = stack
+            .controller
+            .request::<proxy_oracle_owner::GetOwner>(&ReadRequest {
+                params: proxy_oracle_owner::GetOwnerParams {
+                    oracle_id: oracle_id.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            owner.owner,
+            Some(stack.harness.proxy_oracle_signer_account_id.0.clone())
+        );
+
+        let next_id = stack
+            .controller
+            .request::<proxy_oracle_governance::GetNextId>(&ReadRequest {
+                params: proxy_oracle_governance::GetNextIdParams {
+                    oracle_id: oracle_id.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(next_id, 0);
+        let ttl = stack
+            .controller
+            .request::<proxy_oracle_governance::GetTtl>(&ReadRequest {
+                params: proxy_oracle_governance::GetTtlParams {
+                    oracle_id: oracle_id.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(ttl.ttl_ns, templar_common::time::Nanoseconds::zero());
+        let count = stack
+            .controller
+            .request::<proxy_oracle_governance::GetCount>(&ReadRequest {
+                params: proxy_oracle_governance::GetCountParams {
+                    oracle_id: oracle_id.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(count, 0);
+
+        let list = stack
+            .controller
+            .request::<proxy_oracle::ListProxies>(&ReadRequest {
+                params: proxy_oracle::ListProxiesParams {
+                    oracle_id: oracle_id.clone(),
+                    offset: None,
+                    count: None,
+                },
+            })
+            .await?;
+        assert!(list.proxies.is_empty());
+
+        let price_id = templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]);
+        let proxy = templar_common::oracle::proxy::Proxy::median_low([
+            templar_common::oracle::OracleRequest::pyth(
+                "pyth.near".parse().expect("valid oracle id"),
+                templar_common::oracle::pyth::PriceIdentifier([0xbb; 32]),
+            )
+            .into(),
+        ]);
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Create>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::CreateBody {
+                    oracle_id: oracle_id.clone(),
+                    id: 0,
+                    operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                        id: price_id,
+                        proxy: Some(proxy.clone()),
+                    },
+                },
+            })
+            .await?;
+
+        let proposal = stack
+            .controller
+            .request::<proxy_oracle_governance::Get>(&ReadRequest {
+                params: proxy_oracle_governance::GetParams {
+                    oracle_id: oracle_id.clone(),
+                    id: 0,
+                },
+            })
+            .await?;
+        assert!(proposal.proposal.is_some());
+        let ids = stack
+            .controller
+            .request::<proxy_oracle_governance::List>(&ReadRequest {
+                params: proxy_oracle_governance::ListParams {
+                    oracle_id: oracle_id.clone(),
+                    offset: None,
+                    count: None,
+                },
+            })
+            .await?;
+        assert_eq!(ids.ids, vec![0]);
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Execute>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::ExecuteBody {
+                    oracle_id: oracle_id.clone(),
+                    id: 0,
+                },
+            })
+            .await?;
+
+        let got_proxy = stack
+            .controller
+            .request::<proxy_oracle::GetProxy>(&ReadRequest {
+                params: proxy_oracle::GetProxyParams {
+                    oracle_id: oracle_id.clone(),
+                    id: price_id,
+                },
+            })
+            .await?;
+        assert_eq!(got_proxy.proxy, Some(proxy));
+
+        let exists = stack
+            .controller
+            .request::<proxy_oracle::PriceFeedExists>(&ReadRequest {
+                params: proxy_oracle::PriceFeedExistsParams {
+                    oracle_id: oracle_id.clone(),
+                    price_identifier: price_id,
+                },
+            })
+            .await?;
+        assert!(exists.exists);
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_owner::ProposeOwner>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_owner::ProposeOwnerBody {
+                    oracle_id: oracle_id.clone(),
+                    account_id: Some(stack.harness.cleanup_signer_account_id.0.clone()),
+                },
+            })
+            .await?;
+
+        let proposed = stack
+            .controller
+            .request::<proxy_oracle_owner::GetProposedOwner>(&ReadRequest {
+                params: proxy_oracle_owner::GetProposedOwnerParams {
+                    oracle_id: oracle_id.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            proposed.proposed_owner,
+            Some(stack.harness.cleanup_signer_account_id.0.clone())
+        );
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_owner::AcceptOwner>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_owner::AcceptOwnerBody {
+                    oracle_id: oracle_id.clone(),
+                },
+            })
+            .await?;
+
+        let owner = stack
+            .controller
+            .request::<proxy_oracle_owner::GetOwner>(&ReadRequest {
+                params: proxy_oracle_owner::GetOwnerParams { oracle_id },
+            })
+            .await?;
+        assert_eq!(
+            owner.owner,
+            Some(stack.harness.cleanup_signer_account_id.0.clone())
+        );
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Create>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::CreateBody {
+                    oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
+                    id: 1,
+                    operation: templar_common::oracle::proxy::governance::Operation::SetActionTtl {
+                        new_ttl: templar_common::time::Nanoseconds::from_secs(1),
+                    },
+                },
+            })
+            .await?;
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Cancel>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::CancelBody {
+                    oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
+                    id: 1,
+                },
+            })
+            .await?;
+        let cancelled = stack
+            .controller
+            .request::<proxy_oracle_governance::Get>(&ReadRequest {
+                params: proxy_oracle_governance::GetParams {
+                    oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
+                    id: 1,
+                },
+            })
+            .await?;
+        assert!(cancelled.proposal.is_none());
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_owner::RenounceOwner>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_owner::RenounceOwnerBody {
+                    oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        let owner = stack
+            .controller
+            .request::<proxy_oracle_owner::GetOwner>(&ReadRequest {
+                params: proxy_oracle_owner::GetOwnerParams {
+                    oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(owner.owner, None);
 
         stack.shutdown().await;
         Ok(())

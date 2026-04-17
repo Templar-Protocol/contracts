@@ -4,6 +4,7 @@ pub mod contract;
 pub mod ft;
 pub mod macros;
 pub mod market;
+pub mod proxy_oracle;
 pub mod registry;
 pub mod storage;
 pub mod tx;
@@ -19,6 +20,7 @@ use ft::FtClient;
 use market::MarketClient;
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::NetworkConfig;
+use proxy_oracle::ProxyOracleClient;
 use registry::RegistryClient;
 use std::sync::Arc;
 use storage::StorageClient;
@@ -115,6 +117,13 @@ impl NearClient {
 
     pub fn ft(&self, contract_id: AccountId) -> FtClient<'_> {
         FtClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn proxy_oracle(&self, contract_id: AccountId) -> ProxyOracleClient<'_> {
+        ProxyOracleClient {
             inner: self,
             contract_id,
         }

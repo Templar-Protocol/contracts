@@ -16,7 +16,10 @@ pub use primitive::{
     Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, MarketId,
     NearGas, NearToken, RegistryId, UniversalAccountId, U128,
 };
-pub use rpc::{account, common, contract, ft, market, registry, storage, tx, universal_account};
+pub use rpc::{
+    account, common, contract, ft, market, proxy_oracle, proxy_oracle_governance,
+    proxy_oracle_owner, registry, storage, tx, universal_account,
+};
 pub use spec::MethodSpec;
 pub use version::{
     Market, MarketVersion, ParseError as VersionParseError, Registry, RegistryVersion, Version,
