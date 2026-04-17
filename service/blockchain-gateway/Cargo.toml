@@ -26,8 +26,11 @@ url.workspace = true
 anyhow.workspace = true
 blockchain-gateway-testing = { path = "../../gateway/testing" }
 jsonrpsee = { workspace = true, features = ["server"] }
+near-sdk = { workspace = true, features = ["unit-testing"] }
 serde_json.workspace = true
 templar-common.workspace = true
+templar-universal-account.workspace = true
+test-utils.workspace = true
 
 [lints]
 workspace = true

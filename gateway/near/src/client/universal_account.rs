@@ -1,9 +1,23 @@
-use blockchain_gateway_core::universal_account;
-use templar_universal_account::PayloadExecutionParameters;
+use templar_universal_account::{
+    transaction::Transaction, ExecuteArgs, PayloadExecutionParameters,
+};
 
-use crate::client::{macros::contract_views, NearClient};
+use crate::client::{
+    macros::{contract_views, contract_writes},
+    NearClient,
+};
 
 use super::BoundContractClient;
+
+#[derive(serde::Serialize)]
+pub struct UaGetKeyArgs {
+    pub key: templar_universal_account::KeyId,
+}
+
+#[derive(serde::Serialize)]
+pub struct UaExecuteArgs {
+    pub args: ExecuteArgs<Box<[Transaction]>>,
+}
 
 #[derive(Clone)]
 pub struct UniversalAccountClient<'a> {
@@ -23,6 +37,10 @@ impl BoundContractClient for UniversalAccountClient<'_> {
 
 impl UniversalAccountClient<'_> {
     contract_views! {
-        pub fn get_key(universal_account::GetKeyArgs) -> Option<PayloadExecutionParameters>;
+        pub fn get_key(UaGetKeyArgs) -> Option<PayloadExecutionParameters>;
+    }
+
+    contract_writes! {
+        pub fn execute(UaExecuteArgs);
     }
 }

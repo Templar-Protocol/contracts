@@ -1,7 +1,19 @@
-use blockchain_gateway_core::universal_account;
-use futures::future::BoxFuture;
+use std::sync::Arc;
 
-use crate::{actor::DispatchRead, GatewayResult, NearClient};
+use blockchain_gateway_core::{registry, universal_account};
+use futures::future::BoxFuture;
+use templar_universal_account::InitArgs;
+
+use crate::{
+    actor::{
+        dispatch_write, operation_outcome_from_transaction_result, DispatchRead, DispatchWrite,
+    },
+    client::{
+        universal_account::{UaExecuteArgs, UaGetKeyArgs},
+        ContractWriteOptions,
+    },
+    GatewayError, GatewayResult, NearClient,
+};
 
 fn into_parameters_view(
     parameters: templar_universal_account::PayloadExecutionParameters,
@@ -27,17 +39,100 @@ fn into_parameters_view(
 
 impl DispatchRead for universal_account::GetKey {
     fn dispatch(
-        request: Self::Input,
+        params: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             client
-                .universal_account(request.params.account_id)
-                .get_key(request.params.args)
+                .universal_account(params.params.account_id.clone())
+                .get_key(UaGetKeyArgs {
+                    key: params.params.key,
+                })
                 .await
                 .map(|parameters| universal_account::GetKeyResult {
                     parameters: parameters.map(into_parameters_view),
                 })
         })
+    }
+}
+
+impl DispatchWrite for universal_account::Execute {
+    fn dispatch(
+        request: Self::Input,
+        client: NearClient,
+        signer: Arc<near_api::Signer>,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let signer_account_id = request.signer_account_id.clone();
+            let tx_result = client
+                .universal_account(request.body.account_id)
+                .execute(
+                    ContractWriteOptions::new(request.signer_account_id, signer)
+                        .wait_until(request.wait_until)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(300)),
+                    UaExecuteArgs {
+                        args: request.body.args,
+                    },
+                )
+                .await?;
+
+            Ok(operation_outcome_from_transaction_result(
+                signer_account_id,
+                tx_result,
+            ))
+        })
+    }
+
+    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+        &request.signer_account_id
+    }
+}
+
+impl DispatchWrite for universal_account::CreateAccount {
+    fn dispatch(
+        request: Self::Input,
+        client: NearClient,
+        signer: Arc<near_api::Signer>,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let body = request.body;
+            let full_access_keys = body
+                .full_access_keys
+                .map(|keys| {
+                    keys.into_iter()
+                        .map(|key| key.parse::<near_api::PublicKey>().map(Into::into))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()
+                .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+
+            dispatch_write::<registry::Deploy>(
+                client,
+                signer,
+                blockchain_gateway_core::common::WriteRequest {
+                    signer_account_id: request.signer_account_id,
+                    idempotency_key: request.idempotency_key,
+                    wait_until: request.wait_until,
+                    body: blockchain_gateway_core::registry::DeployBody {
+                        registry_id: body.registry_id,
+                        name: body.account_name,
+                        version_key: body.version_key,
+                        init_args: serde_json::to_vec(&InitArgs {
+                            key: body.key,
+                            chain_id: body.chain_id.0.into(),
+                            execute: body.execute.map(|transactions| transactions.into_vec()),
+                        })?
+                        .into(),
+                        full_access_keys,
+                        deposit: body.deposit,
+                    },
+                },
+            )
+            .await
+        })
+    }
+
+    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+        &request.signer_account_id
     }
 }

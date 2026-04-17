@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use templar_universal_account::{transaction::Transaction, ExecuteArgs, KeyId};
 
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
@@ -8,15 +9,9 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct GetKeyArgs {
-    pub key: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GetKeyParams {
     pub account_id: UniversalAccountId,
-    #[serde(flatten)]
-    pub args: GetKeyArgs,
+    pub key: KeyId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -38,23 +33,24 @@ pub struct GetKeyResult {
 
 public_read_method_spec!(GetKey, "ua.getKey", GetKeyParams, GetKeyResult);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExecuteBody {
     pub account_id: UniversalAccountId,
-    pub args: serde_json::Value,
+    pub args: ExecuteArgs<Box<[Transaction]>>,
 }
 
 pub type ExecuteResult = WriteOperationResult;
 
 write_method_spec!(Execute, "ua.execute", ExecuteBody, ExecuteResult);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateAccountBody {
     pub registry_id: RegistryId,
     pub account_name: String,
-    pub key: serde_json::Value,
-    pub chain_id: String,
-    pub execute: Option<serde_json::Value>,
+    pub version_key: String,
+    pub key: KeyId,
+    pub chain_id: crate::U128,
+    pub execute: Option<Box<[Transaction]>>,
     pub full_access_keys: Option<Vec<String>>,
     pub deposit: crate::NearToken,
 }

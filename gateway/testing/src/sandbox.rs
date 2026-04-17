@@ -7,12 +7,10 @@ use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_sandbox::Sandbox;
 use near_token::NearToken;
 use templar_common::{market::MarketConfiguration, market::YieldWeights};
-use templar_universal_account::{
-    authentication::passkey, encoding::p256::PublicKey, InitArgs, NEAR_TESTNET_CHAIN_ID,
-};
+use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
-    market_configuration, FtController, MarketController, MockOracleController, RegistryController,
-    UniversalAccountController,
+    market_configuration, test_signer::TestSigner, FtController, MarketController,
+    MockOracleController, RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -21,6 +19,7 @@ pub struct SandboxHarness {
     pub gateway_signer_account_id: ManagedAccountId,
     pub cleanup_signer_account_id: ManagedAccountId,
     pub registry_signer_account_id: ManagedAccountId,
+    pub universal_account_signer_account_id: ManagedAccountId,
     pub gateway_signers: HashMap<ManagedAccountId, ManagedSigner>,
     pub ft_contract_id: AccountId,
     pub beneficiary_account_id: AccountId,
@@ -62,10 +61,26 @@ impl SandboxHarness {
             .await
             .context("failed to initialize registry signer")?;
 
+        let universal_account_signer_account_id = ManagedAccountId("ua.near".parse()?);
+        let universal_account_secret_key = test_secret_key()?;
+        sandbox
+            .create_account(universal_account_signer_account_id.0.clone())
+            .initial_balance(NearToken::from_near(100))
+            .public_key(universal_account_secret_key.public_key().to_string())
+            .send()
+            .await?;
+        let universal_account_signer = ManagedSigner::new([universal_account_secret_key])
+            .await
+            .context("failed to initialize universal account signer")?;
+
         let gateway_signers = HashMap::from([
             (gateway_signer_account_id.clone(), gateway_signer),
             (cleanup_signer_account_id.clone(), cleanup_signer),
             (registry_signer_account_id.clone(), registry_signer),
+            (
+                universal_account_signer_account_id.clone(),
+                universal_account_signer,
+            ),
         ]);
 
         let ft_contract_id: AccountId = "mock-ft.near".parse()?;
@@ -97,6 +112,7 @@ impl SandboxHarness {
             gateway_signer_account_id,
             cleanup_signer_account_id,
             registry_signer_account_id,
+            universal_account_signer_account_id,
             gateway_signers,
             ft_contract_id,
             beneficiary_account_id,
@@ -201,22 +217,17 @@ impl SandboxHarness {
         Ok((blockchain_gateway_core::MarketId(market_id), configuration))
     }
 
-    pub async fn deploy_universal_account(
-        &self,
-    ) -> Result<(UniversalAccountId, serde_json::Value)> {
-        let account_id: AccountId = "ua.near".parse()?;
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+    pub async fn deploy_universal_account(&self) -> Result<(UniversalAccountId, TestSigner)> {
+        let account_id = self.universal_account_signer_account_id.0.clone();
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize universal account deploy signer")?;
 
-        let public_key: PublicKey = "p256:S8avjv5zYFYhViXo7giqwynnMdox3RAytXQ7FG9a2tj8WxZnU6KUr36MSuUvgrwk4uGNMdiXt6vwtL9yBvj6VAUL"
-            .parse()
-            .expect("static passkey public key should be valid");
+        let test_signer = TestSigner::fixed_passkey([0x11; 32]);
         let init = InitArgs {
-            key: passkey::VerifyKey(public_key).into(),
+            key: test_signer.id(),
             chain_id: NEAR_TESTNET_CHAIN_ID.into(),
             execute: None,
         };
-        let key = serde_json::to_value(&init.key)?;
 
         deploy_contract(
             &self.network,
@@ -228,7 +239,7 @@ impl SandboxHarness {
         )
         .await?;
 
-        Ok((UniversalAccountId(account_id), key))
+        Ok((UniversalAccountId(account_id), test_signer))
     }
 }
 
