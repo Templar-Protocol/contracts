@@ -55,6 +55,27 @@ pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
     fn signer_account_id(params: &Self::Input) -> &ManagedAccountId;
 }
 
+pub async fn dispatch_read<Spec>(
+    client: NearClient,
+    params: impl Into<Spec::Input>,
+) -> GatewayResult<Spec::Output>
+where
+    Spec: DispatchRead,
+{
+    Spec::dispatch(RpcMessage(params.into()), client).await
+}
+
+pub async fn dispatch_write<Spec>(
+    client: NearClient,
+    signer: Arc<near_api::Signer>,
+    params: Spec::Input,
+) -> GatewayResult<Spec::Output>
+where
+    Spec: DispatchWrite,
+{
+    Spec::dispatch(params, client, signer).await
+}
+
 #[derive(Clone)]
 pub struct ReadActor {
     client: NearClient,

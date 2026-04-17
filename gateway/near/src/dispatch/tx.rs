@@ -13,7 +13,36 @@ impl DispatchRead for tx::Get {
         params: RpcMessage<Self>,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { client.chain().get_transaction(params.0.params).await })
+        Box::pin(async move {
+            let params = params.0.params;
+            let result = client
+                .chain()
+                .get_transaction(
+                    params.tx_hash.into(),
+                    params.sender_account_id,
+                    params.wait_until.unwrap_or_default().into(),
+                )
+                .await?;
+
+            Ok(tx::GetResult {
+                status: if result.is_success() {
+                    tx::Status::Succeeded
+                } else if result.is_pending() {
+                    tx::Status::Pending
+                } else {
+                    tx::Status::Failed
+                },
+                total_gas_burnt: result.total_gas_burnt,
+                logs: result.logs().into_iter().map(ToString::to_string).collect(),
+                return_value: match params.encoding {
+                    tx::ValueEncoding::Json => result.json().ok().map(tx::ReturnValue::Json),
+                    tx::ValueEncoding::Base64 => result
+                        .raw_bytes()
+                        .ok()
+                        .map(|b| tx::ReturnValue::Base64(b.into())),
+                },
+            })
+        })
     }
 }
 

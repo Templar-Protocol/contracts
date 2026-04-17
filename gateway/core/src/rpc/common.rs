@@ -72,6 +72,18 @@ pub struct ReadRequest<T> {
     pub params: T,
 }
 
+impl<T> ReadRequest<T> {
+    pub fn new(params: T) -> Self {
+        Self { params }
+    }
+}
+
+impl<T> From<T> for ReadRequest<T> {
+    fn from(params: T) -> Self {
+        Self { params }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteRequest<T> {
     pub signer_account_id: ManagedAccountId,

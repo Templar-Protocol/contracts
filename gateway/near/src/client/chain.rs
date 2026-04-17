@@ -1,5 +1,4 @@
-use blockchain_gateway_core::tx;
-use near_api::{types::errors::ExecutionError, Transaction};
+use near_api::{types::transaction::result::ExecutionFinalResult, Transaction};
 
 use crate::{
     client::NearClient,
@@ -12,56 +11,17 @@ pub struct ChainClient<'a> {
 }
 
 impl ChainClient<'_> {
-    pub async fn get_transaction(&self, params: tx::GetParams) -> GatewayResult<tx::GetResult> {
-        let wait_until = params.wait_until.unwrap_or_default();
-        let result = Transaction::status_with_options(
-            params.sender_account_id,
-            params.tx_hash.into(),
-            wait_until.into(),
-        )
-        .fetch_from(self.inner.network())
-        .await
-        .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-
-        let logs = result.logs().into_iter().map(str::to_owned).collect();
-        let return_value = decode_return_value(result.clone(), params.encoding)
+    pub async fn get_transaction(
+        &self,
+        tx_hash: near_api::CryptoHash,
+        sender_account_id: near_account_id::AccountId,
+        wait_until: near_api::types::TxExecutionStatus,
+    ) -> GatewayResult<ExecutionFinalResult> {
+        let result = Transaction::status_with_options(sender_account_id, tx_hash, wait_until)
+            .fetch_from(self.inner.network())
+            .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-        let status = if result.is_pending() {
-            tx::Status::Pending
-        } else if result.is_success() {
-            tx::Status::Succeeded
-        } else {
-            tx::Status::Failed
-        };
 
-        Ok(tx::GetResult {
-            status,
-            total_gas_burnt: result.total_gas_burnt,
-            logs,
-            return_value,
-        })
-    }
-}
-
-fn decode_return_value(
-    result: near_api::types::transaction::result::ExecutionFinalResult,
-    encoding: tx::ValueEncoding,
-) -> Result<Option<tx::ReturnValue>, ExecutionError> {
-    match encoding {
-        tx::ValueEncoding::Json => match result.json::<serde_json::Value>() {
-            Ok(value) => Ok(Some(tx::ReturnValue::Json(value))),
-            Err(ExecutionError::EofWhileParsingValue) => Ok(None),
-            Err(error) => Err(error),
-        },
-        tx::ValueEncoding::Base64 => {
-            let bytes = result.raw_bytes()?;
-            if bytes.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(tx::ReturnValue::Base64(
-                    blockchain_gateway_core::Base64Bytes(bytes),
-                )))
-            }
-        }
+        Ok(result)
     }
 }

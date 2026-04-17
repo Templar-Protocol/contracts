@@ -5,8 +5,8 @@ use futures::future::BoxFuture;
 
 use crate::{
     actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
-    client::ContractWriteOptions,
-    ops, GatewayResult, NearClient,
+    client::{registry::RemoveVersionArgs, ContractWriteOptions},
+    GatewayResult, NearClient,
 };
 
 impl DispatchRead for registry::ListDeployments {
@@ -69,17 +69,16 @@ impl DispatchWrite for registry::AddVersion {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let deposit = body.deposit;
-            let registry_version = ops::contract::version::<blockchain_gateway_core::Registry>(
-                &client,
-                body.registry_id.0.clone(),
-            )
-            .await?;
+            let registry_version = client
+                .contract(body.registry_id.0.clone())
+                .version()
+                .await?;
             let tx_result = client
                 .registry(body.registry_id.clone())
                 .add_version(
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300))
+                        .tgas(300)
                         .deposit(deposit),
                     registry_version,
                     crate::client::registry::AddVersionArgs {
@@ -112,17 +111,16 @@ impl DispatchWrite for registry::Deploy {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let deposit = body.deposit;
-            let registry_version = ops::contract::version::<blockchain_gateway_core::Registry>(
-                &client,
-                body.registry_id.0.clone(),
-            )
-            .await?;
+            let registry_version = client
+                .contract(body.registry_id.0.clone())
+                .version()
+                .await?;
             let tx_result = client
                 .registry(body.registry_id.clone())
                 .deploy(
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300))
+                        .tgas(300)
                         .deposit(deposit),
                     registry_version,
                     crate::client::registry::DeployArgs {
@@ -162,9 +160,9 @@ impl DispatchWrite for registry::RemoveVersion {
                 .remove_version(
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300))
-                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
-                    crate::client::registry::RemoveVersionArgs {
+                        .tgas(300)
+                        .one_yocto(),
+                    RemoveVersionArgs {
                         version_key: body.version_key,
                     },
                 )
