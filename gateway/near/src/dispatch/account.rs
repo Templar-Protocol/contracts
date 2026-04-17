@@ -5,17 +5,17 @@ use futures::future::BoxFuture;
 use near_api::Account;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
     GatewayResult, NearClient,
 };
 
 impl DispatchRead for account::Get {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let account = client.account().get(params.0.params.account_id).await?;
+            let account = client.account().get(request.params.account_id).await?;
 
             let (code_hash, global_contract_hash, global_contract_account_id) =
                 match account.contract_state {

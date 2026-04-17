@@ -40,14 +40,14 @@ pub(crate) fn map_mailbox_error(
 
 pub trait DispatchRead: MethodSpec + Sized + Send + 'static {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
 }
 
 pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
     fn dispatch(
-        params: Self::Input,
+        request: Self::Input,
         client: NearClient,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
@@ -62,7 +62,7 @@ pub async fn dispatch_read<Spec>(
 where
     Spec: DispatchRead,
 {
-    Spec::dispatch(RpcMessage(params.into()), client).await
+    Spec::dispatch(params.into(), client).await
 }
 
 pub async fn dispatch_write<Spec>(
@@ -110,7 +110,7 @@ where
                 .acquire_owned()
                 .await
                 .map_err(|_error| GatewayError::ActorUnavailable(READ_ACTOR_NAME))?;
-            Spec::dispatch(message, client).await
+            Spec::dispatch(message.0, client).await
         })
     }
 }

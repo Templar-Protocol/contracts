@@ -646,7 +646,7 @@ mod tests {
                 idempotency_key: None,
                 wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
                 body: ft::TransferBody {
-                    token_id: stack.harness.ft_contract_id.clone(),
+                    contract_id: stack.harness.ft_contract_id.clone(),
                     receiver_id: stack.harness.beneficiary_account_id.clone(),
                     amount: blockchain_gateway_core::U128(3),
                 },
@@ -657,7 +657,7 @@ mod tests {
             .controller
             .request::<ft::GetBalanceOf>(&ReadRequest {
                 params: ft::GetBalanceOfParams {
-                    token_id: stack.harness.ft_contract_id.clone(),
+                    contract_id: stack.harness.ft_contract_id.clone(),
                     account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 },
             })

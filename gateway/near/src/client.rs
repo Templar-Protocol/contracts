@@ -11,24 +11,19 @@ pub mod universal_account;
 
 use account::AccountClient;
 use blockchain_gateway_core::{
-    rpc::common::ContractArgs, ManagedAccountId, MarketId, NearGas, NearToken, RegistryId,
-    UniversalAccountId,
+    ManagedAccountId, MarketId, NearGas, NearToken, RegistryId, UniversalAccountId,
 };
 use chain::ChainClient;
 use contract::ContractClient;
 use ft::FtClient;
 use market::MarketClient;
 use near_account_id::{AccountId, AccountIdRef};
-use near_api::{types::Data, Contract, NetworkConfig};
+use near_api::NetworkConfig;
 use registry::RegistryClient;
-use serde::Serialize;
-use serde_json::Value;
 use std::sync::Arc;
 use storage::StorageClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
-
-use crate::error::{GatewayError, GatewayResult};
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
@@ -162,58 +157,6 @@ impl NearClient {
             inner: self,
             signer_account_id,
             signer,
-        }
-    }
-
-    async fn view_json<T>(
-        &self,
-        contract_id: AccountId,
-        method_name: &str,
-        args: impl Serialize,
-    ) -> GatewayResult<Data<T>>
-    where
-        T: serde::de::DeserializeOwned + Send + Sync + 'static,
-    {
-        Contract(contract_id)
-            .call_function(method_name, args)
-            .read_only()
-            .fetch_from(&self.network)
-            .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))
-    }
-
-    async fn view_raw<T>(
-        &self,
-        contract_id: AccountId,
-        method_name: &str,
-        args: Vec<u8>,
-    ) -> GatewayResult<Data<T>>
-    where
-        T: serde::de::DeserializeOwned + Send + Sync + 'static,
-    {
-        Contract(contract_id)
-            .call_function_raw(method_name, args)
-            .read_only()
-            .fetch_from(&self.network)
-            .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))
-    }
-
-    async fn view_value(
-        &self,
-        contract_id: AccountId,
-        method_name: &str,
-        args: &ContractArgs,
-    ) -> GatewayResult<Data<Value>> {
-        match args {
-            ContractArgs::Json(value) => {
-                self.view_json(contract_id, method_name, value.clone())
-                    .await
-            }
-            ContractArgs::Raw(bytes) => {
-                self.view_raw(contract_id, method_name, bytes.0.clone())
-                    .await
-            }
         }
     }
 }

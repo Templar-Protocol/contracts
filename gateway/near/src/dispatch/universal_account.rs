@@ -1,10 +1,7 @@
 use blockchain_gateway_core::universal_account;
 use futures::future::BoxFuture;
 
-use crate::{
-    actor::{DispatchRead, RpcMessage},
-    GatewayResult, NearClient,
-};
+use crate::{actor::DispatchRead, GatewayResult, NearClient};
 
 fn into_parameters_view(
     parameters: templar_universal_account::PayloadExecutionParameters,
@@ -30,14 +27,13 @@ fn into_parameters_view(
 
 impl DispatchRead for universal_account::GetKey {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.params;
             client
-                .universal_account(params.account_id)
-                .get_key(params.args)
+                .universal_account(request.params.account_id)
+                .get_key(request.params.args)
                 .await
                 .map(|parameters| universal_account::GetKeyResult {
                     parameters: parameters.map(into_parameters_view),

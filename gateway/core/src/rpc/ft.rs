@@ -10,7 +10,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBalanceOfParams {
-    pub token_id: AccountId,
+    pub contract_id: AccountId,
     pub account_id: AccountId,
 }
 
@@ -28,7 +28,7 @@ public_read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransferBody {
-    pub token_id: AccountId,
+    pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub amount: U128,
 }

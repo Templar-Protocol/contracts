@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
-use blockchain_gateway_core::storage;
+use blockchain_gateway_core::{
+    common::{StorageBalance, StorageBalanceBounds},
+    storage, ManagedAccountId,
+};
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
     client::{
         storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
         ContractWriteOptions,
@@ -14,17 +17,16 @@ use crate::{
 
 impl DispatchRead for storage::GetBalanceBounds {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.params;
             client
-                .storage(params.contract_id)
+                .storage(request.params.contract_id)
                 .storage_balance_bounds(())
                 .await
                 .map(|bounds| storage::GetBalanceBoundsResult {
-                    bounds: blockchain_gateway_core::common::StorageBalanceBounds {
+                    bounds: StorageBalanceBounds {
                         min: bounds.min,
                         max: bounds.max,
                     },
@@ -35,23 +37,20 @@ impl DispatchRead for storage::GetBalanceBounds {
 
 impl DispatchRead for storage::GetBalanceOf {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.params;
             client
-                .storage(params.contract_id)
+                .storage(request.params.contract_id)
                 .storage_balance_of(StorageBalanceOfArgs {
-                    account_id: params.account_id,
+                    account_id: request.params.account_id,
                 })
                 .await
                 .map(|balance| storage::GetBalanceOfResult {
-                    balance: balance.map(|balance| {
-                        blockchain_gateway_core::common::StorageBalance {
-                            total: balance.total,
-                            available: balance.available,
-                        }
+                    balance: balance.map(|balance| StorageBalance {
+                        total: balance.total,
+                        available: balance.available,
                     }),
                 })
         })
@@ -88,7 +87,7 @@ impl DispatchWrite for storage::Deposit {
         })
     }
 
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
         &request.signer_account_id
     }
 }
@@ -120,7 +119,7 @@ impl DispatchWrite for storage::Unregister {
         })
     }
 
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
         &request.signer_account_id
     }
 }
@@ -185,7 +184,7 @@ impl DispatchWrite for storage::EnsureDeposit {
         })
     }
 
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
         &request.signer_account_id
     }
 }

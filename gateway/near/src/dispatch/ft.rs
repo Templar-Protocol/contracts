@@ -4,7 +4,7 @@ use blockchain_gateway_core::ft;
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
     client::{
         ft::{GetBalanceOfArgs, TransferArgs},
         ContractWriteOptions,
@@ -14,15 +14,14 @@ use crate::{
 
 impl DispatchRead for ft::GetBalanceOf {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.params;
             let balance = client
-                .ft(params.token_id)
+                .ft(request.params.contract_id)
                 .ft_balance_of(GetBalanceOfArgs {
-                    account_id: params.account_id,
+                    account_id: request.params.account_id,
                 })
                 .await?;
 
@@ -41,7 +40,7 @@ impl DispatchWrite for ft::Transfer {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let tx_result = client
-                .ft(body.token_id)
+                .ft(body.contract_id)
                 .ft_transfer(
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)

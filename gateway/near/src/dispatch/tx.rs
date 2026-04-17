@@ -4,23 +4,22 @@ use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
     GatewayResult, NearClient,
 };
 
 impl DispatchRead for tx::Get {
     fn dispatch(
-        params: RpcMessage<Self>,
+        request: Self::Input,
         client: NearClient,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let params = params.0.params;
             let result = client
                 .chain()
                 .get_transaction(
-                    params.tx_hash.into(),
-                    params.sender_account_id,
-                    params.wait_until.unwrap_or_default().into(),
+                    request.params.tx_hash.into(),
+                    request.params.sender_account_id,
+                    request.params.wait_until.unwrap_or_default().into(),
                 )
                 .await?;
 
@@ -34,7 +33,7 @@ impl DispatchRead for tx::Get {
                 },
                 total_gas_burnt: result.total_gas_burnt,
                 logs: result.logs().into_iter().map(ToString::to_string).collect(),
-                return_value: match params.encoding {
+                return_value: match request.params.encoding {
                     tx::ValueEncoding::Json => result.json().ok().map(tx::ReturnValue::Json),
                     tx::ValueEncoding::Base64 => result
                         .raw_bytes()
