@@ -1,6 +1,4 @@
-use std::io::ErrorKind;
-
-use blockchain_gateway_core::{contract, Version};
+use blockchain_gateway_core::contract;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 
 use crate::{
@@ -37,20 +35,6 @@ impl ContractClient<'_> {
             .await?;
 
         Ok(contract::ViewFunctionResult { value: result.data })
-    }
-
-    pub async fn version<T>(&self) -> GatewayResult<Version<T>> {
-        let meta = self.contract_source_metadata(()).await?;
-        let Some(ver_str) = meta.version else {
-            return Err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!("contract {} missing version", self.contract_id),
-            )
-            .into());
-        };
-        Ok(ver_str
-            .parse()
-            .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?)
     }
 
     contract_views! {

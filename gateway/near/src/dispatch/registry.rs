@@ -6,7 +6,7 @@ use futures::future::BoxFuture;
 use crate::{
     actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite, RpcMessage},
     client::ContractWriteOptions,
-    GatewayResult, NearClient,
+    ops, GatewayResult, NearClient,
 };
 
 impl DispatchRead for registry::ListDeployments {
@@ -69,10 +69,11 @@ impl DispatchWrite for registry::AddVersion {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let deposit = body.deposit;
-            let registry_version = client
-                .contract(body.registry_id.0.clone())
-                .version::<blockchain_gateway_core::Registry>()
-                .await?;
+            let registry_version = ops::contract::version::<blockchain_gateway_core::Registry>(
+                &client,
+                body.registry_id.0.clone(),
+            )
+            .await?;
             let tx_result = client
                 .registry(body.registry_id.clone())
                 .add_version(
@@ -111,10 +112,11 @@ impl DispatchWrite for registry::Deploy {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let deposit = body.deposit;
-            let registry_version = client
-                .contract(body.registry_id.0.clone())
-                .version::<blockchain_gateway_core::Registry>()
-                .await?;
+            let registry_version = ops::contract::version::<blockchain_gateway_core::Registry>(
+                &client,
+                body.registry_id.0.clone(),
+            )
+            .await?;
             let tx_result = client
                 .registry(body.registry_id.clone())
                 .deploy(
