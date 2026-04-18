@@ -5,14 +5,12 @@ use blockchain_gateway_core::oracle::{
     self, GetPriceResolutionDependenciesResult, OracleContractKind, RedStoneOraclePrices,
     RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
 };
-use blockchain_gateway_core::proxy_oracle;
 use futures::future::BoxFuture;
 use near_account_id::AccountId;
-use serde::de::DeserializeOwned;
+use templar_common::oracle::price_transformer;
 use templar_common::{
     number::Decimal,
     oracle::{
-        price_transformer::PriceTransformer,
         proxy::Source,
         pyth::{self, PriceIdentifier},
         redstone, OracleRequest,
@@ -21,13 +19,26 @@ use templar_common::{
 };
 
 use crate::{
-    actor::{dispatch_read, DispatchRead},
+    actor::DispatchRead,
     client::{
-        lst_oracle::GetTransformerArgs, pyth_oracle::ListEmaPricesNoOlderThanArgs,
+        lst_oracle::GetTransformerArgs,
+        proxy_oracle::{GetProxyArgs, ListProxiesArgs},
+        pyth_oracle::ListEmaPricesNoOlderThanArgs,
         redstone_oracle::ReadPriceDataArgs,
     },
     GatewayError, GatewayResult, NearClient,
 };
+
+async fn get_proxy(
+    client: &NearClient,
+    oracle_id: AccountId,
+    id: PriceIdentifier,
+) -> GatewayResult<Option<templar_common::oracle::proxy::Proxy>> {
+    client
+        .proxy_oracle(oracle_id)
+        .get_proxy(GetProxyArgs { id })
+        .await
+}
 
 impl DispatchRead for oracle::GetKind {
     fn dispatch(
@@ -45,13 +56,7 @@ impl DispatchRead for oracle::GetPriceResolutionDependencies {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            let kind = dispatch_read::<oracle::GetKind>(
-                client.clone(),
-                oracle::GetKindParams {
-                    oracle_id: params.oracle_id.clone(),
-                },
-            )
-            .await?;
+            let kind = query_oracle_kind(&client, params.oracle_id.clone()).await?;
             let requests =
                 resolve_dependencies(&client, params.oracle_id, params.price_id, &kind).await?;
             Ok(GetPriceResolutionDependenciesResult { kind, requests })
@@ -180,16 +185,14 @@ async fn query_oracle_kind(
     client: &NearClient,
     oracle_id: AccountId,
 ) -> GatewayResult<OracleContractKind> {
-    if dispatch_read::<proxy_oracle::ListProxies>(
-        client.clone(),
-        proxy_oracle::ListProxiesParams {
-            oracle_id: oracle_id.clone(),
+    if client
+        .proxy_oracle(oracle_id.clone())
+        .list_proxies(ListProxiesArgs {
             offset: None,
             count: Some(1),
-        },
-    )
-    .await
-    .is_ok()
+        })
+        .await
+        .is_ok()
     {
         return Ok(OracleContractKind::Proxy);
     }
@@ -232,18 +235,11 @@ async fn resolve_dependencies(
             )])
         }
         OracleContractKind::Proxy => {
-            let proxy = dispatch_read::<proxy_oracle::GetProxy>(
-                client.clone(),
-                proxy_oracle::GetProxyParams {
-                    oracle_id,
-                    id: price_id,
-                },
-            )
-            .await?
-            .proxy
-            .ok_or_else(|| {
-                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-            })?;
+            let proxy = get_proxy(client, oracle_id, price_id)
+                .await?
+                .ok_or_else(|| {
+                    GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
+                })?;
             let requests = proxy
                 .entries
                 .into_iter()
@@ -271,13 +267,7 @@ async fn resolve_price(
     price_id: PriceIdentifier,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
-    let kind = dispatch_read::<oracle::GetKind>(
-        client.clone(),
-        oracle::GetKindParams {
-            oracle_id: oracle_id.clone(),
-        },
-    )
-    .await?;
+    let kind = query_oracle_kind(client, oracle_id.clone()).await?;
     match kind {
         OracleContractKind::Direct => Ok(fetch_oracle_request(
             inputs,
@@ -311,18 +301,11 @@ async fn resolve_price(
             }
         }
         OracleContractKind::Proxy => {
-            let proxy = dispatch_read::<proxy_oracle::GetProxy>(
-                client.clone(),
-                proxy_oracle::GetProxyParams {
-                    oracle_id,
-                    id: price_id,
-                },
-            )
-            .await?
-            .proxy
-            .ok_or_else(|| {
-                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-            })?;
+            let proxy = get_proxy(client, oracle_id, price_id)
+                .await?
+                .ok_or_else(|| {
+                    GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
+                })?;
             let mut prices = vec![];
             for entry in &proxy.entries {
                 if let Some(price) =
@@ -345,26 +328,19 @@ async fn get_price_onchain(
     price_id: PriceIdentifier,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
-    let kind = dispatch_read::<oracle::GetKind>(
-        client.clone(),
-        oracle::GetKindParams {
-            oracle_id: oracle_id.clone(),
-        },
-    )
-    .await?;
+    let kind = query_oracle_kind(client, oracle_id.clone()).await?;
     match kind {
         OracleContractKind::Direct => {
             fetch_oracle_request_onchain(client, OracleRequest::pyth(oracle_id, price_id), max_age)
                 .await
         }
         OracleContractKind::Lst { pyth_id } => {
-            let transformer: Option<PriceTransformer> = contract_view(
-                client.clone(),
-                oracle_id,
-                "get_transformer",
-                serde_json::json!({ "price_identifier": price_id }),
-            )
-            .await?;
+            let transformer = client
+                .lst_oracle(oracle_id.clone())
+                .get_transformer(GetTransformerArgs {
+                    price_identifier: price_id,
+                })
+                .await?;
             match transformer {
                 Some(transformer) => {
                     let Some(price) = fetch_oracle_request_onchain(
@@ -390,18 +366,11 @@ async fn get_price_onchain(
             }
         }
         OracleContractKind::Proxy => {
-            let proxy = dispatch_read::<proxy_oracle::GetProxy>(
-                client.clone(),
-                proxy_oracle::GetProxyParams {
-                    oracle_id,
-                    id: price_id,
-                },
-            )
-            .await?
-            .proxy
-            .ok_or_else(|| {
-                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-            })?;
+            let proxy = get_proxy(client, oracle_id, price_id)
+                .await?
+                .ok_or_else(|| {
+                    GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
+                })?;
             let mut prices = vec![];
             for entry in &proxy.entries {
                 if let Some(price) =
@@ -458,29 +427,14 @@ async fn resolve_proxy_entry_price_onchain(
     }
 }
 
-async fn contract_view<T: DeserializeOwned + Send + Sync + 'static>(
-    client: NearClient,
-    contract_id: AccountId,
-    method_name: &str,
-    args: serde_json::Value,
-) -> GatewayResult<T> {
-    client
-        .contract(contract_id)
-        .view_function(method_name, serde_json::to_vec(&args)?)
-        .await
-}
-
 async fn fetch_transformer_input(
     client: &NearClient,
-    call: templar_common::oracle::price_transformer::Call,
+    call: price_transformer::Call,
 ) -> GatewayResult<Decimal> {
-    contract_view(
-        client.clone(),
-        call.account_id,
-        &call.method_name,
-        serde_json::from_slice::<serde_json::Value>(&call.args.0)?,
-    )
-    .await
+    client
+        .contract(call.account_id)
+        .view_function(&call.method_name, call.args.0)
+        .await
 }
 
 fn fetch_oracle_request(

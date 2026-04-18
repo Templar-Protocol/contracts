@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
-use blockchain_gateway_core::{registry, universal_account};
+use blockchain_gateway_core::{registry::DeployBody, universal_account};
 use futures::future::BoxFuture;
 use templar_universal_account::InitArgs;
 
 use crate::{
-    actor::{
-        dispatch_write, operation_outcome_from_transaction_result, DispatchRead, DispatchWrite,
-    },
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
     client::{
         universal_account::{UaExecuteArgs, UaGetKeyArgs},
         ContractWriteOptions,
     },
+    dispatch::registry::deploy_from_registry,
     GatewayError, GatewayResult, NearClient,
 };
 
@@ -106,26 +105,23 @@ impl DispatchWrite for universal_account::CreateAccount {
                 .transpose()
                 .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
 
-            dispatch_write::<registry::Deploy>(
+            deploy_from_registry(
                 client,
                 signer,
-                blockchain_gateway_core::common::WriteRequest {
-                    signer_account_id: request.signer_account_id,
-                    idempotency_key: request.idempotency_key,
-                    wait_until: request.wait_until,
-                    body: blockchain_gateway_core::registry::DeployBody {
-                        registry_id: body.registry_id,
-                        name: body.account_name,
-                        version_key: body.version_key,
-                        init_args: serde_json::to_vec(&InitArgs {
-                            key: body.key,
-                            chain_id: body.chain_id.0.into(),
-                            execute: body.execute.map(|transactions| transactions.into_vec()),
-                        })?
-                        .into(),
-                        full_access_keys,
-                        deposit: body.deposit,
-                    },
+                request.signer_account_id,
+                request.wait_until,
+                DeployBody {
+                    registry_id: body.registry_id,
+                    name: body.account_name,
+                    version_key: body.version_key,
+                    init_args: serde_json::to_vec(&InitArgs {
+                        key: body.key,
+                        chain_id: body.chain_id.0.into(),
+                        execute: body.execute.map(|transactions| transactions.into_vec()),
+                    })?
+                    .into(),
+                    full_access_keys,
+                    deposit: body.deposit,
                 },
             )
             .await
