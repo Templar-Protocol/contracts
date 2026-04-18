@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use blockchain_gateway_core::{proxy_oracle_owner, ManagedAccountId, NearGas};
+use blockchain_gateway_core::{proxy_oracle_owner, ManagedAccountId};
 use futures::future::BoxFuture;
 
 use crate::{
@@ -54,7 +54,7 @@ impl DispatchWrite for proxy_oracle_owner::ProposeOwner {
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
                         .one_yocto()
-                        .gas(NearGas::from_tgas(300)),
+                        .tgas(300),
                     OwnerProposeArgs {
                         account_id: body.account_id,
                     },
@@ -86,7 +86,7 @@ impl DispatchWrite for proxy_oracle_owner::AcceptOwner {
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
                         .one_yocto()
-                        .gas(NearGas::from_tgas(300)),
+                        .tgas(300),
                     (),
                 )
                 .await?;
@@ -116,7 +116,7 @@ impl DispatchWrite for proxy_oracle_owner::RenounceOwner {
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
                         .one_yocto()
-                        .gas(NearGas::from_tgas(300)),
+                        .tgas(300),
                     (),
                 )
                 .await?;

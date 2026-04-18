@@ -3,6 +3,7 @@ pub mod common;
 pub mod contract;
 pub mod ft;
 pub mod market;
+pub mod oracle;
 pub mod proxy_oracle;
 pub mod proxy_oracle_governance;
 pub mod proxy_oracle_owner;

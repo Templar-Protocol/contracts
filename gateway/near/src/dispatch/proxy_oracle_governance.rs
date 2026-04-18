@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use blockchain_gateway_core::{proxy_oracle_governance, ManagedAccountId, NearGas};
+use blockchain_gateway_core::{proxy_oracle_governance, ManagedAccountId};
 use futures::future::BoxFuture;
 
 use crate::{
@@ -104,7 +104,7 @@ impl DispatchWrite for proxy_oracle_governance::Create {
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
                         .one_yocto()
-                        .gas(NearGas::from_tgas(300)),
+                        .tgas(300),
                     GovCreateArgs {
                         id: body.id,
                         operation: body.operation,
@@ -137,7 +137,7 @@ impl DispatchWrite for proxy_oracle_governance::Cancel {
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
                         .one_yocto()
-                        .gas(NearGas::from_tgas(300)),
+                        .tgas(300),
                     GovActionArgs { id: body.id },
                 )
                 .await?;
@@ -168,7 +168,7 @@ impl DispatchWrite for proxy_oracle_governance::Execute {
                     ContractWriteOptions::new(request.signer_account_id, signer)
                         .wait_until(request.wait_until)
                         .one_yocto()
-                        .gas(NearGas::from_tgas(300)),
+                        .tgas(300),
                     GovActionArgs { id: body.id },
                 )
                 .await?;

@@ -6,11 +6,13 @@ use blockchain_gateway_near::{ManagedSigner, NearClient};
 use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_sandbox::Sandbox;
 use near_token::NearToken;
+use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
 use templar_common::{market::MarketConfiguration, market::YieldWeights};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
-    market_configuration, test_signer::TestSigner, FtController, MarketController,
-    MockOracleController, ProxyOracleController, RegistryController, UniversalAccountController,
+    controller::lst_oracle::LstOracleController, market_configuration, test_signer::TestSigner,
+    FtController, MarketController, MockOracleController, ProxyOracleController,
+    RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -273,6 +275,116 @@ impl SandboxHarness {
         .await?;
 
         Ok(account_id)
+    }
+
+    pub async fn deploy_mock_oracle(&self, account_id: AccountId) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            MockOracleController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+        Ok(account_id)
+    }
+
+    pub async fn set_mock_oracle_pyth_price(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        price: Option<templar_common::oracle::pyth::Price>,
+    ) -> Result<()> {
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize mock oracle signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "set_pyth_price",
+                serde_json::json!({
+                    "price_identifier": price_identifier,
+                    "price": price,
+                }),
+            )
+            .transaction()
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(())
+    }
+
+    pub async fn set_mock_oracle_redstone_price(
+        &self,
+        oracle_id: AccountId,
+        feed_id: templar_common::oracle::redstone::FeedId,
+        data: Option<templar_common::oracle::redstone::FeedData>,
+    ) -> Result<()> {
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize mock oracle signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "set_redstone_price",
+                serde_json::json!({
+                    "feed_id": feed_id,
+                    "data": data,
+                }),
+            )
+            .transaction()
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(())
+    }
+
+    pub async fn deploy_lst_oracle(
+        &self,
+        account_id: AccountId,
+        oracle_id: AccountId,
+    ) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            LstOracleController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({ "oracle_id": oracle_id }),
+        )
+        .await?;
+        Ok(account_id)
+    }
+
+    pub async fn create_lst_transformer(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        entry: PriceTransformer,
+    ) -> Result<()> {
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize lst oracle signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "create_transformer",
+                serde_json::json!({
+                    "price_identifier": price_identifier,
+                    "entry": entry,
+                }),
+            )
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(())
     }
 }
 

@@ -2,9 +2,12 @@ pub mod account;
 pub mod chain;
 pub mod contract;
 pub mod ft;
+pub mod lst_oracle;
 pub mod macros;
 pub mod market;
 pub mod proxy_oracle;
+pub mod pyth_oracle;
+pub mod redstone_oracle;
 pub mod registry;
 pub mod storage;
 pub mod tx;
@@ -17,10 +20,13 @@ use blockchain_gateway_core::{
 use chain::ChainClient;
 use contract::ContractClient;
 use ft::FtClient;
+use lst_oracle::LstOracleClient;
 use market::MarketClient;
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::NetworkConfig;
 use proxy_oracle::ProxyOracleClient;
+use pyth_oracle::PythOracleClient;
+use redstone_oracle::RedStoneOracleClient;
 use registry::RegistryClient;
 use std::sync::Arc;
 use storage::StorageClient;
@@ -124,6 +130,27 @@ impl NearClient {
 
     pub fn proxy_oracle(&self, contract_id: AccountId) -> ProxyOracleClient<'_> {
         ProxyOracleClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn pyth_oracle(&self, contract_id: AccountId) -> PythOracleClient<'_> {
+        PythOracleClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn redstone_oracle(&self, contract_id: AccountId) -> RedStoneOracleClient<'_> {
+        RedStoneOracleClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn lst_oracle(&self, contract_id: AccountId) -> LstOracleClient<'_> {
+        LstOracleClient {
             inner: self,
             contract_id,
         }
