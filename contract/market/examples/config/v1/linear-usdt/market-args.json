@@ -7,7 +7,7 @@
       "Nep141": "usdt.tether-token.near"
     },
     "collateral_asset": {
-      "Nep141": "meta-pool.near"
+      "Nep141": "linear-protocol.near"
     },
     "price_oracle_configuration": {
       "account_id": "proxy-oracle-linear-usdt.v1.tmplr.near",
