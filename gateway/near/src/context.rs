@@ -12,13 +12,14 @@ use url::Url;
 use crate::{
     client::{
         account::AccountClient, chain::ChainClient, contract::ContractClient, ft::FtClient,
-        lst_oracle::LstOracleClient, market::MarketClient, proxy_oracle::ProxyOracleClient,
-        pyth_oracle::PythOracleClient, redstone_oracle::RedStoneOracleClient,
-        registry::RegistryClient, storage::StorageClient, tx::TxClient,
-        universal_account::UniversalAccountClient,
+        lst_oracle::LstOracleClient, market::MarketClient, mt::MtClient,
+        proxy_oracle::ProxyOracleClient, pyth_oracle::PythOracleClient,
+        redstone_oracle::RedStoneOracleClient, registry::RegistryClient, storage::StorageClient,
+        token::TokenClient, tx::TxClient, universal_account::UniversalAccountClient,
     },
     GatewayError, GatewayResult, NearClient,
 };
+use templar_common::asset::{AssetClass, FungibleAsset};
 
 #[derive(Debug, Clone)]
 pub struct PythHttpClient {
@@ -51,9 +52,10 @@ impl PythHttpClient {
         #[serde(crate = "near_sdk::serde")]
         struct Data(#[serde(deserialize_with = "hex::deserialize")] Vec<u8>);
 
-        let mut request = self
-            .http
-            .get(format!("{}/v2/updates/price/latest", self.hermes_url));
+        let mut request = self.http.get(format!(
+            "{}/v2/updates/price/latest",
+            self.hermes_url.as_str().trim_end_matches('/'),
+        ));
 
         for price_id in price_ids {
             request = request.query(&[("ids[]", price_id)]);
@@ -143,6 +145,14 @@ impl GatewayContext {
 
     pub fn ft(&self, contract_id: AccountId) -> FtClient<'_> {
         self.near.ft(contract_id)
+    }
+
+    pub fn mt(&self, contract_id: AccountId) -> MtClient<'_> {
+        self.near.mt(contract_id)
+    }
+
+    pub fn token<T: AssetClass>(&self, asset: FungibleAsset<T>) -> TokenClient<'_> {
+        self.near.token(asset)
     }
 
     pub fn proxy_oracle(&self, contract_id: AccountId) -> ProxyOracleClient<'_> {

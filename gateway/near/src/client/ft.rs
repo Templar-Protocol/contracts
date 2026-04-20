@@ -18,6 +18,13 @@ pub struct TransferArgs {
     pub amount: U128,
 }
 
+#[derive(serde::Serialize)]
+pub struct TransferCallArgs {
+    pub receiver_id: near_account_id::AccountId,
+    pub amount: U128,
+    pub msg: String,
+}
+
 #[derive(Clone)]
 pub struct FtClient<'a> {
     pub(crate) inner: &'a NearClient,
@@ -41,5 +48,6 @@ impl FtClient<'_> {
 
     contract_writes! {
         pub fn ft_transfer(TransferArgs);
+        pub fn ft_transfer_call(TransferCallArgs);
     }
 }

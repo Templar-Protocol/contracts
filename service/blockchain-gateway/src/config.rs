@@ -123,7 +123,7 @@ mod tests {
         );
         assert_eq!(
             config.pyth_hermes_url.as_str(),
-            "https://hermes-beta.pyth.network"
+            "https://hermes-beta.pyth.network/"
         );
         assert_eq!(config.redstone_node_path, PathBuf::from("node"));
         assert_eq!(config.managed_signers.len(), 1);

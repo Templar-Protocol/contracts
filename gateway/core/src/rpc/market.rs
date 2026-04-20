@@ -300,6 +300,14 @@ pub type BorrowResult = WriteOperationResult;
 write_method_spec!(Borrow, "market.borrow", BorrowBody, BorrowResult);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SupplyBody {
+    pub market_id: MarketId,
+    pub amount: BorrowAssetAmount,
+}
+pub type SupplyResult = WriteOperationResult;
+write_method_spec!(Supply, "market.supply", SupplyBody, SupplyResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WithdrawCollateralBody {
     pub market_id: MarketId,
     pub amount: CollateralAssetAmount,
@@ -325,6 +333,15 @@ write_method_spec!(
     ApplyInterestBody,
     ApplyInterestResult
 );
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepayBody {
+    pub market_id: MarketId,
+    pub amount: BorrowAssetAmount,
+    pub account_id: Option<near_account_id::AccountId>,
+}
+pub type RepayResult = WriteOperationResult;
+write_method_spec!(Repay, "market.repay", RepayBody, RepayResult);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CreateSupplyWithdrawalRequestBody {
@@ -362,6 +379,35 @@ write_method_spec!(
     "market.executeNextSupplyWithdrawalRequest",
     ExecuteNextSupplyWithdrawalRequestBody,
     ExecuteNextSupplyWithdrawalRequestResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WithdrawSupplyBody {
+    pub market_id: MarketId,
+    pub amount: BorrowAssetAmount,
+    pub batch_limit: Option<u32>,
+}
+pub type WithdrawSupplyResult = WriteOperationResult;
+write_method_spec!(
+    WithdrawSupply,
+    "market.withdrawSupply",
+    WithdrawSupplyBody,
+    WithdrawSupplyResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LiquidateBody {
+    pub market_id: MarketId,
+    pub account_id: near_account_id::AccountId,
+    pub liquidation_amount: BorrowAssetAmount,
+    pub collateral_amount: Option<CollateralAssetAmount>,
+}
+pub type LiquidateResult = WriteOperationResult;
+write_method_spec!(
+    Liquidate,
+    "market.liquidate",
+    LiquidateBody,
+    LiquidateResult
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

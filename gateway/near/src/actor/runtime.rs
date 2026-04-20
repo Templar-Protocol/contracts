@@ -182,39 +182,51 @@ pub(crate) fn operation_outcome_from_transaction_result(
     signer_account_id: ManagedAccountId,
     tx_result: TransactionResult,
 ) -> WriteOperationResult {
-    let (status, step_status, tx_hash) = if let Some(full) = tx_result.into_full() {
-        let outcome = full.outcome();
-        let tx_hash = Some(outcome.transaction_hash.to_string());
-        let step_status = if full.is_success() {
-            StepStatus::Succeeded
+    operation_outcome_from_transaction_results(signer_account_id, vec![tx_result])
+}
+
+pub(crate) fn operation_outcome_from_transaction_results(
+    signer_account_id: ManagedAccountId,
+    tx_results: Vec<TransactionResult>,
+) -> WriteOperationResult {
+    let mut status = OperationStatus::Succeeded;
+    let mut operation_id = None;
+    let mut steps = Vec::with_capacity(tx_results.len());
+
+    for (index, tx_result) in tx_results.into_iter().enumerate() {
+        let (step_status, tx_hash) = if let Some(full) = tx_result.into_full() {
+            let outcome = full.outcome();
+            let tx_hash = Some(outcome.transaction_hash.to_string());
+            if operation_id.is_none() {
+                operation_id = tx_hash.clone();
+            }
+            if full.is_success() {
+                (StepStatus::Succeeded, tx_hash)
+            } else {
+                status = OperationStatus::Failed;
+                (StepStatus::Failed, tx_hash)
+            }
         } else {
-            StepStatus::Failed
+            if status != OperationStatus::Failed {
+                status = OperationStatus::InProgress;
+            }
+            (StepStatus::Submitted, None)
         };
-        let status = if full.is_success() {
-            OperationStatus::Succeeded
-        } else {
-            OperationStatus::Failed
-        };
-        (status, step_status, tx_hash)
-    } else {
-        (OperationStatus::InProgress, StepStatus::Submitted, None)
-    };
+
+        steps.push(TransactionStepRecord {
+            index: index as u32,
+            status: step_status,
+            tx_hash,
+        });
+    }
 
     WriteOperationResult {
         outcome: OperationOutcome {
             operation: OperationRecord {
-                id: OperationId(
-                    tx_hash
-                        .clone()
-                        .unwrap_or_else(|| Uuid::new_v4().to_string()),
-                ),
+                id: OperationId(operation_id.unwrap_or_else(|| Uuid::new_v4().to_string())),
                 signer_account_id,
                 status,
-                steps: vec![TransactionStepRecord {
-                    index: 0,
-                    status: step_status,
-                    tx_hash,
-                }],
+                steps,
             },
         },
     }

@@ -77,11 +77,15 @@ pub fn attach_gateway(
     register_read::<market::GetLastYieldRate>(&mut m)?;
     register_read::<market::GetStaticYield>(&mut m)?;
     register_write::<market::Borrow>(&mut m)?;
+    register_write::<market::Supply>(&mut m)?;
     register_write::<market::WithdrawCollateral>(&mut m)?;
     register_write::<market::ApplyInterest>(&mut m)?;
+    register_write::<market::Repay>(&mut m)?;
     register_write::<market::CreateSupplyWithdrawalRequest>(&mut m)?;
     register_write::<market::CancelSupplyWithdrawalRequest>(&mut m)?;
     register_write::<market::ExecuteNextSupplyWithdrawalRequest>(&mut m)?;
+    register_write::<market::WithdrawSupply>(&mut m)?;
+    register_write::<market::Liquidate>(&mut m)?;
     register_write::<market::HarvestYield>(&mut m)?;
     register_write::<market::AccumulateStaticYield>(&mut m)?;
     register_write::<market::WithdrawStaticYield>(&mut m)?;
@@ -132,7 +136,7 @@ pub fn attach_gateway(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{collections::HashMap, path::Path};
 
     use anyhow::Result;
     use blockchain_gateway_core::{
@@ -146,6 +150,7 @@ mod tests {
     use blockchain_gateway_testing::{SandboxHarness, TestController};
     use jsonrpsee::server::{ServerBuilder, ServerHandle};
     use near_sdk::json_types::{I64, U64};
+    use templar_common::market::DepositMsg;
     use templar_common::oracle::{
         price_transformer::{self, PriceTransformer},
         proxy::Proxy,
@@ -285,6 +290,72 @@ mod tests {
             })
             .await?
             .value)
+    }
+
+    async fn call_function(
+        stack: &TestStack,
+        signer_account_id: blockchain_gateway_core::ManagedAccountId,
+        receiver_id: near_account_id::AccountId,
+        method_name: &str,
+        args: serde_json::Value,
+        gas_tgas: u64,
+        deposit_yocto: u128,
+    ) -> Result<blockchain_gateway_core::common::WriteOperationResult> {
+        stack
+            .controller
+            .request::<tx::FunctionCall>(&WriteRequest {
+                signer_account_id,
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: tx::FunctionCallBody {
+                    receiver_id,
+                    method_name: ContractMethodName(method_name.to_owned()),
+                    args: ContractArgs::Json(args),
+                    gas: NearGas::from_tgas(gas_tgas),
+                    deposit: NearToken::from_yoctonear(deposit_yocto),
+                },
+            })
+            .await
+    }
+
+    async fn ensure_registered(
+        stack: &TestStack,
+        signer_account_id: blockchain_gateway_core::ManagedAccountId,
+        contract_id: near_account_id::AccountId,
+        account_id: near_account_id::AccountId,
+    ) -> Result<()> {
+        let _ = stack
+            .controller
+            .request::<storage::EnsureDeposit>(&WriteRequest {
+                signer_account_id,
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: storage::EnsureDepositBody {
+                    contract_id,
+                    account_id,
+                    mode: storage::EnsureDepositMode::Registered,
+                },
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn ft_balance(
+        stack: &TestStack,
+        contract_id: near_account_id::AccountId,
+        account_id: near_account_id::AccountId,
+    ) -> Result<u128> {
+        let value = view_contract_json(
+            stack,
+            contract_id,
+            "ft_balance_of",
+            serde_json::json!({ "account_id": account_id }),
+        )
+        .await?;
+        Ok(value
+            .as_str()
+            .expect("ft_balance_of should serialize as string")
+            .parse()?)
     }
 
     #[tokio::test]
@@ -1160,6 +1231,355 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn market_composed_operations_work_against_sandbox() -> Result<()> {
+        let stack = TestStack::start().await?;
+        let (market_id, configuration) = stack.harness.deploy_market().await?;
+        let borrow_asset_id = configuration
+            .borrow_asset
+            .clone()
+            .into_nep141()
+            .expect("sandbox market should use NEP-141 borrow asset");
+        let collateral_asset_id = configuration
+            .collateral_asset
+            .clone()
+            .into_nep141()
+            .expect("sandbox market should use NEP-141 collateral asset");
+
+        stack
+            .harness
+            .set_mock_oracle_pyth_price(
+                configuration.price_oracle_configuration.account_id.clone(),
+                configuration
+                    .price_oracle_configuration
+                    .borrow_asset_price_id,
+                Some(test_utils::to_price(1.0)),
+            )
+            .await?;
+        stack
+            .harness
+            .set_mock_oracle_pyth_price(
+                configuration.price_oracle_configuration.account_id.clone(),
+                configuration
+                    .price_oracle_configuration
+                    .collateral_asset_price_id,
+                Some(test_utils::to_price(2.0)),
+            )
+            .await?;
+
+        for signer_account_id in [
+            stack.harness.gateway_signer_account_id.clone(),
+            stack.harness.cleanup_signer_account_id.clone(),
+        ] {
+            ensure_registered(
+                &stack,
+                signer_account_id.clone(),
+                borrow_asset_id.clone(),
+                signer_account_id.0.clone(),
+            )
+            .await?;
+            ensure_registered(
+                &stack,
+                signer_account_id.clone(),
+                collateral_asset_id.clone(),
+                signer_account_id.0.clone(),
+            )
+            .await?;
+            ensure_registered(
+                &stack,
+                signer_account_id.clone(),
+                market_id.0.clone(),
+                signer_account_id.0.clone(),
+            )
+            .await?;
+        }
+        ensure_registered(
+            &stack,
+            stack.harness.gateway_signer_account_id.clone(),
+            borrow_asset_id.clone(),
+            market_id.0.clone(),
+        )
+        .await?;
+        ensure_registered(
+            &stack,
+            stack.harness.gateway_signer_account_id.clone(),
+            collateral_asset_id.clone(),
+            market_id.0.clone(),
+        )
+        .await?;
+
+        let _ = call_function(
+            &stack,
+            stack.harness.gateway_signer_account_id.clone(),
+            borrow_asset_id.clone(),
+            "mint",
+            serde_json::json!({ "amount": "200000" }),
+            100,
+            0,
+        )
+        .await?;
+        let _ = call_function(
+            &stack,
+            stack.harness.gateway_signer_account_id.clone(),
+            collateral_asset_id.clone(),
+            "mint",
+            serde_json::json!({ "amount": "500000" }),
+            100,
+            0,
+        )
+        .await?;
+        let _ = call_function(
+            &stack,
+            stack.harness.cleanup_signer_account_id.clone(),
+            borrow_asset_id.clone(),
+            "mint",
+            serde_json::json!({ "amount": "200000" }),
+            100,
+            0,
+        )
+        .await?;
+        let _ = call_function(
+            &stack,
+            stack.harness.cleanup_signer_account_id.clone(),
+            collateral_asset_id.clone(),
+            "mint",
+            serde_json::json!({ "amount": "500000" }),
+            100,
+            0,
+        )
+        .await?;
+
+        let supply = stack
+            .controller
+            .request::<market::Supply>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::SupplyBody {
+                    market_id: market_id.clone(),
+                    amount: 100_000u128.into(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            supply.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+        assert_eq!(supply.outcome.operation.steps.len(), 1);
+
+        let mut supply_is_active = false;
+        for _ in 0..10 {
+            let _ = stack
+                .controller
+                .request::<market::HarvestYield>(&WriteRequest {
+                    signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                    idempotency_key: None,
+                    wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                    body: market::HarvestYieldBody {
+                        market_id: market_id.clone(),
+                        account_id: None,
+                        mode: None,
+                    },
+                })
+                .await?;
+            let position = stack
+                .controller
+                .request::<market::GetSupplyPosition>(&ReadRequest {
+                    params: market::GetSupplyPositionParams {
+                        market_id: market_id.clone(),
+                        account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                    },
+                })
+                .await?;
+            if position
+                .position
+                .as_ref()
+                .is_some_and(|position| position.get_deposit().incoming.is_empty())
+            {
+                supply_is_active = true;
+                break;
+            }
+        }
+        assert!(supply_is_active);
+
+        let _ = call_function(
+            &stack,
+            stack.harness.cleanup_signer_account_id.clone(),
+            collateral_asset_id.clone(),
+            "ft_transfer_call",
+            serde_json::json!({
+                "receiver_id": market_id.0.clone(),
+                "amount": "200000",
+                "msg": serde_json::to_string(&DepositMsg::Collateralize)?,
+            }),
+            300,
+            1,
+        )
+        .await?;
+        let _ = stack
+            .controller
+            .request::<market::Borrow>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::BorrowBody {
+                    market_id: market_id.clone(),
+                    amount: 60_000u128.into(),
+                },
+            })
+            .await?;
+
+        let repay = stack
+            .controller
+            .request::<market::Repay>(&WriteRequest {
+                signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::RepayBody {
+                    market_id: market_id.clone(),
+                    amount: 10_000u128.into(),
+                    account_id: None,
+                },
+            })
+            .await?;
+        assert_eq!(
+            repay.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+
+        stack
+            .harness
+            .set_mock_oracle_pyth_price(
+                configuration.price_oracle_configuration.account_id.clone(),
+                configuration
+                    .price_oracle_configuration
+                    .collateral_asset_price_id,
+                Some(test_utils::to_price(0.05)),
+            )
+            .await?;
+
+        let borrow_position_before_liquidation = stack
+            .controller
+            .request::<market::GetBorrowPosition>(&ReadRequest {
+                params: market::GetBorrowPositionParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+                },
+            })
+            .await?
+            .position
+            .expect("borrower should have a borrow position before liquidation");
+        let liability_before_liquidation =
+            borrow_position_before_liquidation.get_total_borrow_asset_liability();
+        let liquidation_oracle_response = HashMap::from([
+            (
+                configuration
+                    .price_oracle_configuration
+                    .borrow_asset_price_id,
+                Some(test_utils::to_price(1.0)),
+            ),
+            (
+                configuration
+                    .price_oracle_configuration
+                    .collateral_asset_price_id,
+                Some(test_utils::to_price(0.05)),
+            ),
+        ]);
+        let liquidation_price_pair = configuration
+            .price_oracle_configuration
+            .create_price_pair(&liquidation_oracle_response)?;
+        let liquidatable_collateral = borrow_position_before_liquidation.liquidatable_collateral(
+            &liquidation_price_pair,
+            configuration.borrow_mcr_maintenance,
+            configuration.liquidation_maximum_spread,
+        );
+        let liquidation_amount = configuration
+            .minimum_acceptable_liquidation_amount(liquidatable_collateral, &liquidation_price_pair)
+            .expect("liquidation amount should be derivable");
+        let liquidator_borrow_balance_before = ft_balance(
+            &stack,
+            borrow_asset_id.clone(),
+            stack.harness.gateway_signer_account_id.0.clone(),
+        )
+        .await?;
+        let liquidate = stack
+            .controller
+            .request::<market::Liquidate>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::LiquidateBody {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+                    liquidation_amount,
+                    collateral_amount: Some(liquidatable_collateral),
+                },
+            })
+            .await?;
+        assert_eq!(
+            liquidate.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+        let liquidator_borrow_balance_after = ft_balance(
+            &stack,
+            borrow_asset_id.clone(),
+            stack.harness.gateway_signer_account_id.0.clone(),
+        )
+        .await?;
+        assert!(liquidator_borrow_balance_after < liquidator_borrow_balance_before);
+
+        let withdraw_supply = stack
+            .controller
+            .request::<market::WithdrawSupply>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: market::WithdrawSupplyBody {
+                    market_id: market_id.clone(),
+                    amount: 20_000u128.into(),
+                    batch_limit: None,
+                },
+            })
+            .await?;
+        assert_eq!(
+            withdraw_supply.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+        assert_eq!(withdraw_supply.outcome.operation.steps.len(), 2);
+
+        let supply_request = stack
+            .controller
+            .request::<market::GetSupplyWithdrawalRequestStatus>(&ReadRequest {
+                params: market::GetSupplyWithdrawalRequestStatusParams {
+                    market_id: market_id.clone(),
+                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        assert!(supply_request.status.is_none());
+
+        let borrow_position = stack
+            .controller
+            .request::<market::GetBorrowPosition>(&ReadRequest {
+                params: market::GetBorrowPositionParams {
+                    market_id,
+                    account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+                },
+            })
+            .await?;
+        let borrow_position = borrow_position
+            .position
+            .expect("borrower should still have a borrow position after partial liquidation");
+        let liability_after_liquidation = borrow_position.get_total_borrow_asset_liability();
+        assert!(
+            liability_after_liquidation <= liability_before_liquidation,
+            "liquidation should not increase liability"
+        );
+
+        stack.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         let stack = TestStack::start().await?;
         let oracle_id = stack.harness.deploy_proxy_oracle().await?;
@@ -1436,6 +1856,16 @@ mod tests {
             package_timestamp: now_ms,
             write_timestamp: now_ms,
         }
+    }
+
+    fn assert_same_pyth_price_value(
+        actual: Option<templar_common::oracle::pyth::Price>,
+        expected: templar_common::oracle::pyth::Price,
+    ) {
+        let actual = actual.expect("expected price to be present");
+        assert_eq!(actual.price, expected.price);
+        assert_eq!(actual.conf, expected.conf);
+        assert_eq!(actual.expo, expected.expo);
     }
 
     #[tokio::test]
@@ -1862,9 +2292,14 @@ mod tests {
 
         assert_eq!(prices.prices.len(), 2);
         assert_eq!(prices.prices[0].price_id, proxy_direct_id);
-        assert_eq!(prices.prices[0].price, Some(pyth_price(100.0)));
+        assert_same_pyth_price_value(prices.prices[0].price.clone(), pyth_price(100.0));
         assert_eq!(prices.prices[1].price_id, proxy_redstone_id);
-        assert_eq!(prices.prices[1].price, redstone_price(42.0).to_pyth_price());
+        assert_same_pyth_price_value(
+            prices.prices[1].price.clone(),
+            redstone_price(42.0)
+                .to_pyth_price()
+                .expect("redstone price should convert to pyth price"),
+        );
 
         let one_price = stack
             .controller

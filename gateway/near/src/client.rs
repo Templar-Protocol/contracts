@@ -5,11 +5,13 @@ pub mod ft;
 pub mod lst_oracle;
 pub mod macros;
 pub mod market;
+pub mod mt;
 pub mod proxy_oracle;
 pub mod pyth_oracle;
 pub mod redstone_oracle;
 pub mod registry;
 pub mod storage;
+pub mod token;
 pub mod tx;
 pub mod universal_account;
 
@@ -22,6 +24,7 @@ use contract::ContractClient;
 use ft::FtClient;
 use lst_oracle::LstOracleClient;
 use market::MarketClient;
+use mt::MtClient;
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::NetworkConfig;
 use proxy_oracle::ProxyOracleClient;
@@ -30,9 +33,10 @@ use redstone_oracle::RedStoneOracleClient;
 use registry::RegistryClient;
 use std::sync::Arc;
 use storage::StorageClient;
+use templar_common::asset::{AssetClass, FungibleAsset};
+use token::TokenClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
-use url::Url;
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
@@ -127,6 +131,17 @@ impl NearClient {
             inner: self,
             contract_id,
         }
+    }
+
+    pub fn mt(&self, contract_id: AccountId) -> MtClient<'_> {
+        MtClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn token<T: AssetClass>(&self, asset: FungibleAsset<T>) -> TokenClient<'_> {
+        TokenClient::new(self, asset)
     }
 
     pub fn proxy_oracle(&self, contract_id: AccountId) -> ProxyOracleClient<'_> {
