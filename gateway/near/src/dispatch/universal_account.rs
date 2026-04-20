@@ -11,7 +11,7 @@ use crate::{
         ContractWriteOptions,
     },
     dispatch::registry::deploy_from_registry,
-    GatewayError, GatewayResult, NearClient,
+    GatewayContext, GatewayError, GatewayResult,
 };
 
 fn into_parameters_view(
@@ -39,11 +39,10 @@ fn into_parameters_view(
 impl DispatchRead for universal_account::GetKey {
     fn dispatch(
         params: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .universal_account(params.params.account_id.clone())
+            ctx.universal_account(params.params.account_id.clone())
                 .get_key(UaGetKeyArgs {
                     key: params.params.key,
                 })
@@ -58,12 +57,12 @@ impl DispatchRead for universal_account::GetKey {
 impl DispatchWrite for universal_account::Execute {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .universal_account(request.body.account_id)
                 .execute(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -90,7 +89,7 @@ impl DispatchWrite for universal_account::Execute {
 impl DispatchWrite for universal_account::CreateAccount {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
@@ -106,7 +105,7 @@ impl DispatchWrite for universal_account::CreateAccount {
                 .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
 
             deploy_from_registry(
-                client,
+                ctx,
                 signer,
                 request.signer_account_id,
                 request.wait_until,

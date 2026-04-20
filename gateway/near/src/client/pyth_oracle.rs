@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use templar_common::oracle::pyth::{Price, PriceIdentifier};
 
-use crate::client::{macros::contract_views, NearClient};
+use crate::client::{
+    macros::{contract_views, contract_writes},
+    NearClient,
+};
 
 use super::BoundContractClient;
 
@@ -32,9 +35,18 @@ pub struct ListEmaPricesNoOlderThanArgs {
     pub age: u64,
 }
 
+#[derive(serde::Serialize)]
+pub struct UpdatePriceFeedsArgs {
+    pub data: String,
+}
+
 impl PythOracleClient<'_> {
     contract_views! {
         pub fn price_feed_exists(PriceFeedExistsArgs) -> bool;
         pub fn list_ema_prices_no_older_than(ListEmaPricesNoOlderThanArgs) -> HashMap<PriceIdentifier, Option<Price>>;
+    }
+
+    contract_writes! {
+        pub fn update_price_feeds(UpdatePriceFeedsArgs);
     }
 }

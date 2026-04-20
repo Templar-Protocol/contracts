@@ -31,6 +31,7 @@ serde_json.workspace = true
 templar-common.workspace = true
 templar-universal-account.workspace = true
 test-utils.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

@@ -5,7 +5,11 @@ use templar_common::oracle::{
     redstone, OracleRequest,
 };
 
-use crate::macros::public_read_method_spec;
+use crate::{
+    macros::{public_read_method_spec, write_method_spec},
+    rpc::common::WriteOperationResult,
+    Base64Bytes,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -137,4 +141,43 @@ public_read_method_spec!(
     "oracle.getPrices",
     GetPricesParams,
     GetPricesResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdatePythBody {
+    pub oracle_id: near_account_id::AccountId,
+    pub vaa: Base64Bytes,
+}
+
+write_method_spec!(
+    UpdatePyth,
+    "oracle.updatePyth",
+    UpdatePythBody,
+    WriteOperationResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdateRedStoneBody {
+    pub oracle_id: near_account_id::AccountId,
+    pub feed_id: redstone::FeedId,
+}
+
+write_method_spec!(
+    UpdateRedStone,
+    "oracle.updateRedStone",
+    UpdateRedStoneBody,
+    WriteOperationResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpdatePricesBody {
+    pub oracle_id: near_account_id::AccountId,
+    pub price_ids: Vec<PriceIdentifier>,
+}
+
+write_method_spec!(
+    UpdatePrices,
+    "oracle.updatePrices",
+    UpdatePricesBody,
+    WriteOperationResult
 );

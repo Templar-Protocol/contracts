@@ -6,13 +6,14 @@ use blockchain_gateway_near::{ManagedSigner, NearClient};
 use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_sandbox::Sandbox;
 use near_token::NearToken;
+use templar_common::oracle::redstone::config as redstone_config;
 use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
 use templar_common::{market::MarketConfiguration, market::YieldWeights};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::lst_oracle::LstOracleController, market_configuration, test_signer::TestSigner,
     FtController, MarketController, MockOracleController, ProxyOracleController,
-    RegistryController, UniversalAccountController,
+    RedStoneAdapterController, RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -287,6 +288,27 @@ impl SandboxHarness {
             MockOracleController::wasm().await.to_vec(),
             "new",
             serde_json::json!({}),
+        )
+        .await?;
+        Ok(account_id)
+    }
+
+    pub async fn deploy_redstone_adapter(&self, account_id: AccountId) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let mut config = redstone_config::prod();
+        config.max_timestamp_delay_ms = u64::MAX;
+        config.max_timestamp_ahead_ms = u64::MAX;
+        config.min_interval_between_updates_ms = 0;
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            RedStoneAdapterController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({
+                "config": config,
+            }),
         )
         .await?;
         Ok(account_id)

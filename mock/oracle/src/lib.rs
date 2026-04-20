@@ -20,6 +20,8 @@ use templar_common::{
 pub struct Contract {
     redstone_prices: LookupMap<FeedId, FeedData>,
     pyth_prices: LookupMap<PriceIdentifier, Price>,
+    last_pyth_update_data: Option<String>,
+    pyth_update_count: u64,
 }
 
 #[near]
@@ -29,6 +31,8 @@ impl Contract {
         Self {
             redstone_prices: LookupMap::new(b"r"),
             pyth_prices: LookupMap::new(b"p"),
+            last_pyth_update_data: None,
+            pyth_update_count: 0,
         }
     }
 
@@ -46,6 +50,20 @@ impl Contract {
         } else {
             self.pyth_prices.remove(&price_identifier);
         }
+    }
+
+    #[payable]
+    pub fn update_price_feeds(&mut self, data: String) {
+        self.last_pyth_update_data = Some(data);
+        self.pyth_update_count += 1;
+    }
+
+    pub fn last_pyth_update_data(&self) -> Option<String> {
+        self.last_pyth_update_data.clone()
+    }
+
+    pub fn pyth_update_count(&self) -> U64 {
+        self.pyth_update_count.into()
     }
 }
 

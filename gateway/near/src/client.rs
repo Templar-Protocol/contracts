@@ -32,6 +32,7 @@ use std::sync::Arc;
 use storage::StorageClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
+use url::Url;
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;

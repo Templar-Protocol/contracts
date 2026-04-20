@@ -12,17 +12,16 @@ use crate::{
         storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
         ContractWriteOptions,
     },
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for storage::GetBalanceBounds {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .storage(request.params.contract_id)
+            ctx.storage(request.params.contract_id)
                 .storage_balance_bounds(())
                 .await
                 .map(|bounds| storage::GetBalanceBoundsResult {
@@ -38,11 +37,10 @@ impl DispatchRead for storage::GetBalanceBounds {
 impl DispatchRead for storage::GetBalanceOf {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .storage(request.params.contract_id)
+            ctx.storage(request.params.contract_id)
                 .storage_balance_of(StorageBalanceOfArgs {
                     account_id: request.params.account_id,
                 })
@@ -60,13 +58,13 @@ impl DispatchRead for storage::GetBalanceOf {
 impl DispatchWrite for storage::Deposit {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .storage(body.contract_id)
                 .storage_deposit(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -95,13 +93,13 @@ impl DispatchWrite for storage::Deposit {
 impl DispatchWrite for storage::Unregister {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .storage(body.contract_id)
                 .storage_unregister(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -127,7 +125,7 @@ impl DispatchWrite for storage::Unregister {
 impl DispatchWrite for storage::EnsureDeposit {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
@@ -135,11 +133,11 @@ impl DispatchWrite for storage::EnsureDeposit {
             let contract_id = body.contract_id.clone();
             let account_id = body.account_id.clone();
 
-            let bounds = client
+            let bounds = ctx
                 .storage(contract_id.clone())
                 .storage_balance_bounds(())
                 .await?;
-            let balance = client
+            let balance = ctx
                 .storage(contract_id.clone())
                 .storage_balance_of(StorageBalanceOfArgs {
                     account_id: account_id.clone(),
@@ -153,7 +151,7 @@ impl DispatchWrite for storage::EnsureDeposit {
             }
 
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .storage(contract_id.clone())
                 .storage_deposit(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -167,7 +165,7 @@ impl DispatchWrite for storage::EnsureDeposit {
                 )
                 .await?;
 
-            let balance_after = client
+            let balance_after = ctx
                 .storage(contract_id)
                 .storage_balance_of(StorageBalanceOfArgs { account_id })
                 .await?;

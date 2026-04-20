@@ -9,16 +9,16 @@ use crate::{
         ft::{GetBalanceOfArgs, TransferArgs},
         ContractWriteOptions,
     },
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for ft::GetBalanceOf {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let balance = client
+            let balance = ctx
                 .ft(request.params.contract_id)
                 .ft_balance_of(GetBalanceOfArgs {
                     account_id: request.params.account_id,
@@ -33,13 +33,13 @@ impl DispatchRead for ft::GetBalanceOf {
 impl DispatchWrite for ft::Transfer {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .ft(body.contract_id)
                 .ft_transfer(
                     ContractWriteOptions::new(request.signer_account_id, signer)

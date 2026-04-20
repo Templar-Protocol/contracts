@@ -13,17 +13,16 @@ use crate::{
         },
         ContractWriteOptions,
     },
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for market::GetConfiguration {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_configuration(())
                 .await
         })
@@ -33,11 +32,10 @@ impl DispatchRead for market::GetConfiguration {
 impl DispatchRead for market::GetCurrentSnapshot {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_current_snapshot(())
                 .await
         })
@@ -47,11 +45,10 @@ impl DispatchRead for market::GetCurrentSnapshot {
 impl DispatchRead for market::GetFinalizedSnapshotsLen {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_finalized_snapshots_len(())
                 .await
         })
@@ -61,11 +58,10 @@ impl DispatchRead for market::GetFinalizedSnapshotsLen {
 impl DispatchRead for market::ListFinalizedSnapshots {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .list_finalized_snapshots(request.params.args)
                 .await
                 .map(|snapshots| market::ListFinalizedSnapshotsResult { snapshots })
@@ -76,11 +72,10 @@ impl DispatchRead for market::ListFinalizedSnapshots {
 impl DispatchRead for market::GetBorrowAssetMetrics {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_borrow_asset_metrics(())
                 .await
         })
@@ -90,11 +85,10 @@ impl DispatchRead for market::GetBorrowAssetMetrics {
 impl DispatchRead for market::ListBorrowPositions {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .list_borrow_positions(request.params.args)
                 .await
                 .map(|positions| market::ListBorrowPositionsResult { positions })
@@ -105,11 +99,10 @@ impl DispatchRead for market::ListBorrowPositions {
 impl DispatchRead for market::GetBorrowPosition {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_borrow_position(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -122,12 +115,11 @@ impl DispatchRead for market::GetBorrowPosition {
 impl DispatchRead for market::GetBorrowPositionPendingInterest {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            client
-                .market(params.market_id)
+            ctx.market(params.market_id)
                 .get_borrow_position_pending_interest(GetBorrowPositionPendingInterestArgs {
                     account_id: params.account_id,
                     snapshot_limit: params.snapshot_limit,
@@ -141,12 +133,11 @@ impl DispatchRead for market::GetBorrowPositionPendingInterest {
 impl DispatchRead for market::GetBorrowStatus {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            client
-                .market(params.market_id)
+            ctx.market(params.market_id)
                 .get_borrow_status(GetBorrowStatusArgs {
                     account_id: params.account_id,
                     oracle_response: params.oracle_response,
@@ -160,11 +151,10 @@ impl DispatchRead for market::GetBorrowStatus {
 impl DispatchRead for market::ListSupplyPositions {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .list_supply_positions(request.params.args)
                 .await
                 .map(|positions| market::ListSupplyPositionsResult { positions })
@@ -175,11 +165,10 @@ impl DispatchRead for market::ListSupplyPositions {
 impl DispatchRead for market::GetSupplyPosition {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_supply_position(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -192,12 +181,11 @@ impl DispatchRead for market::GetSupplyPosition {
 impl DispatchRead for market::GetSupplyPositionPendingYield {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            client
-                .market(params.market_id)
+            ctx.market(params.market_id)
                 .get_supply_position_pending_yield(GetSupplyPositionPendingYieldArgs {
                     account_id: params.account_id,
                     snapshot_limit: params.snapshot_limit,
@@ -211,11 +199,10 @@ impl DispatchRead for market::GetSupplyPositionPendingYield {
 impl DispatchRead for market::GetSupplyWithdrawalRequestStatus {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_supply_withdrawal_request_status(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -228,11 +215,10 @@ impl DispatchRead for market::GetSupplyWithdrawalRequestStatus {
 impl DispatchRead for market::GetSupplyWithdrawalQueueStatus {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_supply_withdrawal_queue_status(())
                 .await
         })
@@ -242,11 +228,10 @@ impl DispatchRead for market::GetSupplyWithdrawalQueueStatus {
 impl DispatchRead for market::GetLastYieldRate {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_last_yield_rate(())
                 .await
         })
@@ -256,11 +241,10 @@ impl DispatchRead for market::GetLastYieldRate {
 impl DispatchRead for market::GetStaticYield {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .market(request.params.market_id)
+            ctx.market(request.params.market_id)
                 .get_static_yield(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -273,12 +257,12 @@ impl DispatchRead for market::GetStaticYield {
 impl DispatchWrite for market::Borrow {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .market(request.body.market_id)
                 .borrow(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -303,12 +287,12 @@ impl DispatchWrite for market::Borrow {
 impl DispatchWrite for market::WithdrawCollateral {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .market(request.body.market_id)
                 .withdraw_collateral(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -333,13 +317,13 @@ impl DispatchWrite for market::WithdrawCollateral {
 impl DispatchWrite for market::ApplyInterest {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .market(body.market_id)
                 .apply_interest(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -365,12 +349,12 @@ impl DispatchWrite for market::ApplyInterest {
 impl DispatchWrite for market::CreateSupplyWithdrawalRequest {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .market(request.body.market_id)
                 .create_supply_withdrawal_request(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -395,12 +379,12 @@ impl DispatchWrite for market::CreateSupplyWithdrawalRequest {
 impl DispatchWrite for market::CancelSupplyWithdrawalRequest {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .market(request.body.market_id)
                 .cancel_supply_withdrawal_request(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -423,12 +407,12 @@ impl DispatchWrite for market::CancelSupplyWithdrawalRequest {
 impl DispatchWrite for market::ExecuteNextSupplyWithdrawalRequest {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .market(request.body.market_id)
                 .execute_next_supply_withdrawal_request(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -453,13 +437,13 @@ impl DispatchWrite for market::ExecuteNextSupplyWithdrawalRequest {
 impl DispatchWrite for market::HarvestYield {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .market(body.market_id)
                 .harvest_yield(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -485,13 +469,13 @@ impl DispatchWrite for market::HarvestYield {
 impl DispatchWrite for market::AccumulateStaticYield {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .market(body.market_id)
                 .accumulate_static_yield(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -517,12 +501,12 @@ impl DispatchWrite for market::AccumulateStaticYield {
 impl DispatchWrite for market::WithdrawStaticYield {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .market(request.body.market_id)
                 .withdraw_static_yield(
                     ContractWriteOptions::new(request.signer_account_id, signer)

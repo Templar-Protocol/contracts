@@ -50,8 +50,17 @@ impl MockOracleController {
         #[view]
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
 
+        #[view]
+        pub fn last_pyth_update_data() -> Option<String>;
+
+        #[view]
+        pub fn pyth_update_count() -> near_sdk::json_types::U64;
+
         #[call(exec)]
         pub fn set_pyth_price(price_identifier: PriceIdentifier, price: Option<pyth::Price>);
+
+        #[call(exec)]
+        pub fn update_price_feeds(data: String);
 
         #[call(exec)]
         pub fn set_redstone_price(feed_id: FeedId, data: Option<FeedData>);

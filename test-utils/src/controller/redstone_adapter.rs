@@ -27,17 +27,20 @@ impl ContractController for RedStoneAdapterController {
 }
 
 impl RedStoneAdapterController {
-    pub async fn deploy(account: Account, config: Config) -> Self {
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| {
-                get_contract(
-                    "templar_redstone_adapter_contract",
-                    "contract/redstone-adapter",
-                )
-            })
-            .await;
+        WASM.get_or_init(|| {
+            get_contract(
+                "templar_redstone_adapter_contract",
+                "contract/redstone-adapter",
+            )
+        })
+        .await
+    }
+
+    pub async fn deploy(account: Account, config: Config) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract

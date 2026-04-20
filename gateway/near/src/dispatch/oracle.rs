@@ -1,12 +1,20 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use blockchain_gateway_core::oracle::{
     self, GetPriceResolutionDependenciesResult, OracleContractKind, RedStoneOraclePrices,
     RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
 };
+use blockchain_gateway_core::{
+    common::WriteOperationResult, OperationId, OperationOutcome, OperationRecord, OperationStatus,
+    StepStatus, TransactionStepRecord,
+};
 use futures::future::BoxFuture;
 use near_account_id::AccountId;
+use near_api::types::transaction::result::TransactionResult;
+use near_sdk::json_types::Base64VecU8;
+use near_sdk::NearToken;
 use templar_common::oracle::price_transformer;
 use templar_common::{
     number::Decimal,
@@ -19,23 +27,25 @@ use templar_common::{
 };
 
 use crate::{
-    actor::DispatchRead,
+    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
     client::{
         lst_oracle::GetTransformerArgs,
         proxy_oracle::{GetProxyArgs, ListProxiesArgs},
-        pyth_oracle::ListEmaPricesNoOlderThanArgs,
-        redstone_oracle::ReadPriceDataArgs,
+        pyth_oracle::{ListEmaPricesNoOlderThanArgs, UpdatePriceFeedsArgs},
+        redstone_oracle::{ReadPriceDataArgs, WritePricesArgs},
+        ContractWriteOptions,
     },
-    GatewayError, GatewayResult, NearClient,
+    GatewayContext, GatewayError, GatewayResult,
 };
 
+const PYTH_UPDATE_DEPOSIT: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000_000);
+
 async fn get_proxy(
-    client: &NearClient,
+    ctx: &GatewayContext,
     oracle_id: AccountId,
     id: PriceIdentifier,
 ) -> GatewayResult<Option<templar_common::oracle::proxy::Proxy>> {
-    client
-        .proxy_oracle(oracle_id)
+    ctx.proxy_oracle(oracle_id)
         .get_proxy(GetProxyArgs { id })
         .await
 }
@@ -43,22 +53,22 @@ async fn get_proxy(
 impl DispatchRead for oracle::GetKind {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { query_oracle_kind(&client, request.params.oracle_id).await })
+        Box::pin(async move { query_oracle_kind(&ctx, request.params.oracle_id).await })
     }
 }
 
 impl DispatchRead for oracle::GetPriceResolutionDependencies {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            let kind = query_oracle_kind(&client, params.oracle_id.clone()).await?;
+            let kind = query_oracle_kind(&ctx, params.oracle_id.clone()).await?;
             let requests =
-                resolve_dependencies(&client, params.oracle_id, params.price_id, &kind).await?;
+                resolve_dependencies(&ctx, params.oracle_id, params.price_id, &kind).await?;
             Ok(GetPriceResolutionDependenciesResult { kind, requests })
         })
     }
@@ -67,13 +77,13 @@ impl DispatchRead for oracle::GetPriceResolutionDependencies {
 impl DispatchRead for oracle::ResolvePrice {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let inputs = ResolutionInputs::new(params.pyth, params.redstone);
             let price = resolve_price(
-                &client,
+                &ctx,
                 &inputs,
                 params.oracle_id,
                 params.price_id,
@@ -88,7 +98,7 @@ impl DispatchRead for oracle::ResolvePrice {
 impl DispatchRead for oracle::ResolvePrices {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
@@ -96,14 +106,9 @@ impl DispatchRead for oracle::ResolvePrices {
             let max_age = Nanoseconds::from_secs(params.age);
             let mut prices = Vec::with_capacity(params.price_ids.len());
             for price_id in params.price_ids {
-                let price = resolve_price(
-                    &client,
-                    &inputs,
-                    params.oracle_id.clone(),
-                    price_id,
-                    max_age,
-                )
-                .await?;
+                let price =
+                    resolve_price(&ctx, &inputs, params.oracle_id.clone(), price_id, max_age)
+                        .await?;
                 prices.push(ResolvedPrice { price_id, price });
             }
             Ok(ResolvePricesResult { prices })
@@ -114,12 +119,12 @@ impl DispatchRead for oracle::ResolvePrices {
 impl DispatchRead for oracle::GetPrice {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let price = get_price_onchain(
-                &client,
+                &ctx,
                 params.oracle_id,
                 params.price_id,
                 Nanoseconds::from_secs(params.age),
@@ -133,7 +138,7 @@ impl DispatchRead for oracle::GetPrice {
 impl DispatchRead for oracle::GetPrices {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
@@ -141,11 +146,155 @@ impl DispatchRead for oracle::GetPrices {
             let mut prices = Vec::with_capacity(params.price_ids.len());
             for price_id in params.price_ids {
                 let price =
-                    get_price_onchain(&client, params.oracle_id.clone(), price_id, max_age).await?;
+                    get_price_onchain(&ctx, params.oracle_id.clone(), price_id, max_age).await?;
                 prices.push(ResolvedPrice { price_id, price });
             }
             Ok(ResolvePricesResult { prices })
         })
+    }
+}
+
+impl DispatchWrite for oracle::UpdatePyth {
+    fn dispatch(
+        request: Self::Input,
+        ctx: GatewayContext,
+        signer: Arc<near_api::Signer>,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let signer_account_id = request.signer_account_id.clone();
+            let tx_result = submit_pyth_update(
+                &ctx,
+                request.signer_account_id,
+                signer,
+                request.wait_until,
+                request.body.oracle_id,
+                request.body.vaa.0,
+            )
+            .await?;
+            Ok(operation_outcome_from_transaction_result(
+                signer_account_id,
+                tx_result,
+            ))
+        })
+    }
+
+    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+        &request.signer_account_id
+    }
+}
+
+impl DispatchWrite for oracle::UpdateRedStone {
+    fn dispatch(
+        request: Self::Input,
+        ctx: GatewayContext,
+        signer: Arc<near_api::Signer>,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let signer_account_id = request.signer_account_id.clone();
+            let oracle_id = request.body.oracle_id;
+            let feed_id = request.body.feed_id;
+            let payload = ctx
+                .redstone_bridge()
+                .fetch_payload(vec![feed_id.clone()])
+                .await?;
+            let tx_result = submit_redstone_update(
+                &ctx,
+                request.signer_account_id,
+                signer,
+                request.wait_until,
+                oracle_id,
+                vec![feed_id],
+                payload,
+            )
+            .await?;
+            Ok(operation_outcome_from_transaction_result(
+                signer_account_id,
+                tx_result,
+            ))
+        })
+    }
+
+    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+        &request.signer_account_id
+    }
+}
+
+impl DispatchWrite for oracle::UpdatePrices {
+    fn dispatch(
+        request: Self::Input,
+        ctx: GatewayContext,
+        signer: Arc<near_api::Signer>,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let signer_account_id = request.signer_account_id.clone();
+            let requests =
+                resolve_update_requests(&ctx, request.body.oracle_id, request.body.price_ids)
+                    .await?;
+
+            let mut results = Vec::new();
+            let mut pyth_updates = BTreeMap::<AccountId, BTreeSet<PriceIdentifier>>::new();
+            let mut redstone_updates = BTreeMap::<AccountId, BTreeSet<redstone::FeedId>>::new();
+
+            for request in requests {
+                match request {
+                    OracleRequest::Pyth(request) => {
+                        pyth_updates
+                            .entry(request.oracle_id)
+                            .or_default()
+                            .insert(request.price_id);
+                    }
+                    OracleRequest::RedStone(request) => {
+                        redstone_updates
+                            .entry(request.oracle_id)
+                            .or_default()
+                            .insert(request.price_id);
+                    }
+                }
+            }
+
+            for (oracle_id, price_ids) in pyth_updates {
+                let price_ids = price_ids.into_iter().collect::<Vec<_>>();
+                let vaa = ctx.pyth_http().fetch_latest_vaa(&price_ids).await?;
+                let tx_result = submit_pyth_update(
+                    &ctx,
+                    request.signer_account_id.clone(),
+                    signer.clone(),
+                    request.wait_until,
+                    oracle_id,
+                    vaa,
+                )
+                .await?;
+                results.push(tx_result);
+            }
+
+            for (oracle_id, feed_ids) in redstone_updates {
+                let feed_ids = feed_ids.into_iter().collect::<Vec<_>>();
+                let payload = ctx
+                    .redstone_bridge()
+                    .fetch_payload(feed_ids.clone())
+                    .await?;
+                let tx_result = submit_redstone_update(
+                    &ctx,
+                    request.signer_account_id.clone(),
+                    signer.clone(),
+                    request.wait_until,
+                    oracle_id,
+                    feed_ids,
+                    payload,
+                )
+                .await?;
+                results.push(tx_result);
+            }
+
+            Ok(operation_outcome_from_transaction_results(
+                signer_account_id,
+                results,
+            ))
+        })
+    }
+
+    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+        &request.signer_account_id
     }
 }
 
@@ -182,10 +331,10 @@ impl ResolutionInputs {
 }
 
 async fn query_oracle_kind(
-    client: &NearClient,
+    ctx: &GatewayContext,
     oracle_id: AccountId,
 ) -> GatewayResult<OracleContractKind> {
-    if client
+    if ctx
         .proxy_oracle(oracle_id.clone())
         .list_proxies(ListProxiesArgs {
             offset: None,
@@ -197,7 +346,7 @@ async fn query_oracle_kind(
         return Ok(OracleContractKind::Proxy);
     }
 
-    match client
+    match ctx
         .lst_oracle(oracle_id.clone())
         .list_transformers(crate::client::lst_oracle::ListTransformersArgs {
             offset: None,
@@ -206,7 +355,7 @@ async fn query_oracle_kind(
         .await
     {
         Ok(_) => {
-            let pyth_id = client.lst_oracle(oracle_id).oracle_id(()).await?;
+            let pyth_id = ctx.lst_oracle(oracle_id).oracle_id(()).await?;
             Ok(OracleContractKind::Lst { pyth_id })
         }
         Err(error) if is_method_not_found(&error) => Ok(OracleContractKind::Direct),
@@ -215,7 +364,7 @@ async fn query_oracle_kind(
 }
 
 async fn resolve_dependencies(
-    client: &NearClient,
+    ctx: &GatewayContext,
     oracle_id: AccountId,
     price_id: PriceIdentifier,
     kind: &OracleContractKind,
@@ -223,7 +372,7 @@ async fn resolve_dependencies(
     match kind.clone() {
         OracleContractKind::Direct => Ok(vec![OracleRequest::pyth(oracle_id, price_id)]),
         OracleContractKind::Lst { pyth_id } => {
-            let transformer = client
+            let transformer = ctx
                 .lst_oracle(oracle_id)
                 .get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
@@ -235,11 +384,9 @@ async fn resolve_dependencies(
             )])
         }
         OracleContractKind::Proxy => {
-            let proxy = get_proxy(client, oracle_id, price_id)
-                .await?
-                .ok_or_else(|| {
-                    GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-                })?;
+            let proxy = get_proxy(ctx, oracle_id, price_id).await?.ok_or_else(|| {
+                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
+            })?;
             let requests = proxy
                 .entries
                 .into_iter()
@@ -261,13 +408,13 @@ async fn resolve_dependencies(
 }
 
 async fn resolve_price(
-    client: &NearClient,
+    ctx: &GatewayContext,
     inputs: &ResolutionInputs,
     oracle_id: AccountId,
     price_id: PriceIdentifier,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
-    let kind = query_oracle_kind(client, oracle_id.clone()).await?;
+    let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
     match kind {
         OracleContractKind::Direct => Ok(fetch_oracle_request(
             inputs,
@@ -275,7 +422,7 @@ async fn resolve_price(
             max_age,
         )),
         OracleContractKind::Lst { pyth_id } => {
-            let transformer = client
+            let transformer = ctx
                 .lst_oracle(oracle_id)
                 .get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
@@ -290,7 +437,7 @@ async fn resolve_price(
                     ) else {
                         return Ok(None);
                     };
-                    let input = fetch_transformer_input(client, transformer.call).await?;
+                    let input = fetch_transformer_input(ctx, transformer.call).await?;
                     Ok(transformer.action.apply(price, input))
                 }
                 None => Ok(fetch_oracle_request(
@@ -301,16 +448,12 @@ async fn resolve_price(
             }
         }
         OracleContractKind::Proxy => {
-            let proxy = get_proxy(client, oracle_id, price_id)
-                .await?
-                .ok_or_else(|| {
-                    GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-                })?;
+            let proxy = get_proxy(ctx, oracle_id, price_id).await?.ok_or_else(|| {
+                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
+            })?;
             let mut prices = vec![];
             for entry in &proxy.entries {
-                if let Some(price) =
-                    resolve_proxy_entry_price(client, inputs, entry, max_age).await?
-                {
+                if let Some(price) = resolve_proxy_entry_price(ctx, inputs, entry, max_age).await? {
                     prices.push((price, entry.weight));
                 }
             }
@@ -323,19 +466,19 @@ async fn resolve_price(
 }
 
 async fn get_price_onchain(
-    client: &NearClient,
+    ctx: &GatewayContext,
     oracle_id: AccountId,
     price_id: PriceIdentifier,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
-    let kind = query_oracle_kind(client, oracle_id.clone()).await?;
+    let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
     match kind {
         OracleContractKind::Direct => {
-            fetch_oracle_request_onchain(client, OracleRequest::pyth(oracle_id, price_id), max_age)
+            fetch_oracle_request_onchain(ctx, OracleRequest::pyth(oracle_id, price_id), max_age)
                 .await
         }
         OracleContractKind::Lst { pyth_id } => {
-            let transformer = client
+            let transformer = ctx
                 .lst_oracle(oracle_id.clone())
                 .get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
@@ -344,7 +487,7 @@ async fn get_price_onchain(
             match transformer {
                 Some(transformer) => {
                     let Some(price) = fetch_oracle_request_onchain(
-                        client,
+                        ctx,
                         OracleRequest::pyth(pyth_id, transformer.price_id),
                         max_age,
                     )
@@ -352,12 +495,12 @@ async fn get_price_onchain(
                     else {
                         return Ok(None);
                     };
-                    let input = fetch_transformer_input(client, transformer.call).await?;
+                    let input = fetch_transformer_input(ctx, transformer.call).await?;
                     Ok(transformer.action.apply(price, input))
                 }
                 None => {
                     fetch_oracle_request_onchain(
-                        client,
+                        ctx,
                         OracleRequest::pyth(pyth_id, price_id),
                         max_age,
                     )
@@ -366,16 +509,12 @@ async fn get_price_onchain(
             }
         }
         OracleContractKind::Proxy => {
-            let proxy = get_proxy(client, oracle_id, price_id)
-                .await?
-                .ok_or_else(|| {
-                    GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-                })?;
+            let proxy = get_proxy(ctx, oracle_id, price_id).await?.ok_or_else(|| {
+                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
+            })?;
             let mut prices = vec![];
             for entry in &proxy.entries {
-                if let Some(price) =
-                    resolve_proxy_entry_price_onchain(client, entry, max_age).await?
-                {
+                if let Some(price) = resolve_proxy_entry_price_onchain(ctx, entry, max_age).await? {
                     prices.push((price, entry.weight));
                 }
             }
@@ -388,7 +527,7 @@ async fn get_price_onchain(
 }
 
 async fn resolve_proxy_entry_price(
-    client: &NearClient,
+    ctx: &GatewayContext,
     inputs: &ResolutionInputs,
     entry: &templar_common::oracle::proxy::Entry,
     max_age: Nanoseconds,
@@ -400,39 +539,38 @@ async fn resolve_proxy_entry_price(
             else {
                 return Ok(None);
             };
-            let input = fetch_transformer_input(client, transformer.call.clone()).await?;
+            let input = fetch_transformer_input(ctx, transformer.call.clone()).await?;
             Ok(transformer.action.apply(price, input))
         }
     }
 }
 
 async fn resolve_proxy_entry_price_onchain(
-    client: &NearClient,
+    ctx: &GatewayContext,
     entry: &templar_common::oracle::proxy::Entry,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
     match &entry.source {
         Source::Request(request) => {
-            fetch_oracle_request_onchain(client, request.clone(), max_age).await
+            fetch_oracle_request_onchain(ctx, request.clone(), max_age).await
         }
         Source::Transformer(transformer) => {
             let Some(price) =
-                fetch_oracle_request_onchain(client, transformer.request.clone(), max_age).await?
+                fetch_oracle_request_onchain(ctx, transformer.request.clone(), max_age).await?
             else {
                 return Ok(None);
             };
-            let input = fetch_transformer_input(client, transformer.call.clone()).await?;
+            let input = fetch_transformer_input(ctx, transformer.call.clone()).await?;
             Ok(transformer.action.apply(price, input))
         }
     }
 }
 
 async fn fetch_transformer_input(
-    client: &NearClient,
+    ctx: &GatewayContext,
     call: price_transformer::Call,
 ) -> GatewayResult<Decimal> {
-    client
-        .contract(call.account_id)
+    ctx.contract(call.account_id)
         .view_function(&call.method_name, call.args.0)
         .await
 }
@@ -460,12 +598,12 @@ fn fetch_oracle_request(
 }
 
 async fn fetch_oracle_request_onchain(
-    client: &NearClient,
+    ctx: &GatewayContext,
     request: OracleRequest,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
     let fetched_price = match request {
-        OracleRequest::Pyth(request) => client
+        OracleRequest::Pyth(request) => ctx
             .pyth_oracle(request.oracle_id)
             .list_ema_prices_no_older_than(ListEmaPricesNoOlderThanArgs {
                 price_ids: vec![request.price_id],
@@ -474,7 +612,7 @@ async fn fetch_oracle_request_onchain(
             .await?
             .remove(&request.price_id)
             .flatten(),
-        OracleRequest::RedStone(request) => client
+        OracleRequest::RedStone(request) => ctx
             .redstone_oracle(request.oracle_id)
             .read_price_data(ReadPriceDataArgs {
                 feed_ids: vec![request.price_id.clone()],
@@ -497,6 +635,111 @@ fn validate_price_age(price: pyth::Price, max_age: Nanoseconds) -> Option<pyth::
 
 fn is_method_not_found(error: &GatewayError) -> bool {
     matches!(error, GatewayError::NearQuery(message) if message.contains("MethodNotFound"))
+}
+
+async fn resolve_update_requests(
+    ctx: &GatewayContext,
+    oracle_id: AccountId,
+    price_ids: Vec<PriceIdentifier>,
+) -> GatewayResult<Vec<OracleRequest>> {
+    let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
+    let mut requests = BTreeSet::new();
+
+    for price_id in price_ids {
+        requests.extend(resolve_dependencies(ctx, oracle_id.clone(), price_id, &kind).await?);
+    }
+
+    Ok(requests.into_iter().collect())
+}
+
+async fn submit_pyth_update(
+    ctx: &GatewayContext,
+    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer: Arc<near_api::Signer>,
+    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
+    oracle_id: AccountId,
+    vaa: Vec<u8>,
+) -> GatewayResult<TransactionResult> {
+    ctx.pyth_oracle(oracle_id)
+        .update_price_feeds(
+            ContractWriteOptions::new(signer_account_id, signer)
+                .wait_until(wait_until)
+                .tgas(300)
+                .deposit(PYTH_UPDATE_DEPOSIT),
+            UpdatePriceFeedsArgs {
+                data: hex::encode(vaa),
+            },
+        )
+        .await
+}
+
+async fn submit_redstone_update(
+    ctx: &GatewayContext,
+    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer: Arc<near_api::Signer>,
+    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
+    oracle_id: AccountId,
+    feed_ids: Vec<redstone::FeedId>,
+    payload: Vec<u8>,
+) -> GatewayResult<TransactionResult> {
+    ctx.redstone_oracle(oracle_id)
+        .write_prices(
+            ContractWriteOptions::new(signer_account_id, signer)
+                .wait_until(wait_until)
+                .tgas(300),
+            WritePricesArgs {
+                feed_ids,
+                payload: Base64VecU8(payload),
+            },
+        )
+        .await
+}
+
+fn operation_outcome_from_transaction_results(
+    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    tx_results: Vec<TransactionResult>,
+) -> WriteOperationResult {
+    let mut status = OperationStatus::Succeeded;
+    let mut operation_id = None;
+    let mut steps = Vec::with_capacity(tx_results.len());
+
+    for (index, tx_result) in tx_results.into_iter().enumerate() {
+        let (step_status, tx_hash) = if let Some(full) = tx_result.into_full() {
+            let outcome = full.outcome();
+            let tx_hash = Some(outcome.transaction_hash.to_string());
+            if operation_id.is_none() {
+                operation_id.clone_from(&tx_hash);
+            }
+            if full.is_success() {
+                (StepStatus::Succeeded, tx_hash)
+            } else {
+                status = OperationStatus::Failed;
+                (StepStatus::Failed, tx_hash)
+            }
+        } else {
+            if status != OperationStatus::Failed {
+                status = OperationStatus::InProgress;
+            }
+            (StepStatus::Submitted, None)
+        };
+
+        steps.push(TransactionStepRecord {
+            index: index as u32,
+            status: step_status,
+            tx_hash,
+        });
+    }
+
+    WriteOperationResult {
+        outcome: OperationOutcome {
+            operation: OperationRecord {
+                id: OperationId(operation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())),
+                signer_account_id,
+                status,
+                steps,
+            },
+        },
+    }
 }
 
 fn system_time() -> Nanoseconds {

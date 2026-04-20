@@ -5,16 +5,16 @@ use futures::future::BoxFuture;
 
 use crate::{
     actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for tx::Get {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let result = client
+            let result = ctx
                 .chain()
                 .get_transaction(
                     request.params.tx_hash.into(),
@@ -48,12 +48,12 @@ impl DispatchRead for tx::Get {
 impl DispatchWrite for tx::FunctionCall {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
-            let tx_result = client
+            let tx_result = ctx
                 .tx(request.signer_account_id.clone(), signer)
                 .function_call(request.body, request.wait_until)
                 .await?;

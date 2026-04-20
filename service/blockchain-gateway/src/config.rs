@@ -1,6 +1,9 @@
-use std::net::SocketAddr;
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::{net::SocketAddr, path::PathBuf};
 
+use blockchain_gateway_core::ManagedAccountId;
+use blockchain_gateway_near::ManagedSigner;
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
@@ -59,6 +62,18 @@ pub struct Config {
     )]
     pub near_rpc_url: Url,
 
+    /// Pyth Hermes API URL used when the gateway needs to fetch fresh update payloads.
+    #[arg(
+        long,
+        env = "PYTH_HERMES_URL",
+        default_value = "https://hermes-beta.pyth.network"
+    )]
+    pub pyth_hermes_url: Url,
+
+    /// Path to the executable used for RedStone bridge payload generation.
+    #[arg(long, env = "REDSTONE_NODE_PATH", default_value = "node")]
+    pub redstone_node_path: PathBuf,
+
     /// Managed signer entries as <account_id>=<secret_key>[,<secret_key>...].
     #[arg(
         long = "managed-signer",
@@ -66,6 +81,22 @@ pub struct Config {
         value_delimiter = ';'
     )]
     pub managed_signers: Vec<ManagedSignerConfig>,
+}
+
+impl Config {
+    pub async fn build_signers(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
+        let mut signers = HashMap::new();
+
+        for config in &self.managed_signers {
+            let secret_keys = config.secret_keys.iter().cloned();
+            let entry = ManagedSigner::new(secret_keys)
+                .await
+                .expect("failed to initialize signer");
+            signers.insert(ManagedAccountId(config.account_id.clone()), entry);
+        }
+
+        signers
+    }
 }
 
 #[cfg(test)]
@@ -90,6 +121,11 @@ mod tests {
             config.near_rpc_url.as_str(),
             "https://rpc.mainnet.near.org/"
         );
+        assert_eq!(
+            config.pyth_hermes_url.as_str(),
+            "https://hermes-beta.pyth.network"
+        );
+        assert_eq!(config.redstone_node_path, PathBuf::from("node"));
         assert_eq!(config.managed_signers.len(), 1);
         assert_eq!(config.managed_signers[0].account_id.as_str(), "test.near");
         assert_eq!(config.managed_signers[0].secret_keys.len(), 2);

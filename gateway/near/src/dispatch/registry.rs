@@ -9,17 +9,16 @@ use crate::{
         registry::{GetDeploymentArgs, RemoveVersionArgs},
         ContractWriteOptions,
     },
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for registry::ListDeployments {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .registry(request.params.registry_id)
+            ctx.registry(request.params.registry_id)
                 .list_deployments(request.params.args)
                 .await
                 .map(|account_ids| registry::ListDeploymentsResult { account_ids })
@@ -30,11 +29,10 @@ impl DispatchRead for registry::ListDeployments {
 impl DispatchRead for registry::GetDeployment {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .registry(request.params.registry_id)
+            ctx.registry(request.params.registry_id)
                 .get_deployment(GetDeploymentArgs {
                     account_id: request.params.account_id,
                 })
@@ -47,11 +45,10 @@ impl DispatchRead for registry::GetDeployment {
 impl DispatchRead for registry::ListVersions {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .registry(request.params.registry_id)
+            ctx.registry(request.params.registry_id)
                 .list_versions(request.params.args)
                 .await
                 .map(|values| registry::ListVersionsResult { values })
@@ -62,18 +59,15 @@ impl DispatchRead for registry::ListVersions {
 impl DispatchWrite for registry::AddVersion {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
             let deposit = body.deposit;
-            let registry_version = client
-                .contract(body.registry_id.0.clone())
-                .version()
-                .await?;
-            let tx_result = client
+            let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
+            let tx_result = ctx
                 .registry(body.registry_id.clone())
                 .add_version(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -104,12 +98,12 @@ impl DispatchWrite for registry::AddVersion {
 impl DispatchWrite for registry::Deploy {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             deploy_from_registry(
-                client,
+                ctx,
                 signer,
                 request.signer_account_id,
                 request.wait_until,
@@ -125,7 +119,7 @@ impl DispatchWrite for registry::Deploy {
 }
 
 pub(crate) async fn deploy_from_registry(
-    client: NearClient,
+    ctx: GatewayContext,
     signer: Arc<near_api::Signer>,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
     wait_until: blockchain_gateway_core::common::TxExecutionStatus,
@@ -133,11 +127,8 @@ pub(crate) async fn deploy_from_registry(
 ) -> GatewayResult<blockchain_gateway_core::common::WriteOperationResult> {
     let signer_account_id_for_result = signer_account_id.clone();
     let deposit = body.deposit;
-    let registry_version = client
-        .contract(body.registry_id.0.clone())
-        .version()
-        .await?;
-    let tx_result = client
+    let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
+    let tx_result = ctx
         .registry(body.registry_id.clone())
         .deploy(
             ContractWriteOptions::new(signer_account_id, signer)
@@ -165,13 +156,13 @@ pub(crate) async fn deploy_from_registry(
 impl DispatchWrite for registry::RemoveVersion {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = client
+            let tx_result = ctx
                 .registry(body.registry_id.clone())
                 .remove_version(
                     ContractWriteOptions::new(request.signer_account_id, signer)

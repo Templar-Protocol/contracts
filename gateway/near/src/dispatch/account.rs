@@ -6,16 +6,16 @@ use near_api::Account;
 
 use crate::{
     actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for account::Get {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let account = client.account().get(request.params.account_id).await?;
+            let account = ctx.account().get(request.params.account_id).await?;
 
             let (code_hash, global_contract_hash, global_contract_account_id) =
                 match account.contract_state {
@@ -54,7 +54,7 @@ impl DispatchRead for account::Get {
 impl DispatchWrite for account::Delete {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
@@ -63,7 +63,7 @@ impl DispatchWrite for account::Delete {
                 .delete_account_with_beneficiary(request.body.beneficiary_id)
                 .with_signer(signer)
                 .wait_until(request.wait_until.into())
-                .send_to(client.network())
+                .send_to(ctx.network())
                 .await
                 .map_err(|error| crate::GatewayError::NearTransaction(error.to_string()))?;
 

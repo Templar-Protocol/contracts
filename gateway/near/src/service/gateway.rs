@@ -9,7 +9,7 @@ use crate::{
         map_mailbox_error, DispatchRead, DispatchWrite, ManagedSigner, ReadActor, RpcMessage,
         WriteActors,
     },
-    GatewayResult,
+    GatewayContext, GatewayResult,
 };
 
 use super::runtime::{spawn_runtime, GatewayRuntime};
@@ -27,10 +27,10 @@ struct GatewayInner {
 
 impl GatewayService {
     pub fn spawn(
-        near: crate::NearClient,
+        context: GatewayContext,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
     ) -> Self {
-        let (runtime, read, write) = spawn_runtime(near, signers);
+        let (runtime, read, write) = spawn_runtime(context, signers);
 
         Self {
             inner: Arc::new(GatewayInner { read, write }),

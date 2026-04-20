@@ -9,17 +9,16 @@ use crate::{
         proxy_oracle::{GovActionArgs, GovCreateArgs, GovGetArgs, GovListArgs},
         ContractWriteOptions,
     },
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for proxy_oracle_governance::GetNextId {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .proxy_oracle(request.params.oracle_id)
+            ctx.proxy_oracle(request.params.oracle_id)
                 .gov_next_id(())
                 .await
         })
@@ -29,10 +28,10 @@ impl DispatchRead for proxy_oracle_governance::GetNextId {
 impl DispatchRead for proxy_oracle_governance::GetTtl {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let ttl_ns = client
+            let ttl_ns = ctx
                 .proxy_oracle(request.params.oracle_id)
                 .gov_ttl_ns(())
                 .await?;
@@ -44,11 +43,10 @@ impl DispatchRead for proxy_oracle_governance::GetTtl {
 impl DispatchRead for proxy_oracle_governance::GetCount {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .proxy_oracle(request.params.oracle_id)
+            ctx.proxy_oracle(request.params.oracle_id)
                 .gov_count(())
                 .await
         })
@@ -58,11 +56,10 @@ impl DispatchRead for proxy_oracle_governance::GetCount {
 impl DispatchRead for proxy_oracle_governance::List {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .proxy_oracle(request.params.oracle_id)
+            ctx.proxy_oracle(request.params.oracle_id)
                 .gov_list(GovListArgs {
                     offset: request.params.offset,
                     count: request.params.count,
@@ -76,12 +73,11 @@ impl DispatchRead for proxy_oracle_governance::List {
 impl DispatchRead for proxy_oracle_governance::Get {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            client
-                .proxy_oracle(params.oracle_id)
+            ctx.proxy_oracle(params.oracle_id)
                 .gov_get(GovGetArgs { id: params.id })
                 .await
                 .map(|proposal| proxy_oracle_governance::GetResult { proposal })
@@ -92,13 +88,13 @@ impl DispatchRead for proxy_oracle_governance::Get {
 impl DispatchWrite for proxy_oracle_governance::Create {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx = client
+            let tx = ctx
                 .proxy_oracle(body.oracle_id)
                 .gov_create(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -125,13 +121,13 @@ impl DispatchWrite for proxy_oracle_governance::Create {
 impl DispatchWrite for proxy_oracle_governance::Cancel {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx = client
+            let tx = ctx
                 .proxy_oracle(body.oracle_id)
                 .gov_cancel(
                     ContractWriteOptions::new(request.signer_account_id, signer)
@@ -156,13 +152,13 @@ impl DispatchWrite for proxy_oracle_governance::Cancel {
 impl DispatchWrite for proxy_oracle_governance::Execute {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx = client
+            let tx = ctx
                 .proxy_oracle(body.oracle_id)
                 .gov_execute(
                     ContractWriteOptions::new(request.signer_account_id, signer)

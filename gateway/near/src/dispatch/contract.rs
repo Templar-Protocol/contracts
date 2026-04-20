@@ -1,15 +1,15 @@
 use blockchain_gateway_core::contract;
 use futures::future::BoxFuture;
 
-use crate::{actor::DispatchRead, GatewayResult, NearClient};
+use crate::{actor::DispatchRead, GatewayContext, GatewayResult};
 
 impl DispatchRead for contract::ViewFunction {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let value = client
+            let value = ctx
                 .contract(request.params.contract_id.clone())
                 .view_function(
                     &request.params.method_name.0,
@@ -25,10 +25,10 @@ impl DispatchRead for contract::ViewFunction {
 impl DispatchRead for contract::GetVersion {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let metadata = client
+            let metadata = ctx
                 .contract(request.params.contract_id)
                 .contract_source_metadata(())
                 .await?;

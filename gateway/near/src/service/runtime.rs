@@ -5,7 +5,7 @@ use blockchain_gateway_core::ManagedAccountId;
 
 use crate::{
     actor::{ManagedSigner, ReadActor, WriteActors},
-    NearClient,
+    GatewayContext,
 };
 
 pub(super) struct GatewayRuntime {
@@ -21,7 +21,7 @@ impl GatewayRuntime {
 }
 
 pub(super) fn spawn_runtime(
-    near: NearClient,
+    context: GatewayContext,
     signers: HashMap<ManagedAccountId, ManagedSigner>,
 ) -> (GatewayRuntime, Addr<ReadActor>, WriteActors) {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -30,8 +30,8 @@ pub(super) fn spawn_runtime(
         let system = actix::System::current();
         let arbiter = system.arbiter().clone();
 
-        let write = WriteActors::spawn(&arbiter, &near, signers);
-        let read = ReadActor::spawn(&arbiter, near);
+        let write = WriteActors::spawn(&arbiter, &context, signers);
+        let read = ReadActor::spawn(&arbiter, context);
 
         ready_tx
             .send((system, read, write))

@@ -91,6 +91,9 @@ pub fn attach_gateway(
     register_read::<oracle::ResolvePrices>(&mut m)?;
     register_read::<oracle::GetPrice>(&mut m)?;
     register_read::<oracle::GetPrices>(&mut m)?;
+    register_write::<oracle::UpdatePyth>(&mut m)?;
+    register_write::<oracle::UpdateRedStone>(&mut m)?;
+    register_write::<oracle::UpdatePrices>(&mut m)?;
     register_read::<proxy_oracle::ListProxies>(&mut m)?;
     register_read::<proxy_oracle::GetProxy>(&mut m)?;
     register_read::<proxy_oracle::PriceFeedExists>(&mut m)?;
@@ -129,6 +132,8 @@ pub fn attach_gateway(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use anyhow::Result;
     use blockchain_gateway_core::{
         account,
@@ -137,6 +142,7 @@ mod tests {
         registry, storage, tx, universal_account, Base64Bytes, ContractMethodName, CryptoHash,
         NearGas, NearToken,
     };
+    use blockchain_gateway_near::GatewayContext;
     use blockchain_gateway_testing::{SandboxHarness, TestController};
     use jsonrpsee::server::{ServerBuilder, ServerHandle};
     use near_sdk::json_types::{I64, U64};
@@ -155,6 +161,11 @@ mod tests {
         transaction::{FunctionCallAction, Transaction},
         KeyParameters, NEAR_TESTNET_CHAIN_ID,
     };
+    use url::Url;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     use super::*;
     struct TestStack {
@@ -166,9 +177,17 @@ mod tests {
 
     impl TestStack {
         async fn start() -> Result<Self> {
+            Self::start_with_oracle_update_config(
+                "https://hermes-beta.pyth.network".parse().unwrap(),
+            )
+            .await
+        }
+
+        async fn start_with_oracle_update_config(pyth_hermes_url: Url) -> Result<Self> {
             let harness = SandboxHarness::start().await?;
-            let gateway =
-                GatewayService::spawn(harness.gateway_client(), harness.gateway_signers.clone());
+            let context =
+                GatewayContext::new(harness.network.clone(), pyth_hermes_url, Path::new(&"node"))?;
+            let gateway = GatewayService::spawn(context, harness.gateway_signers.clone());
 
             let server = ServerBuilder::default().build("127.0.0.1:0").await?;
             let local_addr = server.local_addr()?;
@@ -229,6 +248,43 @@ mod tests {
             .clone()
             .expect("transaction hash should be present for final execution");
         CryptoHash(hash.parse().expect("transaction hash should parse"))
+    }
+
+    fn redstone_bridge_payload_hex() -> &'static str {
+        "45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9030a710019c56f0bec0000000200000015d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e25aa0bcfa3a41df8212eddd51db3496b95c7c3dc4caa9ac9705602af0515db1b31c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec000000020000001dcaf484941c0d206f1898185b953c6a92d7fd188b347505c0f5beb2030e06e3e1b2f7dfb45929ac7676136af93fee7f14a614b40fa4dc2d1e625dbece02eaca21c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec00000002000000199bd54930138268baad2869e9ceb99b6bc67cd6b8a4cc98e05f0b1cd9b7f07066008208399a728fac3d1dc3ca407cb8199a0209377bceb0c48f2cc3d756078051b4254430000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006179a92ab8c019c56f0bec000000020000001f08af53ed34046f7f64cc02ffb7973252954d7c395e440693c896bffdbc2de1e31cf5675bf66583d3e3438f5002ae9c10870d4dc45de05c560b239aa3a2d50a41b425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec0000000200000011b96dc2763a692e3245ce4f1b0c16ea245c240204e99ebd323b340e58bfb14fb5f0465ce11b8dd52ff839547cc949d20e4e8ba0be43dd6417cade2a8ebfd8c9e1c425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec00000002000000114a02710892325b13afc74bbd350dd9ec80342b2d6c0c94df7b7a60dbf67a1b91b182fa4555e0e0db91e6258b279f00b7eeb8f5de9930e352d5321a6b8b64a031c00063137373039383531343539383223302e392e30237374656c6c61722d636f6e6e6563746f72000025000002ed57011e0000"
+    }
+
+    async fn start_mock_hermes_server(vaa_hex: &str) -> Result<MockServer> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v2/updates/price/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "binary": {
+                    "data": [vaa_hex],
+                }
+            })))
+            .mount(&server)
+            .await;
+        Ok(server)
+    }
+
+    async fn view_contract_json(
+        stack: &TestStack,
+        contract_id: near_account_id::AccountId,
+        method_name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        Ok(stack
+            .controller
+            .request::<contract::ViewFunction>(&ReadRequest {
+                params: contract::ViewFunctionParams {
+                    contract_id,
+                    method_name: ContractMethodName(method_name.to_owned()),
+                    args: ContractArgs::Json(args),
+                },
+            })
+            .await?
+            .value)
     }
 
     #[tokio::test]
@@ -1380,6 +1436,223 @@ mod tests {
             package_timestamp: now_ms,
             write_timestamp: now_ms,
         }
+    }
+
+    #[tokio::test]
+    async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
+        let hermes = start_mock_hermes_server("cafebabe").await?;
+        let stack = TestStack::start_with_oracle_update_config(hermes.uri().parse()?).await?;
+
+        let pyth_oracle_id = stack
+            .harness
+            .deploy_mock_oracle("pyth-oracle.near".parse()?)
+            .await?;
+        let redstone_oracle_id = stack
+            .harness
+            .deploy_redstone_adapter("redstone-oracle.near".parse()?)
+            .await?;
+
+        let pyth_result = stack
+            .controller
+            .request::<oracle::UpdatePyth>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: oracle::UpdatePythBody {
+                    oracle_id: pyth_oracle_id.clone(),
+                    vaa: Base64Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+                },
+            })
+            .await?;
+        assert_eq!(
+            pyth_result.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+        assert_eq!(pyth_result.outcome.operation.steps.len(), 1);
+
+        let last_pyth_update = view_contract_json(
+            &stack,
+            pyth_oracle_id.clone(),
+            "last_pyth_update_data",
+            serde_json::Value::Null,
+        )
+        .await?;
+        assert_eq!(
+            last_pyth_update,
+            serde_json::Value::String("deadbeef".to_owned())
+        );
+
+        let redstone_result = stack
+            .controller
+            .request::<oracle::UpdateRedStone>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: oracle::UpdateRedStoneBody {
+                    oracle_id: redstone_oracle_id.clone(),
+                    feed_id: "BTC".into(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            redstone_result.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+        assert_eq!(redstone_result.outcome.operation.steps.len(), 1);
+
+        let redstone_prices = view_contract_json(
+            &stack,
+            redstone_oracle_id,
+            "read_price_data",
+            serde_json::json!({ "feed_ids": ["BTC"] }),
+        )
+        .await?;
+        assert_ne!(
+            redstone_prices["BTC"]["price"],
+            serde_json::Value::String("0".to_owned())
+        );
+
+        stack.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Result<()> {
+        let hermes = start_mock_hermes_server("cafebabe").await?;
+        let stack = TestStack::start_with_oracle_update_config(hermes.uri().parse()?).await?;
+
+        let direct_oracle_id = stack
+            .harness
+            .deploy_mock_oracle("composed-pyth.near".parse()?)
+            .await?;
+        let redstone_oracle_id = stack
+            .harness
+            .deploy_redstone_adapter("composed-redstone.near".parse()?)
+            .await?;
+        let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
+
+        let proxy_direct_id = PriceIdentifier([0x11; 32]);
+        let proxy_redstone_id = PriceIdentifier([0x22; 32]);
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Create>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::CreateBody {
+                    oracle_id: proxy_oracle_id.clone(),
+                    id: 0,
+                    operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                        id: proxy_direct_id,
+                        proxy: Some(Proxy::median_low([OracleRequest::pyth(
+                            direct_oracle_id.clone(),
+                            test_utils::DEFAULT_BORROW_PRICE_ID,
+                        )
+                        .into()])),
+                    },
+                },
+            })
+            .await?;
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Execute>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::ExecuteBody {
+                    oracle_id: proxy_oracle_id.clone(),
+                    id: 0,
+                },
+            })
+            .await?;
+
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Create>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::CreateBody {
+                    oracle_id: proxy_oracle_id.clone(),
+                    id: 1,
+                    operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                        id: proxy_redstone_id,
+                        proxy: Some(Proxy::median_low([OracleRequest::redstone(
+                            redstone_oracle_id.clone(),
+                            "BTC",
+                        )
+                        .into()])),
+                    },
+                },
+            })
+            .await?;
+        let _ = stack
+            .controller
+            .request::<proxy_oracle_governance::Execute>(&WriteRequest {
+                signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: proxy_oracle_governance::ExecuteBody {
+                    oracle_id: proxy_oracle_id.clone(),
+                    id: 1,
+                },
+            })
+            .await?;
+
+        let update_result = stack
+            .controller
+            .request::<oracle::UpdatePrices>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+                body: oracle::UpdatePricesBody {
+                    oracle_id: proxy_oracle_id,
+                    price_ids: vec![proxy_direct_id, proxy_redstone_id],
+                },
+            })
+            .await?;
+        assert_eq!(
+            update_result.outcome.operation.status,
+            blockchain_gateway_core::OperationStatus::Succeeded
+        );
+        assert_eq!(update_result.outcome.operation.steps.len(), 2);
+
+        let pyth_update_count = view_contract_json(
+            &stack,
+            direct_oracle_id.clone(),
+            "pyth_update_count",
+            serde_json::Value::Null,
+        )
+        .await?;
+        assert_eq!(pyth_update_count, serde_json::Value::String("1".to_owned()));
+
+        let last_pyth_update = view_contract_json(
+            &stack,
+            direct_oracle_id,
+            "last_pyth_update_data",
+            serde_json::Value::Null,
+        )
+        .await?;
+        assert_eq!(
+            last_pyth_update,
+            serde_json::Value::String("cafebabe".to_owned())
+        );
+
+        let redstone_prices = view_contract_json(
+            &stack,
+            redstone_oracle_id,
+            "read_price_data",
+            serde_json::json!({ "feed_ids": ["BTC"] }),
+        )
+        .await?;
+        assert_ne!(
+            redstone_prices["BTC"]["price"],
+            serde_json::Value::String("0".to_owned())
+        );
+
+        stack.shutdown().await;
+        Ok(())
     }
 
     #[tokio::test]

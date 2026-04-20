@@ -14,7 +14,7 @@ use near_api::types::transaction::result::TransactionResult;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use crate::{GatewayError, GatewayResult, NearClient};
+use crate::{GatewayContext, GatewayError, GatewayResult};
 
 use super::ManagedSigner;
 
@@ -41,14 +41,14 @@ pub(crate) fn map_mailbox_error(
 pub trait DispatchRead: MethodSpec + Sized + Send + 'static {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        context: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
 }
 
 pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        context: GatewayContext,
         signer: Arc<near_api::Signer>,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
 
@@ -57,20 +57,20 @@ pub trait DispatchWrite: MethodSpec + Sized + Send + 'static {
 
 #[derive(Clone)]
 pub struct ReadActor {
-    client: NearClient,
+    context: GatewayContext,
     semaphore: Arc<Semaphore>,
 }
 
 impl ReadActor {
-    fn new(client: NearClient) -> Self {
+    fn new(context: GatewayContext) -> Self {
         Self {
-            client,
+            context,
             semaphore: Arc::new(Semaphore::new(READ_ACTOR_MAX_CONCURRENCY)),
         }
     }
 
-    pub(crate) fn spawn(arbiter: &ArbiterHandle, client: NearClient) -> Addr<Self> {
-        Self::start_in_arbiter(arbiter, move |_ctx| Self::new(client))
+    pub(crate) fn spawn(arbiter: &ArbiterHandle, context: GatewayContext) -> Addr<Self> {
+        Self::start_in_arbiter(arbiter, move |_ctx| Self::new(context))
     }
 }
 
@@ -81,7 +81,7 @@ where
     type Result = ResponseFuture<GatewayResult<Spec::Output>>;
 
     fn handle(&mut self, message: RpcMessage<Spec>, _ctx: &mut Self::Context) -> Self::Result {
-        let client = self.client.clone();
+        let context = self.context.clone();
         let semaphore = self.semaphore.clone();
 
         Box::pin(async move {
@@ -89,7 +89,7 @@ where
                 .acquire_owned()
                 .await
                 .map_err(|_error| GatewayError::ActorUnavailable(READ_ACTOR_NAME))?;
-            Spec::dispatch(message.0, client).await
+            Spec::dispatch(message.0, context).await
         })
     }
 }
@@ -109,7 +109,7 @@ pub struct WriteActors {
 impl WriteActors {
     pub(crate) fn spawn(
         arbiter: &ArbiterHandle,
-        client: &NearClient,
+        context: &GatewayContext,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
     ) -> Self {
         let senders = signers
@@ -117,7 +117,7 @@ impl WriteActors {
             .map(|(account_id, signer_entry)| {
                 let actor = AccountWriteActor::spawn(
                     arbiter,
-                    client.clone(),
+                    context.clone(),
                     signer_entry.signer,
                     signer_entry.key_count,
                 );
@@ -154,15 +154,15 @@ impl WriteActors {
 }
 
 pub(crate) struct AccountWriteActor {
-    client: NearClient,
+    context: GatewayContext,
     signer: Arc<near_api::Signer>,
     semaphore: Arc<Semaphore>,
 }
 
 impl AccountWriteActor {
-    fn new(client: NearClient, signer: Arc<near_api::Signer>, concurrency: usize) -> Self {
+    fn new(context: GatewayContext, signer: Arc<near_api::Signer>, concurrency: usize) -> Self {
         Self {
-            client,
+            context,
             signer,
             semaphore: Arc::new(Semaphore::new(concurrency)),
         }
@@ -170,11 +170,11 @@ impl AccountWriteActor {
 
     fn spawn(
         arbiter: &ArbiterHandle,
-        client: NearClient,
+        context: GatewayContext,
         signer: Arc<near_api::Signer>,
         concurrency: usize,
     ) -> Addr<Self> {
-        Self::start_in_arbiter(arbiter, move |_ctx| Self::new(client, signer, concurrency))
+        Self::start_in_arbiter(arbiter, move |_ctx| Self::new(context, signer, concurrency))
     }
 }
 
@@ -231,7 +231,7 @@ where
         RpcMessage(message): RpcMessage<Request>,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let client = self.client.clone();
+        let context = self.context.clone();
         let signer = self.signer.clone();
         let semaphore = self.semaphore.clone();
 
@@ -240,7 +240,7 @@ where
                 .acquire_owned()
                 .await
                 .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
-            Request::dispatch(message, client, signer).await
+            Request::dispatch(message, context, signer).await
         })
     }
 }

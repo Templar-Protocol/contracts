@@ -4,17 +4,16 @@ use futures::future::BoxFuture;
 use crate::{
     actor::DispatchRead,
     client::proxy_oracle::{GetProxyArgs, ListProxiesArgs, PriceFeedExistsArgs},
-    GatewayResult, NearClient,
+    GatewayContext, GatewayResult,
 };
 
 impl DispatchRead for proxy_oracle::ListProxies {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            client
-                .proxy_oracle(request.params.oracle_id)
+            ctx.proxy_oracle(request.params.oracle_id)
                 .list_proxies(ListProxiesArgs {
                     offset: request.params.offset,
                     count: request.params.count,
@@ -28,12 +27,11 @@ impl DispatchRead for proxy_oracle::ListProxies {
 impl DispatchRead for proxy_oracle::GetProxy {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            client
-                .proxy_oracle(params.oracle_id)
+            ctx.proxy_oracle(params.oracle_id)
                 .get_proxy(GetProxyArgs { id: params.id })
                 .await
                 .map(|proxy| proxy_oracle::GetProxyResult { proxy })
@@ -44,12 +42,11 @@ impl DispatchRead for proxy_oracle::GetProxy {
 impl DispatchRead for proxy_oracle::PriceFeedExists {
     fn dispatch(
         request: Self::Input,
-        client: NearClient,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            client
-                .proxy_oracle(params.oracle_id)
+            ctx.proxy_oracle(params.oracle_id)
                 .price_feed_exists(PriceFeedExistsArgs {
                     price_identifier: params.price_identifier,
                 })
