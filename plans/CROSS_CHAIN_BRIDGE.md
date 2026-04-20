@@ -55,6 +55,10 @@ If transport changes later, implement a new relayer adapter behind the same trai
 - Keep monitoring and fallback runbooks for relayer liveness.
 - Verified via live bridge API queries for `carrion256.near`: Stellar deposit routing is currently stable across repeated requests, returning the same deposit address `GDJ4JZXZELZD737NVFORH4PSSQDWFDZTKW3AIDKHYQG23ZXBPDGGQBJK` and memo `49425867` on consecutive calls.
 - For the current spike, the Stellar-side integration can treat that HOT locker address + memo pair as effectively static for `carrion256.near`, while preserving the option to re-query if HOT changes routing behavior later.
+- For contract-based HOT Stellar deposits targeting `carrion256.near`, reuse the first proven-good receiver bytes instead of recomputing during the spike:
+  - receiver hex: `52fd581de41f4bace88c936b89bf267a1161426a466adc518cd9e56f201651dd`
+  - receiver base58: `6axVRkdWZFh81dbLC4bBCqHqWhsD7r4u7Rv52D4vshbA`
+  - rationale: a later recomputation produced different bytes and HOT rejected `process_bridge_deposit` with `Cant sign by HOT Verify`
 
 ## Verified Mainnet Transaction Trail
 
