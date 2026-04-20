@@ -16,9 +16,10 @@ use templar_common::{
 
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
+    primitive::PublicKey,
     rpc::common::Pagination,
     rpc::common::WriteOperationResult,
-    MarketId,
+    MarketId, NearToken, RegistryId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -298,6 +299,19 @@ pub struct BorrowBody {
 }
 pub type BorrowResult = WriteOperationResult;
 write_method_spec!(Borrow, "market.borrow", BorrowBody, BorrowResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CreateBody {
+    pub registry_id: RegistryId,
+    pub name: String,
+    pub version_key: String,
+    pub configuration: MarketConfiguration,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_access_keys: Option<Vec<PublicKey>>,
+    pub deposit: NearToken,
+}
+pub type CreateResult = WriteOperationResult;
+write_method_spec!(Create, "market.create", CreateBody, CreateResult);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SupplyBody {

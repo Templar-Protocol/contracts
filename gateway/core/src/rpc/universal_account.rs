@@ -4,6 +4,7 @@ use templar_universal_account::{transaction::Transaction, ExecuteArgs, KeyId};
 
 use crate::{
     macros::{public_read_method_spec, write_method_spec},
+    primitive::PublicKey,
     rpc::common::WriteOperationResult,
     RegistryId, UniversalAccountId,
 };
@@ -44,22 +45,17 @@ pub type ExecuteResult = WriteOperationResult;
 write_method_spec!(Execute, "ua.execute", ExecuteBody, ExecuteResult);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CreateAccountBody {
+pub struct CreateBody {
     pub registry_id: RegistryId,
     pub account_name: String,
     pub version_key: String,
     pub key: KeyId,
     pub chain_id: crate::U128,
     pub execute: Option<Box<[Transaction]>>,
-    pub full_access_keys: Option<Vec<String>>,
+    pub full_access_keys: Option<Vec<PublicKey>>,
     pub deposit: crate::NearToken,
 }
 
-pub type CreateAccountResult = WriteOperationResult;
+pub type CreateResult = WriteOperationResult;
 
-write_method_spec!(
-    CreateAccount,
-    "ua.createAccount",
-    CreateAccountBody,
-    CreateAccountResult
-);
+write_method_spec!(Create, "ua.create", CreateBody, CreateResult);

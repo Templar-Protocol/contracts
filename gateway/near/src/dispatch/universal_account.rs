@@ -11,7 +11,7 @@ use crate::{
         ContractWriteOptions,
     },
     dispatch::registry::deploy_from_registry,
-    GatewayContext, GatewayError, GatewayResult,
+    GatewayContext, GatewayResult,
 };
 
 fn into_parameters_view(
@@ -86,7 +86,7 @@ impl DispatchWrite for universal_account::Execute {
     }
 }
 
-impl DispatchWrite for universal_account::CreateAccount {
+impl DispatchWrite for universal_account::Create {
     fn dispatch(
         request: Self::Input,
         ctx: GatewayContext,
@@ -94,16 +94,6 @@ impl DispatchWrite for universal_account::CreateAccount {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let body = request.body;
-            let full_access_keys = body
-                .full_access_keys
-                .map(|keys| {
-                    keys.into_iter()
-                        .map(|key| key.parse::<near_api::PublicKey>().map(Into::into))
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()
-                .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-
             deploy_from_registry(
                 ctx,
                 signer,
@@ -119,7 +109,7 @@ impl DispatchWrite for universal_account::CreateAccount {
                         execute: body.execute.map(|transactions| transactions.into_vec()),
                     })?
                     .into(),
-                    full_access_keys,
+                    full_access_keys: body.full_access_keys,
                     deposit: body.deposit,
                 },
             )

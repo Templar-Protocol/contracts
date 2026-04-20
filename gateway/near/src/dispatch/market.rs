@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use blockchain_gateway_core::market;
+use blockchain_gateway_core::{market, registry::DeployBody};
 use futures::future::BoxFuture;
 use near_api::types::transaction::result::TransactionResult;
 use templar_common::{
     asset::FungibleAsset,
-    market::{DepositMsg, LiquidateMsg, RepayAccountMsg},
+    market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
 };
 
 use crate::{
@@ -22,8 +22,14 @@ use crate::{
         storage::{StorageBalanceOfArgs, StorageDepositArgs},
         ContractWriteOptions,
     },
+    dispatch::registry::deploy_from_registry_tx_result,
     GatewayContext, GatewayResult,
 };
+
+#[derive(serde::Serialize)]
+struct MarketInitArgs {
+    configuration: MarketConfiguration,
+}
 
 impl DispatchRead for market::GetConfiguration {
     fn dispatch(
@@ -288,6 +294,75 @@ impl DispatchWrite for market::Borrow {
             ))
         })
     }
+    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
+        &request.signer_account_id
+    }
+}
+
+impl DispatchWrite for market::Create {
+    fn dispatch(
+        request: Self::Input,
+        ctx: GatewayContext,
+        signer: Arc<near_api::Signer>,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let body = request.body;
+            let market_account_id = body
+                .registry_id
+                .0
+                .sub_account(&body.name)
+                .map_err(|error| crate::GatewayError::NearQuery(error.to_string()))?;
+            let signer_account_id = request.signer_account_id.clone();
+            let configuration = body.configuration;
+            let mut results = vec![
+                deploy_from_registry_tx_result(
+                    &ctx,
+                    signer.clone(),
+                    request.signer_account_id.clone(),
+                    request.wait_until,
+                    DeployBody {
+                        registry_id: body.registry_id,
+                        name: body.name,
+                        version_key: body.version_key,
+                        init_args: serde_json::to_vec(&MarketInitArgs {
+                            configuration: configuration.clone(),
+                        })?
+                        .into(),
+                        full_access_keys: body.full_access_keys,
+                        deposit: body.deposit,
+                    },
+                )
+                .await?,
+            ];
+
+            for asset_id in [
+                configuration.borrow_asset.into_nep141(),
+                configuration.collateral_asset.into_nep141(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(tx_result) = ensure_storage_registration(
+                    &ctx,
+                    request.signer_account_id.clone(),
+                    signer.clone(),
+                    request.wait_until,
+                    asset_id,
+                    market_account_id.clone(),
+                )
+                .await?
+                {
+                    results.push(tx_result);
+                }
+            }
+
+            Ok(operation_outcome_from_transaction_results(
+                signer_account_id,
+                results,
+            ))
+        })
+    }
+
     fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
         &request.signer_account_id
     }
@@ -824,6 +899,10 @@ async fn ensure_storage_registration(
     contract_id: near_account_id::AccountId,
     account_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<TransactionResult>> {
+    let Some(bounds) = storage_balance_bounds_if_supported(ctx, contract_id.clone()).await? else {
+        return Ok(None);
+    };
+
     let balance = ctx
         .storage(contract_id.clone())
         .storage_balance_of(StorageBalanceOfArgs {
@@ -835,10 +914,6 @@ async fn ensure_storage_registration(
         return Ok(None);
     }
 
-    let bounds = ctx
-        .storage(contract_id.clone())
-        .storage_balance_bounds(())
-        .await?;
     let tx_result = ctx
         .storage(contract_id)
         .storage_deposit(
@@ -855,6 +930,21 @@ async fn ensure_storage_registration(
         )
         .await?;
     Ok(Some(tx_result))
+}
+
+async fn storage_balance_bounds_if_supported(
+    ctx: &GatewayContext,
+    contract_id: near_account_id::AccountId,
+) -> GatewayResult<Option<near_contract_standards::storage_management::StorageBalanceBounds>> {
+    match ctx.storage(contract_id).storage_balance_bounds(()).await {
+        Ok(bounds) => Ok(Some(bounds)),
+        Err(error) if is_method_not_found(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_method_not_found(error: &crate::GatewayError) -> bool {
+    matches!(error, crate::GatewayError::NearQuery(message) if message.contains("MethodNotFound"))
 }
 
 async fn transfer_call_asset<T: templar_common::asset::AssetClass>(
