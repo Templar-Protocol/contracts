@@ -29,23 +29,19 @@ macro_rules! contract_writes {
                 &self,
                 options: $crate::client::ContractWriteOptions,
                 args: $args_ty,
-            ) -> $crate::GatewayResult<::near_api::types::transaction::result::TransactionResult> {
-                let client = $crate::client::BoundContractClient::client(self);
-                client
-                    .tx(options.signer_account_id, options.signer.expect("signer should be present for immediate contract write"))
-                    .function_call(
-                        ::blockchain_gateway_core::tx::FunctionCallBody {
-                            receiver_id: $crate::client::BoundContractClient::contract_id(self).to_owned(),
-                            method_name: ::blockchain_gateway_core::ContractMethodName(
-                                contract_writes!(@method $fn_name $(, $method)?).to_owned(),
-                            ),
-                            args: ::blockchain_gateway_core::common::ContractArgs::Json(::serde_json::to_value(&args)?),
+            ) -> $crate::GatewayResult<$crate::operation::PlannedTransaction> {
+                Ok($crate::operation::PlannedTransaction {
+                    signer_account_id: options.signer_account_id,
+                    receiver_id: $crate::client::BoundContractClient::contract_id(self).to_owned(),
+                    actions: vec![::near_api::types::transaction::actions::Action::FunctionCall(Box::new(
+                        ::near_api::types::transaction::actions::FunctionCallAction {
+                            method_name: contract_writes!(@method $fn_name $(, $method)?).to_owned(),
+                            args: ::blockchain_gateway_core::common::ContractArgs::Json(::serde_json::to_value(&args)?).try_into_bytes()?,
                             gas: options.gas,
                             deposit: options.deposit,
                         },
-                        options.wait_until,
-                    )
-                    .await
+                    ))],
+                })
             }
         )+
     };

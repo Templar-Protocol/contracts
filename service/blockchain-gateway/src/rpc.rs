@@ -3,7 +3,7 @@ use blockchain_gateway_core::{
     proxy_oracle_owner, registry, storage, tx, universal_account,
 };
 use blockchain_gateway_near::{
-    actor::{DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     GatewayError, GatewayService,
 };
 use jsonrpsee::{
@@ -19,7 +19,7 @@ fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(GATEWAY_SERVER_ERROR_CODE, error.to_string(), None::<()>)
 }
 
-fn register_write<Spec: DispatchWrite>(
+fn register_write<Spec: PlanWrite>(
     module: &mut RpcModule<GatewayService>,
 ) -> Result<(), RegisterMethodError>
 where

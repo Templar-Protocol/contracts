@@ -17,7 +17,7 @@ use blockchain_gateway_core::{
 
 use crate::{
     operation::{OperationPlan, PlannedTransaction},
-    GatewayError, GatewayResult,
+    GatewayResult,
 };
 
 pub(crate) fn single_transaction_plan(
@@ -68,24 +68,4 @@ pub(crate) fn function_call_transaction(
             }),
         )],
     })
-}
-
-pub(crate) async fn execute_planned_transaction(
-    ctx: &crate::GatewayContext,
-    signer: std::sync::Arc<near_api::Signer>,
-    transaction: PlannedTransaction,
-    wait_until: blockchain_gateway_core::rpc::common::TxExecutionStatus,
-) -> GatewayResult<near_api::types::transaction::result::TransactionResult> {
-    near_api::Transaction::use_transaction(
-        near_api::types::transaction::PrepopulateTransaction {
-            signer_id: transaction.signer_account_id.0,
-            receiver_id: transaction.receiver_id,
-            actions: transaction.actions,
-        },
-        signer,
-    )
-    .wait_until(wait_until.into())
-    .send_to(ctx.network())
-    .await
-    .map_err(|error| GatewayError::NearTransaction(error.to_string()))
 }

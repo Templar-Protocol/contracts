@@ -1,9 +1,6 @@
 mod runtime;
 mod signer;
 
-pub(crate) use runtime::{
-    map_mailbox_error, operation_outcome_from_transaction_result,
-    operation_outcome_from_transaction_results, ReadActor, RpcMessage, WriteActors,
-};
-pub use runtime::{DispatchRead, DispatchWrite};
+pub(crate) use runtime::{map_mailbox_error, ReadActor, RpcMessage, WriteActors};
+pub use runtime::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, HasWaitUntil, PlanWrite};
 pub use signer::ManagedSigner;

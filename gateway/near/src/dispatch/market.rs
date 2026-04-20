@@ -1,18 +1,12 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::{market, registry::DeployBody};
 use futures::future::BoxFuture;
-use near_api::types::transaction::result::TransactionResult;
 use templar_common::{
     asset::FungibleAsset,
     market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
 };
 
 use crate::{
-    actor::{
-        operation_outcome_from_transaction_result, operation_outcome_from_transaction_results,
-        DispatchRead, DispatchWrite,
-    },
+    actor::{DispatchRead, PlanWrite},
     client::{
         market::{
             AccountIdArg, AccumulateStaticYieldArgs, AmountArg, ApplyInterestArgs, BatchLimitArg,
@@ -22,7 +16,8 @@ use crate::{
         storage::{StorageBalanceOfArgs, StorageDepositArgs},
         ContractWriteOptions,
     },
-    dispatch::registry::deploy_from_registry_tx_result,
+    dispatch::{registry::plan_deploy_from_registry, single_transaction_plan},
+    operation::{OperationPlan, PlannedTransaction},
     GatewayContext, GatewayResult,
 };
 
@@ -269,42 +264,32 @@ impl DispatchRead for market::GetStaticYield {
     }
 }
 
-impl DispatchWrite for market::Borrow {
-    fn dispatch(
+impl PlanWrite for market::Borrow {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .market(request.body.market_id)
-                .borrow(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    AmountArg {
-                        amount: request.body.amount,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(request.body.market_id)
+                    .borrow(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AmountArg {
+                            amount: request.body.amount,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for market::Create {
-    fn dispatch(
+impl PlanWrite for market::Create {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
             let market_account_id = body
@@ -312,28 +297,25 @@ impl DispatchWrite for market::Create {
                 .0
                 .sub_account(&body.name)
                 .map_err(|error| crate::GatewayError::NearQuery(error.to_string()))?;
-            let signer_account_id = request.signer_account_id.clone();
             let configuration = body.configuration;
-            let mut results = vec![
-                deploy_from_registry_tx_result(
-                    &ctx,
-                    signer.clone(),
-                    request.signer_account_id.clone(),
-                    request.wait_until,
-                    DeployBody {
-                        registry_id: body.registry_id,
-                        name: body.name,
-                        version_key: body.version_key,
-                        init_args: serde_json::to_vec(&MarketInitArgs {
-                            configuration: configuration.clone(),
-                        })?
-                        .into(),
-                        full_access_keys: body.full_access_keys,
-                        deposit: body.deposit,
-                    },
-                )
-                .await?,
-            ];
+            let mut steps = plan_deploy_from_registry(
+                &ctx,
+                request.signer_account_id.clone(),
+                request.wait_until,
+                DeployBody {
+                    registry_id: body.registry_id,
+                    name: body.name,
+                    version_key: body.version_key,
+                    init_args: serde_json::to_vec(&MarketInitArgs {
+                        configuration: configuration.clone(),
+                    })?
+                    .into(),
+                    full_access_keys: body.full_access_keys,
+                    deposit: body.deposit,
+                },
+            )
+            .await?
+            .steps;
 
             for asset_id in [
                 configuration.borrow_asset.into_nep141(),
@@ -345,78 +327,64 @@ impl DispatchWrite for market::Create {
                 if let Some(tx_result) = ensure_storage_registration(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     asset_id,
                     market_account_id.clone(),
                 )
                 .await?
                 {
-                    results.push(tx_result);
+                    steps.push(tx_result);
                 }
             }
 
-            Ok(operation_outcome_from_transaction_results(
-                signer_account_id,
-                results,
-            ))
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps,
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for market::Supply {
-    fn dispatch(
+impl PlanWrite for market::Supply {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            let signer_account_id = request.signer_account_id.clone();
             let configuration = ctx
                 .market(body.market_id.clone())
                 .get_configuration(())
                 .await?;
-            let mut tx_results = Vec::new();
+            let mut steps = Vec::new();
 
             if let Some(asset_id) = configuration.borrow_asset.clone().into_nep141() {
                 if let Some(tx_result) = ensure_storage_registration(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     asset_id,
                     body.market_id.0.clone(),
                 )
                 .await?
                 {
-                    tx_results.push(tx_result);
+                    steps.push(tx_result);
                 }
             }
 
             if let Some(tx_result) = ensure_storage_registration(
                 &ctx,
                 request.signer_account_id.clone(),
-                signer.clone(),
-                request.wait_until,
                 body.market_id.0.clone(),
-                signer_account_id.0.clone(),
+                request.signer_account_id.0.clone(),
             )
             .await?
             {
-                tx_results.push(tx_result);
+                steps.push(tx_result);
             }
 
-            tx_results.push(
+            steps.push(
                 transfer_call_asset(
                     &ctx,
                     request.signer_account_id,
-                    signer,
-                    request.wait_until,
                     configuration.borrow_asset,
                     body.market_id.0,
                     body.amount,
@@ -425,89 +393,65 @@ impl DispatchWrite for market::Supply {
                 .await?,
             );
 
-            Ok(operation_outcome_from_transaction_results(
-                signer_account_id,
-                tx_results,
-            ))
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps,
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for market::WithdrawCollateral {
-    fn dispatch(
+impl PlanWrite for market::WithdrawCollateral {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .market(request.body.market_id)
-                .withdraw_collateral(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    AmountArg {
-                        amount: request.body.amount,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(request.body.market_id)
+                    .withdraw_collateral(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AmountArg {
+                            amount: request.body.amount,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for market::ApplyInterest {
-    fn dispatch(
+impl PlanWrite for market::ApplyInterest {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let body = request.body;
-            let tx_result = ctx
-                .market(body.market_id)
-                .apply_interest(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    ApplyInterestArgs {
-                        account_id: body.account_id,
-                        snapshot_limit: body.snapshot_limit,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
-    }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
-}
-
-impl DispatchWrite for market::Repay {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            let signer_account_id = request.signer_account_id.clone();
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(body.market_id)
+                    .apply_interest(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        ApplyInterestArgs {
+                            account_id: body.account_id,
+                            snapshot_limit: body.snapshot_limit,
+                        },
+                    )
+                    .await?,
+            ))
+        })
+    }
+}
+
+impl PlanWrite for market::Repay {
+    fn plan(
+        request: Self::Input,
+        ctx: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            let body = request.body;
             let configuration = ctx
                 .market(body.market_id.clone())
                 .get_configuration(())
@@ -515,29 +459,25 @@ impl DispatchWrite for market::Repay {
             let deposit_msg = body.account_id.map_or(DepositMsg::Repay, |account_id| {
                 DepositMsg::RepayAccount(RepayAccountMsg { account_id })
             });
-            let mut tx_results = Vec::new();
+            let mut steps = Vec::new();
 
             if let Some(asset_id) = configuration.borrow_asset.clone().into_nep141() {
                 if let Some(tx_result) = ensure_storage_registration(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     asset_id,
                     body.market_id.0.clone(),
                 )
                 .await?
                 {
-                    tx_results.push(tx_result);
+                    steps.push(tx_result);
                 }
             }
 
-            tx_results.push(
+            steps.push(
                 transfer_call_asset(
                     &ctx,
                     request.signer_account_id,
-                    signer,
-                    request.wait_until,
                     configuration.borrow_asset,
                     body.market_id.0,
                     body.amount,
@@ -546,115 +486,82 @@ impl DispatchWrite for market::Repay {
                 .await?,
             );
 
-            Ok(operation_outcome_from_transaction_results(
-                signer_account_id,
-                tx_results,
-            ))
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps,
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for market::CreateSupplyWithdrawalRequest {
-    fn dispatch(
+impl PlanWrite for market::CreateSupplyWithdrawalRequest {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .market(request.body.market_id)
-                .create_supply_withdrawal_request(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    AmountArg {
-                        amount: request.body.amount,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(request.body.market_id)
+                    .create_supply_withdrawal_request(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AmountArg {
+                            amount: request.body.amount,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for market::CancelSupplyWithdrawalRequest {
-    fn dispatch(
+impl PlanWrite for market::CancelSupplyWithdrawalRequest {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .market(request.body.market_id)
-                .cancel_supply_withdrawal_request(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    (),
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(request.body.market_id)
+                    .cancel_supply_withdrawal_request(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        (),
+                    )
+                    .await?,
             ))
         })
     }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for market::ExecuteNextSupplyWithdrawalRequest {
-    fn dispatch(
+impl PlanWrite for market::ExecuteNextSupplyWithdrawalRequest {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .market(request.body.market_id)
-                .execute_next_supply_withdrawal_request(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    BatchLimitArg {
-                        batch_limit: request.body.batch_limit,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(request.body.market_id)
+                    .execute_next_supply_withdrawal_request(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        BatchLimitArg {
+                            batch_limit: request.body.batch_limit,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for market::WithdrawSupply {
-    fn dispatch(
+impl PlanWrite for market::WithdrawSupply {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            let signer_account_id = request.signer_account_id.clone();
             let configuration = ctx
                 .market(body.market_id.clone())
                 .get_configuration(())
@@ -663,32 +570,25 @@ impl DispatchWrite for market::WithdrawSupply {
                 .market(body.market_id.clone())
                 .get_supply_withdrawal_queue_status(())
                 .await?;
-            let mut tx_results = Vec::new();
+            let mut steps = Vec::new();
 
             if let Some(asset_id) = configuration.borrow_asset.clone().into_nep141() {
                 if let Some(tx_result) = ensure_storage_registration(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     asset_id,
-                    signer_account_id.0.clone(),
+                    request.signer_account_id.0.clone(),
                 )
                 .await?
                 {
-                    tx_results.push(tx_result);
+                    steps.push(tx_result);
                 }
             }
 
-            tx_results.push(
+            steps.push(
                 ctx.market(body.market_id.clone())
                     .create_supply_withdrawal_request(
-                        ContractWriteOptions::new(
-                            request.signer_account_id.clone(),
-                            signer.clone(),
-                        )
-                        .wait_until(request.wait_until)
-                        .tgas(300),
+                        ContractWriteOptions::new(request.signer_account_id.clone()).tgas(300),
                         AmountArg {
                             amount: body.amount,
                         },
@@ -697,12 +597,10 @@ impl DispatchWrite for market::WithdrawSupply {
             );
 
             if queue_status.length == 0 {
-                tx_results.push(
+                steps.push(
                     ctx.market(body.market_id)
                         .execute_next_supply_withdrawal_request(
-                            ContractWriteOptions::new(request.signer_account_id, signer)
-                                .wait_until(request.wait_until)
-                                .tgas(300),
+                            ContractWriteOptions::new(request.signer_account_id).tgas(300),
                             BatchLimitArg {
                                 batch_limit: body.batch_limit,
                             },
@@ -711,45 +609,37 @@ impl DispatchWrite for market::WithdrawSupply {
                 );
             }
 
-            Ok(operation_outcome_from_transaction_results(
-                signer_account_id,
-                tx_results,
-            ))
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps,
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for market::Liquidate {
-    fn dispatch(
+impl PlanWrite for market::Liquidate {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            let signer_account_id = request.signer_account_id.clone();
             let configuration = ctx
                 .market(body.market_id.clone())
                 .get_configuration(())
                 .await?;
-            let mut tx_results = Vec::new();
+            let mut steps = Vec::new();
 
             if let Some(asset_id) = configuration.borrow_asset.clone().into_nep141() {
                 if let Some(tx_result) = ensure_storage_registration(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     asset_id,
                     body.market_id.0.clone(),
                 )
                 .await?
                 {
-                    tx_results.push(tx_result);
+                    steps.push(tx_result);
                 }
             }
 
@@ -757,23 +647,19 @@ impl DispatchWrite for market::Liquidate {
                 if let Some(tx_result) = ensure_storage_registration(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     asset_id,
-                    signer_account_id.0.clone(),
+                    request.signer_account_id.0.clone(),
                 )
                 .await?
                 {
-                    tx_results.push(tx_result);
+                    steps.push(tx_result);
                 }
             }
 
-            tx_results.push(
+            steps.push(
                 transfer_call_asset(
                     &ctx,
                     request.signer_account_id,
-                    signer,
-                    request.wait_until,
                     configuration.borrow_asset,
                     body.market_id.0,
                     body.liquidation_amount,
@@ -785,120 +671,87 @@ impl DispatchWrite for market::Liquidate {
                 .await?,
             );
 
-            Ok(operation_outcome_from_transaction_results(
-                signer_account_id,
-                tx_results,
-            ))
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps,
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for market::HarvestYield {
-    fn dispatch(
+impl PlanWrite for market::HarvestYield {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = ctx
-                .market(body.market_id)
-                .harvest_yield(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    HarvestYieldArgs {
-                        account_id: body.account_id,
-                        mode: body.mode,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(body.market_id)
+                    .harvest_yield(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        HarvestYieldArgs {
+                            account_id: body.account_id,
+                            mode: body.mode,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for market::AccumulateStaticYield {
-    fn dispatch(
+impl PlanWrite for market::AccumulateStaticYield {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = ctx
-                .market(body.market_id)
-                .accumulate_static_yield(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    AccumulateStaticYieldArgs {
-                        account_id: body.account_id,
-                        snapshot_limit: body.snapshot_limit,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(body.market_id)
+                    .accumulate_static_yield(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AccumulateStaticYieldArgs {
+                            account_id: body.account_id,
+                            snapshot_limit: body.snapshot_limit,
+                        },
+                    )
+                    .await?,
             ))
         })
-    }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for market::WithdrawStaticYield {
-    fn dispatch(
+impl PlanWrite for market::WithdrawStaticYield {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .market(request.body.market_id)
-                .withdraw_static_yield(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300),
-                    AmountArg {
-                        amount: request.body.amount,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.market(request.body.market_id)
+                    .withdraw_static_yield(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AmountArg {
+                            amount: request.body.amount,
+                        },
+                    )
+                    .await?,
             ))
         })
-    }
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
 async fn ensure_storage_registration(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    signer: Arc<near_api::Signer>,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     contract_id: near_account_id::AccountId,
     account_id: near_account_id::AccountId,
-) -> GatewayResult<Option<TransactionResult>> {
+) -> GatewayResult<Option<PlannedTransaction>> {
     let Some(bounds) = storage_balance_bounds_if_supported(ctx, contract_id.clone()).await? else {
         return Ok(None);
     };
@@ -917,8 +770,7 @@ async fn ensure_storage_registration(
     let tx_result = ctx
         .storage(contract_id)
         .storage_deposit(
-            ContractWriteOptions::new(signer_account_id, signer)
-                .wait_until(wait_until)
+            ContractWriteOptions::new(signer_account_id)
                 .tgas(100)
                 .deposit(blockchain_gateway_core::NearToken::from_yoctonear(
                     bounds.min.as_yoctonear(),
@@ -950,17 +802,14 @@ fn is_method_not_found(error: &crate::GatewayError) -> bool {
 async fn transfer_call_asset<T: templar_common::asset::AssetClass>(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    signer: Arc<near_api::Signer>,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     asset: FungibleAsset<T>,
     receiver_id: near_account_id::AccountId,
     amount: impl Into<u128>,
     msg: &impl serde::Serialize,
-) -> GatewayResult<TransactionResult> {
+) -> GatewayResult<PlannedTransaction> {
     ctx.token(asset)
         .transfer_call(
-            ContractWriteOptions::new(signer_account_id, signer)
-                .wait_until(wait_until)
+            ContractWriteOptions::new(signer_account_id)
                 .tgas(300)
                 .one_yocto(),
             receiver_id,

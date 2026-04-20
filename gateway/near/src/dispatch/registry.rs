@@ -1,14 +1,14 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::registry;
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     client::{
         registry::{GetDeploymentArgs, RemoveVersionArgs},
         ContractWriteOptions,
     },
+    dispatch::single_transaction_plan,
+    operation::OperationPlan,
     GatewayContext, GatewayResult,
 };
 
@@ -56,55 +56,42 @@ impl DispatchRead for registry::ListVersions {
     }
 }
 
-impl DispatchWrite for registry::AddVersion {
-    fn dispatch(
+impl PlanWrite for registry::AddVersion {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let deposit = body.deposit;
             let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
-            let tx_result = ctx
-                .registry(body.registry_id.clone())
-                .add_version(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300)
-                        .deposit(deposit),
-                    registry_version,
-                    crate::client::registry::AddVersionArgs {
-                        version_key: body.version_key,
-                        mode: body.deploy_mode,
-                        code: body.code.0,
-                    },
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.registry(body.registry_id)
+                    .add_version(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .tgas(300)
+                            .deposit(body.deposit),
+                        registry_version,
+                        crate::client::registry::AddVersionArgs {
+                            version_key: body.version_key,
+                            mode: body.deploy_mode,
+                            code: body.code.0,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for registry::Deploy {
-    fn dispatch(
+impl PlanWrite for registry::Deploy {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            deploy_from_registry(
-                ctx,
-                signer,
+            plan_deploy_from_registry(
+                &ctx,
                 request.signer_account_id,
                 request.wait_until,
                 request.body,
@@ -112,105 +99,57 @@ impl DispatchWrite for registry::Deploy {
             .await
         })
     }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-pub(crate) async fn deploy_from_registry(
-    ctx: GatewayContext,
-    signer: Arc<near_api::Signer>,
+pub(crate) async fn plan_deploy_from_registry(
+    ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
     wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     body: registry::DeployBody,
-) -> GatewayResult<blockchain_gateway_core::common::WriteOperationResult> {
-    let signer_account_id_for_result = signer_account_id.clone();
+) -> GatewayResult<OperationPlan> {
     let deposit = body.deposit;
     let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
-    let tx_result = ctx
-        .registry(body.registry_id.clone())
-        .deploy(
-            ContractWriteOptions::new(signer_account_id, signer)
-                .wait_until(wait_until)
-                .tgas(300)
-                .deposit(deposit),
-            registry_version,
-            crate::client::registry::DeployArgs {
-                name: body.name,
-                version_key: body.version_key,
-                init_args: body.init_args,
-                full_access_keys: body
-                    .full_access_keys
-                    .map(|keys| keys.into_iter().map(Into::into).collect()),
-            },
-        )
-        .await?;
-
-    Ok(operation_outcome_from_transaction_result(
-        signer_account_id_for_result,
-        tx_result,
+    Ok(single_transaction_plan(
+        wait_until,
+        ctx.registry(body.registry_id)
+            .deploy(
+                ContractWriteOptions::new(signer_account_id)
+                    .tgas(300)
+                    .deposit(deposit),
+                registry_version,
+                crate::client::registry::DeployArgs {
+                    name: body.name,
+                    version_key: body.version_key,
+                    init_args: body.init_args,
+                    full_access_keys: body
+                        .full_access_keys
+                        .map(|keys| keys.into_iter().map(Into::into).collect()),
+                },
+            )
+            .await?,
     ))
 }
 
-pub(crate) async fn deploy_from_registry_tx_result(
-    ctx: &GatewayContext,
-    signer: Arc<near_api::Signer>,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
-    body: registry::DeployBody,
-) -> GatewayResult<near_api::types::transaction::result::TransactionResult> {
-    let deposit = body.deposit;
-    let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
-    ctx.registry(body.registry_id.clone())
-        .deploy(
-            ContractWriteOptions::new(signer_account_id, signer)
-                .wait_until(wait_until)
-                .tgas(300)
-                .deposit(deposit),
-            registry_version,
-            crate::client::registry::DeployArgs {
-                name: body.name,
-                version_key: body.version_key,
-                init_args: body.init_args,
-                full_access_keys: body
-                    .full_access_keys
-                    .map(|keys| keys.into_iter().map(Into::into).collect()),
-            },
-        )
-        .await
-}
-
-impl DispatchWrite for registry::RemoveVersion {
-    fn dispatch(
+impl PlanWrite for registry::RemoveVersion {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx_result = ctx
-                .registry(body.registry_id.clone())
-                .remove_version(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .tgas(300)
-                        .one_yocto(),
-                    RemoveVersionArgs {
-                        version_key: body.version_key,
-                    },
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.registry(body.registry_id)
+                    .remove_version(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .tgas(300)
+                            .one_yocto(),
+                        RemoveVersionArgs {
+                            version_key: body.version_key,
+                        },
+                    )
+                    .await?,
             ))
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }

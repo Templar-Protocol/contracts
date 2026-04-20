@@ -1,16 +1,15 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::{registry::DeployBody, universal_account};
 use futures::future::BoxFuture;
 use templar_universal_account::InitArgs;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     client::{
         universal_account::{UaExecuteArgs, UaGetKeyArgs},
         ContractWriteOptions,
     },
-    dispatch::registry::deploy_from_registry,
+    dispatch::{registry::plan_deploy_from_registry, single_transaction_plan},
+    operation::OperationPlan,
     GatewayContext, GatewayResult,
 };
 
@@ -54,49 +53,37 @@ impl DispatchRead for universal_account::GetKey {
     }
 }
 
-impl DispatchWrite for universal_account::Execute {
-    fn dispatch(
+impl PlanWrite for universal_account::Execute {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .universal_account(request.body.account_id)
-                .execute(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300)),
-                    UaExecuteArgs {
-                        args: request.body.args,
-                    },
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.universal_account(request.body.account_id)
+                    .execute(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .gas(blockchain_gateway_core::NearGas::from_tgas(300)),
+                        UaExecuteArgs {
+                            args: request.body.args,
+                        },
+                    )
+                    .await?,
             ))
         })
     }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
-impl DispatchWrite for universal_account::Create {
-    fn dispatch(
+impl PlanWrite for universal_account::Create {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            deploy_from_registry(
-                ctx,
-                signer,
+            plan_deploy_from_registry(
+                &ctx,
                 request.signer_account_id,
                 request.wait_until,
                 DeployBody {
@@ -115,9 +102,5 @@ impl DispatchWrite for universal_account::Create {
             )
             .await
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }

@@ -1,18 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use blockchain_gateway_core::oracle::{
     self, GetPriceResolutionDependenciesResult, OracleContractKind, RedStoneOraclePrices,
     RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
 };
-use blockchain_gateway_core::{
-    common::WriteOperationResult, OperationId, OperationRecord, OperationStatus, StepStatus,
-    TransactionStepRecord,
-};
 use futures::future::BoxFuture;
 use near_account_id::AccountId;
-use near_api::types::transaction::result::TransactionResult;
 use near_sdk::json_types::Base64VecU8;
 use near_sdk::NearToken;
 use templar_common::oracle::price_transformer;
@@ -27,7 +21,7 @@ use templar_common::{
 };
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     client::{
         lst_oracle::GetTransformerArgs,
         proxy_oracle::{GetProxyArgs, ListProxiesArgs},
@@ -154,84 +148,68 @@ impl DispatchRead for oracle::GetPrices {
     }
 }
 
-impl DispatchWrite for oracle::UpdatePyth {
-    fn dispatch(
+impl PlanWrite for oracle::UpdatePyth {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = submit_pyth_update(
-                &ctx,
-                request.signer_account_id,
-                signer,
-                request.wait_until,
-                request.body.oracle_id,
-                request.body.vaa.0,
-            )
-            .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
+            Ok(crate::operation::OperationPlan {
+                wait_until: request.wait_until,
+                steps: vec![
+                    submit_pyth_update(
+                        &ctx,
+                        request.signer_account_id,
+                        request.body.oracle_id,
+                        request.body.vaa.0,
+                    )
+                    .await?,
+                ],
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for oracle::UpdateRedStone {
-    fn dispatch(
+impl PlanWrite for oracle::UpdateRedStone {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let oracle_id = request.body.oracle_id;
             let feed_id = request.body.feed_id;
             let payload = ctx
                 .redstone_bridge()
                 .fetch_payload(vec![feed_id.clone()])
                 .await?;
-            let tx_result = submit_redstone_update(
-                &ctx,
-                request.signer_account_id,
-                signer,
-                request.wait_until,
-                oracle_id,
-                vec![feed_id],
-                payload,
-            )
-            .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
+            Ok(crate::operation::OperationPlan {
+                wait_until: request.wait_until,
+                steps: vec![
+                    submit_redstone_update(
+                        &ctx,
+                        request.signer_account_id,
+                        oracle_id,
+                        vec![feed_id],
+                        payload,
+                    )
+                    .await?,
+                ],
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for oracle::UpdatePrices {
-    fn dispatch(
+impl PlanWrite for oracle::UpdatePrices {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let requests =
                 resolve_update_requests(&ctx, request.body.oracle_id, request.body.price_ids)
                     .await?;
 
-            let mut results = Vec::new();
+            let mut steps = Vec::new();
             let mut pyth_updates = BTreeMap::<AccountId, BTreeSet<PriceIdentifier>>::new();
             let mut redstone_updates = BTreeMap::<AccountId, BTreeSet<redstone::FeedId>>::new();
 
@@ -255,16 +233,10 @@ impl DispatchWrite for oracle::UpdatePrices {
             for (oracle_id, price_ids) in pyth_updates {
                 let price_ids = price_ids.into_iter().collect::<Vec<_>>();
                 let vaa = ctx.pyth_http().fetch_latest_vaa(&price_ids).await?;
-                let tx_result = submit_pyth_update(
-                    &ctx,
-                    request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
-                    oracle_id,
-                    vaa,
-                )
-                .await?;
-                results.push(tx_result);
+                let tx_result =
+                    submit_pyth_update(&ctx, request.signer_account_id.clone(), oracle_id, vaa)
+                        .await?;
+                steps.push(tx_result);
             }
 
             for (oracle_id, feed_ids) in redstone_updates {
@@ -276,25 +248,19 @@ impl DispatchWrite for oracle::UpdatePrices {
                 let tx_result = submit_redstone_update(
                     &ctx,
                     request.signer_account_id.clone(),
-                    signer.clone(),
-                    request.wait_until,
                     oracle_id,
                     feed_ids,
                     payload,
                 )
                 .await?;
-                results.push(tx_result);
+                steps.push(tx_result);
             }
 
-            Ok(operation_outcome_from_transaction_results(
-                signer_account_id,
-                results,
-            ))
+            Ok(crate::operation::OperationPlan {
+                wait_until: request.wait_until,
+                steps,
+            })
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
@@ -655,15 +621,12 @@ async fn resolve_update_requests(
 async fn submit_pyth_update(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    signer: Arc<near_api::Signer>,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     oracle_id: AccountId,
     vaa: Vec<u8>,
-) -> GatewayResult<TransactionResult> {
+) -> GatewayResult<crate::operation::PlannedTransaction> {
     ctx.pyth_oracle(oracle_id)
         .update_price_feeds(
-            ContractWriteOptions::new(signer_account_id, signer)
-                .wait_until(wait_until)
+            ContractWriteOptions::new(signer_account_id)
                 .tgas(300)
                 .deposit(PYTH_UPDATE_DEPOSIT),
             UpdatePriceFeedsArgs {
@@ -676,69 +639,19 @@ async fn submit_pyth_update(
 async fn submit_redstone_update(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    signer: Arc<near_api::Signer>,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     oracle_id: AccountId,
     feed_ids: Vec<redstone::FeedId>,
     payload: Vec<u8>,
-) -> GatewayResult<TransactionResult> {
+) -> GatewayResult<crate::operation::PlannedTransaction> {
     ctx.redstone_oracle(oracle_id)
         .write_prices(
-            ContractWriteOptions::new(signer_account_id, signer)
-                .wait_until(wait_until)
-                .tgas(300),
+            ContractWriteOptions::new(signer_account_id).tgas(300),
             WritePricesArgs {
                 feed_ids,
                 payload: Base64VecU8(payload),
             },
         )
         .await
-}
-
-fn operation_outcome_from_transaction_results(
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    tx_results: Vec<TransactionResult>,
-) -> WriteOperationResult {
-    let mut status = OperationStatus::Succeeded;
-    let mut operation_id = None;
-    let mut steps = Vec::with_capacity(tx_results.len());
-
-    for (index, tx_result) in tx_results.into_iter().enumerate() {
-        let step_status = if let Some(full) = tx_result.into_full() {
-            let outcome = full.outcome();
-            let tx_hash: blockchain_gateway_core::CryptoHash = outcome.transaction_hash.into();
-            if operation_id.is_none() {
-                operation_id = Some(tx_hash.0.to_string());
-            }
-            if full.is_success() {
-                StepStatus::Succeeded { tx_hash }
-            } else {
-                status = OperationStatus::Failed;
-                StepStatus::Failed {
-                    tx_hash: Some(tx_hash),
-                }
-            }
-        } else {
-            if status != OperationStatus::Failed {
-                status = OperationStatus::InProgress;
-            }
-            StepStatus::Submitted { tx_hash: None }
-        };
-
-        steps.push(TransactionStepRecord {
-            index: index as u32,
-            status: step_status,
-        });
-    }
-
-    WriteOperationResult {
-        operation: OperationRecord {
-            id: OperationId(operation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())),
-            signer_account_id,
-            status,
-            steps,
-        },
-    }
 }
 
 fn system_time() -> Nanoseconds {

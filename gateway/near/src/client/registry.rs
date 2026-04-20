@@ -2,10 +2,9 @@ use std::io::ErrorKind;
 
 use blockchain_gateway_core::{
     common::{ContractArgs, Pagination},
-    tx::FunctionCallBody,
     Base64Bytes, ContractMethodName, RegistryVersion,
 };
-use near_api::types::transaction::result::TransactionResult;
+use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use templar_common::registry::DeployMode;
 
 use crate::{
@@ -13,6 +12,7 @@ use crate::{
         macros::{contract_views, contract_writes},
         NearClient,
     },
+    operation::PlannedTransaction,
     GatewayResult,
 };
 
@@ -71,7 +71,7 @@ impl RegistryClient<'_> {
         options: ContractWriteOptions,
         registry_version: RegistryVersion,
         args: AddVersionArgs,
-    ) -> GatewayResult<TransactionResult> {
+    ) -> GatewayResult<PlannedTransaction> {
         if args.mode == DeployMode::GlobalHash && !registry_version.supports_global_contracts() {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
@@ -81,24 +81,16 @@ impl RegistryClient<'_> {
         }
         let encoded_args =
             registry_version.encode_add_version_args(&args.version_key, args.mode, &args.code)?;
-        self.client()
-            .tx(
-                options.signer_account_id,
-                options
-                    .signer
-                    .expect("signer should be present for immediate registry write"),
-            )
-            .function_call(
-                FunctionCallBody {
-                    receiver_id: self.contract_id().to_owned(),
-                    method_name: ContractMethodName("add_version".to_string()),
-                    args: ContractArgs::Raw(encoded_args.into()),
-                    gas: options.gas,
-                    deposit: options.deposit,
-                },
-                options.wait_until,
-            )
-            .await
+        Ok(PlannedTransaction {
+            signer_account_id: options.signer_account_id,
+            receiver_id: self.contract_id().to_owned(),
+            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: ContractMethodName("add_version".to_string()).0,
+                args: ContractArgs::Raw(encoded_args.into()).try_into_bytes()?,
+                gas: options.gas,
+                deposit: options.deposit,
+            }))],
+        })
     }
 
     pub async fn deploy(
@@ -106,26 +98,18 @@ impl RegistryClient<'_> {
         options: ContractWriteOptions,
         registry_version: RegistryVersion,
         args: DeployArgs,
-    ) -> GatewayResult<TransactionResult> {
+    ) -> GatewayResult<PlannedTransaction> {
         let method_name = registry_version.deploy_method_name();
-        self.client()
-            .tx(
-                options.signer_account_id,
-                options
-                    .signer
-                    .expect("signer should be present for immediate registry write"),
-            )
-            .function_call(
-                FunctionCallBody {
-                    receiver_id: self.contract_id().to_owned(),
-                    method_name: ContractMethodName(method_name.to_string()),
-                    args: ContractArgs::Json(serde_json::to_value(&args)?),
-                    gas: options.gas,
-                    deposit: options.deposit,
-                },
-                options.wait_until,
-            )
-            .await
+        Ok(PlannedTransaction {
+            signer_account_id: options.signer_account_id,
+            receiver_id: self.contract_id().to_owned(),
+            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: ContractMethodName(method_name.to_string()).0,
+                args: ContractArgs::Json(serde_json::to_value(&args)?).try_into_bytes()?,
+                gas: options.gas,
+                deposit: options.deposit,
+            }))],
+        })
     }
 
     contract_writes! {

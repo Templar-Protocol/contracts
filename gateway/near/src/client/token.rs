@@ -38,7 +38,7 @@ impl<'a> TokenClient<'a> {
         receiver_id: near_account_id::AccountId,
         amount: impl Into<u128>,
         msg: String,
-    ) -> GatewayResult<near_api::types::transaction::result::TransactionResult> {
+    ) -> GatewayResult<crate::operation::PlannedTransaction> {
         let amount = U128(amount.into());
 
         match self {

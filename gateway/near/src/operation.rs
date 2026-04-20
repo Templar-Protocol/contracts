@@ -20,6 +20,7 @@ pub struct OperationPlan {
 #[derive(Debug, Clone)]
 pub struct StoredOperation {
     pub request_fingerprint_hash: [u8; 32],
+    #[allow(dead_code)]
     pub request_payload: Vec<u8>,
     pub plan: OperationPlan,
     pub operation: OperationRecord,

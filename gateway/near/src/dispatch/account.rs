@@ -1,12 +1,9 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::account;
 use futures::future::BoxFuture;
 use near_api::types::transaction::actions::{Action, DeleteAccountAction};
-use near_api::Account;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     operation::{OperationPlan, PlannedTransaction},
     GatewayContext, GatewayResult,
 };
@@ -53,47 +50,7 @@ impl DispatchRead for account::Get {
     }
 }
 
-impl DispatchWrite for account::Delete {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = Account(request.signer_account_id.0.clone())
-                .delete_account_with_beneficiary(request.body.beneficiary_id)
-                .with_signer(signer)
-                .wait_until(request.wait_until.into())
-                .send_to(ctx.network())
-                .await
-                .map_err(|error| crate::GatewayError::NearTransaction(error.to_string()))?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
-
-    fn uses_operation_planning() -> bool {
-        true
-    }
-
-    fn idempotency_key(request: &Self::Input) -> Option<&blockchain_gateway_core::IdempotencyKey> {
-        request.idempotency_key.as_ref()
-    }
-
-    fn wait_until(
-        request: &Self::Input,
-    ) -> blockchain_gateway_core::rpc::common::TxExecutionStatus {
-        request.wait_until
-    }
-
+impl PlanWrite for account::Delete {
     fn plan(
         request: Self::Input,
         _context: GatewayContext,

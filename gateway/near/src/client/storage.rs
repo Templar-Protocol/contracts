@@ -48,6 +48,5 @@ impl StorageClient<'_> {
 
     contract_writes! {
         pub(crate) fn storage_deposit(StorageDepositArgs);
-        pub(crate) fn storage_unregister(StorageUnregisterArgs);
     }
 }

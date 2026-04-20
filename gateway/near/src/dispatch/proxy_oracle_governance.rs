@@ -1,14 +1,14 @@
-use std::sync::Arc;
-
-use blockchain_gateway_core::{proxy_oracle_governance, ManagedAccountId};
+use blockchain_gateway_core::proxy_oracle_governance;
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     client::{
         proxy_oracle::{GovActionArgs, GovCreateArgs, GovGetArgs, GovListArgs},
         ContractWriteOptions,
     },
+    dispatch::single_transaction_plan,
+    operation::OperationPlan,
     GatewayContext, GatewayResult,
 };
 
@@ -85,97 +85,71 @@ impl DispatchRead for proxy_oracle_governance::Get {
     }
 }
 
-impl DispatchWrite for proxy_oracle_governance::Create {
-    fn dispatch(
+impl PlanWrite for proxy_oracle_governance::Create {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx = ctx
-                .proxy_oracle(body.oracle_id)
-                .gov_create(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .one_yocto()
-                        .tgas(300),
-                    GovCreateArgs {
-                        id: body.id,
-                        operation: body.operation,
-                    },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.proxy_oracle(body.oracle_id)
+                    .gov_create(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .one_yocto()
+                            .tgas(300),
+                        GovCreateArgs {
+                            id: body.id,
+                            operation: body.operation,
+                        },
+                    )
+                    .await?,
             ))
         })
-    }
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for proxy_oracle_governance::Cancel {
-    fn dispatch(
+impl PlanWrite for proxy_oracle_governance::Cancel {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx = ctx
-                .proxy_oracle(body.oracle_id)
-                .gov_cancel(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .one_yocto()
-                        .tgas(300),
-                    GovActionArgs { id: body.id },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.proxy_oracle(body.oracle_id)
+                    .gov_cancel(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .one_yocto()
+                            .tgas(300),
+                        GovActionArgs { id: body.id },
+                    )
+                    .await?,
             ))
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
     }
 }
 
-impl DispatchWrite for proxy_oracle_governance::Execute {
-    fn dispatch(
+impl PlanWrite for proxy_oracle_governance::Execute {
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
             let body = request.body;
-            let tx = ctx
-                .proxy_oracle(body.oracle_id)
-                .gov_execute(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .one_yocto()
-                        .tgas(300),
-                    GovActionArgs { id: body.id },
-                )
-                .await?;
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx,
+            Ok(single_transaction_plan(
+                request.wait_until,
+                ctx.proxy_oracle(body.oracle_id)
+                    .gov_execute(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .one_yocto()
+                            .tgas(300),
+                        GovActionArgs { id: body.id },
+                    )
+                    .await?,
             ))
         })
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
     }
 }

@@ -12,8 +12,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     actor::{
-        map_mailbox_error, DispatchRead, DispatchWrite, ManagedSigner, ReadActor, RpcMessage,
-        WriteActors,
+        map_mailbox_error, DispatchRead, HasIdempotencyKey, HasSignerAccountId, ManagedSigner,
+        PlanWrite, ReadActor, RpcMessage, WriteActors,
     },
     operation::StoredOperation,
     store::{MemoryOperationStore, SharedOperationStore},
@@ -88,14 +88,10 @@ impl GatewayService {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: DispatchWrite,
-        Request::Input: Clone + Serialize,
+        Request: PlanWrite,
+        Request::Input: Clone + Serialize + HasIdempotencyKey,
     {
-        if Request::uses_operation_planning() {
-            return self.request_planned_write::<Request>(params).await;
-        }
-
-        self.inner.write.request::<Request>(params).await
+        self.request_planned_write::<Request>(params).await
     }
 
     async fn request_planned_write<Request>(
@@ -103,12 +99,12 @@ impl GatewayService {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: DispatchWrite,
+        Request: PlanWrite,
         Request::Input: Clone + Serialize,
     {
         let request_payload = serde_json::to_vec(&params)?;
         let fingerprint = request_fingerprint(Request::RPC_METHOD, &params)?;
-        if let Some(idempotency_key) = Request::idempotency_key(&params) {
+        if let Some(idempotency_key) = params.idempotency_key() {
             if let Some(existing) = self
                 .inner
                 .store
@@ -127,8 +123,8 @@ impl GatewayService {
             .inner
             .store
             .create_operation(
-                Request::signer_account_id(&params).clone(),
-                Request::idempotency_key(&params).cloned(),
+                params.signer_account_id().to_owned(),
+                params.idempotency_key().cloned(),
                 fingerprint,
                 request_payload,
                 plan,

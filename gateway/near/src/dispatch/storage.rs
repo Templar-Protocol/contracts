@@ -1,11 +1,11 @@
 use blockchain_gateway_core::{
     common::{StorageBalance, StorageBalanceBounds},
-    storage, ManagedAccountId,
+    storage,
 };
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     client::storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
     dispatch::{function_call_transaction_json, single_transaction_plan},
     GatewayContext, GatewayResult,
@@ -51,15 +51,7 @@ impl DispatchRead for storage::GetBalanceOf {
     }
 }
 
-impl DispatchWrite for storage::Deposit {
-    fn uses_operation_planning() -> bool {
-        true
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
-    }
-
+impl PlanWrite for storage::Deposit {
     fn plan(
         request: Self::Input,
         _ctx: GatewayContext,
@@ -83,15 +75,7 @@ impl DispatchWrite for storage::Deposit {
     }
 }
 
-impl DispatchWrite for storage::Unregister {
-    fn uses_operation_planning() -> bool {
-        true
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
-    }
-
+impl PlanWrite for storage::Unregister {
     fn plan(
         request: Self::Input,
         _ctx: GatewayContext,
@@ -114,11 +98,7 @@ impl DispatchWrite for storage::Unregister {
     }
 }
 
-impl DispatchWrite for storage::EnsureDeposit {
-    fn uses_operation_planning() -> bool {
-        true
-    }
-
+impl PlanWrite for storage::EnsureDeposit {
     fn plan(
         request: Self::Input,
         ctx: GatewayContext,
@@ -164,10 +144,6 @@ impl DispatchWrite for storage::EnsureDeposit {
             ))
         })
     }
-
-    fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
-        &request.signer_account_id
-    }
 }
 
 struct DepositPlan {
@@ -209,24 +185,6 @@ fn required_deposit(
         }
         (storage::EnsureDepositMode::MinimumAvailable(amount), Some(balance)) => {
             DepositPlan::new(amount.saturating_sub(balance.available), false)
-        }
-    }
-}
-
-fn satisfies_mode(
-    mode: &storage::EnsureDepositMode,
-    balance: Option<&near_contract_standards::storage_management::StorageBalance>,
-) -> bool {
-    let Some(balance) = balance else {
-        return false;
-    };
-    match mode {
-        storage::EnsureDepositMode::Registered => true,
-        storage::EnsureDepositMode::MinimumTotal(amount) => {
-            balance.total.as_yoctonear() >= amount.as_yoctonear()
-        }
-        storage::EnsureDepositMode::MinimumAvailable(amount) => {
-            balance.available.as_yoctonear() >= amount.as_yoctonear()
         }
     }
 }

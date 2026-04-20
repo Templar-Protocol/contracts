@@ -3,7 +3,7 @@ use futures::future::BoxFuture;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 
 use crate::{
-    actor::{DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     client::ft::GetBalanceOfArgs,
     operation::{OperationPlan, PlannedTransaction},
     GatewayContext, GatewayResult,
@@ -27,19 +27,7 @@ impl DispatchRead for ft::GetBalanceOf {
     }
 }
 
-impl DispatchWrite for ft::Transfer {
-    fn uses_operation_planning() -> bool {
-        true
-    }
-
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
-
-    fn idempotency_key(request: &Self::Input) -> Option<&blockchain_gateway_core::IdempotencyKey> {
-        request.idempotency_key.as_ref()
-    }
-
+impl PlanWrite for ft::Transfer {
     fn plan(
         request: Self::Input,
         _context: GatewayContext,

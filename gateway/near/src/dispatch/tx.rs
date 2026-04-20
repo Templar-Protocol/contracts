@@ -3,7 +3,7 @@ use futures::future::BoxFuture;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 
 use crate::{
-    actor::{DispatchRead, DispatchWrite},
+    actor::{DispatchRead, PlanWrite},
     operation::{OperationPlan, PlannedTransaction},
     GatewayContext, GatewayResult,
 };
@@ -45,19 +45,7 @@ impl DispatchRead for tx::Get {
     }
 }
 
-impl DispatchWrite for tx::FunctionCall {
-    fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
-        &request.signer_account_id
-    }
-
-    fn uses_operation_planning() -> bool {
-        true
-    }
-
-    fn idempotency_key(request: &Self::Input) -> Option<&blockchain_gateway_core::IdempotencyKey> {
-        request.idempotency_key.as_ref()
-    }
-
+impl PlanWrite for tx::FunctionCall {
     fn plan(
         request: Self::Input,
         _context: GatewayContext,
