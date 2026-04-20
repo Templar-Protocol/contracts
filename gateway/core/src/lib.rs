@@ -9,8 +9,7 @@ pub mod version;
 
 pub use error::{CoreError, CoreResult};
 pub use operation::{
-    OperationId, OperationOutcome, OperationRecord, OperationStatus, StepStatus,
-    TransactionStepRecord,
+    OperationId, OperationRecord, OperationStatus, StepStatus, TransactionStepRecord,
 };
 pub use primitive::{
     Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, MarketId,

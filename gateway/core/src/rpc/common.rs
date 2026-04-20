@@ -2,7 +2,7 @@ use near_openapi_types::TxExecutionStatus as NearTxExecutionStatus;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{IdempotencyKey, ManagedAccountId, OperationOutcome};
+use crate::{IdempotencyKey, ManagedAccountId, NearToken, OperationRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -97,17 +97,17 @@ pub struct WriteRequest<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteOperationResult {
-    pub outcome: OperationOutcome,
+    pub operation: OperationRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StorageBalanceBounds {
-    pub min: crate::NearToken,
-    pub max: Option<crate::NearToken>,
+    pub min: NearToken,
+    pub max: Option<NearToken>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StorageBalance {
-    pub total: crate::NearToken,
-    pub available: crate::NearToken,
+    pub total: NearToken,
+    pub available: NearToken,
 }

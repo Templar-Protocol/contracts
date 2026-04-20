@@ -108,7 +108,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     assert!(deployment.deployment.is_some());
     assert!(!version.version_string.is_empty());
     assert_eq!(
-        deploy.outcome.operation.status,
+        deploy.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
 

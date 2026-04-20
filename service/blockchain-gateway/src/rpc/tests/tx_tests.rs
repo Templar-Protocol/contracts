@@ -43,6 +43,56 @@ async fn tx_function_call_and_view_function_endpoints_work_against_sandbox() -> 
 }
 
 #[tokio::test]
+async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> {
+    let stack = TestStack::start().await?;
+
+    let first = stack
+        .controller
+        .request::<tx::FunctionCall>(&WriteRequest {
+            signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+            idempotency_key: Some(blockchain_gateway_core::IdempotencyKey(
+                "set-redemption-rate".to_owned(),
+            )),
+            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+            body: tx::FunctionCallBody {
+                receiver_id: stack.harness.ft_contract_id.clone(),
+                method_name: ContractMethodName("set_redemption_rate".to_owned()),
+                args: ContractArgs::Json(serde_json::json!({
+                    "redemption_rate": NearToken::from_near(3).as_yoctonear().to_string(),
+                })),
+                gas: NearGas::from_tgas(100),
+                deposit: NearToken::from_yoctonear(0),
+            },
+        })
+        .await?;
+    let second = stack
+        .controller
+        .request::<tx::FunctionCall>(&WriteRequest {
+            signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+            idempotency_key: Some(blockchain_gateway_core::IdempotencyKey(
+                "set-redemption-rate".to_owned(),
+            )),
+            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
+            body: tx::FunctionCallBody {
+                receiver_id: stack.harness.ft_contract_id.clone(),
+                method_name: ContractMethodName("set_redemption_rate".to_owned()),
+                args: ContractArgs::Json(serde_json::json!({
+                    "redemption_rate": NearToken::from_near(3).as_yoctonear().to_string(),
+                })),
+                gas: NearGas::from_tgas(100),
+                deposit: NearToken::from_yoctonear(0),
+            },
+        })
+        .await?;
+
+    assert_eq!(first.operation.id, second.operation.id);
+    assert_eq!(first.operation.steps, second.operation.steps);
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
 

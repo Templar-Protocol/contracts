@@ -16,6 +16,8 @@ pub enum GatewayError {
     NearTransaction(String),
     #[error("external service failed: {0}")]
     ExternalService(String),
+    #[error("idempotency key conflict")]
+    IdempotencyConflict,
     #[error("actor unavailable: {0}")]
     ActorUnavailable(&'static str),
     #[error("actor error ({actor}): {source}")]

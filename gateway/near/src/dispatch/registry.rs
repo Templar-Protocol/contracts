@@ -153,6 +153,34 @@ pub(crate) async fn deploy_from_registry(
     ))
 }
 
+pub(crate) async fn deploy_from_registry_tx_result(
+    ctx: &GatewayContext,
+    signer: Arc<near_api::Signer>,
+    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
+    body: registry::DeployBody,
+) -> GatewayResult<near_api::types::transaction::result::TransactionResult> {
+    let deposit = body.deposit;
+    let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
+    ctx.registry(body.registry_id.clone())
+        .deploy(
+            ContractWriteOptions::new(signer_account_id, signer)
+                .wait_until(wait_until)
+                .tgas(300)
+                .deposit(deposit),
+            registry_version,
+            crate::client::registry::DeployArgs {
+                name: body.name,
+                version_key: body.version_key,
+                init_args: body.init_args,
+                full_access_keys: body
+                    .full_access_keys
+                    .map(|keys| keys.into_iter().map(Into::into).collect()),
+            },
+        )
+        .await
+}
+
 impl DispatchWrite for registry::RemoveVersion {
     fn dispatch(
         request: Self::Input,

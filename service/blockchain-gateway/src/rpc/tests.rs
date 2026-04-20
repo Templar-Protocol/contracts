@@ -118,11 +118,21 @@ async fn register_gateway_signer_for_ft(
 }
 
 fn tx_hash(result: &blockchain_gateway_core::common::WriteOperationResult) -> CryptoHash {
-    let hash = result.outcome.operation.steps[0]
-        .tx_hash
-        .clone()
-        .expect("transaction hash should be present for final execution");
-    CryptoHash(hash.parse().expect("transaction hash should parse"))
+    let hash = match &result.operation.steps[0].status {
+        blockchain_gateway_core::StepStatus::Succeeded { tx_hash }
+        | blockchain_gateway_core::StepStatus::Failed {
+            tx_hash: Some(tx_hash),
+        }
+        | blockchain_gateway_core::StepStatus::Submitted {
+            tx_hash: Some(tx_hash),
+        } => *tx_hash,
+        blockchain_gateway_core::StepStatus::NotStarted
+        | blockchain_gateway_core::StepStatus::Submitted { tx_hash: None }
+        | blockchain_gateway_core::StepStatus::Failed { tx_hash: None } => {
+            panic!("transaction hash should be present for final execution")
+        }
+    };
+    hash
 }
 
 async fn start_mock_hermes_server(vaa_hex: &str) -> Result<MockServer> {

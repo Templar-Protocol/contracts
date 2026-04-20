@@ -183,7 +183,7 @@ async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result
         })
         .await?;
 
-    assert!(matches!(first, storage::EnsureDepositResult::Operation(_)));
+    assert_eq!(first.operation.steps.len(), 1);
 
     let second = stack
         .controller
@@ -199,7 +199,7 @@ async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result
         })
         .await?;
 
-    assert!(matches!(second, storage::EnsureDepositResult::NoOp));
+    assert_eq!(second.operation.steps.len(), 0);
 
     stack.shutdown().await;
     Ok(())

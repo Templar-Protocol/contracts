@@ -46,7 +46,7 @@ trait BoundContractClient {
 #[derive(Clone)]
 pub struct ContractWriteOptions {
     signer_account_id: ManagedAccountId,
-    signer: Arc<near_api::Signer>,
+    signer: Option<Arc<near_api::Signer>>,
     wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     gas: NearGas,
     deposit: NearToken,
@@ -56,11 +56,17 @@ impl ContractWriteOptions {
     pub fn new(signer_account_id: ManagedAccountId, signer: Arc<near_api::Signer>) -> Self {
         Self {
             signer_account_id,
-            signer,
+            signer: Some(signer),
             wait_until: blockchain_gateway_core::common::TxExecutionStatus::default(),
             gas: NearGas::from_tgas(30),
             deposit: NearToken::from_yoctonear(0),
         }
+    }
+
+    #[must_use]
+    pub fn with_signer(mut self, signer: Arc<near_api::Signer>) -> Self {
+        self.signer = Some(signer);
+        self
     }
 
     #[must_use]

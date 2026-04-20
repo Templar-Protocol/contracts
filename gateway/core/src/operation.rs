@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ManagedAccountId;
+use crate::{CryptoHash, ManagedAccountId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
@@ -15,19 +15,18 @@ pub enum OperationStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum StepStatus {
     NotStarted,
-    Submitted,
-    Succeeded,
-    Failed,
+    Submitted { tx_hash: Option<CryptoHash> },
+    Succeeded { tx_hash: CryptoHash },
+    Failed { tx_hash: Option<CryptoHash> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransactionStepRecord {
     pub index: u32,
     pub status: StepStatus,
-    pub tx_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -36,9 +35,4 @@ pub struct OperationRecord {
     pub signer_account_id: ManagedAccountId,
     pub status: OperationStatus,
     pub steps: Vec<TransactionStepRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct OperationOutcome {
-    pub operation: OperationRecord,
 }

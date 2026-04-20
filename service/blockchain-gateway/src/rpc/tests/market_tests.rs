@@ -197,10 +197,10 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        supply.outcome.operation.status,
+        supply.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
-    assert_eq!(supply.outcome.operation.steps.len(), 1);
+    assert_eq!(supply.operation.steps.len(), 1);
 
     let mut supply_is_active = false;
     for _ in 0..10 {
@@ -278,7 +278,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        repay.outcome.operation.status,
+        repay.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
 
@@ -352,7 +352,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        liquidate.outcome.operation.status,
+        liquidate.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
     let liquidator_borrow_balance_after = ft_balance(
@@ -377,10 +377,10 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        withdraw_supply.outcome.operation.status,
+        withdraw_supply.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
-    assert_eq!(withdraw_supply.outcome.operation.steps.len(), 2);
+    assert_eq!(withdraw_supply.operation.steps.len(), 2);
 
     let supply_request = stack
         .controller
@@ -486,10 +486,10 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
         .await?;
 
     assert_eq!(
-        create.outcome.operation.status,
+        create.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
-    assert_eq!(create.outcome.operation.steps.len(), 3);
+    assert_eq!(create.operation.steps.len(), 3);
 
     let market_account_id = registry_id
         .0

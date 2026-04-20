@@ -1,10 +1,10 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
+use near_api::types::transaction::actions::{Action, FunctionCallAction};
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
+    actor::{DispatchRead, DispatchWrite},
+    operation::{OperationPlan, PlannedTransaction},
     GatewayContext, GatewayResult,
 };
 
@@ -46,26 +46,36 @@ impl DispatchRead for tx::Get {
 }
 
 impl DispatchWrite for tx::FunctionCall {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .tx(request.signer_account_id.clone(), signer)
-                .function_call(request.body, request.wait_until)
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
-    }
-
     fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
         &request.signer_account_id
+    }
+
+    fn uses_operation_planning() -> bool {
+        true
+    }
+
+    fn idempotency_key(request: &Self::Input) -> Option<&blockchain_gateway_core::IdempotencyKey> {
+        request.idempotency_key.as_ref()
+    }
+
+    fn plan(
+        request: Self::Input,
+        _context: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps: vec![PlannedTransaction {
+                    signer_account_id: request.signer_account_id,
+                    receiver_id: request.body.receiver_id,
+                    actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                        method_name: request.body.method_name.0,
+                        args: request.body.args.try_into_bytes()?,
+                        gas: request.body.gas,
+                        deposit: request.body.deposit,
+                    }))],
+                }],
+            })
+        })
     }
 }

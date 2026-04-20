@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::{
     common::{StorageBalance, StorageBalanceBounds},
     storage, ManagedAccountId,
@@ -7,11 +5,9 @@ use blockchain_gateway_core::{
 use futures::future::BoxFuture;
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
-    client::{
-        storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
-        ContractWriteOptions,
-    },
+    actor::{DispatchRead, DispatchWrite},
+    client::storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
+    dispatch::{function_call_transaction_json, single_transaction_plan},
     GatewayContext, GatewayResult,
 };
 
@@ -56,78 +52,77 @@ impl DispatchRead for storage::GetBalanceOf {
 }
 
 impl DispatchWrite for storage::Deposit {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let body = request.body;
-            let tx_result = ctx
-                .storage(body.contract_id)
-                .storage_deposit(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .deposit(body.deposit),
-                    StorageDepositArgs {
-                        account_id: body.beneficiary_id,
-                        registration_only: body.registration_only,
-                    },
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
+    fn uses_operation_planning() -> bool {
+        true
     }
 
     fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
         &request.signer_account_id
+    }
+
+    fn plan(
+        request: Self::Input,
+        _ctx: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
+        Box::pin(async move {
+            Ok(single_transaction_plan(
+                request.wait_until,
+                function_call_transaction_json(
+                    request.signer_account_id,
+                    request.body.contract_id,
+                    "storage_deposit",
+                    StorageDepositArgs {
+                        account_id: request.body.beneficiary_id,
+                        registration_only: request.body.registration_only,
+                    },
+                    blockchain_gateway_core::NearGas::from_tgas(100),
+                    request.body.deposit,
+                )?,
+            ))
+        })
     }
 }
 
 impl DispatchWrite for storage::Unregister {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let body = request.body;
-            let tx_result = ctx
-                .storage(body.contract_id)
-                .storage_unregister(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .one_yocto(),
-                    StorageUnregisterArgs { force: body.force },
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
+    fn uses_operation_planning() -> bool {
+        true
     }
 
     fn signer_account_id(request: &Self::Input) -> &ManagedAccountId {
         &request.signer_account_id
     }
+
+    fn plan(
+        request: Self::Input,
+        _ctx: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
+        Box::pin(async move {
+            Ok(single_transaction_plan(
+                request.wait_until,
+                function_call_transaction_json(
+                    request.signer_account_id,
+                    request.body.contract_id,
+                    "storage_unregister",
+                    StorageUnregisterArgs {
+                        force: request.body.force,
+                    },
+                    blockchain_gateway_core::NearGas::from_tgas(100),
+                    blockchain_gateway_core::NearToken::from_yoctonear(1),
+                )?,
+            ))
+        })
+    }
 }
 
 impl DispatchWrite for storage::EnsureDeposit {
-    fn dispatch(
+    fn uses_operation_planning() -> bool {
+        true
+    }
+
+    fn plan(
         request: Self::Input,
         ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
             let contract_id = body.contract_id.clone();
@@ -147,37 +142,25 @@ impl DispatchWrite for storage::EnsureDeposit {
             let plan = required_deposit(&body.mode, &bounds, balance.as_ref());
 
             if plan.deposit.is_zero() {
-                return Ok(storage::EnsureDepositResult::NoOp);
+                return Ok(crate::operation::OperationPlan {
+                    wait_until: request.wait_until,
+                    steps: vec![],
+                });
             }
 
-            let signer_account_id = request.signer_account_id.clone();
-            let tx_result = ctx
-                .storage(contract_id.clone())
-                .storage_deposit(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .deposit(plan.deposit),
+            Ok(single_transaction_plan(
+                request.wait_until,
+                function_call_transaction_json(
+                    request.signer_account_id,
+                    body.contract_id,
+                    "storage_deposit",
                     StorageDepositArgs {
-                        account_id: Some(account_id.clone()),
+                        account_id: Some(body.account_id),
                         registration_only: plan.registration_only,
                     },
-                )
-                .await?;
-
-            let balance_after = ctx
-                .storage(contract_id)
-                .storage_balance_of(StorageBalanceOfArgs { account_id })
-                .await?;
-
-            if !satisfies_mode(&body.mode, balance_after.as_ref()) {
-                return Err(crate::GatewayError::NearQuery(
-                    "storage deposit did not satisfy ensureDeposit requirement".to_owned(),
-                ));
-            }
-
-            Ok(storage::EnsureDepositResult::Operation(
-                operation_outcome_from_transaction_result(signer_account_id, tx_result),
+                    blockchain_gateway_core::NearGas::from_tgas(100),
+                    plan.deposit,
+                )?,
             ))
         })
     }

@@ -130,7 +130,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .await?;
 
     assert_eq!(
-        create.outcome.operation.status,
+        create.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
 

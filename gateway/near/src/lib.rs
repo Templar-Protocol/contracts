@@ -3,7 +3,9 @@ pub mod client;
 pub mod context;
 mod dispatch;
 pub mod error;
+mod operation;
 pub mod service;
+mod store;
 
 pub use actor::ManagedSigner;
 pub use client::NearClient;

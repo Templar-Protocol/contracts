@@ -32,7 +32,7 @@ macro_rules! contract_writes {
             ) -> $crate::GatewayResult<::near_api::types::transaction::result::TransactionResult> {
                 let client = $crate::client::BoundContractClient::client(self);
                 client
-                    .tx(options.signer_account_id, options.signer)
+                    .tx(options.signer_account_id, options.signer.expect("signer should be present for immediate contract write"))
                     .function_call(
                         ::blockchain_gateway_core::tx::FunctionCallBody {
                             receiver_id: $crate::client::BoundContractClient::contract_id(self).to_owned(),

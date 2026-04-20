@@ -21,7 +21,11 @@ fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
 
 fn register_write<Spec: DispatchWrite>(
     module: &mut RpcModule<GatewayService>,
-) -> Result<(), RegisterMethodError> {
+) -> Result<(), RegisterMethodError>
+where
+    Spec::Input: Clone + serde::Serialize,
+    Spec::Output: serde::de::DeserializeOwned,
+{
     module.register_async_method(Spec::RPC_METHOD, move |params, service, _| async move {
         let params: Spec::Input = params.parse()?;
         let result = service

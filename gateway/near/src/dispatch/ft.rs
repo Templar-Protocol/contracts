@@ -1,14 +1,11 @@
-use std::sync::Arc;
-
 use blockchain_gateway_core::ft;
 use futures::future::BoxFuture;
+use near_api::types::transaction::actions::{Action, FunctionCallAction};
 
 use crate::{
-    actor::{operation_outcome_from_transaction_result, DispatchRead, DispatchWrite},
-    client::{
-        ft::{GetBalanceOfArgs, TransferArgs},
-        ContractWriteOptions,
-    },
+    actor::{DispatchRead, DispatchWrite},
+    client::ft::GetBalanceOfArgs,
+    operation::{OperationPlan, PlannedTransaction},
     GatewayContext, GatewayResult,
 };
 
@@ -31,36 +28,39 @@ impl DispatchRead for ft::GetBalanceOf {
 }
 
 impl DispatchWrite for ft::Transfer {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-        signer: Arc<near_api::Signer>,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let signer_account_id = request.signer_account_id.clone();
-            let body = request.body;
-            let tx_result = ctx
-                .ft(body.contract_id)
-                .ft_transfer(
-                    ContractWriteOptions::new(request.signer_account_id, signer)
-                        .wait_until(request.wait_until)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
-                    TransferArgs {
-                        receiver_id: body.receiver_id,
-                        amount: body.amount,
-                    },
-                )
-                .await?;
-
-            Ok(operation_outcome_from_transaction_result(
-                signer_account_id,
-                tx_result,
-            ))
-        })
+    fn uses_operation_planning() -> bool {
+        true
     }
 
     fn signer_account_id(request: &Self::Input) -> &blockchain_gateway_core::ManagedAccountId {
         &request.signer_account_id
+    }
+
+    fn idempotency_key(request: &Self::Input) -> Option<&blockchain_gateway_core::IdempotencyKey> {
+        request.idempotency_key.as_ref()
+    }
+
+    fn plan(
+        request: Self::Input,
+        _context: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan {
+                wait_until: request.wait_until,
+                steps: vec![PlannedTransaction {
+                    signer_account_id: request.signer_account_id,
+                    receiver_id: request.body.contract_id,
+                    actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                        method_name: "ft_transfer".to_owned(),
+                        args: serde_json::to_vec(&serde_json::json!({
+                            "receiver_id": request.body.receiver_id,
+                            "amount": request.body.amount.0.to_string(),
+                        }))?,
+                        gas: blockchain_gateway_core::NearGas::from_tgas(100),
+                        deposit: blockchain_gateway_core::NearToken::from_yoctonear(1),
+                    }))],
+                }],
+            })
+        })
     }
 }

@@ -78,12 +78,7 @@ pub struct EnsureDepositBody {
     pub mode: EnsureDepositMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "operation")]
-pub enum EnsureDepositResult {
-    NoOp,
-    Operation(WriteOperationResult),
-}
+pub type EnsureDepositResult = WriteOperationResult;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "amount")]

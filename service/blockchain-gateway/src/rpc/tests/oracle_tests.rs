@@ -63,10 +63,10 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        pyth_result.outcome.operation.status,
+        pyth_result.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
-    assert_eq!(pyth_result.outcome.operation.steps.len(), 1);
+    assert_eq!(pyth_result.operation.steps.len(), 1);
 
     let last_pyth_update = view_contract_json(
         &stack,
@@ -93,10 +93,10 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        redstone_result.outcome.operation.status,
+        redstone_result.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
-    assert_eq!(redstone_result.outcome.operation.steps.len(), 1);
+    assert_eq!(redstone_result.operation.steps.len(), 1);
 
     let redstone_prices = view_contract_json(
         &stack,
@@ -211,10 +211,10 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         })
         .await?;
     assert_eq!(
-        update_result.outcome.operation.status,
+        update_result.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded
     );
-    assert_eq!(update_result.outcome.operation.steps.len(), 2);
+    assert_eq!(update_result.operation.steps.len(), 2);
 
     let pyth_update_count = view_contract_json(
         &stack,

@@ -82,7 +82,12 @@ impl RegistryClient<'_> {
         let encoded_args =
             registry_version.encode_add_version_args(&args.version_key, args.mode, &args.code)?;
         self.client()
-            .tx(options.signer_account_id, options.signer)
+            .tx(
+                options.signer_account_id,
+                options
+                    .signer
+                    .expect("signer should be present for immediate registry write"),
+            )
             .function_call(
                 FunctionCallBody {
                     receiver_id: self.contract_id().to_owned(),
@@ -104,7 +109,12 @@ impl RegistryClient<'_> {
     ) -> GatewayResult<TransactionResult> {
         let method_name = registry_version.deploy_method_name();
         self.client()
-            .tx(options.signer_account_id, options.signer)
+            .tx(
+                options.signer_account_id,
+                options
+                    .signer
+                    .expect("signer should be present for immediate registry write"),
+            )
             .function_call(
                 FunctionCallBody {
                     receiver_id: self.contract_id().to_owned(),

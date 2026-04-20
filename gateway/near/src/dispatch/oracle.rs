@@ -7,8 +7,8 @@ use blockchain_gateway_core::oracle::{
     RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
 };
 use blockchain_gateway_core::{
-    common::WriteOperationResult, OperationId, OperationOutcome, OperationRecord, OperationStatus,
-    StepStatus, TransactionStepRecord,
+    common::WriteOperationResult, OperationId, OperationRecord, OperationStatus, StepStatus,
+    TransactionStepRecord,
 };
 use futures::future::BoxFuture;
 use near_account_id::AccountId;
@@ -704,40 +704,39 @@ fn operation_outcome_from_transaction_results(
     let mut steps = Vec::with_capacity(tx_results.len());
 
     for (index, tx_result) in tx_results.into_iter().enumerate() {
-        let (step_status, tx_hash) = if let Some(full) = tx_result.into_full() {
+        let step_status = if let Some(full) = tx_result.into_full() {
             let outcome = full.outcome();
-            let tx_hash = Some(outcome.transaction_hash.to_string());
+            let tx_hash: blockchain_gateway_core::CryptoHash = outcome.transaction_hash.into();
             if operation_id.is_none() {
-                operation_id.clone_from(&tx_hash);
+                operation_id = Some(tx_hash.0.to_string());
             }
             if full.is_success() {
-                (StepStatus::Succeeded, tx_hash)
+                StepStatus::Succeeded { tx_hash }
             } else {
                 status = OperationStatus::Failed;
-                (StepStatus::Failed, tx_hash)
+                StepStatus::Failed {
+                    tx_hash: Some(tx_hash),
+                }
             }
         } else {
             if status != OperationStatus::Failed {
                 status = OperationStatus::InProgress;
             }
-            (StepStatus::Submitted, None)
+            StepStatus::Submitted { tx_hash: None }
         };
 
         steps.push(TransactionStepRecord {
             index: index as u32,
             status: step_status,
-            tx_hash,
         });
     }
 
     WriteOperationResult {
-        outcome: OperationOutcome {
-            operation: OperationRecord {
-                id: OperationId(operation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())),
-                signer_account_id,
-                status,
-                steps,
-            },
+        operation: OperationRecord {
+            id: OperationId(operation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())),
+            signer_account_id,
+            status,
+            steps,
         },
     }
 }
