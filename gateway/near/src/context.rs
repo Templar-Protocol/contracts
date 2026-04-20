@@ -77,14 +77,16 @@ impl PythHttpClient {
 
 #[derive(Debug, Clone)]
 pub struct RedStoneBridgeClient {
-    bridge: Arc<Bridge>,
+    bridge: Bridge,
 }
 
 impl RedStoneBridgeClient {
-    pub fn new(bridge: Bridge) -> Self {
-        Self {
-            bridge: Arc::new(bridge),
-        }
+    pub fn new(node_path: &Path) -> GatewayResult<Self> {
+        let (kill_tx, _kill_rx) = tokio::sync::watch::channel(());
+        Ok(Self {
+            bridge: Bridge::new(node_path, kill_tx)
+                .map_err(|error| GatewayError::ExternalService(error.to_string()))?,
+        })
     }
 
     pub async fn fetch_payload(&self, feed_ids: Vec<FeedId>) -> GatewayResult<Vec<u8>> {
@@ -110,11 +112,7 @@ impl GatewayContext {
     ) -> GatewayResult<Self> {
         let near = NearClient::new(network);
         let pyth_http = PythHttpClient::new(pyth_hermes_url);
-        let (kill_tx, _kill_rx) = tokio::sync::watch::channel(());
-        let redstone_bridge = RedStoneBridgeClient::new(
-            Bridge::new(node_path, kill_tx)
-                .map_err(|error| GatewayError::ExternalService(error.to_string()))?,
-        );
+        let redstone_bridge = RedStoneBridgeClient::new(node_path)?;
 
         Ok(Self {
             near,
