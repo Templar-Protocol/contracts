@@ -13,7 +13,7 @@ The gateway boundary is strict:
 - Include direct NEAR contract writes.
 - Include signing, key management, and nonce management required to safely submit transactions.
 - Include higher-level operations composed from direct NEAR interactions.
-- Exclude non-NEAR business logic and non-RPC outbound HTTP integration.
+- Exclude non-NEAR business logic.
 
 Examples:
 
@@ -21,7 +21,8 @@ Examples:
 - Include registry deployment flows.
 - Include market interactions such as borrow, supply, repay, withdraw, liquidation, and accumulation.
 - Exclude relayer PoW verification.
-- Exclude generic off-chain HTTP fetch logic such as Hermes or RedStone payload retrieval. Those payloads should be fetched by the caller and passed into the gateway if needed.
+- Allow narrowly scoped outbound integrations that are tightly coupled to preparing on-chain writes when keeping them inside the gateway materially simplifies the caller contract. Current examples include fetching Hermes and RedStone update payloads for oracle update operations.
+- Exclude unrelated off-chain workflows such as relayer PoW verification or broader non-NEAR business logic.
 
 ## Product Shape
 
