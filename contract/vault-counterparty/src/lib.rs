@@ -12,7 +12,10 @@ use stellar_xdr::curr::{Limited, Limits, ScAddress, ScVal, WriteXdr};
 
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 const GAS_MT_TRANSFER: Gas = Gas::from_tgas(50);
-const GAS_WITHDRAW: Gas = Gas::from_tgas(80);
+const GAS_WITHDRAW_TARGET: Gas = Gas::from_tgas(250);
+const GAS_WITHDRAW_BUFFER: Gas = Gas::from_tgas(20);
+const INTENTS_CONTRACT: &str = "intents.near";
+const BRIDGE_REFUEL_ACCOUNT: &str = "bridge-refuel.hot.tg";
 const MAX_STELLAR_RECEIVER_LEN: usize = 256;
 const MAX_TOKEN_ID_LEN: usize = 256;
 
@@ -84,53 +87,45 @@ impl Contract {
         self.assert_curator();
         Self::assert_amount(amount);
 
-        self.call_omni(
-            "withdraw",
-            json!({
-                "token_id": self.omni_token_id_for_contract(),
-                "receiver_id": self.encoded_stellar_receiver(),
-                "amount": amount,
-            }),
-            GAS_WITHDRAW,
+        let remaining_gas = Gas::from_gas(
+            env::prepaid_gas()
+                .as_gas()
+                .saturating_sub(env::used_gas().as_gas())
+                .saturating_sub(GAS_WITHDRAW_BUFFER.as_gas()),
+        );
+        let forwarded_gas = Gas::from_gas(remaining_gas.as_gas().min(GAS_WITHDRAW_TARGET.as_gas()));
+
+        Promise::new(account_id(INTENTS_CONTRACT)).function_call(
+            "mt_withdraw".to_string(),
+            serde_json::to_vec(&json!({
+                "token": self.intents_token_contract(),
+                "receiver_id": BRIDGE_REFUEL_ACCOUNT,
+                "token_ids": [self.intents_multi_token_id()],
+                "amounts": [amount.0.to_string()],
+                "memo": serde_json::Value::Null,
+                "msg": self.withdraw_msg_json(),
+            }))
+            .unwrap_or_else(|_| env::panic_str("failed to serialize withdrawal args")),
+            ONE_YOCTO,
+            forwarded_gas,
         )
     }
 
-    pub fn set_curator(&mut self, curator: AccountId) {
-        self.assert_owner();
-        self.curator = curator;
-        env::log_str("curator_updated");
+    fn withdraw_msg_json(&self) -> String {
+        json!({
+            "receiver_id": self.encoded_stellar_receiver(),
+            "amount_native": "0",
+            "block_number": 0,
+        })
+        .to_string()
     }
 
-    pub fn propose_owner(&mut self, pending_owner: AccountId) {
-        self.assert_owner();
-        require!(pending_owner != self.owner, "new owner must differ");
-        self.pending_owner = Some(pending_owner);
-        env::log_str("owner_proposed");
+    fn intents_token_contract(&self) -> String {
+        self.omni_contract.to_string()
     }
 
-    pub fn accept_owner(&mut self) {
-        let predecessor = env::predecessor_account_id();
-        require!(
-            self.pending_owner
-                .as_ref()
-                .is_some_and(|pending| pending == &predecessor),
-            "Only pending owner can accept ownership"
-        );
-        self.owner = predecessor;
-        self.pending_owner = None;
-        env::log_str("owner_accepted");
-    }
-
-    pub fn get_config(&self) -> Config {
-        Config {
-            stellar_receiver: self.stellar_receiver.clone(),
-            near_market: self.near_market.clone(),
-            omni_token_id: self.omni_token_id.clone(),
-            curator: self.curator.clone(),
-            owner: self.owner.clone(),
-            pending_owner: self.pending_owner.clone(),
-            omni_contract: self.omni_contract.clone(),
-        }
+    fn intents_multi_token_id(&self) -> String {
+        self.omni_token_id_for_contract()
     }
 
     fn call_omni(&self, method_name: &str, args: serde_json::Value, gas: Gas) -> Promise {
@@ -141,24 +136,6 @@ impl Contract {
             ONE_YOCTO,
             gas,
         )
-    }
-
-    fn assert_curator(&self) {
-        require!(
-            env::predecessor_account_id() == self.curator,
-            "Only curator can call this method"
-        );
-    }
-
-    fn assert_owner(&self) {
-        require!(
-            env::predecessor_account_id() == self.owner,
-            "Only owner can call this method"
-        );
-    }
-
-    fn assert_amount(amount: U128) {
-        require!(amount.0 > 0, "amount must be > 0");
     }
 
     fn omni_token_id_for_contract(&self) -> String {
@@ -212,6 +189,71 @@ impl Contract {
     }
 }
 
+fn account_id(value: &str) -> AccountId {
+    value
+        .parse()
+        .unwrap_or_else(|_| env::panic_str("invalid account id constant"))
+}
+
+#[near]
+impl Contract {
+    pub fn set_curator(&mut self, curator: AccountId) {
+        self.assert_owner();
+        self.curator = curator;
+        env::log_str("curator_updated");
+    }
+
+    pub fn propose_owner(&mut self, pending_owner: AccountId) {
+        self.assert_owner();
+        require!(pending_owner != self.owner, "new owner must differ");
+        self.pending_owner = Some(pending_owner);
+        env::log_str("owner_proposed");
+    }
+
+    pub fn accept_owner(&mut self) {
+        let predecessor = env::predecessor_account_id();
+        require!(
+            self.pending_owner
+                .as_ref()
+                .is_some_and(|pending| pending == &predecessor),
+            "Only pending owner can accept ownership"
+        );
+        self.owner = predecessor;
+        self.pending_owner = None;
+        env::log_str("owner_accepted");
+    }
+
+    pub fn get_config(&self) -> Config {
+        Config {
+            stellar_receiver: self.stellar_receiver.clone(),
+            near_market: self.near_market.clone(),
+            omni_token_id: self.omni_token_id.clone(),
+            curator: self.curator.clone(),
+            owner: self.owner.clone(),
+            pending_owner: self.pending_owner.clone(),
+            omni_contract: self.omni_contract.clone(),
+        }
+    }
+
+    fn assert_curator(&self) {
+        require!(
+            env::predecessor_account_id() == self.curator,
+            "Only curator can call this method"
+        );
+    }
+
+    fn assert_owner(&self) {
+        require!(
+            env::predecessor_account_id() == self.owner,
+            "Only owner can call this method"
+        );
+    }
+
+    fn assert_amount(amount: U128) {
+        require!(amount.0 > 0, "amount must be > 0");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use near_sdk::{
@@ -234,6 +276,7 @@ mod tests {
         builder.current_account_id(account("counterparty.near"));
         builder.predecessor_account_id(predecessor.clone());
         builder.signer_account_id(predecessor.clone());
+        builder.prepaid_gas(Gas::from_tgas(400));
         testing_env!(builder.build());
     }
 
@@ -312,7 +355,7 @@ mod tests {
 
         let (_, _, args, _, _) = first_function_call();
         assert_eq!(
-            args["token_id"],
+            args["token_ids"][0],
             "1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
         );
     }
@@ -325,19 +368,29 @@ mod tests {
         contract.withdraw_to_stellar(U128(999));
 
         let (receiver, method, args, attached_deposit, prepaid_gas) = first_function_call();
-        assert_eq!(receiver, account("v2_1.omni.hot.tg"));
-        assert_eq!(method, "withdraw");
+        assert_eq!(receiver, account(INTENTS_CONTRACT));
+        assert_eq!(method, "mt_withdraw");
         assert_eq!(attached_deposit, ONE_YOCTO);
-        assert_eq!(prepaid_gas, GAS_WITHDRAW);
+        assert_eq!(prepaid_gas, GAS_WITHDRAW_TARGET);
+        assert_eq!(args["token"], "v2_1.omni.hot.tg");
+        assert_eq!(args["receiver_id"], BRIDGE_REFUEL_ACCOUNT);
+        assert_eq!(args["token_ids"][0], "1100_stellar_usdc");
+        assert_eq!(args["amounts"][0], "999");
+        let msg: serde_json::Value = serde_json::from_str(
+            args["msg"]
+                .as_str()
+                .unwrap_or_else(|| panic!("missing withdrawal msg")),
+        )
+        .unwrap_or_else(|e| panic!("failed to parse withdrawal msg: {e}"));
         assert_eq!(
-            args["receiver_id"],
+            msg["receiver_id"],
             Contract::encode_stellar_sc_address(
                 &ScAddress::from_str("GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV")
                     .unwrap_or_else(|_| panic!("invalid test stellar receiver"))
             )
         );
-        assert_eq!(args["token_id"], "1100_stellar_usdc");
-        assert_eq!(args["amount"], "999");
+        assert_eq!(msg["amount_native"], "0");
+        assert_eq!(msg["block_number"], 0);
     }
 
     #[test]
@@ -360,7 +413,7 @@ mod tests {
         contract.withdraw_to_stellar(U128(5));
 
         let (_, method, _, _, _) = first_function_call();
-        assert_eq!(method, "withdraw");
+        assert_eq!(method, "mt_withdraw");
     }
 
     #[test]
