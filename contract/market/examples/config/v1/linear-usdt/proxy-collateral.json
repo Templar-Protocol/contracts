@@ -1,0 +1,32 @@
+{
+  "aggregator": {
+    "method": "MedianLow",
+    "filter": {
+      "max_age": "60000000000",
+      "max_clock_drift": "10000000000",
+      "min_sources": 1
+    }
+  },
+  "entries": [
+    {
+      "source": {
+        "Transformer": {
+          "request": {
+            "Pyth": {
+              "oracle_id": "pyth-oracle.near",
+              "price_id": "c415de8d2eba7db216527dff4b60e8f3a5311c740dadb233e13e12547e226750"
+            }
+          },
+          "call": {
+            "account_id": "linear-protocol.near",
+            "method_name": "ft_price",
+            "args": "bnVsbA==",
+            "gas": "3000000000000"
+          },
+          "action": { "NormalizeNativeLstPrice": { "decimals": 24 } }
+        }
+      },
+      "weight": 1
+    }
+  ]
+}

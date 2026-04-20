@@ -1,0 +1,59 @@
+{
+  "configuration": {
+    "time_chunk_configuration": {
+      "duration_ms": "600000"
+    },
+    "borrow_asset": {
+      "Nep141": "usdt.tether-token.near"
+    },
+    "collateral_asset": {
+      "Nep141": "meta-pool.near"
+    },
+    "price_oracle_configuration": {
+      "account_id": "proxy-oracle-stnear-usdt.v1.tmplr.near",
+      "collateral_asset_price_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "collateral_asset_decimals": 24,
+      "borrow_asset_price_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "borrow_asset_decimals": 6,
+      "price_maximum_age_s": 60
+    },
+    "borrow_mcr_maintenance": "1.4",
+    "borrow_mcr_liquidation": "1.33333333333333333333333333333333333333",
+    "borrow_asset_maximum_usage_ratio": "0.99",
+    "borrow_origination_fee": { "Flat": "0" },
+    "borrow_interest_rate_strategy": {
+      "Piecewise": {
+        "base": "0",
+        "optimal": "0.9",
+        "rate_1": "0.08888888888888888888888888888888888889",
+        "rate_2": "2.4"
+      }
+    },
+    "borrow_maximum_duration_ms": null,
+    "borrow_range": {
+      "minimum": "1",
+      "maximum": null
+    },
+    "supply_range": {
+      "minimum": "40000",
+      "maximum": null
+    },
+    "supply_withdrawal_range": {
+      "minimum": "40000",
+      "maximum": null
+    },
+    "supply_withdrawal_fee": {
+      "fee": {
+        "Flat": "0"
+      },
+      "duration": "0",
+      "behavior": "Fixed"
+    },
+    "yield_weights": {
+      "supply": 4,
+      "static": { "revenue.tmplr.near": 1 }
+    },
+    "protocol_account_id": "revenue.tmplr.near",
+    "liquidation_maximum_spread": "0.1"
+  }
+}
