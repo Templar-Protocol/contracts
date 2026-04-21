@@ -9,8 +9,20 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "standard", rename_all = "snake_case")]
+pub enum TokenReference {
+    Ft {
+        contract_id: AccountId,
+    },
+    Mt {
+        contract_id: AccountId,
+        token_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBalanceOfParams {
-    pub contract_id: AccountId,
+    pub token: TokenReference,
     pub account_id: AccountId,
 }
 
@@ -21,14 +33,14 @@ pub struct GetBalanceOfResult {
 
 public_read_method_spec!(
     GetBalanceOf,
-    "ft.getBalanceOf",
+    "token.getBalanceOf",
     GetBalanceOfParams,
     GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransferBody {
-    pub contract_id: AccountId,
+    pub token: TokenReference,
     pub receiver_id: AccountId,
     pub amount: U128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,11 +49,11 @@ pub struct TransferBody {
 
 pub type TransferResult = WriteOperationResult;
 
-write_method_spec!(Transfer, "ft.transfer", TransferBody, TransferResult);
+write_method_spec!(Transfer, "token.transfer", TransferBody, TransferResult);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransferCallBody {
-    pub contract_id: AccountId,
+    pub token: TokenReference,
     pub receiver_id: AccountId,
     pub amount: U128,
     pub msg: String,
@@ -53,7 +65,7 @@ pub type TransferCallResult = WriteOperationResult;
 
 write_method_spec!(
     TransferCall,
-    "ft.transferCall",
+    "token.transferCall",
     TransferCallBody,
     TransferCallResult
 );

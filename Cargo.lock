@@ -6067,7 +6067,25 @@ dependencies = [
  "getrandom 0.2.17",
  "near-contract-standards",
  "near-sdk",
+ "primitive-types 0.14.0",
  "templar-common",
+]
+
+[[package]]
+name = "mock-receiver"
+version = "1.2.1"
+dependencies = [
+ "getrandom 0.2.17",
+ "near-contract-standards",
+ "near-sdk",
+]
+
+[[package]]
+name = "mock-ref"
+version = "1.2.1"
+dependencies = [
+ "borsh 1.6.1",
+ "near-sdk",
 ]
 
 [[package]]
@@ -13738,6 +13756,7 @@ dependencies = [
  "near-workspaces",
  "p256",
  "rstest",
+ "serde",
  "templar-common",
  "templar-universal-account",
  "tokio",

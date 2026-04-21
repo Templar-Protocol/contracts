@@ -1,41 +1,5 @@
 use super::*;
 
-fn pyth_price(price: f64) -> templar_common::oracle::pyth::Price {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    templar_common::oracle::pyth::Price {
-        price: I64((price * 10000.0) as i64),
-        conf: U64(0),
-        expo: -4,
-        publish_time: PythTimestamp::from_ms(now_ms),
-    }
-}
-
-fn redstone_price(price: f64) -> FeedData {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let now_ms = Nanoseconds::from_ms(now_ms);
-    FeedData {
-        price: U256::from((price * 1e8) as u128).into(),
-        package_timestamp: now_ms,
-        write_timestamp: now_ms,
-    }
-}
-
-fn assert_same_pyth_price_value(
-    actual: Option<templar_common::oracle::pyth::Price>,
-    expected: templar_common::oracle::pyth::Price,
-) {
-    let actual = actual.expect("expected price to be present");
-    assert_eq!(actual.price, expected.price);
-    assert_eq!(actual.conf, expected.conf);
-    assert_eq!(actual.expo, expected.expo);
-}
-
 #[tokio::test]
 async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
     let hermes = start_mock_hermes_server("cafebabe").await?;

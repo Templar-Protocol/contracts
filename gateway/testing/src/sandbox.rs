@@ -11,9 +11,12 @@ use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIde
 use templar_common::{market::MarketConfiguration, market::YieldWeights};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
-    controller::lst_oracle::LstOracleController, market_configuration, test_signer::TestSigner,
+    controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
+    market_configuration,
+    test_signer::TestSigner,
     FtController, MarketController, MockOracleController, ProxyOracleController,
-    RedStoneAdapterController, RegistryController, UniversalAccountController,
+    ReceiverController, RedStoneAdapterController, RefFinanceController, RegistryController,
+    UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -143,6 +146,57 @@ impl SandboxHarness {
 
     pub async fn ft_wasm(&self) -> Vec<u8> {
         FtController::wasm().await.to_vec()
+    }
+
+    pub async fn deploy_mt(&self, account_id: AccountId) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            test_utils::controller::mt::MtController::wasm()
+                .await
+                .to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+        Ok(account_id)
+    }
+
+    pub async fn deploy_receiver(&self, account_id: AccountId) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            ReceiverController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+        Ok(account_id)
+    }
+
+    pub async fn deploy_ref_finance(
+        &self,
+        account_id: AccountId,
+        pools: Vec<PoolInfo>,
+    ) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            RefFinanceController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({ "pools": pools }),
+        )
+        .await?;
+        Ok(account_id)
     }
 
     pub async fn deploy_registry(&self) -> Result<RegistryId> {

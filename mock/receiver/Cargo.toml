@@ -1,17 +1,17 @@
 [package]
+name = "mock-receiver"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
-name = "mock-oracle"
-publish = false
 repository.workspace = true
-version = "0.0.0"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 getrandom.workspace = true
-near-sdk.workspace = true
 near-contract-standards.workspace = true
-primitive-types.workspace = true
-templar-common.workspace = true
+near-sdk.workspace = true
+
+[lints]
+workspace = true

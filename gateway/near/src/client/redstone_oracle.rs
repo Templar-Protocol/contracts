@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use near_sdk::json_types::Base64VecU8;
-use templar_common::oracle::redstone::{FeedData, FeedId};
+use templar_common::oracle::redstone::{Config, FeedData, FeedId, Role};
 
 use crate::client::{
     macros::{contract_views, contract_writes},
@@ -31,6 +31,18 @@ pub struct ReadPriceDataArgs {
 }
 
 #[derive(serde::Serialize)]
+pub struct ListRoleArgs {
+    pub role: Role,
+}
+
+#[derive(serde::Serialize)]
+pub struct SetRoleArgs {
+    pub account_id: near_account_id::AccountId,
+    pub role: Role,
+    pub set: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
 pub struct WritePricesArgs {
     pub feed_ids: Vec<FeedId>,
     pub payload: Base64VecU8,
@@ -38,10 +50,13 @@ pub struct WritePricesArgs {
 
 impl RedStoneOracleClient<'_> {
     contract_views! {
+        pub fn get_config(()) -> Config;
         pub fn read_price_data(ReadPriceDataArgs) -> HashMap<FeedId, FeedData>;
+        pub fn list_role(ListRoleArgs) -> Vec<near_account_id::AccountId>;
     }
 
     contract_writes! {
+        pub fn set_role(SetRoleArgs);
         pub fn write_prices(WritePricesArgs);
     }
 }

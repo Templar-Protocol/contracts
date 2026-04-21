@@ -16,12 +16,14 @@ pub struct GetBalanceOfArgs {
 pub struct TransferArgs {
     pub receiver_id: near_account_id::AccountId,
     pub amount: U128,
+    pub memo: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 pub struct TransferCallArgs {
     pub receiver_id: near_account_id::AccountId,
     pub amount: U128,
+    pub memo: Option<String>,
     pub msg: String,
 }
 

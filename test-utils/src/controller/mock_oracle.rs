@@ -51,6 +51,9 @@ impl MockOracleController {
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
 
         #[view]
+        pub fn list_ema_prices_unsafe(price_ids: Vec<PriceIdentifier>) -> OracleResponse;
+
+        #[view]
         pub fn last_pyth_update_data() -> Option<String>;
 
         #[view]

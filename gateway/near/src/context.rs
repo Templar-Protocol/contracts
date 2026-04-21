@@ -14,8 +14,9 @@ use crate::{
         account::AccountClient, chain::ChainClient, contract::ContractClient, ft::FtClient,
         lst_oracle::LstOracleClient, market::MarketClient, mt::MtClient,
         proxy_oracle::ProxyOracleClient, pyth_oracle::PythOracleClient,
-        redstone_oracle::RedStoneOracleClient, registry::RegistryClient, storage::StorageClient,
-        token::TokenClient, tx::TxClient, universal_account::UniversalAccountClient,
+        redstone_oracle::RedStoneOracleClient, ref_finance::RefFinanceClient,
+        registry::RegistryClient, storage::StorageClient, token::TokenClient, tx::TxClient,
+        universal_account::UniversalAccountClient,
     },
     GatewayError, GatewayResult, NearClient,
 };
@@ -165,6 +166,10 @@ impl GatewayContext {
 
     pub fn redstone_oracle(&self, contract_id: AccountId) -> RedStoneOracleClient<'_> {
         self.near.redstone_oracle(contract_id)
+    }
+
+    pub fn ref_finance(&self, contract_id: AccountId) -> RefFinanceClient<'_> {
+        self.near.ref_finance(contract_id)
     }
 
     pub fn lst_oracle(&self, contract_id: AccountId) -> LstOracleClient<'_> {

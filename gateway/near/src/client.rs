@@ -9,6 +9,7 @@ pub mod mt;
 pub mod proxy_oracle;
 pub mod pyth_oracle;
 pub mod redstone_oracle;
+pub mod ref_finance;
 pub mod registry;
 pub mod storage;
 pub mod token;
@@ -30,6 +31,7 @@ use near_api::NetworkConfig;
 use proxy_oracle::ProxyOracleClient;
 use pyth_oracle::PythOracleClient;
 use redstone_oracle::RedStoneOracleClient;
+use ref_finance::RefFinanceClient;
 use registry::RegistryClient;
 use std::sync::Arc;
 use storage::StorageClient;
@@ -158,6 +160,13 @@ impl NearClient {
 
     pub fn redstone_oracle(&self, contract_id: AccountId) -> RedStoneOracleClient<'_> {
         RedStoneOracleClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn ref_finance(&self, contract_id: AccountId) -> RefFinanceClient<'_> {
+        RefFinanceClient {
             inner: self,
             contract_id,
         }

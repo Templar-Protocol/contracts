@@ -1,9 +1,16 @@
 mod account_tests;
+mod ft_tests;
+mod lst_oracle_tests;
 mod market_tests;
+mod mt_tests;
 mod oracle_tests;
 mod proxy_oracle_tests;
+mod pyth_tests;
+mod redstone_tests;
+mod ref_finance_tests;
 mod registry_tests;
 mod storage_tests;
+mod token_tests;
 mod tx_tests;
 mod universal_account_tests;
 
@@ -15,9 +22,9 @@ use anyhow::Result;
 use blockchain_gateway_core::{
     account,
     common::{ContractArgs, ReadRequest, WriteRequest},
-    contract, ft, market, oracle, proxy_oracle, proxy_oracle_governance, proxy_oracle_owner,
-    registry, storage, tx, universal_account, Base64Bytes, ContractMethodName, CryptoHash, NearGas,
-    NearToken,
+    contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
+    proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
+    universal_account, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
 use blockchain_gateway_near::GatewayContext;
 use blockchain_gateway_testing::{SandboxHarness, TestController};
@@ -90,6 +97,13 @@ impl TestStack {
 async fn register_gateway_signer_for_ft(
     stack: &TestStack,
 ) -> Result<storage::GetBalanceBoundsResult> {
+    register_ft_account(stack, stack.harness.gateway_signer_account_id.0.clone()).await
+}
+
+async fn register_ft_account(
+    stack: &TestStack,
+    account_id: near_account_id::AccountId,
+) -> Result<storage::GetBalanceBoundsResult> {
     let bounds = stack
         .controller
         .request::<storage::GetBalanceBounds>(&ReadRequest {
@@ -106,7 +120,7 @@ async fn register_gateway_signer_for_ft(
             idempotency_key: None,
             body: storage::DepositBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
-                beneficiary_id: None,
+                beneficiary_id: Some(account_id),
                 registration_only: false,
                 deposit: NearToken::from_near(1),
             },
@@ -143,6 +157,42 @@ async fn start_mock_hermes_server(vaa_hex: &str) -> Result<MockServer> {
         .mount(&server)
         .await;
     Ok(server)
+}
+
+fn pyth_price(price: f64) -> templar_common::oracle::pyth::Price {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    templar_common::oracle::pyth::Price {
+        price: I64((price * 10000.0) as i64),
+        conf: U64(0),
+        expo: -4,
+        publish_time: PythTimestamp::from_ms(now_ms),
+    }
+}
+
+fn redstone_price(price: f64) -> FeedData {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let now_ms = Nanoseconds::from_ms(now_ms);
+    FeedData {
+        price: U256::from((price * 1e8) as u128).into(),
+        package_timestamp: now_ms,
+        write_timestamp: now_ms,
+    }
+}
+
+fn assert_same_pyth_price_value(
+    actual: Option<templar_common::oracle::pyth::Price>,
+    expected: templar_common::oracle::pyth::Price,
+) {
+    let actual = actual.expect("expected price to be present");
+    assert_eq!(actual.price, expected.price);
+    assert_eq!(actual.conf, expected.conf);
+    assert_eq!(actual.expo, expected.expo);
 }
 
 async fn view_contract_json(

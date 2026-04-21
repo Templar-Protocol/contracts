@@ -36,6 +36,11 @@ pub struct ListEmaPricesNoOlderThanArgs {
 }
 
 #[derive(serde::Serialize)]
+pub struct ListEmaPricesUnsafeArgs {
+    pub price_ids: Vec<PriceIdentifier>,
+}
+
+#[derive(serde::Serialize)]
 pub struct UpdatePriceFeedsArgs {
     pub data: String,
 }
@@ -44,6 +49,7 @@ impl PythOracleClient<'_> {
     contract_views! {
         pub fn price_feed_exists(PriceFeedExistsArgs) -> bool;
         pub fn list_ema_prices_no_older_than(ListEmaPricesNoOlderThanArgs) -> HashMap<PriceIdentifier, Option<Price>>;
+        pub fn list_ema_prices_unsafe(ListEmaPricesUnsafeArgs) -> HashMap<PriceIdentifier, Option<Price>>;
     }
 
     contract_writes! {

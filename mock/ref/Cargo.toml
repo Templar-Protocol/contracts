@@ -1,0 +1,16 @@
+[package]
+name = "mock-ref"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+borsh.workspace = true
+near-sdk.workspace = true
+
+[lints]
+workspace = true

@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 use crate::{
     actor::{DispatchRead, PlanWrite},
     client::{
-        ft::{GetBalanceOfArgs, TransferArgs},
+        ft::{GetBalanceOfArgs, TransferArgs, TransferCallArgs},
         ContractWriteOptions,
     },
     dispatch::single_transaction_plan,
@@ -44,6 +44,30 @@ impl PlanWrite for ft::Transfer {
                     TransferArgs {
                         receiver_id: request.body.receiver_id,
                         amount: request.body.amount,
+                        memo: request.body.memo,
+                    },
+                )?,
+            ))
+        })
+    }
+}
+
+impl PlanWrite for ft::TransferCall {
+    fn plan(
+        request: Self::Input,
+        ctx: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(single_transaction_plan(
+                ctx.ft(request.body.contract_id).ft_transfer_call(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
+                    TransferCallArgs {
+                        receiver_id: request.body.receiver_id,
+                        amount: request.body.amount,
+                        memo: request.body.memo,
+                        msg: request.body.msg,
                     },
                 )?,
             ))

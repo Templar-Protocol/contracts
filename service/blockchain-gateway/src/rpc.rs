@@ -1,6 +1,7 @@
 use blockchain_gateway_core::{
-    account, contract, ft, market, op, oracle, proxy_oracle, proxy_oracle_governance,
-    proxy_oracle_owner, registry, storage, tx, universal_account, MethodSpec,
+    account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
+    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
+    token, tx, universal_account, MethodSpec,
 };
 use blockchain_gateway_near::{
     actor::{DispatchRead, PlanWrite},
@@ -53,6 +54,7 @@ fn register_read<Spec: DispatchRead>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn attach_gateway(
     service: GatewayService,
 ) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
@@ -64,6 +66,10 @@ pub fn attach_gateway(
     register_read::<contract::GetVersion>(&mut m)?;
     register_read::<ft::GetBalanceOf>(&mut m)?;
     register_write::<ft::Transfer>(&mut m)?;
+    register_write::<ft::TransferCall>(&mut m)?;
+    register_read::<lst_oracle::GetOracleId>(&mut m)?;
+    register_read::<lst_oracle::ListTransformers>(&mut m)?;
+    register_read::<lst_oracle::GetTransformer>(&mut m)?;
     register_read::<market::GetConfiguration>(&mut m)?;
     register_read::<market::GetCurrentSnapshot>(&mut m)?;
     register_read::<market::GetFinalizedSnapshotsLen>(&mut m)?;
@@ -94,6 +100,12 @@ pub fn attach_gateway(
     register_write::<market::HarvestYield>(&mut m)?;
     register_write::<market::AccumulateStaticYield>(&mut m)?;
     register_write::<market::WithdrawStaticYield>(&mut m)?;
+    register_read::<mt::GetBalanceOf>(&mut m)?;
+    register_read::<mt::GetBatchBalanceOf>(&mut m)?;
+    register_read::<mt::GetSupply>(&mut m)?;
+    register_read::<mt::GetBatchSupply>(&mut m)?;
+    register_write::<mt::Transfer>(&mut m)?;
+    register_write::<mt::TransferCall>(&mut m)?;
     register_read::<oracle::GetKind>(&mut m)?;
     register_read::<oracle::GetPriceResolutionDependencies>(&mut m)?;
     register_read::<oracle::ResolvePrice>(&mut m)?;
@@ -103,6 +115,9 @@ pub fn attach_gateway(
     register_write::<oracle::UpdatePyth>(&mut m)?;
     register_write::<oracle::UpdateRedStone>(&mut m)?;
     register_write::<oracle::UpdatePrices>(&mut m)?;
+    register_read::<pyth::ListEmaPricesNoOlderThan>(&mut m)?;
+    register_read::<pyth::ListEmaPricesUnsafe>(&mut m)?;
+    register_write::<pyth::UpdatePriceFeeds>(&mut m)?;
     register_read::<proxy_oracle::ListProxies>(&mut m)?;
     register_read::<proxy_oracle::GetProxy>(&mut m)?;
     register_read::<proxy_oracle::PriceFeedExists>(&mut m)?;
@@ -119,6 +134,12 @@ pub fn attach_gateway(
     register_write::<proxy_oracle_owner::ProposeOwner>(&mut m)?;
     register_write::<proxy_oracle_owner::AcceptOwner>(&mut m)?;
     register_write::<proxy_oracle_owner::RenounceOwner>(&mut m)?;
+    register_read::<redstone::GetConfig>(&mut m)?;
+    register_read::<redstone::ReadPriceData>(&mut m)?;
+    register_read::<redstone::ListRole>(&mut m)?;
+    register_write::<redstone::SetRole>(&mut m)?;
+    register_write::<redstone::WritePrices>(&mut m)?;
+    register_read::<ref_finance::GetPools>(&mut m)?;
     register_read::<registry::GetDeployment>(&mut m)?;
     register_read::<registry::ListDeployments>(&mut m)?;
     register_read::<registry::ListVersions>(&mut m)?;
@@ -130,8 +151,14 @@ pub fn attach_gateway(
     register_write::<storage::Deposit>(&mut m)?;
     register_write::<storage::EnsureDeposit>(&mut m)?;
     register_write::<storage::Unregister>(&mut m)?;
+    register_read::<token::GetBalanceOf>(&mut m)?;
+    register_write::<token::Transfer>(&mut m)?;
+    register_write::<token::TransferCall>(&mut m)?;
     register_read::<tx::Get>(&mut m)?;
     register_write::<tx::FunctionCall>(&mut m)?;
+    register_write::<tx::Transfer>(&mut m)?;
+    register_write::<tx::DeployContract>(&mut m)?;
+    register_write::<tx::DeployAndInit>(&mut m)?;
     register_read::<universal_account::GetKey>(&mut m)?;
     register_write::<universal_account::Execute>(&mut m)?;
     register_write::<universal_account::Create>(&mut m)?;

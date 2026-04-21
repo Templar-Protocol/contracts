@@ -1,0 +1,30 @@
+use blockchain_gateway_core::ref_finance;
+use futures::future::BoxFuture;
+
+use crate::{
+    actor::DispatchRead, client::ref_finance::GetPoolsArgs, GatewayContext, GatewayResult,
+};
+
+impl DispatchRead for ref_finance::GetPools {
+    fn dispatch(
+        request: Self::Input,
+        ctx: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let pools = ctx
+                .ref_finance(request.params.exchange_id)
+                .get_pools(GetPoolsArgs {
+                    from_index: request.params.from_index,
+                    limit: request.params.limit,
+                })
+                .await?
+                .into_iter()
+                .map(|pool| ref_finance::PoolInfo {
+                    token_account_ids: pool.token_account_ids,
+                    shares_total_supply: pool.shares_total_supply,
+                })
+                .collect();
+            Ok(ref_finance::GetPoolsResult { pools })
+        })
+    }
+}

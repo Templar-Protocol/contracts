@@ -68,3 +68,47 @@ write_method_spec!(
     FunctionCallBody,
     FunctionCallResult
 );
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TransferBody {
+    pub receiver_id: AccountId,
+    pub amount: NearToken,
+}
+
+pub type TransferResult = WriteOperationResult;
+
+write_method_spec!(Transfer, "tx.transfer", TransferBody, TransferResult);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DeployContractBody {
+    pub account_id: AccountId,
+    pub code: Base64Bytes,
+}
+
+pub type DeployContractResult = WriteOperationResult;
+
+write_method_spec!(
+    DeployContract,
+    "tx.deployContract",
+    DeployContractBody,
+    DeployContractResult
+);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DeployAndInitBody {
+    pub account_id: AccountId,
+    pub code: Base64Bytes,
+    pub method_name: ContractMethodName,
+    pub args: ContractArgs,
+    pub gas: NearGas,
+    pub deposit: NearToken,
+}
+
+pub type DeployAndInitResult = WriteOperationResult;
+
+write_method_spec!(
+    DeployAndInit,
+    "tx.deployAndInit",
+    DeployAndInitBody,
+    DeployAndInitResult
+);

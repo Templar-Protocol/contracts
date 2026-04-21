@@ -144,6 +144,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
                 amount: blockchain_gateway_core::U128(3),
+                memo: None,
             },
         })
         .await?;
@@ -212,6 +213,113 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .await;
 
     assert!(deleted.is_err());
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
+    let stack = TestStack::start().await?;
+
+    let before = stack
+        .controller
+        .request::<account::Get>(&ReadRequest {
+            params: account::GetParams {
+                account_id: stack.harness.beneficiary_account_id.clone(),
+            },
+        })
+        .await?;
+
+    let transfer = stack
+        .controller
+        .request::<tx::Transfer>(&WriteRequest {
+            signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+            idempotency_key: None,
+            body: tx::TransferBody {
+                receiver_id: stack.harness.beneficiary_account_id.clone(),
+                amount: NearToken::from_yoctonear(1),
+            },
+        })
+        .await?;
+    assert_eq!(
+        transfer.operation.status,
+        blockchain_gateway_core::OperationStatus::Succeeded
+    );
+
+    let after = stack
+        .controller
+        .request::<account::Get>(&ReadRequest {
+            params: account::GetParams {
+                account_id: stack.harness.beneficiary_account_id.clone(),
+            },
+        })
+        .await?;
+    assert!(after.amount > before.amount);
+
+    let deploy = stack
+        .controller
+        .request::<tx::DeployContract>(&WriteRequest {
+            signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
+            idempotency_key: None,
+            body: tx::DeployContractBody {
+                account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+                code: Base64Bytes(stack.harness.ft_wasm().await),
+            },
+        })
+        .await?;
+    assert_eq!(
+        deploy.operation.status,
+        blockchain_gateway_core::OperationStatus::Succeeded
+    );
+
+    let cleanup_account = stack
+        .controller
+        .request::<account::Get>(&ReadRequest {
+            params: account::GetParams {
+                account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+            },
+        })
+        .await?;
+    assert_ne!(
+        cleanup_account.code_hash,
+        "11111111111111111111111111111111"
+    );
+
+    let deploy_and_init = stack
+        .controller
+        .request::<tx::DeployAndInit>(&WriteRequest {
+            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+            idempotency_key: None,
+            body: tx::DeployAndInitBody {
+                account_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
+                code: Base64Bytes(stack.harness.ft_wasm().await),
+                method_name: ContractMethodName("new".to_owned()),
+                args: ContractArgs::Json(serde_json::json!({
+                    "name": "Gateway FT",
+                    "symbol": "GFT",
+                })),
+                gas: NearGas::from_tgas(100),
+                deposit: NearToken::ZERO,
+            },
+        })
+        .await?;
+    assert_eq!(
+        deploy_and_init.operation.status,
+        blockchain_gateway_core::OperationStatus::Succeeded
+    );
+
+    let redemption_rate = view_contract_json(
+        &stack,
+        stack.harness.proxy_oracle_signer_account_id.0.clone(),
+        "redemption_rate",
+        serde_json::Value::Null,
+    )
+    .await?;
+    assert_eq!(
+        redemption_rate,
+        serde_json::json!(NearToken::from_near(1).as_yoctonear().to_string())
+    );
 
     stack.shutdown().await;
     Ok(())

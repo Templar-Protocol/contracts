@@ -125,10 +125,10 @@ pub trait Pyth {
     //     &self,
     //     price_ids: Vec<PriceIdentifier>,
     // ) -> HashMap<PriceIdentifier, Option<Price>>;
-    // fn list_ema_prices_unsafe(
-    //     &self,
-    //     price_ids: Vec<PriceIdentifier>,
-    // ) -> HashMap<PriceIdentifier, Option<Price>>;
+    fn list_ema_prices_unsafe(
+        &self,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> HashMap<PriceIdentifier, Option<Price>>;
     fn list_ema_prices_no_older_than(
         &self,
         price_ids: Vec<PriceIdentifier>,

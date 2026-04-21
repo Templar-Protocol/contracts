@@ -1,6 +1,8 @@
 use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
-use near_api::types::transaction::actions::{Action, FunctionCallAction};
+use near_api::types::transaction::actions::{
+    Action, DeployContractAction, FunctionCallAction, TransferAction,
+};
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -63,6 +65,77 @@ impl PlanWrite for tx::FunctionCall {
                         gas: request.body.gas,
                         deposit: request.body.deposit,
                     }))],
+                }],
+            })
+        })
+    }
+}
+
+impl PlanWrite for tx::Transfer {
+    fn plan(
+        request: Self::Input,
+        _context: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan {
+                steps: vec![PlannedTransaction {
+                    signer_account_id: request.signer_account_id,
+                    wait_until:
+                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                    receiver_id: request.body.receiver_id,
+                    actions: vec![Action::Transfer(TransferAction {
+                        deposit: request.body.amount,
+                    })],
+                }],
+            })
+        })
+    }
+}
+
+impl PlanWrite for tx::DeployContract {
+    fn plan(
+        request: Self::Input,
+        _context: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan {
+                steps: vec![PlannedTransaction {
+                    signer_account_id: request.signer_account_id,
+                    wait_until:
+                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                    receiver_id: request.body.account_id,
+                    actions: vec![Action::DeployContract(DeployContractAction {
+                        code: request.body.code.0,
+                    })],
+                }],
+            })
+        })
+    }
+}
+
+impl PlanWrite for tx::DeployAndInit {
+    fn plan(
+        request: Self::Input,
+        _context: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan {
+                steps: vec![PlannedTransaction {
+                    signer_account_id: request.signer_account_id,
+                    wait_until:
+                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                    receiver_id: request.body.account_id,
+                    actions: vec![
+                        Action::DeployContract(DeployContractAction {
+                            code: request.body.code.0,
+                        }),
+                        Action::FunctionCall(Box::new(FunctionCallAction {
+                            method_name: request.body.method_name.0,
+                            args: request.body.args.try_into_bytes()?,
+                            gas: request.body.gas,
+                            deposit: request.body.deposit,
+                        })),
+                    ],
                 }],
             })
         })

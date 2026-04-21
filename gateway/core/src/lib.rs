@@ -16,8 +16,9 @@ pub use primitive::{
     NearGas, NearToken, RegistryId, UniversalAccountId, U128,
 };
 pub use rpc::{
-    account, common, contract, ft, market, op, oracle, proxy_oracle, proxy_oracle_governance,
-    proxy_oracle_owner, registry, storage, tx, universal_account,
+    account, common, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
+    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
+    token, tx, universal_account,
 };
 pub use spec::MethodSpec;
 pub use version::{

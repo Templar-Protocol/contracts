@@ -48,6 +48,7 @@ impl<'a> TokenClient<'a> {
                 FtTransferCallArgs {
                     receiver_id,
                     amount,
+                    memo: None,
                     msg,
                 },
             ),
@@ -57,6 +58,8 @@ impl<'a> TokenClient<'a> {
                     receiver_id,
                     token_id: token_id.clone(),
                     amount,
+                    approval: None,
+                    memo: None,
                     msg,
                 },
             ),

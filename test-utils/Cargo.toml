@@ -14,6 +14,7 @@ near-sdk-contract-tools.workspace = true
 near-workspaces = { workspace = true, features = ["unstable"] }
 p256.workspace = true
 rstest.workspace = true
+serde.workspace = true
 templar-common.workspace = true
 templar-universal-account = { workspace = true, features = ["signing"] }
 tokio.workspace = true

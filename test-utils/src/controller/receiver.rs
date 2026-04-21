@@ -1,4 +1,4 @@
-use near_sdk::{json_types::U128, serde_json::json, AccountId};
+use near_sdk::serde_json::json;
 use near_workspaces::{Account, Contract};
 use tokio::sync::OnceCell;
 
@@ -7,21 +7,21 @@ use crate::{define, get_contract};
 use super::ContractController;
 
 #[derive(Clone)]
-pub struct MtController {
+pub struct ReceiverController {
     pub contract: Contract,
 }
 
-impl ContractController for MtController {
+impl ContractController for ReceiverController {
     fn contract(&self) -> &Contract {
         &self.contract
     }
 }
 
-impl MtController {
+impl ReceiverController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract("mock_mt", "mock/mt"))
+        WASM.get_or_init(|| get_contract("mock_receiver", "mock/receiver"))
             .await
     }
 
@@ -42,21 +42,9 @@ impl MtController {
 
     define! {
         #[view]
-        pub fn mt_balance_of(token_id: String, account_id: &AccountId) -> U128;
+        pub fn get_ft_calls() -> u64;
 
         #[view]
-        pub fn redemption_rate(token_id: String) -> U128;
-
-        #[call(exec, yocto(1))]
-        pub fn mt_transfer(token_id: String, receiver_id: &AccountId, amount: U128);
-
-        #[call(exec, yocto(1), tgas(300))]
-        pub fn mt_transfer_call(token_id: String, receiver_id: &AccountId, amount: U128, msg: String);
-
-        #[call(exec)]
-        pub fn mint(token_id: String, amount: U128);
-
-        #[call]
-        pub fn set_redemption_rate(token_id: String, redemption_rate: U128);
+        pub fn get_mt_calls() -> u64;
     }
 }
