@@ -1,7 +1,7 @@
 use blockchain_gateway_core::{
     account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
     proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
-    token, tx, universal_account, MethodSpec, RpcMethodMeta,
+    token, tx, universal_account, MethodSpec,
 };
 use blockchain_gateway_near::{
     actor::{DispatchRead, PlanWrite},
@@ -22,18 +22,16 @@ fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
 
 struct GatewayRpcBuilder {
     module: RpcModule<GatewayService>,
-    methods: Vec<crate::openrpc::Method>,
 }
 
 impl GatewayRpcBuilder {
     fn new(service: GatewayService) -> Self {
         Self {
             module: RpcModule::new(service),
-            methods: Vec::new(),
         }
     }
 
-    fn register_write<Spec: PlanWrite + RpcMethodMeta>(&mut self) -> Result<(), RegisterMethodError>
+    fn register_write<Spec: PlanWrite>(&mut self) -> Result<(), RegisterMethodError>
     where
         Spec::Input: Clone + serde::Serialize,
         Spec::Output: serde::de::DeserializeOwned,
@@ -49,13 +47,10 @@ impl GatewayRpcBuilder {
                 RpcResult::Ok(result)
             },
         )?;
-        self.methods.push(crate::openrpc::method::<Spec>());
         Ok(())
     }
 
-    fn register_read<Spec: DispatchRead + RpcMethodMeta>(
-        &mut self,
-    ) -> Result<(), RegisterMethodError> {
+    fn register_read<Spec: DispatchRead>(&mut self) -> Result<(), RegisterMethodError> {
         self.module.register_async_method(
             Spec::RPC_METHOD,
             move |params, service, _| async move {
@@ -67,7 +62,6 @@ impl GatewayRpcBuilder {
                 RpcResult::Ok(result)
             },
         )?;
-        self.methods.push(crate::openrpc::method::<Spec>());
         Ok(())
     }
 
@@ -83,17 +77,10 @@ impl GatewayRpcBuilder {
                 RpcResult::Ok(op::GetResult { operation: result })
             },
         )?;
-        self.methods.push(crate::openrpc::method::<op::Get>());
         Ok(())
     }
 
-    fn finish(mut self) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
-        self.methods.push(crate::openrpc::discover_method());
-        let document = crate::openrpc::discover(self.methods);
-        self.module
-            .register_method("rpc.discover", move |_, _, _| {
-                RpcResult::Ok(document.clone())
-            })?;
+    fn finish(self) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
         Ok(self.module)
     }
 }
