@@ -72,7 +72,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Create>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: oracle_id.clone(),
                 id: 0,
@@ -111,7 +110,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Execute>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::ExecuteBody {
                 oracle_id: oracle_id.clone(),
                 id: 0,
@@ -146,7 +144,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_owner::ProposeOwner>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_owner::ProposeOwnerBody {
                 oracle_id: oracle_id.clone(),
                 account_id: Some(stack.harness.cleanup_signer_account_id.0.clone()),
@@ -172,7 +169,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_owner::AcceptOwner>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_owner::AcceptOwnerBody {
                 oracle_id: oracle_id.clone(),
             },
@@ -195,7 +191,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Create>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
                 id: 1,
@@ -210,7 +205,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Cancel>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CancelBody {
                 oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
                 id: 1,
@@ -233,7 +227,6 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_owner::RenounceOwner>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_owner::RenounceOwnerBody {
                 oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
             },

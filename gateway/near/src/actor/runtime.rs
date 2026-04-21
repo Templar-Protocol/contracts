@@ -1,14 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
 use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
+use async_trait::async_trait;
 use blockchain_gateway_core::common::WriteRequest;
+use blockchain_gateway_core::rpc::common::WriteOperationResult;
 use blockchain_gateway_core::{IdempotencyKey, ManagedAccountId, MethodSpec};
 use futures::future::BoxFuture;
-use near_api::types::transaction::result::TransactionResult;
-use near_api::types::transaction::PrepopulateTransaction;
+use near_api::advanced::{ExecuteSignedTransaction, TransactionableOrSigned};
+use near_api::types::transaction::{
+    result::TransactionResult, PrepopulateTransaction, SignedTransaction,
+};
 use tokio::sync::Semaphore;
 
-use crate::operation::{OperationPlan, PlannedTransaction};
+use crate::operation::{OperationPlan, PlannedTransaction, PreparedTransactionResult};
 use crate::{GatewayContext, GatewayError, GatewayResult};
 
 use super::ManagedSigner;
@@ -19,16 +23,43 @@ const WRITE_ACTOR_NAME: &str = "write-actor";
 
 pub struct RpcMessage<Spec: MethodSpec>(pub Spec::Input);
 
-pub struct PlannedTransactionMessage {
+pub struct PreparedTransactionMessage {
     pub transaction: PlannedTransaction,
+}
+
+pub struct SubmitSignedTransactionMessage {
+    pub signed_transaction: SignedTransaction,
     pub wait_until: blockchain_gateway_core::rpc::common::TxExecutionStatus,
+}
+
+#[derive(Debug, Clone)]
+struct PrepopulatedTransactionCarrier(PrepopulateTransaction);
+
+#[async_trait]
+impl near_api::advanced::Transactionable for PrepopulatedTransactionCarrier {
+    fn prepopulated(
+        &self,
+    ) -> Result<PrepopulateTransaction, near_api::errors::ArgumentValidationError> {
+        Ok(self.0.clone())
+    }
+
+    async fn validate_with_network(
+        &self,
+        _network: &near_api::NetworkConfig,
+    ) -> Result<(), near_api::errors::ValidationError> {
+        Ok(())
+    }
 }
 
 impl<Spec: MethodSpec> actix::Message for RpcMessage<Spec> {
     type Result = GatewayResult<Spec::Output>;
 }
 
-impl actix::Message for PlannedTransactionMessage {
+impl actix::Message for PreparedTransactionMessage {
+    type Result = GatewayResult<PreparedTransactionResult>;
+}
+
+impl actix::Message for SubmitSignedTransactionMessage {
     type Result = GatewayResult<TransactionResult>;
 }
 
@@ -69,21 +100,9 @@ impl<T> HasSignerAccountId for WriteRequest<T> {
     }
 }
 
-pub trait HasWaitUntil {
-    fn wait_until(&self) -> blockchain_gateway_core::rpc::common::TxExecutionStatus;
-}
-
-impl<T> HasWaitUntil for WriteRequest<T> {
-    fn wait_until(&self) -> blockchain_gateway_core::rpc::common::TxExecutionStatus {
-        self.wait_until
-    }
-}
-
 pub trait PlanWrite:
-    MethodSpec<
-        Output = blockchain_gateway_core::rpc::common::WriteOperationResult,
-        Input: HasIdempotencyKey + HasSignerAccountId + HasWaitUntil,
-    > + Sized
+    MethodSpec<Output = WriteOperationResult, Input: HasIdempotencyKey + HasSignerAccountId>
+    + Sized
     + Send
     + 'static
 {
@@ -175,15 +194,27 @@ impl WriteActors {
         })
     }
 
-    pub(crate) async fn execute_planned_transaction(
+    pub(crate) async fn prepare_planned_transaction(
         &self,
         transaction: PlannedTransaction,
-        wait_until: blockchain_gateway_core::rpc::common::TxExecutionStatus,
-    ) -> GatewayResult<TransactionResult> {
+    ) -> GatewayResult<PreparedTransactionResult> {
         let sender = self.sender_for(&transaction.signer_account_id)?;
         sender
-            .send(PlannedTransactionMessage {
-                transaction,
+            .send(PreparedTransactionMessage { transaction })
+            .await
+            .map_err(|error| map_mailbox_error(error, WRITE_ACTOR_NAME))?
+    }
+
+    pub(crate) async fn submit_signed_transaction(
+        &self,
+        signer_account_id: &ManagedAccountId,
+        signed_transaction: SignedTransaction,
+        wait_until: blockchain_gateway_core::rpc::common::TxExecutionStatus,
+    ) -> GatewayResult<TransactionResult> {
+        let sender = self.sender_for(signer_account_id)?;
+        sender
+            .send(SubmitSignedTransactionMessage {
+                signed_transaction,
                 wait_until,
             })
             .await
@@ -216,12 +247,12 @@ impl AccountWriteActor {
     }
 }
 
-impl Handler<PlannedTransactionMessage> for AccountWriteActor {
-    type Result = ResponseFuture<GatewayResult<TransactionResult>>;
+impl Handler<PreparedTransactionMessage> for AccountWriteActor {
+    type Result = ResponseFuture<GatewayResult<PreparedTransactionResult>>;
 
     fn handle(
         &mut self,
-        message: PlannedTransactionMessage,
+        message: PreparedTransactionMessage,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let context = self.context.clone();
@@ -234,15 +265,67 @@ impl Handler<PlannedTransactionMessage> for AccountWriteActor {
                 .await
                 .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
 
-            near_api::Transaction::use_transaction(
+            let presigned = near_api::Transaction::use_transaction(
                 PrepopulateTransaction {
-                    signer_id: message.transaction.signer_account_id.0,
-                    receiver_id: message.transaction.receiver_id,
-                    actions: message.transaction.actions,
+                    signer_id: message.transaction.signer_account_id.0.clone(),
+                    receiver_id: message.transaction.receiver_id.clone(),
+                    actions: message.transaction.actions.clone(),
                 },
                 signer,
             )
-            .wait_until(message.wait_until.into())
+            .wait_until(message.transaction.wait_until.into())
+            .presign_with(context.network())
+            .await
+            .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
+
+            let Some(signed_transaction) = presigned.transaction.signed() else {
+                return Err(GatewayError::NearTransaction(
+                    "failed to extract presigned transaction".to_owned(),
+                ));
+            };
+            let tx_hash = signed_transaction.get_hash().into();
+
+            Ok(PreparedTransactionResult {
+                transaction: message.transaction,
+                tx_hash,
+                signed_transaction,
+            })
+        })
+    }
+}
+
+impl Handler<SubmitSignedTransactionMessage> for AccountWriteActor {
+    type Result = ResponseFuture<GatewayResult<TransactionResult>>;
+
+    fn handle(
+        &mut self,
+        message: SubmitSignedTransactionMessage,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let context = self.context.clone();
+        let signer = self.signer.clone();
+        let semaphore = self.semaphore.clone();
+
+        Box::pin(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|_error| GatewayError::ActorUnavailable(WRITE_ACTOR_NAME))?;
+
+            let prepopulated = PrepopulateTransaction {
+                signer_id: message.signed_transaction.transaction.signer_id().clone(),
+                receiver_id: message.signed_transaction.transaction.receiver_id().clone(),
+                actions: message.signed_transaction.transaction.actions().to_vec(),
+            };
+
+            ExecuteSignedTransaction {
+                transaction: TransactionableOrSigned::Signed((
+                    message.signed_transaction,
+                    Box::new(PrepopulatedTransactionCarrier(prepopulated)),
+                )),
+                signer,
+                wait_until: message.wait_until.into(),
+            }
             .send_to(context.network())
             .await
             .map_err(|error| GatewayError::NearTransaction(error.to_string()))

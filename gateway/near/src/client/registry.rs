@@ -1,4 +1,4 @@
-use std::io::ErrorKind;
+use std::{borrow::Borrow, io::ErrorKind};
 
 use blockchain_gateway_core::{
     common::{ContractArgs, Pagination},
@@ -66,12 +66,13 @@ impl RegistryClient<'_> {
         pub fn list_versions(Pagination) -> Vec<String>;
     }
 
-    pub async fn add_version(
+    pub fn add_version(
         &self,
         options: ContractWriteOptions,
         registry_version: RegistryVersion,
-        args: AddVersionArgs,
+        args: impl Borrow<AddVersionArgs>,
     ) -> GatewayResult<PlannedTransaction> {
+        let args = args.borrow();
         if args.mode == DeployMode::GlobalHash && !registry_version.supports_global_contracts() {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
@@ -83,6 +84,7 @@ impl RegistryClient<'_> {
             registry_version.encode_add_version_args(&args.version_key, args.mode, &args.code)?;
         Ok(PlannedTransaction {
             signer_account_id: options.signer_account_id,
+            wait_until: options.wait_until,
             receiver_id: self.contract_id().to_owned(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: ContractMethodName("add_version".to_string()).0,
@@ -93,19 +95,20 @@ impl RegistryClient<'_> {
         })
     }
 
-    pub async fn deploy(
+    pub fn deploy(
         &self,
         options: ContractWriteOptions,
         registry_version: RegistryVersion,
-        args: DeployArgs,
+        args: impl Borrow<DeployArgs>,
     ) -> GatewayResult<PlannedTransaction> {
         let method_name = registry_version.deploy_method_name();
         Ok(PlannedTransaction {
             signer_account_id: options.signer_account_id,
+            wait_until: options.wait_until,
             receiver_id: self.contract_id().to_owned(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: ContractMethodName(method_name.to_string()).0,
-                args: ContractArgs::Json(serde_json::to_value(&args)?).try_into_bytes()?,
+                args: ContractArgs::Json(serde_json::to_value(args.borrow())?).try_into_bytes()?,
                 gas: options.gas,
                 deposit: options.deposit,
             }))],

@@ -104,7 +104,6 @@ async fn register_gateway_signer_for_ft(
         .request::<storage::Deposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::DepositBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 beneficiary_id: None,
@@ -119,15 +118,13 @@ async fn register_gateway_signer_for_ft(
 
 fn tx_hash(result: &blockchain_gateway_core::common::WriteOperationResult) -> CryptoHash {
     match &result.operation.steps[0].status {
-        blockchain_gateway_core::StepStatus::Succeeded { tx_hash }
+        blockchain_gateway_core::StepStatus::Prepared { tx_hash }
+        | blockchain_gateway_core::StepStatus::Submitted { tx_hash }
+        | blockchain_gateway_core::StepStatus::Succeeded { tx_hash }
         | blockchain_gateway_core::StepStatus::Failed {
-            tx_hash: Some(tx_hash),
-        }
-        | blockchain_gateway_core::StepStatus::Submitted {
             tx_hash: Some(tx_hash),
         } => *tx_hash,
         blockchain_gateway_core::StepStatus::NotStarted
-        | blockchain_gateway_core::StepStatus::Submitted { tx_hash: None }
         | blockchain_gateway_core::StepStatus::Failed { tx_hash: None } => {
             panic!("transaction hash should be present for final execution")
         }

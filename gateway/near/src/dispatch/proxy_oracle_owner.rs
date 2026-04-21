@@ -45,17 +45,14 @@ impl PlanWrite for proxy_oracle_owner::ProposeOwner {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.proxy_oracle(body.oracle_id)
-                    .own_propose_owner(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .one_yocto()
-                            .tgas(300),
-                        OwnerProposeArgs {
-                            account_id: body.account_id,
-                        },
-                    )
-                    .await?,
+                ctx.proxy_oracle(body.oracle_id).own_propose_owner(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .one_yocto()
+                        .tgas(300),
+                    OwnerProposeArgs {
+                        account_id: body.account_id,
+                    },
+                )?,
             ))
         })
     }
@@ -68,15 +65,12 @@ impl PlanWrite for proxy_oracle_owner::AcceptOwner {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.proxy_oracle(request.body.oracle_id)
-                    .own_accept_owner(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .one_yocto()
-                            .tgas(300),
-                        (),
-                    )
-                    .await?,
+                ctx.proxy_oracle(request.body.oracle_id).own_accept_owner(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .one_yocto()
+                        .tgas(300),
+                    (),
+                )?,
             ))
         })
     }
@@ -89,15 +83,13 @@ impl PlanWrite for proxy_oracle_owner::RenounceOwner {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
                 ctx.proxy_oracle(request.body.oracle_id)
                     .own_renounce_owner(
                         ContractWriteOptions::new(request.signer_account_id)
                             .one_yocto()
                             .tgas(300),
                         (),
-                    )
-                    .await?,
+                    )?,
             ))
         })
     }

@@ -25,13 +25,14 @@ macro_rules! contract_views {
 macro_rules! contract_writes {
     ($($vis:vis fn $fn_name:ident $([$method:literal])? ($args_ty:ty) ; )+) => {
         $(
-            $vis async fn $fn_name(
+            $vis fn $fn_name(
                 &self,
                 options: $crate::client::ContractWriteOptions,
                 args: $args_ty,
             ) -> $crate::GatewayResult<$crate::operation::PlannedTransaction> {
                 Ok($crate::operation::PlannedTransaction {
                     signer_account_id: options.signer_account_id,
+                    wait_until: options.wait_until,
                     receiver_id: $crate::client::BoundContractClient::contract_id(self).to_owned(),
                     actions: vec![::near_api::types::transaction::actions::Action::FunctionCall(Box::new(
                         ::near_api::types::transaction::actions::FunctionCallAction {

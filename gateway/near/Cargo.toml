@@ -12,6 +12,7 @@ blockchain-gateway-core = { path = "../core" }
 futures.workspace = true
 hex.workspace = true
 near-api.workspace = true
+near-openapi-client.workspace = true
 near-account-id = { version = "2.6.0", features = ["serde", "schemars"] }
 near-contract-standards.workspace = true
 near-sdk.workspace = true
@@ -33,3 +34,9 @@ uuid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+near-sandbox = "0.3.9"
+near-token.workspace = true
+test-utils.workspace = true

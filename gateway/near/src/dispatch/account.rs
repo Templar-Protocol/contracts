@@ -57,9 +57,10 @@ impl PlanWrite for account::Delete {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(OperationPlan {
-                wait_until: request.wait_until,
                 steps: vec![PlannedTransaction {
                     signer_account_id: request.signer_account_id.clone(),
+                    wait_until:
+                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
                     receiver_id: request.signer_account_id.0,
                     actions: vec![Action::DeleteAccount(DeleteAccountAction {
                         beneficiary_id: request.body.beneficiary_id,

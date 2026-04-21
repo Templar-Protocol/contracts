@@ -271,15 +271,12 @@ impl PlanWrite for market::Borrow {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.market(request.body.market_id)
-                    .borrow(
-                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                        AmountArg {
-                            amount: request.body.amount,
-                        },
-                    )
-                    .await?,
+                ctx.market(request.body.market_id).borrow(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    AmountArg {
+                        amount: request.body.amount,
+                    },
+                )?,
             ))
         })
     }
@@ -301,7 +298,6 @@ impl PlanWrite for market::Create {
             let mut steps = plan_deploy_from_registry(
                 &ctx,
                 request.signer_account_id.clone(),
-                request.wait_until,
                 DeployBody {
                     registry_id: body.registry_id,
                     name: body.name,
@@ -336,10 +332,7 @@ impl PlanWrite for market::Create {
                 }
             }
 
-            Ok(OperationPlan {
-                wait_until: request.wait_until,
-                steps,
-            })
+            Ok(OperationPlan { steps })
         })
     }
 }
@@ -381,22 +374,16 @@ impl PlanWrite for market::Supply {
                 steps.push(tx_result);
             }
 
-            steps.push(
-                transfer_call_asset(
-                    &ctx,
-                    request.signer_account_id,
-                    configuration.borrow_asset,
-                    body.market_id.0,
-                    body.amount,
-                    &DepositMsg::Supply,
-                )
-                .await?,
-            );
+            steps.push(transfer_call_asset(
+                &ctx,
+                request.signer_account_id,
+                configuration.borrow_asset,
+                body.market_id.0,
+                body.amount,
+                &DepositMsg::Supply,
+            )?);
 
-            Ok(OperationPlan {
-                wait_until: request.wait_until,
-                steps,
-            })
+            Ok(OperationPlan { steps })
         })
     }
 }
@@ -408,15 +395,12 @@ impl PlanWrite for market::WithdrawCollateral {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.market(request.body.market_id)
-                    .withdraw_collateral(
-                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                        AmountArg {
-                            amount: request.body.amount,
-                        },
-                    )
-                    .await?,
+                ctx.market(request.body.market_id).withdraw_collateral(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    AmountArg {
+                        amount: request.body.amount,
+                    },
+                )?,
             ))
         })
     }
@@ -430,16 +414,13 @@ impl PlanWrite for market::ApplyInterest {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.market(body.market_id)
-                    .apply_interest(
-                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                        ApplyInterestArgs {
-                            account_id: body.account_id,
-                            snapshot_limit: body.snapshot_limit,
-                        },
-                    )
-                    .await?,
+                ctx.market(body.market_id).apply_interest(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    ApplyInterestArgs {
+                        account_id: body.account_id,
+                        snapshot_limit: body.snapshot_limit,
+                    },
+                )?,
             ))
         })
     }
@@ -474,22 +455,16 @@ impl PlanWrite for market::Repay {
                 }
             }
 
-            steps.push(
-                transfer_call_asset(
-                    &ctx,
-                    request.signer_account_id,
-                    configuration.borrow_asset,
-                    body.market_id.0,
-                    body.amount,
-                    &deposit_msg,
-                )
-                .await?,
-            );
+            steps.push(transfer_call_asset(
+                &ctx,
+                request.signer_account_id,
+                configuration.borrow_asset,
+                body.market_id.0,
+                body.amount,
+                &deposit_msg,
+            )?);
 
-            Ok(OperationPlan {
-                wait_until: request.wait_until,
-                steps,
-            })
+            Ok(OperationPlan { steps })
         })
     }
 }
@@ -501,15 +476,13 @@ impl PlanWrite for market::CreateSupplyWithdrawalRequest {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
                 ctx.market(request.body.market_id)
                     .create_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id).tgas(300),
                         AmountArg {
                             amount: request.body.amount,
                         },
-                    )
-                    .await?,
+                    )?,
             ))
         })
     }
@@ -522,13 +495,11 @@ impl PlanWrite for market::CancelSupplyWithdrawalRequest {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
                 ctx.market(request.body.market_id)
                     .cancel_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id).tgas(300),
                         (),
-                    )
-                    .await?,
+                    )?,
             ))
         })
     }
@@ -541,15 +512,13 @@ impl PlanWrite for market::ExecuteNextSupplyWithdrawalRequest {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
                 ctx.market(request.body.market_id)
                     .execute_next_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id).tgas(300),
                         BatchLimitArg {
                             batch_limit: request.body.batch_limit,
                         },
-                    )
-                    .await?,
+                    )?,
             ))
         })
     }
@@ -592,8 +561,7 @@ impl PlanWrite for market::WithdrawSupply {
                         AmountArg {
                             amount: body.amount,
                         },
-                    )
-                    .await?,
+                    )?,
             );
 
             if queue_status.length == 0 {
@@ -604,15 +572,11 @@ impl PlanWrite for market::WithdrawSupply {
                             BatchLimitArg {
                                 batch_limit: body.batch_limit,
                             },
-                        )
-                        .await?,
+                        )?,
                 );
             }
 
-            Ok(OperationPlan {
-                wait_until: request.wait_until,
-                steps,
-            })
+            Ok(OperationPlan { steps })
         })
     }
 }
@@ -656,25 +620,19 @@ impl PlanWrite for market::Liquidate {
                 }
             }
 
-            steps.push(
-                transfer_call_asset(
-                    &ctx,
-                    request.signer_account_id,
-                    configuration.borrow_asset,
-                    body.market_id.0,
-                    body.liquidation_amount,
-                    &DepositMsg::Liquidate(LiquidateMsg {
-                        account_id: body.account_id,
-                        amount: body.collateral_amount,
-                    }),
-                )
-                .await?,
-            );
+            steps.push(transfer_call_asset(
+                &ctx,
+                request.signer_account_id,
+                configuration.borrow_asset,
+                body.market_id.0,
+                body.liquidation_amount,
+                &DepositMsg::Liquidate(LiquidateMsg {
+                    account_id: body.account_id,
+                    amount: body.collateral_amount,
+                }),
+            )?);
 
-            Ok(OperationPlan {
-                wait_until: request.wait_until,
-                steps,
-            })
+            Ok(OperationPlan { steps })
         })
     }
 }
@@ -687,16 +645,13 @@ impl PlanWrite for market::HarvestYield {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.market(body.market_id)
-                    .harvest_yield(
-                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                        HarvestYieldArgs {
-                            account_id: body.account_id,
-                            mode: body.mode,
-                        },
-                    )
-                    .await?,
+                ctx.market(body.market_id).harvest_yield(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    HarvestYieldArgs {
+                        account_id: body.account_id,
+                        mode: body.mode,
+                    },
+                )?,
             ))
         })
     }
@@ -710,16 +665,13 @@ impl PlanWrite for market::AccumulateStaticYield {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.market(body.market_id)
-                    .accumulate_static_yield(
-                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                        AccumulateStaticYieldArgs {
-                            account_id: body.account_id,
-                            snapshot_limit: body.snapshot_limit,
-                        },
-                    )
-                    .await?,
+                ctx.market(body.market_id).accumulate_static_yield(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    AccumulateStaticYieldArgs {
+                        account_id: body.account_id,
+                        snapshot_limit: body.snapshot_limit,
+                    },
+                )?,
             ))
         })
     }
@@ -732,15 +684,12 @@ impl PlanWrite for market::WithdrawStaticYield {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.market(request.body.market_id)
-                    .withdraw_static_yield(
-                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                        AmountArg {
-                            amount: request.body.amount,
-                        },
-                    )
-                    .await?,
+                ctx.market(request.body.market_id).withdraw_static_yield(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    AmountArg {
+                        amount: request.body.amount,
+                    },
+                )?,
             ))
         })
     }
@@ -767,20 +716,17 @@ async fn ensure_storage_registration(
         return Ok(None);
     }
 
-    let tx_result = ctx
-        .storage(contract_id)
-        .storage_deposit(
-            ContractWriteOptions::new(signer_account_id)
-                .tgas(100)
-                .deposit(blockchain_gateway_core::NearToken::from_yoctonear(
-                    bounds.min.as_yoctonear(),
-                )),
-            StorageDepositArgs {
-                account_id: Some(account_id),
-                registration_only: true,
-            },
-        )
-        .await?;
+    let tx_result = ctx.storage(contract_id).storage_deposit(
+        ContractWriteOptions::new(signer_account_id)
+            .tgas(100)
+            .deposit(blockchain_gateway_core::NearToken::from_yoctonear(
+                bounds.min.as_yoctonear(),
+            )),
+        StorageDepositArgs {
+            account_id: Some(account_id),
+            registration_only: true,
+        },
+    )?;
     Ok(Some(tx_result))
 }
 
@@ -799,22 +745,20 @@ fn is_method_not_found(error: &crate::GatewayError) -> bool {
     matches!(error, crate::GatewayError::NearQuery(message) if message.contains("MethodNotFound"))
 }
 
-async fn transfer_call_asset<T: templar_common::asset::AssetClass>(
+fn transfer_call_asset<T: templar_common::asset::AssetClass>(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
     asset: FungibleAsset<T>,
     receiver_id: near_account_id::AccountId,
     amount: impl Into<u128>,
-    msg: &impl serde::Serialize,
+    msg: &DepositMsg,
 ) -> GatewayResult<PlannedTransaction> {
-    ctx.token(asset)
-        .transfer_call(
-            ContractWriteOptions::new(signer_account_id)
-                .tgas(300)
-                .one_yocto(),
-            receiver_id,
-            amount,
-            serde_json::to_string(msg)?,
-        )
-        .await
+    ctx.token(asset).transfer_call(
+        ContractWriteOptions::new(signer_account_id)
+            .tgas(300)
+            .one_yocto(),
+        receiver_id,
+        amount,
+        serde_json::to_string(msg)?,
+    )
 }

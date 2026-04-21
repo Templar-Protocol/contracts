@@ -18,7 +18,8 @@ pub enum OperationStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum StepStatus {
     NotStarted,
-    Submitted { tx_hash: Option<CryptoHash> },
+    Prepared { tx_hash: CryptoHash },
+    Submitted { tx_hash: CryptoHash },
     Succeeded { tx_hash: CryptoHash },
     Failed { tx_hash: Option<CryptoHash> },
 }

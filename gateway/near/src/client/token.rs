@@ -1,7 +1,8 @@
 use blockchain_gateway_core::U128;
+use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
 
-use crate::{GatewayResult, NearClient};
+use crate::{operation::PlannedTransaction, GatewayResult, NearClient};
 
 use super::{
     ft::TransferCallArgs as FtTransferCallArgs, mt::TransferCallArgs as MtTransferCallArgs,
@@ -32,41 +33,33 @@ impl<'a> TokenClient<'a> {
         unreachable!("fungible asset should always be NEP-141 or NEP-245")
     }
 
-    pub async fn transfer_call(
+    pub fn transfer_call(
         &self,
         options: ContractWriteOptions,
-        receiver_id: near_account_id::AccountId,
+        receiver_id: AccountId,
         amount: impl Into<u128>,
         msg: String,
-    ) -> GatewayResult<crate::operation::PlannedTransaction> {
+    ) -> GatewayResult<PlannedTransaction> {
         let amount = U128(amount.into());
 
         match self {
-            Self::Ft(client) => {
-                client
-                    .ft_transfer_call(
-                        options,
-                        FtTransferCallArgs {
-                            receiver_id,
-                            amount,
-                            msg,
-                        },
-                    )
-                    .await
-            }
-            Self::Mt { client, token_id } => {
-                client
-                    .mt_transfer_call(
-                        options,
-                        MtTransferCallArgs {
-                            receiver_id,
-                            token_id: token_id.clone(),
-                            amount,
-                            msg,
-                        },
-                    )
-                    .await
-            }
+            Self::Ft(client) => client.ft_transfer_call(
+                options,
+                FtTransferCallArgs {
+                    receiver_id,
+                    amount,
+                    msg,
+                },
+            ),
+            Self::Mt { client, token_id } => client.mt_transfer_call(
+                options,
+                MtTransferCallArgs {
+                    receiver_id,
+                    token_id: token_id.clone(),
+                    amount,
+                    msg,
+                },
+            ),
         }
     }
 

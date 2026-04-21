@@ -55,7 +55,6 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         .request::<oracle::UpdatePyth>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: oracle::UpdatePythBody {
                 oracle_id: pyth_oracle_id.clone(),
                 vaa: Base64Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
@@ -85,7 +84,6 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         .request::<oracle::UpdateRedStone>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: oracle::UpdateRedStoneBody {
                 oracle_id: redstone_oracle_id.clone(),
                 feed_id: "BTC".into(),
@@ -137,7 +135,6 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .request::<proxy_oracle_governance::Create>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 0,
@@ -157,7 +154,6 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .request::<proxy_oracle_governance::Execute>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::ExecuteBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 0,
@@ -170,7 +166,6 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .request::<proxy_oracle_governance::Create>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 1,
@@ -190,7 +185,6 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .request::<proxy_oracle_governance::Execute>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::ExecuteBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 1,
@@ -203,7 +197,6 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .request::<oracle::UpdatePrices>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: oracle::UpdatePricesBody {
                 oracle_id: proxy_oracle_id,
                 price_ids: vec![proxy_direct_id, proxy_redstone_id],
@@ -296,7 +289,6 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Create>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 0,
@@ -316,7 +308,6 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Execute>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::ExecuteBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 0,
@@ -329,7 +320,6 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Create>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 1,
@@ -349,7 +339,6 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_governance::Execute>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: proxy_oracle_governance::ExecuteBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 1,
@@ -421,7 +410,6 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),

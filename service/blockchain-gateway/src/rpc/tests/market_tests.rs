@@ -14,7 +14,6 @@ async fn call_function(
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id,
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id,
                 method_name: ContractMethodName(method_name.to_owned()),
@@ -37,7 +36,6 @@ async fn ensure_registered(
         .request::<storage::EnsureDeposit>(&WriteRequest {
             signer_account_id,
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::EnsureDepositBody {
                 contract_id,
                 account_id,
@@ -189,7 +187,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .request::<market::Supply>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::SupplyBody {
                 market_id: market_id.clone(),
                 amount: 100_000u128.into(),
@@ -209,7 +206,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
             .request::<market::HarvestYield>(&WriteRequest {
                 signer_account_id: stack.harness.gateway_signer_account_id.clone(),
                 idempotency_key: None,
-                wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
                 body: market::HarvestYieldBody {
                     market_id: market_id.clone(),
                     account_id: None,
@@ -256,7 +252,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .request::<market::Borrow>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::BorrowBody {
                 market_id: market_id.clone(),
                 amount: 60_000u128.into(),
@@ -269,7 +264,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .request::<market::Repay>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::RepayBody {
                 market_id: market_id.clone(),
                 amount: 10_000u128.into(),
@@ -342,7 +336,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .request::<market::Liquidate>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::LiquidateBody {
                 market_id: market_id.clone(),
                 account_id: stack.harness.cleanup_signer_account_id.0.clone(),
@@ -368,7 +361,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .request::<market::WithdrawSupply>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::WithdrawSupplyBody {
                 market_id: market_id.clone(),
                 amount: 20_000u128.into(),
@@ -457,7 +449,6 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
         .request::<registry::AddVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: registry::AddVersionBody {
                 registry_id: registry_id.clone(),
                 version_key: "market@1.0.0".to_owned(),
@@ -473,7 +464,6 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
         .request::<market::Create>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::CreateBody {
                 registry_id: registry_id.clone(),
                 name: "market-created".to_owned(),
@@ -680,7 +670,6 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
         .request::<market::ApplyInterest>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::ApplyInterestBody {
                 market_id: market_id.clone(),
                 account_id: None,
@@ -693,7 +682,6 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
         .request::<market::AccumulateStaticYield>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: market::AccumulateStaticYieldBody {
                 market_id,
                 account_id: Some(stack.harness.gateway_signer_account_id.0.clone()),

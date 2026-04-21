@@ -11,7 +11,6 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::AddVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: registry::AddVersionBody {
                 registry_id: registry_id.clone(),
                 version_key: version_key.clone(),
@@ -40,7 +39,6 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::Deploy>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: registry::DeployBody {
                 registry_id: registry_id.clone(),
                 name: "deployed-ft".to_owned(),
@@ -93,7 +91,6 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::RemoveVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: registry::RemoveVersionBody {
                 registry_id: registry_id.clone(),
                 version_key: version_key.clone(),

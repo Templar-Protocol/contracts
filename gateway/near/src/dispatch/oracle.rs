@@ -20,6 +20,7 @@ use templar_common::{
     time::Nanoseconds,
 };
 
+use crate::operation::PlannedTransaction;
 use crate::{
     actor::{DispatchRead, PlanWrite},
     client::{
@@ -155,16 +156,12 @@ impl PlanWrite for oracle::UpdatePyth {
     ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
             Ok(crate::operation::OperationPlan {
-                wait_until: request.wait_until,
-                steps: vec![
-                    submit_pyth_update(
-                        &ctx,
-                        request.signer_account_id,
-                        request.body.oracle_id,
-                        request.body.vaa.0,
-                    )
-                    .await?,
-                ],
+                steps: vec![submit_pyth_update(
+                    &ctx,
+                    request.signer_account_id,
+                    request.body.oracle_id,
+                    request.body.vaa.0,
+                )?],
             })
         })
     }
@@ -183,17 +180,13 @@ impl PlanWrite for oracle::UpdateRedStone {
                 .fetch_payload(vec![feed_id.clone()])
                 .await?;
             Ok(crate::operation::OperationPlan {
-                wait_until: request.wait_until,
-                steps: vec![
-                    submit_redstone_update(
-                        &ctx,
-                        request.signer_account_id,
-                        oracle_id,
-                        vec![feed_id],
-                        payload,
-                    )
-                    .await?,
-                ],
+                steps: vec![submit_redstone_update(
+                    &ctx,
+                    request.signer_account_id,
+                    oracle_id,
+                    vec![feed_id],
+                    payload,
+                )?],
             })
         })
     }
@@ -234,8 +227,7 @@ impl PlanWrite for oracle::UpdatePrices {
                 let price_ids = price_ids.into_iter().collect::<Vec<_>>();
                 let vaa = ctx.pyth_http().fetch_latest_vaa(&price_ids).await?;
                 let tx_result =
-                    submit_pyth_update(&ctx, request.signer_account_id.clone(), oracle_id, vaa)
-                        .await?;
+                    submit_pyth_update(&ctx, request.signer_account_id.clone(), oracle_id, vaa)?;
                 steps.push(tx_result);
             }
 
@@ -251,15 +243,11 @@ impl PlanWrite for oracle::UpdatePrices {
                     oracle_id,
                     feed_ids,
                     payload,
-                )
-                .await?;
+                )?;
                 steps.push(tx_result);
             }
 
-            Ok(crate::operation::OperationPlan {
-                wait_until: request.wait_until,
-                steps,
-            })
+            Ok(crate::operation::OperationPlan { steps })
         })
     }
 }
@@ -618,40 +606,36 @@ async fn resolve_update_requests(
     Ok(requests.into_iter().collect())
 }
 
-async fn submit_pyth_update(
+fn submit_pyth_update(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
     oracle_id: AccountId,
     vaa: Vec<u8>,
-) -> GatewayResult<crate::operation::PlannedTransaction> {
-    ctx.pyth_oracle(oracle_id)
-        .update_price_feeds(
-            ContractWriteOptions::new(signer_account_id)
-                .tgas(300)
-                .deposit(PYTH_UPDATE_DEPOSIT),
-            UpdatePriceFeedsArgs {
-                data: hex::encode(vaa),
-            },
-        )
-        .await
+) -> GatewayResult<PlannedTransaction> {
+    ctx.pyth_oracle(oracle_id).update_price_feeds(
+        ContractWriteOptions::new(signer_account_id)
+            .tgas(300)
+            .deposit(PYTH_UPDATE_DEPOSIT),
+        UpdatePriceFeedsArgs {
+            data: hex::encode(vaa),
+        },
+    )
 }
 
-async fn submit_redstone_update(
+fn submit_redstone_update(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
     oracle_id: AccountId,
     feed_ids: Vec<redstone::FeedId>,
     payload: Vec<u8>,
-) -> GatewayResult<crate::operation::PlannedTransaction> {
-    ctx.redstone_oracle(oracle_id)
-        .write_prices(
-            ContractWriteOptions::new(signer_account_id).tgas(300),
-            WritePricesArgs {
-                feed_ids,
-                payload: Base64VecU8(payload),
-            },
-        )
-        .await
+) -> GatewayResult<PlannedTransaction> {
+    ctx.redstone_oracle(oracle_id).write_prices(
+        ContractWriteOptions::new(signer_account_id).tgas(300),
+        WritePricesArgs {
+            feed_ids,
+            payload: Base64VecU8(payload),
+        },
+    )
 }
 
 fn system_time() -> Nanoseconds {

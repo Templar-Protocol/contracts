@@ -89,8 +89,6 @@ pub struct WriteRequest<T> {
     pub signer_account_id: ManagedAccountId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
-    #[serde(default)]
-    pub wait_until: TxExecutionStatus,
     #[serde(flatten)]
     pub body: T,
 }

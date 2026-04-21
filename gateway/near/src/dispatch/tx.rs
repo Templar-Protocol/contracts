@@ -52,9 +52,10 @@ impl PlanWrite for tx::FunctionCall {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(OperationPlan {
-                wait_until: request.wait_until,
                 steps: vec![PlannedTransaction {
                     signer_account_id: request.signer_account_id,
+                    wait_until:
+                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
                     receiver_id: request.body.receiver_id,
                     actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                         method_name: request.body.method_name.0,

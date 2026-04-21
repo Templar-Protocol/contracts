@@ -66,7 +66,6 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .request::<universal_account::Execute>(&WriteRequest {
             signer_account_id: stack.harness.universal_account_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: universal_account::ExecuteBody {
                 account_id: account_id.clone(),
                 args: signer.execute_args(payload),
@@ -95,7 +94,6 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .request::<registry::AddVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: registry::AddVersionBody {
                 registry_id: registry_id.clone(),
                 version_key: "ua@1.0.0".to_owned(),
@@ -115,7 +113,6 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .request::<universal_account::Create>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: universal_account::CreateBody {
                 registry_id: registry_id.clone(),
                 account_name: "ua-created".to_owned(),

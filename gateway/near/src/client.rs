@@ -55,7 +55,7 @@ impl ContractWriteOptions {
     pub fn new(signer_account_id: ManagedAccountId) -> Self {
         Self {
             signer_account_id,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::default(),
+            wait_until: blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
             gas: NearGas::from_tgas(30),
             deposit: NearToken::from_yoctonear(0),
         }

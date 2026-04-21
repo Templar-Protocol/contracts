@@ -1,10 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use blockchain_gateway_core::{
-    operation::{OperationId, OperationRecord, OperationStatus, StepStatus, TransactionStepRecord},
-    IdempotencyKey, ManagedAccountId,
-};
+use blockchain_gateway_core::{operation::OperationId, IdempotencyKey, ManagedAccountId};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -12,6 +9,7 @@ use crate::{
     operation::{OperationPlan, StoredOperation},
     GatewayResult,
 };
+use std::collections::VecDeque;
 
 pub mod postgres;
 
@@ -73,21 +71,11 @@ impl OperationStore for MemoryOperationStore {
         let operation = StoredOperation {
             request_fingerprint_hash,
             request_payload,
-            operation: OperationRecord {
-                id: OperationId(Uuid::new_v4().to_string()),
-                signer_account_id,
-                status: OperationStatus::Pending,
-                steps: plan
-                    .steps
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| TransactionStepRecord {
-                        index: index as u32,
-                        status: StepStatus::NotStarted,
-                    })
-                    .collect(),
-            },
-            plan,
+            id: OperationId(Uuid::new_v4().to_string()),
+            signer_account_id,
+            succeeded_steps: vec![],
+            current_step: None,
+            remaining_steps: VecDeque::from(plan.steps),
         };
 
         if let Some(idempotency_key) = idempotency_key {
@@ -119,8 +107,9 @@ impl OperationStore for MemoryOperationStore {
             .values()
             .filter(|operation| {
                 matches!(
-                    operation.operation.status,
-                    OperationStatus::Pending | OperationStatus::InProgress
+                    operation.status(),
+                    blockchain_gateway_core::OperationStatus::Pending
+                        | blockchain_gateway_core::OperationStatus::InProgress
                 )
             })
             .cloned()

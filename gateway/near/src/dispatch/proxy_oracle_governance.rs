@@ -93,18 +93,15 @@ impl PlanWrite for proxy_oracle_governance::Create {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.proxy_oracle(body.oracle_id)
-                    .gov_create(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .one_yocto()
-                            .tgas(300),
-                        GovCreateArgs {
-                            id: body.id,
-                            operation: body.operation,
-                        },
-                    )
-                    .await?,
+                ctx.proxy_oracle(body.oracle_id).gov_create(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .one_yocto()
+                        .tgas(300),
+                    GovCreateArgs {
+                        id: body.id,
+                        operation: body.operation,
+                    },
+                )?,
             ))
         })
     }
@@ -118,15 +115,12 @@ impl PlanWrite for proxy_oracle_governance::Cancel {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.proxy_oracle(body.oracle_id)
-                    .gov_cancel(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .one_yocto()
-                            .tgas(300),
-                        GovActionArgs { id: body.id },
-                    )
-                    .await?,
+                ctx.proxy_oracle(body.oracle_id).gov_cancel(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .one_yocto()
+                        .tgas(300),
+                    GovActionArgs { id: body.id },
+                )?,
             ))
         })
     }
@@ -140,15 +134,12 @@ impl PlanWrite for proxy_oracle_governance::Execute {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.proxy_oracle(body.oracle_id)
-                    .gov_execute(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .one_yocto()
-                            .tgas(300),
-                        GovActionArgs { id: body.id },
-                    )
-                    .await?,
+                ctx.proxy_oracle(body.oracle_id).gov_execute(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .one_yocto()
+                        .tgas(300),
+                    GovActionArgs { id: body.id },
+                )?,
             ))
         })
     }

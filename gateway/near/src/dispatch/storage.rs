@@ -6,8 +6,11 @@ use futures::future::BoxFuture;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
-    client::storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
-    dispatch::{function_call_transaction_json, single_transaction_plan},
+    client::{
+        storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
+        ContractWriteOptions,
+    },
+    dispatch::single_transaction_plan,
     GatewayContext, GatewayResult,
 };
 
@@ -54,21 +57,18 @@ impl DispatchRead for storage::GetBalanceOf {
 impl PlanWrite for storage::Deposit {
     fn plan(
         request: Self::Input,
-        _ctx: GatewayContext,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                function_call_transaction_json(
-                    request.signer_account_id,
-                    request.body.contract_id,
-                    "storage_deposit",
+                ctx.storage(request.body.contract_id).storage_deposit(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(request.body.deposit),
                     StorageDepositArgs {
                         account_id: request.body.beneficiary_id,
                         registration_only: request.body.registration_only,
                     },
-                    blockchain_gateway_core::NearGas::from_tgas(100),
-                    request.body.deposit,
                 )?,
             ))
         })
@@ -78,20 +78,17 @@ impl PlanWrite for storage::Deposit {
 impl PlanWrite for storage::Unregister {
     fn plan(
         request: Self::Input,
-        _ctx: GatewayContext,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                function_call_transaction_json(
-                    request.signer_account_id,
-                    request.body.contract_id,
-                    "storage_unregister",
+                ctx.storage(request.body.contract_id).storage_unregister(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
                     StorageUnregisterArgs {
                         force: request.body.force,
                     },
-                    blockchain_gateway_core::NearGas::from_tgas(100),
-                    blockchain_gateway_core::NearToken::from_yoctonear(1),
                 )?,
             ))
         })
@@ -122,24 +119,18 @@ impl PlanWrite for storage::EnsureDeposit {
             let plan = required_deposit(&body.mode, &bounds, balance.as_ref());
 
             if plan.deposit.is_zero() {
-                return Ok(crate::operation::OperationPlan {
-                    wait_until: request.wait_until,
-                    steps: vec![],
-                });
+                return Ok(crate::operation::OperationPlan { steps: vec![] });
             }
 
             Ok(single_transaction_plan(
-                request.wait_until,
-                function_call_transaction_json(
-                    request.signer_account_id,
-                    body.contract_id,
-                    "storage_deposit",
+                ctx.storage(body.contract_id).storage_deposit(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(plan.deposit),
                     StorageDepositArgs {
                         account_id: Some(body.account_id),
                         registration_only: plan.registration_only,
                     },
-                    blockchain_gateway_core::NearGas::from_tgas(100),
-                    plan.deposit,
                 )?,
             ))
         })

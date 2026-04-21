@@ -23,7 +23,6 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<storage::Deposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::DepositBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 beneficiary_id: Some(stack.harness.beneficiary_account_id.clone()),
@@ -68,7 +67,6 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
@@ -98,7 +96,6 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("ft_transfer".to_owned()),
@@ -132,7 +129,6 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("patch_storage_unregister".to_owned()),
@@ -174,7 +170,6 @@ async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result
         .request::<storage::EnsureDeposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::EnsureDepositBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),
@@ -190,7 +185,6 @@ async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result
         .request::<storage::EnsureDeposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::EnsureDepositBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),

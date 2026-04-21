@@ -1,11 +1,14 @@
 use blockchain_gateway_core::ft;
 use futures::future::BoxFuture;
-use near_api::types::transaction::actions::{Action, FunctionCallAction};
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
-    client::ft::GetBalanceOfArgs,
-    operation::{OperationPlan, PlannedTransaction},
+    client::{
+        ft::{GetBalanceOfArgs, TransferArgs},
+        ContractWriteOptions,
+    },
+    dispatch::single_transaction_plan,
+    operation::OperationPlan,
     GatewayContext, GatewayResult,
 };
 
@@ -30,25 +33,20 @@ impl DispatchRead for ft::GetBalanceOf {
 impl PlanWrite for ft::Transfer {
     fn plan(
         request: Self::Input,
-        _context: GatewayContext,
+        ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            Ok(OperationPlan {
-                wait_until: request.wait_until,
-                steps: vec![PlannedTransaction {
-                    signer_account_id: request.signer_account_id,
-                    receiver_id: request.body.contract_id,
-                    actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
-                        method_name: "ft_transfer".to_owned(),
-                        args: serde_json::to_vec(&serde_json::json!({
-                            "receiver_id": request.body.receiver_id,
-                            "amount": request.body.amount.0.to_string(),
-                        }))?,
-                        gas: blockchain_gateway_core::NearGas::from_tgas(100),
-                        deposit: blockchain_gateway_core::NearToken::from_yoctonear(1),
-                    }))],
-                }],
-            })
+            Ok(single_transaction_plan(
+                ctx.ft(request.body.contract_id).ft_transfer(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
+                    TransferArgs {
+                        receiver_id: request.body.receiver_id,
+                        amount: request.body.amount,
+                    },
+                )?,
+            ))
         })
     }
 }

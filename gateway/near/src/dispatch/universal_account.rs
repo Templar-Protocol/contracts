@@ -23,11 +23,7 @@ fn into_parameters_view(
         name: parameters.name,
         version: parameters.version,
         chain_id: parameters.chain_id.map(|value| value.0),
-        verifying_contract: parameters
-            .verifying_contract
-            .to_string()
-            .parse()
-            .expect("templar universal account should emit valid account ids"),
+        verifying_contract: parameters.verifying_contract,
         salt: parameters
             .salt
             .and_then(|value| serde_json::to_value(value).ok())
@@ -60,16 +56,13 @@ impl PlanWrite for universal_account::Execute {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.universal_account(request.body.account_id)
-                    .execute(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .gas(blockchain_gateway_core::NearGas::from_tgas(300)),
-                        UaExecuteArgs {
-                            args: request.body.args,
-                        },
-                    )
-                    .await?,
+                ctx.universal_account(request.body.account_id).execute(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .gas(blockchain_gateway_core::NearGas::from_tgas(300)),
+                    UaExecuteArgs {
+                        args: request.body.args,
+                    },
+                )?,
             ))
         })
     }
@@ -85,7 +78,6 @@ impl PlanWrite for universal_account::Create {
             plan_deploy_from_registry(
                 &ctx,
                 request.signer_account_id,
-                request.wait_until,
                 DeployBody {
                     registry_id: body.registry_id,
                     name: body.account_name,

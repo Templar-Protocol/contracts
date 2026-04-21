@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 use crate::{
     actor::{DispatchRead, PlanWrite},
     client::{
-        registry::{GetDeploymentArgs, RemoveVersionArgs},
+        registry::{AddVersionArgs, GetDeploymentArgs, RemoveVersionArgs},
         ContractWriteOptions,
     },
     dispatch::single_transaction_plan,
@@ -65,20 +65,17 @@ impl PlanWrite for registry::AddVersion {
             let body = request.body;
             let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.registry(body.registry_id)
-                    .add_version(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .tgas(300)
-                            .deposit(body.deposit),
-                        registry_version,
-                        crate::client::registry::AddVersionArgs {
-                            version_key: body.version_key,
-                            mode: body.deploy_mode,
-                            code: body.code.0,
-                        },
-                    )
-                    .await?,
+                ctx.registry(body.registry_id).add_version(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .tgas(300)
+                        .deposit(body.deposit),
+                    registry_version,
+                    AddVersionArgs {
+                        version_key: body.version_key,
+                        mode: body.deploy_mode,
+                        code: body.code.0,
+                    },
+                )?,
             ))
         })
     }
@@ -90,13 +87,7 @@ impl PlanWrite for registry::Deploy {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            plan_deploy_from_registry(
-                &ctx,
-                request.signer_account_id,
-                request.wait_until,
-                request.body,
-            )
-            .await
+            plan_deploy_from_registry(&ctx, request.signer_account_id, request.body).await
         })
     }
 }
@@ -104,29 +95,25 @@ impl PlanWrite for registry::Deploy {
 pub(crate) async fn plan_deploy_from_registry(
     ctx: &GatewayContext,
     signer_account_id: blockchain_gateway_core::ManagedAccountId,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
     body: registry::DeployBody,
 ) -> GatewayResult<OperationPlan> {
     let deposit = body.deposit;
     let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
     Ok(single_transaction_plan(
-        wait_until,
-        ctx.registry(body.registry_id)
-            .deploy(
-                ContractWriteOptions::new(signer_account_id)
-                    .tgas(300)
-                    .deposit(deposit),
-                registry_version,
-                crate::client::registry::DeployArgs {
-                    name: body.name,
-                    version_key: body.version_key,
-                    init_args: body.init_args,
-                    full_access_keys: body
-                        .full_access_keys
-                        .map(|keys| keys.into_iter().map(Into::into).collect()),
-                },
-            )
-            .await?,
+        ctx.registry(body.registry_id).deploy(
+            ContractWriteOptions::new(signer_account_id)
+                .tgas(300)
+                .deposit(deposit),
+            registry_version,
+            crate::client::registry::DeployArgs {
+                name: body.name,
+                version_key: body.version_key,
+                init_args: body.init_args,
+                full_access_keys: body
+                    .full_access_keys
+                    .map(|keys| keys.into_iter().map(Into::into).collect()),
+            },
+        )?,
     ))
 }
 
@@ -138,17 +125,14 @@ impl PlanWrite for registry::RemoveVersion {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                request.wait_until,
-                ctx.registry(body.registry_id)
-                    .remove_version(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .tgas(300)
-                            .one_yocto(),
-                        RemoveVersionArgs {
-                            version_key: body.version_key,
-                        },
-                    )
-                    .await?,
+                ctx.registry(body.registry_id).remove_version(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .tgas(300)
+                        .one_yocto(),
+                    RemoveVersionArgs {
+                        version_key: body.version_key,
+                    },
+                )?,
             ))
         })
     }

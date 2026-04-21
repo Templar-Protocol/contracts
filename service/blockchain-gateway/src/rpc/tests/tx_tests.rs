@@ -9,7 +9,6 @@ async fn tx_function_call_and_view_function_endpoints_work_against_sandbox() -> 
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
@@ -53,7 +52,6 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
             idempotency_key: Some(blockchain_gateway_core::IdempotencyKey(
                 "set-redemption-rate".to_owned(),
             )),
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
@@ -72,7 +70,6 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
             idempotency_key: Some(blockchain_gateway_core::IdempotencyKey(
                 "set-redemption-rate".to_owned(),
             )),
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
@@ -103,7 +100,6 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<storage::Deposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::DepositBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 beneficiary_id: Some(stack.harness.beneficiary_account_id.clone()),
@@ -118,7 +114,6 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: tx::FunctionCallBody {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
@@ -134,7 +129,6 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<ft::Transfer>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: ft::TransferBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
@@ -160,7 +154,6 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<storage::Unregister>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: storage::UnregisterBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 force: false,
@@ -185,7 +178,6 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<account::Delete>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::Final,
             body: account::DeleteBody {
                 beneficiary_id: stack.harness.beneficiary_account_id.clone(),
             },
