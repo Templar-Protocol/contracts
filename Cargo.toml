@@ -77,7 +77,7 @@ near-openapi-client = "0.8.0"
 near-parameters = "0.34.7"
 near-primitives = "0.34.7"
 near-primitives-core = "0.34.7"
-near-sdk = { version = "5.25", features = ["unstable"] }
+near-sdk = { version = "5.25", default-features = false, features = ["unstable"] }
 near-sdk-contract-tools = "4.0.0"
 near-token = "0.3.3"
 near-workspaces = "0.22.1"

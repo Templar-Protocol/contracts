@@ -16,7 +16,7 @@ near-api.workspace = true
 near-openapi-client.workspace = true
 near-account-id = { version = "2.6.0", features = ["serde", "schemars"] }
 near-contract-standards.workspace = true
-near-sdk.workspace = true
+near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
 reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -24,7 +24,7 @@ serde_json.workspace = true
 serde_json_canonicalizer = "0.3.2"
 sha2.workspace = true
 sqlx.workspace = true
-templar-common = { workspace = true, features = ["abi"] }
+templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true

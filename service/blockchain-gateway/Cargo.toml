@@ -15,6 +15,7 @@ futures.workspace = true
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
 near-account-id.workspace = true
 near-api.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +30,6 @@ url.workspace = true
 anyhow.workspace = true
 blockchain-gateway-testing = { path = "../../gateway/testing" }
 jsonrpsee = { workspace = true, features = ["server"] }
-near-sdk = { workspace = true, features = ["unit-testing"] }
 reqwest.workspace = true
 templar-common.workspace = true
 templar-universal-account.workspace = true
