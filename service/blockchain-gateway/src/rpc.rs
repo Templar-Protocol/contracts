@@ -13,6 +13,128 @@ use jsonrpsee::{
     RpcModule,
 };
 
+macro_rules! for_each_gateway_method {
+    ($callback:ident, $target:expr) => {
+        $callback!($target, read, account::Get);
+        $callback!($target, write, account::Delete);
+        $callback!($target, read, contract::ViewFunction);
+        $callback!($target, read, contract::GetVersion);
+        $callback!($target, read, ft::GetBalanceOf);
+        $callback!($target, write, ft::Transfer);
+        $callback!($target, write, ft::TransferCall);
+        $callback!($target, read, lst_oracle::GetOracleId);
+        $callback!($target, read, lst_oracle::ListTransformers);
+        $callback!($target, read, lst_oracle::GetTransformer);
+        $callback!($target, read, market::GetConfiguration);
+        $callback!($target, read, market::GetCurrentSnapshot);
+        $callback!($target, read, market::GetFinalizedSnapshotsLen);
+        $callback!($target, read, market::ListFinalizedSnapshots);
+        $callback!($target, read, market::GetBorrowAssetMetrics);
+        $callback!($target, read, market::ListBorrowPositions);
+        $callback!($target, read, market::GetBorrowPosition);
+        $callback!($target, read, market::GetBorrowPositionPendingInterest);
+        $callback!($target, read, market::GetBorrowStatus);
+        $callback!($target, read, market::ListSupplyPositions);
+        $callback!($target, read, market::GetSupplyPosition);
+        $callback!($target, read, market::GetSupplyPositionPendingYield);
+        $callback!($target, read, market::GetSupplyWithdrawalRequestStatus);
+        $callback!($target, read, market::GetSupplyWithdrawalQueueStatus);
+        $callback!($target, read, market::GetLastYieldRate);
+        $callback!($target, read, market::GetStaticYield);
+        $callback!($target, write, market::Create);
+        $callback!($target, write, market::Borrow);
+        $callback!($target, write, market::Supply);
+        $callback!($target, write, market::WithdrawCollateral);
+        $callback!($target, write, market::ApplyInterest);
+        $callback!($target, write, market::Repay);
+        $callback!($target, write, market::CreateSupplyWithdrawalRequest);
+        $callback!($target, write, market::CancelSupplyWithdrawalRequest);
+        $callback!($target, write, market::ExecuteNextSupplyWithdrawalRequest);
+        $callback!($target, write, market::WithdrawSupply);
+        $callback!($target, write, market::Liquidate);
+        $callback!($target, write, market::HarvestYield);
+        $callback!($target, write, market::AccumulateStaticYield);
+        $callback!($target, write, market::WithdrawStaticYield);
+        $callback!($target, read, mt::GetBalanceOf);
+        $callback!($target, read, mt::GetBatchBalanceOf);
+        $callback!($target, read, mt::GetSupply);
+        $callback!($target, read, mt::GetBatchSupply);
+        $callback!($target, write, mt::Transfer);
+        $callback!($target, write, mt::TransferCall);
+        $callback!($target, read, oracle::GetKind);
+        $callback!($target, read, oracle::GetPriceResolutionDependencies);
+        $callback!($target, read, oracle::ResolvePrice);
+        $callback!($target, read, oracle::ResolvePrices);
+        $callback!($target, read, oracle::GetPrice);
+        $callback!($target, read, oracle::GetPrices);
+        $callback!($target, write, oracle::UpdatePyth);
+        $callback!($target, write, oracle::UpdateRedStone);
+        $callback!($target, write, oracle::UpdatePrices);
+        $callback!($target, read, pyth::ListEmaPricesNoOlderThan);
+        $callback!($target, read, pyth::ListEmaPricesUnsafe);
+        $callback!($target, write, pyth::UpdatePriceFeeds);
+        $callback!($target, read, proxy_oracle::ListProxies);
+        $callback!($target, read, proxy_oracle::GetProxy);
+        $callback!($target, read, proxy_oracle::PriceFeedExists);
+        $callback!($target, read, proxy_oracle_governance::GetNextId);
+        $callback!($target, read, proxy_oracle_governance::GetTtl);
+        $callback!($target, read, proxy_oracle_governance::GetCount);
+        $callback!($target, read, proxy_oracle_governance::List);
+        $callback!($target, read, proxy_oracle_governance::Get);
+        $callback!($target, write, proxy_oracle_governance::Create);
+        $callback!($target, write, proxy_oracle_governance::Cancel);
+        $callback!($target, write, proxy_oracle_governance::Execute);
+        $callback!($target, read, proxy_oracle_owner::GetOwner);
+        $callback!($target, read, proxy_oracle_owner::GetProposedOwner);
+        $callback!($target, write, proxy_oracle_owner::ProposeOwner);
+        $callback!($target, write, proxy_oracle_owner::AcceptOwner);
+        $callback!($target, write, proxy_oracle_owner::RenounceOwner);
+        $callback!($target, read, redstone::GetConfig);
+        $callback!($target, read, redstone::ReadPriceData);
+        $callback!($target, read, redstone::ListRole);
+        $callback!($target, write, redstone::SetRole);
+        $callback!($target, write, redstone::WritePrices);
+        $callback!($target, read, ref_finance::GetPools);
+        $callback!($target, read, registry::GetDeployment);
+        $callback!($target, read, registry::ListDeployments);
+        $callback!($target, read, registry::ListVersions);
+        $callback!($target, write, registry::AddVersion);
+        $callback!($target, write, registry::RemoveVersion);
+        $callback!($target, write, registry::Deploy);
+        $callback!($target, read, storage::GetBalanceBounds);
+        $callback!($target, read, storage::GetBalanceOf);
+        $callback!($target, write, storage::Deposit);
+        $callback!($target, write, storage::EnsureDeposit);
+        $callback!($target, write, storage::Unregister);
+        $callback!($target, read, token::GetBalanceOf);
+        $callback!($target, write, token::Transfer);
+        $callback!($target, write, token::TransferCall);
+        $callback!($target, read, tx::Get);
+        $callback!($target, write, tx::FunctionCall);
+        $callback!($target, write, tx::Transfer);
+        $callback!($target, write, tx::DeployContract);
+        $callback!($target, write, tx::DeployAndInit);
+        $callback!($target, read, universal_account::GetKey);
+        $callback!($target, write, universal_account::Execute);
+        $callback!($target, write, universal_account::Create);
+    };
+}
+
+macro_rules! register_gateway_method {
+    ($target:expr, read, $spec:path) => {
+        register_read::<$spec>($target)?;
+    };
+    ($target:expr, write, $spec:path) => {
+        register_write::<$spec>($target)?;
+    };
+}
+
+macro_rules! push_gateway_method {
+    ($target:expr, $kind:ident, $spec:path) => {
+        $target.push(crate::openrpc::method::<$spec>());
+    };
+}
+
 const GATEWAY_SERVER_ERROR_CODE: i32 = -32000;
 
 #[allow(clippy::needless_pass_by_value)]
@@ -54,114 +176,21 @@ fn register_read<Spec: DispatchRead>(
     Ok(())
 }
 
+fn discover_document() -> crate::openrpc::Document {
+    let mut methods = Vec::new();
+    for_each_gateway_method!(push_gateway_method, methods);
+    methods.push(crate::openrpc::method::<op::Get>());
+    methods.push(crate::openrpc::discover_method());
+    crate::openrpc::discover(methods)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn attach_gateway(
     service: GatewayService,
 ) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
     let mut m = RpcModule::new(service);
 
-    register_read::<account::Get>(&mut m)?;
-    register_write::<account::Delete>(&mut m)?;
-    register_read::<contract::ViewFunction>(&mut m)?;
-    register_read::<contract::GetVersion>(&mut m)?;
-    register_read::<ft::GetBalanceOf>(&mut m)?;
-    register_write::<ft::Transfer>(&mut m)?;
-    register_write::<ft::TransferCall>(&mut m)?;
-    register_read::<lst_oracle::GetOracleId>(&mut m)?;
-    register_read::<lst_oracle::ListTransformers>(&mut m)?;
-    register_read::<lst_oracle::GetTransformer>(&mut m)?;
-    register_read::<market::GetConfiguration>(&mut m)?;
-    register_read::<market::GetCurrentSnapshot>(&mut m)?;
-    register_read::<market::GetFinalizedSnapshotsLen>(&mut m)?;
-    register_read::<market::ListFinalizedSnapshots>(&mut m)?;
-    register_read::<market::GetBorrowAssetMetrics>(&mut m)?;
-    register_read::<market::ListBorrowPositions>(&mut m)?;
-    register_read::<market::GetBorrowPosition>(&mut m)?;
-    register_read::<market::GetBorrowPositionPendingInterest>(&mut m)?;
-    register_read::<market::GetBorrowStatus>(&mut m)?;
-    register_read::<market::ListSupplyPositions>(&mut m)?;
-    register_read::<market::GetSupplyPosition>(&mut m)?;
-    register_read::<market::GetSupplyPositionPendingYield>(&mut m)?;
-    register_read::<market::GetSupplyWithdrawalRequestStatus>(&mut m)?;
-    register_read::<market::GetSupplyWithdrawalQueueStatus>(&mut m)?;
-    register_read::<market::GetLastYieldRate>(&mut m)?;
-    register_read::<market::GetStaticYield>(&mut m)?;
-    register_write::<market::Create>(&mut m)?;
-    register_write::<market::Borrow>(&mut m)?;
-    register_write::<market::Supply>(&mut m)?;
-    register_write::<market::WithdrawCollateral>(&mut m)?;
-    register_write::<market::ApplyInterest>(&mut m)?;
-    register_write::<market::Repay>(&mut m)?;
-    register_write::<market::CreateSupplyWithdrawalRequest>(&mut m)?;
-    register_write::<market::CancelSupplyWithdrawalRequest>(&mut m)?;
-    register_write::<market::ExecuteNextSupplyWithdrawalRequest>(&mut m)?;
-    register_write::<market::WithdrawSupply>(&mut m)?;
-    register_write::<market::Liquidate>(&mut m)?;
-    register_write::<market::HarvestYield>(&mut m)?;
-    register_write::<market::AccumulateStaticYield>(&mut m)?;
-    register_write::<market::WithdrawStaticYield>(&mut m)?;
-    register_read::<mt::GetBalanceOf>(&mut m)?;
-    register_read::<mt::GetBatchBalanceOf>(&mut m)?;
-    register_read::<mt::GetSupply>(&mut m)?;
-    register_read::<mt::GetBatchSupply>(&mut m)?;
-    register_write::<mt::Transfer>(&mut m)?;
-    register_write::<mt::TransferCall>(&mut m)?;
-    register_read::<oracle::GetKind>(&mut m)?;
-    register_read::<oracle::GetPriceResolutionDependencies>(&mut m)?;
-    register_read::<oracle::ResolvePrice>(&mut m)?;
-    register_read::<oracle::ResolvePrices>(&mut m)?;
-    register_read::<oracle::GetPrice>(&mut m)?;
-    register_read::<oracle::GetPrices>(&mut m)?;
-    register_write::<oracle::UpdatePyth>(&mut m)?;
-    register_write::<oracle::UpdateRedStone>(&mut m)?;
-    register_write::<oracle::UpdatePrices>(&mut m)?;
-    register_read::<pyth::ListEmaPricesNoOlderThan>(&mut m)?;
-    register_read::<pyth::ListEmaPricesUnsafe>(&mut m)?;
-    register_write::<pyth::UpdatePriceFeeds>(&mut m)?;
-    register_read::<proxy_oracle::ListProxies>(&mut m)?;
-    register_read::<proxy_oracle::GetProxy>(&mut m)?;
-    register_read::<proxy_oracle::PriceFeedExists>(&mut m)?;
-    register_read::<proxy_oracle_governance::GetNextId>(&mut m)?;
-    register_read::<proxy_oracle_governance::GetTtl>(&mut m)?;
-    register_read::<proxy_oracle_governance::GetCount>(&mut m)?;
-    register_read::<proxy_oracle_governance::List>(&mut m)?;
-    register_read::<proxy_oracle_governance::Get>(&mut m)?;
-    register_write::<proxy_oracle_governance::Create>(&mut m)?;
-    register_write::<proxy_oracle_governance::Cancel>(&mut m)?;
-    register_write::<proxy_oracle_governance::Execute>(&mut m)?;
-    register_read::<proxy_oracle_owner::GetOwner>(&mut m)?;
-    register_read::<proxy_oracle_owner::GetProposedOwner>(&mut m)?;
-    register_write::<proxy_oracle_owner::ProposeOwner>(&mut m)?;
-    register_write::<proxy_oracle_owner::AcceptOwner>(&mut m)?;
-    register_write::<proxy_oracle_owner::RenounceOwner>(&mut m)?;
-    register_read::<redstone::GetConfig>(&mut m)?;
-    register_read::<redstone::ReadPriceData>(&mut m)?;
-    register_read::<redstone::ListRole>(&mut m)?;
-    register_write::<redstone::SetRole>(&mut m)?;
-    register_write::<redstone::WritePrices>(&mut m)?;
-    register_read::<ref_finance::GetPools>(&mut m)?;
-    register_read::<registry::GetDeployment>(&mut m)?;
-    register_read::<registry::ListDeployments>(&mut m)?;
-    register_read::<registry::ListVersions>(&mut m)?;
-    register_write::<registry::AddVersion>(&mut m)?;
-    register_write::<registry::RemoveVersion>(&mut m)?;
-    register_write::<registry::Deploy>(&mut m)?;
-    register_read::<storage::GetBalanceBounds>(&mut m)?;
-    register_read::<storage::GetBalanceOf>(&mut m)?;
-    register_write::<storage::Deposit>(&mut m)?;
-    register_write::<storage::EnsureDeposit>(&mut m)?;
-    register_write::<storage::Unregister>(&mut m)?;
-    register_read::<token::GetBalanceOf>(&mut m)?;
-    register_write::<token::Transfer>(&mut m)?;
-    register_write::<token::TransferCall>(&mut m)?;
-    register_read::<tx::Get>(&mut m)?;
-    register_write::<tx::FunctionCall>(&mut m)?;
-    register_write::<tx::Transfer>(&mut m)?;
-    register_write::<tx::DeployContract>(&mut m)?;
-    register_write::<tx::DeployAndInit>(&mut m)?;
-    register_read::<universal_account::GetKey>(&mut m)?;
-    register_write::<universal_account::Execute>(&mut m)?;
-    register_write::<universal_account::Create>(&mut m)?;
+    for_each_gateway_method!(register_gateway_method, &mut m);
 
     m.register_async_method(op::Get::RPC_METHOD, move |params, service, _| async move {
         let params: <op::Get as MethodSpec>::Input = params.parse()?;
@@ -170,6 +199,10 @@ pub fn attach_gateway(
             .await
             .map_err(map_gateway_error)?;
         RpcResult::Ok(op::GetResult { operation: result })
+    })?;
+
+    m.register_method("rpc.discover", move |_, _, _| {
+        RpcResult::Ok(discover_document())
     })?;
 
     Ok(m)

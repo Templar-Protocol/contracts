@@ -1,4 +1,4 @@
-use near_sdk::{env, json_types::U128, near, AccountId, PanicOnDefault, PromiseOrValue};
+use near_sdk::{json_types::U128, near, AccountId, PanicOnDefault, PromiseOrValue};
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]

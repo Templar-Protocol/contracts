@@ -1,5 +1,6 @@
 mod config;
 mod logging;
+mod openrpc;
 mod rpc;
 
 use blockchain_gateway_near::{GatewayContext, GatewayService, PostgresStore};

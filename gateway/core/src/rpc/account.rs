@@ -23,7 +23,16 @@ pub struct GetResult {
     pub global_contract_account_id: Option<AccountId>,
 }
 
-public_read_method_spec!(Get, "account.get", GetParams, GetResult);
+public_read_method_spec!(
+    /// Get chain state for a NEAR account.
+    ///
+    /// Returns balances, storage usage, and contract hash information for the
+    /// requested account.
+    Get,
+    "account.get",
+    GetParams,
+    GetResult
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteBody {
@@ -32,4 +41,10 @@ pub struct DeleteBody {
 
 pub type DeleteResult = WriteOperationResult;
 
-write_method_spec!(Delete, "account.delete", DeleteBody, DeleteResult);
+write_method_spec!(
+    /// Delete a managed account and send remaining funds to a beneficiary.
+    Delete,
+    "account.delete",
+    DeleteBody,
+    DeleteResult
+);

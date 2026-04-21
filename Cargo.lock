@@ -1775,6 +1775,8 @@ name = "blockchain-gateway-core"
 version = "1.2.1"
 dependencies = [
  "base64 0.22.1",
+ "blockchain-gateway-macros",
+ "borsh 1.6.1",
  "near-account-id",
  "near-api-types",
  "near-gas",
@@ -1788,6 +1790,15 @@ dependencies = [
  "templar-universal-account",
  "thiserror 2.0.18",
  "uuid 1.23.0",
+]
+
+[[package]]
+name = "blockchain-gateway-macros"
+version = "1.2.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1842,6 +1853,8 @@ dependencies = [
  "near-account-id",
  "near-api",
  "near-sdk",
+ "reqwest 0.12.28",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sqlx",

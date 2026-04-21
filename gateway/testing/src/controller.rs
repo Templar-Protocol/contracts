@@ -16,6 +16,10 @@ impl TestController {
         }
     }
 
+    pub fn request_url(&self) -> &str {
+        &self.rpc_url
+    }
+
     pub async fn request<Spec>(&self, params: &Spec::Input) -> Result<Spec::Output>
     where
         Spec: MethodSpec,

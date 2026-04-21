@@ -1,4 +1,5 @@
 mod account_tests;
+mod discover_tests;
 mod ft_tests;
 mod lst_oracle_tests;
 mod market_tests;
@@ -212,4 +213,20 @@ async fn view_contract_json(
         })
         .await?
         .value)
+}
+
+async fn rpc_discover(stack: &TestStack) -> Result<serde_json::Value> {
+    let response = reqwest::Client::new()
+        .post(stack.controller.request_url())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "rpc.discover",
+            "params": {},
+            "id": 1,
+        }))
+        .send()
+        .await?;
+
+    let value: serde_json::Value = response.json().await?;
+    Ok(value["result"].clone())
 }

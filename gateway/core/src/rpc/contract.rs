@@ -17,6 +17,10 @@ pub struct ViewFunctionResult {
 }
 
 public_read_method_spec!(
+    /// Call a contract view method with arbitrary arguments.
+    ///
+    /// This is the generic escape hatch for read-only contract calls when a
+    /// more specific typed RPC method is not available.
     ViewFunction,
     "contract.viewFunction",
     ViewFunctionParams,
@@ -35,6 +39,7 @@ pub struct VersionResult {
 }
 
 public_read_method_spec!(
+    /// Read a contract version from NEP-330 metadata.
     GetVersion,
     "contract.getVersion",
     GetVersionParams,

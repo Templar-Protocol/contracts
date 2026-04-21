@@ -20,7 +20,7 @@ pub use rpc::{
     proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
     token, tx, universal_account,
 };
-pub use spec::MethodSpec;
+pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
 pub use version::{
     Market, MarketVersion, ParseError as VersionParseError, Registry, RegistryVersion, Version,
 };

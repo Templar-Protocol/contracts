@@ -7,6 +7,8 @@ repository.workspace = true
 
 [dependencies]
 base64.workspace = true
+blockchain-gateway-macros = { path = "../macros" }
+borsh.workspace = true
 near-api-types = "0.8.5"
 near-openapi-types.workspace = true
 near-account-id = { workspace = true, features = ["serde", "schemars"] }

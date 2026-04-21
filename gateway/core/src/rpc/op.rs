@@ -13,4 +13,10 @@ pub struct GetResult {
     pub operation: Option<OperationRecord>,
 }
 
-public_read_method_spec!(Get, "op.get", GetParams, GetResult);
+public_read_method_spec!(
+    /// Look up a previously submitted operation by ID.
+    Get,
+    "op.get",
+    GetParams,
+    GetResult
+);

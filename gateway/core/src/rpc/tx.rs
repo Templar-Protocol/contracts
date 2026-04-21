@@ -49,7 +49,13 @@ pub struct GetResult {
     pub return_value: Option<ReturnValue>,
 }
 
-public_read_method_spec!(Get, "tx.get", GetParams, GetResult);
+public_read_method_spec!(
+    /// Fetch transaction execution status and result details.
+    Get,
+    "tx.get",
+    GetParams,
+    GetResult
+);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FunctionCallBody {
@@ -63,6 +69,7 @@ pub struct FunctionCallBody {
 pub type FunctionCallResult = WriteOperationResult;
 
 write_method_spec!(
+    /// Submit a single function-call transaction.
     FunctionCall,
     "tx.functionCall",
     FunctionCallBody,
@@ -77,7 +84,13 @@ pub struct TransferBody {
 
 pub type TransferResult = WriteOperationResult;
 
-write_method_spec!(Transfer, "tx.transfer", TransferBody, TransferResult);
+write_method_spec!(
+    /// Transfer native NEAR to another account.
+    Transfer,
+    "tx.transfer",
+    TransferBody,
+    TransferResult
+);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DeployContractBody {
@@ -88,6 +101,7 @@ pub struct DeployContractBody {
 pub type DeployContractResult = WriteOperationResult;
 
 write_method_spec!(
+    /// Deploy contract code to an existing account in a single transaction.
     DeployContract,
     "tx.deployContract",
     DeployContractBody,
@@ -107,6 +121,7 @@ pub struct DeployAndInitBody {
 pub type DeployAndInitResult = WriteOperationResult;
 
 write_method_spec!(
+    /// Deploy contract code and call its init method in one transaction.
     DeployAndInit,
     "tx.deployAndInit",
     DeployAndInitBody,

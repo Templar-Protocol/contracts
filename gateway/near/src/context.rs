@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use blockchain_gateway_core::{ManagedAccountId, MarketId, RegistryId, UniversalAccountId};
 use near_account_id::AccountId;
 use near_api::NetworkConfig;
-use near_sdk::serde::Deserialize;
+use serde::Deserialize;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::oracle::redstone::FeedId;
 use templar_redstone_bridge::Bridge;
@@ -38,19 +38,16 @@ impl PythHttpClient {
 
     pub async fn fetch_latest_vaa(&self, price_ids: &[PriceIdentifier]) -> GatewayResult<Vec<u8>> {
         #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
         struct ResponseBody {
             binary: Binary,
         }
 
         #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
         struct Binary {
             data: [Data; 1],
         }
 
         #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
         struct Data(#[serde(deserialize_with = "hex::deserialize")] Vec<u8>);
 
         let mut request = self.http.get(format!(
