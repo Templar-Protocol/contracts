@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id,\n                rpc_method,\n                signer_account_id,\n                idempotency_key,\n                request_fingerprint_hash,\n                request_payload,\n                status as \"status: OperationStatusRow\",\n                created_at,\n                updated_at\n            FROM gateway_operations\n            WHERE status IN ('pending', 'in_progress')\n            ORDER BY created_at ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "rpc_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "signer_account_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "idempotency_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "request_fingerprint_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "request_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "status: OperationStatusRow",
+        "type_info": {
+          "Custom": {
+            "name": "gateway_operation_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "in_progress",
+                "succeeded",
+                "failed"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "85c1c9ef6fd57ff5ad2e9317cc291657b15d66857debc934548f59ee7ce14df9"
+}

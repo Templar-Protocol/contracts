@@ -102,6 +102,7 @@ pub enum CurrentStep {
 
 #[derive(Debug, Clone)]
 pub struct StoredOperation {
+    pub rpc_method: String,
     pub request_fingerprint_hash: [u8; 32],
     #[allow(dead_code)]
     pub request_payload: Vec<u8>,

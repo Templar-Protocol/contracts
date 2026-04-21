@@ -12,3 +12,4 @@ pub use client::NearClient;
 pub use context::{GatewayContext, PythHttpClient, RedStoneBridgeClient};
 pub use error::{GatewayError, GatewayResult};
 pub use service::GatewayService;
+pub use store::{MemoryOperationStore, OperationStore, PostgresStore, SharedOperationStore};

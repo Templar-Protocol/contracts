@@ -1,6 +1,6 @@
 use blockchain_gateway_core::{
-    account, contract, ft, market, oracle, proxy_oracle, proxy_oracle_governance,
-    proxy_oracle_owner, registry, storage, tx, universal_account,
+    account, contract, ft, market, op, oracle, proxy_oracle, proxy_oracle_governance,
+    proxy_oracle_owner, registry, storage, tx, universal_account, MethodSpec,
 };
 use blockchain_gateway_near::{
     actor::{DispatchRead, PlanWrite},
@@ -135,6 +135,15 @@ pub fn attach_gateway(
     register_read::<universal_account::GetKey>(&mut m)?;
     register_write::<universal_account::Execute>(&mut m)?;
     register_write::<universal_account::Create>(&mut m)?;
+
+    m.register_async_method(op::Get::RPC_METHOD, move |params, service, _| async move {
+        let params: <op::Get as MethodSpec>::Input = params.parse()?;
+        let result = service
+            .get_operation(&params.params.operation_id)
+            .await
+            .map_err(map_gateway_error)?;
+        RpcResult::Ok(op::GetResult { operation: result })
+    })?;
 
     Ok(m)
 }

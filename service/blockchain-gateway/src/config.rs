@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::{net::SocketAddr, path::PathBuf};
 
 use blockchain_gateway_core::ManagedAccountId;
-use blockchain_gateway_near::ManagedSigner;
+use blockchain_gateway_near::{ManagedSigner, PostgresStore, SharedOperationStore};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
@@ -62,6 +62,14 @@ pub struct Config {
     )]
     pub near_rpc_url: Url,
 
+    /// Postgres database URL for durable gateway operation storage.
+    #[arg(long, env = "GATEWAY_DATABASE_URL")]
+    pub database_url: Option<String>,
+
+    /// Run gateway Postgres migrations during startup.
+    #[arg(long, env = "GATEWAY_DATABASE_MIGRATE", default_value_t = false)]
+    pub migrate_database: bool,
+
     /// Pyth Hermes API URL used when the gateway needs to fetch fresh update payloads.
     #[arg(
         long,
@@ -97,6 +105,14 @@ impl Config {
 
         signers
     }
+
+    pub fn build_store(&self) -> Result<Option<SharedOperationStore>, sqlx::Error> {
+        self.database_url
+            .as_deref()
+            .map(PostgresStore::new)
+            .transpose()
+            .map(|store| store.map(|store| std::sync::Arc::new(store) as SharedOperationStore))
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +137,8 @@ mod tests {
             config.near_rpc_url.as_str(),
             "https://rpc.mainnet.near.org/"
         );
+        assert_eq!(config.database_url, None);
+        assert!(!config.migrate_database);
         assert_eq!(
             config.pyth_hermes_url.as_str(),
             "https://hermes-beta.pyth.network/"

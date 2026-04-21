@@ -2,7 +2,7 @@ mod config;
 mod logging;
 mod rpc;
 
-use blockchain_gateway_near::{GatewayContext, GatewayService};
+use blockchain_gateway_near::{GatewayContext, GatewayService, PostgresStore};
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use near_api::NetworkConfig;
@@ -19,13 +19,33 @@ async fn main() {
     let _log_guard = logging::init();
 
     let signers = config.build_signers().await;
+    let store = config
+        .build_store()
+        .expect("failed to initialize gateway operation store");
+
+    if config.migrate_database {
+        let Some(database_url) = config.database_url.as_deref() else {
+            panic!("--migrate-database requires GATEWAY_DATABASE_URL to be set");
+        };
+        PostgresStore::new(database_url)
+            .expect("failed to initialize Postgres store for migration")
+            .migrate()
+            .await
+            .expect("failed to run gateway database migrations");
+    }
+
     let context = GatewayContext::new(
         NetworkConfig::from_rpc_url("gateway", config.near_rpc_url),
         config.pyth_hermes_url,
         &config.redstone_node_path,
     )
     .expect("failed to initialize gateway context");
-    let gateway = GatewayService::spawn(context, signers);
+    let gateway = if let Some(store) = store {
+        GatewayService::spawn_with_store(context, signers, store)
+    } else {
+        tracing::warn!("no gateway database configured; using in-memory operation store");
+        GatewayService::spawn(context, signers)
+    };
 
     let server = ServerBuilder::default()
         .build(config.listen_addr)

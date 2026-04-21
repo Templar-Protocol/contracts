@@ -49,3 +49,9 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 - Prefer a domain namespace over a low-level namespace when the method represents a standard or protocol concept.
 - Prefer first-class typed methods when permissioning or validation matters.
 - Use `contract.viewFunction` only for generic contract views that do not deserve a more specific typed RPC.
+
+## Local DB
+
+- Use a local Postgres server with separate databases per crate.
+- Run gateway migrations from `gateway/near/`.
+- Run `cargo sqlx prepare` from `gateway/near/` so `.sqlx` stays crate-local.

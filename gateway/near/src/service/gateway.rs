@@ -42,6 +42,14 @@ impl GatewayService {
         context: GatewayContext,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
     ) -> Self {
+        Self::spawn_with_store(context, signers, Arc::new(MemoryOperationStore::new()))
+    }
+
+    pub fn spawn_with_store(
+        context: GatewayContext,
+        signers: HashMap<ManagedAccountId, ManagedSigner>,
+        store: SharedOperationStore,
+    ) -> Self {
         let (runtime, read, write) = spawn_runtime(context.clone(), signers);
 
         let service = Self {
@@ -49,7 +57,7 @@ impl GatewayService {
                 context,
                 read,
                 write,
-                store: Arc::new(MemoryOperationStore::new()),
+                store,
             }),
             runtime: Arc::new(Mutex::new(Some(runtime))),
         };
@@ -85,6 +93,18 @@ impl GatewayService {
             .map_err(|error| map_mailbox_error(error, "read-actor"))?
     }
 
+    pub async fn get_operation(
+        &self,
+        operation_id: &blockchain_gateway_core::OperationId,
+    ) -> GatewayResult<Option<blockchain_gateway_core::OperationRecord>> {
+        Ok(self
+            .inner
+            .store
+            .get_by_id(operation_id)
+            .await?
+            .map(|operation| operation.operation_record()))
+    }
+
     pub async fn request_write<Request>(
         &self,
         params: Request::Input,
@@ -113,6 +133,7 @@ impl GatewayService {
             .inner
             .store
             .create_operation(
+                Request::RPC_METHOD,
                 params.signer_account_id().to_owned(),
                 params.idempotency_key().cloned(),
                 fingerprint,
@@ -423,6 +444,7 @@ mod tests {
             .inner
             .store
             .create_operation(
+                tx::FunctionCall::RPC_METHOD,
                 request.signer_account_id().to_owned(),
                 request.idempotency_key().cloned(),
                 fingerprint,
@@ -521,6 +543,7 @@ mod tests {
             .inner
             .store
             .create_operation(
+                tx::FunctionCall::RPC_METHOD,
                 harness.gateway_signer_account_id.clone(),
                 Some(IdempotencyKey("multi-step-sequence".to_owned())),
                 fingerprint,

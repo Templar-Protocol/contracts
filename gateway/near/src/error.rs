@@ -16,6 +16,10 @@ pub enum GatewayError {
     NearTransaction(String),
     #[error("external service failed: {0}")]
     ExternalService(String),
+    #[error("invalid stored operation: {0}")]
+    InvalidStoredOperation(String),
+    #[error("sql error: {0}")]
+    Sql(#[from] sqlx::Error),
     #[error("idempotency key conflict")]
     IdempotencyConflict,
     #[error("actor unavailable: {0}")]

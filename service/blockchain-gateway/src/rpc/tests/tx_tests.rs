@@ -85,6 +85,17 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
     assert_eq!(first.operation.id, second.operation.id);
     assert_eq!(first.operation.steps, second.operation.steps);
 
+    let fetched = stack
+        .controller
+        .request::<op::Get>(&ReadRequest {
+            params: op::GetParams {
+                operation_id: first.operation.id.clone(),
+            },
+        })
+        .await?;
+
+    assert_eq!(fetched.operation, Some(first.operation.clone()));
+
     stack.shutdown().await;
     Ok(())
 }

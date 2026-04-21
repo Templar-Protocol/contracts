@@ -16,6 +16,7 @@ jsonrpsee = { workspace = true, features = ["server", "macros"] }
 near-account-id.workspace = true
 near-api.workspace = true
 serde.workspace = true
+sqlx.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true

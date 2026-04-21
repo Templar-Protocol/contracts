@@ -13,6 +13,8 @@ use std::collections::VecDeque;
 
 pub mod postgres;
 
+pub use postgres::PostgresStore;
+
 #[derive(Default)]
 pub struct MemoryOperationStore {
     operations: Mutex<HashMap<OperationId, StoredOperation>>,
@@ -21,6 +23,9 @@ pub struct MemoryOperationStore {
 
 #[async_trait]
 pub trait OperationStore: Send + Sync {
+    async fn get_by_id(&self, operation_id: &OperationId)
+        -> GatewayResult<Option<StoredOperation>>;
+
     async fn get_by_idempotency_key(
         &self,
         idempotency_key: &IdempotencyKey,
@@ -28,6 +33,7 @@ pub trait OperationStore: Send + Sync {
 
     async fn create_operation(
         &self,
+        rpc_method: &str,
         signer_account_id: ManagedAccountId,
         idempotency_key: Option<IdempotencyKey>,
         request_fingerprint_hash: [u8; 32],
@@ -48,6 +54,13 @@ impl MemoryOperationStore {
 
 #[async_trait]
 impl OperationStore for MemoryOperationStore {
+    async fn get_by_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> GatewayResult<Option<StoredOperation>> {
+        Ok(self.operations.lock().await.get(operation_id).cloned())
+    }
+
     async fn get_by_idempotency_key(
         &self,
         idempotency_key: &IdempotencyKey,
@@ -62,6 +75,7 @@ impl OperationStore for MemoryOperationStore {
 
     async fn create_operation(
         &self,
+        rpc_method: &str,
         signer_account_id: ManagedAccountId,
         idempotency_key: Option<IdempotencyKey>,
         request_fingerprint_hash: [u8; 32],
@@ -69,6 +83,7 @@ impl OperationStore for MemoryOperationStore {
         plan: OperationPlan,
     ) -> GatewayResult<StoredOperation> {
         let operation = StoredOperation {
+            rpc_method: rpc_method.to_owned(),
             request_fingerprint_hash,
             request_payload,
             id: OperationId(Uuid::new_v4().to_string()),

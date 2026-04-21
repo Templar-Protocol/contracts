@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO gateway_operation_steps (\n                operation_id,\n                step_index,\n                signer_account_id,\n                receiver_id,\n                wait_until,\n                actions,\n                state,\n                tx_hash,\n                signed_transaction,\n                updated_at\n            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        {
+          "Custom": {
+            "name": "gateway_operation_step_state",
+            "kind": {
+              "Enum": [
+                "not_started",
+                "prepared",
+                "submitted",
+                "succeeded",
+                "failed"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "89741951683c5d222abdd04a0c385d73959e88a8a94f92e9c18d002d797047e1"
+}
