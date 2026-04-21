@@ -1,8 +1,38 @@
+use moka::sync::Cache;
+use near_account_id::AccountId;
 use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
 
-use crate::client::{macros::contract_views, NearClient};
+use crate::client::{
+    cache::{config_cache, immutable_cache, load_cached},
+    macros::contract_views,
+    NearClient,
+};
 
 use super::BoundContractClient;
+
+const LST_ORACLE_ID_CACHE_CAPACITY: u64 = 512;
+const LST_TRANSFORMER_CACHE_CAPACITY: u64 = 4_096;
+
+#[derive(Clone)]
+pub(crate) struct LstOracleClientCaches {
+    pub oracle_id: Cache<AccountId, std::sync::Arc<AccountId>>,
+    pub transformer: Cache<LstTransformerCacheKey, std::sync::Arc<Option<PriceTransformer>>>,
+}
+
+impl LstOracleClientCaches {
+    pub fn new() -> Self {
+        Self {
+            oracle_id: immutable_cache(LST_ORACLE_ID_CACHE_CAPACITY),
+            transformer: config_cache(LST_TRANSFORMER_CACHE_CAPACITY),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct LstTransformerCacheKey {
+    pub oracle_id: AccountId,
+    pub price_identifier: PriceIdentifier,
+}
 
 #[derive(Clone)]
 pub struct LstOracleClient<'a> {
@@ -31,6 +61,38 @@ pub struct GetTransformerArgs {
 }
 
 impl LstOracleClient<'_> {
+    pub async fn cached_oracle_id(&self) -> crate::GatewayResult<near_account_id::AccountId> {
+        load_cached(
+            &self.inner.cache().lst_oracle.oracle_id,
+            self.contract_id.clone(),
+            {
+                let near = self.inner.clone();
+                let contract_id = self.contract_id.clone();
+                move || async move { near.lst_oracle(contract_id).oracle_id(()).await }
+            },
+        )
+        .await
+    }
+
+    pub async fn cached_get_transformer(
+        &self,
+        args: GetTransformerArgs,
+    ) -> crate::GatewayResult<Option<PriceTransformer>> {
+        load_cached(
+            &self.inner.cache().lst_oracle.transformer,
+            LstTransformerCacheKey {
+                oracle_id: self.contract_id.clone(),
+                price_identifier: args.price_identifier,
+            },
+            {
+                let near = self.inner.clone();
+                let contract_id = self.contract_id.clone();
+                move || async move { near.lst_oracle(contract_id).get_transformer(args).await }
+            },
+        )
+        .await
+    }
+
     contract_views! {
         pub fn oracle_id(()) -> near_account_id::AccountId;
         pub fn list_transformers(ListTransformersArgs) -> Vec<PriceIdentifier>;

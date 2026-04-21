@@ -1,3 +1,5 @@
+use moka::sync::Cache;
+use near_account_id::AccountId;
 use templar_common::{
     governance::Proposal,
     oracle::{
@@ -8,11 +10,33 @@ use templar_common::{
 };
 
 use crate::client::{
+    cache::{config_cache, load_cached},
     macros::{contract_views, contract_writes},
     NearClient,
 };
 
 use super::BoundContractClient;
+
+const PROXY_DEFINITION_CACHE_CAPACITY: u64 = 4_096;
+
+#[derive(Clone)]
+pub(crate) struct ProxyOracleClientCaches {
+    pub definition: Cache<ProxyDefinitionCacheKey, std::sync::Arc<Option<Proxy>>>,
+}
+
+impl ProxyOracleClientCaches {
+    pub fn new() -> Self {
+        Self {
+            definition: config_cache(PROXY_DEFINITION_CACHE_CAPACITY),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct ProxyDefinitionCacheKey {
+    pub oracle_id: AccountId,
+    pub price_identifier: PriceIdentifier,
+}
 
 #[derive(Clone)]
 pub struct ProxyOracleClient<'a> {
@@ -66,6 +90,25 @@ pub struct OwnerProposeArgs {
 }
 
 impl ProxyOracleClient<'_> {
+    pub async fn cached_get_proxy(
+        &self,
+        args: GetProxyArgs,
+    ) -> crate::GatewayResult<Option<Proxy>> {
+        load_cached(
+            &self.inner.cache().proxy_oracle.definition,
+            ProxyDefinitionCacheKey {
+                oracle_id: self.contract_id.clone(),
+                price_identifier: args.id,
+            },
+            {
+                let near = self.inner.clone();
+                let contract_id = self.contract_id.clone();
+                move || async move { near.proxy_oracle(contract_id).get_proxy(args).await }
+            },
+        )
+        .await
+    }
+
     contract_views! {
         pub fn list_proxies(ListProxiesArgs) -> Vec<PriceIdentifier>;
         pub fn get_proxy(GetProxyArgs) -> Option<Proxy>;

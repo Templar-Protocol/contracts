@@ -13,7 +13,7 @@ use crate::{
             GetBorrowPositionPendingInterestArgs, GetBorrowStatusArgs,
             GetSupplyPositionPendingYieldArgs, HarvestYieldArgs,
         },
-        storage::{StorageBalanceOfArgs, StorageDepositArgs},
+        storage::{StorageBalanceBoundsView, StorageBalanceOfArgs, StorageDepositArgs},
         ContractWriteOptions,
     },
     dispatch::{registry::plan_deploy_from_registry, single_transaction_plan},
@@ -346,7 +346,7 @@ impl PlanWrite for market::Supply {
             let body = request.body;
             let configuration = ctx
                 .market(body.market_id.clone())
-                .get_configuration(())
+                .cached_get_configuration()
                 .await?;
             let mut steps = Vec::new();
 
@@ -435,7 +435,7 @@ impl PlanWrite for market::Repay {
             let body = request.body;
             let configuration = ctx
                 .market(body.market_id.clone())
-                .get_configuration(())
+                .cached_get_configuration()
                 .await?;
             let deposit_msg = body.account_id.map_or(DepositMsg::Repay, |account_id| {
                 DepositMsg::RepayAccount(RepayAccountMsg { account_id })
@@ -533,7 +533,7 @@ impl PlanWrite for market::WithdrawSupply {
             let body = request.body;
             let configuration = ctx
                 .market(body.market_id.clone())
-                .get_configuration(())
+                .cached_get_configuration()
                 .await?;
             let queue_status = ctx
                 .market(body.market_id.clone())
@@ -590,7 +590,7 @@ impl PlanWrite for market::Liquidate {
             let body = request.body;
             let configuration = ctx
                 .market(body.market_id.clone())
-                .get_configuration(())
+                .cached_get_configuration()
                 .await?;
             let mut steps = Vec::new();
 
@@ -733,16 +733,10 @@ async fn ensure_storage_registration(
 async fn storage_balance_bounds_if_supported(
     ctx: &GatewayContext,
     contract_id: near_account_id::AccountId,
-) -> GatewayResult<Option<near_contract_standards::storage_management::StorageBalanceBounds>> {
-    match ctx.storage(contract_id).storage_balance_bounds(()).await {
-        Ok(bounds) => Ok(Some(bounds)),
-        Err(error) if is_method_not_found(&error) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-fn is_method_not_found(error: &crate::GatewayError) -> bool {
-    matches!(error, crate::GatewayError::NearQuery(message) if message.contains("MethodNotFound"))
+) -> GatewayResult<Option<StorageBalanceBoundsView>> {
+    ctx.storage(contract_id)
+        .cached_storage_balance_bounds_if_supported()
+        .await
 }
 
 fn transfer_call_asset<T: templar_common::asset::AssetClass>(

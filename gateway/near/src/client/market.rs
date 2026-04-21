@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use blockchain_gateway_core::common::Pagination;
+use moka::sync::Cache;
+use near_account_id::AccountId;
 use templar_common::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
@@ -14,11 +16,27 @@ use templar_common::{
 };
 
 use crate::client::{
+    cache::{immutable_cache, load_cached},
     macros::{contract_views, contract_writes},
     NearClient,
 };
 
 use super::BoundContractClient;
+
+const MARKET_CONFIGURATION_CACHE_CAPACITY: u64 = 256;
+
+#[derive(Clone)]
+pub(crate) struct MarketClientCaches {
+    pub configuration: Cache<AccountId, std::sync::Arc<MarketConfiguration>>,
+}
+
+impl MarketClientCaches {
+    pub fn new() -> Self {
+        Self {
+            configuration: immutable_cache(MARKET_CONFIGURATION_CACHE_CAPACITY),
+        }
+    }
+}
 
 #[derive(serde::Serialize)]
 pub struct GetBorrowPositionPendingInterestArgs {
@@ -88,6 +106,19 @@ impl BoundContractClient for MarketClient<'_> {
 }
 
 impl MarketClient<'_> {
+    pub async fn cached_get_configuration(&self) -> crate::GatewayResult<MarketConfiguration> {
+        load_cached(
+            &self.inner.cache().market.configuration,
+            self.contract_id.0.clone(),
+            {
+                let near = self.inner.clone();
+                let contract_id = self.contract_id.clone();
+                move || async move { near.market(contract_id).get_configuration(()).await }
+            },
+        )
+        .await
+    }
+
     contract_views! {
         pub fn get_configuration(()) -> MarketConfiguration;
         pub fn list_borrow_positions(Pagination) -> HashMap<near_account_id::AccountId, BorrowPosition>;

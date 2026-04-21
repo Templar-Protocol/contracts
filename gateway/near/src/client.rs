@@ -1,4 +1,5 @@
 pub mod account;
+pub mod cache;
 pub mod chain;
 pub mod contract;
 pub mod ft;
@@ -17,9 +18,11 @@ pub mod tx;
 pub mod universal_account;
 
 use account::AccountClient;
+use blockchain_gateway_core::oracle::OracleContractKind;
 use blockchain_gateway_core::{
     ManagedAccountId, MarketId, NearGas, NearToken, RegistryId, UniversalAccountId,
 };
+use cache::{config_cache, is_method_not_found, load_cached, NearClientCache};
 use chain::ChainClient;
 use contract::ContractClient;
 use ft::FtClient;
@@ -39,6 +42,23 @@ use templar_common::asset::{AssetClass, FungibleAsset};
 use token::TokenClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
+
+use crate::GatewayResult;
+
+const ORACLE_KIND_CACHE_CAPACITY: u64 = 512;
+
+#[derive(Clone)]
+pub(crate) struct OracleClientCaches {
+    pub kind: moka::sync::Cache<AccountId, std::sync::Arc<OracleContractKind>>,
+}
+
+impl OracleClientCaches {
+    pub fn new() -> Self {
+        Self {
+            kind: config_cache(ORACLE_KIND_CACHE_CAPACITY),
+        }
+    }
+}
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
@@ -97,18 +117,73 @@ impl ContractWriteOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NearClient {
     network: NetworkConfig,
+    cache: Arc<NearClientCache>,
+}
+
+impl std::fmt::Debug for NearClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NearClient")
+            .field("network", &self.network)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NearClient {
     pub fn new(network: NetworkConfig) -> Self {
-        Self { network }
+        Self {
+            network,
+            cache: Arc::new(NearClientCache::new()),
+        }
     }
 
     pub fn network(&self) -> &NetworkConfig {
         &self.network
+    }
+
+    pub(crate) fn cache(&self) -> &NearClientCache {
+        &self.cache
+    }
+
+    pub async fn cached_oracle_kind(
+        &self,
+        oracle_id: AccountId,
+    ) -> GatewayResult<OracleContractKind> {
+        load_cached(&self.cache.oracle.kind, oracle_id.clone(), {
+            let client = self.clone();
+            move || async move {
+                if client
+                    .proxy_oracle(oracle_id.clone())
+                    .list_proxies(proxy_oracle::ListProxiesArgs {
+                        offset: None,
+                        count: Some(1),
+                    })
+                    .await
+                    .is_ok()
+                {
+                    return Ok(OracleContractKind::Proxy);
+                }
+
+                match client
+                    .lst_oracle(oracle_id.clone())
+                    .list_transformers(lst_oracle::ListTransformersArgs {
+                        offset: None,
+                        count: Some(1),
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        let pyth_id = client.lst_oracle(oracle_id).cached_oracle_id().await?;
+                        Ok(OracleContractKind::Lst { pyth_id })
+                    }
+                    Err(error) if is_method_not_found(&error) => Ok(OracleContractKind::Direct),
+                    Err(error) => Err(error),
+                }
+            }
+        })
+        .await
     }
 
     pub fn chain(&self) -> ChainClient<'_> {

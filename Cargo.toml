@@ -64,6 +64,7 @@ itertools = "0.14.0"
 jsonrpsee = "0.26.0"
 k256 = "0.13.4"
 libfuzzer-sys = "0.4"
+moka = { version = "0.12.10", features = ["future", "sync"] }
 near-account-id = "2.6"
 near-api = "0.8.5"
 near-chain-configs = "0.34.7"

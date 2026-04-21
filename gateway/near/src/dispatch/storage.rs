@@ -7,7 +7,10 @@ use futures::future::BoxFuture;
 use crate::{
     actor::{DispatchRead, PlanWrite},
     client::{
-        storage::{StorageBalanceOfArgs, StorageDepositArgs, StorageUnregisterArgs},
+        storage::{
+            StorageBalanceBoundsView, StorageBalanceOfArgs, StorageDepositArgs,
+            StorageUnregisterArgs,
+        },
         ContractWriteOptions,
     },
     dispatch::single_transaction_plan,
@@ -21,7 +24,7 @@ impl DispatchRead for storage::GetBalanceBounds {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             ctx.storage(request.params.contract_id)
-                .storage_balance_bounds(())
+                .cached_storage_balance_bounds()
                 .await
                 .map(|bounds| storage::GetBalanceBoundsResult {
                     bounds: StorageBalanceBounds {
@@ -107,7 +110,7 @@ impl PlanWrite for storage::EnsureDeposit {
 
             let bounds = ctx
                 .storage(contract_id.clone())
-                .storage_balance_bounds(())
+                .cached_storage_balance_bounds()
                 .await?;
             let balance = ctx
                 .storage(contract_id.clone())
@@ -160,7 +163,7 @@ impl DepositPlan {
 
 fn required_deposit(
     mode: &storage::EnsureDepositMode,
-    bounds: &near_contract_standards::storage_management::StorageBalanceBounds,
+    bounds: &StorageBalanceBoundsView,
     balance: Option<&near_contract_standards::storage_management::StorageBalance>,
 ) -> DepositPlan {
     match (mode, balance) {

@@ -17,6 +17,7 @@ near-openapi-client.workspace = true
 near-account-id = { version = "2.6.0", features = ["serde", "schemars"] }
 near-contract-standards.workspace = true
 near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
+moka.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true

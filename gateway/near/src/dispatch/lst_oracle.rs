@@ -15,7 +15,7 @@ impl DispatchRead for lst_oracle::GetOracleId {
         Box::pin(async move {
             let pyth_oracle_id = ctx
                 .lst_oracle(request.params.oracle_id)
-                .oracle_id(())
+                .cached_oracle_id()
                 .await?;
             Ok(lst_oracle::GetOracleIdResult { pyth_oracle_id })
         })
@@ -48,7 +48,7 @@ impl DispatchRead for lst_oracle::GetTransformer {
         Box::pin(async move {
             let transformer = ctx
                 .lst_oracle(request.params.oracle_id)
-                .get_transformer(GetTransformerArgs {
+                .cached_get_transformer(GetTransformerArgs {
                     price_identifier: request.params.price_identifier,
                 })
                 .await?;

@@ -48,7 +48,8 @@ fn cleaned_doc_text(attrs: &[Attribute]) -> String {
             continue;
         }
         let Expr::Lit(ExprLit {
-            lit: Lit::Str(text), ..
+            lit: Lit::Str(text),
+            ..
         }) = &name_value.value
         else {
             continue;
@@ -120,10 +121,16 @@ fn expand_method(input: MethodSpecInput, kind: MethodKind) -> TokenStream {
 
 #[proc_macro]
 pub fn public_read_method_spec(input: TokenStream) -> TokenStream {
-    expand_method(parse_macro_input!(input as MethodSpecInput), MethodKind::Read)
+    expand_method(
+        parse_macro_input!(input as MethodSpecInput),
+        MethodKind::Read,
+    )
 }
 
 #[proc_macro]
 pub fn write_method_spec(input: TokenStream) -> TokenStream {
-    expand_method(parse_macro_input!(input as MethodSpecInput), MethodKind::Write)
+    expand_method(
+        parse_macro_input!(input as MethodSpecInput),
+        MethodKind::Write,
+    )
 }

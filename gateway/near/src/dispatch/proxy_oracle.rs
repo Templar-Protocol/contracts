@@ -32,7 +32,7 @@ impl DispatchRead for proxy_oracle::GetProxy {
         Box::pin(async move {
             let params = request.params;
             ctx.proxy_oracle(params.oracle_id)
-                .get_proxy(GetProxyArgs { id: params.id })
+                .cached_get_proxy(GetProxyArgs { id: params.id })
                 .await
                 .map(|proxy| proxy_oracle::GetProxyResult { proxy })
         })

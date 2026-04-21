@@ -25,7 +25,7 @@ use crate::{
     actor::{DispatchRead, PlanWrite},
     client::{
         lst_oracle::GetTransformerArgs,
-        proxy_oracle::{GetProxyArgs, ListProxiesArgs},
+        proxy_oracle::GetProxyArgs,
         pyth_oracle::{ListEmaPricesNoOlderThanArgs, UpdatePriceFeedsArgs},
         redstone_oracle::{ReadPriceDataArgs, WritePricesArgs},
         ContractWriteOptions,
@@ -41,7 +41,7 @@ async fn get_proxy(
     id: PriceIdentifier,
 ) -> GatewayResult<Option<templar_common::oracle::proxy::Proxy>> {
     ctx.proxy_oracle(oracle_id)
-        .get_proxy(GetProxyArgs { id })
+        .cached_get_proxy(GetProxyArgs { id })
         .await
 }
 
@@ -288,33 +288,7 @@ async fn query_oracle_kind(
     ctx: &GatewayContext,
     oracle_id: AccountId,
 ) -> GatewayResult<OracleContractKind> {
-    if ctx
-        .proxy_oracle(oracle_id.clone())
-        .list_proxies(ListProxiesArgs {
-            offset: None,
-            count: Some(1),
-        })
-        .await
-        .is_ok()
-    {
-        return Ok(OracleContractKind::Proxy);
-    }
-
-    match ctx
-        .lst_oracle(oracle_id.clone())
-        .list_transformers(crate::client::lst_oracle::ListTransformersArgs {
-            offset: None,
-            count: Some(1),
-        })
-        .await
-    {
-        Ok(_) => {
-            let pyth_id = ctx.lst_oracle(oracle_id).oracle_id(()).await?;
-            Ok(OracleContractKind::Lst { pyth_id })
-        }
-        Err(error) if is_method_not_found(&error) => Ok(OracleContractKind::Direct),
-        Err(error) => Err(error),
-    }
+    ctx.near().cached_oracle_kind(oracle_id).await
 }
 
 async fn resolve_dependencies(
@@ -328,7 +302,7 @@ async fn resolve_dependencies(
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
                 .lst_oracle(oracle_id)
-                .get_transformer(GetTransformerArgs {
+                .cached_get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
                 })
                 .await?;
@@ -378,7 +352,7 @@ async fn resolve_price(
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
                 .lst_oracle(oracle_id)
-                .get_transformer(GetTransformerArgs {
+                .cached_get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
                 })
                 .await?;
@@ -434,7 +408,7 @@ async fn get_price_onchain(
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
                 .lst_oracle(oracle_id.clone())
-                .get_transformer(GetTransformerArgs {
+                .cached_get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
                 })
                 .await?;
@@ -585,10 +559,6 @@ fn validate_price_age(price: pyth::Price, max_age: Nanoseconds) -> Option<pyth::
         return None;
     }
     Some(price)
-}
-
-fn is_method_not_found(error: &GatewayError) -> bool {
-    matches!(error, GatewayError::NearQuery(message) if message.contains("MethodNotFound"))
 }
 
 async fn resolve_update_requests(

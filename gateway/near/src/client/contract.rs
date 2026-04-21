@@ -1,16 +1,37 @@
 use std::io::ErrorKind;
 
 use blockchain_gateway_core::Version;
+use moka::sync::Cache;
+use near_account_id::AccountId;
 use near_api::Contract;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    client::{macros::contract_views, NearClient},
+    client::{
+        cache::{immutable_cache, load_cached},
+        macros::contract_views,
+        NearClient,
+    },
     GatewayError, GatewayResult,
 };
 
 use super::BoundContractClient;
+
+const CONTRACT_METADATA_CACHE_CAPACITY: u64 = 256;
+
+#[derive(Clone)]
+pub(crate) struct ContractClientCaches {
+    pub contract_source_metadata: Cache<AccountId, std::sync::Arc<ContractSourceMetadata>>,
+}
+
+impl ContractClientCaches {
+    pub fn new() -> Self {
+        Self {
+            contract_source_metadata: immutable_cache(CONTRACT_METADATA_CACHE_CAPACITY),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ContractClient<'a> {
@@ -42,8 +63,25 @@ impl ContractClient<'_> {
             .data)
     }
 
+    pub async fn cached_contract_source_metadata(&self) -> GatewayResult<ContractSourceMetadata> {
+        load_cached(
+            &self.inner.cache().contract.contract_source_metadata,
+            self.contract_id.clone(),
+            {
+                let near = self.inner.clone();
+                let contract_id = self.contract_id.clone();
+                move || async move {
+                    near.contract(contract_id)
+                        .contract_source_metadata(())
+                        .await
+                }
+            },
+        )
+        .await
+    }
+
     pub async fn version<T>(&self) -> GatewayResult<Version<T>> {
-        let meta = self.contract_source_metadata(()).await?;
+        let meta = self.cached_contract_source_metadata().await?;
         let Some(ver_str) = meta.version else {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,

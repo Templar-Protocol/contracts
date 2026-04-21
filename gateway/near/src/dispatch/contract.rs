@@ -30,7 +30,7 @@ impl DispatchRead for contract::GetVersion {
         Box::pin(async move {
             let metadata = ctx
                 .contract(request.params.contract_id)
-                .contract_source_metadata(())
+                .cached_contract_source_metadata()
                 .await?;
             let version_string = metadata.version.ok_or_else(|| {
                 crate::GatewayError::NearQuery(
