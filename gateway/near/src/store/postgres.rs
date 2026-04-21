@@ -11,7 +11,7 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 
 use crate::{
     operation::{OperationPlan, PlannedTransaction, StoredOperation, SucceededStep},
-    store::OperationStore,
+    store::{CreateOperationResult, OperationStore},
     GatewayError, GatewayResult,
 };
 
@@ -179,7 +179,7 @@ impl OperationStore for PostgresStore {
         rows_to_stored_operation(operation_row, step_rows).map(Some)
     }
 
-    async fn create_operation(
+    async fn create_or_get_operation(
         &self,
         rpc_method: &str,
         signer_account_id: ManagedAccountId,
@@ -187,7 +187,7 @@ impl OperationStore for PostgresStore {
         request_fingerprint_hash: [u8; 32],
         request_payload: Vec<u8>,
         plan: OperationPlan,
-    ) -> GatewayResult<StoredOperation> {
+    ) -> GatewayResult<CreateOperationResult> {
         let operation = StoredOperation {
             rpc_method: rpc_method.to_owned(),
             request_fingerprint_hash,
@@ -199,8 +199,25 @@ impl OperationStore for PostgresStore {
             remaining_steps: VecDeque::from(plan.steps),
         };
 
-        save_operation_tx(&self.pool, &operation, idempotency_key.as_ref(), None).await?;
-        Ok(operation)
+        match save_operation_tx(&self.pool, &operation, idempotency_key.as_ref(), None).await {
+            Ok(()) => Ok(CreateOperationResult::Created(operation)),
+            Err(GatewayError::Sql(sqlx::Error::Database(database_error)))
+                if database_error.constraint()
+                    == Some("gateway_operations_idempotency_key_unique") =>
+            {
+                let key = idempotency_key.expect("idempotency key should exist on unique conflict");
+                let existing = self.get_by_idempotency_key(&key).await?.ok_or_else(|| {
+                    GatewayError::InvalidStoredOperation(
+                        "idempotency conflict without existing operation".to_owned(),
+                    )
+                })?;
+                if existing.request_fingerprint_hash != operation.request_fingerprint_hash {
+                    return Err(GatewayError::IdempotencyConflict);
+                }
+                Ok(CreateOperationResult::Existing(existing))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()> {
@@ -300,18 +317,19 @@ async fn save_operation_tx(
 ) -> GatewayResult<()> {
     let mut tx = pool.begin().await?;
 
-    let payload_json: Value =
-        serde_json::from_slice(&operation.request_payload).map_err(|error| {
-            GatewayError::InvalidStoredOperation(format!(
-                "invalid stored request payload json: {error}"
-            ))
-        })?;
     let status = operation_status_row(operation.status());
     let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
         .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
     let now = Utc::now();
+    let step_rows = stored_operation_to_step_rows(operation)?;
 
     if existing_operation_id.is_none() {
+        let payload_json: Value =
+            serde_json::from_slice(&operation.request_payload).map_err(|error| {
+                GatewayError::InvalidStoredOperation(format!(
+                    "invalid stored request payload json: {error}"
+                ))
+            })?;
         sqlx::query!(
             r#"
             INSERT INTO gateway_operations (
@@ -337,38 +355,24 @@ async fn save_operation_tx(
         .execute(&mut *tx)
         .await?;
     } else {
+        validate_existing_operation_shape(&mut tx, operation_uuid, operation, &step_rows).await?;
+
         sqlx::query!(
             r#"
             UPDATE gateway_operations
-            SET signer_account_id = $2,
-                request_fingerprint_hash = $3,
-                request_payload = $4,
-                status = $5,
-                updated_at = $6
+            SET status = $2,
+                updated_at = $3
             WHERE id = $1
             "#,
             operation_uuid,
-            operation.signer_account_id.0.as_str(),
-            operation.request_fingerprint_hash.to_vec(),
-            payload_json,
             status as OperationStatusRow,
             now,
         )
         .execute(&mut *tx)
         .await?;
-
-        sqlx::query!(
-            "DELETE FROM gateway_operation_steps WHERE operation_id = $1",
-            operation_uuid
-        )
-        .execute(&mut *tx)
-        .await?;
     }
 
-    for (index, step_row) in stored_operation_to_step_rows(operation)?
-        .into_iter()
-        .enumerate()
-    {
+    for (index, step_row) in step_rows.into_iter().enumerate() {
         sqlx::query!(
             r#"
             INSERT INTO gateway_operation_steps (
@@ -383,6 +387,11 @@ async fn save_operation_tx(
                 signed_transaction,
                 updated_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (operation_id, step_index) DO UPDATE
+            SET state = EXCLUDED.state,
+                tx_hash = EXCLUDED.tx_hash,
+                signed_transaction = EXCLUDED.signed_transaction,
+                updated_at = EXCLUDED.updated_at
             "#,
             operation_uuid,
             index as i32,
@@ -400,6 +409,101 @@ async fn save_operation_tx(
     }
 
     tx.commit().await?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ExistingStepShapeRow {
+    step_index: i32,
+    signer_account_id: String,
+    receiver_id: String,
+    wait_until: String,
+    actions: Value,
+}
+
+async fn validate_existing_operation_shape(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    operation: &StoredOperation,
+    step_rows: &[PersistedStepRow],
+) -> GatewayResult<()> {
+    let existing = sqlx::query!(
+        r#"
+        SELECT
+            rpc_method,
+            signer_account_id,
+            request_fingerprint_hash,
+            request_payload
+        FROM gateway_operations
+        WHERE id = $1
+        "#,
+        operation_uuid,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+
+    let payload_json: Value =
+        serde_json::from_slice(&operation.request_payload).map_err(|error| {
+            GatewayError::InvalidStoredOperation(format!(
+                "invalid stored request payload json: {error}"
+            ))
+        })?;
+
+    if existing.rpc_method != operation.rpc_method
+        || existing.signer_account_id != operation.signer_account_id.0.as_str()
+        || existing.request_fingerprint_hash != operation.request_fingerprint_hash.to_vec()
+        || existing.request_payload != payload_json
+    {
+        return Err(GatewayError::InvalidStoredOperation(
+            "operation immutable metadata changed".to_owned(),
+        ));
+    }
+
+    let existing_steps = sqlx::query!(
+        r#"
+        SELECT
+            step_index,
+            signer_account_id,
+            receiver_id,
+            wait_until,
+            actions
+        FROM gateway_operation_steps
+        WHERE operation_id = $1
+        ORDER BY step_index ASC
+        "#,
+        operation_uuid,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+
+    if existing_steps.len() != step_rows.len() {
+        return Err(GatewayError::InvalidStoredOperation(
+            "operation step count changed".to_owned(),
+        ));
+    }
+
+    for (index, (existing, current)) in existing_steps.into_iter().zip(step_rows.iter()).enumerate()
+    {
+        let existing = ExistingStepShapeRow {
+            step_index: existing.step_index,
+            signer_account_id: existing.signer_account_id,
+            receiver_id: existing.receiver_id,
+            wait_until: existing.wait_until,
+            actions: existing.actions,
+        };
+
+        if existing.step_index != index as i32
+            || existing.signer_account_id != current.signer_account_id
+            || existing.receiver_id != current.receiver_id
+            || existing.wait_until != current.wait_until
+            || existing.actions != current.actions
+        {
+            return Err(GatewayError::InvalidStoredOperation(
+                "operation step plan changed".to_owned(),
+            ));
+        }
+    }
+
     Ok(())
 }
 

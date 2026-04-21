@@ -18,7 +18,7 @@ use crate::{
         PlanWrite, ReadActor, RpcMessage, WriteActors,
     },
     operation::{CurrentStep, CurrentStepRef, StoredOperation},
-    store::{MemoryOperationStore, SharedOperationStore},
+    store::{CreateOperationResult, MemoryOperationStore, SharedOperationStore},
     GatewayContext, GatewayResult,
 };
 
@@ -114,25 +114,11 @@ impl GatewayService {
     {
         let request_payload = serde_json::to_vec(&params)?;
         let fingerprint = make_request_fingerprint(Request::RPC_METHOD, &params)?;
-        if let Some(idempotency_key) = params.idempotency_key() {
-            if let Some(existing) = self
-                .inner
-                .store
-                .get_by_idempotency_key(idempotency_key)
-                .await?
-            {
-                if existing.request_fingerprint_hash != fingerprint {
-                    return Err(crate::GatewayError::IdempotencyConflict);
-                }
-                return Ok(operation_result_from_stored(existing));
-            }
-        }
-
         let plan = Request::plan(params.clone(), self.read_context()).await?;
-        let operation = self
+        let operation = match self
             .inner
             .store
-            .create_operation(
+            .create_or_get_operation(
                 Request::RPC_METHOD,
                 params.signer_account_id().to_owned(),
                 params.idempotency_key().cloned(),
@@ -140,7 +126,13 @@ impl GatewayService {
                 request_payload,
                 plan,
             )
-            .await?;
+            .await?
+        {
+            CreateOperationResult::Existing(existing) => {
+                return Ok(operation_result_from_stored(existing));
+            }
+            CreateOperationResult::Created(created) => created,
+        };
 
         let operation = self.execute_remaining_steps(operation).await?;
         Ok(operation_result_from_stored(operation))
@@ -440,10 +432,10 @@ mod tests {
         let payload = serde_json::to_vec(&request)?;
         let plan =
             <tx::FunctionCall as PlanWrite>::plan(request.clone(), service.read_context()).await?;
-        let mut operation = service
+        let mut operation = match service
             .inner
             .store
-            .create_operation(
+            .create_or_get_operation(
                 tx::FunctionCall::RPC_METHOD,
                 request.signer_account_id().to_owned(),
                 request.idempotency_key().cloned(),
@@ -451,7 +443,11 @@ mod tests {
                 payload,
                 plan,
             )
-            .await?;
+            .await?
+        {
+            CreateOperationResult::Created(operation) => operation,
+            CreateOperationResult::Existing(_) => panic!("expected new operation"),
+        };
 
         let pending = operation
             .begin_next_preparation(service.inner.store.clone())
@@ -539,10 +535,10 @@ mod tests {
 
         let fingerprint = make_request_fingerprint(tx::FunctionCall::RPC_METHOD, &first_request)?;
         let payload = serde_json::to_vec(&first_request)?;
-        let operation = service
+        let operation = match service
             .inner
             .store
-            .create_operation(
+            .create_or_get_operation(
                 tx::FunctionCall::RPC_METHOD,
                 harness.gateway_signer_account_id.clone(),
                 Some(IdempotencyKey("multi-step-sequence".to_owned())),
@@ -550,7 +546,11 @@ mod tests {
                 payload,
                 first_plan,
             )
-            .await?;
+            .await?
+        {
+            CreateOperationResult::Created(operation) => operation,
+            CreateOperationResult::Existing(_) => panic!("expected new operation"),
+        };
         let stored = service.execute_remaining_steps(operation).await?;
 
         assert_eq!(stored.status(), OperationStatus::Succeeded);

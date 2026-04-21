@@ -17,8 +17,18 @@ pub use postgres::PostgresStore;
 
 #[derive(Default)]
 pub struct MemoryOperationStore {
-    operations: Mutex<HashMap<OperationId, StoredOperation>>,
-    idempotency: Mutex<HashMap<IdempotencyKey, OperationId>>,
+    state: Mutex<MemoryStoreState>,
+}
+
+#[derive(Default)]
+struct MemoryStoreState {
+    operations: HashMap<OperationId, StoredOperation>,
+    idempotency: HashMap<IdempotencyKey, OperationId>,
+}
+
+pub enum CreateOperationResult {
+    Created(StoredOperation),
+    Existing(StoredOperation),
 }
 
 #[async_trait]
@@ -31,7 +41,7 @@ pub trait OperationStore: Send + Sync {
         idempotency_key: &IdempotencyKey,
     ) -> GatewayResult<Option<StoredOperation>>;
 
-    async fn create_operation(
+    async fn create_or_get_operation(
         &self,
         rpc_method: &str,
         signer_account_id: ManagedAccountId,
@@ -39,7 +49,7 @@ pub trait OperationStore: Send + Sync {
         request_fingerprint_hash: [u8; 32],
         request_payload: Vec<u8>,
         plan: OperationPlan,
-    ) -> GatewayResult<StoredOperation>;
+    ) -> GatewayResult<CreateOperationResult>;
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()>;
 
@@ -58,22 +68,29 @@ impl OperationStore for MemoryOperationStore {
         &self,
         operation_id: &OperationId,
     ) -> GatewayResult<Option<StoredOperation>> {
-        Ok(self.operations.lock().await.get(operation_id).cloned())
+        Ok(self
+            .state
+            .lock()
+            .await
+            .operations
+            .get(operation_id)
+            .cloned())
     }
 
     async fn get_by_idempotency_key(
         &self,
         idempotency_key: &IdempotencyKey,
     ) -> GatewayResult<Option<StoredOperation>> {
-        let operation_id = self.idempotency.lock().await.get(idempotency_key).cloned();
+        let state = self.state.lock().await;
+        let operation_id = state.idempotency.get(idempotency_key).cloned();
         let Some(operation_id) = operation_id else {
             return Ok(None);
         };
 
-        Ok(self.operations.lock().await.get(&operation_id).cloned())
+        Ok(state.operations.get(&operation_id).cloned())
     }
 
-    async fn create_operation(
+    async fn create_or_get_operation(
         &self,
         rpc_method: &str,
         signer_account_id: ManagedAccountId,
@@ -81,7 +98,23 @@ impl OperationStore for MemoryOperationStore {
         request_fingerprint_hash: [u8; 32],
         request_payload: Vec<u8>,
         plan: OperationPlan,
-    ) -> GatewayResult<StoredOperation> {
+    ) -> GatewayResult<CreateOperationResult> {
+        let mut state = self.state.lock().await;
+
+        if let Some(idempotency_key) = &idempotency_key {
+            if let Some(operation_id) = state.idempotency.get(idempotency_key) {
+                let existing = state
+                    .operations
+                    .get(operation_id)
+                    .cloned()
+                    .expect("idempotency mapping should reference existing operation");
+                if existing.request_fingerprint_hash != request_fingerprint_hash {
+                    return Err(crate::GatewayError::IdempotencyConflict);
+                }
+                return Ok(CreateOperationResult::Existing(existing));
+            }
+        }
+
         let operation = StoredOperation {
             rpc_method: rpc_method.to_owned(),
             request_fingerprint_hash,
@@ -94,31 +127,31 @@ impl OperationStore for MemoryOperationStore {
         };
 
         if let Some(idempotency_key) = idempotency_key {
-            self.idempotency
-                .lock()
-                .await
+            state
+                .idempotency
                 .insert(idempotency_key, operation.operation_id().clone());
         }
-        self.operations
-            .lock()
-            .await
+        state
+            .operations
             .insert(operation.operation_id().clone(), operation.clone());
-        Ok(operation)
+        Ok(CreateOperationResult::Created(operation))
     }
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()> {
-        self.operations
+        self.state
             .lock()
             .await
+            .operations
             .insert(operation.operation_id().clone(), operation);
         Ok(())
     }
 
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
         Ok(self
-            .operations
+            .state
             .lock()
             .await
+            .operations
             .values()
             .filter(|operation| {
                 matches!(

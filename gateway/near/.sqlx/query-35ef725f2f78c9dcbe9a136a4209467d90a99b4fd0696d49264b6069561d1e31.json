@@ -1,14 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE gateway_operations\n            SET signer_account_id = $2,\n                request_fingerprint_hash = $3,\n                request_payload = $4,\n                status = $5,\n                updated_at = $6\n            WHERE id = $1\n            ",
+  "query": "\n            UPDATE gateway_operations\n            SET status = $2,\n                updated_at = $3\n            WHERE id = $1\n            ",
   "describe": {
     "columns": [],
     "parameters": {
       "Left": [
         "Uuid",
-        "Text",
-        "Bytea",
-        "Jsonb",
         {
           "Custom": {
             "name": "gateway_operation_status",
@@ -27,5 +24,5 @@
     },
     "nullable": []
   },
-  "hash": "021163017c612f31ad25fb4986179f05b80c45ead68efd10c2ceb9987b0cd3a0"
+  "hash": "35ef725f2f78c9dcbe9a136a4209467d90a99b4fd0696d49264b6069561d1e31"
 }
