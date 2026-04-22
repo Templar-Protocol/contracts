@@ -2,6 +2,7 @@ mod config;
 mod logging;
 mod rpc;
 
+use crate::rpc::attach_gateway;
 use blockchain_gateway_near::{GatewayContext, GatewayService, PostgresStore};
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
@@ -54,7 +55,7 @@ async fn main() {
     let local_addr = server
         .local_addr()
         .expect("server should have a bound local address");
-    let module = rpc::attach_gateway(gateway.clone()).expect("failed to attach RPC methods");
+    let module = attach_gateway(gateway.clone()).expect("failed to attach RPC methods");
     let handle = server.start(module);
 
     tracing::info!(%local_addr, "blockchain gateway service listening");

@@ -3,8 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
+    macros::{read_method_spec, write_method_spec},
     NearToken,
 };
 
@@ -23,15 +22,12 @@ pub struct GetResult {
     pub global_contract_account_id: Option<AccountId>,
 }
 
-public_read_method_spec!(
+read_method_spec!(
     /// Get chain state for a NEAR account.
     ///
     /// Returns balances, storage usage, and contract hash information for the
     /// requested account.
-    Get,
-    "account.get",
-    GetParams,
-    GetResult
+    "account.get": Get(GetParams) -> GetResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -39,12 +35,7 @@ pub struct DeleteBody {
     pub beneficiary_id: AccountId,
 }
 
-pub type DeleteResult = WriteOperationResult;
-
 write_method_spec!(
     /// Delete a managed account and send remaining funds to a beneficiary.
-    Delete,
-    "account.delete",
-    DeleteBody,
-    DeleteResult
+    "account.delete": Delete(DeleteBody)
 );

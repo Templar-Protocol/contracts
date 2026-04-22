@@ -3,9 +3,8 @@ use serde::{Deserialize, Serialize};
 use templar_universal_account::{transaction::Transaction, ExecuteArgs, KeyId};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
+    macros::{read_method_spec, write_method_spec},
     primitive::PublicKey,
-    rpc::common::WriteOperationResult,
     RegistryId, UniversalAccountId,
 };
 
@@ -32,7 +31,10 @@ pub struct GetKeyResult {
     pub parameters: Option<PayloadExecutionParametersView>,
 }
 
-public_read_method_spec!(GetKey, "ua.getKey", GetKeyParams, GetKeyResult);
+read_method_spec!(
+    /// Get key parameters from a universal account.
+    "ua.getKey": GetKey(GetKeyParams) -> GetKeyResult
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExecuteBody {
@@ -40,9 +42,10 @@ pub struct ExecuteBody {
     pub args: ExecuteArgs<Box<[Transaction]>>,
 }
 
-pub type ExecuteResult = WriteOperationResult;
-
-write_method_spec!(Execute, "ua.execute", ExecuteBody, ExecuteResult);
+write_method_spec!(
+    /// Execute a universal account payload.
+    "ua.execute": Execute(ExecuteBody)
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateBody {
@@ -56,6 +59,7 @@ pub struct CreateBody {
     pub deposit: crate::NearToken,
 }
 
-pub type CreateResult = WriteOperationResult;
-
-write_method_spec!(Create, "ua.create", CreateBody, CreateResult);
+write_method_spec!(
+    /// Create a universal account from the registry.
+    "ua.create": Create(CreateBody)
+);

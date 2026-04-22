@@ -3,8 +3,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::{ContractArgs, TxExecutionStatus, WriteOperationResult},
+    macros::{read_method_spec, write_method_spec},
+    rpc::common::{ContractArgs, TxExecutionStatus},
     Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
 
@@ -49,12 +49,9 @@ pub struct GetResult {
     pub return_value: Option<ReturnValue>,
 }
 
-public_read_method_spec!(
+read_method_spec!(
     /// Fetch transaction execution status and result details.
-    Get,
-    "tx.get",
-    GetParams,
-    GetResult
+    "tx.get": Get(GetParams) -> GetResult
 );
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -66,14 +63,9 @@ pub struct FunctionCallBody {
     pub deposit: NearToken,
 }
 
-pub type FunctionCallResult = WriteOperationResult;
-
 write_method_spec!(
     /// Submit a single function-call transaction.
-    FunctionCall,
-    "tx.functionCall",
-    FunctionCallBody,
-    FunctionCallResult
+    "tx.functionCall": FunctionCall(FunctionCallBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -82,14 +74,9 @@ pub struct TransferBody {
     pub amount: NearToken,
 }
 
-pub type TransferResult = WriteOperationResult;
-
 write_method_spec!(
     /// Transfer native NEAR to another account.
-    Transfer,
-    "tx.transfer",
-    TransferBody,
-    TransferResult
+    "tx.transfer": Transfer(TransferBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -98,14 +85,9 @@ pub struct DeployContractBody {
     pub code: Base64Bytes,
 }
 
-pub type DeployContractResult = WriteOperationResult;
-
 write_method_spec!(
     /// Deploy contract code to an existing account in a single transaction.
-    DeployContract,
-    "tx.deployContract",
-    DeployContractBody,
-    DeployContractResult
+    "tx.deployContract": DeployContract(DeployContractBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -118,12 +100,7 @@ pub struct DeployAndInitBody {
     pub deposit: NearToken,
 }
 
-pub type DeployAndInitResult = WriteOperationResult;
-
 write_method_spec!(
     /// Deploy contract code and call its init method in one transaction.
-    DeployAndInit,
-    "tx.deployAndInit",
-    DeployAndInitBody,
-    DeployAndInitResult
+    "tx.deployAndInit": DeployAndInit(DeployAndInitBody)
 );

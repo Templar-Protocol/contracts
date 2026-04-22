@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::{proxy::Proxy, pyth::PriceIdentifier};
 
-use crate::macros::public_read_method_spec;
+use crate::macros::read_method_spec;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListProxiesParams {
@@ -16,11 +16,9 @@ pub struct ListProxiesResult {
     pub proxies: Vec<PriceIdentifier>,
 }
 
-public_read_method_spec!(
-    ListProxies,
-    "proxyOracle.listProxies",
-    ListProxiesParams,
-    ListProxiesResult
+read_method_spec!(
+    /// List proxy price feeds.
+    "proxyOracle.listProxies": ListProxies(ListProxiesParams) -> ListProxiesResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -34,11 +32,9 @@ pub struct GetProxyResult {
     pub proxy: Option<Proxy>,
 }
 
-public_read_method_spec!(
-    GetProxy,
-    "proxyOracle.getProxy",
-    GetProxyParams,
-    GetProxyResult
+read_method_spec!(
+    /// Get a proxy price feed definition.
+    "proxyOracle.getProxy": GetProxy(GetProxyParams) -> GetProxyResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -52,9 +48,7 @@ pub struct PriceFeedExistsResult {
     pub exists: bool,
 }
 
-public_read_method_spec!(
-    PriceFeedExists,
-    "proxyOracle.priceFeedExists",
-    PriceFeedExistsParams,
-    PriceFeedExistsResult
+read_method_spec!(
+    /// Check whether a proxy price feed exists.
+    "proxyOracle.priceFeedExists": PriceFeedExists(PriceFeedExistsParams) -> PriceFeedExistsResult
 );

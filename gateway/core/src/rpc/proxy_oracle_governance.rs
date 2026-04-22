@@ -4,21 +4,16 @@ use templar_common::{
     governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
 };
 
-use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
-};
+use crate::macros::{read_method_spec, write_method_spec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetNextIdParams {
     pub oracle_id: near_account_id::AccountId,
 }
 pub type GetNextIdResult = u32;
-public_read_method_spec!(
-    GetNextId,
-    "proxyOracleGovernance.getNextId",
-    GetNextIdParams,
-    GetNextIdResult
+read_method_spec!(
+    /// Get the next governance proposal ID.
+    "proxyOracleGovernance.getNextId": GetNextId(GetNextIdParams) -> GetNextIdResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -29,11 +24,9 @@ pub struct GetTtlParams {
 pub struct GetTtlResult {
     pub ttl_ns: Nanoseconds,
 }
-public_read_method_spec!(
-    GetTtl,
-    "proxyOracleGovernance.getTtl",
-    GetTtlParams,
-    GetTtlResult
+read_method_spec!(
+    /// Get governance proposal TTL.
+    "proxyOracleGovernance.getTtl": GetTtl(GetTtlParams) -> GetTtlResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -41,11 +34,9 @@ pub struct GetCountParams {
     pub oracle_id: near_account_id::AccountId,
 }
 pub type GetCountResult = u32;
-public_read_method_spec!(
-    GetCount,
-    "proxyOracleGovernance.getCount",
-    GetCountParams,
-    GetCountResult
+read_method_spec!(
+    /// Get governance proposal count.
+    "proxyOracleGovernance.getCount": GetCount(GetCountParams) -> GetCountResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,7 +50,10 @@ pub struct ListParams {
 pub struct ListResult {
     pub ids: Vec<u32>,
 }
-public_read_method_spec!(List, "proxyOracleGovernance.list", ListParams, ListResult);
+read_method_spec!(
+    /// List governance proposal IDs.
+    "proxyOracleGovernance.list": List(ListParams) -> ListResult
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetParams {
@@ -71,7 +65,10 @@ pub struct GetParams {
 pub struct GetResult {
     pub proposal: Option<Proposal<Operation>>,
 }
-public_read_method_spec!(Get, "proxyOracleGovernance.get", GetParams, GetResult);
+read_method_spec!(
+    /// Get a governance proposal.
+    "proxyOracleGovernance.get": Get(GetParams) -> GetResult
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CreateBody {
@@ -79,12 +76,9 @@ pub struct CreateBody {
     pub id: u32,
     pub operation: Operation,
 }
-pub type CreateResult = WriteOperationResult;
 write_method_spec!(
-    Create,
-    "proxyOracleGovernance.create",
-    CreateBody,
-    CreateResult
+    /// Create a governance proposal.
+    "proxyOracleGovernance.create": Create(CreateBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -92,12 +86,9 @@ pub struct CancelBody {
     pub oracle_id: near_account_id::AccountId,
     pub id: u32,
 }
-pub type CancelResult = WriteOperationResult;
 write_method_spec!(
-    Cancel,
-    "proxyOracleGovernance.cancel",
-    CancelBody,
-    CancelResult
+    /// Cancel a governance proposal.
+    "proxyOracleGovernance.cancel": Cancel(CancelBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -105,10 +96,7 @@ pub struct ExecuteBody {
     pub oracle_id: near_account_id::AccountId,
     pub id: u32,
 }
-pub type ExecuteResult = WriteOperationResult;
 write_method_spec!(
-    Execute,
-    "proxyOracleGovernance.execute",
-    ExecuteBody,
-    ExecuteResult
+    /// Execute a governance proposal.
+    "proxyOracleGovernance.execute": Execute(ExecuteBody)
 );

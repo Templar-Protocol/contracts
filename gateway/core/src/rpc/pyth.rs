@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use templar_common::oracle::pyth::{Price, PriceIdentifier};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
+    macros::{read_method_spec, write_method_spec},
     Base64Bytes,
 };
 
@@ -27,11 +26,9 @@ pub struct ListEmaPricesNoOlderThanResult {
     pub prices: Vec<PriceEntry>,
 }
 
-public_read_method_spec!(
-    ListEmaPricesNoOlderThan,
-    "pyth.listEmaPricesNoOlderThan",
-    ListEmaPricesNoOlderThanParams,
-    ListEmaPricesNoOlderThanResult
+read_method_spec!(
+    /// List EMA prices within an age limit.
+    "pyth.listEmaPricesNoOlderThan": ListEmaPricesNoOlderThan(ListEmaPricesNoOlderThanParams) -> ListEmaPricesNoOlderThanResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -45,11 +42,9 @@ pub struct ListEmaPricesUnsafeResult {
     pub prices: Vec<PriceEntry>,
 }
 
-public_read_method_spec!(
-    ListEmaPricesUnsafe,
-    "pyth.listEmaPricesUnsafe",
-    ListEmaPricesUnsafeParams,
-    ListEmaPricesUnsafeResult
+read_method_spec!(
+    /// List EMA prices without an age limit.
+    "pyth.listEmaPricesUnsafe": ListEmaPricesUnsafe(ListEmaPricesUnsafeParams) -> ListEmaPricesUnsafeResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -58,11 +53,7 @@ pub struct UpdatePriceFeedsBody {
     pub data: Base64Bytes,
 }
 
-pub type UpdatePriceFeedsResult = WriteOperationResult;
-
 write_method_spec!(
-    UpdatePriceFeeds,
-    "pyth.updatePriceFeeds",
-    UpdatePriceFeedsBody,
-    UpdatePriceFeedsResult
+    /// Submit raw Pyth update data.
+    "pyth.updatePriceFeeds": UpdatePriceFeeds(UpdatePriceFeedsBody)
 );

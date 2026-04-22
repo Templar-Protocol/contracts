@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
 
-use crate::{macros::public_read_method_spec, rpc::common::Pagination};
+use crate::{macros::read_method_spec, rpc::common::Pagination};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetOracleIdParams {
@@ -15,11 +15,9 @@ pub struct GetOracleIdResult {
     pub pyth_oracle_id: AccountId,
 }
 
-public_read_method_spec!(
-    GetOracleId,
-    "lstOracle.getOracleId",
-    GetOracleIdParams,
-    GetOracleIdResult
+read_method_spec!(
+    /// Get the backing Pyth oracle for an LST oracle.
+    "lstOracle.getOracleId": GetOracleId(GetOracleIdParams) -> GetOracleIdResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -34,11 +32,9 @@ pub struct ListTransformersResult {
     pub price_ids: Vec<PriceIdentifier>,
 }
 
-public_read_method_spec!(
-    ListTransformers,
-    "lstOracle.listTransformers",
-    ListTransformersParams,
-    ListTransformersResult
+read_method_spec!(
+    /// List transformer price IDs on an LST oracle.
+    "lstOracle.listTransformers": ListTransformers(ListTransformersParams) -> ListTransformersResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -52,9 +48,7 @@ pub struct GetTransformerResult {
     pub transformer: Option<PriceTransformer>,
 }
 
-public_read_method_spec!(
-    GetTransformer,
-    "lstOracle.getTransformer",
-    GetTransformerParams,
-    GetTransformerResult
+read_method_spec!(
+    /// Get a transformer definition for a price ID.
+    "lstOracle.getTransformer": GetTransformer(GetTransformerParams) -> GetTransformerResult
 );

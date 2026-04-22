@@ -3,8 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
+    macros::{read_method_spec, write_method_spec},
     U128,
 };
 
@@ -26,11 +25,9 @@ pub struct GetBalanceOfResult {
     pub balance: U128,
 }
 
-public_read_method_spec!(
-    GetBalanceOf,
-    "mt.getBalanceOf",
-    GetBalanceOfParams,
-    GetBalanceOfResult
+read_method_spec!(
+    /// Get a multi-token balance.
+    "mt.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -51,11 +48,9 @@ pub struct GetBatchBalanceOfResult {
     pub balances: Vec<BalanceEntry>,
 }
 
-public_read_method_spec!(
-    GetBatchBalanceOf,
-    "mt.getBatchBalanceOf",
-    GetBatchBalanceOfParams,
-    GetBatchBalanceOfResult
+read_method_spec!(
+    /// Get multiple multi-token balances.
+    "mt.getBatchBalanceOf": GetBatchBalanceOf(GetBatchBalanceOfParams) -> GetBatchBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -69,7 +64,10 @@ pub struct GetSupplyResult {
     pub supply: Option<U128>,
 }
 
-public_read_method_spec!(GetSupply, "mt.getSupply", GetSupplyParams, GetSupplyResult);
+read_method_spec!(
+    /// Get total supply for a multi-token ID.
+    "mt.getSupply": GetSupply(GetSupplyParams) -> GetSupplyResult
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBatchSupplyParams {
@@ -88,11 +86,9 @@ pub struct GetBatchSupplyResult {
     pub supplies: Vec<SupplyEntry>,
 }
 
-public_read_method_spec!(
-    GetBatchSupply,
-    "mt.getBatchSupply",
-    GetBatchSupplyParams,
-    GetBatchSupplyResult
+read_method_spec!(
+    /// Get total supply for multiple multi-token IDs.
+    "mt.getBatchSupply": GetBatchSupply(GetBatchSupplyParams) -> GetBatchSupplyResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -107,9 +103,10 @@ pub struct TransferBody {
     pub memo: Option<String>,
 }
 
-pub type TransferResult = WriteOperationResult;
-
-write_method_spec!(Transfer, "mt.transfer", TransferBody, TransferResult);
+write_method_spec!(
+    /// Transfer multi-tokens.
+    "mt.transfer": Transfer(TransferBody)
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransferCallBody {
@@ -124,11 +121,7 @@ pub struct TransferCallBody {
     pub msg: String,
 }
 
-pub type TransferCallResult = WriteOperationResult;
-
 write_method_spec!(
-    TransferCall,
-    "mt.transferCall",
-    TransferCallBody,
-    TransferCallResult
+    /// Transfer multi-tokens and call the receiver.
+    "mt.transferCall": TransferCall(TransferCallBody)
 );

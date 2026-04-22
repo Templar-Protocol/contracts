@@ -3,8 +3,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::{StorageBalance, StorageBalanceBounds, WriteOperationResult},
+    macros::{read_method_spec, write_method_spec},
+    rpc::common::{StorageBalance, StorageBalanceBounds},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -17,11 +17,9 @@ pub struct GetBalanceBoundsResult {
     pub bounds: StorageBalanceBounds,
 }
 
-public_read_method_spec!(
-    GetBalanceBounds,
-    "storage.getBalanceBounds",
-    GetBalanceBoundsParams,
-    GetBalanceBoundsResult
+read_method_spec!(
+    /// Get storage balance bounds for a contract.
+    "storage.getBalanceBounds": GetBalanceBounds(GetBalanceBoundsParams) -> GetBalanceBoundsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -35,11 +33,9 @@ pub struct GetBalanceOfResult {
     pub balance: Option<StorageBalance>,
 }
 
-public_read_method_spec!(
-    GetBalanceOf,
-    "storage.getBalanceOf",
-    GetBalanceOfParams,
-    GetBalanceOfResult
+read_method_spec!(
+    /// Get storage balance for an account.
+    "storage.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -51,9 +47,10 @@ pub struct DepositBody {
     pub deposit: crate::NearToken,
 }
 
-pub type DepositResult = WriteOperationResult;
-
-write_method_spec!(Deposit, "storage.deposit", DepositBody, DepositResult);
+write_method_spec!(
+    /// Deposit storage for an account.
+    "storage.deposit": Deposit(DepositBody)
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UnregisterBody {
@@ -62,13 +59,9 @@ pub struct UnregisterBody {
     pub force: bool,
 }
 
-pub type UnregisterResult = WriteOperationResult;
-
 write_method_spec!(
-    Unregister,
-    "storage.unregister",
-    UnregisterBody,
-    UnregisterResult
+    /// Unregister storage for an account.
+    "storage.unregister": Unregister(UnregisterBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -77,8 +70,6 @@ pub struct EnsureDepositBody {
     pub account_id: AccountId,
     pub mode: EnsureDepositMode,
 }
-
-pub type EnsureDepositResult = WriteOperationResult;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "amount")]
@@ -89,8 +80,6 @@ pub enum EnsureDepositMode {
 }
 
 write_method_spec!(
-    EnsureDeposit,
-    "storage.ensureDeposit",
-    EnsureDepositBody,
-    EnsureDepositResult
+    /// Ensure an account has enough storage deposit.
+    "storage.ensureDeposit": EnsureDeposit(EnsureDepositBody)
 );

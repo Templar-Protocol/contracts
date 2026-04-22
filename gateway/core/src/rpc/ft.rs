@@ -3,8 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
+    macros::{read_method_spec, write_method_spec},
     U128,
 };
 
@@ -19,11 +18,9 @@ pub struct GetBalanceOfResult {
     pub balance: U128,
 }
 
-public_read_method_spec!(
-    GetBalanceOf,
-    "ft.getBalanceOf",
-    GetBalanceOfParams,
-    GetBalanceOfResult
+read_method_spec!(
+    /// Get a fungible token balance.
+    "ft.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -35,9 +32,10 @@ pub struct TransferBody {
     pub memo: Option<String>,
 }
 
-pub type TransferResult = WriteOperationResult;
-
-write_method_spec!(Transfer, "ft.transfer", TransferBody, TransferResult);
+write_method_spec!(
+    /// Transfer fungible tokens.
+    "ft.transfer": Transfer(TransferBody)
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransferCallBody {
@@ -49,11 +47,7 @@ pub struct TransferCallBody {
     pub memo: Option<String>,
 }
 
-pub type TransferCallResult = WriteOperationResult;
-
 write_method_spec!(
-    TransferCall,
-    "ft.transferCall",
-    TransferCallBody,
-    TransferCallResult
+    /// Transfer fungible tokens and call the receiver.
+    "ft.transferCall": TransferCall(TransferCallBody)
 );

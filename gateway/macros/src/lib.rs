@@ -3,36 +3,73 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    parse_macro_input, Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Result, Token, Type,
+    parenthesized, parse_macro_input, Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Result,
+    Token, Type,
 };
 
-enum MethodKind {
-    Read,
-    Write,
-}
-
-struct MethodSpecInput {
+struct ReadMethodSpecInput {
     attrs: Vec<Attribute>,
-    ident: Ident,
-    _comma_1: Token![,],
     rpc_method: LitStr,
-    _comma_2: Token![,],
+    ident: Ident,
     input: Type,
-    _comma_3: Token![,],
     output: Type,
 }
 
-impl Parse for MethodSpecInput {
+impl Parse for ReadMethodSpecInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let attrs = input.call(Attribute::parse_outer)?;
+        let rpc_method: LitStr = input.parse()?;
+        let _: Token![:] = input.parse()?;
+        let ident: Ident = input.parse()?;
+
+        let input_content;
+        parenthesized!(input_content in input);
+        let input_ty: Type = input_content.parse()?;
+
+        let _: Token![->] = input.parse()?;
+        let output: Type = input.parse()?;
+
+        if input.peek(Token![,]) {
+            let _: Token![,] = input.parse()?;
+        }
+
         Ok(Self {
-            attrs: input.call(Attribute::parse_outer)?,
-            ident: input.parse()?,
-            _comma_1: input.parse()?,
-            rpc_method: input.parse()?,
-            _comma_2: input.parse()?,
-            input: input.parse()?,
-            _comma_3: input.parse()?,
-            output: input.parse()?,
+            attrs,
+            rpc_method,
+            ident,
+            input: input_ty,
+            output,
+        })
+    }
+}
+
+struct WriteMethodSpecInput {
+    attrs: Vec<Attribute>,
+    rpc_method: LitStr,
+    ident: Ident,
+    input: Type,
+}
+
+impl Parse for WriteMethodSpecInput {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let attrs = input.call(Attribute::parse_outer)?;
+        let rpc_method: LitStr = input.parse()?;
+        let _: Token![:] = input.parse()?;
+        let ident: Ident = input.parse()?;
+
+        let input_content;
+        parenthesized!(input_content in input);
+        let input_ty: Type = input_content.parse()?;
+
+        if input.peek(Token![,]) {
+            let _: Token![,] = input.parse()?;
+        }
+
+        Ok(Self {
+            attrs,
+            rpc_method,
+            ident,
+            input: input_ty,
         })
     }
 }
@@ -75,36 +112,27 @@ fn summary_from_doc(doc: &str) -> String {
         .join(" ")
 }
 
-fn expand_method(input: MethodSpecInput, kind: MethodKind) -> TokenStream {
-    let MethodSpecInput {
-        attrs,
-        ident,
-        rpc_method,
-        input,
-        output,
-        ..
-    } = input;
-
+fn expand_method(
+    attrs: Vec<Attribute>,
+    rpc_method: LitStr,
+    ident: Ident,
+    request_ty: proc_macro2::TokenStream,
+    output_ty: proc_macro2::TokenStream,
+    method_kind: proc_macro2::TokenStream,
+) -> TokenStream {
     let doc = cleaned_doc_text(&attrs);
     let summary = summary_from_doc(&doc);
     let deprecated = attrs.iter().any(|attr| attr.path().is_ident("deprecated"));
 
-    let request_ty = match kind {
-        MethodKind::Read => quote!(crate::common::ReadRequest<#input>),
-        MethodKind::Write => quote!(crate::common::WriteRequest<#input>),
-    };
-    let method_kind = match kind {
-        MethodKind::Read => quote!(crate::spec::MethodKind::Read),
-        MethodKind::Write => quote!(crate::spec::MethodKind::Write),
-    };
-
     quote! {
+        #[doc = concat!("RPC method: `", #rpc_method, "`")]
+        #[doc = ""]
         #(#attrs)*
         pub struct #ident;
 
         impl crate::MethodSpec for #ident {
             type Input = #request_ty;
-            type Output = #output;
+            type Output = #output_ty;
 
             const RPC_METHOD: &'static str = #rpc_method;
         }
@@ -120,17 +148,40 @@ fn expand_method(input: MethodSpecInput, kind: MethodKind) -> TokenStream {
 }
 
 #[proc_macro]
-pub fn public_read_method_spec(input: TokenStream) -> TokenStream {
+pub fn read_method_spec(input: TokenStream) -> TokenStream {
+    let ReadMethodSpecInput {
+        attrs,
+        rpc_method,
+        ident,
+        input,
+        output,
+    } = parse_macro_input!(input as ReadMethodSpecInput);
+
     expand_method(
-        parse_macro_input!(input as MethodSpecInput),
-        MethodKind::Read,
+        attrs,
+        rpc_method,
+        ident,
+        quote!(crate::common::ReadRequest<#input>),
+        quote!(#output),
+        quote!(crate::spec::MethodKind::Read),
     )
 }
 
 #[proc_macro]
 pub fn write_method_spec(input: TokenStream) -> TokenStream {
+    let WriteMethodSpecInput {
+        attrs,
+        rpc_method,
+        ident,
+        input,
+    } = parse_macro_input!(input as WriteMethodSpecInput);
+
     expand_method(
-        parse_macro_input!(input as MethodSpecInput),
-        MethodKind::Write,
+        attrs,
+        rpc_method,
+        ident,
+        quote!(crate::common::WriteRequest<#input>),
+        quote!(crate::rpc::common::WriteOperationResult),
+        quote!(crate::spec::MethodKind::Write),
     )
 }

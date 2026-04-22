@@ -6,8 +6,7 @@ use templar_common::oracle::{
 };
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
+    macros::{read_method_spec, write_method_spec},
     Base64Bytes,
 };
 
@@ -26,7 +25,10 @@ pub struct GetKindParams {
 
 pub type GetKindResult = OracleContractKind;
 
-public_read_method_spec!(GetKind, "oracle.getKind", GetKindParams, GetKindResult);
+read_method_spec!(
+    /// Detect the kind of oracle contract.
+    "oracle.getKind": GetKind(GetKindParams) -> GetKindResult
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetPriceResolutionDependenciesParams {
@@ -40,11 +42,9 @@ pub struct GetPriceResolutionDependenciesResult {
     pub requests: Vec<OracleRequest>,
 }
 
-public_read_method_spec!(
-    GetPriceResolutionDependencies,
-    "oracle.getPriceResolutionDependencies",
-    GetPriceResolutionDependenciesParams,
-    GetPriceResolutionDependenciesResult
+read_method_spec!(
+    /// Get update dependencies for a price.
+    "oracle.getPriceResolutionDependencies": GetPriceResolutionDependencies(GetPriceResolutionDependenciesParams) -> GetPriceResolutionDependenciesResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -88,11 +88,9 @@ pub struct ResolvePriceResult {
     pub price: Option<pyth::Price>,
 }
 
-public_read_method_spec!(
-    ResolvePrice,
-    "oracle.resolvePrice",
-    ResolvePriceParams,
-    ResolvePriceResult
+read_method_spec!(
+    /// Resolve a single price from supplied inputs.
+    "oracle.resolvePrice": ResolvePrice(ResolvePriceParams) -> ResolvePriceResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -106,11 +104,9 @@ pub struct ResolvePricesResult {
     pub prices: Vec<ResolvedPrice>,
 }
 
-public_read_method_spec!(
-    ResolvePrices,
-    "oracle.resolvePrices",
-    ResolvePricesParams,
-    ResolvePricesResult
+read_method_spec!(
+    /// Resolve multiple prices from supplied inputs.
+    "oracle.resolvePrices": ResolvePrices(ResolvePricesParams) -> ResolvePricesResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -132,15 +128,16 @@ pub struct GetPriceResult {
     pub price: Option<pyth::Price>,
 }
 
-public_read_method_spec!(GetPrice, "oracle.getPrice", GetPriceParams, GetPriceResult);
+read_method_spec!(
+    /// Read a single on-chain oracle price.
+    "oracle.getPrice": GetPrice(GetPriceParams) -> GetPriceResult
+);
 
 pub type GetPricesResult = ResolvePricesResult;
 
-public_read_method_spec!(
-    GetPrices,
-    "oracle.getPrices",
-    GetPricesParams,
-    GetPricesResult
+read_method_spec!(
+    /// Read multiple on-chain oracle prices.
+    "oracle.getPrices": GetPrices(GetPricesParams) -> GetPricesResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -150,10 +147,8 @@ pub struct UpdatePythBody {
 }
 
 write_method_spec!(
-    UpdatePyth,
-    "oracle.updatePyth",
-    UpdatePythBody,
-    WriteOperationResult
+    /// Submit a Pyth oracle update.
+    "oracle.updatePyth": UpdatePyth(UpdatePythBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -163,10 +158,8 @@ pub struct UpdateRedStoneBody {
 }
 
 write_method_spec!(
-    UpdateRedStone,
-    "oracle.updateRedStone",
-    UpdateRedStoneBody,
-    WriteOperationResult
+    /// Submit a RedStone oracle update.
+    "oracle.updateRedStone": UpdateRedStone(UpdateRedStoneBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -176,8 +169,6 @@ pub struct UpdatePricesBody {
 }
 
 write_method_spec!(
-    UpdatePrices,
-    "oracle.updatePrices",
-    UpdatePricesBody,
-    WriteOperationResult
+    /// Submit all updates needed for prices.
+    "oracle.updatePrices": UpdatePrices(UpdatePricesBody)
 );

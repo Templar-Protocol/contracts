@@ -2,7 +2,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{macros::public_read_method_spec, U128};
+use crate::{macros::read_method_spec, U128};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetPoolsParams {
@@ -22,9 +22,7 @@ pub struct GetPoolsResult {
     pub pools: Vec<PoolInfo>,
 }
 
-public_read_method_spec!(
-    GetPools,
-    "refFinance.getPools",
-    GetPoolsParams,
-    GetPoolsResult
+read_method_spec!(
+    /// List pools from a Ref Finance exchange.
+    "refFinance.getPools": GetPools(GetPoolsParams) -> GetPoolsResult
 );

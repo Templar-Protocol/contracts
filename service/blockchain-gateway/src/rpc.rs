@@ -31,6 +31,10 @@ impl GatewayRpcBuilder {
         }
     }
 
+    fn finish(self) -> RpcModule<GatewayService> {
+        self.module
+    }
+
     fn register_write<Spec: PlanWrite>(&mut self) -> Result<(), RegisterMethodError>
     where
         Spec::Input: Clone + serde::Serialize,
@@ -79,18 +83,10 @@ impl GatewayRpcBuilder {
         )?;
         Ok(())
     }
-
-    fn finish(self) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
-        Ok(self.module)
-    }
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn attach_gateway(
-    service: GatewayService,
-) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
-    let mut builder = GatewayRpcBuilder::new(service);
-
+fn register_gateway_methods(builder: &mut GatewayRpcBuilder) -> Result<(), RegisterMethodError> {
     builder.register_read::<account::Get>()?;
     builder.register_write::<account::Delete>()?;
     builder.register_read::<contract::ViewFunction>()?;
@@ -194,8 +190,15 @@ pub fn attach_gateway(
     builder.register_write::<universal_account::Execute>()?;
     builder.register_write::<universal_account::Create>()?;
     builder.register_operation_get()?;
+    Ok(())
+}
 
-    builder.finish()
+pub fn attach_gateway(
+    service: GatewayService,
+) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
+    let mut builder = GatewayRpcBuilder::new(service);
+    register_gateway_methods(&mut builder)?;
+    Ok(builder.finish())
 }
 
 #[cfg(test)]

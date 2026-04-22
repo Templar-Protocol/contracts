@@ -2,9 +2,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
+    macros::{read_method_spec, write_method_spec},
     primitive::PublicKey,
-    rpc::common::{Pagination, WriteOperationResult},
+    rpc::common::Pagination,
     Base64Bytes, NearToken, RegistryId,
 };
 
@@ -20,11 +20,9 @@ pub struct ListDeploymentsResult {
     pub account_ids: Vec<near_account_id::AccountId>,
 }
 
-public_read_method_spec!(
-    ListDeployments,
-    "registry.listDeployments",
-    ListDeploymentsParams,
-    ListDeploymentsResult
+read_method_spec!(
+    /// List deployments in a registry.
+    "registry.listDeployments": ListDeployments(ListDeploymentsParams) -> ListDeploymentsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -39,11 +37,9 @@ pub struct ListVersionsResult {
     pub values: Vec<String>,
 }
 
-public_read_method_spec!(
-    ListVersions,
-    "registry.listVersions",
-    ListVersionsParams,
-    ListVersionsResult
+read_method_spec!(
+    /// List versions in a registry.
+    "registry.listVersions": ListVersions(ListVersionsParams) -> ListVersionsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -57,11 +53,9 @@ pub struct GetDeploymentResult {
     pub deployment: Option<templar_common::registry::Deployment>,
 }
 
-public_read_method_spec!(
-    GetDeployment,
-    "registry.getDeployment",
-    GetDeploymentParams,
-    GetDeploymentResult
+read_method_spec!(
+    /// Get a deployment record from a registry.
+    "registry.getDeployment": GetDeployment(GetDeploymentParams) -> GetDeploymentResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -73,13 +67,9 @@ pub struct AddVersionBody {
     pub deposit: NearToken,
 }
 
-pub type AddVersionResult = WriteOperationResult;
-
 write_method_spec!(
-    AddVersion,
-    "registry.addVersion",
-    AddVersionBody,
-    AddVersionResult
+    /// Add a deployable version to a registry.
+    "registry.addVersion": AddVersion(AddVersionBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -93,9 +83,10 @@ pub struct DeployBody {
     pub deposit: crate::NearToken,
 }
 
-pub type DeployResult = WriteOperationResult;
-
-write_method_spec!(Deploy, "registry.deploy", DeployBody, DeployResult);
+write_method_spec!(
+    /// Deploy a contract from a registry version.
+    "registry.deploy": Deploy(DeployBody)
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RemoveVersionBody {
@@ -103,11 +94,7 @@ pub struct RemoveVersionBody {
     pub version_key: String,
 }
 
-pub type RemoveVersionResult = WriteOperationResult;
-
 write_method_spec!(
-    RemoveVersion,
-    "registry.removeVersion",
-    RemoveVersionBody,
-    RemoveVersionResult
+    /// Remove a version from a registry.
+    "registry.removeVersion": RemoveVersion(RemoveVersionBody)
 );

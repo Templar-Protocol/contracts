@@ -3,8 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    macros::{public_read_method_spec, write_method_spec},
-    rpc::common::WriteOperationResult,
+    macros::{read_method_spec, write_method_spec},
     U128,
 };
 
@@ -31,11 +30,9 @@ pub struct GetBalanceOfResult {
     pub balance: U128,
 }
 
-public_read_method_spec!(
-    GetBalanceOf,
-    "token.getBalanceOf",
-    GetBalanceOfParams,
-    GetBalanceOfResult
+read_method_spec!(
+    /// Get a token balance across supported standards.
+    "token.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -47,9 +44,10 @@ pub struct TransferBody {
     pub memo: Option<String>,
 }
 
-pub type TransferResult = WriteOperationResult;
-
-write_method_spec!(Transfer, "token.transfer", TransferBody, TransferResult);
+write_method_spec!(
+    /// Transfer a token across supported standards.
+    "token.transfer": Transfer(TransferBody)
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransferCallBody {
@@ -61,11 +59,7 @@ pub struct TransferCallBody {
     pub memo: Option<String>,
 }
 
-pub type TransferCallResult = WriteOperationResult;
-
 write_method_spec!(
-    TransferCall,
-    "token.transferCall",
-    TransferCallBody,
-    TransferCallResult
+    /// Transfer a token and call the receiver.
+    "token.transferCall": TransferCall(TransferCallBody)
 );
