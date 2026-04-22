@@ -19,18 +19,6 @@ pub enum OracleContractKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetKindParams {
-    pub oracle_id: near_account_id::AccountId,
-}
-
-pub type GetKindResult = OracleContractKind;
-
-read_method_spec!(
-    /// Detect the kind of oracle contract.
-    "oracle.getKind": GetKind(GetKindParams) -> GetKindResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetPriceResolutionDependenciesParams {
     pub oracle_id: near_account_id::AccountId,
     pub price_id: PriceIdentifier,

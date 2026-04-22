@@ -90,6 +90,7 @@ fn register_gateway_methods(builder: &mut GatewayRpcBuilder) -> Result<(), Regis
     builder.register_read::<account::Get>()?;
     builder.register_write::<account::Delete>()?;
     builder.register_read::<contract::ViewFunction>()?;
+    builder.register_read::<contract::GetKind>()?;
     builder.register_read::<contract::GetVersion>()?;
     builder.register_read::<ft::GetBalanceOf>()?;
     builder.register_write::<ft::Transfer>()?;
@@ -133,7 +134,6 @@ fn register_gateway_methods(builder: &mut GatewayRpcBuilder) -> Result<(), Regis
     builder.register_read::<mt::GetBatchSupply>()?;
     builder.register_write::<mt::Transfer>()?;
     builder.register_write::<mt::TransferCall>()?;
-    builder.register_read::<oracle::GetKind>()?;
     builder.register_read::<oracle::GetPriceResolutionDependencies>()?;
     builder.register_read::<oracle::ResolvePrice>()?;
     builder.register_read::<oracle::ResolvePrices>()?;
@@ -169,6 +169,7 @@ fn register_gateway_methods(builder: &mut GatewayRpcBuilder) -> Result<(), Regis
     builder.register_read::<ref_finance::GetPools>()?;
     builder.register_read::<registry::GetDeployment>()?;
     builder.register_read::<registry::ListDeployments>()?;
+    builder.register_read::<registry::ListDeploymentsByKind>()?;
     builder.register_read::<registry::ListVersions>()?;
     builder.register_write::<registry::AddVersion>()?;
     builder.register_write::<registry::RemoveVersion>()?;

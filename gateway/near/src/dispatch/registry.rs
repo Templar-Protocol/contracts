@@ -7,6 +7,7 @@ use crate::{
         registry::{AddVersionArgs, GetDeploymentArgs, RemoveVersionArgs},
         ContractWriteOptions,
     },
+    dispatch::contract::query_contract_kind,
     dispatch::single_transaction_plan,
     operation::OperationPlan,
     GatewayContext, GatewayResult,
@@ -52,6 +53,38 @@ impl DispatchRead for registry::ListVersions {
                 .list_versions(request.params.args)
                 .await
                 .map(|values| registry::ListVersionsResult { values })
+        })
+    }
+}
+
+impl DispatchRead for registry::ListDeploymentsByKind {
+    fn dispatch(
+        request: Self::Input,
+        ctx: GatewayContext,
+    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+        Box::pin(async move {
+            let params = request.params;
+            let account_ids = ctx
+                .registry(params.registry_id)
+                .list_deployments(blockchain_gateway_core::common::Pagination::default())
+                .await?;
+
+            let mut filtered = Vec::new();
+            for account_id in account_ids {
+                if query_contract_kind(&ctx, account_id.clone()).await? == params.kind {
+                    filtered.push(account_id);
+                }
+            }
+
+            let offset = params.args.offset.unwrap_or_default() as usize;
+            let limit = params.args.limit.map(|value| value as usize);
+            let account_ids = if let Some(limit) = limit {
+                filtered.into_iter().skip(offset).take(limit).collect()
+            } else {
+                filtered.into_iter().skip(offset).collect()
+            };
+
+            Ok(registry::ListDeploymentsResult { account_ids })
         })
     }
 }

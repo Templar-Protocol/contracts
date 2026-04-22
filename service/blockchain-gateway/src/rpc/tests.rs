@@ -1,4 +1,5 @@
 mod account_tests;
+mod contract_tests;
 mod ft_tests;
 mod lst_oracle_tests;
 mod market_tests;

@@ -1,6 +1,6 @@
 use std::io::ErrorKind;
 
-use blockchain_gateway_core::Version;
+use blockchain_gateway_core::{contract::ContractKind, Version};
 use moka::sync::Cache;
 use near_account_id::AccountId;
 use near_api::Contract;
@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     client::{
-        cache::{immutable_cache, load_cached},
+        cache::{config_cache, immutable_cache, load_cached},
         macros::contract_views,
         NearClient,
     },
@@ -19,16 +19,19 @@ use crate::{
 use super::BoundContractClient;
 
 const CONTRACT_METADATA_CACHE_CAPACITY: u64 = 256;
+const CONTRACT_KIND_CACHE_CAPACITY: u64 = 512;
 
 #[derive(Clone)]
 pub(crate) struct ContractClientCaches {
     pub contract_source_metadata: Cache<AccountId, std::sync::Arc<ContractSourceMetadata>>,
+    pub contract_kind: Cache<AccountId, std::sync::Arc<ContractKind>>,
 }
 
 impl ContractClientCaches {
     pub fn new() -> Self {
         Self {
             contract_source_metadata: immutable_cache(CONTRACT_METADATA_CACHE_CAPACITY),
+            contract_kind: config_cache(CONTRACT_KIND_CACHE_CAPACITY),
         }
     }
 }

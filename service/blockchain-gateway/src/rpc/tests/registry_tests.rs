@@ -77,6 +77,28 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
 
+    let markets_only = stack
+        .controller
+        .request::<registry::ListDeploymentsByKind>(&ReadRequest {
+            params: registry::ListDeploymentsByKindParams {
+                registry_id: registry_id.clone(),
+                args: blockchain_gateway_core::common::Pagination::default(),
+                kind: contract::ContractKind::Market,
+            },
+        })
+        .await?;
+
+    let unknown_only = stack
+        .controller
+        .request::<registry::ListDeploymentsByKind>(&ReadRequest {
+            params: registry::ListDeploymentsByKindParams {
+                registry_id: registry_id.clone(),
+                args: blockchain_gateway_core::common::Pagination::default(),
+                kind: contract::ContractKind::Unknown,
+            },
+        })
+        .await?;
+
     let version = stack
         .controller
         .request::<contract::GetVersion>(&ReadRequest {
@@ -104,6 +126,8 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     );
     assert!(deployment.deployment.is_some());
     assert!(!version.version_string.is_empty());
+    assert!(markets_only.account_ids.is_empty());
+    assert_eq!(unknown_only.account_ids, deployments.account_ids);
     assert_eq!(
         deploy.operation.status,
         blockchain_gateway_core::OperationStatus::Succeeded

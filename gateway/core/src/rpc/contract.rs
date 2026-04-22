@@ -29,6 +29,29 @@ pub struct GetVersionParams {
     pub contract_id: AccountId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractKind {
+    Unknown,
+    Registry,
+    Market,
+    ProxyOracle,
+    LstOracle,
+    UniversalAccount,
+    RedstoneOracle,
+    PythOracle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetKindParams {
+    pub contract_id: AccountId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetKindResult {
+    pub kind: ContractKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VersionResult {
     pub version_string: String,
@@ -38,4 +61,9 @@ pub struct VersionResult {
 read_method_spec!(
     /// Read a contract version from NEP-330 metadata.
     "contract.getVersion": GetVersion(GetVersionParams) -> VersionResult
+);
+
+read_method_spec!(
+    /// Identify the kind of deployed protocol contract.
+    "contract.getKind": GetKind(GetKindParams) -> GetKindResult
 );

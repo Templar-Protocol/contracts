@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    contract::ContractKind,
     macros::{read_method_spec, write_method_spec},
     primitive::PublicKey,
     rpc::common::Pagination,
@@ -23,6 +24,19 @@ pub struct ListDeploymentsResult {
 read_method_spec!(
     /// List deployments in a registry.
     "registry.listDeployments": ListDeployments(ListDeploymentsParams) -> ListDeploymentsResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ListDeploymentsByKindParams {
+    pub registry_id: RegistryId,
+    #[serde(flatten)]
+    pub args: Pagination,
+    pub kind: ContractKind,
+}
+
+read_method_spec!(
+    /// List deployments in a registry filtered by contract kind.
+    "registry.listDeploymentsByKind": ListDeploymentsByKind(ListDeploymentsByKindParams) -> ListDeploymentsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

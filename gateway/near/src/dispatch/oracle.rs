@@ -45,15 +45,6 @@ async fn get_proxy(
         .await
 }
 
-impl DispatchRead for oracle::GetKind {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move { query_oracle_kind(&ctx, request.params.oracle_id).await })
-    }
-}
-
 impl DispatchRead for oracle::GetPriceResolutionDependencies {
     fn dispatch(
         request: Self::Input,
