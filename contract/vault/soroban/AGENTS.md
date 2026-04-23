@@ -54,20 +54,27 @@ measured, and re-verified:
 
 ## Binary Size Gate
 
-The Soroban runtime deploy artifact must stay at or below `128 KiB` (`131072` bytes).
+Every Soroban contract artifact built by `contract/vault/soroban/justfile` must stay at or below
+its configured budget. The default budget is `128 KiB` (`131072` bytes).
 
 Use these commands:
 
 - `just -f contract/vault/soroban/justfile build`
-- `just -f contract/vault/soroban/justfile size-budget-check`
+- `just -f contract/vault/soroban/justfile size-budget-check-all`
 - `just -f contract/vault/soroban/justfile wasm-analyze 250 120`
 - `just -f contract/vault/soroban/justfile wasm-analyze-print all 120`
 
 Important details:
 
-- The size gate checks `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`.
+- `size-budget-check-all` checks the runtime deploy artifact plus governance, share token, Blend
+  adapter, ERC-4626 proxy, and curator proxy optimized WASMs.
+- The runtime size gate checks `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`.
 - `build` also emits `templar_soroban_runtime.optimized.wasm`; the deploy artifact is the
   contractspec-stripped one.
+- Proxy size gates check:
+  `target/wasm32-unknown-unknown/release-soroban/templar_4626_proxy_soroban.optimized.wasm`
+  and
+  `target/wasm32-unknown-unknown/release-soroban/templar_curator_proxy_soroban.optimized.wasm`.
 - `scripts/strip_contractspec.py` typically saves about `7 KiB` by removing `contractspecv0`.
 - The current recovered evidence from `2026-04-23` recorded `137127` bytes, which is `6055`
   bytes over budget.
@@ -82,7 +89,7 @@ Common growth pitfalls:
 When the size gate fails:
 
 1. Rebuild with `just -f contract/vault/soroban/justfile build`.
-2. Run `just -f contract/vault/soroban/justfile size-budget-check`.
+2. Run `just -f contract/vault/soroban/justfile size-budget-check-all`.
 3. Run `just -f contract/vault/soroban/justfile wasm-analyze 250 120`.
 4. Prefer deleting duplicated logic or narrowing compile surface before introducing new helper
    layers or architectural churn.
@@ -91,7 +98,7 @@ When the size gate fails:
 
 ## Release WASM Inspection Workflow
 
-Do not stop at `size-budget-check`. When the artifact grows, inspect the built release artifacts
+Do not stop at `size-budget-check-all`. When an artifact grows, inspect the built release artifacts
 directly and keep the commands/results in the task notes or PR description.
 
 Release artifacts to inspect after `just -f contract/vault/soroban/justfile build`:
@@ -299,7 +306,7 @@ Minimum runtime verification:
 Size verification:
 
 - `just -f contract/vault/soroban/justfile build`
-- `just -f contract/vault/soroban/justfile size-budget-check`
+- `just -f contract/vault/soroban/justfile size-budget-check-all`
 
 When relevant, also run:
 
@@ -307,6 +314,7 @@ When relevant, also run:
 - `cargo test -p templar-soroban-share-token -- --nocapture`
 - `cargo test -p templar-soroban-blend-adapter -- --nocapture`
 - `just -f contract/vault/soroban/justfile check-4626-proxy`
+- `just -f contract/vault/soroban/justfile check-curator-proxy`
 
 Use `wasm-analyze` when:
 
@@ -316,7 +324,7 @@ Use `wasm-analyze` when:
 
 Use direct `twiggy` and `wasm-objdump` on the release artifacts when:
 
-- a change regresses `size-budget-check`
+- a change regresses `size-budget-check-all`
 - you need to know whether growth came from code, data, or custom sections
 - you need to attribute bloat to a specific retained function tree rather than a crate-level guess
 

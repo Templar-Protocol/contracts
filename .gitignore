@@ -28,6 +28,7 @@ _site/
 # generated soroban test snapshots
 contract/vault/**/test_snapshots/
 contract/proxy-4626-soroban/test_snapshots/
+contract/proxy-curator-soroban/test_snapshots/
 
 # generated bindings
 client/vault/dist/

@@ -18,6 +18,10 @@ pub(crate) enum DataKey {
     CurrentFees,
     CurrentRestrictionMode,
     CurrentRestrictionAccounts,
+    CurrentAllocators,
+    CurrentGroupCap(SdkString),
+    CurrentGroupRelCap(SdkString),
+    CurrentGroupMember(u32),
     Abdicated(GovernanceActionKind),
     SkimRecipient,
 }
@@ -37,6 +41,7 @@ pub enum TimelockKind {
     MarketRemoval,
     CapGroup,
     Skim,
+    Allocator,
     TimelockConfig,
     Other,
 }
@@ -56,8 +61,16 @@ pub enum GovernanceActionKind {
     MarketRemoval,
     CapGroup,
     Skim,
+    Allocator,
     TimelockConfig,
     Other,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub enum TimelockScope {
+    One(TimelockKind),
+    All,
 }
 
 #[contracttype]
@@ -75,6 +88,7 @@ pub struct Timelocks {
     pub market_removal_ns: u64,
     pub cap_group_ns: u64,
     pub skim_ns: u64,
+    pub allocator_ns: u64,
     pub timelock_config_ns: u64,
     pub other_ns: u64,
 }
@@ -94,12 +108,13 @@ impl Timelocks {
             market_removal_ns: default_ns,
             cap_group_ns: default_ns,
             skim_ns: default_ns,
+            allocator_ns: default_ns,
             timelock_config_ns: default_ns,
             other_ns: default_ns,
         }
     }
 
-    pub(crate) fn get(self, kind: TimelockKind) -> u64 {
+    pub(crate) fn get(&self, kind: TimelockKind) -> u64 {
         match kind {
             TimelockKind::Pause => self.pause_ns,
             TimelockKind::Curator => self.curator_ns,
@@ -113,6 +128,7 @@ impl Timelocks {
             TimelockKind::MarketRemoval => self.market_removal_ns,
             TimelockKind::CapGroup => self.cap_group_ns,
             TimelockKind::Skim => self.skim_ns,
+            TimelockKind::Allocator => self.allocator_ns,
             TimelockKind::TimelockConfig => self.timelock_config_ns,
             TimelockKind::Other => self.other_ns,
         }
@@ -132,6 +148,7 @@ impl Timelocks {
             TimelockKind::MarketRemoval => self.market_removal_ns = value,
             TimelockKind::CapGroup => self.cap_group_ns = value,
             TimelockKind::Skim => self.skim_ns = value,
+            TimelockKind::Allocator => self.allocator_ns = value,
             TimelockKind::TimelockConfig => self.timelock_config_ns = value,
             TimelockKind::Other => self.other_ns = value,
         }
@@ -140,13 +157,16 @@ impl Timelocks {
 
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
-pub struct FeeParams {
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+pub struct Fees {
     pub performance_fee_wad: i128,
     pub performance_recipient: Address,
     pub management_fee_wad: i128,
     pub management_recipient: Address,
     pub max_growth_rate_wad: Option<i128>,
 }
+
+pub type FeeParams = Fees;
 
 #[contracttype]
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -177,6 +197,46 @@ impl RestrictionMode {
 
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+pub enum Restrictions {
+    None,
+    Blacklist(Vec<Address>),
+    Whitelist(Vec<Address>),
+}
+
+impl Restrictions {
+    pub(crate) fn into_parts(self, env: &soroban_sdk::Env) -> (RestrictionMode, Vec<Address>) {
+        match self {
+            Self::None => (RestrictionMode::None, Vec::new(env)),
+            Self::Blacklist(accounts) => (RestrictionMode::Blacklist, accounts),
+            Self::Whitelist(accounts) => (RestrictionMode::Whitelist, accounts),
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+pub enum CapGroupUpdate {
+    SetCap(SdkString, i128),
+    RemoveCap(SdkString),
+    SetRelativeCap(SdkString, i128),
+    RemoveRelativeCap(SdkString),
+    SetMember(u32, SdkString),
+    RemoveMember(u32),
+}
+
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+pub enum CapGroupUpdateKey {
+    Cap(SdkString),
+    RelativeCap(SdkString),
+    Member(u32),
+}
+
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
 pub enum GovernanceAction {
     SetPaused(bool),
     SetCurator(Address),
@@ -188,12 +248,13 @@ pub enum GovernanceAction {
     SetSentinel(Address),
     SetCap(u32, i128),
     RemoveMarket(u32),
-    SetGroupCap(SdkString, i128),
-    SetGroupRelCap(SdkString, i128),
-    SetGroupMember(u32, SdkString),
+    SetGroupCap(SdkString, Option<i128>),
+    SetGroupRelCap(SdkString, Option<i128>),
+    SetGroupMember(u32, Option<SdkString>),
     SetSkimRecipient(Address),
     Skim(Address),
-    SetTimelock(TimelockKind, u64),
+    SetAllocators(Vec<Address>),
+    SetTimelock(TimelockScope, u64),
     Other(Symbol, BytesN<32>),
 }
 

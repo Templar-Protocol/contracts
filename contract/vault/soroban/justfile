@@ -46,6 +46,8 @@ default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.optimized.wasm"
+proxy_4626_wasm := wasm_dir + "/templar_4626_proxy_soroban.optimized.wasm"
+curator_proxy_wasm := wasm_dir + "/templar_curator_proxy_soroban.optimized.wasm"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -125,6 +127,18 @@ size-budget-check max_bytes="131072": build
 		--wasm "{{deploy_wasm}}" \
 		--max-bytes "{{max_bytes}}"
 
+# Enforce governance WASM size budget (default: 128 KiB).
+size-budget-check-governance max_bytes="131072": build
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{governance_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+
+# Enforce share token WASM size budget (default: 128 KiB).
+size-budget-check-share-token max_bytes="131072": build
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{share_token_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+
 # Build and optimize the Blend adapter WASM.
 build-blend-adapter:
 	@echo "Building Blend adapter WASM..."
@@ -132,6 +146,40 @@ build-blend-adapter:
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-blend-adapter
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
+
+# Enforce Blend adapter WASM size budget (default: 128 KiB).
+size-budget-check-blend-adapter max_bytes="131072": build-blend-adapter
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{blend_adapter_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+
+# Build and optimize the Soroban ERC-4626 proxy WASM.
+build-4626-proxy:
+	@echo "Building Soroban ERC-4626 proxy WASM..."
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
+		--manifest-path "{{root}}/Cargo.toml" -p templar-4626-proxy-soroban
+	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-4626-proxy-soroban "{{wasm_dir}}/templar_4626_proxy_soroban.wasm"
+	@echo "✓ Built: {{proxy_4626_wasm}}"
+
+# Enforce Soroban ERC-4626 proxy WASM size budget (default: 128 KiB).
+size-budget-check-4626-proxy max_bytes="131072": build-4626-proxy
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{proxy_4626_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+
+# Build and optimize the Soroban curator operations proxy WASM.
+build-curator-proxy:
+	@echo "Building Soroban curator proxy WASM..."
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
+		--manifest-path "{{root}}/Cargo.toml" -p templar-curator-proxy-soroban
+	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-curator-proxy-soroban "{{wasm_dir}}/templar_curator_proxy_soroban.wasm"
+	@echo "✓ Built: {{curator_proxy_wasm}}"
+
+# Enforce Soroban curator proxy WASM size budget (default: 128 KiB).
+size-budget-check-curator-proxy max_bytes="131072": build-curator-proxy
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{curator_proxy_wasm}}" \
+		--max-bytes "{{max_bytes}}"
 
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
@@ -141,9 +189,39 @@ check-4626-proxy:
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
 
-# Build all WASMs (vault + governance + share token + blend adapter).
-build-all: build build-blend-adapter
+# Check the Soroban curator operations proxy crate.
+check-curator-proxy:
+	@echo "Checking Soroban curator proxy crate..."
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
+		--manifest-path "{{root}}/Cargo.toml" \
+		-p templar-curator-proxy-soroban
+	@echo "✓ Checked: templar-curator-proxy-soroban"
+
+# Build all WASMs (vault + governance + share token + blend adapter + proxies).
+build-all: build build-blend-adapter build-4626-proxy build-curator-proxy
 	@echo "✓ All contracts built"
+
+# Enforce size budgets for every Soroban WASM built by this justfile.
+size-budget-check-all max_bytes="131072": build build-blend-adapter build-4626-proxy build-curator-proxy
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{deploy_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{governance_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{share_token_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{blend_adapter_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{proxy_4626_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+		--wasm "{{curator_proxy_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+	@echo "✓ All Soroban WASM size budgets passed"
 
 # Build debug WASM, emit twiggy reports, and print them.
 # Usage: just wasm-analyze [rows] [lines]
@@ -212,6 +290,14 @@ governance-wasm-path:
 # Print the share token WASM path.
 share-token-wasm-path:
 	@echo "{{share_token_wasm}}"
+
+# Print the ERC-4626 proxy WASM path.
+proxy-4626-wasm-path:
+	@echo "{{proxy_4626_wasm}}"
+
+# Print the curator proxy WASM path.
+curator-proxy-wasm-path:
+	@echo "{{curator_proxy_wasm}}"
 
 # =============================================================================
 # NETWORK & IDENTITY SETUP

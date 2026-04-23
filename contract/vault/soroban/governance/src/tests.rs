@@ -11,12 +11,12 @@ use soroban_sdk::{
     Bytes,
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-    GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
-    GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_CURATOR,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 #[contract]
@@ -30,6 +30,7 @@ enum MockVaultKey {
     Sentinel,
     Curator,
     Governance,
+    Allocators,
     SkimRecipient,
     SupplyQueue,
     LastFeeAccounts,
@@ -284,6 +285,13 @@ impl MockVault {
         env.storage().instance().get(&MockVaultKey::Governance)
     }
 
+    pub fn allocators(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::Allocators)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     pub fn skim_recipient(env: Env) -> Option<Address> {
         env.storage().instance().get(&MockVaultKey::SkimRecipient)
     }
@@ -410,6 +418,13 @@ impl MockVault {
                     env.storage()
                         .instance()
                         .set(&MockVaultKey::Governance, &governance);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_ALLOCATORS => {
+                if let Some(allocators) = many {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::Allocators, &allocators);
                 }
             }
             GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT => {
@@ -767,6 +782,55 @@ fn timelock_config_increase_immediate_decrease_timelocked() {
 }
 
 #[test]
+fn all_timelocks_can_be_updated_together() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_timelock(
+            env.clone(),
+            admin.clone(),
+            6_000_000_000,
+            None,
+        )
+        .unwrap();
+    });
+
+    let timelocks = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::timelocks(env.clone())
+    });
+    assert_eq!(timelocks.pause_ns, 6_000_000_000);
+    assert_eq!(timelocks.allocator_ns, 6_000_000_000);
+    assert_eq!(timelocks.other_ns, 6_000_000_000);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_timelock(
+            env.clone(),
+            admin.clone(),
+            4_000_000_000,
+            None,
+        )
+        .unwrap();
+    });
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
 fn other_action_approval_and_consume() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1024,6 +1088,54 @@ fn supply_queue_submission_routes_to_vault() {
 
     let on_vault = env.as_contract(&vault, || MockVault::supply_queue(env.clone()));
     assert_eq!(on_vault, target_ids);
+}
+
+#[test]
+fn allocator_management_is_timelocked_and_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let allocator = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_is_allocator(
+            env.clone(),
+            admin.clone(),
+            allocator.clone(),
+            true,
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_allocators(env.clone(), admin.clone())
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let accepted = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_allocators(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(accepted, proposal_id);
+
+    let on_vault = env.as_contract(&vault, || MockVault::allocators(env.clone()));
+    assert_eq!(on_vault, Vec::from_array(&env, [allocator]));
 }
 
 #[test]
