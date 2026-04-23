@@ -13300,6 +13300,7 @@ dependencies = [
  "moka",
  "near-account-id",
  "near-api",
+ "near-api-types",
  "near-contract-standards",
  "near-openapi-client",
  "near-sandbox",

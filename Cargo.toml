@@ -67,6 +67,7 @@ libfuzzer-sys = "0.4"
 moka = { version = "0.12.10", features = ["future", "sync"] }
 near-account-id = "2.6"
 near-api = "0.8.5"
+near-api-types = "0.8.5"
 near-chain-configs = "0.34.7"
 near-contract-standards = "5.25"
 near-crypto = "0.34.7"

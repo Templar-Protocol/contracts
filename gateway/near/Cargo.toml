@@ -12,6 +12,7 @@ chrono.workspace = true
 futures.workspace = true
 hex.workspace = true
 near-api.workspace = true
+near-api-types.workspace = true
 near-openapi-client.workspace = true
 near-account-id = { version = "2.6.0", features = ["serde", "schemars"] }
 near-contract-standards.workspace = true
