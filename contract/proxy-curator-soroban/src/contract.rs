@@ -20,8 +20,8 @@ use crate::error::ContractError;
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub enum AllocationDelta {
-    Supply(u32, i128),
-    Withdraw(u32, i128),
+    Supply(u32, u128),
+    Withdraw(u32, u128),
 }
 
 #[contracttype]
@@ -31,33 +31,33 @@ pub struct VaultView {
     pub governance: Address,
     pub asset_token: Address,
     pub share_token: Address,
-    pub virtual_shares: i128,
-    pub virtual_assets: i128,
+    pub virtual_shares: u128,
+    pub virtual_assets: u128,
     pub paused: bool,
-    pub total_shares: i128,
-    pub idle_assets: i128,
-    pub external_assets: i128,
-    pub total_assets: i128,
-    pub fee_anchor_total_assets: i128,
+    pub total_shares: u128,
+    pub idle_assets: u128,
+    pub external_assets: u128,
+    pub total_assets: u128,
+    pub fee_anchor_total_assets: u128,
     pub fee_anchor_timestamp_ns: u64,
-    pub management_fee_wad: i128,
-    pub performance_fee_wad: i128,
-    pub max_growth_rate_wad: i128,
+    pub management_fee_wad: u128,
+    pub performance_fee_wad: u128,
+    pub max_growth_rate_wad: u128,
     pub supply_queue: Vec<u32>,
-    pub cap_groups: Vec<(String, i128, i128)>,
+    pub cap_groups: Vec<(String, u128, u128)>,
 }
 
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub struct VaultPreview {
-    pub convert_to_shares: i128,
-    pub convert_to_assets: i128,
-    pub max_deposit: i128,
-    pub max_mint: i128,
-    pub max_withdraw: i128,
-    pub max_redeem: i128,
-    pub preview_mint_assets: i128,
-    pub preview_withdraw_shares: i128,
+    pub convert_to_shares: u128,
+    pub convert_to_assets: u128,
+    pub max_deposit: u128,
+    pub max_mint: u128,
+    pub max_withdraw: u128,
+    pub max_redeem: u128,
+    pub preview_mint_assets: u128,
+    pub preview_withdraw_shares: u128,
 }
 
 #[contracttype]
@@ -73,11 +73,11 @@ pub struct GovernanceView {
 #[derive(Clone, Eq, PartialEq)]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 pub struct Fees {
-    pub performance_fee_wad: i128,
+    pub performance_fee_wad: u128,
     pub performance_recipient: Address,
-    pub management_fee_wad: i128,
+    pub management_fee_wad: u128,
     pub management_recipient: Address,
-    pub max_growth_rate_wad: Option<i128>,
+    pub max_growth_rate_wad: Option<u128>,
 }
 
 #[contracttype]
@@ -93,9 +93,12 @@ pub enum Restrictions {
 #[derive(Clone, Eq, PartialEq)]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 pub enum CapGroupUpdate {
-    SetCap(String, i128),
-    SetRelativeCap(String, i128),
+    SetCap(String, u128),
+    RemoveCap(String),
+    SetRelativeCap(String, u128),
+    RemoveRelativeCap(String),
     SetMember(u32, String),
+    RemoveMember(u32),
 }
 
 #[contracttype]
@@ -122,7 +125,7 @@ pub(crate) enum VaultCommand {
     Allocate {
         caller: Address,
         market: u32,
-        amount: i128,
+        amount: u128,
         supply: bool,
     },
     RefreshMarkets {
@@ -211,13 +214,13 @@ impl SorobanCuratorProxyContract {
         env: Env,
         allocator: Address,
         delta: AllocationDelta,
-    ) -> Result<i128, ContractError> {
+    ) -> Result<u128, ContractError> {
         allocator.require_auth();
         let (market, amount, supply) = match delta {
             AllocationDelta::Supply(market, amount) => (market, amount, true),
             AllocationDelta::Withdraw(market, amount) => (market, amount, false),
         };
-        expect_i128_result(invoke_vault_execute(
+        expect_u128_result(invoke_vault_execute(
             &env,
             VaultCommand::Allocate {
                 caller: allocator,
@@ -232,9 +235,9 @@ impl SorobanCuratorProxyContract {
         env: Env,
         operator: Address,
         markets: Vec<u32>,
-    ) -> Result<i128, ContractError> {
+    ) -> Result<u128, ContractError> {
         operator.require_auth();
-        expect_i128_result(invoke_vault_execute(
+        expect_u128_result(invoke_vault_execute(
             &env,
             VaultCommand::RefreshMarkets {
                 caller: operator,
@@ -374,7 +377,7 @@ impl SorobanCuratorProxyContract {
         env: Env,
         admin: Address,
         market_id: u32,
-        new_cap: i128,
+        new_cap: u128,
     ) -> Result<u64, ContractError> {
         admin.require_auth();
         invoke_governance(
@@ -419,6 +422,9 @@ impl SorobanCuratorProxyContract {
                 "submit_set_group_member",
                 (admin, market, group).into_val(&env),
             ),
+            CapGroupUpdate::RemoveCap(_)
+            | CapGroupUpdate::RemoveRelativeCap(_)
+            | CapGroupUpdate::RemoveMember(_) => Err(ContractError::NotImplemented),
         }
     }
 
@@ -669,8 +675,8 @@ impl SorobanCuratorProxyContract {
     pub fn preview(
         env: Env,
         owner: Address,
-        assets: i128,
-        shares: i128,
+        assets: u128,
+        shares: u128,
     ) -> Result<VaultPreview, ContractError> {
         let response = call_proxy_view_full(&env, &owner, assets, shares)?;
         Ok(vault_preview_from_fields(response.preview))
@@ -746,8 +752,8 @@ pub(crate) fn invoke_vault_execute(
 fn call_proxy_view_full(
     env: &Env,
     owner: &Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 ) -> Result<ProxyViewFields, ContractError> {
     let vault_address = read_vault_address(env)?;
     let result = env.try_invoke_contract::<ProxyViewResponse, ContractError>(
@@ -970,9 +976,9 @@ where
     }
 }
 
-fn expect_i128_result(result: WireVaultCommandResult) -> Result<i128, ContractError> {
+fn expect_u128_result(result: WireVaultCommandResult) -> Result<u128, ContractError> {
     match result {
-        WireVaultCommandResult::I128(value) => Ok(value),
+        WireVaultCommandResult::U128(value) => Ok(value),
         _ => Err(ContractError::VaultError),
     }
 }

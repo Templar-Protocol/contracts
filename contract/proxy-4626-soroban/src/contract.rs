@@ -34,14 +34,14 @@ pub(crate) enum VaultCommand {
     DepositWithMin {
         owner: Address,
         receiver: Address,
-        assets: i128,
-        min_shares_out: i128,
+        assets: u128,
+        min_shares_out: u128,
     },
     RequestWithdraw {
         owner: Address,
         receiver: Address,
-        shares: i128,
-        min_assets_out: i128,
+        shares: u128,
+        min_assets_out: u128,
     },
     ExecuteWithdraw {
         caller: Address,
@@ -107,9 +107,9 @@ impl Soroban4626ProxyContract {
     pub fn deposit(
         env: Env,
         operator: Address,
-        assets: i128,
+        assets: u128,
         receiver: Address,
-    ) -> Result<i128, ContractError> {
+    ) -> Result<u128, ContractError> {
         deposit_with_min_internal(env, operator, assets, receiver, 0)
     }
 
@@ -121,10 +121,10 @@ impl Soroban4626ProxyContract {
     pub fn deposit_with_min(
         env: Env,
         operator: Address,
-        assets: i128,
+        assets: u128,
         receiver: Address,
-        min_shares_out: i128,
-    ) -> Result<i128, ContractError> {
+        min_shares_out: u128,
+    ) -> Result<u128, ContractError> {
         deposit_with_min_internal(env, operator, assets, receiver, min_shares_out)
     }
 
@@ -138,15 +138,13 @@ impl Soroban4626ProxyContract {
     pub fn mint(
         env: Env,
         operator: Address,
-        shares: i128,
+        shares: u128,
         receiver: Address,
-    ) -> Result<i128, ContractError> {
-        require_non_negative(shares)?;
+    ) -> Result<u128, ContractError> {
         operator.require_auth();
         let preview = call_proxy_view(&env, &operator, 0, shares)?;
         let assets = preview.preview_mint_assets;
-        require_non_negative(assets)?;
-        let minted_shares = expect_i128_result(invoke_vault_execute(
+        let minted_shares = expect_u128_result(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
                 owner: operator.clone(),
@@ -172,16 +170,14 @@ impl Soroban4626ProxyContract {
     pub fn withdraw(
         env: Env,
         operator: Address,
-        assets: i128,
+        assets: u128,
         receiver: Address,
         owner: Address,
     ) -> Result<u64, ContractError> {
-        require_non_negative(assets)?;
         operator.require_auth();
         require_self_operator(&operator, &owner)?;
         let preview = call_proxy_view(&env, &owner, assets, 0)?;
         let shares = preview.preview_withdraw_shares;
-        require_non_negative(shares)?;
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
@@ -208,16 +204,14 @@ impl Soroban4626ProxyContract {
     pub fn redeem(
         env: Env,
         operator: Address,
-        shares: i128,
+        shares: u128,
         receiver: Address,
         owner: Address,
     ) -> Result<u64, ContractError> {
-        require_non_negative(shares)?;
         operator.require_auth();
         require_self_operator(&operator, &owner)?;
         let preview = call_proxy_view(&env, &owner, 0, shares)?;
         let assets = preview.convert_to_assets;
-        require_non_negative(assets)?;
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
@@ -241,11 +235,9 @@ impl Soroban4626ProxyContract {
         env: Env,
         owner: Address,
         receiver: Address,
-        shares: i128,
-        min_assets_out: i128,
+        shares: u128,
+        min_assets_out: u128,
     ) -> Result<u64, ContractError> {
-        require_non_negative(shares)?;
-        require_non_negative(min_assets_out)?;
         owner.require_auth();
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
@@ -277,65 +269,70 @@ impl Soroban4626ProxyContract {
         read_asset_token(&env)
     }
 
-    pub fn total_assets(env: Env) -> Result<i128, ContractError> {
+    pub fn total_assets(env: Env) -> Result<u128, ContractError> {
         let response = call_proxy_view_full(&env, &env.current_contract_address(), 0, 0)?;
         Ok(response.core.totals.total_assets)
     }
 
-    pub fn total_supply(env: Env) -> Result<i128, ContractError> {
+    pub fn total_supply(env: Env) -> Result<u128, ContractError> {
         let share_token = read_share_token(&env)?;
-        call_token_view_no_args(&env, &share_token, "total_supply")
+        token_i128_to_u128(call_token_view_no_args(&env, &share_token, "total_supply")?)
     }
 
-    pub fn balance_of(env: Env, owner: Address) -> Result<i128, ContractError> {
+    pub fn balance_of(env: Env, owner: Address) -> Result<u128, ContractError> {
         let share_token = read_share_token(&env)?;
-        call_token_view_with_address(&env, &share_token, "balance", &owner)
+        token_i128_to_u128(call_token_view_with_address(
+            &env,
+            &share_token,
+            "balance",
+            &owner,
+        )?)
     }
 
-    pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, ContractError> {
+    pub fn convert_to_shares(env: Env, assets: u128) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), assets, 0)?;
         Ok(preview.convert_to_shares)
     }
 
-    pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, ContractError> {
+    pub fn convert_to_assets(env: Env, shares: u128) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), 0, shares)?;
         Ok(preview.convert_to_assets)
     }
 
-    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
+    pub fn preview_deposit(env: Env, assets: u128) -> Result<u128, ContractError> {
         Self::convert_to_shares(env, assets)
     }
 
-    pub fn preview_mint(env: Env, shares: i128) -> Result<i128, ContractError> {
+    pub fn preview_mint(env: Env, shares: u128) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), 0, shares)?;
         Ok(preview.preview_mint_assets)
     }
 
-    pub fn preview_withdraw(env: Env, assets: i128) -> Result<i128, ContractError> {
+    pub fn preview_withdraw(env: Env, assets: u128) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), assets, 0)?;
         Ok(preview.preview_withdraw_shares)
     }
 
-    pub fn preview_redeem(env: Env, shares: i128) -> Result<i128, ContractError> {
+    pub fn preview_redeem(env: Env, shares: u128) -> Result<u128, ContractError> {
         Self::convert_to_assets(env, shares)
     }
 
-    pub fn max_deposit(env: Env, receiver: Address) -> Result<i128, ContractError> {
+    pub fn max_deposit(env: Env, receiver: Address) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &receiver, 0, 0)?;
         Ok(preview.max_deposit)
     }
 
-    pub fn max_mint(env: Env, receiver: Address) -> Result<i128, ContractError> {
+    pub fn max_mint(env: Env, receiver: Address) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &receiver, 0, 0)?;
         Ok(preview.max_mint)
     }
 
-    pub fn max_withdraw(env: Env, owner: Address) -> Result<i128, ContractError> {
+    pub fn max_withdraw(env: Env, owner: Address) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &owner, 0, 0)?;
         Ok(preview.max_withdraw)
     }
 
-    pub fn max_redeem(env: Env, owner: Address) -> Result<i128, ContractError> {
+    pub fn max_redeem(env: Env, owner: Address) -> Result<u128, ContractError> {
         let preview = call_proxy_view(&env, &owner, 0, 0)?;
         Ok(preview.max_redeem)
     }
@@ -406,12 +403,6 @@ pub(crate) fn require_initialized(env: &Env) -> Result<(), ContractError> {
         .ok_or(ContractError::NotInitialized)
 }
 
-fn require_non_negative(amount: i128) -> Result<(), ContractError> {
-    (amount >= 0)
-        .then_some(())
-        .ok_or(ContractError::InvalidInput)
-}
-
 fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
@@ -421,14 +412,12 @@ fn extend_instance_ttl(env: &Env) {
 fn deposit_with_min_internal(
     env: Env,
     operator: Address,
-    assets: i128,
+    assets: u128,
     receiver: Address,
-    min_shares_out: i128,
-) -> Result<i128, ContractError> {
-    require_non_negative(assets)?;
-    require_non_negative(min_shares_out)?;
+    min_shares_out: u128,
+) -> Result<u128, ContractError> {
     operator.require_auth();
-    let shares = expect_i128_result(invoke_vault_execute(
+    let shares = expect_u128_result(invoke_vault_execute(
         &env,
         VaultCommand::DepositWithMin {
             owner: operator.clone(),
@@ -493,8 +482,8 @@ pub(crate) fn invoke_vault_execute(
 fn call_proxy_view_full(
     env: &Env,
     owner: &Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 ) -> Result<ProxyViewFields, ContractError> {
     let vault_address = read_vault_address(env)?;
     let proxy_view = Symbol::new(env, "proxy_view");
@@ -522,8 +511,8 @@ fn map_vault_invoke_error(error: InvokeError) -> ContractError {
 fn call_proxy_view(
     env: &Env,
     owner: &Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 ) -> Result<ProxyPreviewFields, ContractError> {
     let response = call_proxy_view_full(env, owner, assets, shares)?;
     Ok(response.preview)
@@ -570,11 +559,15 @@ where
     }
 }
 
-fn expect_i128_result(result: WireVaultCommandResult) -> Result<i128, ContractError> {
+fn expect_u128_result(result: WireVaultCommandResult) -> Result<u128, ContractError> {
     match result {
-        WireVaultCommandResult::I128(value) => Ok(value),
+        WireVaultCommandResult::U128(value) => Ok(value),
         _ => Err(ContractError::VaultError),
     }
+}
+
+fn token_i128_to_u128(value: i128) -> Result<u128, ContractError> {
+    u128::try_from(value).map_err(|_| ContractError::VaultError)
 }
 
 fn expect_u64_result(result: WireVaultCommandResult) -> Result<u64, ContractError> {
@@ -602,8 +595,8 @@ pub(crate) fn emit_deposit_event(
     env: &Env,
     caller: &Address,
     owner: &Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 ) {
     env.events().publish(
         (symbol_short!("Deposit"), caller.clone(), owner.clone()),
@@ -618,7 +611,7 @@ pub(crate) fn emit_redeem_request_event(
     owner: &Address,
     request_id: u64,
     sender: &Address,
-    shares: i128,
+    shares: u128,
 ) {
     env.events().publish(
         (

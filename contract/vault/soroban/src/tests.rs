@@ -1721,52 +1721,6 @@ mod contract_tests {
     }
 
     #[test]
-    fn test_set_withdrawal_cooldown_rejects_negative_value() {
-        use soroban_sdk::testutils::Address as _;
-
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = soroban_sdk::Address::generate(&env);
-        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(
-                env.clone(),
-                curator,
-                governance.clone(),
-                asset,
-                share,
-                0,
-                0,
-            )
-            .unwrap();
-
-            let err = execute_governance_command(
-                &env,
-                &governance,
-                &GovernanceCommand::SetGovernanceConfig {
-                    kind: GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-                    primary: None,
-                    many: None,
-                    value_a: Some(-1),
-                    value_b: None,
-                },
-            )
-            .expect_err("negative withdrawal cooldown must be rejected");
-
-            assert_eq!(err, crate::error::ContractError::InvalidInput);
-            assert_eq!(
-                env.storage()
-                    .instance()
-                    .get(&VaultDataKey::WithdrawalCooldownNs),
-                Some(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
-            );
-        });
-    }
-
-    #[test]
     fn test_set_idle_resync_cooldown_updates_contract_storage() {
         use soroban_sdk::testutils::Address as _;
 
@@ -1807,52 +1761,6 @@ mod contract_tests {
                     .instance()
                     .get(&VaultDataKey::IdleResyncCooldownNs),
                 Some(5_000u64)
-            );
-        });
-    }
-
-    #[test]
-    fn test_set_idle_resync_cooldown_rejects_negative_value() {
-        use soroban_sdk::testutils::Address as _;
-
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = soroban_sdk::Address::generate(&env);
-        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(
-                env.clone(),
-                curator,
-                governance.clone(),
-                asset,
-                share,
-                0,
-                0,
-            )
-            .unwrap();
-
-            let err = execute_governance_command(
-                &env,
-                &governance,
-                &GovernanceCommand::SetGovernanceConfig {
-                    kind: GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-                    primary: None,
-                    many: None,
-                    value_a: Some(-1),
-                    value_b: None,
-                },
-            )
-            .expect_err("negative idle-resync cooldown must be rejected");
-
-            assert_eq!(err, crate::error::ContractError::InvalidInput);
-            assert_eq!(
-                env.storage()
-                    .instance()
-                    .get(&VaultDataKey::IdleResyncCooldownNs),
-                Some(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
             );
         });
     }
@@ -2070,13 +1978,13 @@ mod contract_tests {
             receiver: &soroban_sdk::Address,
             owner: &soroban_sdk::Address,
             operator: &soroban_sdk::Address,
-            assets: i128,
-        ) -> Result<i128, RuntimeError> {
+            assets: u128,
+        ) -> Result<u128, RuntimeError> {
             let mut result = None;
             let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
                 result = Some(vault.atomic_withdraw(
                     self.env,
-                    assets,
+                    assets.try_into().expect("test assets fit i128"),
                     i128::MAX,
                     receiver.clone(),
                     owner.clone(),
@@ -2084,7 +1992,9 @@ mod contract_tests {
                 )?);
                 Ok(())
             };
-            with_contract_vault(self.env, &mut call).map(|()| result.unwrap_or(0))
+            with_contract_vault(self.env, &mut call).map(|()| {
+                u128::try_from(result.unwrap_or(0)).expect("withdraw result must be nonnegative")
+            })
         }
     }
 
@@ -2476,12 +2386,12 @@ mod contract_tests {
                         receiver: sdk_text(&receiver),
                         operator: sdk_text(&owner),
                         assets: 500,
-                        max_shares_burned: i128::MAX,
+                        max_shares_burned: 1_000,
                     },
                 )
             })
             .expect("atomic withdraw command should execute");
-        assert_eq!(burned, VaultCommandResult::I128(500));
+        assert_eq!(burned, VaultCommandResult::U128(500));
 
         let redeemed = env
             .as_contract(&contract_id, || {
@@ -2497,7 +2407,7 @@ mod contract_tests {
                 )
             })
             .expect("atomic redeem command should execute");
-        assert_eq!(redeemed, VaultCommandResult::I128(250));
+        assert_eq!(redeemed, VaultCommandResult::U128(250));
 
         let asset_client = soroban_sdk::token::Client::new(&env, &asset);
         let share_client = soroban_sdk::token::Client::new(&env, &share);
@@ -2568,7 +2478,7 @@ mod contract_tests {
                     receiver: sdk_text(&receiver),
                     operator: sdk_text(&owner),
                     assets: 600,
-                    max_shares_burned: i128::MAX,
+                    max_shares_burned: 1_500,
                 },
             )
         });
@@ -2620,7 +2530,7 @@ mod contract_tests {
 
         let owner = soroban_sdk::Address::generate(&env);
         let receiver = soroban_sdk::Address::generate(&env);
-        let deposit_assets = 1_000_000_i128;
+        let deposit_assets = 1_000_000_u128;
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -2635,7 +2545,7 @@ mod contract_tests {
             .unwrap();
         });
 
-        asset_admin_client.mint(&owner, &deposit_assets);
+        asset_admin_client.mint(&owner, &(deposit_assets as i128));
 
         let asset_client = soroban_sdk::token::Client::new(&env, &asset);
         let share_client = soroban_sdk::token::Client::new(&env, &share);
@@ -2655,8 +2565,8 @@ mod contract_tests {
                 )
             })
             .expect("deposit_with_min should succeed");
-        let VaultCommandResult::I128(minted) = minted else {
-            panic!("expected i128 result")
+        let VaultCommandResult::U128(minted) = minted else {
+            panic!("expected u128 result")
         };
         let resources = env.cost_estimate().resources();
 
@@ -2671,12 +2581,12 @@ mod contract_tests {
     );
 
         assert!(minted > 0);
-        assert_eq!(share_client.balance(&receiver), minted);
+        assert_eq!(share_client.balance(&receiver), minted as i128);
         assert_eq!(
             asset_client.balance(&owner),
-            owner_assets_before - deposit_assets
+            owner_assets_before - deposit_assets as i128
         );
-        assert_eq!(asset_client.balance(&contract_id), deposit_assets);
+        assert_eq!(asset_client.balance(&contract_id), deposit_assets as i128);
         assert_eq!(
             env.as_contract(&contract_id, || env
                 .storage()
@@ -2716,7 +2626,7 @@ mod contract_tests {
         let share_client = soroban_sdk::token::Client::new(&env, &share);
 
         let owner = soroban_sdk::Address::generate(&env);
-        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as u128;
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -2731,7 +2641,7 @@ mod contract_tests {
             .unwrap();
         });
 
-        asset_admin_client.mint(&owner, &deposit_assets);
+        asset_admin_client.mint(&owner, &(deposit_assets as i128));
 
         env.as_contract(&contract_id, || {
             assert_eq!(
@@ -2745,7 +2655,7 @@ mod contract_tests {
                     },
                 )
                 .unwrap(),
-                VaultCommandResult::I128(deposit_assets)
+                VaultCommandResult::U128(deposit_assets)
             );
             assert_eq!(
                 execute_command(
@@ -2763,7 +2673,7 @@ mod contract_tests {
         });
 
         assert_eq!(share_client.balance(&owner), 0);
-        assert_eq!(share_client.balance(&contract_id), deposit_assets);
+        assert_eq!(share_client.balance(&contract_id), deposit_assets as i128);
 
         env.as_contract(&contract_id, || {
             let mut storage = SorobanStorage::new(&env);
@@ -2852,7 +2762,7 @@ mod contract_tests {
             assert!(state.withdraw_queue.is_empty());
             assert_eq!(state.total_shares, deposit_assets as u128);
         });
-        assert_eq!(share_client.balance(&owner), deposit_assets);
+        assert_eq!(share_client.balance(&owner), deposit_assets as i128);
         assert_eq!(share_client.balance(&contract_id), 0);
     }
 
@@ -2885,7 +2795,7 @@ mod contract_tests {
         let share = share_sac.address();
 
         let owner = soroban_sdk::Address::generate(&env);
-        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as u128;
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -2900,7 +2810,7 @@ mod contract_tests {
             .unwrap();
         });
 
-        asset_admin_client.mint(&owner, &deposit_assets);
+        asset_admin_client.mint(&owner, &(deposit_assets as i128));
 
         env.as_contract(&contract_id, || {
             execute_command(
@@ -3257,7 +3167,7 @@ mod effects_tests {
     }
 
     #[test]
-    fn test_u128_to_i128_conversion() {
+    fn test_to_i128_event_conversion() {
         // Valid conversions
         assert!(to_i128_event(0).is_ok());
         assert!(to_i128_event(1000).is_ok());
@@ -3324,12 +3234,12 @@ mod market_tests {
 
     #[derive(Clone, Default)]
     struct TestMarketAdapter {
-        mock_total_assets: i128,
+        mock_total_assets: u128,
         should_fail: bool,
     }
 
     impl TestMarketAdapter {
-        const fn new(mock_total_assets: i128) -> Self {
+        const fn new(mock_total_assets: u128) -> Self {
             Self {
                 mock_total_assets,
                 should_fail: false,
@@ -3345,7 +3255,7 @@ mod market_tests {
     }
 
     impl TestMarketAdapter {
-        fn supply(&self, _env: &Env, _asset: &Address, _amount: i128) -> Result<(), RuntimeError> {
+        fn supply(&self, _env: &Env, _asset: &Address, _amount: u128) -> Result<(), RuntimeError> {
             if self.should_fail {
                 return Err(RuntimeError::effect_failed("test supply failed"));
             }
@@ -3356,7 +3266,7 @@ mod market_tests {
             &self,
             _env: &Env,
             _asset: &Address,
-            _amount: i128,
+            _amount: u128,
         ) -> Result<(), RuntimeError> {
             if self.should_fail {
                 return Err(RuntimeError::effect_failed("test withdraw failed"));
@@ -3368,8 +3278,8 @@ mod market_tests {
             &self,
             _env: &Env,
             _asset: &Address,
-            amount: i128,
-        ) -> Result<i128, RuntimeError> {
+            amount: u128,
+        ) -> Result<u128, RuntimeError> {
             if self.should_fail {
                 return Err(RuntimeError::effect_failed(
                     "test progress_withdrawal failed",
@@ -3378,7 +3288,7 @@ mod market_tests {
             Ok(amount)
         }
 
-        fn total_assets(&self, _env: &Env, _asset: &Address) -> Result<i128, RuntimeError> {
+        fn total_assets(&self, _env: &Env, _asset: &Address) -> Result<u128, RuntimeError> {
             if self.should_fail {
                 return Err(RuntimeError::effect_failed("test total_assets failed"));
             }
@@ -3390,7 +3300,7 @@ mod market_tests {
     struct TestCrossChainAdapter {
         next_attempt_id: u64,
         settlement_receipt: Option<SettlementReceipt>,
-        mock_total_assets: i128,
+        mock_total_assets: u128,
         should_fail: bool,
     }
 
@@ -3433,7 +3343,9 @@ mod market_tests {
                 .unwrap_or(SettlementReceipt::new(
                     op_id,
                     attempt_id,
-                    self.mock_total_assets,
+                    self.mock_total_assets
+                        .try_into()
+                        .expect("test total assets fit i128"),
                 )))
         }
 
@@ -3441,7 +3353,10 @@ mod market_tests {
             if self.should_fail {
                 return Err(RuntimeError::effect_failed("test total_assets failed"));
             }
-            Ok(self.mock_total_assets)
+            Ok(self
+                .mock_total_assets
+                .try_into()
+                .expect("test total assets fit i128"))
         }
     }
 

@@ -41,7 +41,7 @@ fn setup_harness_with_auth_mock(mock_auth: bool) -> Harness {
     env.invoke_contract::<()>(
         &vault,
         &Symbol::new(&env, "initialize"),
-        (&governance, &governance, &asset, &share, &0i128, &0i128).into_val(&env),
+        (&governance, &governance, &asset, &share, &0u128, &0u128).into_val(&env),
     );
 
     let proxy = env.register(SorobanCuratorProxyContract, ());

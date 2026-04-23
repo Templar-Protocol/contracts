@@ -45,8 +45,8 @@ impl MockVaultContract {
 
         let command = WireVaultCommand::decode(&payload.to_alloc_vec()).expect("decode command");
         let result = match command {
-            WireVaultCommand::Allocate { .. } => WireVaultCommandResult::I128(123),
-            WireVaultCommand::RefreshMarkets { .. } => WireVaultCommandResult::I128(456),
+            WireVaultCommand::Allocate { .. } => WireVaultCommandResult::U128(123),
+            WireVaultCommand::RefreshMarkets { .. } => WireVaultCommandResult::U128(456),
             WireVaultCommand::ResyncIdleBalance
             | WireVaultCommand::CancelMigration { .. }
             | WireVaultCommand::ExtendTtl => WireVaultCommandResult::Unit,
@@ -77,7 +77,7 @@ enum MockGovernanceDataKey {
 struct MockSetCapCall {
     caller: Address,
     market_id: u32,
-    new_cap: i128,
+    new_cap: u128,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -132,7 +132,7 @@ impl MockGovernanceContract {
         env: Env,
         caller: Address,
         market_id: u32,
-        new_cap: i128,
+        new_cap: u128,
     ) -> Result<u64, GovernanceError> {
         env.storage().instance().set(
             &MockGovernanceDataKey::LastSetCap,
@@ -177,11 +177,11 @@ impl MockGovernanceContract {
     pub fn submit_set_fees(
         env: Env,
         caller: Address,
-        performance_fee_wad: i128,
+        performance_fee_wad: u128,
         performance_recipient: Address,
-        management_fee_wad: i128,
+        management_fee_wad: u128,
         management_recipient: Address,
-        max_growth_rate_wad: Option<i128>,
+        max_growth_rate_wad: Option<u128>,
     ) -> Result<u64, GovernanceError> {
         let fees = Fees {
             performance_fee_wad,

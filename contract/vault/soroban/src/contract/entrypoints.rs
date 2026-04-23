@@ -18,7 +18,7 @@ use super::*;
 use crate::storage::{SorobanStorage, Storage};
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
-    ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
+    ExecuteWithdrawStatus, GovernanceCommand, ProxyViewResponse, VaultCommand, VaultCommandResult,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
     GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_SENTINEL,
@@ -43,7 +43,7 @@ fn required_addresses(
     value.ok_or(ContractError::InvalidInput)
 }
 
-fn required_i128(value: Option<i128>) -> Result<i128, ContractError> {
+fn required_u128(value: Option<u128>) -> Result<u128, ContractError> {
     value.ok_or(ContractError::InvalidInput)
 }
 
@@ -165,8 +165,8 @@ fn apply_skim_recipient_config(env: &Env, recipient: soroban_sdk::Address) {
 
 fn apply_virtual_offsets_config(
     env: &Env,
-    virtual_shares: i128,
-    virtual_assets: i128,
+    virtual_shares: u128,
+    virtual_assets: u128,
 ) -> Result<(), ContractError> {
     if virtual_offsets_locked(env) {
         return Err(ContractError::InvalidState);
@@ -177,8 +177,6 @@ fn apply_virtual_offsets_config(
         }
     }
 
-    let virtual_shares = to_u128(virtual_shares)?;
-    let virtual_assets = to_u128(virtual_assets)?;
     store_virtual_offsets(env, virtual_shares, virtual_assets);
     emit_admin_event(env, symbol_short!("s_voffs"));
     Ok(())
@@ -186,7 +184,7 @@ fn apply_virtual_offsets_config(
 
 fn apply_withdrawal_cooldown_config(
     env: &Env,
-    withdrawal_cooldown_ns: i128,
+    withdrawal_cooldown_ns: u128,
 ) -> Result<(), ContractError> {
     let withdrawal_cooldown_ns =
         u64::try_from(withdrawal_cooldown_ns).map_err(|_| ContractError::InvalidInput)?;
@@ -197,7 +195,7 @@ fn apply_withdrawal_cooldown_config(
 
 fn apply_idle_resync_cooldown_config(
     env: &Env,
-    idle_resync_cooldown_ns: i128,
+    idle_resync_cooldown_ns: u128,
 ) -> Result<(), ContractError> {
     let idle_resync_cooldown_ns =
         u64::try_from(idle_resync_cooldown_ns).map_err(|_| ContractError::InvalidInput)?;
@@ -299,15 +297,14 @@ fn apply_cap_policy(
     env: &Env,
     caller_kernel: Address,
     market_id: u32,
-    new_cap: i128,
+    new_cap: u128,
     caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
-    let new_cap_u128 = to_u128(new_cap)?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         if caller_preauthorized {
-            vault.apply_governance_cap_authorized(market_id, new_cap_u128)
+            vault.apply_governance_cap_authorized(market_id, new_cap)
         } else {
-            vault.apply_governance_cap(caller_kernel, market_id, new_cap_u128)
+            vault.apply_governance_cap(caller_kernel, market_id, new_cap)
         }
     };
     with_contract_vault_contract_error(env, &mut call)
@@ -424,7 +421,7 @@ fn apply_group_policy(
     mode: u32,
     market_id: Option<u32>,
     cap_group_id: Option<soroban_sdk::String>,
-    value: Option<i128>,
+    value: Option<u128>,
     caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     fn parse_cap_group(raw: alloc::string::String) -> Result<CapGroupId, ContractError> {
@@ -437,17 +434,11 @@ fn apply_group_policy(
     let internal = match mode {
         0 => CapGroupUpdate::SetCap {
             cap_group_id: parse_cap_group(cap_group_raw.clone())?,
-            new_cap: match value {
-                Some(raw) => Some(to_u128(raw)?),
-                None => None,
-            },
+            new_cap: value,
         },
         1 => CapGroupUpdate::SetRelativeCap {
             cap_group_id: parse_cap_group(cap_group_raw.clone())?,
-            new_relative_cap: match value {
-                Some(raw) => Some(Wad::from(to_u128(raw)?)),
-                None => None,
-            },
+            new_relative_cap: value.map(Wad::from),
         },
         2 => {
             let market_id = market_id.ok_or(ContractError::InvalidInput)?;
@@ -515,9 +506,9 @@ fn apply_paused_policy(
 fn apply_fees_policy(
     env: &Env,
     accounts: soroban_sdk::Vec<soroban_sdk::Address>,
-    performance_fee_wad: i128,
-    management_fee_wad: i128,
-    max_growth_rate_wad: Option<i128>,
+    performance_fee_wad: u128,
+    management_fee_wad: u128,
+    max_growth_rate_wad: Option<u128>,
 ) -> Result<(), ContractError> {
     if accounts.len() != 2 {
         return Err(ContractError::InvalidInput);
@@ -551,20 +542,14 @@ fn deposit_with_min_impl(
     env: &Env,
     owner: soroban_sdk::Address,
     receiver: soroban_sdk::Address,
-    assets: i128,
-    min_shares_out: i128,
-) -> Result<i128, ContractError> {
+    assets: u128,
+    min_shares_out: u128,
+) -> Result<u128, ContractError> {
     require_signed(&owner);
-    if assets <= 0 {
+    if assets == 0 {
         return Err(ContractError::InvalidInput);
     }
 
-    let assets_u128 = to_u128(assets)?;
-    let min_shares_u128 = if min_shares_out < 0 {
-        return Err(ContractError::InvalidInput);
-    } else {
-        to_u128(min_shares_out)?
-    };
     let now_ns = ledger_timestamp_ns(env)?;
 
     let mut shares_minted = 0u128;
@@ -572,7 +557,7 @@ fn deposit_with_min_impl(
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         reconcile_current_idle_assets(env, vault, now_ns)?;
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
-        let result = vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
+        let result = vault.deposit(caller_k, receiver_k, assets, min_shares_out, now_ns)?;
         shares_minted = result.shares_minted;
         is_capitalized = result.total_assets != 0 && result.total_shares != 0;
         Ok(())
@@ -581,33 +566,27 @@ fn deposit_with_min_impl(
     if shares_minted != 0 && is_capitalized {
         lock_virtual_offsets(env);
     }
-    to_i128(shares_minted)
+    Ok(shares_minted)
 }
 
 fn request_withdraw_impl(
     env: &Env,
     owner: soroban_sdk::Address,
     receiver: soroban_sdk::Address,
-    shares: i128,
-    min_assets_out: i128,
+    shares: u128,
+    min_assets_out: u128,
 ) -> Result<u64, ContractError> {
     require_signed(&owner);
-    if shares <= 0 {
+    if shares == 0 {
         return Err(ContractError::InvalidInput);
     }
-    let shares_u128 = to_u128(shares)?;
-    let min_assets_u128 = if min_assets_out < 0 {
-        return Err(ContractError::InvalidInput);
-    } else {
-        to_u128(min_assets_out)?
-    };
     let now_ns = ledger_timestamp_ns(env)?;
 
     let mut request_id = 0u64;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result =
-            vault.request_withdraw(caller_k, receiver_k, shares_u128, min_assets_u128, now_ns)?;
+            vault.request_withdraw(caller_k, receiver_k, shares, min_assets_out, now_ns)?;
         request_id = result.request_id;
         Ok(())
     };
@@ -678,23 +657,26 @@ fn atomic_withdraw_impl(
     owner: soroban_sdk::Address,
     receiver: soroban_sdk::Address,
     operator: soroban_sdk::Address,
-    assets: i128,
-    max_shares_burned: i128,
-) -> Result<i128, ContractError> {
-    if assets <= 0 || max_shares_burned < 0 {
+    assets: u128,
+    max_shares_burned: u128,
+) -> Result<u128, ContractError> {
+    if assets == 0 {
         return Err(ContractError::InvalidInput);
     }
 
-    let mut burned = 0i128;
+    let mut burned = 0u128;
+    let assets_i128 = to_i128(assets)?;
+    let max_shares_burned_i128 = to_i128(max_shares_burned)?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        burned = vault.atomic_withdraw(
+        let burned_i128 = vault.atomic_withdraw(
             env,
-            assets,
-            max_shares_burned,
+            assets_i128,
+            max_shares_burned_i128,
             receiver.clone(),
             owner.clone(),
             operator.clone(),
         )?;
+        burned = to_u128(burned_i128).map_err(|_| RuntimeError::invalid_input(""))?;
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
@@ -706,23 +688,26 @@ fn atomic_redeem_impl(
     owner: soroban_sdk::Address,
     receiver: soroban_sdk::Address,
     operator: soroban_sdk::Address,
-    shares: i128,
-    min_assets_out: i128,
-) -> Result<i128, ContractError> {
-    if shares <= 0 || min_assets_out < 0 {
+    shares: u128,
+    min_assets_out: u128,
+) -> Result<u128, ContractError> {
+    if shares == 0 {
         return Err(ContractError::InvalidInput);
     }
 
-    let mut assets_out = 0i128;
+    let mut assets_out = 0u128;
+    let shares_i128 = to_i128(shares)?;
+    let min_assets_out_i128 = to_i128(min_assets_out)?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        assets_out = vault.atomic_redeem(
+        let assets_out_i128 = vault.atomic_redeem(
             env,
-            shares,
-            min_assets_out,
+            shares_i128,
+            min_assets_out_i128,
             receiver.clone(),
             owner.clone(),
             operator.clone(),
         )?;
+        assets_out = to_u128(assets_out_i128).map_err(|_| RuntimeError::invalid_input(""))?;
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
@@ -733,16 +718,16 @@ fn allocate_impl(
     env: &Env,
     caller: soroban_sdk::Address,
     market: u32,
-    amount: i128,
+    amount: u128,
     supply: bool,
-) -> Result<i128, ContractError> {
+) -> Result<u128, ContractError> {
     require_signed(&caller);
     let caller_kernel = kernel_address_from_sdk(env, &caller);
     let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         vault.authorize(ActionKind::BeginAllocating, caller_kernel)
     };
     with_contract_vault_contract_error(env, &mut preauth)?;
-    if amount <= 0 {
+    if amount == 0 {
         return Err(ContractError::InvalidInput);
     }
     let now_ns = ledger_timestamp_ns(env)?;
@@ -752,13 +737,13 @@ fn allocate_impl(
     let mut new_external: u128 = 0;
     let emitted_amount = if supply {
         let adapter = supply_adapter_for_market(env, market)?;
-        let amount_u128 = to_u128(amount)?;
-        asset_client.transfer(&vault_address, &adapter, &amount);
-        invoke_supply(env, &adapter, &asset_token, amount);
+        let amount_i128 = to_i128(amount)?;
+        asset_client.transfer(&vault_address, &adapter, &amount_i128);
+        invoke_supply(env, &adapter, &asset_token, amount_i128);
         let observed_total_assets = to_u128(invoke_total_assets(env, &adapter, &asset_token))?;
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-            let plan = vec![AllocationPlanEntry::new(market, amount_u128)];
+            let plan = vec![AllocationPlanEntry::new(market, amount)];
             let op_id = vault.begin_allocation_internal(caller_kernel, &plan, now_ns)?;
             new_external = vault.complete_supply_allocation(
                 caller_kernel,
@@ -774,7 +759,8 @@ fn allocate_impl(
     } else {
         let adapter = adapter_for_market(env, market)?;
         let balance_before = asset_client.balance(&vault_address);
-        let realized_amount = invoke_progress_withdrawal(env, &adapter, &asset_token, amount);
+        let amount_i128 = to_i128(amount)?;
+        let realized_amount = invoke_progress_withdrawal(env, &adapter, &asset_token, amount_i128);
         let balance_after = asset_client.balance(&vault_address);
         let observed_delta = balance_after
             .checked_sub(balance_before)
@@ -796,17 +782,17 @@ fn allocate_impl(
             Ok(())
         };
         with_contract_vault_contract_error(env, &mut call)?;
-        realized_amount
+        realized_amount_u128
     };
     emit_alloc_event(env, market, emitted_amount, supply);
-    to_i128(new_external)
+    Ok(new_external)
 }
 
 fn refresh_markets_impl(
     env: &Env,
     caller: soroban_sdk::Address,
     markets: soroban_sdk::Vec<u32>,
-) -> Result<i128, ContractError> {
+) -> Result<u128, ContractError> {
     require_signed(&caller);
     let caller_kernel = kernel_address_from_sdk(env, &caller);
     let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
@@ -845,7 +831,7 @@ fn refresh_markets_impl(
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
-    to_i128(new_external)
+    Ok(new_external)
 }
 
 fn set_governance_config_impl(
@@ -854,8 +840,8 @@ fn set_governance_config_impl(
     kind: u32,
     primary: Option<soroban_sdk::Address>,
     many: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
-    value_a: Option<i128>,
-    value_b: Option<i128>,
+    value_a: Option<u128>,
+    value_b: Option<u128>,
     caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     if caller_preauthorized {
@@ -880,13 +866,13 @@ fn set_governance_config_impl(
             apply_skim_recipient_config(env, required_address(primary)?)
         }
         GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS => {
-            apply_virtual_offsets_config(env, required_i128(value_a)?, required_i128(value_b)?)?
+            apply_virtual_offsets_config(env, required_u128(value_a)?, required_u128(value_b)?)?
         }
         GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN => {
-            apply_withdrawal_cooldown_config(env, required_i128(value_a)?)?
+            apply_withdrawal_cooldown_config(env, required_u128(value_a)?)?
         }
         GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN => {
-            apply_idle_resync_cooldown_config(env, required_i128(value_a)?)?
+            apply_idle_resync_cooldown_config(env, required_u128(value_a)?)?
         }
         _ => return Err(ContractError::InvalidInput),
     }
@@ -902,9 +888,9 @@ fn set_governance_policy_impl(
     accounts: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
     market_id: Option<u32>,
     cap_group_id: Option<soroban_sdk::String>,
-    value: Option<i128>,
-    value_b: Option<i128>,
-    value_c: Option<i128>,
+    value: Option<u128>,
+    value_b: Option<u128>,
+    value_c: Option<u128>,
     caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     let governance_kernel = || -> Result<Address, ContractError> {
@@ -1148,7 +1134,7 @@ fn execute_public_command(
             receiver,
             assets,
             min_shares_out,
-        } => Ok(VaultCommandResult::I128(deposit_with_min_impl(
+        } => Ok(VaultCommandResult::U128(deposit_with_min_impl(
             env,
             address_from_alloc_string(env, &owner)?,
             address_from_alloc_string(env, &receiver)?,
@@ -1180,7 +1166,7 @@ fn execute_public_command(
             operator,
             assets,
             max_shares_burned,
-        } => Ok(VaultCommandResult::I128(atomic_withdraw_impl(
+        } => Ok(VaultCommandResult::U128(atomic_withdraw_impl(
             env,
             address_from_alloc_string(env, &owner)?,
             address_from_alloc_string(env, &receiver)?,
@@ -1194,7 +1180,7 @@ fn execute_public_command(
             operator,
             shares,
             min_assets_out,
-        } => Ok(VaultCommandResult::I128(atomic_redeem_impl(
+        } => Ok(VaultCommandResult::U128(atomic_redeem_impl(
             env,
             address_from_alloc_string(env, &owner)?,
             address_from_alloc_string(env, &receiver)?,
@@ -1207,7 +1193,7 @@ fn execute_public_command(
             market,
             amount,
             supply,
-        } => Ok(VaultCommandResult::I128(allocate_impl(
+        } => Ok(VaultCommandResult::U128(allocate_impl(
             env,
             address_from_alloc_string(env, &caller)?,
             market,
@@ -1219,7 +1205,7 @@ fn execute_public_command(
             for market in markets {
                 sdk_markets.push_back(market);
             }
-            Ok(VaultCommandResult::I128(refresh_markets_impl(
+            Ok(VaultCommandResult::U128(refresh_markets_impl(
                 env,
                 address_from_alloc_string(env, &caller)?,
                 sdk_markets,
@@ -1344,17 +1330,14 @@ fn initialize_impl(
     governance: soroban_sdk::Address,
     asset_token: soroban_sdk::Address,
     share_token: soroban_sdk::Address,
-    virtual_shares: i128,
-    virtual_assets: i128,
+    virtual_shares: u128,
+    virtual_assets: u128,
     withdrawal_cooldown_ns: u64,
     idle_resync_cooldown_ns: u64,
 ) -> Result<(), ContractError> {
     if env.storage().instance().has(&VaultDataKey::Initialized) {
         return Err(ContractError::AlreadyInitialized);
     }
-
-    let virtual_shares = to_u128(virtual_shares)?;
-    let virtual_assets = to_u128(virtual_assets)?;
 
     require_wasm_or_account_address(&curator)?;
     require_contract_address(&governance)?;
@@ -1386,8 +1369,8 @@ impl SorobanVaultContract {
         governance: soroban_sdk::Address,
         asset_token: soroban_sdk::Address,
         share_token: soroban_sdk::Address,
-        virtual_shares: i128,
-        virtual_assets: i128,
+        virtual_shares: u128,
+        virtual_assets: u128,
     ) -> Result<(), ContractError> {
         initialize_impl(
             &env,
@@ -1408,8 +1391,8 @@ impl SorobanVaultContract {
         governance: soroban_sdk::Address,
         asset_token: soroban_sdk::Address,
         share_token: soroban_sdk::Address,
-        virtual_shares: i128,
-        virtual_assets: i128,
+        virtual_shares: u128,
+        virtual_assets: u128,
         withdrawal_cooldown_ns: u64,
     ) -> Result<(), ContractError> {
         initialize_impl(
@@ -1431,8 +1414,8 @@ impl SorobanVaultContract {
         governance: soroban_sdk::Address,
         asset_token: soroban_sdk::Address,
         share_token: soroban_sdk::Address,
-        virtual_shares: i128,
-        virtual_assets: i128,
+        virtual_shares: u128,
+        virtual_assets: u128,
         withdrawal_cooldown_ns: u64,
         idle_resync_cooldown_ns: u64,
     ) -> Result<(), ContractError> {
@@ -1474,55 +1457,27 @@ impl SorobanVaultContract {
     /// This is intentional: Soroban `withdraw` / `redeem` are atomic idle exits,
     /// while market-backed exits must use `request_withdraw` and allocator-driven
     /// queue execution.
-    #[allow(
-        clippy::type_complexity,
-        reason = "proxy view is a compact ABI surface consumed by tests and tooling"
-    )]
     #[allow(clippy::too_many_lines)]
     pub fn proxy_view(
         env: Env,
         owner: soroban_sdk::Address,
-        assets: i128,
-        shares: i128,
-    ) -> Result<
-        (
-            (
-                (
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                    soroban_sdk::Address,
-                ),
-                (i128, i128, bool),
-                (i128, i128, i128, i128),
-                (i128, u64, i128, i128, i128),
-            ),
-            (
-                soroban_sdk::Vec<u32>,
-                soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
-            ),
-            (i128, i128, i128, i128, i128, i128, i128, i128),
-        ),
-        ContractError,
-    > {
+        assets: u128,
+        shares: u128,
+    ) -> Result<ProxyViewResponse, ContractError> {
         let (virtual_shares, virtual_assets) = load_virtual_offsets(&env);
         let storage = SorobanStorage::new(&env);
         let mut queue = soroban_sdk::Vec::new(&env);
         let mut groups = soroban_sdk::Vec::new(&env);
         let (state, config) = load_state_and_config(&env)?;
-        let total_shares = to_i128(state.total_shares)?;
-        let idle_assets = to_i128(state.idle_assets)?;
-        let external_assets = to_i128(state.external_assets)?;
-        let total_assets = to_i128(state.total_assets)?;
         let fee_growth_rate = match config.fees.max_total_assets_growth_rate {
-            Some(rate) => to_i128(u128::from(rate))?,
+            Some(rate) => u128::from(rate),
             None => 0,
         };
         let fee_info = (
-            to_i128(state.fee_anchor.total_assets)?,
+            state.fee_anchor.total_assets,
             state.fee_anchor.timestamp_ns.as_u64(),
-            to_i128(u128::from(config.fees.management.fee_wad))?,
-            to_i128(u128::from(config.fees.performance.fee_wad))?,
+            u128::from(config.fees.management.fee_wad),
+            u128::from(config.fees.performance.fee_wad),
             fee_growth_rate,
         );
         let policy_state = runtime_to_contract(storage.load_policy_state())?.unwrap_or_default();
@@ -1531,39 +1486,33 @@ impl SorobanVaultContract {
         }
         for (id, rec) in policy_state.cap_groups().iter() {
             let sdk_id = soroban_sdk::String::from_str(&env, id.as_str());
-            let abs_cap = rec.cap.absolute_cap().map(|c| c as i128).unwrap_or(0);
-            groups.push_back((sdk_id, abs_cap, rec.principal as i128));
+            let abs_cap = rec.cap.absolute_cap().unwrap_or(0);
+            groups.push_back((sdk_id, abs_cap, rec.principal));
         }
-        let convert_to_shares_value = if assets <= 0 {
+        let convert_to_shares_value = if assets == 0 {
             0
         } else {
-            let assets_u128 = to_u128(assets)?;
-            to_i128(
-                convert_to_shares_bounded(
-                    &state,
-                    &config,
-                    assets_u128,
-                    i128::MAX as u128,
-                    InvalidStateCode::MintOverflowTotalShares,
-                )
-                .map_err(|_| ContractError::ConversionOverflow)?,
-            )?
+            convert_to_shares_bounded(
+                &state,
+                &config,
+                assets,
+                u128::MAX,
+                InvalidStateCode::MintOverflowTotalShares,
+            )
+            .map_err(|_| ContractError::ConversionOverflow)?
         };
 
-        let convert_to_assets_value = if shares <= 0 {
+        let convert_to_assets_value = if shares == 0 {
             0
         } else {
-            let shares_u128 = to_u128(shares)?;
-            to_i128(
-                convert_to_assets_bounded(
-                    &state,
-                    &config,
-                    shares_u128,
-                    i128::MAX as u128,
-                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
-                )
-                .map_err(|_| ContractError::ConversionOverflow)?,
-            )?
+            convert_to_assets_bounded(
+                &state,
+                &config,
+                shares,
+                u128::MAX,
+                InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+            )
+            .map_err(|_| ContractError::ConversionOverflow)?
         };
 
         let (max_deposit_value, max_mint_value) = if state.op_state.is_idle() && !config.paused {
@@ -1572,7 +1521,7 @@ impl SorobanVaultContract {
                 .min(u128::MAX.saturating_sub(state.idle_assets));
             let share_headroom = u128::MAX.saturating_sub(state.total_shares);
 
-            let max_assets = asset_headroom.min(i128::MAX as u128);
+            let max_assets = asset_headroom;
             let shares_for_max_assets = convert_to_shares_bounded(
                 &state,
                 &config,
@@ -1588,13 +1537,13 @@ impl SorobanVaultContract {
                     &state,
                     &config,
                     share_headroom,
-                    i128::MAX as u128,
+                    u128::MAX,
                     InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
                 )
                 .map_err(|_| ContractError::ConversionOverflow)?
             };
 
-            let max_shares = share_headroom.min(i128::MAX as u128);
+            let max_shares = share_headroom;
             let assets_for_max_shares = convert_to_assets_bounded(
                 &state,
                 &config,
@@ -1610,12 +1559,12 @@ impl SorobanVaultContract {
                     &state,
                     &config,
                     asset_headroom,
-                    i128::MAX as u128,
+                    u128::MAX,
                     InvalidStateCode::MintOverflowTotalShares,
                 )
                 .map_err(|_| ContractError::ConversionOverflow)?
             };
-            (to_i128(max_deposit)?, to_i128(max_mint)?)
+            (max_deposit, max_mint)
         } else {
             (0, 0)
         };
@@ -1626,41 +1575,35 @@ impl SorobanVaultContract {
                 owner_shares.min(convert_to_shares(&state, &config, state.idle_assets));
             let max_withdraw_u128 =
                 convert_to_assets(&state, &config, owner_shares).min(state.idle_assets);
-            (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
+            (max_withdraw_u128, max_redeem_u128)
         } else {
             (0, 0)
         };
 
-        let preview_mint_value = if shares <= 0 {
+        let preview_mint_value = if shares == 0 {
             0
         } else {
-            let shares_u128 = to_u128(shares)?;
-            to_i128(
-                convert_to_assets_ceil_bounded(
-                    &state,
-                    &config,
-                    shares_u128,
-                    i128::MAX as u128,
-                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
-                )
-                .map_err(|_| ContractError::ConversionOverflow)?,
-            )?
+            convert_to_assets_ceil_bounded(
+                &state,
+                &config,
+                shares,
+                u128::MAX,
+                InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+            )
+            .map_err(|_| ContractError::ConversionOverflow)?
         };
 
-        let preview_withdraw_value = if assets <= 0 {
+        let preview_withdraw_value = if assets == 0 {
             0
         } else {
-            let assets_u128 = to_u128(assets)?;
-            to_i128(
-                convert_to_shares_ceil_bounded(
-                    &state,
-                    &config,
-                    assets_u128,
-                    i128::MAX as u128,
-                    InvalidStateCode::AtomicWithdrawBurnExceedsTotalShares,
-                )
-                .map_err(|_| ContractError::ConversionOverflow)?,
-            )?
+            convert_to_shares_ceil_bounded(
+                &state,
+                &config,
+                assets,
+                u128::MAX,
+                InvalidStateCode::AtomicWithdrawBurnExceedsTotalShares,
+            )
+            .map_err(|_| ContractError::ConversionOverflow)?
         };
 
         Ok((
@@ -1671,12 +1614,13 @@ impl SorobanVaultContract {
                     get_config_address(&env, &VaultDataKey::AssetToken)?,
                     get_config_address(&env, &VaultDataKey::ShareToken)?,
                 ),
+                (virtual_shares, virtual_assets, storage.is_paused()),
                 (
-                    to_i128(virtual_shares)?,
-                    to_i128(virtual_assets)?,
-                    storage.is_paused(),
+                    state.total_shares,
+                    state.idle_assets,
+                    state.external_assets,
+                    state.total_assets,
                 ),
-                (total_shares, idle_assets, external_assets, total_assets),
                 fee_info,
             ),
             (queue, groups),

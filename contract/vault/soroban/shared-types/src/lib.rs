@@ -21,18 +21,18 @@ pub type ProxyAddressesView = (
     soroban_sdk::Address,
     soroban_sdk::Address,
 );
-pub type ProxyVirtualOffsetsView = (i128, i128, bool);
-pub type ProxyTotalsView = (i128, i128, i128, i128);
-pub type ProxyFeesView = (i128, u64, i128, i128, i128);
+pub type ProxyVirtualOffsetsView = (u128, u128, bool);
+pub type ProxyTotalsView = (u128, u128, u128, u128);
+pub type ProxyFeesView = (u128, u64, u128, u128, u128);
 pub type ProxyCoreView = (
     ProxyAddressesView,
     ProxyVirtualOffsetsView,
     ProxyTotalsView,
     ProxyFeesView,
 );
-pub type ProxyCapGroupView = (soroban_sdk::String, i128, i128);
+pub type ProxyCapGroupView = (soroban_sdk::String, u128, u128);
 pub type ProxyPolicyView = (soroban_sdk::Vec<u32>, soroban_sdk::Vec<ProxyCapGroupView>);
-pub type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
+pub type ProxyPreviewView = (u128, u128, u128, u128, u128, u128, u128, u128);
 pub type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
 
 #[derive(Clone)]
@@ -45,26 +45,26 @@ pub struct ProxyAddressesFields {
 
 #[derive(Clone)]
 pub struct ProxyVirtualOffsetsFields {
-    pub virtual_shares: i128,
-    pub virtual_assets: i128,
+    pub virtual_shares: u128,
+    pub virtual_assets: u128,
     pub paused: bool,
 }
 
 #[derive(Clone)]
 pub struct ProxyTotalsFields {
-    pub total_shares: i128,
-    pub idle_assets: i128,
-    pub external_assets: i128,
-    pub total_assets: i128,
+    pub total_shares: u128,
+    pub idle_assets: u128,
+    pub external_assets: u128,
+    pub total_assets: u128,
 }
 
 #[derive(Clone)]
 pub struct ProxyFeesFields {
-    pub fee_total_assets: i128,
+    pub fee_total_assets: u128,
     pub fee_timestamp_ns: u64,
-    pub management_fee_wad: i128,
-    pub performance_fee_wad: i128,
-    pub max_total_assets_growth_rate_wad: i128,
+    pub management_fee_wad: u128,
+    pub performance_fee_wad: u128,
+    pub max_total_assets_growth_rate_wad: u128,
 }
 
 #[derive(Clone)]
@@ -83,14 +83,14 @@ pub struct ProxyPolicyFields {
 
 #[derive(Clone)]
 pub struct ProxyPreviewFields {
-    pub convert_to_shares: i128,
-    pub convert_to_assets: i128,
-    pub max_deposit: i128,
-    pub max_mint: i128,
-    pub max_withdraw: i128,
-    pub max_redeem: i128,
-    pub preview_mint_assets: i128,
-    pub preview_withdraw_shares: i128,
+    pub convert_to_shares: u128,
+    pub convert_to_assets: u128,
+    pub max_deposit: u128,
+    pub max_mint: u128,
+    pub max_withdraw: u128,
+    pub max_redeem: u128,
+    pub preview_mint_assets: u128,
+    pub preview_withdraw_shares: u128,
 }
 
 #[derive(Clone)]
@@ -228,21 +228,17 @@ fn push_u128(out: &mut Vec<u8>, value: u128) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn push_i128(out: &mut Vec<u8>, value: i128) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
 fn push_string(out: &mut Vec<u8>, value: &str) {
     let bytes = value.as_bytes();
     push_u32(out, bytes.len() as u32);
     out.extend_from_slice(bytes);
 }
 
-fn push_option_i128(out: &mut Vec<u8>, value: &Option<i128>) {
+fn push_option_u128(out: &mut Vec<u8>, value: &Option<u128>) {
     match value {
         Some(value) => {
             push_u8(out, 1);
-            push_i128(out, *value);
+            push_u128(out, *value);
         }
         None => push_u8(out, 0),
     }
@@ -331,22 +327,16 @@ fn read_u128(bytes: &[u8], cursor: &mut usize) -> Result<u128, CodecError> {
     Ok(u128::from_le_bytes(raw))
 }
 
-fn read_i128(bytes: &[u8], cursor: &mut usize) -> Result<i128, CodecError> {
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(read_exact(bytes, cursor, 16)?);
-    Ok(i128::from_le_bytes(raw))
-}
-
 fn read_string(bytes: &[u8], cursor: &mut usize) -> Result<String, CodecError> {
     let len = read_u32(bytes, cursor)? as usize;
     let raw = read_exact(bytes, cursor, len)?;
     String::from_utf8(raw.to_vec()).map_err(|_| CodecError::InvalidUtf8)
 }
 
-fn read_option_i128(bytes: &[u8], cursor: &mut usize) -> Result<Option<i128>, CodecError> {
+fn read_option_u128(bytes: &[u8], cursor: &mut usize) -> Result<Option<u128>, CodecError> {
     match read_u8(bytes, cursor)? {
         0 => Ok(None),
-        1 => Ok(Some(read_i128(bytes, cursor)?)),
+        1 => Ok(Some(read_u128(bytes, cursor)?)),
         _ => Err(CodecError::InvalidTag),
     }
 }
@@ -417,14 +407,14 @@ pub enum VaultCommand {
     DepositWithMin {
         owner: String,
         receiver: String,
-        assets: i128,
-        min_shares_out: i128,
+        assets: u128,
+        min_shares_out: u128,
     },
     RequestWithdraw {
         owner: String,
         receiver: String,
-        shares: i128,
-        min_assets_out: i128,
+        shares: u128,
+        min_assets_out: u128,
     },
     ExecuteWithdraw {
         caller: String,
@@ -436,7 +426,7 @@ pub enum VaultCommand {
     Allocate {
         caller: String,
         market: u32,
-        amount: i128,
+        amount: u128,
         supply: bool,
     },
     RefreshMarkets {
@@ -448,15 +438,15 @@ pub enum VaultCommand {
         owner: String,
         receiver: String,
         operator: String,
-        assets: i128,
-        max_shares_burned: i128,
+        assets: u128,
+        max_shares_burned: u128,
     },
     AtomicRedeem {
         owner: String,
         receiver: String,
         operator: String,
-        shares: i128,
-        min_assets_out: i128,
+        shares: u128,
+        min_assets_out: u128,
     },
     ResyncIdleBalance,
     CancelMigration {
@@ -471,8 +461,8 @@ pub enum GovernanceCommand {
         kind: u32,
         primary: Option<String>,
         many: Option<Vec<String>>,
-        value_a: Option<i128>,
-        value_b: Option<i128>,
+        value_a: Option<u128>,
+        value_b: Option<u128>,
     },
     SetGovernancePolicy {
         kind: u32,
@@ -481,9 +471,9 @@ pub enum GovernanceCommand {
         accounts: Option<Vec<String>>,
         market_id: Option<u32>,
         cap_group_id: Option<String>,
-        value: Option<i128>,
-        value_b: Option<i128>,
-        value_c: Option<i128>,
+        value: Option<u128>,
+        value_b: Option<u128>,
+        value_c: Option<u128>,
     },
     Skim {
         token: String,
@@ -493,7 +483,7 @@ pub enum GovernanceCommand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultCommandResult {
     Unit,
-    I128(i128),
+    U128(u128),
     U64(u64),
     ExecuteWithdrawStatus(ExecuteWithdrawStatus),
 }
@@ -543,8 +533,8 @@ impl VaultCommand {
                 push_u8(&mut out, 0);
                 push_string(&mut out, owner);
                 push_string(&mut out, receiver);
-                push_i128(&mut out, *assets);
-                push_i128(&mut out, *min_shares_out);
+                push_u128(&mut out, *assets);
+                push_u128(&mut out, *min_shares_out);
             }
             Self::RequestWithdraw {
                 owner,
@@ -555,8 +545,8 @@ impl VaultCommand {
                 push_u8(&mut out, 1);
                 push_string(&mut out, owner);
                 push_string(&mut out, receiver);
-                push_i128(&mut out, *shares);
-                push_i128(&mut out, *min_assets_out);
+                push_u128(&mut out, *shares);
+                push_u128(&mut out, *min_assets_out);
             }
             Self::ExecuteWithdraw { caller } => {
                 push_u8(&mut out, 2);
@@ -576,7 +566,7 @@ impl VaultCommand {
                 push_u8(&mut out, 3);
                 push_string(&mut out, caller);
                 push_u32(&mut out, *market);
-                push_i128(&mut out, *amount);
+                push_u128(&mut out, *amount);
                 push_u8(&mut out, u8::from(*supply));
             }
             Self::RefreshMarkets { caller, markets } => {
@@ -596,8 +586,8 @@ impl VaultCommand {
                 push_string(&mut out, owner);
                 push_string(&mut out, receiver);
                 push_string(&mut out, operator);
-                push_i128(&mut out, *assets);
-                push_i128(&mut out, *max_shares_burned);
+                push_u128(&mut out, *assets);
+                push_u128(&mut out, *max_shares_burned);
             }
             Self::AtomicRedeem {
                 owner,
@@ -610,8 +600,8 @@ impl VaultCommand {
                 push_string(&mut out, owner);
                 push_string(&mut out, receiver);
                 push_string(&mut out, operator);
-                push_i128(&mut out, *shares);
-                push_i128(&mut out, *min_assets_out);
+                push_u128(&mut out, *shares);
+                push_u128(&mut out, *min_assets_out);
             }
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
@@ -629,14 +619,14 @@ impl VaultCommand {
             0 => Ok(Self::DepositWithMin {
                 owner: read_string(bytes, &mut cursor)?,
                 receiver: read_string(bytes, &mut cursor)?,
-                assets: read_i128(bytes, &mut cursor)?,
-                min_shares_out: read_i128(bytes, &mut cursor)?,
+                assets: read_u128(bytes, &mut cursor)?,
+                min_shares_out: read_u128(bytes, &mut cursor)?,
             }),
             1 => Ok(Self::RequestWithdraw {
                 owner: read_string(bytes, &mut cursor)?,
                 receiver: read_string(bytes, &mut cursor)?,
-                shares: read_i128(bytes, &mut cursor)?,
-                min_assets_out: read_i128(bytes, &mut cursor)?,
+                shares: read_u128(bytes, &mut cursor)?,
+                min_assets_out: read_u128(bytes, &mut cursor)?,
             }),
             2 => Ok(Self::ExecuteWithdraw {
                 caller: read_string(bytes, &mut cursor)?,
@@ -648,7 +638,7 @@ impl VaultCommand {
             3 => Ok(Self::Allocate {
                 caller: read_string(bytes, &mut cursor)?,
                 market: read_u32(bytes, &mut cursor)?,
-                amount: read_i128(bytes, &mut cursor)?,
+                amount: read_u128(bytes, &mut cursor)?,
                 supply: match read_u8(bytes, &mut cursor)? {
                     0 => false,
                     1 => true,
@@ -664,15 +654,15 @@ impl VaultCommand {
                 owner: read_string(bytes, &mut cursor)?,
                 receiver: read_string(bytes, &mut cursor)?,
                 operator: read_string(bytes, &mut cursor)?,
-                assets: read_i128(bytes, &mut cursor)?,
-                max_shares_burned: read_i128(bytes, &mut cursor)?,
+                assets: read_u128(bytes, &mut cursor)?,
+                max_shares_burned: read_u128(bytes, &mut cursor)?,
             }),
             7 => Ok(Self::AtomicRedeem {
                 owner: read_string(bytes, &mut cursor)?,
                 receiver: read_string(bytes, &mut cursor)?,
                 operator: read_string(bytes, &mut cursor)?,
-                shares: read_i128(bytes, &mut cursor)?,
-                min_assets_out: read_i128(bytes, &mut cursor)?,
+                shares: read_u128(bytes, &mut cursor)?,
+                min_assets_out: read_u128(bytes, &mut cursor)?,
             }),
             8 => Ok(Self::ResyncIdleBalance),
             9 => Ok(Self::CancelMigration {
@@ -702,8 +692,8 @@ impl GovernanceCommand {
                 push_u32(&mut out, *kind);
                 push_option_string(&mut out, primary);
                 push_option_string_vec(&mut out, many);
-                push_option_i128(&mut out, value_a);
-                push_option_i128(&mut out, value_b);
+                push_option_u128(&mut out, value_a);
+                push_option_u128(&mut out, value_b);
             }
             Self::SetGovernancePolicy {
                 kind,
@@ -723,9 +713,9 @@ impl GovernanceCommand {
                 push_option_string_vec(&mut out, accounts);
                 push_option_u32(&mut out, market_id);
                 push_option_string(&mut out, cap_group_id);
-                push_option_i128(&mut out, value);
-                push_option_i128(&mut out, value_b);
-                push_option_i128(&mut out, value_c);
+                push_option_u128(&mut out, value);
+                push_option_u128(&mut out, value_b);
+                push_option_u128(&mut out, value_c);
             }
             Self::Skim { token } => {
                 push_u8(&mut out, GOVERNANCE_COMMAND_TAG_SKIM);
@@ -742,8 +732,8 @@ impl GovernanceCommand {
                 kind: read_u32(bytes, &mut cursor)?,
                 primary: read_option_string(bytes, &mut cursor)?,
                 many: read_option_string_vec(bytes, &mut cursor)?,
-                value_a: read_option_i128(bytes, &mut cursor)?,
-                value_b: read_option_i128(bytes, &mut cursor)?,
+                value_a: read_option_u128(bytes, &mut cursor)?,
+                value_b: read_option_u128(bytes, &mut cursor)?,
             }),
             GOVERNANCE_COMMAND_TAG_SET_POLICY => Ok(Self::SetGovernancePolicy {
                 kind: read_u32(bytes, &mut cursor)?,
@@ -752,9 +742,9 @@ impl GovernanceCommand {
                 accounts: read_option_string_vec(bytes, &mut cursor)?,
                 market_id: read_option_u32(bytes, &mut cursor)?,
                 cap_group_id: read_option_string(bytes, &mut cursor)?,
-                value: read_option_i128(bytes, &mut cursor)?,
-                value_b: read_option_i128(bytes, &mut cursor)?,
-                value_c: read_option_i128(bytes, &mut cursor)?,
+                value: read_option_u128(bytes, &mut cursor)?,
+                value_b: read_option_u128(bytes, &mut cursor)?,
+                value_c: read_option_u128(bytes, &mut cursor)?,
             }),
             GOVERNANCE_COMMAND_TAG_SKIM => Ok(Self::Skim {
                 token: read_string(bytes, &mut cursor)?,
@@ -772,9 +762,9 @@ impl VaultCommandResult {
         let mut out = Vec::new();
         match self {
             Self::Unit => push_u8(&mut out, 0),
-            Self::I128(value) => {
+            Self::U128(value) => {
                 push_u8(&mut out, 1);
-                push_i128(&mut out, *value);
+                push_u128(&mut out, *value);
             }
             Self::U64(value) => {
                 push_u8(&mut out, 2);
@@ -795,7 +785,7 @@ impl VaultCommandResult {
         let mut cursor = 0usize;
         let result = match read_u8(bytes, &mut cursor)? {
             0 => Ok(Self::Unit),
-            1 => Ok(Self::I128(read_i128(bytes, &mut cursor)?)),
+            1 => Ok(Self::U128(read_u128(bytes, &mut cursor)?)),
             2 => Ok(Self::U64(read_u64(bytes, &mut cursor)?)),
             3 => Ok(Self::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
                 op_state_before: read_u32(bytes, &mut cursor)?,
