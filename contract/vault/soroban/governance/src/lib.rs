@@ -5,10 +5,10 @@ extern crate alloc;
 mod types;
 pub use types::*;
 
-use alloc::{string::String, vec};
+use alloc::string::String as AllocString;
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, Address, Bytes, BytesN, Env, String as SdkString, Symbol, Vec,
+    contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String as SdkString, Symbol, Vec,
 };
 use templar_curator_primitives::governance::{
     timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
@@ -17,7 +17,7 @@ use templar_curator_primitives::governance::{
 };
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_soroban_shared_types::{
-    VaultCommand, GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+    GovernanceCommand, GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
     GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL,
     GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
     GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
@@ -311,20 +311,24 @@ impl SorobanVaultGovernanceContract {
         Self::submit(env, caller, GovernanceAction::Skim(token))
     }
 
-    pub fn abdicate(env: Env, caller: Address, method_name: Symbol) -> Result<(), GovernanceError> {
+    pub fn abdicate(
+        env: Env,
+        caller: Address,
+        kind: GovernanceActionKind,
+    ) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
         env.storage()
             .instance()
-            .set(&DataKey::Abdicated(method_name), &true);
+            .set(&DataKey::Abdicated(kind), &true);
         Ok(())
     }
 
-    pub fn is_abdicated(env: Env, method_name: Symbol) -> bool {
+    pub fn is_abdicated(env: Env, kind: GovernanceActionKind) -> bool {
         extend_instance_ttl(&env);
         env.storage()
             .instance()
-            .get(&DataKey::Abdicated(method_name))
+            .get(&DataKey::Abdicated(kind))
             .unwrap_or(false)
     }
 
@@ -1011,121 +1015,26 @@ fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
 
 #[allow(clippy::too_many_lines)]
 fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
-    let governance = env.current_contract_address();
     let vault = get_address(env, DataKey::Vault)?;
 
     match action {
         GovernanceAction::SetPaused(paused) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_PAUSED,
-                    target_ids: None,
-                    mode: Some(u32::from(*paused)),
-                    accounts: None,
-                    market_id: None,
-                    cap_group_id: None,
-                    value: None,
-                    value_b: None,
-                    value_c: None,
-                },
-            );
+            execute_vault_governance_action(env, &vault, action)?;
             env.storage()
                 .instance()
                 .set(&DataKey::CurrentPaused, paused);
         }
-        GovernanceAction::SetCurator(new_curator) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_CONFIG_KIND_CURATOR,
-                    primary: Some(address_text(new_curator)),
-                    many: None,
-                    value_a: None,
-                    value_b: None,
-                },
-            );
-        }
-        GovernanceAction::SetGovernance(new_governance) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-                    primary: Some(address_text(new_governance)),
-                    many: None,
-                    value_a: None,
-                    value_b: None,
-                },
-            );
-        }
-        GovernanceAction::SetSupplyQueue(target_ids) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
-                    target_ids: Some(target_ids.iter().collect()),
-                    mode: None,
-                    accounts: None,
-                    market_id: None,
-                    cap_group_id: None,
-                    value: None,
-                    value_b: None,
-                    value_c: None,
-                },
-            );
+        GovernanceAction::SetCurator(_)
+        | GovernanceAction::SetGovernance(_)
+        | GovernanceAction::SetSupplyQueue(_) => {
+            execute_vault_governance_action(env, &vault, action)?
         }
         GovernanceAction::SetFees(params) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_FEES,
-                    target_ids: None,
-                    mode: None,
-                    accounts: Some(vec![
-                        address_text(&params.performance_recipient),
-                        address_text(&params.management_recipient),
-                    ]),
-                    market_id: None,
-                    cap_group_id: None,
-                    value: Some(params.performance_fee_wad),
-                    value_b: Some(params.management_fee_wad),
-                    value_c: params.max_growth_rate_wad,
-                },
-            );
+            execute_vault_governance_action(env, &vault, action)?;
             env.storage().instance().set(&DataKey::CurrentFees, params);
         }
         GovernanceAction::SetRestrictions(mode, accounts) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-                    target_ids: None,
-                    mode: Some(mode.as_u32()),
-                    accounts: Some(
-                        accounts
-                            .iter()
-                            .map(|account| address_text(&account))
-                            .collect(),
-                    ),
-                    market_id: None,
-                    cap_group_id: None,
-                    value: None,
-                    value_b: None,
-                    value_c: None,
-                },
-            );
+            execute_vault_governance_action(env, &vault, action)?;
             env.storage()
                 .instance()
                 .set(&DataKey::CurrentRestrictionMode, mode);
@@ -1134,157 +1043,27 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 .set(&DataKey::CurrentRestrictionAccounts, accounts);
         }
         GovernanceAction::SetGuardian(guardian) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_CONFIG_KIND_GUARDIANS,
-                    primary: None,
-                    many: Some(vec![address_text(guardian)]),
-                    value_a: None,
-                    value_b: None,
-                },
-            );
+            execute_vault_governance_action(env, &vault, action)?;
             env.storage().instance().set(&DataKey::Guardian, guardian);
         }
         GovernanceAction::SetSentinel(sentinel) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
-                    primary: Some(address_text(sentinel)),
-                    many: None,
-                    value_a: None,
-                    value_b: None,
-                },
-            );
+            execute_vault_governance_action(env, &vault, action)?;
             env.storage().instance().set(&DataKey::Sentinel, sentinel);
         }
-        GovernanceAction::SetCap(market_id, new_cap) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_CAP,
-                    target_ids: None,
-                    mode: None,
-                    accounts: None,
-                    market_id: Some(*market_id),
-                    cap_group_id: None,
-                    value: Some(*new_cap),
-                    value_b: None,
-                    value_c: None,
-                },
-            );
-        }
-        GovernanceAction::RemoveMarket(market_id) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
-                    target_ids: None,
-                    mode: None,
-                    accounts: None,
-                    market_id: Some(*market_id),
-                    cap_group_id: None,
-                    value: None,
-                    value_b: None,
-                    value_c: None,
-                },
-            );
-        }
-        GovernanceAction::SetGroupCap(cap_group_id, new_cap) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_GROUP,
-                    target_ids: None,
-                    mode: Some(0),
-                    accounts: None,
-                    market_id: Some(0),
-                    cap_group_id: Some(sdk_string_text(cap_group_id)),
-                    value: Some(*new_cap),
-                    value_b: None,
-                    value_c: None,
-                },
-            );
-        }
-        GovernanceAction::SetGroupRelCap(cap_group_id, new_relative_cap_wad) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_GROUP,
-                    target_ids: None,
-                    mode: Some(1),
-                    accounts: None,
-                    market_id: Some(0),
-                    cap_group_id: Some(sdk_string_text(cap_group_id)),
-                    value: Some(*new_relative_cap_wad),
-                    value_b: None,
-                    value_c: None,
-                },
-            );
-        }
-        GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
-            let encoded_cap_group_id = if cap_group_id.is_empty() {
-                None
-            } else {
-                Some(sdk_string_text(cap_group_id))
-            };
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_GROUP,
-                    target_ids: None,
-                    mode: Some(2),
-                    accounts: None,
-                    market_id: Some(*market_id),
-                    cap_group_id: encoded_cap_group_id,
-                    value: Some(0),
-                    value_b: None,
-                    value_c: None,
-                },
-            );
+        GovernanceAction::SetCap(_, _)
+        | GovernanceAction::RemoveMarket(_)
+        | GovernanceAction::SetGroupCap(_, _)
+        | GovernanceAction::SetGroupRelCap(_, _)
+        | GovernanceAction::SetGroupMember(_, _) => {
+            execute_vault_governance_action(env, &vault, action)?
         }
         GovernanceAction::SetSkimRecipient(recipient) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: address_text(&governance),
-                    kind: GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-                    primary: Some(address_text(recipient)),
-                    many: None,
-                    value_a: None,
-                    value_b: None,
-                },
-            );
+            execute_vault_governance_action(env, &vault, action)?;
             env.storage()
                 .instance()
                 .set(&DataKey::SkimRecipient, recipient);
         }
-        GovernanceAction::Skim(token) => {
-            authorize_and_execute(
-                env,
-                &vault,
-                &VaultCommand::Skim {
-                    caller: address_text(&governance),
-                    token: address_text(token),
-                },
-            );
-        }
+        GovernanceAction::Skim(_) => execute_vault_governance_action(env, &vault, action)?,
         GovernanceAction::SetTimelock(kind, new_timelock_ns) => {
             validate_timelock_ns(*new_timelock_ns)?;
             let mut timelocks = load_timelocks(env);
@@ -1307,10 +1086,222 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
     Ok(())
 }
 
-fn authorize_and_execute(env: &Env, vault: &Address, command: &VaultCommand) {
-    let fn_name = Symbol::new(env, "execute");
-    let payload = command_payload(env, command);
-    let args = Vec::from_array(env, [payload.to_val()]);
+fn execute_vault_governance_action(
+    env: &Env,
+    vault: &Address,
+    action: &GovernanceAction,
+) -> Result<(), GovernanceError> {
+    let payload =
+        governance_payload_for_action(env, action)?.ok_or(GovernanceError::InvalidInput)?;
+    let governance = env.current_contract_address();
+    authorize_and_invoke(
+        env,
+        vault,
+        Symbol::new(env, "execute_governance"),
+        Vec::from_array(env, [governance.into_val(env), payload.into_val(env)]),
+    );
+    Ok(())
+}
+
+fn governance_payload_for_action(
+    env: &Env,
+    action: &GovernanceAction,
+) -> Result<Option<Bytes>, GovernanceError> {
+    let command = match action {
+        GovernanceAction::SetCurator(curator) => Some(GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+            primary: Some(sdk_address_to_alloc_string(curator)?),
+            many: None,
+            value_a: None,
+            value_b: None,
+        }),
+        GovernanceAction::SetGovernance(governance) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+                primary: Some(sdk_address_to_alloc_string(governance)?),
+                many: None,
+                value_a: None,
+                value_b: None,
+            })
+        }
+        GovernanceAction::SetGuardian(guardian) => Some(GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_GUARDIANS,
+            primary: None,
+            many: Some(alloc::vec![sdk_address_to_alloc_string(guardian)?]),
+            value_a: None,
+            value_b: None,
+        }),
+        GovernanceAction::SetSentinel(sentinel) => Some(GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
+            primary: Some(sdk_address_to_alloc_string(sentinel)?),
+            many: None,
+            value_a: None,
+            value_b: None,
+        }),
+        GovernanceAction::SetSkimRecipient(recipient) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+                primary: Some(sdk_address_to_alloc_string(recipient)?),
+                many: None,
+                value_a: None,
+                value_b: None,
+            })
+        }
+        GovernanceAction::Skim(token) => Some(GovernanceCommand::Skim {
+            token: sdk_address_to_alloc_string(token)?,
+        }),
+        GovernanceAction::SetSupplyQueue(target_ids) => {
+            Some(GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                target_ids: Some(soroban_u32_vec_to_alloc(target_ids)),
+                mode: None,
+                accounts: None,
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            })
+        }
+        GovernanceAction::SetPaused(paused) => Some(GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_PAUSED,
+            target_ids: None,
+            mode: Some(u32::from(*paused)),
+            accounts: None,
+            market_id: None,
+            cap_group_id: None,
+            value: None,
+            value_b: None,
+            value_c: None,
+        }),
+        GovernanceAction::SetFees(params) => Some(GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_FEES,
+            target_ids: None,
+            mode: None,
+            accounts: Some(alloc::vec![
+                sdk_address_to_alloc_string(&params.performance_recipient)?,
+                sdk_address_to_alloc_string(&params.management_recipient)?,
+            ]),
+            market_id: None,
+            cap_group_id: None,
+            value: Some(params.performance_fee_wad),
+            value_b: Some(params.management_fee_wad),
+            value_c: params.max_growth_rate_wad,
+        }),
+        GovernanceAction::SetRestrictions(mode, accounts) => {
+            Some(GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+                target_ids: None,
+                mode: Some(mode.as_u32()),
+                accounts: Some(soroban_address_vec_to_alloc(accounts)?),
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            })
+        }
+        GovernanceAction::SetCap(market_id, cap) => Some(GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_CAP,
+            target_ids: None,
+            mode: None,
+            accounts: None,
+            market_id: Some(*market_id),
+            cap_group_id: None,
+            value: Some(*cap),
+            value_b: None,
+            value_c: None,
+        }),
+        GovernanceAction::RemoveMarket(market_id) => Some(GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+            target_ids: None,
+            mode: None,
+            accounts: None,
+            market_id: Some(*market_id),
+            cap_group_id: None,
+            value: None,
+            value_b: None,
+            value_c: None,
+        }),
+        GovernanceAction::SetGroupCap(cap_group_id, cap) => {
+            Some(GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_GROUP,
+                target_ids: None,
+                mode: Some(0),
+                accounts: None,
+                market_id: None,
+                cap_group_id: Some(sdk_string_to_alloc_string(cap_group_id)?),
+                value: Some(*cap),
+                value_b: None,
+                value_c: None,
+            })
+        }
+        GovernanceAction::SetGroupRelCap(cap_group_id, relative_cap_wad) => {
+            Some(GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_GROUP,
+                target_ids: None,
+                mode: Some(1),
+                accounts: None,
+                market_id: None,
+                cap_group_id: Some(sdk_string_to_alloc_string(cap_group_id)?),
+                value: Some(*relative_cap_wad),
+                value_b: None,
+                value_c: None,
+            })
+        }
+        GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            let cap_group_id = if cap_group_id.is_empty() {
+                None
+            } else {
+                Some(sdk_string_to_alloc_string(cap_group_id)?)
+            };
+            Some(GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_GROUP,
+                target_ids: None,
+                mode: Some(2),
+                accounts: None,
+                market_id: Some(*market_id),
+                cap_group_id,
+                value: None,
+                value_b: None,
+                value_c: None,
+            })
+        }
+        GovernanceAction::SetTimelock(_, _) | GovernanceAction::Other(_, _) => None,
+    };
+
+    Ok(command.map(|command| Bytes::from_slice(env, &command.encode())))
+}
+
+fn sdk_address_to_alloc_string(address: &Address) -> Result<AllocString, GovernanceError> {
+    let raw = address.to_string().to_bytes().to_alloc_vec();
+    AllocString::from_utf8(raw).map_err(|_| GovernanceError::InvalidInput)
+}
+
+fn sdk_string_to_alloc_string(value: &SdkString) -> Result<AllocString, GovernanceError> {
+    AllocString::from_utf8(value.to_bytes().to_alloc_vec())
+        .map_err(|_| GovernanceError::InvalidInput)
+}
+
+fn soroban_u32_vec_to_alloc(values: &Vec<u32>) -> alloc::vec::Vec<u32> {
+    let mut result = alloc::vec::Vec::new();
+    for value in values.iter() {
+        result.push(value);
+    }
+    result
+}
+
+fn soroban_address_vec_to_alloc(
+    values: &Vec<Address>,
+) -> Result<alloc::vec::Vec<AllocString>, GovernanceError> {
+    let mut result = alloc::vec::Vec::new();
+    for value in values.iter() {
+        result.push(sdk_address_to_alloc_string(&value)?);
+    }
+    Ok(result)
+}
+
+fn authorize_and_invoke(env: &Env, vault: &Address, fn_name: Symbol, args: Vec<soroban_sdk::Val>) {
     let args_for_auth = args.clone();
 
     env.authorize_as_current_contract(Vec::from_array(
@@ -1325,21 +1316,7 @@ fn authorize_and_execute(env: &Env, vault: &Address, command: &VaultCommand) {
         })],
     ));
 
-    let _: Bytes = env.invoke_contract(vault, &fn_name, args);
-}
-
-fn address_text(address: &Address) -> String {
-    String::from_utf8(address.to_string().to_bytes().to_alloc_vec())
-        .unwrap_or_else(|_| String::new())
-}
-
-fn sdk_string_text(value: &SdkString) -> String {
-    String::from_utf8(value.to_bytes().to_alloc_vec()).unwrap_or_else(|_| String::new())
-}
-
-fn command_payload(env: &Env, command: &VaultCommand) -> Bytes {
-    let bytes = command.encode();
-    Bytes::from_slice(env, &bytes)
+    env.invoke_contract::<()>(vault, &fn_name, args);
 }
 
 fn get_address(env: &Env, key: DataKey) -> Result<Address, GovernanceError> {
@@ -1384,34 +1361,12 @@ fn require_vault_caller(env: &Env, caller: &Address) -> Result<(), GovernanceErr
     Ok(())
 }
 
-fn method_name_for_action(env: &Env, action: &GovernanceAction) -> Symbol {
-    match action {
-        GovernanceAction::SetGuardian(_) => Symbol::new(env, "submit_guardian"),
-        GovernanceAction::SetSentinel(_) => Symbol::new(env, "submit_sentinel"),
-        GovernanceAction::SetFees(_) => Symbol::new(env, "set_governance_policy"),
-        GovernanceAction::SetRestrictions(_, _) => Symbol::new(env, "set_governance_policy"),
-        GovernanceAction::SetCap(_, _) => Symbol::new(env, "submit_cap"),
-        GovernanceAction::RemoveMarket(_) => Symbol::new(env, "submit_market_removal"),
-        GovernanceAction::SetGroupCap(_, _)
-        | GovernanceAction::SetGroupRelCap(_, _)
-        | GovernanceAction::SetGroupMember(_, _) => Symbol::new(env, "submit_cap_group_update"),
-        GovernanceAction::SetSkimRecipient(_) => Symbol::new(env, "set_skim_recipient"),
-        GovernanceAction::Skim(_) => Symbol::new(env, "skim"),
-        GovernanceAction::SetPaused(_) => Symbol::new(env, "set_governance_policy"),
-        GovernanceAction::SetCurator(_) => Symbol::new(env, "set_curator"),
-        GovernanceAction::SetGovernance(_) => Symbol::new(env, "set_governance"),
-        GovernanceAction::SetSupplyQueue(_) => Symbol::new(env, "set_governance_policy"),
-        GovernanceAction::SetTimelock(_, _) => Symbol::new(env, "submit_timelock"),
-        GovernanceAction::Other(_, _) => Symbol::new(env, "other"),
-    }
-}
-
 fn require_not_abdicated(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
-    let method_name = method_name_for_action(env, action);
+    let kind = action_kind(action);
     let abdicated: bool = env
         .storage()
         .instance()
-        .get(&DataKey::Abdicated(method_name))
+        .get(&DataKey::Abdicated(kind))
         .unwrap_or(false);
     if abdicated {
         return Err(GovernanceError::Abdicated);

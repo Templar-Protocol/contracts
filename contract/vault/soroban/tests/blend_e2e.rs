@@ -7,7 +7,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Bytes, BytesN, Env, String,
 };
-use std::string::String as StdString;
+use std::string::String as AllocString;
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_blend_adapter::BlendAdapterContract;
 use templar_soroban_runtime::{
@@ -15,12 +15,12 @@ use templar_soroban_runtime::{
     storage::{SorobanStorage, Storage},
 };
 use templar_soroban_shared_types::{
-    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
-fn address_text(address: &Address) -> StdString {
-    StdString::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+fn address_wire(address: &Address) -> AllocString {
+    AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec()).expect("valid address")
 }
 
 fn execute_command(
@@ -31,6 +31,15 @@ fn execute_command(
     let result = SorobanVaultContract::execute(env.clone(), payload)?;
     VaultCommandResult::decode(&result.to_alloc_vec())
         .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+}
+
+fn execute_governance_command(
+    env: &Env,
+    caller: &Address,
+    command: &GovernanceCommand,
+) -> Result<(), templar_soroban_runtime::ContractError> {
+    let payload = Bytes::from_slice(env, &command.encode());
+    SorobanVaultContract::execute_governance(env.clone(), caller.clone(), payload)
 }
 
 struct VaultProxy<'a> {
@@ -147,19 +156,18 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         proxy.initialize(&governance, &asset, &share);
     });
     env.as_contract(&vault, || {
-        let result = execute_command(
+        execute_governance_command(
             &env,
-            &VaultCommand::SetGovernanceConfig {
-                caller: address_text(&governance),
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
                 kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
                 primary: None,
-                many: Some(vec![address_text(&allocator)]),
+                many: Some(vec![address_wire(&allocator)]),
                 value_a: None,
                 value_b: None,
             },
         )
         .unwrap();
-        assert!(matches!(result, VaultCommandResult::Unit));
     });
     env.as_contract(&vault, || {
         let mut storage = SorobanStorage::new(&env);
@@ -170,10 +178,10 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         storage.save_policy_state(&policy_state).unwrap();
     });
     env.as_contract(&vault, || {
-        let result = execute_command(
+        execute_governance_command(
             &env,
-            &VaultCommand::SetGovernancePolicy {
-                caller: address_text(&governance),
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
                 kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
                 target_ids: Some(vec![0u32]),
                 mode: None,
@@ -186,22 +194,20 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             },
         )
         .unwrap();
-        assert!(matches!(result, VaultCommandResult::Unit));
     });
     env.as_contract(&vault, || {
-        let result = execute_command(
+        execute_governance_command(
             &env,
-            &VaultCommand::SetGovernanceConfig {
-                caller: address_text(&governance),
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
                 kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
                 primary: None,
-                many: Some(vec![address_text(&adapter)]),
+                many: Some(vec![address_wire(&adapter)]),
                 value_a: None,
                 value_b: None,
             },
         )
         .unwrap();
-        assert!(matches!(result, VaultCommandResult::Unit));
     });
 
     let deposit_amount = 10_000_000_000;
@@ -215,8 +221,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             execute_command(
                 &env,
                 &VaultCommand::DepositWithMin {
-                    owner: address_text(&user),
-                    receiver: address_text(&user),
+                    owner: address_wire(&user),
+                    receiver: address_wire(&user),
                     assets: deposit_amount,
                     min_shares_out: 0,
                 },
@@ -237,7 +243,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             execute_command(
                 &env,
                 &VaultCommand::Allocate {
-                    caller: address_text(&allocator),
+                    caller: address_wire(&allocator),
                     market: 0,
                     amount: supply_amount,
                     supply: true,
@@ -268,7 +274,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             execute_command(
                 &env,
                 &VaultCommand::RefreshMarkets {
-                    caller: address_text(&allocator),
+                    caller: address_wire(&allocator),
                     markets: vec![0u32],
                 },
             )
@@ -292,7 +298,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             execute_command(
                 &env,
                 &VaultCommand::Allocate {
-                    caller: address_text(&allocator),
+                    caller: address_wire(&allocator),
                     market: 0,
                     amount: withdraw_amount,
                     supply: false,

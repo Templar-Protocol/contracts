@@ -133,6 +133,14 @@ build-blend-adapter:
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
 
+# Check the Soroban ERC-4626 proxy crate.
+check-4626-proxy:
+	@echo "Checking Soroban ERC-4626 proxy crate..."
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
+		--manifest-path "{{root}}/Cargo.toml" \
+		-p templar-4626-proxy-soroban
+	@echo "✓ Checked: templar-4626-proxy-soroban"
+
 # Build all WASMs (vault + governance + share token + blend adapter).
 build-all: build build-blend-adapter
 	@echo "✓ All contracts built"
@@ -904,14 +912,6 @@ register-address address:
 		--caller "$admin" \
 		--address "{{address}}"; \
 	echo "✓ Address registered"
-
-set-curator new_curator:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Setting curator to {{new_curator}}..."; \
-	just invoke set_curator --caller "$admin" --new_curator "{{new_curator}}"; \
-	mkdir -p "{{state_dir}}"; \
-	echo "{{new_curator}}" > "{{state_dir}}/admin_address"; \
-	echo "✓ Curator updated"
 
 # Set supply queue via governance (submit + accept).
 # Requires governance contract deployed with timelock=0 for instant acceptance.

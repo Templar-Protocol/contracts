@@ -18,7 +18,7 @@ pub(crate) enum DataKey {
     CurrentFees,
     CurrentRestrictionMode,
     CurrentRestrictionAccounts,
-    Abdicated(Symbol),
+    Abdicated(GovernanceActionKind),
     SkimRecipient,
 }
 
