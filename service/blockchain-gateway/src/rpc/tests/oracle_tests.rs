@@ -27,7 +27,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         pyth_result.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     assert_eq!(pyth_result.operation.steps.len(), 1);
 
@@ -56,7 +56,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         redstone_result.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     assert_eq!(redstone_result.operation.steps.len(), 1);
 
@@ -169,7 +169,7 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .await?;
     assert_eq!(
         update_result.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     assert_eq!(update_result.operation.steps.len(), 2);
 

@@ -1,16 +1,16 @@
-use blockchain_gateway_core::{
-    account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
-    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
-    token, tx, universal_account, MethodSpec,
-};
-use blockchain_gateway_near::{
-    actor::{DispatchRead, PlanWrite},
-    GatewayError, GatewayService,
-};
 use jsonrpsee::{
     core::{RegisterMethodError, RpcResult},
     types::ErrorObjectOwned,
     RpcModule,
+};
+use templar_gateway_near::{
+    actor::{DispatchRead, PlanWrite},
+    GatewayError, GatewayService,
+};
+use templar_gateway_types::{
+    account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
+    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
+    token, tx, universal_account, MethodSpec,
 };
 
 const GATEWAY_SERVER_ERROR_CODE: i32 = -32000;

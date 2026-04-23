@@ -1,8 +1,8 @@
-use blockchain_gateway_core::tx;
 use futures::future::BoxFuture;
 use near_api::types::transaction::actions::{
     Action, DeployContractAction, FunctionCallAction, TransferAction,
 };
+use templar_gateway_types::tx;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -57,7 +57,7 @@ impl PlanWrite for tx::FunctionCall {
                 steps: vec![PlannedTransaction {
                     signer_account_id: request.signer_account_id,
                     wait_until:
-                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
                     receiver_id: request.body.receiver_id,
                     actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                         method_name: request.body.method_name.0,
@@ -81,7 +81,7 @@ impl PlanWrite for tx::Transfer {
                 steps: vec![PlannedTransaction {
                     signer_account_id: request.signer_account_id,
                     wait_until:
-                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
                     receiver_id: request.body.receiver_id,
                     actions: vec![Action::Transfer(TransferAction {
                         deposit: request.body.amount,
@@ -102,7 +102,7 @@ impl PlanWrite for tx::DeployContract {
                 steps: vec![PlannedTransaction {
                     signer_account_id: request.signer_account_id,
                     wait_until:
-                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
                     receiver_id: request.body.account_id,
                     actions: vec![Action::DeployContract(DeployContractAction {
                         code: request.body.code.0,
@@ -123,7 +123,7 @@ impl PlanWrite for tx::DeployAndInit {
                 steps: vec![PlannedTransaction {
                     signer_account_id: request.signer_account_id,
                     wait_until:
-                        blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
                     receiver_id: request.body.account_id,
                     actions: vec![
                         Action::DeployContract(DeployContractAction {

@@ -1,5 +1,5 @@
-use blockchain_gateway_core::ft;
 use futures::future::BoxFuture;
+use templar_gateway_types::ft;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -39,8 +39,8 @@ impl PlanWrite for ft::Transfer {
             Ok(single_transaction_plan(
                 ctx.ft(request.body.contract_id).ft_transfer(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
+                        .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
                     TransferArgs {
                         receiver_id: request.body.receiver_id,
                         amount: request.body.amount,
@@ -61,8 +61,8 @@ impl PlanWrite for ft::TransferCall {
             Ok(single_transaction_plan(
                 ctx.ft(request.body.contract_id).ft_transfer_call(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
+                        .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
                     TransferCallArgs {
                         receiver_id: request.body.receiver_id,
                         amount: request.body.amount,

@@ -49,7 +49,7 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
         .controller
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
-            idempotency_key: Some(blockchain_gateway_core::IdempotencyKey(
+            idempotency_key: Some(templar_gateway_types::IdempotencyKey(
                 "set-redemption-rate".to_owned(),
             )),
             body: tx::FunctionCallBody {
@@ -67,7 +67,7 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
         .controller
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
-            idempotency_key: Some(blockchain_gateway_core::IdempotencyKey(
+            idempotency_key: Some(templar_gateway_types::IdempotencyKey(
                 "set-redemption-rate".to_owned(),
             )),
             body: tx::FunctionCallBody {
@@ -143,7 +143,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
             body: ft::TransferBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
-                amount: blockchain_gateway_core::U128(3),
+                amount: templar_gateway_types::U128(3),
                 memo: None,
             },
         })
@@ -159,7 +159,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         })
         .await?;
 
-    assert_eq!(balance.balance, blockchain_gateway_core::U128(0));
+    assert_eq!(balance.balance, templar_gateway_types::U128(0));
 
     let _ = stack
         .controller
@@ -206,7 +206,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
                         .expect("valid dummy hash"),
                 ),
                 sender_account_id: stack.harness.cleanup_signer_account_id.0.clone(),
-                wait_until: Some(blockchain_gateway_core::common::TxExecutionStatus::None),
+                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::None),
                 encoding: tx::ValueEncoding::Json,
             },
         })
@@ -244,7 +244,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         transfer.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let after = stack
@@ -270,7 +270,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         deploy.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let cleanup_account = stack
@@ -306,7 +306,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         deploy_and_init.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let redemption_rate = view_contract_json(

@@ -2,13 +2,13 @@ use super::*;
 
 async fn call_function(
     stack: &TestStack,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     receiver_id: near_account_id::AccountId,
     method_name: &str,
     args: serde_json::Value,
     gas_tgas: u64,
     deposit_yocto: u128,
-) -> Result<blockchain_gateway_core::common::WriteOperationResult> {
+) -> Result<templar_gateway_types::common::WriteOperationResult> {
     stack
         .controller
         .request::<tx::FunctionCall>(&WriteRequest {
@@ -27,7 +27,7 @@ async fn call_function(
 
 async fn ensure_registered(
     stack: &TestStack,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     contract_id: near_account_id::AccountId,
     account_id: near_account_id::AccountId,
 ) -> Result<()> {
@@ -195,7 +195,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         supply.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     assert_eq!(supply.operation.steps.len(), 1);
 
@@ -273,7 +273,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         repay.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     stack
@@ -346,7 +346,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         liquidate.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     let liquidator_borrow_balance_after = ft_balance(
         &stack,
@@ -370,7 +370,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         withdraw_supply.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     assert_eq!(withdraw_supply.operation.steps.len(), 2);
 
@@ -426,7 +426,7 @@ async fn market_endpoints_work_against_sandbox() -> Result<()> {
         .request::<market::ListBorrowPositions>(&ReadRequest {
             params: market::ListBorrowPositionsParams {
                 market_id,
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
             },
         })
         .await?;
@@ -477,7 +477,7 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
 
     assert_eq!(
         create.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
     assert_eq!(create.operation.steps.len(), 3);
 
@@ -485,7 +485,7 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
         .0
         .sub_account("market-created")
         .expect("created market id should be valid");
-    let market_id = blockchain_gateway_core::MarketId(market_account_id.clone());
+    let market_id = templar_gateway_types::MarketId(market_account_id.clone());
 
     let returned_configuration = stack
         .controller
@@ -562,7 +562,7 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
         .request::<market::ListFinalizedSnapshots>(&ReadRequest {
             params: market::ListFinalizedSnapshotsParams {
                 market_id: market_id.clone(),
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
             },
         })
         .await?;
@@ -608,7 +608,7 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
         .request::<market::ListSupplyPositions>(&ReadRequest {
             params: market::ListSupplyPositionsParams {
                 market_id: market_id.clone(),
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
             },
         })
         .await?;

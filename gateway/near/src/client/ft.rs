@@ -1,4 +1,4 @@
-use blockchain_gateway_core::U128;
+use templar_gateway_types::U128;
 
 use crate::client::{
     macros::{contract_views, contract_writes},

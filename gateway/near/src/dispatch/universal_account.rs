@@ -1,5 +1,5 @@
-use blockchain_gateway_core::{registry::DeployBody, universal_account};
 use futures::future::BoxFuture;
+use templar_gateway_types::{registry::DeployBody, universal_account};
 use templar_universal_account::InitArgs;
 
 use crate::{
@@ -58,7 +58,7 @@ impl PlanWrite for universal_account::Execute {
             Ok(single_transaction_plan(
                 ctx.universal_account(request.body.account_id).execute(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300)),
+                        .gas(templar_gateway_types::NearGas::from_tgas(300)),
                     UaExecuteArgs {
                         args: request.body.args,
                     },

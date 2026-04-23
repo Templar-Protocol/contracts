@@ -1,8 +1,8 @@
-use blockchain_gateway_core::{
+use futures::future::BoxFuture;
+use templar_gateway_types::{
     common::{StorageBalance, StorageBalanceBounds},
     storage,
 };
-use futures::future::BoxFuture;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -66,7 +66,7 @@ impl PlanWrite for storage::Deposit {
             Ok(single_transaction_plan(
                 ctx.storage(request.body.contract_id).storage_deposit(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .deposit(request.body.deposit),
                     StorageDepositArgs {
                         account_id: request.body.beneficiary_id,
@@ -87,8 +87,8 @@ impl PlanWrite for storage::Unregister {
             Ok(single_transaction_plan(
                 ctx.storage(request.body.contract_id).storage_unregister(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
-                        .deposit(blockchain_gateway_core::NearToken::from_yoctonear(1)),
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
+                        .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
                     StorageUnregisterArgs {
                         force: request.body.force,
                     },
@@ -128,7 +128,7 @@ impl PlanWrite for storage::EnsureDeposit {
             Ok(single_transaction_plan(
                 ctx.storage(body.contract_id).storage_deposit(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .deposit(plan.deposit),
                     StorageDepositArgs {
                         account_id: Some(body.account_id),
@@ -141,19 +141,19 @@ impl PlanWrite for storage::EnsureDeposit {
 }
 
 struct DepositPlan {
-    deposit: blockchain_gateway_core::NearToken,
+    deposit: templar_gateway_types::NearToken,
     registration_only: bool,
 }
 
 impl DepositPlan {
     fn empty() -> Self {
         Self {
-            deposit: blockchain_gateway_core::NearToken::ZERO,
+            deposit: templar_gateway_types::NearToken::ZERO,
             registration_only: false,
         }
     }
 
-    fn new(deposit: blockchain_gateway_core::NearToken, registration_only: bool) -> Self {
+    fn new(deposit: templar_gateway_types::NearToken, registration_only: bool) -> Self {
         Self {
             deposit,
             registration_only,

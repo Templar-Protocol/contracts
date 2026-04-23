@@ -50,7 +50,7 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         update.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let last_update = view_contract_json(

@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::{net::SocketAddr, path::PathBuf};
 
-use blockchain_gateway_core::ManagedAccountId;
-use blockchain_gateway_near::{ManagedSigner, PostgresStore, SharedOperationStore};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
+use templar_gateway_near::{ManagedSigner, PostgresStore, SharedOperationStore};
+use templar_gateway_types::ManagedAccountId;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

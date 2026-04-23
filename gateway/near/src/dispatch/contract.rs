@@ -1,5 +1,5 @@
-use blockchain_gateway_core::contract;
 use futures::future::BoxFuture;
+use templar_gateway_types::contract;
 
 use crate::{
     actor::DispatchRead, client::cache::load_cached, GatewayContext, GatewayError, GatewayResult,
@@ -136,8 +136,8 @@ async fn try_registry_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .registry(blockchain_gateway_core::RegistryId(contract_id))
-        .list_versions(blockchain_gateway_core::common::Pagination::default())
+        .registry(templar_gateway_types::RegistryId(contract_id))
+        .list_versions(templar_gateway_types::common::Pagination::default())
         .await
     {
         Ok(_) => Ok(Some(contract::ContractKind::Registry)),
@@ -151,7 +151,7 @@ async fn try_market_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .market(blockchain_gateway_core::MarketId(contract_id))
+        .market(templar_gateway_types::MarketId(contract_id))
         .get_configuration(())
         .await
     {
@@ -166,7 +166,7 @@ async fn try_universal_account_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .universal_account(blockchain_gateway_core::UniversalAccountId(contract_id))
+        .universal_account(templar_gateway_types::UniversalAccountId(contract_id))
         .get_key(crate::client::universal_account::UaGetKeyArgs {
             key: templar_universal_account::KeyId::Ed25519Raw(
                 templar_universal_account::authentication::ed25519::raw::VerifyKey(

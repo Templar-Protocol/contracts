@@ -1,14 +1,14 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
-use blockchain_gateway_core::{ManagedAccountId, RegistryId, UniversalAccountId};
-use blockchain_gateway_near::{ManagedSigner, NearClient};
 use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_sandbox::Sandbox;
 use near_token::NearToken;
 use templar_common::oracle::redstone::config as redstone_config;
 use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
 use templar_common::{market::MarketConfiguration, market::YieldWeights};
+use templar_gateway_near::{ManagedSigner, NearClient};
+use templar_gateway_types::{ManagedAccountId, RegistryId, UniversalAccountId};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
@@ -217,7 +217,7 @@ impl SandboxHarness {
 
     pub async fn deploy_market(
         &self,
-    ) -> Result<(blockchain_gateway_core::MarketId, MarketConfiguration)> {
+    ) -> Result<(templar_gateway_types::MarketId, MarketConfiguration)> {
         let borrow_asset_id: AccountId = "borrow-ft.near".parse()?;
         let collateral_asset_id: AccountId = "collateral-ft.near".parse()?;
         let oracle_id: AccountId = "oracle.near".parse()?;
@@ -286,7 +286,7 @@ impl SandboxHarness {
         )
         .await?;
 
-        Ok((blockchain_gateway_core::MarketId(market_id), configuration))
+        Ok((templar_gateway_types::MarketId(market_id), configuration))
     }
 
     pub async fn deploy_universal_account(&self) -> Result<(UniversalAccountId, TestSigner)> {

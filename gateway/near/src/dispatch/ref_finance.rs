@@ -1,5 +1,5 @@
-use blockchain_gateway_core::ref_finance;
 use futures::future::BoxFuture;
+use templar_gateway_types::ref_finance;
 
 use crate::{
     actor::DispatchRead, client::ref_finance::GetPoolsArgs, GatewayContext, GatewayResult,

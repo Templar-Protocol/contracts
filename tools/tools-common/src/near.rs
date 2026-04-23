@@ -1,7 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
 use anyhow::{bail, Context};
-use blockchain_gateway_core::Version;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 use near_crypto::Signer;
 use near_jsonrpc_client::{
@@ -22,6 +21,7 @@ use near_sdk::{
     serde_json::{self},
     AccountId, Gas, NearToken,
 };
+use templar_gateway_types::Version;
 use tokio::time::sleep;
 
 pub type Client = JsonRpcClient;

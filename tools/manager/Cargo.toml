@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-blockchain-gateway-core = { path = "../../gateway/core" }
 borsh.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -27,6 +26,7 @@ near-sdk = { workspace = true, features = ["non-contract-usage"] }
 serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
+templar-gateway-types.workspace = true
 templar-redstone-bridge.workspace = true
 templar-tools-common.workspace = true
 tokio.workspace = true

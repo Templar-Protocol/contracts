@@ -2,14 +2,14 @@ use std::{collections::HashMap, sync::Arc};
 
 use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
 use async_trait::async_trait;
-use blockchain_gateway_core::common::WriteRequest;
-use blockchain_gateway_core::rpc::common::WriteOperationResult;
-use blockchain_gateway_core::{IdempotencyKey, ManagedAccountId, MethodSpec};
 use futures::future::BoxFuture;
 use near_api::advanced::{ExecuteSignedTransaction, TransactionableOrSigned};
 use near_api::types::transaction::{
     result::TransactionResult, PrepopulateTransaction, SignedTransaction,
 };
+use templar_gateway_types::common::WriteRequest;
+use templar_gateway_types::rpc::common::WriteOperationResult;
+use templar_gateway_types::{IdempotencyKey, ManagedAccountId, MethodSpec};
 use tokio::sync::Semaphore;
 
 use crate::operation::{OperationPlan, PlannedTransaction, PreparedTransactionResult};
@@ -29,7 +29,7 @@ pub struct PreparedTransactionMessage {
 
 pub struct SubmitSignedTransactionMessage {
     pub signed_transaction: SignedTransaction,
-    pub wait_until: blockchain_gateway_core::rpc::common::TxExecutionStatus,
+    pub wait_until: templar_gateway_types::rpc::common::TxExecutionStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -209,7 +209,7 @@ impl WriteActors {
         &self,
         signer_account_id: &ManagedAccountId,
         signed_transaction: SignedTransaction,
-        wait_until: blockchain_gateway_core::rpc::common::TxExecutionStatus,
+        wait_until: templar_gateway_types::rpc::common::TxExecutionStatus,
     ) -> GatewayResult<TransactionResult> {
         let sender = self.sender_for(signer_account_id)?;
         sender

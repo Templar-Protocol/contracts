@@ -20,15 +20,6 @@ use super::*;
 use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
-use blockchain_gateway_core::{
-    account,
-    common::{ContractArgs, ReadRequest, WriteRequest},
-    contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
-    proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
-    universal_account, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
-};
-use blockchain_gateway_near::GatewayContext;
-use blockchain_gateway_testing::{SandboxHarness, TestController};
 use jsonrpsee::server::{ServerBuilder, ServerHandle};
 use near_sdk::json_types::{I64, U64};
 use templar_common::market::DepositMsg;
@@ -41,6 +32,15 @@ use templar_common::oracle::{
 };
 use templar_common::primitive_types::U256;
 use templar_common::time::Nanoseconds;
+use templar_gateway_near::GatewayContext;
+use templar_gateway_testing::{SandboxHarness, TestController};
+use templar_gateway_types::{
+    account,
+    common::{ContractArgs, ReadRequest, WriteRequest},
+    contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
+    proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
+    universal_account, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+};
 use templar_universal_account::{
     authentication::with_raw_string::WithRawString,
     authentication::Payload,
@@ -131,16 +131,16 @@ async fn register_ft_account(
     Ok(bounds)
 }
 
-fn tx_hash(result: &blockchain_gateway_core::common::WriteOperationResult) -> CryptoHash {
+fn tx_hash(result: &templar_gateway_types::common::WriteOperationResult) -> CryptoHash {
     match &result.operation.steps[0].status {
-        blockchain_gateway_core::StepStatus::Prepared { tx_hash }
-        | blockchain_gateway_core::StepStatus::Submitted { tx_hash }
-        | blockchain_gateway_core::StepStatus::Succeeded { tx_hash }
-        | blockchain_gateway_core::StepStatus::Failed {
+        templar_gateway_types::StepStatus::Prepared { tx_hash }
+        | templar_gateway_types::StepStatus::Submitted { tx_hash }
+        | templar_gateway_types::StepStatus::Succeeded { tx_hash }
+        | templar_gateway_types::StepStatus::Failed {
             tx_hash: Some(tx_hash),
         } => *tx_hash,
-        blockchain_gateway_core::StepStatus::NotStarted
-        | blockchain_gateway_core::StepStatus::Failed { tx_hash: None } => {
+        templar_gateway_types::StepStatus::NotStarted
+        | templar_gateway_types::StepStatus::Failed { tx_hash: None } => {
             panic!("transaction hash should be present for final execution")
         }
     }

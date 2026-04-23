@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use anyhow::Context;
-use blockchain_gateway_core::Version;
 use sha2::Digest;
+use templar_gateway_types::Version;
 
 fn get_metadata(workspace_dir: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
     cargo_metadata::MetadataCommand::new()

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use blockchain_gateway_core::common::Pagination;
 use moka::sync::Cache;
 use near_account_id::AccountId;
 use templar_common::{
@@ -14,6 +13,7 @@ use templar_common::{
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
+use templar_gateway_types::common::Pagination;
 
 use crate::client::{
     cache::{immutable_cache, load_cached},
@@ -92,7 +92,7 @@ pub struct AccumulateStaticYieldArgs {
 #[derive(Clone)]
 pub struct MarketClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) contract_id: blockchain_gateway_core::MarketId,
+    pub(crate) contract_id: templar_gateway_types::MarketId,
 }
 
 impl BoundContractClient for MarketClient<'_> {

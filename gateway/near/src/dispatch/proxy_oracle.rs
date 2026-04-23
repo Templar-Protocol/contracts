@@ -1,5 +1,5 @@
-use blockchain_gateway_core::proxy_oracle;
 use futures::future::BoxFuture;
+use templar_gateway_types::proxy_oracle;
 
 use crate::{
     actor::DispatchRead,

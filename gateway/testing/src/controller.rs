@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
-use blockchain_gateway_core::MethodSpec;
 use serde::de::DeserializeOwned;
+use templar_gateway_types::MethodSpec;
 
 #[derive(Debug, Clone)]
 pub struct TestController {

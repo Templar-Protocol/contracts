@@ -1,11 +1,11 @@
 use std::{borrow::Borrow, io::ErrorKind};
 
-use blockchain_gateway_core::{
+use near_api::types::transaction::actions::{Action, FunctionCallAction};
+use templar_common::registry::DeployMode;
+use templar_gateway_types::{
     common::{ContractArgs, Pagination},
     Base64Bytes, ContractMethodName, RegistryVersion,
 };
-use near_api::types::transaction::actions::{Action, FunctionCallAction};
-use templar_common::registry::DeployMode;
 
 use crate::{
     client::{
@@ -46,7 +46,7 @@ pub struct RemoveVersionArgs {
 #[derive(Clone)]
 pub struct RegistryClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) contract_id: blockchain_gateway_core::RegistryId,
+    pub(crate) contract_id: templar_gateway_types::RegistryId,
 }
 
 impl BoundContractClient for RegistryClient<'_> {

@@ -34,7 +34,7 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
             body: ft::TransferCallBody {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: receiver_id.clone(),
-                amount: blockchain_gateway_core::U128(7),
+                amount: templar_gateway_types::U128(7),
                 msg: "ok".to_owned(),
                 memo: Some("gateway-test".to_owned()),
             },
@@ -43,7 +43,7 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
 
     assert_eq!(
         result.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let _ = stack
@@ -52,7 +52,7 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
             params: tx::GetParams {
                 tx_hash: tx_hash(&result),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: Some(blockchain_gateway_core::common::TxExecutionStatus::Final),
+                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
                 encoding: tx::ValueEncoding::Json,
             },
         })

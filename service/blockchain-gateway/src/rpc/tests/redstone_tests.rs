@@ -49,7 +49,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         set_role.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let roles = stack
@@ -80,7 +80,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         write.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let written = stack

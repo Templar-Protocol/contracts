@@ -1,5 +1,5 @@
-use blockchain_gateway_core::redstone;
 use futures::future::BoxFuture;
+use templar_gateway_types::redstone;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},

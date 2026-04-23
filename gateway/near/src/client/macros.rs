@@ -37,7 +37,7 @@ macro_rules! contract_writes {
                     actions: vec![::near_api::types::transaction::actions::Action::FunctionCall(Box::new(
                         ::near_api::types::transaction::actions::FunctionCallAction {
                             method_name: contract_writes!(@method $fn_name $(, $method)?).to_owned(),
-                            args: ::blockchain_gateway_core::common::ContractArgs::Json(::serde_json::to_value(&args)?).try_into_bytes()?,
+                            args: ::templar_gateway_types::common::ContractArgs::Json(::serde_json::to_value(&args)?).try_into_bytes()?,
                             gas: options.gas,
                             deposit: options.deposit,
                         },

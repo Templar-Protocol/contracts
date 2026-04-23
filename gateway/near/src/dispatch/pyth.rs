@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use blockchain_gateway_core::{pyth, NearToken};
 use futures::future::BoxFuture;
+use templar_gateway_types::{pyth, NearToken};
 
 use crate::{
     actor::{DispatchRead, PlanWrite},

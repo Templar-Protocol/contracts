@@ -1,10 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use blockchain_gateway_core::oracle::{
-    self, GetPriceResolutionDependenciesResult, OracleContractKind, RedStoneOraclePrices,
-    RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
-};
 use futures::future::BoxFuture;
 use near_account_id::AccountId;
 use near_sdk::json_types::Base64VecU8;
@@ -18,6 +14,10 @@ use templar_common::{
         redstone, OracleRequest,
     },
     time::Nanoseconds,
+};
+use templar_gateway_types::oracle::{
+    self, GetPriceResolutionDependenciesResult, OracleContractKind, RedStoneOraclePrices,
+    RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
 };
 
 use crate::operation::PlannedTransaction;
@@ -281,14 +281,12 @@ async fn query_oracle_kind(
     oracle_id: AccountId,
 ) -> GatewayResult<OracleContractKind> {
     match query_contract_kind(ctx, oracle_id.clone()).await? {
-        blockchain_gateway_core::contract::ContractKind::PythOracle
-        | blockchain_gateway_core::contract::ContractKind::RedstoneOracle => {
+        templar_gateway_types::contract::ContractKind::PythOracle
+        | templar_gateway_types::contract::ContractKind::RedstoneOracle => {
             Ok(OracleContractKind::Direct)
         }
-        blockchain_gateway_core::contract::ContractKind::ProxyOracle => {
-            Ok(OracleContractKind::Proxy)
-        }
-        blockchain_gateway_core::contract::ContractKind::LstOracle => {
+        templar_gateway_types::contract::ContractKind::ProxyOracle => Ok(OracleContractKind::Proxy),
+        templar_gateway_types::contract::ContractKind::LstOracle => {
             let pyth_id = ctx.lst_oracle(oracle_id).cached_oracle_id().await?;
             Ok(OracleContractKind::Lst { pyth_id })
         }
@@ -585,7 +583,7 @@ async fn resolve_update_requests(
 
 fn submit_pyth_update(
     ctx: &GatewayContext,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     oracle_id: AccountId,
     vaa: Vec<u8>,
 ) -> GatewayResult<PlannedTransaction> {
@@ -601,7 +599,7 @@ fn submit_pyth_update(
 
 fn submit_redstone_update(
     ctx: &GatewayContext,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     oracle_id: AccountId,
     feed_ids: Vec<redstone::FeedId>,
     payload: Vec<u8>,

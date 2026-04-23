@@ -1,4 +1,4 @@
-use blockchain_gateway_core::RegistryVersion;
+use templar_gateway_types::RegistryVersion;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},

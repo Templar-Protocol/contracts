@@ -1,6 +1,6 @@
-use blockchain_gateway_core::U128;
 use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
+use templar_gateway_types::U128;
 
 use crate::{operation::PlannedTransaction, GatewayResult, NearClient};
 

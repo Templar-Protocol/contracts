@@ -1,5 +1,5 @@
-use blockchain_gateway_core::U128;
 use near_account_id::AccountId;
+use templar_gateway_types::U128;
 
 use crate::client::{macros::contract_views, NearClient};
 

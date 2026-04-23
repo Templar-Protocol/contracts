@@ -1,15 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
 use actix::Addr;
-use blockchain_gateway_core::{
-    operation::OperationStatus, rpc::common::WriteOperationResult, ManagedAccountId,
-};
 use near_api::advanced::{
     tx_rpc::{TransactionStatusRef, TransactionStatusRpc},
     RequestBuilder, TransactionStatusHandler,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use templar_gateway_types::{
+    operation::OperationStatus, rpc::common::WriteOperationResult, ManagedAccountId,
+};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -95,8 +95,8 @@ impl GatewayService {
 
     pub async fn get_operation(
         &self,
-        operation_id: &blockchain_gateway_core::OperationId,
-    ) -> GatewayResult<Option<blockchain_gateway_core::OperationRecord>> {
+        operation_id: &templar_gateway_types::OperationId,
+    ) -> GatewayResult<Option<templar_gateway_types::OperationRecord>> {
         Ok(self
             .inner
             .store
@@ -256,7 +256,7 @@ impl GatewayService {
     async fn query_submitted_transaction(
         &self,
         signer_account_id: &ManagedAccountId,
-        tx_hash: blockchain_gateway_core::CryptoHash,
+        tx_hash: templar_gateway_types::CryptoHash,
     ) -> GatewayResult<near_api::types::transaction::result::ExecutionFinalResult> {
         RequestBuilder::new(
             TransactionStatusRpc,
@@ -292,13 +292,13 @@ mod tests {
     use std::{collections::HashMap, path::Path, sync::Arc};
 
     use anyhow::Result;
-    use blockchain_gateway_core::{
-        common::{ContractArgs, WriteRequest},
-        tx, ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
-    };
     use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
     use near_sandbox::Sandbox;
     use near_token::NearToken as SandboxNearToken;
+    use templar_gateway_types::{
+        common::{ContractArgs, WriteRequest},
+        tx, ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
+    };
     use test_utils::FtController;
     use url::Url;
 

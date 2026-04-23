@@ -3,10 +3,10 @@ mod logging;
 mod rpc;
 
 use crate::rpc::attach_gateway;
-use blockchain_gateway_near::{GatewayContext, GatewayService, PostgresStore};
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use near_api::NetworkConfig;
+use templar_gateway_near::{GatewayContext, GatewayService, PostgresStore};
 use tokio::signal;
 
 use crate::config::Config;

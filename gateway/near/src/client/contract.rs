@@ -1,11 +1,11 @@
 use std::io::ErrorKind;
 
-use blockchain_gateway_core::{contract::ContractKind, Version};
 use moka::sync::Cache;
 use near_account_id::AccountId;
 use near_api::Contract;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 use serde::de::DeserializeOwned;
+use templar_gateway_types::{contract::ContractKind, Version};
 
 use crate::{
     client::{

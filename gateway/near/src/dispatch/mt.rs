@@ -1,5 +1,5 @@
-use blockchain_gateway_core::mt;
 use futures::future::BoxFuture;
+use templar_gateway_types::mt;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -120,7 +120,7 @@ impl PlanWrite for mt::Transfer {
             Ok(single_transaction_plan(
                 ctx.mt(body.contract_id).mt_transfer(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .one_yocto(),
                     TransferArgs {
                         receiver_id: body.receiver_id,
@@ -145,7 +145,7 @@ impl PlanWrite for mt::TransferCall {
             Ok(single_transaction_plan(
                 ctx.mt(body.contract_id).mt_transfer_call(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300))
+                        .gas(templar_gateway_types::NearGas::from_tgas(300))
                         .one_yocto(),
                     TransferCallArgs {
                         receiver_id: body.receiver_id,

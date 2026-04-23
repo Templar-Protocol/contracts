@@ -1,7 +1,7 @@
 use std::{collections::HashMap, thread::JoinHandle};
 
 use actix::Addr;
-use blockchain_gateway_core::ManagedAccountId;
+use templar_gateway_types::ManagedAccountId;
 
 use crate::{
     actor::{ManagedSigner, ReadActor, WriteActors},

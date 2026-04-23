@@ -18,9 +18,6 @@ pub mod tx;
 pub mod universal_account;
 
 use account::AccountClient;
-use blockchain_gateway_core::{
-    ManagedAccountId, MarketId, NearGas, NearToken, RegistryId, UniversalAccountId,
-};
 use cache::NearClientCache;
 use chain::ChainClient;
 use contract::ContractClient;
@@ -38,6 +35,9 @@ use registry::RegistryClient;
 use std::sync::Arc;
 use storage::StorageClient;
 use templar_common::asset::{AssetClass, FungibleAsset};
+use templar_gateway_types::{
+    ManagedAccountId, MarketId, NearGas, NearToken, RegistryId, UniversalAccountId,
+};
 use token::TokenClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
@@ -50,7 +50,7 @@ trait BoundContractClient {
 #[derive(Clone)]
 pub struct ContractWriteOptions {
     signer_account_id: ManagedAccountId,
-    wait_until: blockchain_gateway_core::common::TxExecutionStatus,
+    wait_until: templar_gateway_types::common::TxExecutionStatus,
     gas: NearGas,
     deposit: NearToken,
 }
@@ -59,7 +59,7 @@ impl ContractWriteOptions {
     pub fn new(signer_account_id: ManagedAccountId) -> Self {
         Self {
             signer_account_id,
-            wait_until: blockchain_gateway_core::common::TxExecutionStatus::ExecutedOptimistic,
+            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
             gas: NearGas::from_tgas(30),
             deposit: NearToken::from_yoctonear(0),
         }
@@ -68,7 +68,7 @@ impl ContractWriteOptions {
     #[must_use]
     pub fn wait_until(
         mut self,
-        wait_until: blockchain_gateway_core::common::TxExecutionStatus,
+        wait_until: templar_gateway_types::common::TxExecutionStatus,
     ) -> Self {
         self.wait_until = wait_until;
         self

@@ -1,13 +1,13 @@
-use blockchain_gateway_core::{
-    operation::OperationRecord, rpc::common::TxExecutionStatus, ManagedAccountId, OperationId,
-    OperationStatus, StepStatus,
-};
 use near_api::types::{
     transaction::{actions::Action, SignedTransaction},
     AccountId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use templar_gateway_types::{
+    operation::OperationRecord, rpc::common::TxExecutionStatus, ManagedAccountId, OperationId,
+    OperationStatus, StepStatus,
+};
 
 use crate::{store::SharedOperationStore, GatewayResult};
 
@@ -22,7 +22,7 @@ pub struct PlannedTransaction {
 #[derive(Debug, Clone)]
 pub struct PreparedTransactionResult {
     pub transaction: PlannedTransaction,
-    pub tx_hash: blockchain_gateway_core::CryptoHash,
+    pub tx_hash: templar_gateway_types::CryptoHash,
     pub signed_transaction: SignedTransaction,
 }
 
@@ -79,7 +79,7 @@ impl OperationPlan {
 pub struct SucceededStep {
     #[allow(dead_code)]
     pub transaction: PlannedTransaction,
-    pub tx_hash: blockchain_gateway_core::CryptoHash,
+    pub tx_hash: templar_gateway_types::CryptoHash,
 }
 
 #[derive(Debug, Clone)]
@@ -87,16 +87,16 @@ pub enum CurrentStep {
     Prepared {
         transaction: PlannedTransaction,
         signed_transaction: Box<SignedTransaction>,
-        tx_hash: blockchain_gateway_core::CryptoHash,
+        tx_hash: templar_gateway_types::CryptoHash,
     },
     Submitted {
         transaction: PlannedTransaction,
-        tx_hash: blockchain_gateway_core::CryptoHash,
+        tx_hash: templar_gateway_types::CryptoHash,
     },
     Failed {
         #[allow(dead_code)]
         transaction: PlannedTransaction,
-        tx_hash: Option<blockchain_gateway_core::CryptoHash>,
+        tx_hash: Option<templar_gateway_types::CryptoHash>,
     },
 }
 
@@ -126,7 +126,7 @@ pub struct PreparedCurrentStep<'a> {
     store: SharedOperationStore,
     transaction: PlannedTransaction,
     signed_transaction: SignedTransaction,
-    tx_hash: blockchain_gateway_core::CryptoHash,
+    tx_hash: templar_gateway_types::CryptoHash,
 }
 
 #[must_use]
@@ -134,7 +134,7 @@ pub struct SubmittedCurrentStep<'a> {
     operation: &'a mut StoredOperation,
     store: SharedOperationStore,
     transaction: PlannedTransaction,
-    tx_hash: blockchain_gateway_core::CryptoHash,
+    tx_hash: templar_gateway_types::CryptoHash,
 }
 
 pub enum CurrentStepRef<'a> {
@@ -224,7 +224,7 @@ impl StoredOperation {
         }
     }
 
-    fn transaction_step_records(&self) -> Vec<blockchain_gateway_core::TransactionStepRecord> {
+    fn transaction_step_records(&self) -> Vec<templar_gateway_types::TransactionStepRecord> {
         let mut steps = Vec::with_capacity(
             self.succeeded_steps.len()
                 + self.remaining_steps.len()
@@ -232,7 +232,7 @@ impl StoredOperation {
         );
 
         for (index, step) in self.succeeded_steps.iter().enumerate() {
-            steps.push(blockchain_gateway_core::TransactionStepRecord {
+            steps.push(templar_gateway_types::TransactionStepRecord {
                 index: index as u32,
                 status: StepStatus::Succeeded {
                     tx_hash: step.tx_hash,
@@ -249,7 +249,7 @@ impl StoredOperation {
                 }
                 CurrentStep::Failed { tx_hash, .. } => StepStatus::Failed { tx_hash: *tx_hash },
             };
-            steps.push(blockchain_gateway_core::TransactionStepRecord {
+            steps.push(templar_gateway_types::TransactionStepRecord {
                 index: next_index,
                 status,
             });
@@ -258,7 +258,7 @@ impl StoredOperation {
 
         for transaction in &self.remaining_steps {
             let _ = transaction;
-            steps.push(blockchain_gateway_core::TransactionStepRecord {
+            steps.push(templar_gateway_types::TransactionStepRecord {
                 index: next_index,
                 status: StepStatus::NotStarted,
             });
@@ -312,7 +312,7 @@ impl SubmittedCurrentStep<'_> {
         &self.transaction
     }
 
-    pub async fn succeed(self, tx_hash: blockchain_gateway_core::CryptoHash) -> GatewayResult<()> {
+    pub async fn succeed(self, tx_hash: templar_gateway_types::CryptoHash) -> GatewayResult<()> {
         self.operation.succeeded_steps.push(SucceededStep {
             transaction: self.transaction,
             tx_hash,
@@ -323,7 +323,7 @@ impl SubmittedCurrentStep<'_> {
 
     pub async fn fail(
         self,
-        tx_hash: Option<blockchain_gateway_core::CryptoHash>,
+        tx_hash: Option<templar_gateway_types::CryptoHash>,
     ) -> GatewayResult<()> {
         self.operation.current_step = Some(CurrentStep::Failed {
             transaction: self.transaction,
@@ -332,7 +332,7 @@ impl SubmittedCurrentStep<'_> {
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub fn tx_hash(&self) -> blockchain_gateway_core::CryptoHash {
+    pub fn tx_hash(&self) -> templar_gateway_types::CryptoHash {
         self.tx_hash
     }
 }

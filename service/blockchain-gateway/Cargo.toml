@@ -1,13 +1,11 @@
 [package]
-name = "blockchain-gateway-service"
-version.workspace = true
+name = "templar-gateway-service"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-blockchain-gateway-core = { path = "../../gateway/core" }
-blockchain-gateway-near = { path = "../../gateway/near" }
 clap.workspace = true
 dirs.workspace = true
 dotenvy.workspace = true
@@ -20,6 +18,8 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+templar-gateway-types.workspace = true
+templar-gateway-near.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
@@ -28,10 +28,10 @@ url.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-blockchain-gateway-testing = { path = "../../gateway/testing" }
 jsonrpsee = { workspace = true, features = ["server"] }
 reqwest.workspace = true
 templar-common.workspace = true
+templar-gateway-testing.workspace = true
 templar-universal-account.workspace = true
 test-utils.workspace = true
 wiremock.workspace = true

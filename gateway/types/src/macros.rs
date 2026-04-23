@@ -18,5 +18,5 @@ macro_rules! transparent_newtype {
     };
 }
 
-pub(crate) use blockchain_gateway_macros::{read_method_spec, write_method_spec};
+pub(crate) use templar_gateway_macros::{read_method_spec, write_method_spec};
 pub(crate) use transparent_newtype;

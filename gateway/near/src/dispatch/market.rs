@@ -1,9 +1,9 @@
-use blockchain_gateway_core::{market, registry::DeployBody};
 use futures::future::BoxFuture;
 use templar_common::{
     asset::FungibleAsset,
     market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
 };
+use templar_gateway_types::{market, registry::DeployBody};
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -697,7 +697,7 @@ impl PlanWrite for market::WithdrawStaticYield {
 
 async fn ensure_storage_registration(
     ctx: &GatewayContext,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     contract_id: near_account_id::AccountId,
     account_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<PlannedTransaction>> {
@@ -719,7 +719,7 @@ async fn ensure_storage_registration(
     let tx_result = ctx.storage(contract_id).storage_deposit(
         ContractWriteOptions::new(signer_account_id)
             .tgas(100)
-            .deposit(blockchain_gateway_core::NearToken::from_yoctonear(
+            .deposit(templar_gateway_types::NearToken::from_yoctonear(
                 bounds.min.as_yoctonear(),
             )),
         StorageDepositArgs {
@@ -741,7 +741,7 @@ async fn storage_balance_bounds_if_supported(
 
 fn transfer_call_asset<T: templar_common::asset::AssetClass>(
     ctx: &GatewayContext,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     asset: FungibleAsset<T>,
     receiver_id: near_account_id::AccountId,
     amount: impl Into<u128>,

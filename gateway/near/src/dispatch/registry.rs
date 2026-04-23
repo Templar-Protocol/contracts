@@ -1,5 +1,5 @@
-use blockchain_gateway_core::registry;
 use futures::future::BoxFuture;
+use templar_gateway_types::registry;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -66,7 +66,7 @@ impl DispatchRead for registry::ListDeploymentsByKind {
             let params = request.params;
             let account_ids = ctx
                 .registry(params.registry_id)
-                .list_deployments(blockchain_gateway_core::common::Pagination::default())
+                .list_deployments(templar_gateway_types::common::Pagination::default())
                 .await?;
 
             let mut filtered = Vec::new();
@@ -127,7 +127,7 @@ impl PlanWrite for registry::Deploy {
 
 pub(crate) async fn plan_deploy_from_registry(
     ctx: &GatewayContext,
-    signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    signer_account_id: templar_gateway_types::ManagedAccountId,
     body: registry::DeployBody,
 ) -> GatewayResult<OperationPlan> {
     let deposit = body.deposit;

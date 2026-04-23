@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use blockchain_gateway_core::{operation::OperationId, IdempotencyKey, ManagedAccountId};
+use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -156,8 +156,8 @@ impl OperationStore for MemoryOperationStore {
             .filter(|operation| {
                 matches!(
                     operation.status(),
-                    blockchain_gateway_core::OperationStatus::Pending
-                        | blockchain_gateway_core::OperationStatus::InProgress
+                    templar_gateway_types::OperationStatus::Pending
+                        | templar_gateway_types::OperationStatus::InProgress
                 )
             })
             .cloned()

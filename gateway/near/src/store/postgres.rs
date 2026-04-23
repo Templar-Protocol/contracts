@@ -1,13 +1,13 @@
 use std::{collections::VecDeque, str::FromStr};
 
 use async_trait::async_trait;
-use blockchain_gateway_core::{
-    operation::OperationId, CryptoHash, IdempotencyKey, ManagedAccountId, OperationStatus,
-};
 use chrono::{DateTime, Utc};
 use near_api::types::transaction::SignedTransaction;
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use templar_gateway_types::{
+    operation::OperationId, CryptoHash, IdempotencyKey, ManagedAccountId, OperationStatus,
+};
 
 use crate::{
     operation::{OperationPlan, PlannedTransaction, StoredOperation, SucceededStep},
@@ -760,9 +760,9 @@ fn operation_status_from_row(status: OperationStatusRow) -> OperationStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blockchain_gateway_core::{common::TxExecutionStatus, NearToken};
     use near_api::types::transaction::actions::{Action, TransferAction};
     use near_api::types::CryptoHash as NearCryptoHash;
+    use templar_gateway_types::{common::TxExecutionStatus, NearToken};
 
     fn sample_transaction(index: u8) -> PlannedTransaction {
         PlannedTransaction::single_action(

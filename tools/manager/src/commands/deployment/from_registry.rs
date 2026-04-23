@@ -1,7 +1,7 @@
-use blockchain_gateway_core::RegistryVersion;
 use near_crypto::PublicKey;
 use near_sdk::{json_types::Base64VecU8, AccountId, NearToken};
 use serde_json::json;
+use templar_gateway_types::RegistryVersion;
 use templar_tools_common::near::{contract_version, Function};
 
 use crate::{

@@ -47,7 +47,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
         .request::<lst_oracle::ListTransformers>(&ReadRequest {
             params: lst_oracle::ListTransformersParams {
                 oracle_id: lst_oracle_id.clone(),
-                pagination: blockchain_gateway_core::common::Pagination::default(),
+                pagination: templar_gateway_types::common::Pagination::default(),
             },
         })
         .await?;

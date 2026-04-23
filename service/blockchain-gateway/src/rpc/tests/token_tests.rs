@@ -57,7 +57,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             },
         })
         .await?;
-    assert_eq!(ft_balance.balance, blockchain_gateway_core::U128(5));
+    assert_eq!(ft_balance.balance, templar_gateway_types::U128(5));
 
     let mt_balance = stack
         .controller
@@ -71,7 +71,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             },
         })
         .await?;
-    assert_eq!(mt_balance.balance, blockchain_gateway_core::U128(6));
+    assert_eq!(mt_balance.balance, templar_gateway_types::U128(6));
 
     let transfer = stack
         .controller
@@ -83,14 +83,14 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
                     contract_id: stack.harness.ft_contract_id.clone(),
                 },
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
-                amount: blockchain_gateway_core::U128(5),
+                amount: templar_gateway_types::U128(5),
                 memo: Some("token-transfer".to_owned()),
             },
         })
         .await?;
     assert_eq!(
         transfer.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let transfer_call = stack
@@ -104,7 +104,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
                     token_id: "mt_borrow".to_owned(),
                 },
                 receiver_id: receiver_id.clone(),
-                amount: blockchain_gateway_core::U128(6),
+                amount: templar_gateway_types::U128(6),
                 msg: "ok".to_owned(),
                 memo: Some("token-call".to_owned()),
             },
@@ -112,7 +112,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         transfer_call.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let _ = stack
@@ -121,7 +121,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             params: tx::GetParams {
                 tx_hash: tx_hash(&transfer_call),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: Some(blockchain_gateway_core::common::TxExecutionStatus::Final),
+                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
                 encoding: tx::ValueEncoding::Json,
             },
         })

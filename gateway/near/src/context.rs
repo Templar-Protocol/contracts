@@ -1,11 +1,11 @@
 use std::{path::Path, sync::Arc};
 
-use blockchain_gateway_core::{ManagedAccountId, MarketId, RegistryId, UniversalAccountId};
 use near_account_id::AccountId;
 use near_api::NetworkConfig;
 use serde::Deserialize;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::oracle::redstone::FeedId;
+use templar_gateway_types::{ManagedAccountId, MarketId, RegistryId, UniversalAccountId};
 use templar_redstone_bridge::Bridge;
 use url::Url;
 

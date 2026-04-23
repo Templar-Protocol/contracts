@@ -27,7 +27,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListVersions>(&ReadRequest {
             params: registry::ListVersionsParams {
                 registry_id: registry_id.clone(),
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
             },
         })
         .await?;
@@ -72,7 +72,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListDeployments>(&ReadRequest {
             params: registry::ListDeploymentsParams {
                 registry_id: registry_id.clone(),
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
             },
         })
         .await?;
@@ -82,7 +82,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListDeploymentsByKind>(&ReadRequest {
             params: registry::ListDeploymentsByKindParams {
                 registry_id: registry_id.clone(),
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
                 kind: contract::ContractKind::Market,
             },
         })
@@ -93,7 +93,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListDeploymentsByKind>(&ReadRequest {
             params: registry::ListDeploymentsByKindParams {
                 registry_id: registry_id.clone(),
-                args: blockchain_gateway_core::common::Pagination::default(),
+                args: templar_gateway_types::common::Pagination::default(),
                 kind: contract::ContractKind::Unknown,
             },
         })
@@ -130,7 +130,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     assert_eq!(unknown_only.account_ids, deployments.account_ids);
     assert_eq!(
         deploy.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     stack.shutdown().await;

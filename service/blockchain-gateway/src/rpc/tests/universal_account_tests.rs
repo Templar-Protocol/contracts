@@ -118,7 +118,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
                 account_name: "ua-created".to_owned(),
                 version_key: "ua@1.0.0".to_owned(),
                 key: signer.id(),
-                chain_id: blockchain_gateway_core::U128(NEAR_TESTNET_CHAIN_ID),
+                chain_id: templar_gateway_types::U128(NEAR_TESTNET_CHAIN_ID),
                 execute: None,
                 full_access_keys: None,
                 deposit: NearToken::from_near(20),
@@ -128,7 +128,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
 
     assert_eq!(
         create.operation.status,
-        blockchain_gateway_core::OperationStatus::Succeeded
+        templar_gateway_types::OperationStatus::Succeeded
     );
 
     let created_account_id: near_account_id::AccountId = format!("ua-created.{}", registry_id.0)
@@ -139,7 +139,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .controller
         .request::<universal_account::GetKey>(&ReadRequest {
             params: universal_account::GetKeyParams {
-                account_id: blockchain_gateway_core::UniversalAccountId(created_account_id),
+                account_id: templar_gateway_types::UniversalAccountId(created_account_id),
                 key: signer.id(),
             },
         })

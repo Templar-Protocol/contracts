@@ -1,5 +1,5 @@
-use blockchain_gateway_core::token;
 use futures::future::BoxFuture;
+use templar_gateway_types::token;
 
 use crate::{
     actor::{DispatchRead, PlanWrite},
@@ -55,7 +55,7 @@ impl PlanWrite for token::Transfer {
             let transaction = match token {
                 token::TokenReference::Ft { contract_id } => ctx.ft(contract_id).ft_transfer(
                     crate::client::ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .one_yocto(),
                     crate::client::ft::TransferArgs {
                         receiver_id,
@@ -68,7 +68,7 @@ impl PlanWrite for token::Transfer {
                     token_id,
                 } => ctx.mt(contract_id).mt_transfer(
                     crate::client::ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(100))
+                        .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .one_yocto(),
                     crate::client::mt::TransferArgs {
                         receiver_id,
@@ -100,7 +100,7 @@ impl PlanWrite for token::TransferCall {
             let transaction = match token {
                 token::TokenReference::Ft { contract_id } => ctx.ft(contract_id).ft_transfer_call(
                     crate::client::ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300))
+                        .gas(templar_gateway_types::NearGas::from_tgas(300))
                         .one_yocto(),
                     crate::client::ft::TransferCallArgs {
                         receiver_id,
@@ -114,7 +114,7 @@ impl PlanWrite for token::TransferCall {
                     token_id,
                 } => ctx.mt(contract_id).mt_transfer_call(
                     crate::client::ContractWriteOptions::new(request.signer_account_id)
-                        .gas(blockchain_gateway_core::NearGas::from_tgas(300))
+                        .gas(templar_gateway_types::NearGas::from_tgas(300))
                         .one_yocto(),
                     crate::client::mt::TransferCallArgs {
                         receiver_id,

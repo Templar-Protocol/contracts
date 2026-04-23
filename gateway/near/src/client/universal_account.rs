@@ -22,7 +22,7 @@ pub struct UaExecuteArgs {
 #[derive(Clone)]
 pub struct UniversalAccountClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) contract_id: blockchain_gateway_core::UniversalAccountId,
+    pub(crate) contract_id: templar_gateway_types::UniversalAccountId,
 }
 
 impl BoundContractClient for UniversalAccountClient<'_> {

@@ -1,12 +1,12 @@
-use blockchain_gateway_core::tx;
 use near_api::{types::transaction::result::TransactionResult, Contract};
+use templar_gateway_types::tx;
 
 use crate::{client::NearClient, GatewayError, GatewayResult};
 
 #[derive(Clone)]
 pub struct TxClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) signer_account_id: blockchain_gateway_core::ManagedAccountId,
+    pub(crate) signer_account_id: templar_gateway_types::ManagedAccountId,
     pub(crate) signer: std::sync::Arc<near_api::Signer>,
 }
 
@@ -14,7 +14,7 @@ impl TxClient<'_> {
     pub async fn function_call(
         &self,
         body: tx::FunctionCallBody,
-        wait_until: blockchain_gateway_core::common::TxExecutionStatus,
+        wait_until: templar_gateway_types::common::TxExecutionStatus,
     ) -> GatewayResult<TransactionResult> {
         Contract(body.receiver_id)
             .call_function_raw(&body.method_name.0, body.args.try_into_bytes()?)
