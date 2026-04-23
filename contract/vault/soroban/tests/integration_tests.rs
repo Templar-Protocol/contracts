@@ -8,7 +8,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Bytes, Env,
 };
-use std::string::String;
+use std::string::String as AllocString;
 use templar_curator_primitives::policy::state::MarketConfig;
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
@@ -20,7 +20,7 @@ use templar_soroban_runtime::{
     Storage, // Import the trait
 };
 use templar_soroban_shared_types::{
-    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -41,8 +41,8 @@ use templar_vault_kernel::{
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
 
-fn sdk_text(address: &soroban_sdk::Address) -> String {
-    String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+fn sdk_wire(address: &soroban_sdk::Address) -> AllocString {
+    AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec()).expect("valid address")
 }
 
 type ProxyCoreView = (
@@ -190,6 +190,16 @@ impl<'a> VaultProxy<'a> {
             VaultCommandResult::Unit => Ok(()),
             _ => Err(templar_soroban_runtime::ContractError::InvalidInput),
         }
+    }
+
+    fn execute_governance_unit(
+        &self,
+        caller: &soroban_sdk::Address,
+        command: &GovernanceCommand,
+    ) -> Result<(), templar_soroban_runtime::ContractError> {
+        let payload = Bytes::from_slice(self.env, &command.encode());
+        SorobanVaultContract::execute_governance(self.env.clone(), caller.clone(), payload)?;
+        Ok(())
     }
 }
 
@@ -372,17 +382,18 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
 
     env.as_contract(&contract_id, || {
         let governance = proxy.governance().unwrap();
-        let result = proxy
-            .execute(&VaultCommand::SetGovernanceConfig {
-                caller: sdk_text(&governance),
-                kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-                primary: None,
-                many: None,
-                value_a: Some(virtual_shares as i128),
-                value_b: Some(virtual_assets as i128),
-            })
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                    primary: None,
+                    many: None,
+                    value_a: Some(virtual_shares as i128),
+                    value_b: Some(virtual_assets as i128),
+                },
+            )
             .unwrap();
-        assert!(matches!(result, VaultCommandResult::Unit));
 
         let mut storage = SorobanStorage::new(&env);
         let state = VaultState {
@@ -514,7 +525,7 @@ fn soroban_contract_execute_withdraw_queue_empty_errors(
 
     env.as_contract(&contract_id, || {
         let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
-            caller: sdk_text(&user),
+            caller: sdk_wire(&user),
         });
         assert!(result.is_err());
     });
@@ -545,7 +556,7 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
 
     env.as_contract(&contract_id, || {
         let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
-            caller: sdk_text(&user),
+            caller: sdk_wire(&user),
         });
         assert!(result.is_err());
     });

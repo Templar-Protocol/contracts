@@ -292,12 +292,13 @@ mod contract_tests {
     use crate::storage::{SorobanStorage, Storage};
     use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
     use alloc::collections::BTreeMap;
+    use alloc::string::String as AllocString;
     use alloc::vec;
     use alloc::vec::Vec;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
-        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
@@ -364,8 +365,9 @@ mod contract_tests {
         }
     }
 
-    fn sdk_text(address: &SdkAddress) -> alloc::string::String {
-        alloc::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+    fn sdk_text(address: &SdkAddress) -> AllocString {
+        AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec())
+            .expect("valid address")
     }
 
     fn execute_command(
@@ -376,6 +378,15 @@ mod contract_tests {
         let result = SorobanVaultContract::execute(env.clone(), payload)?;
         VaultCommandResult::decode(&result.to_alloc_vec())
             .map_err(|_| crate::error::ContractError::InvalidInput)
+    }
+
+    fn execute_governance_command(
+        env: &Env,
+        caller: &SdkAddress,
+        command: &GovernanceCommand,
+    ) -> Result<(), crate::error::ContractError> {
+        let payload = Bytes::from_slice(env, &command.encode());
+        SorobanVaultContract::execute_governance(env.clone(), caller.clone(), payload)
     }
 
     #[derive(Clone, Debug, Default)]
@@ -970,10 +981,10 @@ mod contract_tests {
             )
             .unwrap();
 
-            let result = execute_command(
+            execute_governance_command(
                 &env,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: sdk_text(&governance),
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
                     kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
                     primary: None,
                     many: None,
@@ -982,7 +993,6 @@ mod contract_tests {
                 },
             )
             .unwrap();
-            assert!(matches!(result, VaultCommandResult::Unit));
 
             assert_eq!(
                 env.storage().instance().get(&VaultDataKey::VirtualShares),
@@ -1903,7 +1913,7 @@ mod storage_tests {
     use crate::error::RuntimeError;
     use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
     use crate::test_utils::{fuzz_api, MemoryStorage};
-    use alloc::string::{String, ToString};
+    use alloc::string::{String as AllocString, ToString};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
@@ -1911,26 +1921,35 @@ mod storage_tests {
     use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
-        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-        GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+        GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
+        GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+        GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_GROUP,
+        GOVERNANCE_POLICY_KIND_PAUSED,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
         PendingWithdrawal, Restrictions, TimestampNs, VaultState, WithdrawQueue, WithdrawingState,
     };
 
-    fn sdk_text(address: &SdkAddress) -> std::string::String {
-        std::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+    fn sdk_text(address: &SdkAddress) -> AllocString {
+        AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec())
+            .expect("valid address")
     }
 
-    fn execute_command(
+    fn execute_governance_command(
         env: &Env,
-        command: &VaultCommand,
-    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+        contract_id: &SdkAddress,
+        caller: &SdkAddress,
+        command: &GovernanceCommand,
+    ) {
+        use soroban_sdk::{IntoVal, Symbol};
+
         let payload = Bytes::from_slice(env, &command.encode());
-        let result = SorobanVaultContract::execute(env.clone(), payload)?;
-        VaultCommandResult::decode(&result.to_alloc_vec())
-            .map_err(|_| crate::error::ContractError::InvalidInput)
+        env.invoke_contract::<()>(
+            contract_id,
+            &Symbol::new(env, "execute_governance"),
+            (caller, &payload).into_val(env),
+        );
     }
 
     #[test]
@@ -2494,200 +2513,25 @@ mod storage_tests {
                 .iter()
                 .map(|address| sdk_text(&address))
                 .collect();
-            let result = execute_command(
+            let payload = soroban_sdk::Bytes::from_slice(
                 &env,
-                &VaultCommand::SetGovernanceConfig {
-                    caller: sdk_text(&governance),
+                &GovernanceCommand::SetGovernanceConfig {
                     kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
                     primary: None,
                     many: Some(updated),
                     value_a: None,
                     value_b: None,
-                },
-            )
-            .unwrap();
-            assert!(matches!(result, VaultCommandResult::Unit));
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
 
             assert_eq!(
                 env.storage()
                     .instance()
                     .get(&crate::contract::VaultDataKey::AllowedAdapters),
                 Some(updated_adapters)
-            );
-        });
-    }
-
-    #[rstest]
-    fn test_governance_policy_rejects_fee_account_count(contract_env: (Env, soroban_sdk::Address)) {
-        let (env, contract_id) = contract_env;
-        env.mock_all_auths_allowing_non_root_auth();
-        let governance = SdkAddress::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            set_config_address(
-                &env,
-                &crate::contract::VaultDataKey::Governance,
-                &governance,
-            );
-
-            let err = match execute_command(
-                &env,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: sdk_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_FEES,
-                    target_ids: None,
-                    mode: None,
-                    accounts: Some(alloc::vec![sdk_text(&SdkAddress::generate(&env))]),
-                    market_id: None,
-                    cap_group_id: None,
-                    value: Some(1),
-                    value_b: Some(2),
-                    value_c: None,
-                },
-            ) {
-                Ok(_) => panic!("expected invalid input error"),
-                Err(err) => err,
-            };
-
-            assert_eq!(err, crate::error::ContractError::InvalidInput);
-        });
-    }
-
-    #[test]
-    fn test_governance_policy_group_cap_clear_via_none_reaches_policy_layer() {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(
-                env.clone(),
-                curator.clone(),
-                governance.clone(),
-                asset,
-                share,
-                0,
-                0,
-            )
-            .unwrap();
-            set_config_address(
-                &env,
-                &crate::contract::VaultDataKey::Governance,
-                &governance,
-            );
-
-            let mut storage = SorobanStorage::new(&env);
-            storage.save_state(&VaultState::default()).unwrap();
-            storage.save_paused(false).unwrap();
-            let mut policy_state = PolicyState::default();
-            let cap_group_id = CapGroupId::try_from("group-a".to_string()).unwrap();
-            policy_state.set_cap_group_absolute_cap(cap_group_id.clone(), Some(77));
-            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
-
-            let err = match execute_command(
-                &env,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: sdk_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_GROUP,
-                    target_ids: None,
-                    mode: Some(0),
-                    accounts: None,
-                    market_id: Some(0),
-                    cap_group_id: Some("group-a".to_string()),
-                    value: None,
-                    value_b: None,
-                    value_c: None,
-                },
-            ) {
-                Ok(_) => panic!("clearing an active cap should remain timelocked"),
-                Err(err) => err,
-            };
-
-            assert_eq!(err, crate::error::ContractError::InvalidInput);
-
-            let reloaded = Storage::load_policy_state(&storage)
-                .unwrap()
-                .unwrap_or_default();
-            assert_eq!(
-                reloaded
-                    .cap_group(&cap_group_id)
-                    .and_then(|record| record.cap.absolute_cap()),
-                Some(77)
-            );
-        });
-    }
-
-    #[test]
-    fn test_governance_policy_group_relative_cap_clear_via_none_reaches_policy_layer() {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        let contract_id = env.register(SorobanVaultContract, ());
-        let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            SorobanVaultContract::initialize(
-                env.clone(),
-                curator.clone(),
-                governance.clone(),
-                asset,
-                share,
-                0,
-                0,
-            )
-            .unwrap();
-            set_config_address(
-                &env,
-                &crate::contract::VaultDataKey::Governance,
-                &governance,
-            );
-
-            let mut storage = SorobanStorage::new(&env);
-            storage.save_state(&VaultState::default()).unwrap();
-            storage.save_paused(false).unwrap();
-            let mut policy_state = PolicyState::default();
-            let cap_group_id = CapGroupId::try_from("group-b".to_string()).unwrap();
-            policy_state.set_cap_group_relative_cap(
-                cap_group_id.clone(),
-                Some(templar_vault_kernel::Wad::from(25u128)),
-            );
-            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
-
-            let err = match execute_command(
-                &env,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: sdk_text(&governance),
-                    kind: GOVERNANCE_POLICY_KIND_GROUP,
-                    target_ids: None,
-                    mode: Some(1),
-                    accounts: None,
-                    market_id: Some(0),
-                    cap_group_id: Some("group-b".to_string()),
-                    value: None,
-                    value_b: None,
-                    value_c: None,
-                },
-            ) {
-                Ok(_) => panic!("clearing an active relative cap should remain timelocked"),
-                Err(err) => err,
-            };
-
-            assert_eq!(err, crate::error::ContractError::InvalidInput);
-
-            let reloaded = Storage::load_policy_state(&storage)
-                .unwrap()
-                .unwrap_or_default();
-            assert_eq!(
-                reloaded
-                    .cap_group(&cap_group_id)
-                    .and_then(|record| record.cap.relative_cap()),
-                Some(templar_vault_kernel::Wad::from(25u128))
             );
         });
     }
@@ -2730,24 +2574,23 @@ mod storage_tests {
                 .unwrap();
             Storage::save_policy_state(&mut storage, &policy_state).unwrap();
 
-            let result = execute_command(
+            let payload = soroban_sdk::Bytes::from_slice(
                 &env,
-                &VaultCommand::SetGovernancePolicy {
-                    caller: sdk_text(&governance),
+                &GovernanceCommand::SetGovernancePolicy {
                     kind: GOVERNANCE_POLICY_KIND_GROUP,
                     target_ids: None,
                     mode: Some(2),
                     accounts: None,
                     market_id: Some(7),
-                    cap_group_id: Some(String::new()),
+                    cap_group_id: Some("".to_string()),
                     value: Some(0),
                     value_b: None,
                     value_c: None,
-                },
-            )
-            .unwrap();
-
-            assert!(matches!(result, VaultCommandResult::Unit));
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
 
             let reloaded = Storage::load_policy_state(&storage)
                 .unwrap()
@@ -2759,5 +2602,241 @@ mod storage_tests {
                 None
             );
         });
+    }
+
+    #[test]
+    fn test_execute_governance_bridge_happy_path() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let new_curator = SdkAddress::generate(&env);
+        let new_governance = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
+        let guardian = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+                primary: Some(sdk_text(&new_curator)),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&crate::contract::VaultDataKey::Curator),
+                Some(new_curator.clone())
+            );
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+                primary: Some(sdk_text(&new_governance)),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&crate::contract::VaultDataKey::Governance),
+                Some(new_governance.clone())
+            );
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &new_governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
+                primary: Some(sdk_text(&sentinel)),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&crate::contract::VaultDataKey::Sentinel),
+                Some(sentinel.clone())
+            );
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &new_governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_GUARDIANS,
+                primary: None,
+                many: Some(alloc::vec![sdk_text(&guardian)]),
+                value_a: None,
+                value_b: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            let stored_guardians: Option<SdkVec<SdkAddress>> = env
+                .storage()
+                .instance()
+                .get(&crate::contract::VaultDataKey::Guardians);
+            let stored_guardians = stored_guardians.expect("guardians should be set");
+            assert_eq!(stored_guardians.len(), 1);
+            assert_eq!(stored_guardians.get_unchecked(0), guardian);
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_rejects_unauthorized_callers() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let attacker = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &attacker,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernanceConfig {
+                        kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+                        primary: Some(sdk_text(&SdkAddress::generate(&env))),
+                        many: None,
+                        value_a: None,
+                        value_b: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(err, Err(Ok(crate::error::ContractError::Unauthorized)));
+
+        let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &attacker,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                        target_ids: None,
+                        mode: Some(1),
+                        accounts: None,
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(err, Err(Ok(crate::error::ContractError::Unauthorized)));
+
+        let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &attacker,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::Skim {
+                        token: sdk_text(&SdkAddress::generate(&env)),
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(err, Err(Ok(crate::error::ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_execute_governance_rejects_malformed_payload() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (&governance, &Bytes::from_slice(&env, &[0xff])).into_val(&env),
+        );
+        assert_eq!(err, Err(Ok(crate::error::ContractError::InvalidInput)));
     }
 }

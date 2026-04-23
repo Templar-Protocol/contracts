@@ -4,7 +4,7 @@ extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CodecError {
     Truncated,
     InvalidUtf8,
@@ -194,7 +194,15 @@ fn read_option_string_vec(
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+fn ensure_finished(bytes: &[u8], cursor: usize) -> Result<(), CodecError> {
+    if cursor == bytes.len() {
+        Ok(())
+    } else {
+        Err(CodecError::InvalidEncoding)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultCommand {
     DepositWithMin {
         owner: String,
@@ -221,8 +229,16 @@ pub enum VaultCommand {
         caller: String,
         markets: Vec<u32>,
     },
-    SetGovernanceConfig {
+    ResyncIdleBalance,
+    CancelMigration {
         caller: String,
+    },
+    ExtendTtl,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceCommand {
+    SetGovernanceConfig {
         kind: u32,
         primary: Option<String>,
         many: Option<Vec<String>>,
@@ -230,7 +246,6 @@ pub enum VaultCommand {
         value_b: Option<i128>,
     },
     SetGovernancePolicy {
-        caller: String,
         kind: u32,
         target_ids: Option<Vec<u32>>,
         mode: Option<u32>,
@@ -242,17 +257,11 @@ pub enum VaultCommand {
         value_c: Option<i128>,
     },
     Skim {
-        caller: String,
         token: String,
     },
-    ResyncIdleBalance,
-    CancelMigration {
-        caller: String,
-    },
-    ExtendTtl,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultCommandResult {
     Unit,
     I128(i128),
@@ -326,51 +335,6 @@ impl VaultCommand {
                 push_string(&mut out, caller);
                 push_u32_vec(&mut out, markets);
             }
-            Self::SetGovernanceConfig {
-                caller,
-                kind,
-                primary,
-                many,
-                value_a,
-                value_b,
-            } => {
-                push_u8(&mut out, 5);
-                push_string(&mut out, caller);
-                push_u32(&mut out, *kind);
-                push_option_string(&mut out, primary);
-                push_option_string_vec(&mut out, many);
-                push_option_i128(&mut out, value_a);
-                push_option_i128(&mut out, value_b);
-            }
-            Self::SetGovernancePolicy {
-                caller,
-                kind,
-                target_ids,
-                mode,
-                accounts,
-                market_id,
-                cap_group_id,
-                value,
-                value_b,
-                value_c,
-            } => {
-                push_u8(&mut out, 6);
-                push_string(&mut out, caller);
-                push_u32(&mut out, *kind);
-                push_option_u32_vec(&mut out, target_ids);
-                push_option_u32(&mut out, mode);
-                push_option_string_vec(&mut out, accounts);
-                push_option_u32(&mut out, market_id);
-                push_option_string(&mut out, cap_group_id);
-                push_option_i128(&mut out, value);
-                push_option_i128(&mut out, value_b);
-                push_option_i128(&mut out, value_c);
-            }
-            Self::Skim { caller, token } => {
-                push_u8(&mut out, 7);
-                push_string(&mut out, caller);
-                push_string(&mut out, token);
-            }
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
                 push_u8(&mut out, 9);
@@ -413,16 +377,78 @@ impl VaultCommand {
                 caller: read_string(bytes, &mut cursor)?,
                 markets: read_u32_vec(bytes, &mut cursor)?,
             }),
-            5 => Ok(Self::SetGovernanceConfig {
+            8 => Ok(Self::ResyncIdleBalance),
+            9 => Ok(Self::CancelMigration {
                 caller: read_string(bytes, &mut cursor)?,
+            }),
+            10 => Ok(Self::ExtendTtl),
+            _ => Err(CodecError::InvalidTag),
+        }?;
+        ensure_finished(bytes, cursor)?;
+        Ok(command)
+    }
+}
+
+impl GovernanceCommand {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        match self {
+            Self::SetGovernanceConfig {
+                kind,
+                primary,
+                many,
+                value_a,
+                value_b,
+            } => {
+                push_u8(&mut out, 0);
+                push_u32(&mut out, *kind);
+                push_option_string(&mut out, primary);
+                push_option_string_vec(&mut out, many);
+                push_option_i128(&mut out, value_a);
+                push_option_i128(&mut out, value_b);
+            }
+            Self::SetGovernancePolicy {
+                kind,
+                target_ids,
+                mode,
+                accounts,
+                market_id,
+                cap_group_id,
+                value,
+                value_b,
+                value_c,
+            } => {
+                push_u8(&mut out, 1);
+                push_u32(&mut out, *kind);
+                push_option_u32_vec(&mut out, target_ids);
+                push_option_u32(&mut out, mode);
+                push_option_string_vec(&mut out, accounts);
+                push_option_u32(&mut out, market_id);
+                push_option_string(&mut out, cap_group_id);
+                push_option_i128(&mut out, value);
+                push_option_i128(&mut out, value_b);
+                push_option_i128(&mut out, value_c);
+            }
+            Self::Skim { token } => {
+                push_u8(&mut out, 2);
+                push_string(&mut out, token);
+            }
+        }
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        let command = match read_u8(bytes, &mut cursor)? {
+            0 => Ok(Self::SetGovernanceConfig {
                 kind: read_u32(bytes, &mut cursor)?,
                 primary: read_option_string(bytes, &mut cursor)?,
                 many: read_option_string_vec(bytes, &mut cursor)?,
                 value_a: read_option_i128(bytes, &mut cursor)?,
                 value_b: read_option_i128(bytes, &mut cursor)?,
             }),
-            6 => Ok(Self::SetGovernancePolicy {
-                caller: read_string(bytes, &mut cursor)?,
+            1 => Ok(Self::SetGovernancePolicy {
                 kind: read_u32(bytes, &mut cursor)?,
                 target_ids: read_option_u32_vec(bytes, &mut cursor)?,
                 mode: read_option_u32(bytes, &mut cursor)?,
@@ -433,22 +459,12 @@ impl VaultCommand {
                 value_b: read_option_i128(bytes, &mut cursor)?,
                 value_c: read_option_i128(bytes, &mut cursor)?,
             }),
-            7 => Ok(Self::Skim {
-                caller: read_string(bytes, &mut cursor)?,
+            2 => Ok(Self::Skim {
                 token: read_string(bytes, &mut cursor)?,
             }),
-            8 => Ok(Self::ResyncIdleBalance),
-            9 => Ok(Self::CancelMigration {
-                caller: read_string(bytes, &mut cursor)?,
-            }),
-            10 => Ok(Self::ExtendTtl),
             _ => Err(CodecError::InvalidTag),
         }?;
-
-        if cursor != bytes.len() {
-            return Err(CodecError::InvalidEncoding);
-        }
-
+        ensure_finished(bytes, cursor)?;
         Ok(command)
     }
 }
@@ -479,11 +495,105 @@ impl VaultCommandResult {
             2 => Ok(Self::U64(read_u64(bytes, &mut cursor)?)),
             _ => Err(CodecError::InvalidTag),
         }?;
-
-        if cursor != bytes.len() {
-            return Err(CodecError::InvalidEncoding);
-        }
-
+        ensure_finished(bytes, cursor)?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{string::String, vec};
+
+    #[test]
+    fn vault_command_roundtrip_representative() {
+        let commands = vec![
+            VaultCommand::DepositWithMin {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                assets: 100,
+                min_shares_out: 1,
+            },
+            VaultCommand::ResyncIdleBalance,
+            VaultCommand::CancelMigration {
+                caller: String::from("caller"),
+            },
+        ];
+
+        for command in commands {
+            let encoded = command.encode();
+            let decoded = VaultCommand::decode(&encoded).expect("decode vault command");
+            assert_eq!(decoded, command);
+        }
+    }
+
+    #[test]
+    fn governance_command_roundtrip_representative() {
+        let commands = vec![
+            GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+                primary: Some(String::from("curator")),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+            GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_FEES,
+                target_ids: None,
+                mode: None,
+                accounts: Some(vec![String::from("perf"), String::from("mgmt")]),
+                market_id: None,
+                cap_group_id: None,
+                value: Some(11),
+                value_b: Some(22),
+                value_c: Some(33),
+            },
+            GovernanceCommand::Skim {
+                token: String::from("token"),
+            },
+        ];
+
+        for command in commands {
+            let encoded = command.encode();
+            let decoded = GovernanceCommand::decode(&encoded).expect("decode governance command");
+            assert_eq!(decoded, command);
+        }
+    }
+
+    #[test]
+    fn governance_command_decode_rejects_trailing_bytes() {
+        let mut encoded = GovernanceCommand::Skim {
+            token: String::from("token"),
+        }
+        .encode();
+        encoded.push(0xFF);
+
+        assert_eq!(
+            GovernanceCommand::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn governance_command_decode_rejects_invalid_option_tag() {
+        let bytes = vec![0, 0, 0, 0, 0, 9];
+        assert_eq!(
+            GovernanceCommand::decode(&bytes),
+            Err(CodecError::InvalidTag)
+        );
+    }
+
+    #[test]
+    fn vault_and_governance_tags_do_not_overlap() {
+        let governance = GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+            primary: Some(String::from("curator")),
+            many: None,
+            value_a: None,
+            value_b: None,
+        }
+        .encode();
+
+        assert!(VaultCommand::decode(&governance).is_err());
     }
 }
