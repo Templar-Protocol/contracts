@@ -12,6 +12,13 @@ This crate is the Soroban executor layer for the shared vault kernel. It owns:
 - RBAC/auth enforcement via `require_auth()` + shared `ActionKind`
 - execution of `KernelEffect`s against Soroban token contracts
 
+Governance timelock/orchestration lives in the dedicated `contract/vault/soroban/governance`
+contract. The runtime still applies canonical governance state changes. Vault-bound governance
+actions cross the contract boundary via `execute_governance(env, caller, payload)`, where the
+payload carries a `GovernanceCommand`. `SetTimelock` and `Other` actions stay local to the
+governance contract. The generic `execute(payload)` path remains for user flows and for the
+retained execute-path config subset (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`).
+
 ```mermaid
 graph TB
     subgraph Contract["contract/vault/soroban"]
@@ -58,6 +65,17 @@ sequenceDiagram
     Vault->>Storage: save state / policy / mappings
     Entry-->>Caller: return result
 ```
+
+### Governance Control-Plane Boundary
+
+- The governance contract owns proposal submission, timelocks, approval/revocation, and abdication.
+- The runtime remains the canonical owner of applied vault config/policy state.
+- Vault-bound governance actions cross the boundary through a single bridge:
+  `execute_governance(env, caller, payload)`. The payload is a `GovernanceCommand` that the
+  runtime decodes and dispatches to the corresponding internal config/policy/state helpers.
+- `execute(payload)` remains for user flows and for the retained execute-path config subset
+  (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`). Governance never calls `execute`
+  for vault-bound mutations.
 
 ### Soroban-Specific Withdrawal Path
 

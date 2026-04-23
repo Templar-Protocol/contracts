@@ -14,7 +14,7 @@ use super::helpers::{
 };
 use super::*;
 use templar_soroban_shared_types::{
-    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
     GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
@@ -660,7 +660,10 @@ fn cancel_migration_impl(env: &Env, caller: soroban_sdk::Address) -> Result<(), 
     Ok(())
 }
 
-fn execute_command(env: &Env, command: VaultCommand) -> Result<VaultCommandResult, ContractError> {
+fn execute_public_command(
+    env: &Env,
+    command: VaultCommand,
+) -> Result<VaultCommandResult, ContractError> {
     match command {
         VaultCommand::DepositWithMin {
             owner,
@@ -713,8 +716,28 @@ fn execute_command(env: &Env, command: VaultCommand) -> Result<VaultCommandResul
                 sdk_markets,
             )?))
         }
-        VaultCommand::SetGovernanceConfig {
-            caller,
+        VaultCommand::ResyncIdleBalance => {
+            resync_idle_balance_impl(env)?;
+            Ok(VaultCommandResult::Unit)
+        }
+        VaultCommand::CancelMigration { caller } => {
+            cancel_migration_impl(env, address_from_alloc_string(env, &caller)?)?;
+            Ok(VaultCommandResult::Unit)
+        }
+        VaultCommand::ExtendTtl => {
+            extend_storage_ttl(env);
+            Ok(VaultCommandResult::Unit)
+        }
+    }
+}
+
+fn execute_governance_command(
+    env: &Env,
+    caller: soroban_sdk::Address,
+    command: GovernanceCommand,
+) -> Result<(), ContractError> {
+    match command {
+        GovernanceCommand::SetGovernanceConfig {
             kind,
             primary,
             many,
@@ -729,19 +752,9 @@ fn execute_command(env: &Env, command: VaultCommand) -> Result<VaultCommandResul
                 .as_ref()
                 .map(|values| addresses_from_alloc_strings(env, values))
                 .transpose()?;
-            set_governance_config_impl(
-                env,
-                address_from_alloc_string(env, &caller)?,
-                kind,
-                primary,
-                many,
-                value_a,
-                value_b,
-            )?;
-            Ok(VaultCommandResult::Unit)
+            set_governance_config_impl(env, caller, kind, primary, many, value_a, value_b)
         }
-        VaultCommand::SetGovernancePolicy {
-            caller,
+        GovernanceCommand::SetGovernancePolicy {
             kind,
             target_ids,
             mode,
@@ -768,7 +781,7 @@ fn execute_command(env: &Env, command: VaultCommand) -> Result<VaultCommandResul
             });
             set_governance_policy_impl(
                 env,
-                address_from_alloc_string(env, &caller)?,
+                caller,
                 kind,
                 target_ids,
                 mode,
@@ -778,28 +791,10 @@ fn execute_command(env: &Env, command: VaultCommand) -> Result<VaultCommandResul
                 value,
                 value_b,
                 value_c,
-            )?;
-            Ok(VaultCommandResult::Unit)
+            )
         }
-        VaultCommand::Skim { caller, token } => {
-            skim_impl(
-                env,
-                address_from_alloc_string(env, &caller)?,
-                address_from_alloc_string(env, &token)?,
-            )?;
-            Ok(VaultCommandResult::Unit)
-        }
-        VaultCommand::ResyncIdleBalance => {
-            resync_idle_balance_impl(env)?;
-            Ok(VaultCommandResult::Unit)
-        }
-        VaultCommand::CancelMigration { caller } => {
-            cancel_migration_impl(env, address_from_alloc_string(env, &caller)?)?;
-            Ok(VaultCommandResult::Unit)
-        }
-        VaultCommand::ExtendTtl => {
-            extend_storage_ttl(env);
-            Ok(VaultCommandResult::Unit)
+        GovernanceCommand::Skim { token } => {
+            skim_impl(env, caller, address_from_alloc_string(env, &token)?)
         }
     }
 }
@@ -843,8 +838,18 @@ impl SorobanVaultContract {
 
     pub fn execute(env: Env, payload: Bytes) -> Result<Bytes, ContractError> {
         let command = decode_command(&payload)?;
-        let result = execute_command(&env, command)?;
+        let result = execute_public_command(&env, command)?;
         encode_command_result(&env, &result)
+    }
+
+    pub fn execute_governance(
+        env: Env,
+        caller: soroban_sdk::Address,
+        payload: Bytes,
+    ) -> Result<(), ContractError> {
+        let command = GovernanceCommand::decode(&payload.to_alloc_vec())
+            .map_err(|_| ContractError::InvalidInput)?;
+        execute_governance_command(&env, caller, command)
     }
 
     #[allow(
