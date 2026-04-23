@@ -30,6 +30,7 @@ use crate::{
         redstone_oracle::{ReadPriceDataArgs, WritePricesArgs},
         ContractWriteOptions,
     },
+    dispatch::contract::query_contract_kind,
     GatewayContext, GatewayError, GatewayResult,
 };
 
@@ -279,7 +280,22 @@ async fn query_oracle_kind(
     ctx: &GatewayContext,
     oracle_id: AccountId,
 ) -> GatewayResult<OracleContractKind> {
-    ctx.near().cached_oracle_kind(oracle_id).await
+    match query_contract_kind(ctx, oracle_id.clone()).await? {
+        blockchain_gateway_core::contract::ContractKind::PythOracle
+        | blockchain_gateway_core::contract::ContractKind::RedstoneOracle => {
+            Ok(OracleContractKind::Direct)
+        }
+        blockchain_gateway_core::contract::ContractKind::ProxyOracle => {
+            Ok(OracleContractKind::Proxy)
+        }
+        blockchain_gateway_core::contract::ContractKind::LstOracle => {
+            let pyth_id = ctx.lst_oracle(oracle_id).cached_oracle_id().await?;
+            Ok(OracleContractKind::Lst { pyth_id })
+        }
+        other => Err(GatewayError::NearQuery(format!(
+            "contract kind {other:?} is not an oracle contract"
+        ))),
+    }
 }
 
 async fn resolve_dependencies(
