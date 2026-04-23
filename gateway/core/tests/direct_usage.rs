@@ -1,9 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
-use near_api::{
-    types::transaction::actions::Action, Contract, NetworkConfig, SecretKey, Signer,
-};
+use near_api::{types::transaction::actions::Action, Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
 use templar_gateway_core::{DispatchRead, GatewayContext, PlanWrite};
 use templar_gateway_types::{
@@ -20,10 +18,12 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
     let signer_account_id = ManagedAccountId("library-user.near".parse()?);
-    let signer = create_account_signer(&sandbox, &signer_account_id.0, NearToken::from_near(25)).await?;
+    let signer =
+        create_account_signer(&sandbox, &signer_account_id.0, NearToken::from_near(25)).await?;
 
     let ft_contract_id = "mock-ft.near".parse()?;
-    let ft_signer = create_account_signer(&sandbox, &ft_contract_id, NearToken::from_near(25)).await?;
+    let ft_signer =
+        create_account_signer(&sandbox, &ft_contract_id, NearToken::from_near(25)).await?;
     deploy_contract(
         &network,
         ft_contract_id.clone(),
@@ -53,7 +53,10 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     )
     .await?;
 
-    assert_eq!(account.code_hash, near_api::types::CryptoHash::default().to_string());
+    assert_eq!(
+        account.code_hash,
+        near_api::types::CryptoHash::default().to_string()
+    );
     assert_eq!(account.locked, NearToken::from_yoctonear(0));
 
     let plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(

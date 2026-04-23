@@ -8,15 +8,14 @@ use near_api::advanced::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_core::{
-    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayError,
-    GatewayContext, GatewayResult, HasIdempotencyKey, HasSignerAccountId, PlanWrite,
-    SharedOperationStore, StoredOperation, SucceededStep,
+    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayContext, GatewayError,
+    GatewayResult, HasIdempotencyKey, HasSignerAccountId, PlanWrite, SharedOperationStore,
+    StoredOperation, SucceededStep,
 };
 use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
     WriteActors,
 };
-use templar_gateway_store::MemoryOperationStore;
 use templar_gateway_types::{
     operation::OperationStatus, rpc::common::WriteOperationResult, ManagedAccountId,
 };
@@ -37,13 +36,6 @@ struct GatewayInner {
 
 impl GatewayService {
     pub fn spawn(
-        context: GatewayContext,
-        signers: HashMap<ManagedAccountId, ManagedSigner>,
-    ) -> Self {
-        Self::spawn_with_store(context, signers, Arc::new(MemoryOperationStore::new()))
-    }
-
-    pub fn spawn_with_store(
         context: GatewayContext,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
         store: SharedOperationStore,
@@ -149,12 +141,10 @@ impl GatewayService {
                         .await
                     {
                         Ok(execution) if execution.is_success() => {
-                            operation
-                                .succeeded_steps
-                                .push(SucceededStep {
-                                    transaction,
-                                    tx_hash,
-                                });
+                            operation.succeeded_steps.push(SucceededStep {
+                                transaction,
+                                tx_hash,
+                            });
                             operation.current_step = None;
                         }
                         Ok(_) | Err(_) => {
@@ -240,8 +230,7 @@ impl GatewayService {
                 let tx_hash = submitted_step.tx_hash();
                 submitted_step.fail(Some(tx_hash)).await?;
             }
-            Some(CurrentStepRef::Failed) => {}
-            None => {}
+            Some(CurrentStepRef::Failed) | None => {}
         }
 
         Ok(operation)
@@ -351,7 +340,11 @@ mod tests {
             Url::parse("https://hermes-beta.pyth.network")?,
             Path::new("node"),
         )?;
-        let service = GatewayService::spawn(context, gateway_signers);
+        let service = GatewayService::spawn(
+            context,
+            gateway_signers,
+            Arc::new(templar_gateway_store::MemoryStore::new()),
+        );
 
         Ok((
             TestHarness {
@@ -425,9 +418,11 @@ mod tests {
 
         let fingerprint = make_request_fingerprint(tx::FunctionCall::RPC_METHOD, &request)?;
         let payload = serde_json::to_vec(&request)?;
-        let plan =
-            <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(request.clone(), service.read_context())
-                .await?;
+        let plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
+            request.clone(),
+            service.read_context(),
+        )
+        .await?;
         let mut operation = match service
             .inner
             .store
@@ -516,12 +511,16 @@ mod tests {
             },
         };
 
-        let mut first_plan =
-            <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(first_request.clone(), service.read_context())
-                .await?;
-        let second_plan =
-            <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(second_request, service.read_context())
-                .await?;
+        let mut first_plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
+            first_request.clone(),
+            service.read_context(),
+        )
+        .await?;
+        let second_plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
+            second_request,
+            service.read_context(),
+        )
+        .await?;
         first_plan.push(
             second_plan
                 .steps

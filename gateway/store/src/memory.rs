@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Default)]
-pub struct MemoryOperationStore {
+pub struct MemoryStore {
     state: Mutex<MemoryStoreState>,
 }
 
@@ -20,14 +20,14 @@ struct MemoryStoreState {
     idempotency: HashMap<IdempotencyKey, OperationId>,
 }
 
-impl MemoryOperationStore {
+impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
 #[async_trait]
-impl OperationStore for MemoryOperationStore {
+impl OperationStore for MemoryStore {
     async fn get_by_id(
         &self,
         operation_id: &OperationId,

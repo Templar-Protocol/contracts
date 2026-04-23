@@ -1,11 +1,11 @@
 use futures::future::BoxFuture;
 use templar_gateway_types::lst_oracle;
 
+use crate::DispatchRead;
 use crate::{
     client::lst_oracle::{GetTransformerArgs, ListTransformersArgs},
     GatewayContext, GatewayResult,
 };
-use crate::DispatchRead;
 
 impl DispatchRead<GatewayContext> for lst_oracle::GetOracleId {
     fn dispatch(

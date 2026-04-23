@@ -10,6 +10,8 @@ mod operation;
 use async_trait::async_trait;
 use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
 
+pub use client::{ContractWriteOptions, NearClient};
+pub use context::GatewayContext;
 pub use error::{GatewayError, GatewayResult};
 pub use methods::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use operation::{
@@ -17,8 +19,6 @@ pub use operation::{
     PreparedCurrentStep, PreparedTransactionResult, SharedOperationStore, StoredOperation,
     SubmittedCurrentStep, SucceededStep,
 };
-pub use client::{ContractWriteOptions, NearClient};
-pub use context::GatewayContext;
 pub use templar_gateway_oracle_pyth::PythHttpClient;
 pub use templar_gateway_oracle_redstone::RedStoneBridgeClient;
 pub use templar_gateway_types::OraclePayloadSource;
@@ -30,10 +30,8 @@ pub enum CreateOperationResult {
 
 #[async_trait]
 pub trait OperationStore: Send + Sync {
-    async fn get_by_id(
-        &self,
-        operation_id: &OperationId,
-    ) -> GatewayResult<Option<StoredOperation>>;
+    async fn get_by_id(&self, operation_id: &OperationId)
+        -> GatewayResult<Option<StoredOperation>>;
 
     async fn get_by_idempotency_key(
         &self,

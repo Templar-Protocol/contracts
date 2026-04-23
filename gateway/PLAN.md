@@ -1,8 +1,8 @@
-# Blockchain Gateway Architecture
+# Templar Gateway Architecture
 
 ## Purpose
 
-The blockchain gateway is the NEAR-facing service boundary for off-chain code in this repository.
+The Templar Gateway is the NEAR-facing service boundary for off-chain code in this repository.
 
 It owns:
 

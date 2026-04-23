@@ -2,9 +2,7 @@ use futures::future::BoxFuture;
 use templar_gateway_types::token;
 
 use crate::{
-    dispatch::single_transaction_plan,
-    operation::OperationPlan,
-    GatewayContext, GatewayResult,
+    dispatch::single_transaction_plan, operation::OperationPlan, GatewayContext, GatewayResult,
 };
 use crate::{DispatchRead, PlanWrite};
 

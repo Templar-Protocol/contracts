@@ -1,10 +1,8 @@
 use futures::future::BoxFuture;
 use templar_gateway_types::contract;
 
-use crate::{
-    client::cache::load_cached, GatewayContext, GatewayError, GatewayResult,
-};
 use crate::DispatchRead;
+use crate::{client::cache::load_cached, GatewayContext, GatewayError, GatewayResult};
 
 impl DispatchRead<GatewayContext> for contract::ViewFunction {
     fn dispatch(

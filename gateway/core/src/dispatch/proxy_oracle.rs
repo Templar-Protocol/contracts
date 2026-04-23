@@ -1,11 +1,11 @@
 use futures::future::BoxFuture;
 use templar_gateway_types::proxy_oracle;
 
+use crate::DispatchRead;
 use crate::{
     client::proxy_oracle::{GetProxyArgs, ListProxiesArgs, PriceFeedExistsArgs},
     GatewayContext, GatewayResult,
 };
-use crate::DispatchRead;
 
 impl DispatchRead<GatewayContext> for proxy_oracle::ListProxies {
     fn dispatch(

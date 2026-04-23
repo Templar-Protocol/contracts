@@ -53,7 +53,9 @@ impl GatewayRpcBuilder {
         Ok(())
     }
 
-    fn register_read<Spec: DispatchRead<GatewayContext>>(&mut self) -> Result<(), RegisterMethodError> {
+    fn register_read<Spec: DispatchRead<GatewayContext>>(
+        &mut self,
+    ) -> Result<(), RegisterMethodError> {
         self.module.register_async_method(
             Spec::RPC_METHOD,
             move |params, service, _| async move {

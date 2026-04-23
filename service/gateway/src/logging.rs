@@ -3,12 +3,12 @@ use std::fs;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-const LOG_FILE_PREFIX: &str = "blockchain-gateway";
+const LOG_FILE_PREFIX: &str = "templar-gateway";
 
 fn standard_log_dir() -> Option<std::path::PathBuf> {
     dirs::state_dir()
         .or_else(dirs::data_local_dir)
-        .map(|dir| dir.join("templar").join("blockchain-gateway"))
+        .map(|dir| dir.join("templar").join("gateway"))
 }
 
 pub fn init() -> Option<WorkerGuard> {

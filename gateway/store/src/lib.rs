@@ -3,5 +3,5 @@
 mod memory;
 mod postgres;
 
-pub use memory::MemoryOperationStore;
+pub use memory::MemoryStore;
 pub use postgres::PostgresStore;

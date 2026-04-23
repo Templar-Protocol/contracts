@@ -1,10 +1,8 @@
 use futures::future::BoxFuture;
 use templar_gateway_types::ref_finance;
 
-use crate::{
-    client::ref_finance::GetPoolsArgs, GatewayContext, GatewayResult,
-};
 use crate::DispatchRead;
+use crate::{client::ref_finance::GetPoolsArgs, GatewayContext, GatewayResult};
 
 impl DispatchRead<GatewayContext> for ref_finance::GetPools {
     fn dispatch(

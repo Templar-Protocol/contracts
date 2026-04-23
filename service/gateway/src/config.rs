@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf};
 
+use anyhow::{bail, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
 use templar_gateway_core::SharedOperationStore;
 use templar_gateway_runtime::ManagedSigner;
-use templar_gateway_store::PostgresStore;
+use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
 
@@ -52,7 +54,7 @@ impl FromStr for ManagedSignerConfig {
 
 #[derive(Debug, Clone, Parser)]
 pub struct Config {
-    /// TCP address for the blockchain gateway JSON-RPC server.
+    /// TCP address for the Templar Gateway JSON-RPC server.
     #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:9944")]
     pub listen_addr: SocketAddr,
 
@@ -84,7 +86,7 @@ pub struct Config {
     #[arg(long, env = "REDSTONE_NODE_PATH", default_value = "node")]
     pub redstone_node_path: PathBuf,
 
-    /// Managed signer entries as <account_id>=<secret_key>[,<secret_key>...].
+    /// Managed signer entries as `<account_id>=<secret_key>[,<secret_key>...]`.
     #[arg(
         long = "managed-signer",
         env = "MANAGED_SIGNERS",
@@ -94,6 +96,7 @@ pub struct Config {
 }
 
 impl Config {
+    #[allow(clippy::expect_used, reason = "only called on startup")]
     pub async fn build_signers(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
         let mut signers = HashMap::new();
 
@@ -108,12 +111,20 @@ impl Config {
         signers
     }
 
-    pub fn build_store(&self) -> Result<Option<SharedOperationStore>, sqlx::Error> {
-        self.database_url
-            .as_deref()
-            .map(PostgresStore::new)
-            .transpose()
-            .map(|store| store.map(|store| std::sync::Arc::new(store) as SharedOperationStore))
+    pub async fn build_store(&self) -> Result<SharedOperationStore> {
+        let Some(database_url) = self.database_url.as_deref() else {
+            if self.migrate_database {
+                bail!("--migrate-database requires GATEWAY_DATABASE_URL to be set");
+            }
+            return Ok(Arc::new(MemoryStore::new()));
+        };
+
+        let store = PostgresStore::new(database_url)?;
+        if self.migrate_database {
+            store.migrate().await?;
+        }
+
+        Ok(Arc::new(store))
     }
 }
 
@@ -124,7 +135,7 @@ mod tests {
     #[test]
     fn parses_minimal_config() {
         let config = Config::try_parse_from([
-            "blockchain-gateway-service",
+            "templar-gateway-service",
             "--near-rpc-url",
             "https://rpc.mainnet.near.org",
             "--listen-addr",
@@ -149,5 +160,30 @@ mod tests {
         assert_eq!(config.managed_signers.len(), 1);
         assert_eq!(config.managed_signers[0].account_id.as_str(), "test.near");
         assert_eq!(config.managed_signers[0].secret_keys.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn migrate_requires_database_url() {
+        let config = Config::try_parse_from(["templar-gateway-service", "--migrate-database"])
+            .expect("config should parse");
+
+        let error = match config.build_store().await {
+            Ok(_) => panic!("migration without a database URL should fail"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("--migrate-database requires GATEWAY_DATABASE_URL to be set"));
+    }
+
+    #[tokio::test]
+    async fn build_store_defaults_to_memory_without_database_url() {
+        let config =
+            Config::try_parse_from(["templar-gateway-service"]).expect("config should parse");
+
+        match config.build_store().await {
+            Ok(_) => {}
+            Err(error) => panic!("memory-backed default store should build: {error}"),
+        }
     }
 }

@@ -6,10 +6,10 @@ use near_api::advanced::{ExecuteSignedTransaction, TransactionableOrSigned};
 use near_api::types::transaction::{
     result::TransactionResult, PrepopulateTransaction, SignedTransaction,
 };
+use templar_gateway_core::GatewayContext;
 use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, PlannedTransaction, PreparedTransactionResult,
 };
-use templar_gateway_core::GatewayContext;
 use templar_gateway_types::{ManagedAccountId, MethodSpec};
 use tokio::sync::Semaphore;
 
@@ -61,10 +61,7 @@ impl actix::Message for SubmitSignedTransactionMessage {
     type Result = GatewayResult<TransactionResult>;
 }
 
-pub fn map_mailbox_error(
-    error: actix::MailboxError,
-    actor_name: &'static str,
-) -> GatewayError {
+pub fn map_mailbox_error(error: actix::MailboxError, actor_name: &'static str) -> GatewayError {
     GatewayError::ActorError {
         actor: actor_name,
         source: error,
@@ -148,9 +145,9 @@ impl WriteActors {
         &self,
         signer_account_id: &ManagedAccountId,
     ) -> GatewayResult<&Addr<AccountWriteActor>> {
-        self.senders.get(signer_account_id).ok_or_else(|| {
-            GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string())
-        })
+        self.senders
+            .get(signer_account_id)
+            .ok_or_else(|| GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string()))
     }
 
     pub async fn prepare_planned_transaction(

@@ -226,10 +226,8 @@ impl PlanWrite<GatewayContext> for oracle::UpdatePrices {
 
             for (oracle_id, feed_ids) in redstone_updates {
                 let feed_ids = feed_ids.into_iter().collect::<Vec<_>>();
-                let payload = ctx
-                    .redstone_bridge();
-                let payload = OraclePayloadSource::fetch_payload(payload, &feed_ids)
-                    .await?;
+                let payload = ctx.redstone_bridge();
+                let payload = OraclePayloadSource::fetch_payload(payload, &feed_ids).await?;
                 let tx_result = submit_redstone_update(
                     &ctx,
                     request.signer_account_id.clone(),

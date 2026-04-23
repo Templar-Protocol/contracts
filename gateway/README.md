@@ -1,6 +1,6 @@
 # Gateway Naming
 
-This document defines the RPC naming conventions for the blockchain gateway.
+This document defines the RPC naming conventions for the Templar Gateway.
 
 ## Read Methods
 
