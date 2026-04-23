@@ -4,6 +4,7 @@ members = [
     "common",
     "contract/lst-oracle",
     "contract/market",
+    "contract/proxy-4626-soroban",
     "contract/proxy-oracle",
     "contract/redstone-adapter",
     "contract/registry",

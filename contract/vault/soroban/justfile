@@ -133,7 +133,7 @@ build-blend-adapter:
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
 	@echo "Checking Soroban ERC-4626 proxy crate..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
+	@SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
 		--manifest-path "{{root}}/Cargo.toml" \
 		--target wasm32-unknown-unknown \
 		-p templar-4626-proxy-soroban
