@@ -1,0 +1,24 @@
+[package]
+name = "templar-curator-proxy-soroban"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Typed Soroban curator operations proxy for Templar Protocol"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+doctest = false
+
+[features]
+default = []
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+templar-soroban-governance = { path = "../vault/soroban/governance" }
+templar-soroban-shared-types = { path = "../vault/soroban/shared-types" }
+
+[dev-dependencies]
+soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
+templar-soroban-runtime = { path = "../vault/soroban", features = ["testutils"] }

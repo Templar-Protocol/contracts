@@ -141,6 +141,14 @@ check-4626-proxy:
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
 
+# Check the Soroban curator operations proxy crate.
+check-curator-proxy:
+	@echo "Checking Soroban curator proxy crate..."
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
+		--manifest-path "{{root}}/Cargo.toml" \
+		-p templar-curator-proxy-soroban
+	@echo "✓ Checked: templar-curator-proxy-soroban"
+
 # Build all WASMs (vault + governance + share token + blend adapter).
 build-all: build build-blend-adapter
 	@echo "✓ All contracts built"
