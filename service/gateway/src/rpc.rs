@@ -3,15 +3,14 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
     RpcModule,
 };
-use templar_gateway_near::{
-    actor::{DispatchRead, PlanWrite},
-    GatewayError, GatewayService,
-};
+use templar_gateway_core::{DispatchRead, GatewayContext, GatewayError, PlanWrite};
 use templar_gateway_types::{
     account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
     proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
     token, tx, universal_account, MethodSpec,
 };
+
+use crate::gateway_service::GatewayService;
 
 const GATEWAY_SERVER_ERROR_CODE: i32 = -32000;
 
@@ -35,7 +34,7 @@ impl GatewayRpcBuilder {
         self.module
     }
 
-    fn register_write<Spec: PlanWrite>(&mut self) -> Result<(), RegisterMethodError>
+    fn register_write<Spec: PlanWrite<GatewayContext>>(&mut self) -> Result<(), RegisterMethodError>
     where
         Spec::Input: Clone + serde::Serialize,
         Spec::Output: serde::de::DeserializeOwned,
@@ -54,7 +53,7 @@ impl GatewayRpcBuilder {
         Ok(())
     }
 
-    fn register_read<Spec: DispatchRead>(&mut self) -> Result<(), RegisterMethodError> {
+    fn register_read<Spec: DispatchRead<GatewayContext>>(&mut self) -> Result<(), RegisterMethodError> {
         self.module.register_async_method(
             Spec::RPC_METHOD,
             move |params, service, _| async move {

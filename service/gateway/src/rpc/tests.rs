@@ -32,7 +32,7 @@ use templar_common::oracle::{
 };
 use templar_common::primitive_types::U256;
 use templar_common::time::Nanoseconds;
-use templar_gateway_near::GatewayContext;
+use templar_gateway_core::GatewayContext;
 use templar_gateway_testing::{SandboxHarness, TestController};
 use templar_gateway_types::{
     account,

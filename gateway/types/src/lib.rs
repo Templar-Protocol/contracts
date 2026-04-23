@@ -2,6 +2,7 @@ mod macros;
 
 pub mod error;
 pub mod operation;
+pub mod payload;
 pub mod primitive;
 pub mod rpc;
 pub mod spec;
@@ -11,6 +12,7 @@ pub use error::{CoreError, CoreResult};
 pub use operation::{
     OperationId, OperationRecord, OperationStatus, StepStatus, TransactionStepRecord,
 };
+pub use payload::OraclePayloadSource;
 pub use primitive::{
     Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, MarketId,
     NearGas, NearToken, RegistryId, UniversalAccountId, U128,

@@ -53,5 +53,6 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 ## Local DB
 
 - Use a local Postgres server with separate databases per crate.
-- Run gateway migrations from `gateway/near/`.
-- Run `cargo sqlx prepare` from `gateway/near/` so `.sqlx` stays crate-local.
+- Run gateway store migrations from `gateway/store/`.
+- Run `cargo sqlx prepare` from `gateway/store/` so `.sqlx` stays crate-local.
+- `gateway/store` defaults `SQLX_OFFLINE=true` during normal builds; override it when regenerating `.sqlx` against a live dev database.

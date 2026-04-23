@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM gateway_operation_steps\n            WHERE operation_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "369ab1adfccff7ed8ba1b2a5c16f7a634f17003d4524b94f87dcbf032430e7bf"
+}

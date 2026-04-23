@@ -1,159 +1,183 @@
-# Blockchain Gateway Refactor Plan
+# Blockchain Gateway Architecture
 
 ## Purpose
 
-The blockchain gateway is a NEAR-only refactor of the code that interacts with smart contracts in this repository.
+The blockchain gateway is the NEAR-facing service boundary for off-chain code in this repository.
 
-This first version does not include Soroban. Soroban may be added later, but it must not drive the current design.
+It owns:
 
-The gateway boundary is strict:
+- direct NEAR contract reads
+- direct NEAR contract writes
+- transaction planning and operation semantics
+- transaction execution runtime and signer management
+- durable operation/idempotency state
+- tightly scoped oracle payload integrations needed to prepare writes
 
-- Include all direct NEAR blockchain interactions.
-- Include direct NEAR contract queries.
-- Include direct NEAR contract writes.
-- Include signing, key management, and nonce management required to safely submit transactions.
-- Include higher-level operations composed from direct NEAR interactions.
-- Exclude non-NEAR business logic.
+It does not own:
 
-Examples:
+- JSON-RPC transport concerns beyond the service binary
+- broader relayer business logic
+- unrelated off-chain workflows
+- authentication and authorization policy beyond whatever typed request shape is needed to execute an operation
 
-- Include universal account creation and execution.
-- Include registry deployment flows.
-- Include market interactions such as borrow, supply, repay, withdraw, liquidation, and accumulation.
-- Exclude relayer PoW verification.
-- Allow narrowly scoped outbound integrations that are tightly coupled to preparing on-chain writes when keeping them inside the gateway materially simplifies the caller contract. Current examples include fetching Hermes and RedStone update payloads for oracle update operations.
-- Exclude unrelated off-chain workflows such as relayer PoW verification or broader non-NEAR business logic.
+This version is NEAR-only. Soroban or other chains may be added later, but they should not distort the current crate boundaries.
 
-## Product Shape
+## Current Crate Layout
 
-The refactor should comprise:
+All gateway code lives under `gateway/`, with the transport binary under `service/gateway`.
 
-- blockchain gateway common crate(s)
-- one service crate
-
-The service crate is an internal binary, but partners may also deploy it in their own infrastructure.
-
-## Communication Layer
-
-The gateway should use JSON-RPC.
-
-Why:
-
-- The API is operation-oriented rather than resource-oriented.
-- Go and JavaScript clients can consume it easily.
-- It avoids protobuf and gRPC friction for JavaScript-heavy partner integrations.
-
-Implementation constraint:
-
-- `jsonrpsee` should be used only as thin transport glue.
-- The RPC contract, types, business logic, auth policy, actor messages, and execution model must not depend on `jsonrpsee`.
-- Only the service binary crate should depend on `jsonrpsee`.
-- The service binary crate should contain no business logic. It should only perform request decoding, auth extraction, dispatch, and response encoding.
-
-Transport preference:
-
-- Prefer local/private deployment patterns.
-- Unix domain sockets are a good default for same-host use.
-- TCP may be supported for partner/self-hosted deployments.
-
-## Crate Layout
-
-All blockchain gateway code lives under `gateway/` at the project root.
-
-Current intended crates:
+Current crates:
 
 1. `gateway/core`
-2. `gateway/near`
-3. `gateway/testing`
-4. `service/blockchain-gateway`
+2. `gateway/runtime`
+3. `gateway/store`
+4. `gateway/oracle-pyth`
+5. `gateway/oracle-redstone`
+6. `gateway/testing`
+7. `service/gateway`
 
 ### `gateway/core`
 
-This crate is the transport-agnostic source of truth for the public contract.
+This is the transport-agnostic source of truth for gateway behavior.
 
 Responsibilities:
 
-- shared primitive newtypes
-- RPC method taxonomy
-- request/response types
-- operation IDs and operation status types
-- auth policy types
-- error taxonomy
-- schema/spec metadata traits
+- request and response types
+- method taxonomy
+- operation plan and operation state types
+- gateway error taxonomy
+- NEAR client/query surface used by planning
+- current dispatch and write-planning logic
+- shared traits such as the oracle payload source abstraction
 
 Requirements:
 
 - no `jsonrpsee`
-- derive serde and schema information from the same Rust types used in production
-- prefer strong newtypes over raw strings where practical
-- use `near_account_id::AccountId` for account identifier newtypes, not `String`
+- no runtime ownership
+- no actor lifecycle management
+- no durable store implementation
+- expose lightweight functions and traits that define operation behavior
 
-### `gateway/near`
+The long-term direction is for `gateway/core` to move further toward a single-phase requirements model:
 
-This crate contains NEAR-specific business logic and internal orchestration.
+1. declare all required reads up front
+2. resolve them outside the planner
+3. finalize a plan from resolved inputs
+
+That refactor is not complete yet, but `core` is the place where it should land.
+
+### `gateway/runtime`
+
+This crate owns runtime-hosted execution.
 
 Responsibilities:
 
-- `near-api` integration
-- actor model implementation
-- auth enforcement logic
-- operation planning and execution
-- account/key lane management
-- nonce management
-- signing and submission
-- Postgres-backed persistence for auth, operations, idempotency, and audit
-- typed contract/domain logic for registry, market, universal account, and storage interactions
+- signer ownership
+- write execution lanes
+- actor/message-passing execution scaffolding
+- transaction submission orchestration
+- runtime startup and lifecycle
 
 Requirements:
 
-- no `jsonrpsee`
-- no transport-specific request handling
-- keep all business logic here rather than in the service crate
+- no transport glue
+- no request decoding logic
+- no ownership of operation semantics that belong in `gateway/core`
+
+### `gateway/store`
+
+This crate owns durable operation storage.
+
+Responsibilities:
+
+- operation store interfaces and implementations
+- idempotency persistence
+- in-memory and Postgres-backed stores
+- migrations and `sqlx` metadata
+
+Current structure:
+
+- `memory.rs`
+- `postgres.rs`
+
+Notes:
+
+- run migrations from `gateway/store/`
+- regenerate `.sqlx` from `gateway/store/`
+- normal builds should use offline metadata
+
+### `gateway/oracle-pyth`
+
+This crate owns the Hermes/Pyth integration.
+
+Responsibilities:
+
+- fetch Pyth update payloads
+- implement the shared oracle payload trait for Pyth price IDs
+
+### `gateway/oracle-redstone`
+
+This crate owns the RedStone bridge integration.
+
+Responsibilities:
+
+- communicate with the RedStone bridge
+- fetch RedStone payloads
+- implement the shared oracle payload trait for RedStone feed IDs
 
 ### `gateway/testing`
 
-This crate will eventually absorb the test controller abstractions currently in `test-utils`.
+This crate owns gateway-specific testing helpers.
 
 Responsibilities:
 
-- typed test controllers
-- replacement for the current controller DSL / `define!`-style ergonomics
-- near-sandbox support
-- migration path away from `near-workspaces` assumptions where practical
+- sandbox setup and helpers
+- test-time client/runtime wiring
+- future home for more extracted gateway test abstractions
 
-### `service/blockchain-gateway`
+### `service/gateway`
 
-This crate is the JSON-RPC server binary.
+This is the JSON-RPC server binary.
 
 Responsibilities:
 
-- configure and start the RPC server
-- deserialize JSON-RPC requests into internal typed requests
-- dispatch into `gateway/near`
-- encode results and errors back into JSON-RPC responses
+- start and configure the RPC server
+- decode JSON-RPC requests
+- call into the gateway crates
+- encode responses back to JSON-RPC
+- wire together `core`, `runtime`, `store`, and the oracle integrations
 
 Requirements:
 
-- this is the only crate allowed to depend on `jsonrpsee`
-- no business logic here
-- no direct NEAR execution logic here
-- authentication and permissioning are handled outside the gateway
+- this is the only gateway crate that should depend on `jsonrpsee`
+- keep it as thin transport and composition glue
+- do not move planning or execution semantics into this crate
+
+## Communication Layer
+
+The gateway uses JSON-RPC because the API is operation-oriented rather than resource-oriented, and it is easy to consume from Go and JavaScript clients.
+
+Constraints:
+
+- `jsonrpsee` stays in `service/gateway`
+- transport should not become the source of truth for method shapes
+- business logic should remain outside the service binary
 
 ## API Design Principles
 
 ### Reads vs Writes
 
-Reads and writes are unauthenticated at the gateway layer.
+Reads and writes are differentiated by behavior, not by transport shape.
 
-Authentication and permissioning are handled outside the blockchain gateway.
+Writes are modeled as operations. Even a one-transaction write is still an operation with one step.
 
-The gateway still distinguishes reads from writes semantically, but not for access control.
+The current architecture already plans writes separately from executing them. The next refinement is to make read requirements explicit up front so planning can become more deterministic, cacheable, and easier to test.
 
-### Typed Domain Methods
+### Typed Methods
 
-The public API should prefer typed service-level methods rather than raw generic function calls.
+The public API should prefer typed domain methods over generic function-call interfaces.
 
-Typed domain methods are RPC methods that correspond to a contract/domain concept such as:
+Examples:
 
 - `registry.deploy`
 - `market.borrow`
@@ -165,155 +189,68 @@ Typed domain methods are RPC methods that correspond to a contract/domain concep
 - `ua.createAccount`
 - `storage.ensureDeposit`
 
-These methods do not have to mirror on-chain contract method names exactly. They may be renamed or grouped to present a cleaner service-level API.
-
 ### Generic Escape Hatch
 
-Include a generic write method for now:
-
-- `tx.functionCall`
-
-But this is a temporary escape hatch. The long-term goal is to remove or de-emphasize it once typed methods cover all necessary interactions.
-
-If present, any restrictions are enforced outside the gateway.
-
-### All Writes Are Operations
-
-There is no useful architectural distinction between single-transaction and multi-transaction writes.
-
-All writes should be modeled as operations.
-
-- a one-transaction write is just an operation with one transaction step
-- a multi-transaction write is just an operation with multiple transaction steps
-
-Every write should return an operation ID.
-
-Default write behavior should wait for final completion unless or until a later non-blocking mode is added.
+A generic low-level write surface may still exist where needed, but it should remain clearly secondary to typed operations.
 
 ### Idempotency
 
-Write idempotency is useful in v1.
-
-Reason:
-
-- JSON-RPC request `id` is only a transport correlation field
-- it is not a durable operation identity
-- retries may come from a different client session or process
-
-The gateway therefore needs durable operation tracking and idempotency records for write requests.
+Transport request IDs are not durable operation identities. Durable write idempotency remains part of the gateway design and belongs in the store layer.
 
 ## Auth Scope
 
-Authentication and permissioning are explicitly out of scope for the blockchain gateway.
+Authentication and authorization policy are out of scope for the gateway itself.
 
-The surrounding service layer or deployment environment is responsible for ensuring that only authorized callers can invoke the gateway.
+The surrounding deployment or caller-facing service is responsible for access control. The gateway should not become an auth system.
 
 The gateway does not:
 
-- store auth tokens or principals
-- enforce method allowlists
-- enforce signer-account permissions
-- evaluate request authentication
+- store auth tokens
+- enforce caller permissions
+- evaluate deployment-specific policy
 
-Secrets must not be stored in the database.
-
-Key material should come from:
-
-- environment variables
-- a secrets manager
-- a keychain or equivalent host-managed secret source
-
-Persist only key metadata such as:
-
-- logical key ID
-- owning account
-- public key
-- status
-- secret source reference
+Key material should come from host-managed secret sources, not from Postgres.
 
 ## Persistence Model
 
 Use Postgres for durable control-plane state.
 
-This is already a reasonable dependency in this repository because the relayer already uses `sqlx` and Postgres.
+Persist:
 
-Persist in Postgres:
-
-- managed account metadata
-- managed key metadata only
 - operation records
 - operation step records
-- idempotency mapping
-- audit events
+- idempotency mappings
+- managed account metadata as needed by execution
 
-Do not persist in Postgres:
+Do not persist:
 
 - private keys
-- raw secret values
-- ephemeral block hash caches
-- ephemeral in-memory `near-api` signer nonce cache state
+- raw secrets
+- ephemeral RPC caches
+- volatile signer nonce cache state
 
-The volatile runtime should reconstruct signer state on startup from durable metadata plus host-provided secrets.
+The runtime should reconstruct volatile signer state from durable metadata plus externally provided secrets.
 
-## Actor Model
+## Runtime Model
 
-Prefer message passing throughout. Full actor model is ideal.
+The runtime crate currently uses actor-style ownership boundaries for execution and signer coordination.
 
-The relayer implementation should be used as inspiration here.
+That is acceptable as an execution detail, but those concerns should remain outside `gateway/core`.
 
-At minimum, the architecture should preserve actor-like ownership boundaries.
+The key architectural boundary is:
 
-Current intended actors:
-
-1. `RpcActor`
-2. domain actors such as `RegistryActor`, `MarketActor`, `UniversalAccountActor`, `StorageActor`
-3. `OperationActor`
-
-### `RpcActor`
-
-Owns NEAR RPC access.
-
-Responsibilities:
-
-- view calls
-- account/access-key queries
-- transaction submission
-- transaction status polling
-- block lookups needed for transaction freshness
-
-### `OperationActor`
-
-Coordinates multi-step operations and records durable progress.
-
-## Nonce Management
-
-For v1, the gateway relies on `near-api`'s built-in signer functionality for:
-
-- nonce caching per `(account_id, public_key)`
-- finalized access-key nonce fetching
-- access-key pooling across multiple keys
-- transaction signing and submission
-
-This means the gateway does not currently implement a custom nonce manager.
-
-Important implications:
-
-- all writes for a managed account should flow through the same shared `Arc<near_api::Signer>` instance
-- the gateway still owns operation semantics, idempotency, and higher-level workflow control
-- if stronger restart recovery or multi-instance coordination becomes necessary later, a custom nonce-management layer can still be added on top
-
-The gateway should not expose raw nonce reservation or raw signing as public RPC methods.
+- `core` defines what should happen
+- `runtime` owns how a planned write is executed
+- `store` owns durability
 
 ## Method Taxonomy
 
-The current intended taxonomy is:
+The gateway surface is expected to include:
 
 - public read methods
-- write methods
+- operation-producing write methods
 
-The current core crate already has preliminary enums for this structure.
-
-### Initial Read Surface
+Illustrative read surface:
 
 - `system.health`
 - `system.version`
@@ -328,7 +265,7 @@ The current core crate already has preliminary enums for this structure.
 - `storage.getBalanceBounds`
 - `storage.getBalanceOf`
 
-### Initial Write Surface
+Illustrative write surface:
 
 - `tx.functionCall`
 - `storage.deposit`
@@ -337,102 +274,28 @@ The current core crate already has preliminary enums for this structure.
 - `ua.execute`
 - `ua.createAccount`
 
-### Future Typed Market Surface
+The exact surface should continue to become more typed over time.
 
-The gateway is expected to grow beyond the minimal first pass.
+## Documentation And Spec Generation
 
-Future typed market methods should include at least:
-
-- `market.borrow`
-- `market.supply`
-- `market.withdrawCollateral`
-- `market.withdrawSupply`
-- `market.repay`
-- `market.liquidate`
-- `market.accumulateBorrow`
-- `market.accumulateStaticYield`
-
-The general rule is that the gateway should eventually encompass all service needs of partners for NEAR interactions.
-
-## Documentation and Spec Generation
-
-Spec generation must not be an afterthought.
-
-The system should be as self-documenting as possible.
+The gateway contract should be derived from Rust types, not hand-maintained transport docs.
 
 Approach:
 
 - define the contract in Rust types first
-- derive serde and schema information from those same types
-- use traits and method metadata in the core crate as the source of truth
-- generate machine-readable spec/docs from those types
+- derive serde and schema information from those types
+- keep the public contract and method metadata close to `gateway/core`
 
-Important constraint:
+`jsonrpsee` must not become the source of truth for the public API.
 
-- do not hand-build a large documentation/spec generation system as part of this refactor
-- prefer a dependency to do the spec generation work for us
+## Near-Term Direction
 
-Current direction:
+The current crate split is in place. The next meaningful architectural step is not more crate churn.
 
-- use `schemars` in the core types
-- find a dependency-assisted way to generate a spec from the same type registry
-- do not let `jsonrpsee` become the source of truth for the API contract
+The next step is to move `gateway/core` toward a single-phase requirements model for planning:
 
-## Type System Principles
+1. compute a deterministic set of reads required for an operation
+2. resolve them with caching and deduplication outside the planner
+3. finalize the operation plan from resolved data
 
-Compile-time verification of invariants is highly valuable.
-
-The design should leverage the Rust type system for:
-
-- explicit method taxonomy
-- strong newtypes rather than primitive obsession
-- account ID wrappers
-- auth policy types
-- operation status and lifecycle modeling
-- internal request state transitions where typestate improves clarity and safety
-
-Typestate is considered useful here, particularly for:
-
-- parsed vs authorized write requests
-- operation lifecycle stages
-- internal execution stages where illegal transitions should be made unrepresentable
-
-## Current Scaffold Status
-
-Initial module structure has already been created.
-
-Current files/crates introduced:
-
-- `gateway/core`
-- `gateway/near`
-- `gateway/testing`
-- `service/blockchain-gateway`
-
-Current notable decisions already reflected in code:
-
-- `jsonrpsee` is only used in `service/blockchain-gateway`
-- `gateway/core` owns method taxonomy and primitive newtypes
-- `gateway/near` owns actor/business scaffolding
-- `gateway/testing` exists as the future home for extracted testing abstractions
-- transparent newtype helpers have been introduced in `gateway/core`
-- `near_account_id::AccountId` is used for account ID wrappers
-
-## Next Implementation Steps
-
-The immediate next steps are:
-
-1. define the initial typed RPC request/response types in `gateway/core`
-2. define method metadata/spec traits strongly enough to support future spec generation
-3. define internal service traits and actor message interfaces in `gateway/near`
-4. define persistence interfaces and initial Postgres schema for auth, operations, idempotency, and audit
-5. begin implementing the `jsonrpsee` adapter only after the internal typed contract is stable enough
-
-## Guardrails
-
-- Keep changes small and incremental.
-- Preserve the boundary that the service crate is glue only.
-- Avoid introducing business logic into the transport layer.
-- Avoid stringly typed method dispatch outside the JSON-RPC boundary.
-- Prefer typed service-level methods over generic function calls.
-- Keep the generic function-call escape hatch constrained and temporary.
-- Never store secrets in the database.
+That should make requirements more visible, easier to cache, and easier to test without pushing lifecycle/runtime concerns back into the core crate.

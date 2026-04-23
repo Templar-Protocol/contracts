@@ -81,6 +81,7 @@ near-primitives = "0.34.7"
 near-primitives-core = "0.34.7"
 near-sdk = { version = "5.25", default-features = false, features = ["unstable"] }
 near-sdk-contract-tools = "4.0.0"
+near-sandbox = "0.3.9"
 near-token = "0.3.3"
 near-workspaces = "0.22.1"
 p256 = "0.13.2"
@@ -106,8 +107,12 @@ sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
+templar-gateway-core = { path = "./gateway/core" }
 templar-gateway-macros = { path = "./gateway/macros" }
-templar-gateway-near = { path = "./gateway/near" }
+templar-gateway-oracle-pyth = { path = "./gateway/oracle-pyth" }
+templar-gateway-oracle-redstone = { path = "./gateway/oracle-redstone" }
+templar-gateway-runtime = { path = "./gateway/runtime" }
+templar-gateway-store = { path = "./gateway/store" }
 templar-gateway-testing = { path = "./gateway/testing" }
 templar-gateway-types = { path = "./gateway/types" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }

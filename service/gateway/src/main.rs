@@ -1,4 +1,5 @@
 mod config;
+mod gateway_service;
 mod logging;
 mod rpc;
 
@@ -6,10 +7,12 @@ use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use near_api::NetworkConfig;
-use templar_gateway_near::{GatewayContext, GatewayService, PostgresStore};
+use templar_gateway_core::GatewayContext;
+use templar_gateway_store::PostgresStore;
 use tokio::signal;
 
 use crate::config::Config;
+use crate::gateway_service::GatewayService;
 
 #[allow(clippy::expect_used, reason = "fail fast during startup/shutdown")]
 #[tokio::main]

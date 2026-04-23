@@ -7,7 +7,8 @@ use near_token::NearToken;
 use templar_common::oracle::redstone::config as redstone_config;
 use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
 use templar_common::{market::MarketConfiguration, market::YieldWeights};
-use templar_gateway_near::{ManagedSigner, NearClient};
+use templar_gateway_core::NearClient;
+use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::{ManagedAccountId, RegistryId, UniversalAccountId};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{

@@ -13279,6 +13279,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-gateway-core"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "anyhow",
+ "async-trait",
+ "futures",
+ "hex",
+ "moka",
+ "near-account-id",
+ "near-api",
+ "near-contract-standards",
+ "near-openapi-client",
+ "near-sandbox",
+ "near-sdk",
+ "near-token",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "templar-common",
+ "templar-gateway-oracle-pyth",
+ "templar-gateway-oracle-redstone",
+ "templar-gateway-types",
+ "templar-universal-account",
+ "test-utils",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "templar-gateway-macros"
 version = "0.1.0"
 dependencies = [
@@ -13288,63 +13319,69 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-gateway-near"
+name = "templar-gateway-oracle-pyth"
 version = "0.1.0"
 dependencies = [
- "actix",
- "anyhow",
  "async-trait",
- "chrono",
- "futures",
  "hex",
- "moka",
- "near-account-id",
- "near-api",
- "near-api-types",
- "near-contract-standards",
- "near-openapi-client",
- "near-sandbox",
- "near-sdk",
- "near-token",
  "reqwest 0.12.28",
- "schemars 0.8.22",
  "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
- "sqlx",
+ "templar-common",
+ "templar-gateway-types",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
+name = "templar-gateway-oracle-redstone"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
  "templar-common",
  "templar-gateway-types",
  "templar-redstone-bridge",
- "templar-universal-account",
- "test-utils",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
- "url",
- "uuid 1.23.0",
+]
+
+[[package]]
+name = "templar-gateway-runtime"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "async-trait",
+ "futures",
+ "near-api",
+ "templar-gateway-core",
+ "templar-gateway-types",
+ "tokio",
 ]
 
 [[package]]
 name = "templar-gateway-service"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "anyhow",
  "clap",
  "dirs 6.0.0",
  "dotenvy",
- "futures",
  "jsonrpsee",
  "near-account-id",
  "near-api",
+ "near-sandbox",
  "near-sdk",
+ "near-token",
  "reqwest 0.12.28",
- "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
  "sqlx",
  "templar-common",
- "templar-gateway-near",
+ "templar-gateway-core",
+ "templar-gateway-runtime",
+ "templar-gateway-store",
  "templar-gateway-testing",
  "templar-gateway-types",
  "templar-universal-account",
@@ -13355,6 +13392,23 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "templar-gateway-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "borsh 1.6.1",
+ "chrono",
+ "near-account-id",
+ "near-api",
+ "serde_json",
+ "sqlx",
+ "templar-gateway-core",
+ "templar-gateway-types",
+ "tokio",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -13370,7 +13424,8 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
- "templar-gateway-near",
+ "templar-gateway-core",
+ "templar-gateway-runtime",
  "templar-gateway-types",
  "templar-universal-account",
  "test-utils",
@@ -13381,6 +13436,7 @@ dependencies = [
 name = "templar-gateway-types"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "borsh 1.6.1",
  "near-account-id",
