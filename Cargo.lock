@@ -13066,6 +13066,7 @@ dependencies = [
 name = "templar-soroban-governance"
 version = "0.1.0"
 dependencies = [
+ "postcard",
  "soroban-sdk 25.3.0",
  "templar-curator-primitives",
  "templar-soroban-shared-types",
@@ -13102,6 +13103,8 @@ dependencies = [
 name = "templar-soroban-shared-types"
 version = "0.1.0"
 dependencies = [
+ "postcard",
+ "serde",
  "soroban-sdk 25.3.0",
 ]
 

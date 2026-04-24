@@ -89,27 +89,27 @@ impl Number {
 
     #[inline]
     #[must_use]
-    pub fn mul_div_floor(x: Number, y: Number, denom: Number) -> Number {
-        if denom.is_zero() {
+    pub fn mul_div_floor(multiplicand: Number, multiplier: Number, denominator: Number) -> Number {
+        if denominator.is_zero() {
             return Number::zero();
         }
-        let prod = x.0.full_mul(y.0);
-        let q = prod / U512::from(denom.0);
-        Number(Self::as_u256_trunc(q))
+        let product = multiplicand.0.full_mul(multiplier.0);
+        let quotient = product / U512::from(denominator.0);
+        Number(Self::as_u256_trunc(quotient))
     }
 
     #[inline]
     #[must_use]
-    pub fn mul_div_ceil(x: Number, y: Number, denom: Number) -> Number {
-        if denom.is_zero() {
+    pub fn mul_div_ceil(multiplicand: Number, multiplier: Number, denominator: Number) -> Number {
+        if denominator.is_zero() {
             return Number::zero();
         }
-        let prod = x.0.full_mul(y.0);
-        let d = U512::from(denom.0);
-        let q = prod / d;
-        let r = prod % d;
-        let base = Number(Self::as_u256_trunc(q));
-        if r.is_zero() {
+        let product = multiplicand.0.full_mul(multiplier.0);
+        let wide_denominator = U512::from(denominator.0);
+        let quotient = product / wide_denominator;
+        let remainder = product % wide_denominator;
+        let base = Number(Self::as_u256_trunc(quotient));
+        if remainder.is_zero() {
             base
         } else {
             base.saturating_add(Number::one())
@@ -239,9 +239,10 @@ impl<'de> Deserialize<'de> for Wad {
 }
 
 impl Wad {
+    const SCALE_LOW_LIMB: u64 = 1_000_000_000_000_000_000u64;
     pub const SCALE: u128 = 1_000_000_000_000_000_000u128;
     pub const ZERO: Self = Wad(Number::ZERO);
-    pub const ONE: Self = Wad(Number(U256([Self::SCALE as u64, 0, 0, 0])));
+    pub const ONE: Self = Wad(Number(U256([Self::SCALE_LOW_LIMB, 0, 0, 0])));
 
     #[inline]
     #[must_use]
