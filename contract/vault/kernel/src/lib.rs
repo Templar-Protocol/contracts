@@ -4,6 +4,7 @@ extern crate alloc;
 #[cfg(any(test, feature = "std", feature = "schemars", feature = "borsh-schema"))]
 extern crate std;
 
+pub mod abort;
 pub mod actions;
 pub mod address_book;
 pub mod effects;
@@ -33,11 +34,11 @@ pub use math::wad::{
     mul_div_ceil, mul_div_floor, mul_wad_floor, total_assets_for_fee_accrual, Wad, MAX_FEE_WAD,
     MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, YEAR_NS,
 };
-pub use restrictions::{RestrictionKind, Restrictions};
+pub use restrictions::{RestrictionKind, RestrictionMode, Restrictions};
 pub use state::escrow::{
     apply_settlement, can_apply_settlement, compute_escrow_stats, find_by_owner, is_stale,
-    settle_proportional, total_burn, total_refund, EscrowEntry, EscrowSettlement, EscrowStats,
-    SettlementResult,
+    settle_proportional, settle_proportional_raw, total_burn, total_refund, EscrowEntry,
+    EscrowSettlement, EscrowStats, SettlementResult,
 };
 pub use state::op_state::{
     AllocatingState, AllocationPlanEntry, IdleState, OpState, PayoutState, RefreshingState,
@@ -58,5 +59,5 @@ pub use transitions::{
     withdrawal_collected, withdrawal_settled, withdrawal_step_callback, TransitionError,
     TransitionRes, TransitionResult, WithdrawalRequest,
 };
-pub use types::{ActualIdx, Address, AssetId, ExpectedIdx, KernelVersion, TimestampNs};
+pub use types::{ActualIdx, Address, AssetId, DurationNs, ExpectedIdx, KernelVersion, TimestampNs};
 pub use utils::TimeGate;

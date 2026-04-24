@@ -23,14 +23,15 @@ proptest! {
     #[test]
     fn prop_compute_settlement_shares_conserves_escrow(
         escrow in 0u64..1_000_000_000,
-        expected in 0u64..1_000_000_000,
+        expected in 1u64..1_000_000_000,
         collected in 0u64..1_000_000_000,
     ) {
+        prop_assume!(collected <= expected);
         let settlement = compute_settlement_shares(
             escrow as u128,
             expected as u128,
             collected as u128,
-        );
+        ).expect("filtered property inputs should be valid");
 
         prop_assert_eq!(
             settlement.to_burn.saturating_add(settlement.refund),
@@ -39,12 +40,12 @@ proptest! {
         prop_assert!(settlement.to_burn <= escrow as u128);
         prop_assert!(settlement.refund <= escrow as u128);
 
-        if expected == 0 || escrow == 0 {
+        if escrow == 0 {
             prop_assert_eq!(settlement.to_burn, 0);
             prop_assert_eq!(settlement.refund, escrow as u128);
         }
 
-        if collected >= expected && expected > 0 {
+        if collected == expected {
             prop_assert_eq!(settlement.to_burn, escrow as u128);
             prop_assert_eq!(settlement.refund, 0);
         }
@@ -72,9 +73,9 @@ proptest! {
         prop_assert!(route.validate().is_ok());
 
         let ordered: Vec<(u32, u128)> = route
-            .entries
+            .entries()
             .iter()
-            .map(|e| (e.target_id, e.max_amount))
+            .map(|entry| (entry.target_id, entry.max_amount))
             .collect();
         assert_route_order_by_principal(&ordered);
     }
@@ -101,15 +102,15 @@ proptest! {
             .unwrap();
         prop_assert!(route.validate().is_ok());
 
-        for window in route.entries.windows(2) {
+        for window in route.entries().windows(2) {
             let a = &window[0];
             let b = &window[1];
-            let a_liq = a.available_liquidity.expect("route entry should carry liquidity metadata");
-            let b_liq = b.available_liquidity.expect("route entry should carry liquidity metadata");
-            if a_liq == b_liq {
+            let a_cap = a.max_amount;
+            let b_cap = b.max_amount;
+            if a_cap == b_cap {
                 prop_assert!(a.target_id <= b.target_id);
             } else {
-                prop_assert!(a_liq >= b_liq);
+                prop_assert!(a_cap >= b_cap);
             }
         }
     }

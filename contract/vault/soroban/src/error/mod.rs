@@ -104,8 +104,14 @@ impl From<crate::auth::AuthError> for RuntimeError {
         match err {
             crate::auth::AuthError::NotAuthorized { .. } => RuntimeError::Unauthorized,
             crate::auth::AuthError::InvalidProof => RuntimeError::Unauthorized,
-            crate::auth::AuthError::MissingRole => RuntimeError::Unauthorized,
+            crate::auth::AuthError::MissingRole { .. } => RuntimeError::Unauthorized,
             crate::auth::AuthError::VaultPaused => RuntimeError::InvalidState,
         }
+    }
+}
+
+impl From<templar_curator_primitives::policy::state::PolicyStateError> for RuntimeError {
+    fn from(_err: templar_curator_primitives::policy::state::PolicyStateError) -> Self {
+        RuntimeError::InvalidState
     }
 }

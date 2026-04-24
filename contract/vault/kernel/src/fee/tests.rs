@@ -68,3 +68,37 @@ fn test_generic_fees_with_wad() {
     assert!(!fees.performance.fee.is_zero());
     assert!(!fees.management.fee.is_zero());
 }
+
+#[cfg(feature = "postcard")]
+#[test]
+fn postcard_roundtrip_fee_slot() {
+    let slot = FeeSlot::new(Wad::one() / 10, Address([7u8; 32]));
+    let bytes = postcard::to_allocvec(&slot).expect("serialize fee slot");
+    let decoded: FeeSlot = postcard::from_bytes(&bytes).expect("deserialize fee slot");
+    assert_eq!(decoded, slot);
+}
+
+#[cfg(feature = "postcard")]
+#[test]
+fn postcard_roundtrip_fees_spec() {
+    let fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, Address([1u8; 32])),
+        FeeSlot::new(Wad::one() / 20, Address([2u8; 32])),
+        Some(Wad::one() / 5),
+    );
+    let bytes = postcard::to_allocvec(&fees).expect("serialize fees spec");
+    let decoded: FeesSpec = postcard::from_bytes(&bytes).expect("deserialize fees spec");
+    assert_eq!(decoded, fees);
+}
+
+#[cfg(all(feature = "postcard", feature = "soroban"))]
+#[test]
+fn soroban_postcard_fee_slot_is_compact() {
+    let slot = FeeSlot::new(Wad::one() / 10, Address([3u8; 32]));
+    let bytes = postcard::to_allocvec(&slot).expect("serialize fee slot");
+    assert!(
+        bytes.len() < 50,
+        "expected compact fee slot encoding, got {} bytes",
+        bytes.len()
+    );
+}

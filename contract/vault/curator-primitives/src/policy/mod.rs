@@ -6,11 +6,11 @@
 //! - [`cap_group`]: Maximum allocation caps per market group
 //! - [`cap_group_adapter`]: Field-based helpers for boundary/runtime adapters
 //! - [`cooldown`]: Reusable cooldown/rate-limiting type
-//! - [`lock_filter`]: Helpers for excluding locked targets from plans
+//! - [`lock_filter`]: Helpers for excluding leased targets from plans
 //! - [`supply_queue`]: Pending supply requests
 //! - [`withdraw_route`]: How to withdraw from markets
 //! - [`refresh_plan`]: List of targets to refresh
-//! - [`market_lock`]: Prevent concurrent operations on the same market
+//! - [`market_lock`]: Fenced lease registry for market-scoped coordination
 //! - [`state`]: Aggregate policy state for executors
 //! - [`target_set`]: Shared target-list validation helpers
 

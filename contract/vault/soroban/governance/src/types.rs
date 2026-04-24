@@ -23,7 +23,7 @@ pub(crate) enum DataKey {
 }
 
 #[contracttype]
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TimelockKind {
     Pause,
     Curator,
@@ -152,7 +152,6 @@ pub struct FeeParams {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum RestrictionMode {
     None,
-    Paused,
     Blacklist,
     Whitelist,
 }
@@ -161,9 +160,8 @@ impl RestrictionMode {
     pub(crate) fn from_u32(value: u32) -> Result<Self, GovernanceError> {
         match value {
             0 => Ok(Self::None),
-            1 => Ok(Self::Paused),
-            2 => Ok(Self::Blacklist),
-            3 => Ok(Self::Whitelist),
+            1 => Ok(Self::Blacklist),
+            2 => Ok(Self::Whitelist),
             _ => Err(GovernanceError::InvalidInput),
         }
     }
@@ -171,9 +169,8 @@ impl RestrictionMode {
     pub(crate) fn as_u32(self) -> u32 {
         match self {
             Self::None => 0,
-            Self::Paused => 1,
-            Self::Blacklist => 2,
-            Self::Whitelist => 3,
+            Self::Blacklist => 1,
+            Self::Whitelist => 2,
         }
     }
 }

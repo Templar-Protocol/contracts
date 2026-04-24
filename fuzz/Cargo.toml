@@ -13,6 +13,9 @@ libfuzzer-sys.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 primitive-types.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-vault-kernel = { path = "../contract/vault/kernel", features = ["postcard", "soroban"] }
+templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["postcard"] }
+templar-soroban-runtime = { path = "../contract/vault/soroban", features = ["testutils"] }
 
 [lints]
 workspace = true
@@ -103,5 +106,11 @@ bench = false
 [[bin]]
 name = "fuzz_supply"
 path = "fuzz_targets/fuzz_supply.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_soroban_storage_codecs"
+path = "fuzz_targets/fuzz_soroban_storage_codecs.rs"
 test = false
 bench = false

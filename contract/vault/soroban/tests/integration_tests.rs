@@ -6,18 +6,22 @@ use rstest::{fixture, rstest};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Env,
+    Bytes, Env,
 };
+use std::string::String;
+use templar_curator_primitives::policy::state::MarketConfig;
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
-    storage::{SorobanStorage, VersionedState},
+    storage::SorobanStorage,
     test_utils::{begin_allocating, finish_allocating, MemoryStorage},
     EffectContext,
     EffectInterpreter,
     Storage, // Import the trait
 };
-use templar_soroban_shared_types::GovernanceConfigKind;
+use templar_soroban_shared_types::{
+    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+};
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
@@ -36,6 +40,10 @@ use templar_vault_kernel::{
 
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
+
+fn sdk_text(address: &soroban_sdk::Address) -> String {
+    String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+}
 
 type ProxyCoreView = (
     (
@@ -162,6 +170,26 @@ impl<'a> VaultProxy<'a> {
             .view(soroban_sdk::Address::generate(self.env), assets, 0)?
             .2
              .7)
+    }
+
+    fn execute(
+        &self,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+        let payload = Bytes::from_slice(self.env, &command.encode());
+        let result = SorobanVaultContract::execute(self.env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+    }
+
+    fn execute_unit(
+        &self,
+        command: &VaultCommand,
+    ) -> Result<(), templar_soroban_runtime::ContractError> {
+        match self.execute(command)? {
+            VaultCommandResult::Unit => Ok(()),
+            _ => Err(templar_soroban_runtime::ContractError::InvalidInput),
+        }
     }
 }
 
@@ -308,8 +336,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let empty_state = VaultState::default();
-        let versioned = VersionedState::new(empty_state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&empty_state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(empty_state, assets_in, 0, 0);
@@ -324,8 +351,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
             idle_assets: 10_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(state, assets_in, 0, 0);
@@ -346,16 +372,17 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
 
     env.as_contract(&contract_id, || {
         let governance = proxy.governance().unwrap();
-        SorobanVaultContract::set_governance_config(
-            env.clone(),
-            governance,
-            GovernanceConfigKind::VirtualOffsets,
-            None,
-            None,
-            Some(virtual_shares as i128),
-            Some(virtual_assets as i128),
-        )
-        .unwrap();
+        let result = proxy
+            .execute(&VaultCommand::SetGovernanceConfig {
+                caller: sdk_text(&governance),
+                kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                primary: None,
+                many: None,
+                value_a: Some(virtual_shares as i128),
+                value_b: Some(virtual_assets as i128),
+            })
+            .unwrap();
+        assert!(matches!(result, VaultCommandResult::Unit));
 
         let mut storage = SorobanStorage::new(&env);
         let state = VaultState {
@@ -364,8 +391,7 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
             idle_assets: 10_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(state, assets_in, virtual_shares, virtual_assets);
@@ -399,10 +425,15 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
             FeeSlot::new(Wad::one() / 5, Address([2u8; 32])),
             None,
         );
-        let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
         env.storage().instance().set(
             &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
-            &bytes,
+            &Bytes::from_slice(&env, &bytes),
         );
 
         let mut storage = SorobanStorage::new(&env);
@@ -413,9 +444,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
             fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
             ..Default::default()
         };
-        storage
-            .save_state(&VersionedState::new(state.clone()))
-            .unwrap();
+        storage.save_state(&state).unwrap();
 
         let config = VaultConfig {
             fees,
@@ -462,8 +491,7 @@ fn soroban_contract_preview_withdraw_matches_kernel(
             idle_assets: 20_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
 
         let assets_in: i128 = 1000;
         let shares_burned = proxy.preview_withdraw(assets_in).unwrap();
@@ -482,9 +510,12 @@ fn soroban_contract_execute_withdraw_queue_empty_errors(
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&contract_id, || {
-        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_text(&user),
+        });
         assert!(result.is_err());
     });
 }
@@ -496,6 +527,7 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&contract_id, || {
         let state = VaultState {
@@ -508,12 +540,13 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
             ..Default::default()
         };
         let mut storage = SorobanStorage::new(&env);
-        let versioned = VersionedState::new(state);
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
     });
 
     env.as_contract(&contract_id, || {
-        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_text(&user),
+        });
         assert!(result.is_err());
     });
 }
@@ -528,6 +561,18 @@ fn create_test_vault() -> TestVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 
@@ -546,12 +591,14 @@ fn create_rbac_vault() -> RbacVault {
     let mut vault = CuratorVault::new(
         test_config(),
         MemoryStorage::new(),
-        RbacAuth {
-            config: rbac_config,
-        },
+        RbacAuth::new(rbac_config),
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 
@@ -630,6 +677,15 @@ fn test_allocation_flow_basic(mut vault: TestVault) {
 
     let allocator = allocator_addr();
     let user = user_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().idle_assets, 10000);
@@ -759,6 +815,11 @@ fn test_rbac_curator_can_do_everything(mut rbac_vault: RbacVault) {
 
     let curator = curator_addr();
 
+    rbac_vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     rbac_vault.deposit(curator, curator, 10000, 0, 100).unwrap();
 
     rbac_vault
@@ -800,7 +861,7 @@ fn test_restrictions_blacklist_blocks_deposit(mut rbac_vault: RbacVault) {
     let user = user_addr();
 
     rbac_vault
-        .set_restrictions(sentinel, Some(Restrictions::Blacklist(vec![user])))
+        .set_restrictions(sentinel, Some(Restrictions::blacklist(vec![user])))
         .unwrap();
 
     let result = rbac_vault.deposit(user, user, 1000, 0, 100);
@@ -817,8 +878,8 @@ fn test_state_persists_after_deposit(mut vault: TestVault) {
 
     // Verify storage was updated
     let stored = vault.storage.load_state().unwrap().unwrap();
-    assert_eq!(stored.state.total_assets, 1000);
-    assert_eq!(stored.state.total_shares, 1000);
+    assert_eq!(stored.total_assets, 1000);
+    assert_eq!(stored.total_shares, 1000);
 }
 
 #[rstest]
@@ -841,8 +902,8 @@ fn test_state_persists_after_allocation(mut vault: TestVault) {
         .unwrap();
 
     let stored = vault.storage.load_state().unwrap().unwrap();
-    assert_eq!(stored.state.external_assets, 5000);
-    assert!(stored.state.op_state.is_idle());
+    assert_eq!(stored.external_assets, 5000);
+    assert!(stored.op_state.is_idle());
 }
 
 // Effect Execution Tests
@@ -873,6 +934,15 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().total_assets, 10000);
@@ -1064,6 +1134,11 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().total_assets, 10000);
     assert_eq!(vault.state().unwrap().total_shares, 10000);
@@ -1097,6 +1172,11 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
 
@@ -1232,6 +1312,19 @@ fn test_allocation_multiple_markets(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     vault
@@ -1272,6 +1365,11 @@ fn test_allocate_withdraw_uses_allocation_lifecycle(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
     let supply_result = vault
@@ -1485,6 +1583,7 @@ fn test_withdrawal_transition_flow_reaches_idle(
 
     let request = WithdrawalRequest {
         op_id,
+        request_id: 7,
         amount: 150,
         receiver: Address([6u8; 32]),
         owner: Address([5u8; 32]),
@@ -1557,9 +1656,7 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
             fee_anchor: FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0)),
             ..Default::default()
         };
-        storage
-            .save_state(&VersionedState::new(state))
-            .expect("save state");
+        storage.save_state(&state).expect("save state");
     });
 
     asset_admin_client.mint(&contract_id, &500);
@@ -1589,7 +1686,9 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
     assert_eq!(external_assets_after, 0);
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::resync_idle_balance(env.clone()).unwrap();
+        proxy
+            .execute_unit(&VaultCommand::ResyncIdleBalance)
+            .unwrap();
     });
 
     let total_assets_final = env.as_contract(&contract_id, || proxy.total_assets().unwrap());

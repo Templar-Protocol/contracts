@@ -21,6 +21,7 @@ fn complete_allocation_skips_zero_amount_pending_withdrawal() {
         10,
         Some(WithdrawalRequest {
             op_id: 11,
+            request_id: 11,
             amount: 0,
             receiver: receiver_addr(1),
             owner: owner_addr(1),
@@ -50,6 +51,7 @@ fn complete_allocation_rejects_nonzero_withdrawal_with_zero_escrow() {
         20,
         Some(WithdrawalRequest {
             op_id: 21,
+            request_id: 21,
             amount: 50,
             receiver: receiver_addr(2),
             owner: owner_addr(2),
@@ -66,6 +68,7 @@ fn withdrawal_settled_supports_partial_collection() {
         OpState::Idle,
         WithdrawalRequest {
             op_id: 7,
+            request_id: 7,
             amount: 100,
             receiver: receiver_addr(7),
             owner: owner_addr(7),
@@ -80,6 +83,7 @@ fn withdrawal_settled_supports_partial_collection() {
         result.new_state,
         OpState::Payout(PayoutState {
             op_id: 7,
+            request_id: 7,
             receiver: receiver_addr(7),
             amount: 40,
             owner: owner_addr(7),
@@ -103,6 +107,7 @@ fn withdrawal_settled_rejects_collection_overflow() {
         OpState::Idle,
         WithdrawalRequest {
             op_id: 8,
+            request_id: 8,
             amount: 100,
             receiver: receiver_addr(8),
             owner: owner_addr(8),

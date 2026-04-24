@@ -22,6 +22,7 @@
 //! - TransferShares effects are generated for withdrawals
 
 use proptest::prelude::*;
+use templar_curator_primitives::policy::state::MarketConfig;
 
 use templar_soroban_runtime::{
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
@@ -63,6 +64,10 @@ fn create_prop_test_vault() -> PropTestVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 

@@ -57,17 +57,12 @@ impl Contract {
         let virtual_shares = self.virtual_shares.saturating_sub(1);
         let virtual_assets = self.virtual_assets.saturating_sub(1);
 
-        let paused = matches!(
-            self.gate.restrictions,
-            Some(templar_common::vault::Restrictions::Paused)
-        );
-
         VaultConfig {
             fees: FeesSpec::zero(),
             min_withdrawal_assets: 0,
             withdrawal_cooldown_ns: self.withdrawal_cooldown_ns,
             max_pending_withdrawals: Self::MAX_PENDING_WITHDRAWALS_MIRROR,
-            paused,
+            paused: self.gate.paused,
             virtual_shares,
             virtual_assets,
         }
@@ -75,7 +70,10 @@ impl Contract {
 
     #[must_use]
     pub(crate) fn kernel_restrictions_mirror(&self) -> Option<KernelRestrictions> {
-        self.gate.restrictions.clone()
+        self.gate
+            .restrictions
+            .as_ref()
+            .and_then(templar_common::vault::Restrictions::to_kernel_mode)
     }
 }
 

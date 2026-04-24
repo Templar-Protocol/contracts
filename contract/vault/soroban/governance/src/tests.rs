@@ -8,7 +8,10 @@ use soroban_sdk::{
     contracttype,
     testutils::{Address as _, Ledger, LedgerInfo},
 };
-use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
+use templar_soroban_shared_types::{
+    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+};
 
 #[contract]
 struct MockVault;
@@ -23,6 +26,70 @@ enum MockVaultKey {
 
 #[contractimpl]
 impl MockVault {
+    pub fn execute(env: Env, payload: Bytes) -> Bytes {
+        let command = match VaultCommand::decode(&payload.to_alloc_vec()) {
+            Ok(command) => command,
+            Err(_) => panic!("decode command failed"),
+        };
+
+        match command {
+            VaultCommand::SetGovernanceConfig {
+                caller,
+                kind,
+                primary,
+                many,
+                value_a,
+                value_b,
+            } => {
+                Self::set_governance_config(
+                    env.clone(),
+                    sdk_address(&env, &caller),
+                    kind,
+                    primary.as_ref().map(|value| sdk_address(&env, value)),
+                    many.as_ref().map(|items| sdk_address_vec(&env, items)),
+                    value_a,
+                    value_b,
+                );
+            }
+            VaultCommand::SetGovernancePolicy {
+                caller,
+                kind,
+                target_ids,
+                mode,
+                accounts,
+                market_id,
+                cap_group_id,
+                value,
+                value_b,
+                value_c,
+            } => {
+                Self::set_governance_policy(
+                    env.clone(),
+                    sdk_address(&env, &caller),
+                    kind,
+                    target_ids.as_ref().map(|items| sdk_u32_vec(&env, items)),
+                    mode,
+                    accounts.as_ref().map(|items| sdk_address_vec(&env, items)),
+                    market_id,
+                    cap_group_id
+                        .as_ref()
+                        .map(|value| SdkString::from_str(&env, value)),
+                    value,
+                    value_b,
+                    value_c,
+                );
+            }
+            VaultCommand::Skim { caller, token } => Self::skim(
+                env.clone(),
+                sdk_address(&env, &caller),
+                sdk_address(&env, &token),
+            ),
+            other => panic!("unexpected command: {:?}", other.encode()),
+        }
+
+        Bytes::from_slice(&env, &VaultCommandResult::Unit.encode())
+    }
+
     pub fn set_paused(env: Env, _caller: Address, paused: bool) {
         env.storage().instance().set(&MockVaultKey::Paused, &paused);
     }
@@ -45,14 +112,14 @@ impl MockVault {
     pub fn set_governance_config(
         env: Env,
         _caller: Address,
-        kind: GovernanceConfigKind,
+        kind: u32,
         primary: Option<Address>,
         many: Option<Vec<Address>>,
         _value_a: Option<i128>,
         _value_b: Option<i128>,
     ) {
         match kind {
-            GovernanceConfigKind::Sentinel => {
+            GOVERNANCE_CONFIG_KIND_SENTINEL => {
                 let Some(sentinel) = primary else {
                     return;
                 };
@@ -60,7 +127,7 @@ impl MockVault {
                     .instance()
                     .set(&MockVaultKey::Sentinel, &sentinel);
             }
-            GovernanceConfigKind::Guardians => {
+            GOVERNANCE_CONFIG_KIND_GUARDIANS => {
                 let Some(guardians) = many else {
                     return;
                 };
@@ -80,7 +147,7 @@ impl MockVault {
     pub fn set_governance_policy(
         env: Env,
         _caller: Address,
-        kind: GovernancePolicyKind,
+        kind: u32,
         _target_ids: Option<Vec<u32>>,
         mode: Option<u32>,
         accounts: Option<Vec<Address>>,
@@ -90,16 +157,36 @@ impl MockVault {
         _value_b: Option<i128>,
         _value_c: Option<i128>,
     ) {
-        if kind == GovernancePolicyKind::Paused {
+        if kind == GOVERNANCE_POLICY_KIND_PAUSED {
             let paused = mode.unwrap_or(0) != 0;
             env.storage().instance().set(&MockVaultKey::Paused, &paused);
         }
-        if kind == GovernancePolicyKind::Fees {
+        if kind == GOVERNANCE_POLICY_KIND_FEES {
             let _ = accounts;
         }
     }
 
     pub fn skim(_env: Env, _caller: Address, _token: Address) {}
+}
+
+fn sdk_address(env: &Env, value: &str) -> Address {
+    Address::from_string(&SdkString::from_str(env, value))
+}
+
+fn sdk_address_vec(env: &Env, values: &[String]) -> Vec<Address> {
+    let mut addresses = Vec::new(env);
+    for value in values {
+        addresses.push_back(sdk_address(env, value));
+    }
+    addresses
+}
+
+fn sdk_u32_vec(env: &Env, values: &[u32]) -> Vec<u32> {
+    let mut entries = Vec::new(env);
+    for value in values {
+        entries.push_back(*value);
+    }
+    entries
 }
 
 #[test]
@@ -260,7 +347,7 @@ fn revoke_kind_removes_all_matching() {
         )
         .unwrap()
     });
-    assert_eq!(removed, 2);
+    assert_eq!(removed, 1);
 
     let pending = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::pending_ids(env.clone())
@@ -451,4 +538,27 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
     env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
     });
+}
+
+#[test]
+fn relative_cap_addition_is_immediate_and_removal_is_timelocked() {
+    assert_eq!(
+        TimelockDecision::from_relative_cap_change(None, Some(templar_vault_kernel::Wad::from(1))),
+        Ok(TimelockDecision::Immediate)
+    );
+    assert_eq!(
+        TimelockDecision::from_relative_cap_change(Some(templar_vault_kernel::Wad::from(1)), None,),
+        Ok(TimelockDecision::Timelocked)
+    );
+}
+
+#[test]
+fn empty_group_member_string_is_treated_as_membership_removal() {
+    let empty = SdkString::from_str(&Env::default(), "");
+    let proposed = if empty.is_empty() { None } else { Some(&empty) };
+
+    assert_eq!(
+        TimelockDecision::from_membership_assignment_change::<SdkString>(Some(&empty), proposed),
+        Ok(TimelockDecision::Timelocked)
+    );
 }

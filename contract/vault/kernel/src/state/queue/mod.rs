@@ -29,7 +29,7 @@ pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 ///
 /// Represents a user's request to redeem shares for underlying assets.
 /// The shares are held in escrow until the withdrawal is processed.
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingWithdrawal {
     pub owner: Address,
@@ -60,7 +60,7 @@ impl PendingWithdrawal {
 }
 
 /// Result of attempting to satisfy a withdrawal from available assets.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalResult {
     pub assets_out: u128,
@@ -104,7 +104,7 @@ pub fn compute_idle_settlement(
 }
 
 /// Status information for a single withdrawal request in the queue.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawalRequestStatus {
     pub index: u32,
@@ -113,7 +113,7 @@ pub struct WithdrawalRequestStatus {
 }
 
 /// Aggregate status of the entire withdrawal queue.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct QueueStatus {
     pub length: u32,
@@ -430,13 +430,13 @@ use alloc::vec::Vec;
 
 pub use crate::state::vault::MAX_PENDING;
 
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct PendingWithdrawals {
     entries: Vec<PendingWithdrawalEntry>,
 }
 
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, PartialEq, Eq)]
 struct PendingWithdrawalEntry {
     id: u64,
@@ -527,6 +527,17 @@ impl PendingWithdrawals {
     pub fn keys(&self) -> impl Iterator<Item = &u64> {
         self.entries.iter().map(|entry| &entry.id)
     }
+
+    #[inline]
+    #[must_use]
+    pub fn from_sorted_entries(entries: Vec<(u64, PendingWithdrawal)>) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|(id, withdrawal)| PendingWithdrawalEntry { id, withdrawal })
+                .collect(),
+        }
+    }
 }
 
 impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
@@ -556,7 +567,7 @@ impl FromIterator<(u64, PendingWithdrawal)> for PendingWithdrawals {
 /// - FIFO withdrawal ordering; no skipping head
 /// - `cached_total_escrow == sum(pending_withdrawals.values().map(|w| w.escrow_shares))`
 /// - `cached_total_expected == sum(pending_withdrawals.values().map(|w| w.expected_assets))`
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WithdrawQueue {
     /// Pending withdrawals keyed by monotonic ID.
@@ -613,7 +624,8 @@ impl WithdrawQueue {
     where
         I: IntoIterator<Item = (u64, PendingWithdrawal)>,
     {
-        let pending_withdrawals: PendingWithdrawals = pending_withdrawals.into_iter().collect();
+        let pending_withdrawals =
+            PendingWithdrawals::from_sorted_entries(pending_withdrawals.into_iter().collect());
         let (cached_total_escrow, cached_total_expected) =
             compute_pending_totals(pending_withdrawals.values());
         Self {
@@ -754,14 +766,16 @@ impl WithdrawQueue {
         let head_id = self.next_withdraw_to_execute;
         let withdrawal = self.pending_withdrawals.remove(&head_id)?;
 
-        self.cached_total_escrow = self
-            .cached_total_escrow
-            .checked_sub(withdrawal.escrow_shares)
-            .expect("dequeue: cached_total_escrow underflow - queue cache corrupt");
-        self.cached_total_expected = self
-            .cached_total_expected
-            .checked_sub(withdrawal.expected_assets)
-            .expect("dequeue: cached_total_expected underflow - queue cache corrupt");
+        self.cached_total_escrow = crate::unwrap_abort!(
+            self.cached_total_escrow
+                .checked_sub(withdrawal.escrow_shares),
+            crate::abort::OVERFLOW,
+        );
+        self.cached_total_expected = crate::unwrap_abort!(
+            self.cached_total_expected
+                .checked_sub(withdrawal.expected_assets),
+            crate::abort::OVERFLOW,
+        );
 
         // Advance to the next ID in the queue
         self.next_withdraw_to_execute = self
@@ -910,7 +924,7 @@ impl WithdrawQueue {
 }
 
 /// Errors that can occur during queue operations.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum QueueError {
     /// Queue is at maximum capacity.

@@ -1,6 +1,6 @@
 //! Shared non-domain helpers for kernel-adjacent crates.
 
-use crate::types::TimestampNs;
+use crate::types::{DurationNs, TimestampNs};
 
 /// Generic readiness gate represented by an optional ready-at timestamp.
 ///
@@ -26,8 +26,8 @@ impl TimeGate {
     }
 
     #[must_use]
-    pub const fn schedule_from(now_ns: TimestampNs, delay_ns: TimestampNs) -> Self {
-        Self::from_ready_at(now_ns.saturating_add(delay_ns))
+    pub const fn schedule_from(now_ns: TimestampNs, delay_ns: DurationNs) -> Self {
+        Self::from_ready_at(now_ns.saturating_add_duration(delay_ns))
     }
 
     #[must_use]
@@ -51,7 +51,7 @@ impl TimeGate {
 #[cfg(test)]
 mod tests {
     use super::TimeGate;
-    use crate::types::TimestampNs;
+    use crate::types::{DurationNs, TimestampNs};
 
     #[test]
     fn time_gate_ready_now_is_always_ready() {
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn time_gate_scheduled_reports_remaining_and_readiness() {
-        let gate = TimeGate::schedule_from(TimestampNs(100), TimestampNs(50));
+        let gate = TimeGate::schedule_from(TimestampNs(100), DurationNs(50));
         assert_eq!(gate.ready_at_ns(), Some(TimestampNs(150)));
         assert!(!gate.is_ready(TimestampNs(149)));
         assert!(gate.is_ready(TimestampNs(150)));
