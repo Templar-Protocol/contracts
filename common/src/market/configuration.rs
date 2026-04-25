@@ -1,6 +1,7 @@
 use std::{io::ErrorKind, ops::Deref};
 
 use near_sdk::{borsh, json_types::U64, near, AccountId};
+use templar_primitives::number::Decimal;
 
 use crate::{
     asset::{
@@ -10,7 +11,6 @@ use crate::{
     borrow::{BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
-    number::Decimal,
     price::{Convert, PricePair},
     snapshot::Snapshot,
     time_chunk::TimeChunkConfiguration,
@@ -345,8 +345,9 @@ mod tests {
         serde_json::{self, json},
     };
     use rstest::rstest;
+    use templar_primitives::dec;
 
-    use crate::{dec, oracle::pyth::PriceIdentifier};
+    use crate::oracle::pyth::PriceIdentifier;
 
     use super::*;
 

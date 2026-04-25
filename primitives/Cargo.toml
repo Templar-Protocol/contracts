@@ -1,0 +1,32 @@
+[package]
+name = "templar-primitives"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version = "0.1.0"
+
+[dependencies]
+borsh = { workspace = true, default-features = false, features = [], optional = true }
+primitive-types.workspace = true
+redstone = { workspace = true, default-features = false, features = [], optional = true }
+serde = { workspace = true, default-features = false, features = ["alloc", "derive"], optional = true }
+schemars = { workspace = true, default-features = false, features = [], optional = true }
+near-sdk = { workspace = true, default-features = false, features = [], optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+rand = "0.8"
+rstest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["borsh/std", "serde/std"]
+borsh = ["dep:borsh"]
+schemars = ["std", "dep:schemars"]
+serde = ["dep:serde"]
+near = ["dep:near-sdk", "serde", "schemars", "borsh"]
+redstone = ["dep:redstone"]

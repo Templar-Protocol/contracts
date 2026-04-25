@@ -6,8 +6,7 @@ use redstone::{
     network::{error::Error as RedStoneError, StdEnv},
     ConfigFactory, FeedValue,
 };
-
-use crate::time::Nanoseconds;
+use templar_primitives::time::Nanoseconds;
 
 use super::{
     config::{Config, DATA_STALENESS},

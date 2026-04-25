@@ -1,16 +1,17 @@
 pub mod median;
 pub mod priority;
 
-use crate::proxy::Source;
-use templar_common::oracle::pyth;
+use crate::*;
 
-pub trait Aggregate {
-    fn sources(&self) -> Vec<&Source>;
-    fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, Error>;
+pub trait Aggregate<S> {
+    fn sources(&self) -> Vec<&S>;
+    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, Error>;
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("length mismatch: expected {expected}, actual {actual}")]
+    LengthMismatch { expected: usize, actual: usize },
     #[error("too few valid sources: expected {expected}, actual {actual}")]
     TooFewValidSources { expected: usize, actual: usize },
 }

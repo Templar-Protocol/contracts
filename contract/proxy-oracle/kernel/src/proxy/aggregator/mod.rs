@@ -1,31 +1,31 @@
 pub mod method;
 
+use crate::*;
 use method::{
     median::{MedianHigh, MedianLow},
     priority::Priority,
     Aggregate,
 };
-use near_sdk::near;
-use templar_common::oracle::pyth;
 
-use super::{Source, WeightedSource};
+use super::WeightedSource;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub enum Aggregator {
-    MedianLow(MedianLow),
-    Priority(Priority),
-    MedianHigh(MedianHigh),
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Aggregator<S> {
+        MedianLow(MedianLow<S>),
+        Priority(Priority<S>),
+        MedianHigh(MedianHigh<S>),
+    }
 }
 
-impl Aggregator {
-    pub fn median_low(entries: impl IntoIterator<Item = Source>) -> Self {
+impl<S> Aggregator<S> {
+    pub fn median_low(entries: impl IntoIterator<Item = S>) -> Self {
         Self::MedianLow(MedianLow::new(
             entries.into_iter().map(|s| WeightedSource::new(s, 1)),
         ))
     }
 
-    pub fn priority(entries: impl IntoIterator<Item = Source>) -> Self {
+    pub fn priority(entries: impl IntoIterator<Item = S>) -> Self {
         Self::Priority(Priority::new(entries))
     }
 
@@ -37,13 +37,13 @@ impl Aggregator {
         }
     }
 
-    pub fn sources(&self) -> Vec<&Source> {
-        <Self as Aggregate>::sources(self)
+    pub fn sources(&self) -> Vec<&S> {
+        <Self as Aggregate<S>>::sources(self)
     }
 }
 
-impl Aggregate for Aggregator {
-    fn sources(&self) -> Vec<&Source> {
+impl<S> Aggregate<S> for Aggregator<S> {
+    fn sources(&self) -> Vec<&S> {
         match self {
             Self::MedianLow(inner) => inner.sources(),
             Self::Priority(inner) => inner.sources(),
@@ -51,7 +51,7 @@ impl Aggregate for Aggregator {
         }
     }
 
-    fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, method::Error> {
+    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, method::Error> {
         match self {
             Self::MedianLow(inner) => inner.aggregate(prices),
             Self::Priority(inner) => inner.aggregate(prices),

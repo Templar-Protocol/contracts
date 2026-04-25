@@ -1,27 +1,42 @@
 pub mod aggregator;
 pub mod freshness_filter;
-pub mod governance;
-pub mod input;
 
-use near_sdk::near;
-use templar_common::{oracle::pyth, time::Nanoseconds};
+use crate::*;
 
 pub use aggregator::Aggregator;
 pub use freshness_filter::FreshnessFilter;
-pub use input::{ProxyPriceTransformer, Source, WeightedSource};
 
 use aggregator::method::Aggregate;
+use templar_primitives::time::Nanoseconds;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct Proxy {
-    pub aggregator: Aggregator,
-    pub freshness_filter: FreshnessFilter,
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct WeightedSource<S> {
+        pub source: S,
+        pub weight: u32,
+    }
 }
 
-impl Proxy {
+impl<S> WeightedSource<S> {
+    pub fn new(source: impl Into<S>, weight: u32) -> Self {
+        Self {
+            source: source.into(),
+            weight,
+        }
+    }
+}
+
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Proxy<S> {
+        pub aggregator: Aggregator<S>,
+        pub freshness_filter: FreshnessFilter,
+    }
+}
+
+impl<S> Proxy<S> {
     #[must_use]
-    pub fn new(aggregator: Aggregator, freshness_filter: FreshnessFilter) -> Self {
+    pub fn new(aggregator: Aggregator<S>, freshness_filter: FreshnessFilter) -> Self {
         Self {
             aggregator,
             freshness_filter,
@@ -30,7 +45,7 @@ impl Proxy {
 
     #[must_use]
     pub fn median_low(
-        sources: impl IntoIterator<Item = Source>,
+        sources: impl IntoIterator<Item = S>,
         freshness_filter: FreshnessFilter,
     ) -> Self {
         Self::new(Aggregator::median_low(sources), freshness_filter)
@@ -38,7 +53,7 @@ impl Proxy {
 
     #[must_use]
     pub fn priority(
-        sources: impl IntoIterator<Item = Source>,
+        sources: impl IntoIterator<Item = S>,
         freshness_filter: FreshnessFilter,
     ) -> Self {
         Self::new(Aggregator::priority(sources), freshness_filter)
@@ -50,15 +65,15 @@ impl Proxy {
         self
     }
 
-    pub fn sources(&self) -> Vec<&Source> {
+    pub fn sources(&self) -> Vec<&S> {
         self.aggregator.sources()
     }
 
     pub fn resolve(
         &self,
-        prices: Vec<Option<pyth::Price>>,
+        prices: Vec<Option<Price>>,
         now: Nanoseconds,
-    ) -> Result<pyth::Price, aggregator::method::Error> {
+    ) -> Result<Price, aggregator::method::Error> {
         let prices = prices
             .into_iter()
             .map(|price| {

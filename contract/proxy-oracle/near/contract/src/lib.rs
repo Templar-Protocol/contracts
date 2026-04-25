@@ -3,25 +3,23 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
+use near_sdk::json_types::{I64, U64};
 use near_sdk::{env, near, AccountId, Gas, PanicOnDefault, PromiseOrValue};
 use near_sdk_contract_tools::{owner::Owner, Owner};
+use templar_common::oracle::pyth::{self, PythTimestamp};
 use templar_common::{
     contract::list,
-    number::Decimal,
     oracle::{
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
     },
     self_ext,
-    time::Nanoseconds,
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     UnwrapReject,
 };
-use templar_proxy_oracle_kernel::{
-    proxy::{Proxy, Source},
-    request::OracleRequest,
-    state,
-};
+use templar_primitives::{Decimal, Nanoseconds};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
 
 mod callback_handler;
 use callback_handler::{callback_result, CallbackHandler, OracleType};
@@ -72,7 +70,7 @@ impl Contract {
         list(self.proxies.keys(), offset, count)
     }
 
-    pub fn get_proxy(&self, id: PriceIdentifier) -> Option<Proxy> {
+    pub fn get_proxy(&self, id: PriceIdentifier) -> Option<Proxy<Source>> {
         self.proxies.get(&id)
     }
 
@@ -180,13 +178,13 @@ impl Contract {
     pub fn list_ema_prices_no_older_than_01_consume_results(
         &self,
         oracle_order: Vec<OracleType>,
-        invoked: Vec<(PriceIdentifier, Proxy)>,
+        invoked: Vec<(PriceIdentifier, Proxy<Source>)>,
         max_age: Nanoseconds,
     ) -> OracleResponse {
         let callback = CallbackHandler::new(&oracle_order, max_age);
         let mut results = OracleResponse::with_capacity(invoked.len());
 
-        let now = Nanoseconds::now();
+        let now = Nanoseconds::near_timestamp();
 
         let mut i = oracle_order.len() as u64;
         for (price_id, proxy) in invoked {
@@ -206,7 +204,7 @@ impl Contract {
                     Source::Request(request) => callback.get(request),
                 };
 
-                prices.push(source_result);
+                prices.push(source_result.and_then(pyth_to_kernel));
             }
 
             let result = proxy.resolve(prices, now);
@@ -214,12 +212,29 @@ impl Contract {
             if let Err(ref error) = result {
                 near_sdk::log!("Aggregation error: {error}");
             }
-
-            results.insert(price_id, result.ok());
+            results.insert(price_id, result.ok().and_then(kernel_to_pyth));
         }
 
         results
     }
+}
+
+fn pyth_to_kernel(p: pyth::Price) -> Option<templar_proxy_oracle_kernel::Price> {
+    Some(templar_proxy_oracle_kernel::Price {
+        price: p.price.0,
+        conf: p.conf.0,
+        expo: p.expo,
+        publish_time_ns: p.publish_time.try_into_time()?,
+    })
+}
+
+fn kernel_to_pyth(p: templar_proxy_oracle_kernel::Price) -> Option<pyth::Price> {
+    Some(pyth::Price {
+        price: I64(p.price),
+        conf: U64(p.conf),
+        expo: p.expo,
+        publish_time: PythTimestamp::try_from_time(p.publish_time_ns)?,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]

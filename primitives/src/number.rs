@@ -1,15 +1,11 @@
+use crate::*;
+use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use std::{
     fmt::{Debug, Display},
-    ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
     str::FromStr,
 };
 
-use near_sdk::{
-    borsh::{BorshDeserialize, BorshSchema, BorshSerialize},
-    serde::{self, Deserialize, Serialize},
-};
 use primitive_types::U512;
-use schemars::JsonSchema;
 
 pub const FRACTIONAL_BITS: usize = 128;
 /// `floor(FRACTIONAL_BITS / log2(10))`
@@ -51,7 +47,8 @@ impl Default for Decimal {
     }
 }
 
-impl JsonSchema for Decimal {
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Decimal {
     fn schema_name() -> String {
         "Decimal".to_string()
     }
@@ -64,45 +61,50 @@ impl JsonSchema for Decimal {
     }
 }
 
-impl BorshSchema for Decimal {
+#[cfg(feature = "borsh")]
+impl borsh::BorshSchema for Decimal {
     fn add_definitions_recursively(
         definitions: &mut std::collections::BTreeMap<
-            near_sdk::borsh::schema::Declaration,
-            near_sdk::borsh::schema::Definition,
+            borsh::schema::Declaration,
+            borsh::schema::Definition,
         >,
     ) {
-        <[u64; 8] as BorshSchema>::add_definitions_recursively(definitions);
+        <[u64; 8] as borsh::BorshSchema>::add_definitions_recursively(definitions);
     }
 
-    fn declaration() -> near_sdk::borsh::schema::Declaration {
+    fn declaration() -> borsh::schema::Declaration {
         String::from("Decimal")
     }
 }
 
-impl BorshSerialize for Decimal {
+#[cfg(feature = "borsh")]
+impl borsh::BorshSerialize for Decimal {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        BorshSerialize::serialize(&self.repr.0, writer)
+        borsh::BorshSerialize::serialize(&self.repr.0, writer)
     }
 }
 
-impl BorshDeserialize for Decimal {
+#[cfg(feature = "borsh")]
+impl borsh::BorshDeserialize for Decimal {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         Ok(Self {
-            repr: U512(BorshDeserialize::deserialize_reader(reader)?),
+            repr: U512(borsh::BorshDeserialize::deserialize_reader(reader)?),
         })
     }
 }
 
-impl Serialize for Decimal {
+#[cfg(feature = "serde")]
+impl serde::Serialize for Decimal {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: near_sdk::serde::Serializer,
+        S: serde::Serializer,
     {
         serializer.serialize_str(&self.to_fixed(FRACTIONAL_DECIMAL_DIGITS))
     }
 }
 
-impl<'de> Deserialize<'de> for Decimal {
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Decimal {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -433,7 +435,7 @@ macro_rules! impl_self {
         impl Add<$t> for $s {
             type Output = Decimal;
 
-            fn add(self, rhs: $t) -> Self::Output {
+            fn add(self, rhs: $t) -> Decimal {
                 Decimal {
                     repr: self.repr.add(rhs.repr),
                 }
@@ -443,7 +445,7 @@ macro_rules! impl_self {
         impl Sub<$t> for $s {
             type Output = Decimal;
 
-            fn sub(self, rhs: $t) -> Self::Output {
+            fn sub(self, rhs: $t) -> Decimal {
                 Decimal {
                     repr: self.repr.sub(rhs.repr),
                 }
@@ -453,7 +455,7 @@ macro_rules! impl_self {
         impl Mul<$t> for $s {
             type Output = Decimal;
 
-            fn mul(self, rhs: $t) -> Self::Output {
+            fn mul(self, rhs: $t) -> Decimal {
                 #[allow(clippy::cast_possible_truncation)]
                 let mut shr = FRACTIONAL_BITS as u32;
                 let shr_self = self.repr.trailing_zeros().min(shr);
@@ -471,7 +473,7 @@ macro_rules! impl_self {
         impl Div<$t> for $s {
             type Output = Decimal;
 
-            fn div(self, rhs: $t) -> Self::Output {
+            fn div(self, rhs: $t) -> Decimal {
                 #[allow(clippy::cast_possible_truncation)]
                 let mut sh = FRACTIONAL_BITS as u32;
                 let sh_self = self.repr.leading_zeros().min(sh);
@@ -545,7 +547,7 @@ macro_rules! impl_int {
         impl Mul<$t> for $s {
             type Output = Decimal;
 
-            fn mul(self, rhs: $t) -> Self::Output {
+            fn mul(self, rhs: $t) -> Decimal {
                 Decimal { repr: self.repr * U512::from(rhs) }
             }
         }
@@ -553,7 +555,7 @@ macro_rules! impl_int {
         impl Mul<$s> for $t {
             type Output = Decimal;
 
-            fn mul(self, rhs: $s) -> Self::Output {
+            fn mul(self, rhs: $s) -> Decimal {
                 Decimal { repr: U512::from(self) * rhs.repr }
             }
         }
@@ -561,7 +563,7 @@ macro_rules! impl_int {
         impl Div<$t> for $s {
             type Output = Decimal;
 
-            fn div(self, rhs: $t) -> Self::Output {
+            fn div(self, rhs: $t) -> Decimal {
                 Decimal { repr: self.repr / U512::from(rhs) }
             }
         }
@@ -569,7 +571,7 @@ macro_rules! impl_int {
         impl Div<$s> for $t {
             type Output = Decimal;
 
-            fn div(self, rhs: $s) -> Self::Output {
+            fn div(self, rhs: $s) -> Decimal {
                 Decimal::from(self) / rhs
             }
         }
@@ -577,7 +579,7 @@ macro_rules! impl_int {
         impl Add<$t> for $s {
             type Output = Decimal;
 
-            fn add(self, rhs: $t) -> Self::Output {
+            fn add(self, rhs: $t) -> Decimal {
                 self + Decimal::from(rhs)
             }
         }
@@ -585,7 +587,7 @@ macro_rules! impl_int {
         impl Add<$s> for $t {
             type Output = Decimal;
 
-            fn add(self, rhs: $s) -> Self::Output {
+            fn add(self, rhs: $s) -> Decimal {
                 Decimal::from(self) + rhs
             }
         }
@@ -593,7 +595,7 @@ macro_rules! impl_int {
         impl Sub<$t> for $s {
             type Output = Decimal;
 
-            fn sub(self, rhs: $t) -> Self::Output {
+            fn sub(self, rhs: $t) -> Decimal {
                 self - Decimal::from(rhs)
             }
         }
@@ -601,7 +603,7 @@ macro_rules! impl_int {
         impl Sub<$s> for $t {
             type Output = Decimal;
 
-            fn sub(self, rhs: $s) -> Self::Output {
+            fn sub(self, rhs: $s) -> Decimal {
                 Decimal::from(self) - rhs
             }
         }
@@ -613,7 +615,7 @@ macro_rules! impl_int {
         }
 
         impl PartialOrd<$t> for $s {
-            fn partial_cmp(&self, other: &$t) -> Option<std::cmp::Ordering> {
+            fn partial_cmp(&self, other: &$t) -> Option<core::cmp::Ordering> {
                 self.repr.partial_cmp(&Decimal::from(*other).repr)
             }
         }
@@ -646,12 +648,20 @@ impl_from_const!(u64, from_u64);
 
 #[cfg(test)]
 mod tests {
-    use near_sdk::serde_json;
     use primitive_types::U256;
     use rand::Rng;
     use rstest::rstest;
 
     use super::*;
+
+    macro_rules! println {
+        ($($arg:tt)*) => {
+            #[cfg(feature = "std")]
+            std::println!($($arg)*);
+            #[cfg(not(feature = "std"))]
+            let _ = format_args!($($arg)*);
+        };
+    }
 
     // These functions are intentionally implemented using mathematical
     // operations instead of bitwise operations, so as to test the
@@ -788,7 +798,7 @@ mod tests {
             None,
         );
         for i in -(FRACTIONAL_DECIMAL_DIGITS as i32)..=(WHOLE_DECIMAL_DIGITS as i32) {
-            eprintln!("10^{i} = {:?}", Decimal::ONE.mul_pow10(i).unwrap());
+            println!("10^{i} = {:?}", Decimal::ONE.mul_pow10(i).unwrap());
         }
         assert_eq!(
             Decimal::ONE.mul_pow10((WHOLE_DECIMAL_DIGITS as i32) + 1),
@@ -843,6 +853,7 @@ mod tests {
         assert_eq!(value.fractional_part_as_u128_dividend(), expected);
     }
 
+    #[cfg(feature = "serde")]
     #[rstest]
     #[case(Decimal::ONE)]
     #[case(Decimal::TWO)]
@@ -956,9 +967,9 @@ mod tests {
         for case in cases {
             let p: Decimal = case.to_fixed(FRACTIONAL_DECIMAL_DIGITS).parse().unwrap();
 
-            eprintln!("{:x?}", case.repr.0);
-            eprintln!("{:x?}", p.repr.0);
-            eprintln!("|{p:?} - {case:?}| = {:?}", p.abs_diff(case).as_repr());
+            println!("{:x?}", case.repr.0);
+            println!("{:x?}", p.repr.0);
+            println!("|{p:?} - {case:?}| = {:?}", p.abs_diff(case).as_repr());
 
             assert!(p.near_equal(case));
         }
@@ -984,7 +995,7 @@ mod tests {
             let parsed = Decimal::from_str(&s).unwrap();
             assert_eq!(n, parsed);
             println!("{n:?}");
-            println!();
+            println!("");
         }
     }
 }

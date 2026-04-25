@@ -96,6 +96,18 @@ impl PythTimestamp {
     pub fn as_ms(&self) -> Option<i64> {
         self.0.checked_mul(1000)
     }
+
+    pub fn try_into_time(self) -> Option<templar_primitives::Nanoseconds> {
+        let ms = self.as_ms()?;
+        Some(templar_primitives::Nanoseconds::from_ms(
+            u64::try_from(ms).ok()?,
+        ))
+    }
+
+    pub fn try_from_time(value: templar_primitives::Nanoseconds) -> Option<Self> {
+        let ms = value.as_ms();
+        Some(PythTimestamp::from_ms(i64::try_from(ms).ok()?))
+    }
 }
 
 #[ext_contract(ext_pyth)]

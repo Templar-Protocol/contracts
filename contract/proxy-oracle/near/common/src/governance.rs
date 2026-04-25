@@ -1,16 +1,16 @@
 use near_sdk::near;
-use templar_common::{
-    gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, time::Nanoseconds,
-};
+use templar_common::{gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier};
+use templar_primitives::Nanoseconds;
+use templar_proxy_oracle_kernel::proxy::Proxy;
 
-use super::Proxy;
+use crate::input::Source;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum Operation {
     SetProxy {
         id: PriceIdentifier,
-        proxy: Option<Proxy>,
+        proxy: Option<Proxy<Source>>,
     },
     SetActionTtl {
         new_ttl: Nanoseconds,
@@ -46,11 +46,9 @@ gen_ext_governance!(ext_proxy_governance, ProxyGovernanceInterface, Operation);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        proxy::{Aggregator, FreshnessFilter},
-        request::OracleRequest,
-    };
+    use crate::request::OracleRequest;
     use rstest::rstest;
+    use templar_proxy_oracle_kernel::proxy::{Aggregator, FreshnessFilter};
 
     fn invalid_operation() -> Operation {
         Operation::SetProxy {

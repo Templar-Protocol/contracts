@@ -1,38 +1,38 @@
 use std::cmp::Ordering;
 
-use templar_common::oracle::pyth::{self, PythTimestamp};
+use templar_primitives::time::Nanoseconds;
 
 #[derive(Debug, Clone, Eq)]
 pub struct SpecificPrice {
     pub value: i64,
     pub exponent: i32,
-    pub publish_time: PythTimestamp,
+    pub publish_time_ns: Nanoseconds,
 }
 
-impl From<SpecificPrice> for pyth::Price {
+impl From<SpecificPrice> for crate::Price {
     fn from(specific_price: SpecificPrice) -> Self {
         Self {
-            price: specific_price.value.into(),
-            conf: 0.into(),
+            price: specific_price.value,
+            conf: 0,
             expo: specific_price.exponent,
-            publish_time: specific_price.publish_time,
+            publish_time_ns: specific_price.publish_time_ns,
         }
     }
 }
 
 impl SpecificPrice {
-    pub fn split(price: &pyth::Price) -> (Self, Self) {
-        let conf = i64::try_from(price.conf.0).unwrap_or(i64::MAX);
+    pub fn split(price: &crate::Price) -> (Self, Self) {
+        let conf = i64::try_from(price.conf).unwrap_or(i64::MAX);
         (
             Self {
-                value: price.price.0.saturating_sub(conf),
+                value: price.price.saturating_sub(conf),
                 exponent: price.expo,
-                publish_time: price.publish_time,
+                publish_time_ns: price.publish_time_ns,
             },
             Self {
-                value: price.price.0.saturating_add(conf),
+                value: price.price.saturating_add(conf),
                 exponent: price.expo,
-                publish_time: price.publish_time,
+                publish_time_ns: price.publish_time_ns,
             },
         )
     }
@@ -109,7 +109,7 @@ mod tests {
         SpecificPrice {
             value,
             exponent,
-            publish_time: PythTimestamp::from_secs(0),
+            publish_time_ns: PythTimestamp::from_secs(0),
         }
     }
 

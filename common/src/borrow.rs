@@ -1,13 +1,13 @@
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{json_types::U64, near, AccountId};
+use templar_primitives::number::Decimal;
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     event::MarketEvent,
     market::{Market, SnapshotProof},
-    number::Decimal,
     price::{Appraise, Convert, PricePair, Valuation},
     YEAR_PER_MS,
 };
@@ -757,7 +757,6 @@ mod tests {
 
     use crate::{
         asset::FungibleAsset,
-        dec,
         fee::{Fee, TimeBasedFee},
         interest_rate_strategy::InterestRateStrategy,
         market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
@@ -775,6 +774,8 @@ mod tests {
         #[values(1000, 1005, 999_999)] borrow_price: i64,
         #[values(0, 10)] conf: u64,
     ) {
+        use templar_primitives::dec;
+
         use crate::oracle::pyth::PythTimestamp;
 
         let c = VMContextBuilder::new()

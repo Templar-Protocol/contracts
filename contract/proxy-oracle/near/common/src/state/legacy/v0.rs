@@ -2,9 +2,9 @@ use near_sdk::{borsh::BorshSerialize, collections::UnorderedMap, near, BorshStor
 use templar_common::{
     governance::Governance,
     oracle::pyth::{self, PriceIdentifier, PythTimestamp},
-    time::Nanoseconds,
     versioned_state::{StateVersion, VersionedState},
 };
+use templar_primitives::Nanoseconds;
 
 use crate::{
     price_transformer::{Action, Call},

@@ -1,9 +1,8 @@
-use near_sdk::near;
-
 use crate::{
     price_transformer::{Action, Call},
     request::OracleRequest,
 };
+use near_sdk::near;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]

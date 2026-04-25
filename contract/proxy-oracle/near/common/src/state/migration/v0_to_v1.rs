@@ -4,17 +4,18 @@ use templar_common::{
     oracle::pyth::PriceIdentifier,
     versioned_state::StateTransformer,
 };
+use templar_proxy_oracle_kernel::proxy::{
+    aggregator::method::{median::MedianLow, priority::Priority},
+    Aggregator, FreshnessFilter, Proxy, WeightedSource,
+};
 
 use crate::{
-    proxy::{
-        aggregator::method::{median::MedianLow, priority::Priority},
-        governance, Aggregator, FreshnessFilter, Proxy, ProxyPriceTransformer, Source,
-        WeightedSource,
-    },
+    governance,
+    input::Source,
     state::{self, legacy::v0, v1},
 };
 
-impl From<v0::ProxyPriceTransformer> for ProxyPriceTransformer {
+impl From<v0::ProxyPriceTransformer> for crate::input::ProxyPriceTransformer {
     fn from(value: v0::ProxyPriceTransformer) -> Self {
         Self {
             request: value.request,
@@ -33,7 +34,7 @@ impl From<v0::LegacySource> for Source {
     }
 }
 
-impl From<v0::Entry> for WeightedSource {
+impl From<v0::Entry> for WeightedSource<Source> {
     fn from(value: v0::Entry) -> Self {
         Self::new(Source::from(value.source), value.weight)
     }
@@ -45,7 +46,7 @@ impl From<v0::Filter> for FreshnessFilter {
     }
 }
 
-impl From<v0::Proxy> for Proxy {
+impl From<v0::Proxy> for Proxy<Source> {
     fn from(value: v0::Proxy) -> Self {
         let freshness_filter = FreshnessFilter::from(value.aggregator.filter.clone());
 
@@ -113,7 +114,7 @@ fn snapshot_proposals(
 
 fn snapshot_proxies(
     proxies: &near_sdk::collections::UnorderedMap<PriceIdentifier, v0::Proxy>,
-) -> Vec<(PriceIdentifier, Proxy)> {
+) -> Vec<(PriceIdentifier, Proxy<Source>)> {
     proxies
         .iter()
         .map(|(price_id, proxy)| (price_id, Proxy::from(proxy)))
@@ -162,18 +163,20 @@ impl StateTransformer for V0ToV1 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use std::collections::HashMap;
 
     use near_sdk::{test_utils::VMContextBuilder, testing_env, AccountId};
     use templar_common::{
         governance::{Governance, Proposal},
         oracle::pyth::PriceIdentifier,
-        time::Nanoseconds,
         versioned_state::{read_state_version, write_state_version, StateTransformer},
     };
+    use templar_primitives::Nanoseconds;
 
     use crate::{
-        proxy::{governance::Operation, Aggregator, FreshnessFilter, Proxy, Source},
+        governance::Operation,
         request::OracleRequest,
         state::{legacy::v0, migration::v0_to_v1::V0ToV1},
     };
@@ -191,7 +194,7 @@ mod tests {
         context();
 
         let patch: HashMap<Vec<u8>, Vec<u8>> = near_sdk::borsh::from_slice(include_bytes!(
-            "../../../../near/contract/tests/migration/v0_state_patch.borsh"
+            "../../../../contract/tests/migration/v0_state_patch.borsh"
         ))
         .unwrap();
 
@@ -302,8 +305,8 @@ mod tests {
                 assert_eq!(
                     proxy.freshness_filter,
                     FreshnessFilter::new(
-                        Some(Nanoseconds::from_secs(70)),
-                        Some(Nanoseconds::from_secs(20)),
+                        Some(templar_primitives::Nanoseconds::from_secs(70)),
+                        Some(templar_primitives::Nanoseconds::from_secs(20)),
                     ),
                 );
                 match &proxy.aggregator {

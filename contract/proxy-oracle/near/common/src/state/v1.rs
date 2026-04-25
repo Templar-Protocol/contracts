@@ -1,14 +1,16 @@
-use near_sdk::{borsh::BorshSerialize, collections::UnorderedMap, near, BorshStorageKey};
+use near_sdk::{collections::UnorderedMap, near, BorshStorageKey};
 use templar_common::{
     governance::Governance,
     oracle::pyth::PriceIdentifier,
     versioned_state::{StateVersion, VersionedState},
 };
 
-use crate::proxy::{governance::Operation, Proxy};
+use templar_proxy_oracle_kernel::proxy::Proxy;
 
-#[derive(BorshSerialize, BorshStorageKey)]
-#[borsh(crate = "near_sdk::borsh")]
+use crate::{governance::Operation, input::Source};
+
+#[derive(BorshStorageKey)]
+#[near(serializers = [borsh])]
 pub enum StorageKey {
     Governance,
     Proxies,
@@ -18,7 +20,7 @@ pub enum StorageKey {
 #[near(serializers = [borsh])]
 pub struct State {
     pub governance: Governance<Operation>,
-    pub proxies: UnorderedMap<PriceIdentifier, Proxy>,
+    pub proxies: UnorderedMap<PriceIdentifier, Proxy<Source>>,
 }
 
 impl StateVersion for State {

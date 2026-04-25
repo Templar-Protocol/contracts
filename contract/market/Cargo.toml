@@ -33,6 +33,7 @@ near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-contract-standards.workspace = true
 templar-common.workspace = true
+templar-primitives = { workspace = true, features = ["near"] }
 
 [dev-dependencies]
 itertools.workspace = true

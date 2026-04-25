@@ -1,9 +1,12 @@
-use near_sdk::{near, serde};
+#[allow(unused_imports)]
+use crate::*;
 use primitive_types::U256;
-use schemars::JsonSchema;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[near(serializers = [borsh])]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize, borsh::BorshSchema)
+)]
 pub struct SerializableU256([u64; 4]);
 
 impl SerializableU256 {
@@ -24,7 +27,8 @@ impl From<SerializableU256> for U256 {
     }
 }
 
-impl JsonSchema for SerializableU256 {
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for SerializableU256 {
     fn schema_name() -> String {
         "SerializableU256".to_string()
     }
@@ -36,6 +40,7 @@ impl JsonSchema for SerializableU256 {
     }
 }
 
+#[cfg(feature = "serde")]
 impl serde::Serialize for SerializableU256 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -45,6 +50,7 @@ impl serde::Serialize for SerializableU256 {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for SerializableU256 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

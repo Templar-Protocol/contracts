@@ -1,7 +1,8 @@
 use near_sdk::{assert_one_yocto, env, near};
 use near_sdk_contract_tools::owner::Owner;
-use templar_common::{contract::list, governance::Proposal, time::Nanoseconds, UnwrapReject};
-use templar_proxy_oracle_kernel::proxy::governance::{Operation, ProxyGovernanceInterface};
+use templar_common::{contract::list, governance::Proposal, UnwrapReject};
+use templar_primitives::Nanoseconds;
+use templar_proxy_oracle_near_common::governance::{Operation, ProxyGovernanceInterface};
 
 use crate::{Contract, ContractExt};
 
@@ -36,7 +37,7 @@ impl ProxyGovernanceInterface for Contract {
             .create(
                 id,
                 operation,
-                Nanoseconds::now(),
+                Nanoseconds::near_timestamp(),
                 env::predecessor_account_id(),
             )
             .unwrap_or_reject()
@@ -57,7 +58,7 @@ impl ProxyGovernanceInterface for Contract {
 
         match self
             .governance
-            .execute(id, Nanoseconds::now())
+            .execute(id, Nanoseconds::near_timestamp())
             .unwrap_or_reject()
         {
             Operation::SetProxy { id, proxy } => {

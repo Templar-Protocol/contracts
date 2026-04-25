@@ -2,6 +2,7 @@ use near_sdk::{
     collections::{LookupMap, UnorderedMap},
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
+use templar_primitives::number::Decimal;
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -11,7 +12,6 @@ use crate::{
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
     market::MarketConfiguration,
-    number::Decimal,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
@@ -432,11 +432,11 @@ fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decima
 #[cfg(test)]
 mod tests {
     use near_sdk::{test_utils::*, testing_env, VMContext};
+    use templar_primitives::dec;
 
     use crate::{
         asset::FungibleAsset,
         borrow::InitialBorrow,
-        dec,
         fee::{Fee, TimeBasedFee},
         interest_rate_strategy::InterestRateStrategy,
         market::{PriceOracleConfiguration, Withdrawal, YieldWeights},

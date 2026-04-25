@@ -8,11 +8,11 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
-    number::Decimal,
     oracle::pyth::{ext_pyth, OracleResponse, PriceIdentifier},
     self_ext,
 };
-use templar_proxy_oracle_kernel::price_transformer::PriceTransformer;
+use templar_primitives::number::Decimal;
+use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]

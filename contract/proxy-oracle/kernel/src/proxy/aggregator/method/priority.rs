@@ -1,32 +1,33 @@
-use near_sdk::near;
-use templar_common::{oracle::pyth, panic_with_message};
-
-use crate::proxy::Source;
+use crate::*;
 
 use super::Aggregate;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct Priority {
-    pub sources: Vec<Source>,
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Priority<S> {
+        pub sources: Vec<S>,
+    }
 }
 
-impl Priority {
-    pub fn new(sources: impl IntoIterator<Item = Source>) -> Self {
+impl<S> Priority<S> {
+    pub fn new(sources: impl IntoIterator<Item = S>) -> Self {
         Self {
             sources: sources.into_iter().collect(),
         }
     }
 }
 
-impl Aggregate for Priority {
-    fn sources(&self) -> Vec<&Source> {
+impl<S> Aggregate<S> for Priority<S> {
+    fn sources(&self) -> Vec<&S> {
         self.sources.iter().collect()
     }
 
-    fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, super::Error> {
+    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, super::Error> {
         if prices.len() != self.sources.len() {
-            panic_with_message("Invariant violation: length mismatch");
+            return Err(super::Error::LengthMismatch {
+                expected: self.sources.len(),
+                actual: prices.len(),
+            });
         }
 
         prices

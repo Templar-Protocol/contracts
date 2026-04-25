@@ -1,12 +1,10 @@
 mod specific_price;
 
-use std::marker::PhantomData;
-
-use near_sdk::near;
-use templar_common::{oracle::pyth, panic_with_message};
+use crate::*;
+use core::marker::PhantomData;
 
 use super::Aggregate;
-use crate::proxy::{Source, WeightedSource};
+use crate::proxy::WeightedSource;
 use specific_price::SpecificPrice;
 
 /// Calculates the weighted median of a sorted list of weighted items.
@@ -56,9 +54,10 @@ pub trait MedianVariant {
     fn median<T>(sorted_weighted_items: &[(T, u32)]) -> usize;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct Low;
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Low;
+}
 
 impl MedianVariant for Low {
     fn median<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
@@ -67,9 +66,10 @@ impl MedianVariant for Low {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct High;
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct High;
+}
 
 impl MedianVariant for High {
     fn median<T>(sorted_weighted_items: &[(T, u32)]) -> usize {
@@ -78,25 +78,26 @@ impl MedianVariant for High {
     }
 }
 
-pub type MedianLow = Median<Low>;
-pub type MedianHigh = Median<High>;
+pub type MedianLow<S> = Median<Low, S>;
+pub type MedianHigh<S> = Median<High, S>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct Median<V: MedianVariant> {
-    #[serde(skip)]
-    #[borsh(skip)]
-    _variant: PhantomData<V>,
-    pub sources: Vec<WeightedSource>,
-    /// Minimum number of sources required for the aggregation to produce a result.
-    ///
-    /// For example, if the proxy has a Pyth source and a RedStone source, and `min_sources` is set to `2`,
-    /// the aggregation will only produce a result if both oracles provide a price.
-    pub min_sources: u32,
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Median<V: MedianVariant, S> {
+        #[cfg_attr(feature = "serde", serde(skip))]
+        #[cfg_attr(feature = "borsh", borsh(skip))]
+        _variant: PhantomData<V>,
+        pub sources: Vec<WeightedSource<S>>,
+        /// Minimum number of sources required for the aggregation to produce a result.
+        ///
+        /// For example, if the proxy has a Pyth source and a RedStone source, and `min_sources` is set to `2`,
+        /// the aggregation will only produce a result if both oracles provide a price.
+        pub min_sources: u32,
+    }
 }
 
-impl<V: MedianVariant> Median<V> {
-    pub fn new(sources: impl IntoIterator<Item = WeightedSource>) -> Self {
+impl<V: MedianVariant, S> Median<V, S> {
+    pub fn new(sources: impl IntoIterator<Item = WeightedSource<S>>) -> Self {
         Self {
             _variant: PhantomData,
             sources: sources.into_iter().collect(),
@@ -105,14 +106,17 @@ impl<V: MedianVariant> Median<V> {
     }
 }
 
-impl<V: MedianVariant> Aggregate for Median<V> {
-    fn sources(&self) -> Vec<&Source> {
+impl<V: MedianVariant, S> Aggregate<S> for Median<V, S> {
+    fn sources(&self) -> Vec<&S> {
         self.sources.iter().map(|entry| &entry.source).collect()
     }
 
-    fn aggregate(&self, prices: Vec<Option<pyth::Price>>) -> Result<pyth::Price, super::Error> {
+    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, super::Error> {
         if prices.len() != self.sources.len() {
-            panic_with_message("Invariant violation: length mismatch");
+            return Err(super::Error::LengthMismatch {
+                expected: self.sources.len(),
+                actual: prices.len(),
+            });
         }
 
         let min_sources = self.min_sources.max(1);

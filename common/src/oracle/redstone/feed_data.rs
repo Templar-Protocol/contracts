@@ -1,14 +1,13 @@
 use near_sdk::json_types::{I64, U64};
 use primitive_types::U256;
+use templar_primitives::{strnum::SU256, time::Nanoseconds};
 
-use crate::{oracle::pyth, time::Nanoseconds};
-
-use super::SerializableU256;
+use crate::oracle::pyth::{self, PythTimestamp};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near_sdk::near(serializers = [json, borsh])]
 pub struct FeedData {
-    pub price: SerializableU256,
+    pub price: SU256,
     /// Package timestamp in nanoseconds since Unix epoch.
     pub package_timestamp: Nanoseconds,
     /// Write timestamp in nanoseconds since Unix epoch.
@@ -25,7 +24,7 @@ impl FeedData {
             conf: U64(0),
             expo: exponent.checked_sub(super::DECIMALS)?,
             // Publish time is in seconds, but the RedStone data uses nanoseconds.
-            publish_time: self.package_timestamp.try_to_pyth()?,
+            publish_time: PythTimestamp::try_from_time(self.package_timestamp)?,
         })
     }
 }

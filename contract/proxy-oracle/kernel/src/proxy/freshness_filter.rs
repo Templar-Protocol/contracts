@@ -1,13 +1,15 @@
-use near_sdk::near;
-use templar_common::{oracle::pyth, time::Nanoseconds};
+use templar_primitives::time::Nanoseconds;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub struct FreshnessFilter {
-    /// Maximum age of a price in nanoseconds. If a price is older than this, it will be excluded from proxy resolution.
-    pub max_age_ns: Option<Nanoseconds>,
-    /// Maximum clock drift in nanoseconds. This is the future-analog of `max_age_ns`.
-    pub max_clock_drift_ns: Option<Nanoseconds>,
+use crate::*;
+
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct FreshnessFilter {
+        /// Maximum age of a price in nanoseconds. If a price is older than this, it will be excluded from proxy resolution.
+        pub max_age_ns: Option<Nanoseconds>,
+        /// Maximum clock drift in nanoseconds. This is the future-analog of `max_age_ns`.
+        pub max_clock_drift_ns: Option<Nanoseconds>,
+    }
 }
 
 impl FreshnessFilter {
@@ -27,10 +29,8 @@ impl FreshnessFilter {
         Self::new(None, None)
     }
 
-    pub fn accepts(&self, price: &pyth::Price, now: Nanoseconds) -> bool {
-        let Some(published) = Nanoseconds::try_from_pyth(price.publish_time) else {
-            return false;
-        };
+    pub fn accepts(&self, price: &Price, now: Nanoseconds) -> bool {
+        let published = price.publish_time_ns;
 
         if now >= published {
             self.max_age_ns

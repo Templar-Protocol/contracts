@@ -2,10 +2,8 @@ use near_sdk::{
     json_types::{Base64VecU8, U64},
     near, AccountId, Gas,
 };
-use templar_common::{
-    number::Decimal,
-    oracle::pyth::{self, PriceIdentifier},
-};
+use templar_common::oracle::pyth::{self, PriceIdentifier};
+use templar_primitives::Decimal;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -106,8 +104,8 @@ impl PriceTransformer {
 
 #[cfg(test)]
 mod tests {
-    use templar_common::dec;
     use templar_common::oracle::pyth::PythTimestamp;
+    use templar_primitives::dec;
 
     use super::*;
 

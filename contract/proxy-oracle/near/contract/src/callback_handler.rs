@@ -6,10 +6,10 @@ use templar_common::{
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
     },
-    time::Nanoseconds,
     UnwrapReject,
 };
-use templar_proxy_oracle_kernel::request::{OracleRequest, PythRequest, RedStoneRequest};
+use templar_primitives::Nanoseconds;
+use templar_proxy_oracle_near_common::request::{OracleRequest, PythRequest, RedStoneRequest};
 
 static ERR_ORACLE_NOT_INVOKED: &str = "Invariant violation: oracle not invoked";
 
@@ -48,7 +48,7 @@ impl<'a> CallbackHandler<'a> {
             oracle_order,
             pyth_results,
             redstone_results,
-            now: Nanoseconds::now(),
+            now: Nanoseconds::near_timestamp(),
             max_age,
         }
     }
@@ -94,7 +94,7 @@ impl<'a> CallbackHandler<'a> {
         }?;
 
         // Filter for staleness
-        let Some(publish_time) = Nanoseconds::try_from_pyth(price.publish_time) else {
+        let Some(publish_time) = price.publish_time.try_into_time() else {
             near_sdk::log!("Failed to convert publish_time");
             return None;
         };
