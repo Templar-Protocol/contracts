@@ -3,10 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::json_types::{I64, U64};
 use near_sdk::{env, near, AccountId, Gas, PanicOnDefault, PromiseOrValue};
 use near_sdk_contract_tools::{owner::Owner, Owner};
-use templar_common::oracle::pyth::{self, PythTimestamp};
 use templar_common::{
     contract::list,
     oracle::{
@@ -15,11 +13,12 @@ use templar_common::{
     },
     self_ext,
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
-    UnwrapReject,
+    Decimal, Nanoseconds, UnwrapReject,
 };
-use templar_primitives::{Decimal, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::Proxy;
-use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
+use templar_proxy_oracle_near_common::{
+    input::Source, kernel_to_pyth, pyth_to_kernel, request::OracleRequest, state,
+};
 
 mod callback_handler;
 use callback_handler::{callback_result, CallbackHandler, OracleType};
@@ -204,7 +203,7 @@ impl Contract {
                     Source::Request(request) => callback.get(request),
                 };
 
-                prices.push(source_result.and_then(pyth_to_kernel));
+                prices.push(source_result.as_ref().and_then(pyth_to_kernel));
             }
 
             let result = proxy.resolve(prices, now);
@@ -212,29 +211,11 @@ impl Contract {
             if let Err(ref error) = result {
                 near_sdk::log!("Aggregation error: {error}");
             }
-            results.insert(price_id, result.ok().and_then(kernel_to_pyth));
+            results.insert(price_id, result.ok().as_ref().and_then(kernel_to_pyth));
         }
 
         results
     }
-}
-
-fn pyth_to_kernel(p: pyth::Price) -> Option<templar_proxy_oracle_kernel::Price> {
-    Some(templar_proxy_oracle_kernel::Price {
-        price: p.price.0,
-        conf: p.conf.0,
-        expo: p.expo,
-        publish_time_ns: p.publish_time.try_into_time()?,
-    })
-}
-
-fn kernel_to_pyth(p: templar_proxy_oracle_kernel::Price) -> Option<pyth::Price> {
-    Some(pyth::Price {
-        price: I64(p.price),
-        conf: U64(p.conf),
-        expo: p.expo,
-        publish_time: PythTimestamp::try_from_time(p.publish_time_ns)?,
-    })
 }
 
 #[cfg(target_arch = "wasm32")]

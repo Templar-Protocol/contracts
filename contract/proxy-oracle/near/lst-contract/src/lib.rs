@@ -9,9 +9,9 @@ use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
     oracle::pyth::{ext_pyth, OracleResponse, PriceIdentifier},
+    Decimal,
     self_ext,
 };
-use templar_primitives::number::Decimal;
 use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
 #[derive(BorshSerialize, BorshStorageKey)]

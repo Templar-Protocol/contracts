@@ -2,8 +2,10 @@ use near_sdk::{
     json_types::{Base64VecU8, U64},
     near, AccountId, Gas,
 };
-use templar_common::oracle::pyth::{self, PriceIdentifier};
-use templar_primitives::Decimal;
+use templar_common::{
+    oracle::pyth::{self, PriceIdentifier},
+    Decimal,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -38,7 +40,7 @@ pub struct Call {
 }
 
 impl Call {
-    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(clippy::unwrap_used)]
     pub fn new(
         account_id: &near_sdk::AccountIdRef,
@@ -54,7 +56,7 @@ impl Call {
         }
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "rpc"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_simple(account_id: &near_sdk::AccountIdRef, method_name: impl Into<String>) -> Self {
         Self::new(
             account_id,
@@ -104,8 +106,8 @@ impl PriceTransformer {
 
 #[cfg(test)]
 mod tests {
+    use templar_common::dec;
     use templar_common::oracle::pyth::PythTimestamp;
-    use templar_primitives::dec;
 
     use super::*;
 

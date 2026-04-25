@@ -1,7 +1,7 @@
 use near_sdk::{serde_json::json, AccountId};
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::pyth::{OracleResponse, PriceIdentifier};
-use templar_proxy_oracle_kernel::price_transformer::PriceTransformer;
+use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};

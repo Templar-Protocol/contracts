@@ -3,9 +3,10 @@ use std::collections::HashSet;
 use near_jsonrpc_client::JsonRpcClient;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::pyth::PriceIdentifier;
-use templar_proxy_oracle_kernel::{
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{
+    input::{ProxyPriceTransformer, Source},
     price_transformer::{self, PriceTransformer},
-    proxy::{FreshnessFilter, Proxy, ProxyPriceTransformer, Source},
     request::OracleRequest,
 };
 use templar_relayer::client::near::{Near, ResolvePriceIdentifierError};

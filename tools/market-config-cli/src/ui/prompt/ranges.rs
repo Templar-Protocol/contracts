@@ -4,7 +4,7 @@ use crate::{
     CliError, CliResult, ConfigBuilder,
 };
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 #[derive(Clone, Debug)]
 pub struct RangeDefaults {
@@ -441,7 +441,7 @@ mod tests {
     use crate::CliError;
     use rstest::rstest;
     use std::str::FromStr;
-    use templar_common::number::Decimal;
+    use templar_common::Decimal;
 
     // ===== amount_decimal_to_base_units tests =====
 

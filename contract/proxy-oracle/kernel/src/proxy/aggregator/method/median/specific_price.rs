@@ -101,7 +101,7 @@ fn compare_scaled(
 
 #[cfg(test)]
 mod tests {
-    use templar_common::oracle::pyth::PythTimestamp;
+    use templar_primitives::Nanoseconds;
 
     use super::*;
 
@@ -109,7 +109,7 @@ mod tests {
         SpecificPrice {
             value,
             exponent,
-            publish_time_ns: PythTimestamp::from_secs(0),
+            publish_time_ns: Nanoseconds::zero(),
         }
     }
 

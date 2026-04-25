@@ -12,15 +12,16 @@ use near_sdk::{
 };
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
-    governance::Proposal, oracle::pyth::PriceIdentifier, time::Nanoseconds,
-    versioned_state::write_state_version,
+    governance::Proposal, oracle::pyth::PriceIdentifier, versioned_state::write_state_version,
+    Nanoseconds,
 };
-use templar_proxy_oracle_kernel::{
+use templar_proxy_oracle_kernel::proxy::{
+    aggregator::method::median::MedianLow, Aggregator, FreshnessFilter, Proxy, WeightedSource,
+};
+use templar_proxy_oracle_near_common::{
+    governance::Operation,
+    input::{ProxyPriceTransformer, Source},
     price_transformer::{Action, Call},
-    proxy::{
-        aggregator::method::median::MedianLow, governance::Operation, Aggregator, FreshnessFilter,
-        Proxy, ProxyPriceTransformer, Source, WeightedSource,
-    },
     request::OracleRequest,
     state,
     state::legacy::v0,
@@ -148,7 +149,7 @@ fn pending_proxy() -> v0::Proxy {
     }
 }
 
-fn expected_btc_proxy() -> Proxy {
+fn expected_btc_proxy() -> Proxy<Source> {
     let mut proxy = Proxy::new(
         Aggregator::MedianLow(MedianLow::new([
             WeightedSource::new(
@@ -172,7 +173,7 @@ fn expected_btc_proxy() -> Proxy {
     proxy
 }
 
-fn expected_eth_proxy() -> Proxy {
+fn expected_eth_proxy() -> Proxy<Source> {
     Proxy::priority(
         [
             OracleRequest::redstone("redstone.test.near".parse().unwrap(), "ETH").into(),
@@ -186,7 +187,7 @@ fn expected_eth_proxy() -> Proxy {
     )
 }
 
-fn expected_stnear_proxy() -> Proxy {
+fn expected_stnear_proxy() -> Proxy<Source> {
     let mut proxy = Proxy::new(
         Aggregator::MedianLow(MedianLow::new([
             WeightedSource::new(
@@ -222,7 +223,7 @@ fn expected_stnear_proxy() -> Proxy {
     proxy
 }
 
-fn expected_pending_proxy() -> Proxy {
+fn expected_pending_proxy() -> Proxy<Source> {
     Proxy::priority(
         [
             OracleRequest::pyth("pyth2.test.near".parse().unwrap(), PENDING_PRICE_ID).into(),

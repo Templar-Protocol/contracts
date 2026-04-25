@@ -42,37 +42,28 @@ impl<S> Aggregate<S> for Priority<S> {
 
 #[cfg(test)]
 mod tests {
-    use near_sdk::json_types::{I64, U64};
-    use templar_common::oracle::pyth::PythTimestamp;
-
-    use crate::request::OracleRequest;
-
     use super::*;
 
-    fn price(value: i64, conf: u64, publish_time: PythTimestamp) -> pyth::Price {
-        pyth::Price {
-            price: I64(value),
-            conf: U64(conf),
+    fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
+        Price {
+            price: value,
+            conf,
             expo: -6,
-            publish_time,
+            publish_time_ns: templar_primitives::Nanoseconds::from_secs(publish_time_s),
         }
     }
 
-    fn secs(s: i64) -> PythTimestamp {
-        PythTimestamp::from_secs(s)
-    }
-
-    fn priority(count: usize) -> Priority {
+    fn priority(count: usize) -> Priority<&'static str> {
         Priority {
-            sources: (0..count)
-                .map(|_| OracleRequest::redstone("oracle.near".parse().unwrap(), "BTC").into())
-                .collect(),
+            sources: (0..count).map(|_| "source").collect(),
         }
     }
 
     #[test]
     fn priority_empty_returns_too_few_valid_sources() {
-        let error = Priority { sources: vec![] }.aggregate(vec![]).unwrap_err();
+        let error = Priority::<&'static str> { sources: vec![] }
+            .aggregate(vec![])
+            .unwrap_err();
         assert!(matches!(
             error,
             super::super::Error::TooFewValidSources {
@@ -85,41 +76,41 @@ mod tests {
     #[test]
     fn priority_single_price() {
         let result = priority(1)
-            .aggregate(vec![Some(price(1_000_000, 0, secs(0)))])
+            .aggregate(vec![Some(price(1_000_000, 0, 0))])
             .unwrap();
-        assert_eq!(result.price.0, 1_000_000);
+        assert_eq!(result.price, 1_000_000);
     }
 
     #[test]
     fn priority_selects_first_valid_price() {
         let prices = vec![
             None,
-            Some(price(2_000_000, 0, secs(0))),
-            Some(price(3_000_000, 0, secs(0))),
+            Some(price(2_000_000, 0, 0)),
+            Some(price(3_000_000, 0, 0)),
         ];
         let result = priority(prices.len()).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, 2_000_000);
+        assert_eq!(result.price, 2_000_000);
     }
 
     #[test]
     fn priority_preserves_original_price_with_confidence() {
         let result = priority(2)
             .aggregate(vec![
-                Some(price(1_000, 100, secs(0))),
-                Some(price(2_000, 0, secs(0))),
+                Some(price(1_000, 100, 0)),
+                Some(price(2_000, 0, 0)),
             ])
             .unwrap();
-        assert_eq!(result.price.0, 1_000);
-        assert_eq!(result.conf.0, 100);
+        assert_eq!(result.price, 1_000);
+        assert_eq!(result.conf, 100);
     }
 
     #[test]
     fn priority_returns_first_valid_price_even_with_multiple_prices() {
         let prices = vec![
-            Some(price(1_000_000, 0, secs(0))),
-            Some(price(2_000_000, 0, secs(0))),
+            Some(price(1_000_000, 0, 0)),
+            Some(price(2_000_000, 0, 0)),
         ];
         let result = priority(prices.len()).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, 1_000_000);
+        assert_eq!(result.price, 1_000_000);
     }
 }

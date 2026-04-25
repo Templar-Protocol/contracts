@@ -14,7 +14,7 @@ use templar_common::{
     market::PriceOracleConfiguration,
     oracle::pyth::{Price, PriceIdentifier},
 };
-use templar_proxy_oracle_kernel::request::OracleRequest;
+use templar_proxy_oracle_near_common::request::OracleRequest;
 
 pub mod app;
 pub mod broom;

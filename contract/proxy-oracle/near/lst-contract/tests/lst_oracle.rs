@@ -8,7 +8,7 @@ use templar_common::{
     market::{MarketConfiguration, YieldWeights},
     oracle::pyth::PriceIdentifier,
 };
-use templar_proxy_oracle_kernel::price_transformer::{Call, PriceTransformer};
+use templar_proxy_oracle_near_common::price_transformer::{Call, PriceTransformer};
 use test_utils::*;
 
 fn redemption_rate_call(account_id: &near_sdk::AccountIdRef) -> Call {

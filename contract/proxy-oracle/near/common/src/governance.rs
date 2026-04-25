@@ -1,6 +1,7 @@
 use near_sdk::near;
-use templar_common::{gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier};
-use templar_primitives::Nanoseconds;
+use templar_common::{
+    gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, Nanoseconds,
+};
 use templar_proxy_oracle_kernel::proxy::Proxy;
 
 use crate::input::Source;

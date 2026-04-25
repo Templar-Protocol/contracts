@@ -23,7 +23,8 @@ pub mod withdrawal_queue;
 
 pub use primitive_types;
 pub use schemars;
-use templar_primitives::number::Decimal;
+pub use templar_primitives::dec;
+pub use templar_primitives::{Decimal, Nanoseconds, SI128, SI64, SU128, SU256, SU64};
 
 /// Panic helper that works in both WASM and native contexts.
 ///

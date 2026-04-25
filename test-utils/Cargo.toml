@@ -16,7 +16,9 @@ p256.workspace = true
 rstest.workspace = true
 serde.workspace = true
 templar-common.workspace = true
+templar-primitives.workspace = true
 templar-proxy-oracle-kernel.workspace = true
+templar-proxy-oracle-near-common.workspace = true
 templar-universal-account = { workspace = true, features = ["signing"] }
 tokio.workspace = true
 

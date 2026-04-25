@@ -8,12 +8,16 @@ version = "0.1.0"
 [dependencies]
 templar-common.workspace = true
 templar-proxy-oracle-kernel.workspace = true
-templar-primitives = { workspace = true, features = ["near"] }
 thiserror.workspace = true
 near-sdk.workspace = true
+near-primitives = { workspace = true, optional = true }
 
 [dev-dependencies]
 rstest.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = []
+rpc = ["dep:near-primitives"]

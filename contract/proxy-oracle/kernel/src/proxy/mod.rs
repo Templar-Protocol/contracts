@@ -94,44 +94,30 @@ impl<S> Proxy<S> {
 
 #[cfg(test)]
 mod tests {
-    use near_sdk::json_types::{I64, U64};
     use rstest::rstest;
-    use templar_common::{
-        oracle::pyth::{self, PythTimestamp},
-        time::Nanoseconds,
-    };
+    use templar_primitives::Nanoseconds;
 
     use crate::{
         proxy::{
             aggregator::method::{median::MedianLow, Error},
             Aggregator, FreshnessFilter, Proxy, WeightedSource,
         },
-        request::OracleRequest,
+        vec, Price,
     };
 
-    fn price(value: i64, conf: u64, publish_time: PythTimestamp) -> pyth::Price {
-        pyth::Price {
-            price: I64(value),
-            conf: U64(conf),
+    fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
+        Price {
+            price: value,
+            conf,
             expo: -6,
-            publish_time,
+            publish_time_ns: Nanoseconds::from_secs(publish_time_s),
         }
     }
 
-    fn secs(s: i64) -> PythTimestamp {
-        PythTimestamp::from_secs(s)
-    }
-
-    fn median_proxy(freshness_filter: FreshnessFilter, min_sources: u32) -> Proxy {
+    fn median_proxy(freshness_filter: FreshnessFilter, min_sources: u32) -> Proxy<&'static str> {
         let mut aggregator = MedianLow::new([
-            WeightedSource::new(
-                OracleRequest::redstone("oracle.near".parse().unwrap(), "BTC"),
-                1,
-            ),
-            WeightedSource::new(
-                OracleRequest::redstone("oracle.near".parse().unwrap(), "BTC"),
-                1,
-            ),
+            WeightedSource::new("source-a", 1),
+            WeightedSource::new("source-b", 1),
         ]);
         aggregator.min_sources = min_sources;
 
@@ -148,8 +134,8 @@ mod tests {
             2,
         );
         let prices = vec![
-            Some(price(1_000_000, 0, secs(1_000))),
-            Some(price(2_000_000, 0, secs(100))),
+            Some(price(1_000_000, 0, 1_000)),
+            Some(price(2_000_000, 0, 100)),
         ];
 
         let error = proxy
@@ -184,13 +170,13 @@ mod tests {
         );
         let now = Nanoseconds::from_secs(u64::try_from(now_s).unwrap());
         let prices = vec![
-            Some(price(1_000_000, 0, secs(publish_time_s))),
-            Some(price(9_999_999, 0, secs(now_s))),
+            Some(price(1_000_000, 0, u64::try_from(publish_time_s).unwrap())),
+            Some(price(9_999_999, 0, u64::try_from(now_s).unwrap())),
         ];
 
         let result = proxy.resolve(prices, now).unwrap();
 
-        assert_eq!(result.price.0, if included { 1_000_000 } else { 9_999_999 });
+        assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
     }
 
     #[rstest]
@@ -211,13 +197,13 @@ mod tests {
         );
         let now = Nanoseconds::from_secs(u64::try_from(now_s).unwrap());
         let prices = vec![
-            Some(price(1_000_000, 0, secs(publish_time_s))),
-            Some(price(9_999_999, 0, secs(now_s))),
+            Some(price(1_000_000, 0, u64::try_from(publish_time_s).unwrap())),
+            Some(price(9_999_999, 0, u64::try_from(now_s).unwrap())),
         ];
 
         let result = proxy.resolve(prices, now).unwrap();
 
-        assert_eq!(result.price.0, if included { 1_000_000 } else { 9_999_999 });
+        assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
     }
 
     #[test]
@@ -230,12 +216,17 @@ mod tests {
             1,
         );
         let prices = vec![
-            Some(price(1_000_000, 0, secs(-1))),
-            Some(price(9_999_999, 0, secs(1_000))),
+            Some(Price {
+                price: 1_000_000,
+                conf: 0,
+                expo: -6,
+                publish_time_ns: Nanoseconds::zero(),
+            }),
+            Some(price(9_999_999, 0, 1_000)),
         ];
 
         let result = proxy.resolve(prices, Nanoseconds::from_ms(1_000)).unwrap();
 
-        assert_eq!(result.price.0, 9_999_999);
+        assert_eq!(result.price, 9_999_999);
     }
 }

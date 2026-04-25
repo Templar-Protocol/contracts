@@ -20,7 +20,7 @@ use templar_common::{
     market::DepositMsg,
     oracle::{pyth, redstone},
 };
-use templar_proxy_oracle_kernel::request::OracleRequest;
+use templar_proxy_oracle_near_common::request::OracleRequest;
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,

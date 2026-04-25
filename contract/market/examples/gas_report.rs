@@ -3,7 +3,7 @@
 use near_sdk::Gas;
 use templar_common::{
     fee::Fee, interest_rate_strategy::InterestRateStrategy, market::HarvestYieldMode,
-    number::Decimal, time_chunk::TimeChunkConfiguration,
+    time_chunk::TimeChunkConfiguration, Decimal,
 };
 use test_utils::*;
 

@@ -6,7 +6,7 @@ use crate::{
     analyzer::Analyzer, config::Config, error::Result, scanner::MarketScanner, types::MarketReport,
 };
 use near_sdk::AccountId;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 /// Market processing statistics.
 #[derive(Debug, Default)]

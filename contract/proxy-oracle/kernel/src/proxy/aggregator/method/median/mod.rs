@@ -148,37 +148,25 @@ impl<V: MedianVariant, S> Aggregate<S> for Median<V, S> {
 
 #[cfg(test)]
 mod tests {
-    use near_sdk::json_types::{I64, U64};
-    use templar_common::oracle::pyth::PythTimestamp;
-
-    use crate::{proxy::aggregator::method::Error, request::OracleRequest};
+    use crate::proxy::aggregator::method::Error;
 
     use super::*;
 
-    fn price(value: i64, conf: u64, publish_time: PythTimestamp) -> pyth::Price {
-        pyth::Price {
-            price: I64(value),
-            conf: U64(conf),
+    fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
+        Price {
+            price: value,
+            conf,
             expo: -6,
-            publish_time,
+            publish_time_ns: templar_primitives::Nanoseconds::from_secs(publish_time_s),
         }
     }
 
-    fn secs(s: i64) -> PythTimestamp {
-        PythTimestamp::from_secs(s)
-    }
-
-    fn median_low(weights: &[u32], min_sources: u32) -> MedianLow {
+    fn median_low(weights: &[u32], min_sources: u32) -> MedianLow<&'static str> {
         MedianLow {
             _variant: PhantomData,
             sources: weights
                 .iter()
-                .map(|weight| {
-                    WeightedSource::new(
-                        OracleRequest::redstone("oracle.near".parse().unwrap(), "BTC"),
-                        *weight,
-                    )
-                })
+                .map(|weight| WeightedSource::new("source", *weight))
                 .collect(),
             min_sources,
         }
@@ -186,7 +174,9 @@ mod tests {
 
     #[test]
     fn aggregate_empty_returns_too_few_valid_sources() {
-        let error = MedianLow::new([]).aggregate(vec![]).unwrap_err();
+        let error = MedianLow::<&'static str>::new([])
+            .aggregate(vec![])
+            .unwrap_err();
         assert!(matches!(
             error,
             Error::TooFewValidSources {
@@ -199,28 +189,25 @@ mod tests {
     #[test]
     fn aggregate_single_price_no_conf() {
         let result = median_low(&[1], 1)
-            .aggregate(vec![Some(price(1_000_000, 0, secs(0)))])
+            .aggregate(vec![Some(price(1_000_000, 0, 0))])
             .unwrap();
-        assert_eq!(result.price.0, 1_000_000);
+        assert_eq!(result.price, 1_000_000);
     }
 
     #[test]
     fn aggregate_median_of_three() {
         let prices = vec![
-            Some(price(1_000_000, 0, secs(0))),
-            Some(price(2_000_000, 0, secs(0))),
-            Some(price(3_000_000, 0, secs(0))),
+            Some(price(1_000_000, 0, 0)),
+            Some(price(2_000_000, 0, 0)),
+            Some(price(3_000_000, 0, 0)),
         ];
         let result = median_low(&[1, 1, 1], 1).aggregate(prices).unwrap();
-        assert_eq!(result.price.0, 2_000_000);
+        assert_eq!(result.price, 2_000_000);
     }
 
     #[test]
     fn aggregate_min_sources_not_met_returns_error() {
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(0))),
-            Some(price(2_000_000, 0, secs(0))),
-        ];
+        let prices = vec![Some(price(1_000_000, 0, 0)), Some(price(2_000_000, 0, 0))];
         let error = median_low(&[1, 1], 3).aggregate(prices).unwrap_err();
         assert!(matches!(
             error,
@@ -233,10 +220,7 @@ mod tests {
 
     #[test]
     fn aggregate_min_sources_exactly_met() {
-        let prices = vec![
-            Some(price(1_000_000, 0, secs(0))),
-            Some(price(2_000_000, 0, secs(0))),
-        ];
+        let prices = vec![Some(price(1_000_000, 0, 0)), Some(price(2_000_000, 0, 0))];
         assert!(median_low(&[1, 1], 2).aggregate(prices).is_ok());
     }
 

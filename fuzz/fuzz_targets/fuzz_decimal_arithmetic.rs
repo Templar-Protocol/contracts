@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::str::FromStr;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: (u128, u128, u128, i32, i32, u32, u8)| {
     let (a, b, c, exp1, _exp2, pow_exp, op_selector) = data;

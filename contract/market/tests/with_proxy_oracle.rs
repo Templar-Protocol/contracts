@@ -11,12 +11,10 @@ use templar_common::{
         redstone::FeedData,
     },
     primitive_types::U256,
-    time::Nanoseconds,
+    Nanoseconds,
 };
-use templar_proxy_oracle_kernel::{
-    proxy::{FreshnessFilter, Proxy, Source},
-    request::OracleRequest,
-};
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use test_utils::*;
 
 #[allow(clippy::cast_possible_truncation)]

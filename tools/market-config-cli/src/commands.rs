@@ -10,9 +10,7 @@ use market_config_cli::{
 use near_sdk::AccountId;
 use serde_json::{self, to_string_pretty};
 use std::path::PathBuf;
-use templar_common::{
-    interest_rate_strategy::InterestRateStrategy, number::Decimal, utils::Network,
-};
+use templar_common::{interest_rate_strategy::InterestRateStrategy, utils::Network, Decimal};
 
 /// Handle the interactive command flow.
 /// # Errors

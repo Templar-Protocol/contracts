@@ -19,16 +19,16 @@ use templar_common::{
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
     },
-    primitive_types,
-    time::Nanoseconds,
+    primitive_types, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::{
+use templar_proxy_oracle_kernel::proxy::{
+    aggregator::{method::median::MedianLow, Aggregator},
+    FreshnessFilter, Proxy, WeightedSource,
+};
+use templar_proxy_oracle_near_common::{
+    governance::{Operation, ProxyGovernanceInterface},
+    input::{ProxyPriceTransformer, Source},
     price_transformer,
-    proxy::{
-        aggregator::{method::median::MedianLow, Aggregator},
-        governance::{Operation, ProxyGovernanceInterface},
-        FreshnessFilter, Proxy, ProxyPriceTransformer, Source, WeightedSource,
-    },
     request::OracleRequest,
 };
 use templar_proxy_oracle_near_contract::Contract;
@@ -370,10 +370,10 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
             set!(
                 redstone.$id = Some(FeedData {
                     price: primitive_types::U256::from($val * 100_000_000_u128).into(),
-                    package_timestamp: templar_common::time::Nanoseconds::from_ms(
+                    package_timestamp: templar_common::Nanoseconds::from_ms(
                         std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
                     ),
-                    write_timestamp: templar_common::time::Nanoseconds::from_ms(
+                    write_timestamp: templar_common::Nanoseconds::from_ms(
                         std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
                     ),
                 })
@@ -630,7 +630,7 @@ async fn proxy_oracle_enforces_freshness_filter(
                 price: I64(expected_price as i64),
                 conf: U64(0),
                 expo: 0,
-                publish_time: now.try_to_pyth().unwrap(),
+                publish_time: PythTimestamp::try_from_time(now).unwrap(),
             }),
         )
         .await;
@@ -642,7 +642,7 @@ async fn proxy_oracle_enforces_freshness_filter(
                 price: I64(80_000),
                 conf: U64(0),
                 expo: 0,
-                publish_time: future_time.try_to_pyth().unwrap(),
+                publish_time: PythTimestamp::try_from_time(future_time).unwrap(),
             }),
         )
         .await;

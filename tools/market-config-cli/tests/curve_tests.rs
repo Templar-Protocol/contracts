@@ -1,6 +1,6 @@
 use market_config_cli::curve::{strategy_from_name, CurveInput, ModelArg};
 use rstest::rstest;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 #[rstest]
 #[case(ModelArg::Piecewise, "piecewise")]

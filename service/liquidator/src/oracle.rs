@@ -16,16 +16,18 @@ use near_primitives::{
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use std::collections::HashMap;
 use templar_common::{
-    number::Decimal,
     oracle::{
         pyth::{self, OracleResponse, PriceIdentifier},
         redstone,
     },
-    time::Nanoseconds,
+    Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::{
-    price_transformer::PriceTransformer,
-    proxy::{Proxy, ProxyPriceTransformer, Source},
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{
+    input::{ProxyPriceTransformer, Source},
+    kernel_to_pyth,
+    price_transformer::{Call, PriceTransformer},
+    pyth_to_kernel,
     request::OracleRequest,
 };
 
@@ -342,7 +344,7 @@ impl OracleFetcher {
         // Proxy oracle: collect Pyth entries from proxy config
         if self.proxy_oracle_cache.read().await.contains(oracle) {
             for &pid in price_ids {
-                let proxy: Option<Proxy> = view(
+                let proxy: Option<Proxy<Source>> = view(
                     &self.client,
                     oracle.clone(),
                     "get_proxy",
@@ -759,7 +761,7 @@ impl OracleFetcher {
         let mut result = OracleResponse::new();
 
         for &price_id in price_ids {
-            let proxy: Option<Proxy> = view(
+            let proxy: Option<Proxy<Source>> = view(
                 &self.client,
                 proxy_oracle.clone(),
                 "get_proxy",
@@ -789,14 +791,14 @@ impl OracleFetcher {
                     }
                 };
 
-                prices.push(price);
+                prices.push(price.as_ref().and_then(pyth_to_kernel));
             }
 
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
             let source_count = prices.iter().filter(|price| price.is_some()).count();
             let aggregated = proxy.resolve(prices, now).ok();
-            result.insert(price_id, aggregated);
+            result.insert(price_id, aggregated.as_ref().and_then(kernel_to_pyth));
 
             if result.get(&price_id).and_then(|p| p.as_ref()).is_some() {
                 tracing::debug!(
@@ -981,17 +983,18 @@ impl OracleFetcher {
     }
 
     /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
-    async fn fetch_transformer_input(
-        &self,
-        call: &templar_proxy_oracle_kernel::price_transformer::Call,
-    ) -> Result<Decimal, RpcError> {
-        // Use the rpc_call() method to create a view query
-        let query = call.rpc_call();
-
-        // Execute the query using the RPC client
+    async fn fetch_transformer_input(&self, call: &Call) -> Result<Decimal, RpcError> {
         let request = near_jsonrpc_client::methods::query::RpcQueryRequest {
             block_reference: near_primitives::types::BlockReference::latest(),
-            request: query,
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: call.account_id.as_str().parse().map_err(|err| {
+                    RpcError::WrongResponseKind(format!(
+                        "Invalid account ID in transformer call: {err}"
+                    ))
+                })?,
+                method_name: call.method_name.clone(),
+                args: call.args.0.clone().into(),
+            },
         };
 
         let response = self.client.call(request).await.map_err(RpcError::from)?;

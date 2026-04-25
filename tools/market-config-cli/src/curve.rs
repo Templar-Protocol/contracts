@@ -1,6 +1,6 @@
 use crate::CliResult;
 use clap::ValueEnum;
-use templar_common::{interest_rate_strategy::InterestRateStrategy, number::Decimal};
+use templar_common::{interest_rate_strategy::InterestRateStrategy, Decimal};
 
 #[derive(Copy, Clone, Debug, ValueEnum, Eq, PartialEq)]
 pub enum ModelArg {

@@ -7,12 +7,9 @@ use std::{
 };
 
 use near_workspaces::{network::Sandbox, AccountId, Worker};
-use templar_common::{oracle::pyth::PriceIdentifier, time::Nanoseconds};
-use templar_proxy_oracle_kernel::{
-    proxy::{FreshnessFilter, Proxy},
-    request::OracleRequest,
-    state,
-};
+use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
 use test_utils::{
     assert_all_outcomes_success, controller::migration::MigrationController,
     pyth_price_id::stable::CRYPTO_USDC_USD, worker, ContractController, GovernanceController,
@@ -64,7 +61,7 @@ async fn deploy_from_patch(
     ProxyOracleController { contract }
 }
 
-fn expected_ustry_proxy() -> Proxy {
+fn expected_ustry_proxy() -> Proxy<Source> {
     Proxy::median_low(
         [
             OracleRequest::redstone("redstone-adapter.v1.tmplr.near".parse().unwrap(), "USTRY")
@@ -77,7 +74,7 @@ fn expected_ustry_proxy() -> Proxy {
     )
 }
 
-fn expected_usdc_proxy() -> Proxy {
+fn expected_usdc_proxy() -> Proxy<Source> {
     Proxy::median_low(
         [
             OracleRequest::redstone("redstone-adapter.v1.tmplr.near".parse().unwrap(), "USDC")

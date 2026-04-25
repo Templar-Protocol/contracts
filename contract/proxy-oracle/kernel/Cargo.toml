@@ -6,12 +6,12 @@ edition.workspace = true
 version = "0.1.0"
 
 [dependencies]
-borsh = { workspace = true, default-features = false, features = [], optional = true }
-hex = { workspace = true, default-features = false, features = ["alloc"], optional = true }
-serde = { workspace = true, default-features = false, features = ["alloc", "derive"], optional = true }
-schemars = { workspace = true, default-features = false, optional = true }
-templar-primitives = { workspace = true, default-features = false, features = [] }
-thiserror = { workspace = true, default-features = false, features = [] }
+borsh = { workspace = true, features = [], optional = true }
+hex = { workspace = true, features = ["alloc"], optional = true }
+serde = { workspace = true, features = ["alloc", "derive"], optional = true }
+schemars = { workspace = true, optional = true }
+templar-primitives = { workspace = true, features = [] }
+thiserror = { workspace = true, features = [] }
 
 [dev-dependencies]
 hex-literal.workspace = true

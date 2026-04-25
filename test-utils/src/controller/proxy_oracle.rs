@@ -6,12 +6,10 @@ use near_workspaces::{Account, Contract};
 use templar_common::{
     governance,
     oracle::pyth::{OracleResponse, PriceIdentifier},
-    time::Nanoseconds,
+    Nanoseconds,
 };
-use templar_proxy_oracle_kernel::{
-    proxy::{self, governance::Operation, Proxy},
-    state,
-};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{governance::Operation, input::Source, state};
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
@@ -62,7 +60,12 @@ impl ProxyOracleController {
         Self { contract }
     }
 
-    pub async fn set_proxy(&self, executor: &Account, id: PriceIdentifier, proxy: Option<Proxy>) {
+    pub async fn set_proxy(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        proxy: Option<Proxy<Source>>,
+    ) {
         let op_id = self.gov_next_id().await;
         self.gov_create(executor, op_id, Operation::SetProxy { id, proxy })
             .await;
@@ -71,7 +74,7 @@ impl ProxyOracleController {
 
     define! {
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
-        #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy>;
+        #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy<Source>>;
 
         #[call]
         pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;
@@ -84,7 +87,7 @@ impl ProxyOracleController {
     }
 }
 
-impl GovernanceController<proxy::governance::Operation> for ProxyOracleController {}
+impl GovernanceController<Operation> for ProxyOracleController {}
 
 pub trait GovernanceController<T: DeserializeOwned + Serialize>: ContractController {
     define! {

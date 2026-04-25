@@ -3,8 +3,8 @@ use std::io::Write;
 use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::{governance::Proposal, time::Nanoseconds};
-use templar_proxy_oracle_kernel::proxy::governance::Operation;
+use templar_common::{governance::Proposal, Nanoseconds};
+use templar_proxy_oracle_near_common::governance::Operation;
 use templar_tools_common::near;
 
 use crate::{

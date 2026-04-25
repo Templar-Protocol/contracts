@@ -13,7 +13,7 @@ use std::str::FromStr;
 use templar_common::{
     fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
     market::MarketConfiguration,
-    number::Decimal,
+    Decimal,
 };
 
 /// Prompts for fee configuration during interactive mode.

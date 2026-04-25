@@ -34,16 +34,18 @@ use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBo
 
 use templar_common::{
     market::MarketConfiguration,
-    number::Decimal,
     oracle::{
         pyth::{self, PriceIdentifier},
         redstone,
     },
-    time::Nanoseconds,
+    Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::{
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{
+    input::Source,
+    kernel_to_pyth,
     price_transformer::{Call, PriceTransformer},
-    proxy::{Proxy, Source},
+    pyth_to_kernel,
     request::OracleRequest,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
@@ -666,7 +668,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-    ) -> Result<Option<Proxy>, ViewError> {
+    ) -> Result<Option<Proxy<Source>>, ViewError> {
         self.view(oracle_id, "get_proxy", json!({ "id": price_identifier }))
             .await
     }
@@ -792,7 +794,12 @@ impl Near {
 
         let mut prices = vec![];
         for source in proxy.sources() {
-            prices.push(self.resolve_proxy_source_price(source, max_age).await?);
+            prices.push(
+                self.resolve_proxy_source_price(source, max_age)
+                    .await?
+                    .as_ref()
+                    .and_then(pyth_to_kernel),
+            );
         }
 
         tracing::debug!(?prices, "Prices to aggregate");
@@ -801,7 +808,7 @@ impl Near {
 
         tracing::debug!(?price, "Aggregated price");
 
-        Ok(price)
+        Ok(price.as_ref().and_then(kernel_to_pyth))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -940,7 +947,7 @@ impl Near {
                 tracing::debug!("Price ID resolved: Proxy oracle contract");
 
                 if let Some(proxy) = self
-                    .view::<Option<Proxy>>(
+                    .view::<Option<Proxy<Source>>>(
                         oracle_id.clone(),
                         "get_proxy",
                         json!({ "id": price_identifier }),

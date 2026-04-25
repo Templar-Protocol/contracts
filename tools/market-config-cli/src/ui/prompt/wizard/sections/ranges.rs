@@ -11,7 +11,7 @@ use crate::{
 use dialoguer::theme::ColorfulTheme;
 use near_sdk::json_types::U128;
 use std::cell::RefCell;
-use templar_common::{market::MarketConfiguration, number::Decimal, utils::Network};
+use templar_common::{market::MarketConfiguration, utils::Network, Decimal};
 
 /// Prompts for position ranges during interactive mode.
 pub fn prompt_ranges(

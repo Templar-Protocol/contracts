@@ -35,9 +35,10 @@ use templar_common::{
     },
     registry::DeployMode,
 };
-use templar_proxy_oracle_kernel::{
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{
+    input::{ProxyPriceTransformer, Source},
     price_transformer,
-    proxy::{FreshnessFilter, Proxy, ProxyPriceTransformer, Source},
     request::OracleRequest,
 };
 use templar_relayer::{

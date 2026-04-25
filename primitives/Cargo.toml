@@ -6,12 +6,12 @@ edition.workspace = true
 version = "0.1.0"
 
 [dependencies]
-borsh = { workspace = true, default-features = false, features = [], optional = true }
+borsh = { workspace = true, features = [], optional = true }
 primitive-types.workspace = true
 redstone = { workspace = true, default-features = false, features = [], optional = true }
-serde = { workspace = true, default-features = false, features = ["alloc", "derive"], optional = true }
-schemars = { workspace = true, default-features = false, features = [], optional = true }
-near-sdk = { workspace = true, default-features = false, features = [], optional = true }
+serde = { workspace = true, features = ["alloc", "derive"], optional = true }
+schemars = { workspace = true, features = [], optional = true }
+near-sdk = { workspace = true, features = [], optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]

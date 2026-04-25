@@ -32,6 +32,7 @@ sqlx = { version = "0.8", features = [
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
 templar-proxy-oracle-kernel = { workspace = true }
+templar-proxy-oracle-near-common = { workspace = true }
 templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true

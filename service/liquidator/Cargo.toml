@@ -28,6 +28,7 @@ reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 templar-common = { workspace = true, features = ["rpc"] }
 templar-proxy-oracle-kernel = { workspace = true }
+templar-proxy-oracle-near-common = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

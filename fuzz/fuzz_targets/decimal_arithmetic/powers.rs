@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: (u128, u32)| {
     let (a, pow_exp) = data;
@@ -29,4 +29,3 @@ fuzz_target!(|data: (u128, u32)| {
     let _ = Decimal::TWO.pow(10);
     let _ = Decimal::ONE_HALF.pow(5);
 });
-

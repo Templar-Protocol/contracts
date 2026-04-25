@@ -9,10 +9,8 @@ use templar_common::oracle::{
     pyth::PriceIdentifier,
     redstone::{self, FeedId},
 };
-use templar_proxy_oracle_kernel::{
-    proxy::{FreshnessFilter, Proxy},
-    request::OracleRequest,
-};
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::request::OracleRequest;
 use templar_relayer::{
     app::args,
     cache::Cache,

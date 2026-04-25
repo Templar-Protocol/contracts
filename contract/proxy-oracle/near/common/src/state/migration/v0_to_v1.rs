@@ -171,9 +171,9 @@ mod tests {
     use templar_common::{
         governance::{Governance, Proposal},
         oracle::pyth::PriceIdentifier,
+        Nanoseconds,
         versioned_state::{read_state_version, write_state_version, StateTransformer},
     };
-    use templar_primitives::Nanoseconds;
 
     use crate::{
         governance::Operation,
@@ -305,8 +305,8 @@ mod tests {
                 assert_eq!(
                     proxy.freshness_filter,
                     FreshnessFilter::new(
-                        Some(templar_primitives::Nanoseconds::from_secs(70)),
-                        Some(templar_primitives::Nanoseconds::from_secs(20)),
+                        Some(templar_common::Nanoseconds::from_secs(70)),
+                        Some(templar_common::Nanoseconds::from_secs(20)),
                     ),
                 );
                 match &proxy.aggregator {

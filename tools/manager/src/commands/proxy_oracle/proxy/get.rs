@@ -4,8 +4,9 @@ use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
-use templar_proxy_oracle_kernel::{
-    proxy::{Aggregator, Proxy, Source, WeightedSource},
+use templar_proxy_oracle_kernel::proxy::{Aggregator, Proxy, WeightedSource};
+use templar_proxy_oracle_near_common::{
+    input::Source,
     request::OracleRequest,
 };
 use templar_tools_common::near;
@@ -32,7 +33,7 @@ impl GetProxy {
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let price_id: PriceIdentifier = self.price_id.into();
 
-        let proxy: Option<Proxy> = near::view(
+        let proxy: Option<Proxy<Source>> = near::view(
             &ctx.near,
             &self.oracle_id,
             "get_proxy",
@@ -47,7 +48,7 @@ impl GetProxy {
     }
 }
 
-impl OutputStyle for Proxy {
+impl OutputStyle for Proxy<Source> {
     fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         let aggregator_name = self.aggregator.name();
 
@@ -131,7 +132,7 @@ impl OutputStyle for Proxy {
 fn write_weighted_entry(
     out: &mut dyn Write,
     index: usize,
-    entry: &WeightedSource,
+    entry: &WeightedSource<Source>,
 ) -> anyhow::Result<()> {
     writeln!(
         out,

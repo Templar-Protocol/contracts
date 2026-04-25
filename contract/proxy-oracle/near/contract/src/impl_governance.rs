@@ -1,7 +1,6 @@
 use near_sdk::{assert_one_yocto, env, near};
 use near_sdk_contract_tools::owner::Owner;
-use templar_common::{contract::list, governance::Proposal, UnwrapReject};
-use templar_primitives::Nanoseconds;
+use templar_common::{contract::list, governance::Proposal, Nanoseconds, UnwrapReject};
 use templar_proxy_oracle_near_common::governance::{Operation, ProxyGovernanceInterface};
 
 use crate::{Contract, ContractExt};

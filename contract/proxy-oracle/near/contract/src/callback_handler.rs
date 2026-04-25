@@ -6,9 +6,9 @@ use templar_common::{
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
     },
+    Nanoseconds,
     UnwrapReject,
 };
-use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_near_common::request::{OracleRequest, PythRequest, RedStoneRequest};
 
 static ERR_ORACLE_NOT_INVOKED: &str = "Invariant violation: oracle not invoked";
