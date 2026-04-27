@@ -531,6 +531,14 @@ impl PendingWithdrawals {
     #[inline]
     #[must_use]
     pub fn from_sorted_entries(entries: Vec<(u64, PendingWithdrawal)>) -> Self {
+        let mut last_id = None;
+        for (id, _) in &entries {
+            if last_id.is_some_and(|last| last >= *id) {
+                crate::abort!("pending withdrawal entries must be sorted by unique id");
+            }
+            last_id = Some(*id);
+        }
+
         Self {
             entries: entries
                 .into_iter()

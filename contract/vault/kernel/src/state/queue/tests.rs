@@ -189,6 +189,22 @@ fn pending_withdrawals_from_iter_rejects_duplicate_ids() {
 }
 
 #[test]
+#[should_panic(expected = "pending withdrawal entries must be sorted by unique id")]
+fn pending_withdrawals_from_sorted_entries_rejects_duplicate_ids() {
+    let withdrawal = make_withdrawal(1, 100, 1000);
+    let _pending =
+        PendingWithdrawals::from_sorted_entries(vec![(7, withdrawal.clone()), (7, withdrawal)]);
+}
+
+#[test]
+#[should_panic(expected = "pending withdrawal entries must be sorted by unique id")]
+fn pending_withdrawals_from_sorted_entries_rejects_unsorted_ids() {
+    let withdrawal = make_withdrawal(1, 100, 1000);
+    let _pending =
+        PendingWithdrawals::from_sorted_entries(vec![(8, withdrawal.clone()), (7, withdrawal)]);
+}
+
+#[test]
 fn test_compute_full_withdrawal() {
     let w = make_withdrawal(1, 100, 1000);
 

@@ -1551,8 +1551,9 @@ fn stale_rebalance_callback_checks_lease_before_op_state() {
     let mut c = new_test_contract(&vault_id);
 
     let market_id = c.insert_market_for_tests(mk(8016), MarketConfiguration::default(), 600);
+    let op_id = 20;
     c.op_state = OpState::Allocating(AllocatingState {
-        op_id: 21,
+        op_id,
         index: 0,
         remaining: 0,
         plan: vec![],
@@ -1561,7 +1562,7 @@ fn stale_rebalance_callback_checks_lease_before_op_state() {
     let before_state = c.op_state.clone();
     let res = c.rebalance_withdraw_01_execute_withdraw_fetch_position(
         Ok(U128(1_000)),
-        20,
+        op_id,
         market_id,
         U64(999),
         None,

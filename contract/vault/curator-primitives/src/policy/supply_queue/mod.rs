@@ -192,7 +192,7 @@ impl SupplyQueue {
         for bucket in self.buckets.iter_mut().rev() {
             if !bucket.is_empty() {
                 let entry = bucket.remove(0);
-                self.len -= 1;
+                self.len = self.len.saturating_sub(1);
                 return Ok(entry);
             }
         }
@@ -246,7 +246,8 @@ impl SupplyQueue {
         let mut filtered = Self::new(self.max_length());
         for entry in self.entries() {
             if leases.is_unleased(entry.target_id, now_ns) {
-                filtered.push_validated_entry(entry.clone()).unwrap();
+                let inserted = filtered.push_validated_entry(entry.clone());
+                debug_assert!(inserted.is_some());
             }
         }
         filtered

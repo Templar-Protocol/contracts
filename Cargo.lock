@@ -13229,6 +13229,7 @@ dependencies = [
  "proptest",
  "schemars 0.8.22",
  "serde",
+ "serde_json",
  "templar-vault-kernel",
  "templar-vault-macros",
 ]
