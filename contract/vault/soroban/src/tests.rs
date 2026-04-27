@@ -924,6 +924,21 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_rejects_fees_spec_trailing_bytes() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+
+        env.as_contract(&contract_id, || {
+            let bytes = vec![0u8; 113];
+            env.storage()
+                .instance()
+                .set(&VaultDataKey::FeesSpec, &Bytes::from_slice(&env, &bytes));
+
+            assert!(crate::contract::load_fees_spec(&env).is_err());
+        });
+    }
+
+    #[test]
     fn test_loads_virtual_offsets_from_storage() {
         use soroban_sdk::testutils::Address as _;
 

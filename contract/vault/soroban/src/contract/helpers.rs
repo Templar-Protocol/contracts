@@ -121,13 +121,20 @@ fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
         .get(cursor)
         .ok_or_else(|| RuntimeError::storage_error(""))?
     {
-        0 => None,
+        0 => {
+            cursor += 1;
+            None
+        }
         1 => {
             cursor += 1;
             Some(Wad::from(read_u128(bytes, &mut cursor)?))
         }
         _ => return Err(RuntimeError::storage_error("")),
     };
+
+    if cursor != bytes.len() {
+        return Err(RuntimeError::storage_error(""));
+    }
 
     Ok(FeesSpec::new(
         performance,
