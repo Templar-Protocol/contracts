@@ -2,6 +2,7 @@ use std::num::NonZeroU8;
 
 use derive_more::{Display, From, Into};
 
+use crate::vault::wad::Wad;
 use crate::{
     asset::{BorrowAsset, FungibleAsset},
     supply::SupplyPosition,
@@ -19,7 +20,6 @@ pub use templar_vault_kernel::state::op_state::{
     AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
-use crate::vault::wad::Wad;
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -54,17 +54,17 @@ pub mod prelude {
     pub use super::gas::*;
     pub use super::params::*;
     pub use super::restrictions::*;
+    pub use super::wad::{
+        compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
+        mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+    };
+    pub use super::wad::{Number, WIDE};
     pub use super::{
         require_at_least, storage_bytes_for_account_id, ActualIdx, AllocationDelta, AllocationPlan,
         AllocationWeights, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Delta,
         DepositMsg, Error, EscrowSettlement, ExpectedIdx, Fee, FeeAccrualAnchor, Fees,
         IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId,
         PendingWithdrawal, RealAssetsReport, ResyncIdleReport, TimestampNs, VaultConfiguration,
-    };
-    pub use super::wad::{Number, WIDE};
-    pub use super::wad::{
-        compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
-        mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
     };
 }
 
@@ -383,9 +383,9 @@ pub struct FeeAccrualAnchor {
 #[cfg(test)]
 mod tests {
     use super::{Fee, Fees, MarketId};
+    use crate::vault::wad::Wad;
     use near_sdk::json_types::U128;
     use near_sdk::AccountId;
-    use crate::vault::wad::Wad;
 
     #[test]
     fn market_id_try_from_u64_accepts_u32_range() {

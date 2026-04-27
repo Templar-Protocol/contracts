@@ -1231,8 +1231,7 @@ impl Contract {
 
                 Event::CapGroupRelativeCapSet {
                     cap_group: cap_group.clone(),
-                    new_relative_cap: new_relative_cap
-                        .map_or(U128(u128::from(Wad::one())), |cap| cap),
+                    new_relative_cap: *new_relative_cap,
                 }
                 .emit();
             }
@@ -1338,7 +1337,7 @@ impl Contract {
         {
             Event::CapGroupRelativeCapRaiseSubmitted {
                 cap_group: cap_group.clone(),
-                new_relative_cap: new_relative_cap.map_or(U128(u128::from(Wad::one())), |cap| cap),
+                new_relative_cap: *new_relative_cap,
                 valid_at_ns: u64::from(ready_at_ns).into(),
             }
             .emit();

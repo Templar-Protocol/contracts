@@ -216,7 +216,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     CapGroupRelativeCapRaiseSubmitted {
         cap_group: CapGroupId,
-        new_relative_cap: U128,
+        new_relative_cap: Option<U128>,
         valid_at_ns: U64,
     },
     #[event_version("1.0.0")]
@@ -224,7 +224,7 @@ pub enum Event {
     #[event_version("1.0.0")]
     CapGroupRelativeCapSet {
         cap_group: CapGroupId,
-        new_relative_cap: U128,
+        new_relative_cap: Option<U128>,
     },
     #[event_version("1.0.0")]
     CapGroupPrincipalUpdated {
