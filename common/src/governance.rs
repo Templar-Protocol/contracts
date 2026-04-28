@@ -1,3 +1,4 @@
+use crate::Nanoseconds;
 use borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::{
     near,
@@ -5,7 +6,6 @@ use near_sdk::{
     store::{iterable_map, key, IterableMap},
     AccountId, IntoStorageKey,
 };
-use crate::Nanoseconds;
 
 #[near(event_json(standard = "templar-governance"))]
 pub enum Event<T: Serialize> {

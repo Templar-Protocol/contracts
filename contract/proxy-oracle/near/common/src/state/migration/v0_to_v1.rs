@@ -171,8 +171,8 @@ mod tests {
     use templar_common::{
         governance::{Governance, Proposal},
         oracle::pyth::PriceIdentifier,
-        Nanoseconds,
         versioned_state::{read_state_version, write_state_version, StateTransformer},
+        Nanoseconds,
     };
 
     use crate::{

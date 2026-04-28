@@ -95,10 +95,7 @@ mod tests {
     #[test]
     fn priority_preserves_original_price_with_confidence() {
         let result = priority(2)
-            .aggregate(vec![
-                Some(price(1_000, 100, 0)),
-                Some(price(2_000, 0, 0)),
-            ])
+            .aggregate(vec![Some(price(1_000, 100, 0)), Some(price(2_000, 0, 0))])
             .unwrap();
         assert_eq!(result.price, 1_000);
         assert_eq!(result.conf, 100);
@@ -106,10 +103,7 @@ mod tests {
 
     #[test]
     fn priority_returns_first_valid_price_even_with_multiple_prices() {
-        let prices = vec![
-            Some(price(1_000_000, 0, 0)),
-            Some(price(2_000_000, 0, 0)),
-        ];
+        let prices = vec![Some(price(1_000_000, 0, 0)), Some(price(2_000_000, 0, 0))];
         let result = priority(prices.len()).aggregate(prices).unwrap();
         assert_eq!(result.price, 1_000_000);
     }

@@ -5,10 +5,7 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_proxy_oracle_kernel::proxy::{Aggregator, Proxy, WeightedSource};
-use templar_proxy_oracle_near_common::{
-    input::Source,
-    request::OracleRequest,
-};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use templar_tools_common::near;
 
 use super::CliPriceIdentifier;

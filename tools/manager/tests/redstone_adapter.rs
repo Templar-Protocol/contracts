@@ -13,7 +13,6 @@ use templar_common::{
     oracle::redstone::{Config, FeedId},
     registry::DeployMode,
 };
-use templar_primitives::strnum::SU256;
 use templar_manager::commands::{
     deployment::{Deploy, FromRegistry},
     redstone_adapter::{
@@ -31,6 +30,7 @@ use templar_manager::commands::{
     },
 };
 use templar_manager::util::{EmptyArgsLoader, OutputArgs};
+use templar_primitives::strnum::SU256;
 use test_utils::{accounts, worker};
 
 /// Stellar test payload containing ETH + BTC prices, timestamp `1_770_985_144_000` ms.

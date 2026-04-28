@@ -9,8 +9,7 @@ use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
     oracle::pyth::{ext_pyth, OracleResponse, PriceIdentifier},
-    Decimal,
-    self_ext,
+    self_ext, Decimal,
 };
 use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 

@@ -6,8 +6,7 @@ use templar_common::{
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
     },
-    Nanoseconds,
-    UnwrapReject,
+    Nanoseconds, UnwrapReject,
 };
 use templar_proxy_oracle_near_common::request::{OracleRequest, PythRequest, RedStoneRequest};
 

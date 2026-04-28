@@ -6,12 +6,12 @@ edition.workspace = true
 version = "0.1.0"
 
 [dependencies]
-borsh = { workspace = true, features = [], optional = true }
-hex = { workspace = true, features = ["alloc"], optional = true }
-serde = { workspace = true, features = ["alloc", "derive"], optional = true }
-schemars = { workspace = true, optional = true }
+borsh = { version = "1.5", default-features = false, features = [], optional = true }
+hex = { version =  "0.4", default-features = false, features = ["alloc"], optional = true }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
+schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
 templar-primitives = { workspace = true, features = [] }
-thiserror = { workspace = true, features = [] }
+thiserror = { version = "2", default-features = false, features = [] }
 
 [dev-dependencies]
 hex-literal.workspace = true
@@ -28,5 +28,5 @@ workspace = true
 default = ["std", "borsh", "serde", "schemars"]
 std = ["templar-primitives/std", "borsh/std", "hex/std", "serde/std", "thiserror/std"]
 borsh = ["dep:borsh"]
-schemars = ["std", "dep:schemars"]
-serde = ["dep:hex", "dep:serde"]
+schemars = ["std", "dep:schemars", "schemars/derive"]
+serde = ["dep:hex", "dep:serde", "hex/serde"]
