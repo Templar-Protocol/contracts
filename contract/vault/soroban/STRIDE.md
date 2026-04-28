@@ -42,8 +42,10 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 7. **Upgrade boundary** — Two-step upgrade (upgrade → migrate) with blocking interim period.
 8. **Governance contract ↔ Vault contract** — After timelock maturity, the governance contract
    invokes `execute_governance(env, caller, payload)` on the vault, passing a `GovernanceCommand`
-   payload. The vault trusts that the governance contract enforces timelocks; the vault itself
-   applies changes immediately when called by governance through this bridge.
+   payload. The entrypoint decodes and dispatches the command; each command handler authorizes the
+   supplied caller with `require_governance()` before mutating state. The vault trusts that the
+   governance contract enforces timelocks and applies changes immediately once the handler confirms
+   the caller is the configured governance contract.
 9. **Vault contract ↔ Share token contract** — Share token enforces vault auth for `mint()`/`burn()` and `from.require_auth()` for user `transfer()` (while allowing vault-driven internal transfers). The vault address is immutable in the share token after initialization.
 
 ### Privilege Hierarchy
@@ -200,10 +202,7 @@ Interaction: I24. |
 |---|---|
 | **Spoofing** | **Spoof.1.R.1** — `require_auth()` is called on all privileged entrypoints. Role-based authorization via `ActionKind` → `allowed_roles_for_action()` mapping in curator-primitives keeps the effective role set explicit. **Spoof.1.R.2** — Operational: use multisig or segregated keys for curator and governance. Hardware security modules for high-value deployments. |
 | | **Spoof.2.R.1** — Deploy and initialize atomically (e.g., via a factory contract that deploys + calls `initialize` in a single transaction). **Spoof.2.R.2** — Consider adding an `admin` parameter to `initialize()` or requiring the deployer's auth to prevent front-running. **Spoof.2.R.3** — Accepted risk: Soroban contract deployment is typically atomic with initialization in practice, but this is a procedural control, not a technical one. |
-| | **Spoof.3.R.1** — ✅ **Implemented**: `execute_governance` requires `require_auth(caller)` +
-governance address check before decoding and dispatching the payload. Only the governance
-contract can invoke this entrypoint. **Spoof.3.R.2** — The governance contract itself enforces
-`require_auth(admin)` + timelock maturity before calling `execute_governance`. |
+| | **Spoof.3.R.1** — ✅ **Implemented**: each `execute_governance` command handler calls `require_governance(caller)` before mutating state, which performs `caller.require_auth()` and checks the caller against the configured governance address. The entrypoint decodes and dispatches before this handler-level authorization, so every future `GovernanceCommand` variant must keep `require_governance` as its first state-changing step. **Spoof.3.R.2** — The governance contract itself enforces `require_auth(admin)` + timelock maturity before calling `execute_governance`. |
 | **Tampering** | **Tamper.1.R.1** — `allocate` and `refresh_markets` query adapters internally; the kernel validates state transitions. **Tamper.1.R.2** — Restrict adapters to vetted, audited contracts. Monitor external_assets drift vs adapter-reported totals. **Tamper.1.R.3** — Consider adding a maximum drift threshold that pauses the vault if adapter-reported assets deviate beyond tolerance. |
 | | **Tamper.5.R.1** — Soroban transactions are atomic; if the adapter call fails, the entire transaction (including state update) reverts. **Tamper.5.R.2** — Focus review on adapter behavior, authorization boundaries, and accounting correctness around external calls instead of reentrancy guards. **Tamper.5.R.3** — The state is intentionally consistent at the external call boundary (`external_assets` updated before `allocate_supply` transfers, realized assets applied before `allocate_withdraw` returns). |
 | | **Tamper.6.R.1** — Storage decode validates blob deserialization, version key presence, version match, and compatibility before using persisted state. **Tamper.6.R.2** — Pin postcard crate version; audit serialization round-trip in CI. **Tamper.6.R.3** — Upgrade/migrate flow validates storage version compatibility before proceeding. |

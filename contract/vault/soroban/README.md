@@ -187,9 +187,9 @@ The Soroban justfile builds two runtime artifacts:
 
 Useful commands:
 
-- `wasm-path` -> default runtime deploy artifact
+- `wasm-path` -> default runtime artifact, currently `templar_soroban_runtime.optimized.wasm`
 - `optimized-wasm-path` -> explicit optimized artifact path
-- `deploy-wasm-path` -> contractspec-stripped deploy artifact path
+- `deploy-wasm-path` -> contractspec-stripped deploy artifact path used for deployment and size verification
 - `size-budget-check` -> verifies `templar_soroban_runtime.deploy.wasm <= 131072` bytes
 
 ## State Size and Operational Limits

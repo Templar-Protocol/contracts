@@ -189,7 +189,7 @@ wasm-analyze-print report="all" lines="120":
 		--report "{{report}}" \
 		--lines "{{lines}}"
 
-# Print the default WASM path (deploy artifact, contractspecv0 stripped).
+# Print the default WASM path (optimized artifact with contractspec metadata).
 wasm-path:
 	@echo "{{default_wasm}}"
 
