@@ -252,7 +252,10 @@ sentinel as soon as operational key infrastructure is ready. |
 ## Soroban-Specific Notes
 
 - **Reentrancy model**: Soroban does not expose the traditional EVM reentrancy model. Cross-contract calls are still synchronous within a transaction, so the main review focus is adapter behavior, authorization, and atomic rollback semantics.
-- **Storage decode**: Validates blob deserialization, version key presence, version match, and compatibility before using persisted state.
+- **Storage decode**: Versioned `StateBlob` loading validates blob deserialization, version key
+  presence, version match, compatibility, and trailing-byte exhaustion before using persisted state.
+  Fee config storage also rejects non-canonical trailing bytes. Auxiliary manual policy decoders
+  should preserve the same cursor-exhaustion rule when they are touched.
 - **Storage TTL**: Persistent entries must be maintained via `extend_ttl`. Default threshold is ~30 days; extension target is ~6 months. Automatic extension on state writes provides additional safety.
 - **Resource limits**: Soroban network-level constraints on CPU, memory, ledger footprint, and transaction size. Writes fail atomically when limits are exceeded — no partial state corruption.
 - **Auth model**: Soroban `require_auth()` is invocation-scoped. The vault uses it for caller identity, then delegates to RBAC for role checks. `require_auth` on the caller is distinct from contract-level auth (the vault contract itself authorizes token operations as the contract address).

@@ -16,8 +16,9 @@ Governance timelock/orchestration lives in the dedicated `contract/vault/soroban
 contract. The runtime still applies canonical governance state changes. Vault-bound governance
 actions cross the contract boundary via `execute_governance(env, caller, payload)`, where the
 payload carries a `GovernanceCommand`. `SetTimelock` and `Other` actions stay local to the
-governance contract. The generic `execute(payload)` path remains for user flows and for the
-retained execute-path config subset (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`).
+governance contract. The generic `execute(payload)` path remains for user flows and a small
+retained config subset (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`); vault-bound
+governance mutations use `execute_governance`.
 
 ```mermaid
 graph TB
@@ -74,8 +75,8 @@ sequenceDiagram
   `execute_governance(env, caller, payload)`. The payload is a `GovernanceCommand` that the
   runtime decodes and dispatches to the corresponding internal config/policy/state helpers.
 - `execute(payload)` remains for user flows and for the retained execute-path config subset
-  (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`). Governance never calls `execute`
-  for vault-bound mutations.
+  (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`). Vault-bound governance mutations use
+  `execute_governance`, not the generic user-flow command path.
 
 ### Soroban-Specific Withdrawal Path
 
@@ -161,8 +162,9 @@ Use recipes from [contract/vault/soroban/justfile](./justfile):
 
 From repo root: `just -f contract/vault/soroban/justfile <recipe>`.
 
-The build step compiles the WASM and runs `stellar contract optimize` to shrink
-it from ~430KB to ~250KB (required to stay under Soroban's transaction limits).
+The build step compiles the runtime, governance, and share-token WASMs, runs the Stellar optimizer,
+and strips runtime contractspec metadata into a deploy artifact. The runtime deploy artifact is
+budgeted separately from the optimizer output because it is the artifact used for size gating.
 
 ## Blend Adapter
 
@@ -177,14 +179,18 @@ After deployment, register the adapter as a vault market before allocation.
 
 ## Deployment Artifact
 
-The Soroban justfile deploys only the optimized runtime artifact:
+The Soroban justfile builds two runtime artifacts:
 
-- `templar_soroban_runtime.optimized.wasm` (default deploy target)
+- `templar_soroban_runtime.optimized.wasm` with Stellar optimizer output
+- `templar_soroban_runtime.deploy.wasm` with contractspec metadata stripped for deployment and
+  size-budget checks
 
 Useful commands:
 
-- `wasm-path` -> optimized deploy artifact
+- `wasm-path` -> default runtime deploy artifact
 - `optimized-wasm-path` -> explicit optimized artifact path
+- `deploy-wasm-path` -> contractspec-stripped deploy artifact path
+- `size-budget-check` -> verifies `templar_soroban_runtime.deploy.wasm <= 131072` bytes
 
 ## State Size and Operational Limits
 

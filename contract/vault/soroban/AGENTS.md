@@ -12,7 +12,6 @@ Soroban-side companion contracts:
 - `templar-soroban-share-token` in `contract/vault/soroban/share-token`
 - `templar-soroban-blend-adapter` in `contract/vault/soroban/blend-adapter`
 - shared ABI/types in `contract/vault/soroban/shared-types`
-- the Soroban ERC-4626 proxy in `contract/proxy-4626-soroban`
 
 Read these first before making non-trivial changes:
 
@@ -69,8 +68,8 @@ Important details:
 - `build` also emits `templar_soroban_runtime.optimized.wasm`; the deploy artifact is the
   contractspec-stripped one.
 - `scripts/strip_contractspec.py` typically saves about `7 KiB` by removing `contractspecv0`.
-- The current recovered evidence from `2026-04-23` recorded `137127` bytes, which is `6055`
-  bytes over budget.
+- Recent local evidence from PR #417 records the deploy artifact at about `128807` bytes
+  (`125.8 KiB`), leaving roughly `2.2 KiB` of headroom under the `131072` byte gate.
 
 Common growth pitfalls:
 
@@ -306,7 +305,6 @@ When relevant, also run:
 - `cargo test -p templar-soroban-governance -- --nocapture`
 - `cargo test -p templar-soroban-share-token -- --nocapture`
 - `cargo test -p templar-soroban-blend-adapter -- --nocapture`
-- `just -f contract/vault/soroban/justfile check-4626-proxy`
 
 Use `wasm-analyze` when:
 
