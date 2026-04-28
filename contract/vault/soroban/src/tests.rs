@@ -3104,7 +3104,7 @@ mod effects_tests {
     }
 
     #[test]
-    fn test_emit_event_publishes_compact_payload_without_address_mapping() {
+    fn test_emit_event_publishes_typed_contract_event_without_address_mapping() {
         use templar_vault_kernel::effects::KernelEvent;
 
         let env = test_env();
@@ -3129,22 +3129,6 @@ mod effects_tests {
 
         let events = env.events().all().filter_by_contract(&contract_id);
         assert_eq!(events.events().len(), 1);
-    }
-
-    #[test]
-    fn kernel_event_payload_starts_with_codec_version_then_event_tag() {
-        use crate::effects::{encode_kernel_event, KERNEL_EVENT_CODEC_VERSION};
-        use templar_vault_kernel::effects::KernelEvent;
-
-        let payload = encode_kernel_event(&KernelEvent::DepositProcessed {
-            owner: templar_vault_kernel::Address([1u8; 32]),
-            receiver: templar_vault_kernel::Address([2u8; 32]),
-            assets_in: 3,
-            shares_out: 4,
-        });
-
-        assert_eq!(payload[0], KERNEL_EVENT_CODEC_VERSION);
-        assert_eq!(payload[1], 10);
     }
 }
 

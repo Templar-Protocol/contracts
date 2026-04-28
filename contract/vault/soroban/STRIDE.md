@@ -167,7 +167,7 @@ governance timelocks. Interactions: I8, I19–I22. |
 | | **Tamper.9** — Governance abdication now operates on `GovernanceActionKind` rather than free-form
 strings. A mismatch between the kind used in `abdicate()` and the kind derived from a submitted
 action would leave the action unblocked. Interaction: I24. |
-| **Repudiation** | **Repudiate.1** — Operators deny executing sensitive actions. Kernel state transitions emit `KernelEvent` envelopes, and pause/unpause actions (dispatched via `execute_governance`) emit OZ Pausable events. However, many privileged operations are auditable via transaction history. Interactions: I1–I7, I19. |
+| **Repudiation** | **Repudiate.1** — Operators deny executing sensitive actions. Kernel state transitions emit typed Soroban contract events, and pause/unpause actions (dispatched via `execute_governance`) emit OZ Pausable events. However, many privileged operations are auditable via transaction history. Interactions: I1–I7, I19. |
 | | **Repudiate.2** — Some privileged/governance operations still rely primarily on tx-level observability where structured events are sparse or lightweight. Interactions: I5, I6, I8–I15. |
 | | **Repudiate.3** — New governance actions (sentinel change, skim recipient change, abdication, skim execution) should emit structured events for auditability. Without events, irreversible actions like abdication are harder to detect and audit. Interactions: I20–I24. |
 | **Information Disclosure** | **Info.1** — No confidentiality assumptions exist for contract storage or events; this is expected on-chain transparency. All state is publicly readable. Interaction: I18. |
@@ -212,7 +212,7 @@ Interaction: I24. |
 `GovernanceAction` to a canonical `GovernanceActionKind`. `abdicate()` and `require_not_abdicated()`
 both operate on the same kind, preventing typo-based bypasses. **Tamper.9.R.2** — The governance
 contract rejects submission of actions whose kind has been abdicated before queuing them. |
-| **Repudiation** | **Repudiate.1.R.1** — Actions require signed caller auth. Kernel state transitions emit `KernelEvent` envelopes via `publish_kernel_event`. OZ Pausable events emitted for pause/unpause. **Repudiate.1.R.2** — Maintain off-chain indexing/audit trails keyed by `op_id`, caller address, and timestamps. |
+| **Repudiation** | **Repudiate.1.R.1** — Actions require signed caller auth. Kernel state transitions emit typed Soroban contract events via `publish_kernel_event`. OZ Pausable events emitted for pause/unpause. **Repudiate.1.R.2** — Maintain off-chain indexing/audit trails keyed by `op_id`, caller address, and timestamps. |
 | | **Repudiate.2.R.1** — ✅ **Implemented**: Admin/allocation events are emitted for high-impact
 privileged operations dispatched through `execute_governance(payload)` (curator, governance,
 fees, restrictions, adapter allowlist, sentinel, guardian, caps, skim, pause, etc.) and for
