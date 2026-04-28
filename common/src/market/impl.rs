@@ -251,7 +251,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> Option<SupplyPositionGuard<'_>> {
+    ) -> Option<SupplyPositionGuard> {
         self.supply_positions
             .get(&account_id)
             .map(|position| SupplyPositionGuard::new(self, account_id, position))
@@ -261,7 +261,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> SupplyPositionGuard<'_> {
+    ) -> SupplyPositionGuard {
         let position = self
             .supply_positions
             .get(&account_id)
@@ -292,7 +292,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> Option<BorrowPositionGuard<'_>> {
+    ) -> Option<BorrowPositionGuard> {
         self.borrow_positions
             .get(&account_id)
             .map(|position| BorrowPositionGuard::new(self, account_id, position))
@@ -302,7 +302,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> BorrowPositionGuard<'_> {
+    ) -> BorrowPositionGuard {
         let position = self
             .borrow_positions
             .get(&account_id)

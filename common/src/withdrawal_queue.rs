@@ -202,7 +202,7 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn iter(&self) -> WithdrawalQueueIter<'_> {
+    pub fn iter(&self) -> WithdrawalQueueIter {
         WithdrawalQueueIter {
             withdrawal_queue: self,
             next_node_id: self.queue_head,

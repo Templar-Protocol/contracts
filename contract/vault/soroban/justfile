@@ -42,6 +42,7 @@ wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.wasm"
 deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
 remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
@@ -98,7 +99,7 @@ _optimize-wasm package wasm_path:
 		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
 		exit 1; \
 	fi
-	@if ! CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}"; then \
+	@if ! RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}"; then \
 		echo "Error: failed to build {{package}} with stellar CLI."; \
 		echo "Spec shaking v2 requires stellar-cli v25.2.0+; v26 is recommended."; \
 		exit 1; \
@@ -150,7 +151,7 @@ wasm-analyze rows="250" lines="120":
 		exit 1; \
 	fi
 	@echo "Building debug WASM for analysis..."
-	@SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
+	@RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
 	@mkdir -p "{{wasm_analysis_dir}}"
 	@twiggy top "{{debug_wasm}}" -n "{{rows}}" > "{{wasm_analysis_dir}}/top.txt"
@@ -162,12 +163,12 @@ wasm-analyze rows="250" lines="120":
 	@echo "  {{wasm_analysis_dir}}/monos.txt"
 	@echo ""
 	@echo "Computing release/optimized WASM sizes..."
-	@SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
+	@RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime >/dev/null
 	@if [ -d "/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib" ]; then \
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \
 	fi; \
-	if CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
+	if RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
 		:; \
 	else \
 		stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null 2>&1; \

@@ -42,7 +42,37 @@ jobs:
         env:
           SQLX_OFFLINE: true
         run: |
-          cargo clippy --all-features --workspace --tests -- -D warnings
+          cargo clippy --all-features --workspace --tests \
+            --exclude templar-soroban-blend-adapter \
+            --exclude templar-soroban-governance \
+            --exclude templar-soroban-runtime \
+            --exclude templar-soroban-share-token \
+            --exclude templar-soroban-shared-types \
+            -- -D warnings
+
+  soroban-code-linter:
+    name: Soroban Code Linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Soroban lint Rust toolchain
+        uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          targets: wasm32-unknown-unknown,wasm32v1-none
+          components: clippy
+      - name: Run Soroban cargo clippy
+        env:
+          RUSTUP_TOOLCHAIN: 1.89.0
+          SQLX_OFFLINE: true
+        run: |
+          cargo clippy --all-features --tests \
+            -p templar-soroban-blend-adapter \
+            -p templar-soroban-governance \
+            -p templar-soroban-runtime \
+            -p templar-soroban-share-token \
+            -p templar-soroban-shared-types \
+            -- -D warnings
 
   soroban:
     name: Soroban
@@ -52,7 +82,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/rust
+      - name: Install Soroban Rust toolchain
+        uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          targets: wasm32-unknown-unknown,wasm32v1-none
 
       - name: Install tools
         uses: taiki-e/install-action@v2

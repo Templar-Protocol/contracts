@@ -208,86 +208,24 @@ impl Default for FeesSpec {
     }
 }
 
-#[cfg(all(feature = "serde", not(feature = "postcard")))]
+#[cfg(feature = "serde")]
 mod serde_impl {
-    use super::*;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Serialize, Deserialize)]
-    struct FeeSlotSerde {
-        fee_wad: Wad,
-        recipient: Address,
-    }
-
-    impl Serialize for FeeSlot {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer,
-        {
-            FeeSlotSerde {
-                fee_wad: self.fee_wad,
-                recipient: self.recipient,
-            }
-            .serialize(serializer)
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FeeSlot {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            let value = FeeSlotSerde::deserialize(deserializer)?;
-            Ok(Self::new(value.fee_wad, value.recipient))
-        }
-    }
-
-    #[derive(Serialize, Deserialize)]
-    struct FeesSpecSerde {
-        performance: FeeSlot,
-        management: FeeSlot,
-        max_total_assets_growth_rate: Option<Wad>,
-    }
-
-    impl Serialize for FeesSpec {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer,
-        {
-            FeesSpecSerde {
-                performance: self.performance,
-                management: self.management,
-                max_total_assets_growth_rate: self.max_total_assets_growth_rate,
-            }
-            .serialize(serializer)
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FeesSpec {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            let value = FeesSpecSerde::deserialize(deserializer)?;
-            Ok(Self::new(
-                value.performance,
-                value.management,
-                value.max_total_assets_growth_rate,
-            ))
-        }
-    }
-}
-
-#[cfg(feature = "postcard")]
-mod postcard_serde_impl {
     use super::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(feature = "postcard"), not(target_arch = "wasm32")))]
     #[derive(Serialize, Deserialize)]
-    struct FeeSlotSerde {
+    struct FeeSlotFields {
         fee_wad: Wad,
         recipient: Address,
+    }
+
+    #[cfg(any(not(feature = "postcard"), not(target_arch = "wasm32")))]
+    #[derive(Serialize, Deserialize)]
+    struct FeesSpecFields {
+        performance: FeeSlot,
+        management: FeeSlot,
+        max_total_assets_growth_rate: Option<Wad>,
     }
 
     impl Serialize for FeeSlot {
@@ -296,14 +234,25 @@ mod postcard_serde_impl {
             S: Serializer,
         {
             #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "postcard")]
             if serializer.is_human_readable() {
-                return FeeSlotSerde {
+                return FeeSlotFields {
                     fee_wad: self.fee_wad,
                     recipient: self.recipient,
                 }
                 .serialize(serializer);
             }
 
+            #[cfg(not(feature = "postcard"))]
+            {
+                return FeeSlotFields {
+                    fee_wad: self.fee_wad,
+                    recipient: self.recipient,
+                }
+                .serialize(serializer);
+            }
+
+            #[cfg(feature = "postcard")]
             (&self.fee_wad, &self.recipient).serialize(serializer)
         }
     }
@@ -314,25 +263,22 @@ mod postcard_serde_impl {
             D: Deserializer<'de>,
         {
             #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "postcard")]
             if deserializer.is_human_readable() {
-                let value = FeeSlotSerde::deserialize(deserializer)?;
-                return Ok(Self {
-                    fee_wad: value.fee_wad,
-                    recipient: value.recipient,
-                });
+                let value = FeeSlotFields::deserialize(deserializer)?;
+                return Ok(Self::new(value.fee_wad, value.recipient));
             }
 
+            #[cfg(not(feature = "postcard"))]
+            {
+                let value = FeeSlotFields::deserialize(deserializer)?;
+                return Ok(Self::new(value.fee_wad, value.recipient));
+            }
+
+            #[cfg(feature = "postcard")]
             <(Wad, Address)>::deserialize(deserializer)
                 .map(|(fee_wad, recipient)| Self { fee_wad, recipient })
         }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[derive(Serialize, Deserialize)]
-    struct FeesSpecSerde {
-        performance: FeeSlot,
-        management: FeeSlot,
-        max_total_assets_growth_rate: Option<Wad>,
     }
 
     impl Serialize for FeesSpec {
@@ -341,8 +287,9 @@ mod postcard_serde_impl {
             S: Serializer,
         {
             #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "postcard")]
             if serializer.is_human_readable() {
-                return FeesSpecSerde {
+                return FeesSpecFields {
                     performance: self.performance,
                     management: self.management,
                     max_total_assets_growth_rate: self.max_total_assets_growth_rate,
@@ -350,6 +297,17 @@ mod postcard_serde_impl {
                 .serialize(serializer);
             }
 
+            #[cfg(not(feature = "postcard"))]
+            {
+                return FeesSpecFields {
+                    performance: self.performance,
+                    management: self.management,
+                    max_total_assets_growth_rate: self.max_total_assets_growth_rate,
+                }
+                .serialize(serializer);
+            }
+
+            #[cfg(feature = "postcard")]
             (
                 &self.performance,
                 &self.management,
@@ -365,15 +323,27 @@ mod postcard_serde_impl {
             D: Deserializer<'de>,
         {
             #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "postcard")]
             if deserializer.is_human_readable() {
-                let value = FeesSpecSerde::deserialize(deserializer)?;
-                return Ok(Self {
-                    performance: value.performance,
-                    management: value.management,
-                    max_total_assets_growth_rate: value.max_total_assets_growth_rate,
-                });
+                let value = FeesSpecFields::deserialize(deserializer)?;
+                return Ok(Self::new(
+                    value.performance,
+                    value.management,
+                    value.max_total_assets_growth_rate,
+                ));
             }
 
+            #[cfg(not(feature = "postcard"))]
+            {
+                let value = FeesSpecFields::deserialize(deserializer)?;
+                return Ok(Self::new(
+                    value.performance,
+                    value.management,
+                    value.max_total_assets_growth_rate,
+                ));
+            }
+
+            #[cfg(feature = "postcard")]
             <(FeeSlot, FeeSlot, Option<Wad>)>::deserialize(deserializer).map(
                 |(performance, management, max_total_assets_growth_rate)| Self {
                     performance,
