@@ -42,7 +42,8 @@ async fn get_proxy(
     oracle_id: AccountId,
     id: PriceIdentifier,
 ) -> GatewayResult<Option<templar_common::oracle::proxy::Proxy>> {
-    ctx.proxy_oracle(oracle_id)
+    ctx.near()
+        .proxy_oracle(oracle_id)
         .cached_get_proxy(GetProxyArgs { id })
         .await
 }
@@ -168,10 +169,9 @@ impl PlanWrite<GatewayContext> for oracle::UpdateRedStone {
         Box::pin(async move {
             let oracle_id = request.body.oracle_id;
             let feed_id = request.body.feed_id;
-            let payload = ctx
-                .redstone_bridge()
-                .fetch_payload(vec![feed_id.clone()])
-                .await?;
+            let payload =
+                OraclePayloadSource::fetch_payload(ctx.redstone_source(), &[feed_id.clone()])
+                    .await?;
             Ok(crate::operation::OperationPlan {
                 steps: vec![submit_redstone_update(
                     &ctx,
@@ -218,7 +218,7 @@ impl PlanWrite<GatewayContext> for oracle::UpdatePrices {
 
             for (oracle_id, price_ids) in pyth_updates {
                 let price_ids = price_ids.into_iter().collect::<Vec<_>>();
-                let vaa = OraclePayloadSource::fetch_payload(ctx.pyth_http(), &price_ids).await?;
+                let vaa = OraclePayloadSource::fetch_payload(ctx.pyth_source(), &price_ids).await?;
                 let tx_result =
                     submit_pyth_update(&ctx, request.signer_account_id.clone(), oracle_id, vaa)?;
                 steps.push(tx_result);
@@ -226,8 +226,8 @@ impl PlanWrite<GatewayContext> for oracle::UpdatePrices {
 
             for (oracle_id, feed_ids) in redstone_updates {
                 let feed_ids = feed_ids.into_iter().collect::<Vec<_>>();
-                let payload = ctx.redstone_bridge();
-                let payload = OraclePayloadSource::fetch_payload(payload, &feed_ids).await?;
+                let payload =
+                    OraclePayloadSource::fetch_payload(ctx.redstone_source(), &feed_ids).await?;
                 let tx_result = submit_redstone_update(
                     &ctx,
                     request.signer_account_id.clone(),
@@ -286,7 +286,7 @@ async fn query_oracle_kind(
         }
         templar_gateway_types::contract::ContractKind::ProxyOracle => Ok(OracleContractKind::Proxy),
         templar_gateway_types::contract::ContractKind::LstOracle => {
-            let pyth_id = ctx.lst_oracle(oracle_id).cached_oracle_id().await?;
+            let pyth_id = ctx.near().lst_oracle(oracle_id).cached_oracle_id().await?;
             Ok(OracleContractKind::Lst { pyth_id })
         }
         other => Err(GatewayError::NearQuery(format!(
@@ -305,6 +305,7 @@ async fn resolve_dependencies(
         OracleContractKind::Direct => Ok(vec![OracleRequest::pyth(oracle_id, price_id)]),
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
+                .near()
                 .lst_oracle(oracle_id)
                 .cached_get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
@@ -355,6 +356,7 @@ async fn resolve_price(
         )),
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
+                .near()
                 .lst_oracle(oracle_id)
                 .cached_get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
@@ -411,6 +413,7 @@ async fn get_price_onchain(
         }
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
+                .near()
                 .lst_oracle(oracle_id.clone())
                 .cached_get_transformer(GetTransformerArgs {
                     price_identifier: price_id,
@@ -502,7 +505,8 @@ async fn fetch_transformer_input(
     ctx: &GatewayContext,
     call: price_transformer::Call,
 ) -> GatewayResult<Decimal> {
-    ctx.contract(call.account_id)
+    ctx.near()
+        .contract(call.account_id)
         .view_function(&call.method_name, call.args.0)
         .await
 }
@@ -536,6 +540,7 @@ async fn fetch_oracle_request_onchain(
 ) -> GatewayResult<Option<pyth::Price>> {
     let fetched_price = match request {
         OracleRequest::Pyth(request) => ctx
+            .near()
             .pyth_oracle(request.oracle_id)
             .list_ema_prices_no_older_than(ListEmaPricesNoOlderThanArgs {
                 price_ids: vec![request.price_id],
@@ -545,6 +550,7 @@ async fn fetch_oracle_request_onchain(
             .remove(&request.price_id)
             .flatten(),
         OracleRequest::RedStone(request) => ctx
+            .near()
             .redstone_oracle(request.oracle_id)
             .read_price_data(ReadPriceDataArgs {
                 feed_ids: vec![request.price_id.clone()],
@@ -586,7 +592,7 @@ fn submit_pyth_update(
     oracle_id: AccountId,
     vaa: Vec<u8>,
 ) -> GatewayResult<PlannedTransaction> {
-    ctx.pyth_oracle(oracle_id).update_price_feeds(
+    ctx.near().pyth_oracle(oracle_id).update_price_feeds(
         ContractWriteOptions::new(signer_account_id)
             .tgas(300)
             .deposit(PYTH_UPDATE_DEPOSIT),
@@ -603,7 +609,7 @@ fn submit_redstone_update(
     feed_ids: Vec<redstone::FeedId>,
     payload: Vec<u8>,
 ) -> GatewayResult<PlannedTransaction> {
-    ctx.redstone_oracle(oracle_id).write_prices(
+    ctx.near().redstone_oracle(oracle_id).write_prices(
         ContractWriteOptions::new(signer_account_id).tgas(300),
         WritePricesArgs {
             feed_ids,

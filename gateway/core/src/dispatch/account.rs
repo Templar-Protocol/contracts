@@ -14,7 +14,7 @@ impl DispatchRead<GatewayContext> for account::Get {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let account = ctx.account().get(request.params.account_id).await?;
+            let account = ctx.near().account().get(request.params.account_id).await?;
 
             let (code_hash, global_contract_hash, global_contract_account_id) =
                 match account.contract_state {

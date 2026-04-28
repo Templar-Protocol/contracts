@@ -1,20 +1,16 @@
 use std::{collections::HashMap, sync::Arc};
 
 use actix::Addr;
-use near_api::advanced::{
-    tx_rpc::{TransactionStatusRef, TransactionStatusRpc},
-    RequestBuilder, TransactionStatusHandler,
-};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_core::{
-    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayContext, GatewayError,
-    GatewayResult, HasIdempotencyKey, HasSignerAccountId, PlanWrite, SharedOperationStore,
-    StoredOperation, SucceededStep,
+    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayContext,
+    GatewayResult, HasIdempotencyKey, HasSignerAccountId, NearOperationExecutor,
+    NearTransactionSigner, PlanWrite, SharedExecuteOperation, SharedOperationStore,
+    SharedSignTransaction, StoredOperation, SucceededStep,
 };
 use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
-    WriteActors,
 };
 use templar_gateway_types::{
     operation::OperationStatus, rpc::common::WriteOperationResult, ManagedAccountId,
@@ -29,8 +25,9 @@ pub struct GatewayService {
 
 struct GatewayInner {
     context: GatewayContext,
+    operation_executor: SharedExecuteOperation,
     read: Addr<ReadActor>,
-    write: WriteActors,
+    transaction_signer: SharedSignTransaction,
     store: SharedOperationStore,
 }
 
@@ -40,13 +37,36 @@ impl GatewayService {
         signers: HashMap<ManagedAccountId, ManagedSigner>,
         store: SharedOperationStore,
     ) -> Self {
-        let (runtime, read, write) = spawn_runtime(context.clone(), signers);
+        let signers = signers
+            .into_iter()
+            .map(|(account_id, signer)| (account_id, signer.signer))
+            .collect();
+
+        Self::spawn_with_backends(
+            context.clone(),
+            store,
+            Arc::new(NearTransactionSigner::new(
+                context.network().clone(),
+                signers,
+            )),
+            Arc::new(NearOperationExecutor::new(context.network().clone())),
+        )
+    }
+
+    pub fn spawn_with_backends(
+        context: GatewayContext,
+        store: SharedOperationStore,
+        transaction_signer: SharedSignTransaction,
+        operation_executor: SharedExecuteOperation,
+    ) -> Self {
+        let (runtime, read) = spawn_runtime(context.clone());
 
         let service = Self {
             inner: Arc::new(GatewayInner {
                 context,
+                operation_executor,
                 read,
-                write,
+                transaction_signer,
                 store,
             }),
             runtime: Arc::new(Mutex::new(Some(runtime))),
@@ -191,8 +211,8 @@ impl GatewayService {
         if let Some(pending) = operation.begin_next_preparation(self.inner.store.clone()) {
             let prepared = self
                 .inner
-                .write
-                .prepare_planned_transaction(pending.transaction().clone())
+                .transaction_signer
+                .sign_transaction(pending.transaction().clone())
                 .await?;
             pending.finish(prepared).await?;
         }
@@ -201,13 +221,12 @@ impl GatewayService {
             Some(CurrentStepRef::Prepared(prepared_step)) => {
                 let wait_until = prepared_step.wait_until();
                 let (signed_transaction, submitted_step) = prepared_step.submit().await?;
-                let signer_account_id = submitted_step.transaction().signer_account_id.clone();
                 let tx_hash = submitted_step.tx_hash();
 
                 match self
                     .inner
-                    .write
-                    .submit_signed_transaction(&signer_account_id, signed_transaction, wait_until)
+                    .operation_executor
+                    .submit_transaction(signed_transaction, wait_until)
                     .await
                 {
                     Ok(tx_result) => {
@@ -245,18 +264,10 @@ impl GatewayService {
         signer_account_id: &ManagedAccountId,
         tx_hash: templar_gateway_types::CryptoHash,
     ) -> GatewayResult<near_api::types::transaction::result::ExecutionFinalResult> {
-        RequestBuilder::new(
-            TransactionStatusRpc,
-            TransactionStatusRef {
-                sender_account_id: signer_account_id.0.clone(),
-                tx_hash: tx_hash.0,
-                wait_until: near_api::types::TxExecutionStatus::Final,
-            },
-            TransactionStatusHandler,
-        )
-        .fetch_from(self.inner.context.network())
-        .await
-        .map_err(|error| GatewayError::NearTransaction(error.to_string()))
+        self.inner
+            .operation_executor
+            .query_transaction(signer_account_id, tx_hash)
+            .await
     }
 }
 
@@ -282,6 +293,7 @@ mod tests {
     use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
     use near_sandbox::Sandbox;
     use near_token::NearToken as SandboxNearToken;
+    use templar_gateway_core::GatewayError;
     use templar_gateway_types::{
         common::{ContractArgs, WriteRequest},
         tx, ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
@@ -445,8 +457,8 @@ mod tests {
             .expect("step should be preparable");
         let prepared = service
             .inner
-            .write
-            .prepare_planned_transaction(pending.transaction().clone())
+            .transaction_signer
+            .sign_transaction(pending.transaction().clone())
             .await?;
         pending.finish(prepared).await?;
 
@@ -455,13 +467,12 @@ mod tests {
                 Some(CurrentStepRef::Prepared(prepared_step)) => prepared_step.submit().await?,
                 _ => panic!("expected prepared current step"),
             };
-        let signer_account_id = submitted_step.transaction().signer_account_id.clone();
         let wait_until = submitted_step.transaction().wait_until;
 
         let _ = service
             .inner
-            .write
-            .submit_signed_transaction(&signer_account_id, signed_transaction, wait_until)
+            .operation_executor
+            .submit_transaction(signed_transaction, wait_until)
             .await?;
         drop(submitted_step);
 

@@ -1,9 +1,12 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
-use near_api::{types::transaction::actions::Action, Contract, NetworkConfig, SecretKey, Signer};
+use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
-use templar_gateway_core::{DispatchRead, GatewayContext, PlanWrite};
+use templar_gateway_core::{
+    DispatchRead, ExecuteOperation, GatewayContext, NearOperationExecutor, NearTransactionSigner,
+    PlanWrite, SignTransaction,
+};
 use templar_gateway_types::{
     account,
     common::{ContractArgs, ReadRequest, WriteRequest},
@@ -82,22 +85,16 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     assert_eq!(plan.steps[0].receiver_id, ft_contract_id);
     assert_eq!(plan.steps[0].actions.len(), 1);
 
-    let Action::FunctionCall(action) = &plan.steps[0].actions[0] else {
-        panic!("planned transaction should contain a function call");
-    };
-
-    let result = context
-        .tx(signer_account_id.clone(), signer)
-        .function_call(
-            tx::FunctionCallBody {
-                receiver_id: plan.steps[0].receiver_id.clone(),
-                method_name: ContractMethodName(action.method_name.clone()),
-                args: ContractArgs::Raw(action.args.clone().into()),
-                gas: action.gas,
-                deposit: action.deposit,
-            },
-            plan.steps[0].wait_until,
-        )
+    let transaction_signer = NearTransactionSigner::new(
+        network.clone(),
+        std::collections::HashMap::from([(signer_account_id.clone(), signer)]),
+    );
+    let operation_executor = NearOperationExecutor::new(network.clone());
+    let prepared = transaction_signer
+        .sign_transaction(plan.steps[0].clone())
+        .await?;
+    let result = operation_executor
+        .submit_transaction(prepared.signed_transaction, prepared.transaction.wait_until)
         .await?;
 
     assert!(result.is_success());

@@ -41,6 +41,7 @@ impl DispatchRead<GatewayContext> for pyth::ListEmaPricesNoOlderThan {
             let params = request.params;
             let price_ids = params.price_ids;
             let response = ctx
+                .near()
                 .pyth_oracle(params.oracle_id)
                 .list_ema_prices_no_older_than(ListEmaPricesNoOlderThanArgs {
                     price_ids: price_ids.clone(),
@@ -63,6 +64,7 @@ impl DispatchRead<GatewayContext> for pyth::ListEmaPricesUnsafe {
             let params = request.params;
             let price_ids = params.price_ids;
             let response = ctx
+                .near()
                 .pyth_oracle(params.oracle_id)
                 .list_ema_prices_unsafe(ListEmaPricesUnsafeArgs {
                     price_ids: price_ids.clone(),
@@ -83,7 +85,7 @@ impl PlanWrite<GatewayContext> for pyth::UpdatePriceFeeds {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.pyth_oracle(body.oracle_id).update_price_feeds(
+                ctx.near().pyth_oracle(body.oracle_id).update_price_feeds(
                     ContractWriteOptions::new(request.signer_account_id)
                         .tgas(300)
                         .deposit(NearToken::from_yoctonear(10_000_000_000_000_000_000_000)),

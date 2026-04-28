@@ -30,6 +30,7 @@ impl DispatchRead<GatewayContext> for mt::GetBalanceOf {
         Box::pin(async move {
             let params = request.params;
             let balance = ctx
+                .near()
                 .mt(params.contract_id)
                 .mt_balance_of(GetBalanceOfArgs {
                     account_id: params.account_id,
@@ -50,6 +51,7 @@ impl DispatchRead<GatewayContext> for mt::GetBatchBalanceOf {
             let params = request.params;
             let token_ids = params.token_ids;
             let values = ctx
+                .near()
                 .mt(params.contract_id)
                 .mt_batch_balance_of(GetBatchBalanceOfArgs {
                     account_id: params.account_id,
@@ -75,6 +77,7 @@ impl DispatchRead<GatewayContext> for mt::GetSupply {
         Box::pin(async move {
             let params = request.params;
             let supply = ctx
+                .near()
                 .mt(params.contract_id)
                 .mt_supply(GetSupplyArgs {
                     token_id: params.token_id,
@@ -94,6 +97,7 @@ impl DispatchRead<GatewayContext> for mt::GetBatchSupply {
             let params = request.params;
             let token_ids = params.token_ids;
             let values = ctx
+                .near()
                 .mt(params.contract_id)
                 .mt_batch_supply(GetBatchSupplyArgs {
                     token_ids: token_ids.clone(),
@@ -118,7 +122,7 @@ impl PlanWrite<GatewayContext> for mt::Transfer {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.mt(body.contract_id).mt_transfer(
+                ctx.near().mt(body.contract_id).mt_transfer(
                     ContractWriteOptions::new(request.signer_account_id)
                         .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .one_yocto(),
@@ -143,7 +147,7 @@ impl PlanWrite<GatewayContext> for mt::TransferCall {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.mt(body.contract_id).mt_transfer_call(
+                ctx.near().mt(body.contract_id).mt_transfer_call(
                     ContractWriteOptions::new(request.signer_account_id)
                         .gas(templar_gateway_types::NearGas::from_tgas(300))
                         .one_yocto(),

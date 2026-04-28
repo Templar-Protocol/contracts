@@ -14,6 +14,7 @@ impl DispatchRead<GatewayContext> for lst_oracle::GetOracleId {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let pyth_oracle_id = ctx
+                .near()
                 .lst_oracle(request.params.oracle_id)
                 .cached_oracle_id()
                 .await?;
@@ -29,6 +30,7 @@ impl DispatchRead<GatewayContext> for lst_oracle::ListTransformers {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let price_ids = ctx
+                .near()
                 .lst_oracle(request.params.oracle_id)
                 .list_transformers(ListTransformersArgs {
                     offset: request.params.pagination.offset,
@@ -47,6 +49,7 @@ impl DispatchRead<GatewayContext> for lst_oracle::GetTransformer {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let transformer = ctx
+                .near()
                 .lst_oracle(request.params.oracle_id)
                 .cached_get_transformer(GetTransformerArgs {
                     price_identifier: request.params.price_identifier,

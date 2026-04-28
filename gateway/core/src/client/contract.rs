@@ -2,7 +2,6 @@ use std::io::ErrorKind;
 
 use moka::sync::Cache;
 use near_account_id::AccountId;
-use near_api::Contract;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 use serde::de::DeserializeOwned;
 use templar_gateway_types::{contract::ContractKind, Version};
@@ -13,7 +12,7 @@ use crate::{
         macros::contract_views,
         NearClient,
     },
-    GatewayError, GatewayResult,
+    GatewayResult, ReadNear,
 };
 
 use super::BoundContractClient;
@@ -57,13 +56,13 @@ impl ContractClient<'_> {
     where
         T: DeserializeOwned + Send + Sync + 'static,
     {
-        Ok(Contract(self.contract_id.clone())
-            .call_function_raw(method_name, args)
-            .read_only()
-            .fetch_from(self.inner.network())
-            .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?
-            .data)
+        <NearClient as ReadNear>::view_function(
+            self.inner,
+            self.contract_id.clone(),
+            method_name,
+            args,
+        )
+        .await
     }
 
     pub async fn cached_contract_source_metadata(&self) -> GatewayResult<ContractSourceMetadata> {

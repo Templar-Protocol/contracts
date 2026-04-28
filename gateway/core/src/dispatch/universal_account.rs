@@ -37,7 +37,8 @@ impl DispatchRead<GatewayContext> for universal_account::GetKey {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.universal_account(params.params.account_id.clone())
+            ctx.near()
+                .universal_account(params.params.account_id.clone())
                 .get_key(UaGetKeyArgs {
                     key: params.params.key,
                 })
@@ -56,13 +57,15 @@ impl PlanWrite<GatewayContext> for universal_account::Execute {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.universal_account(request.body.account_id).execute(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .gas(templar_gateway_types::NearGas::from_tgas(300)),
-                    UaExecuteArgs {
-                        args: request.body.args,
-                    },
-                )?,
+                ctx.near()
+                    .universal_account(request.body.account_id)
+                    .execute(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .gas(templar_gateway_types::NearGas::from_tgas(300)),
+                        UaExecuteArgs {
+                            args: request.body.args,
+                        },
+                    )?,
             ))
         })
     }

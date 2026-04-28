@@ -17,6 +17,7 @@ impl DispatchRead<GatewayContext> for tx::Get {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let result = ctx
+                .near()
                 .chain()
                 .get_transaction(
                     request.params.tx_hash.into(),

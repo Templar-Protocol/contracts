@@ -4,8 +4,10 @@ pub mod client;
 mod context;
 mod dispatch;
 mod error;
+mod executor;
 mod methods;
 mod operation;
+mod read;
 
 use async_trait::async_trait;
 use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
@@ -13,12 +15,17 @@ use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccou
 pub use client::{ContractWriteOptions, NearClient};
 pub use context::GatewayContext;
 pub use error::{GatewayError, GatewayResult};
+pub use executor::{
+    ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,
+    SharedSignTransaction, SignTransaction,
+};
 pub use methods::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use operation::{
     CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation, PlannedTransaction,
     PreparedCurrentStep, PreparedTransactionResult, SharedOperationStore, StoredOperation,
     SubmittedCurrentStep, SucceededStep,
 };
+pub use read::ReadNear;
 pub use templar_gateway_oracle_pyth::PythHttpClient;
 pub use templar_gateway_oracle_redstone::RedStoneBridgeClient;
 pub use templar_gateway_types::OraclePayloadSource;

@@ -15,7 +15,8 @@ impl DispatchRead<GatewayContext> for proxy_oracle_owner::GetOwner {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.proxy_oracle(request.params.oracle_id)
+            ctx.near()
+                .proxy_oracle(request.params.oracle_id)
                 .own_get_owner(())
                 .await
                 .map(|owner| proxy_oracle_owner::GetOwnerResult { owner })
@@ -29,7 +30,8 @@ impl DispatchRead<GatewayContext> for proxy_oracle_owner::GetProposedOwner {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.proxy_oracle(request.params.oracle_id)
+            ctx.near()
+                .proxy_oracle(request.params.oracle_id)
                 .own_get_proposed_owner(())
                 .await
                 .map(|proposed_owner| proxy_oracle_owner::GetProposedOwnerResult { proposed_owner })
@@ -45,7 +47,7 @@ impl PlanWrite<GatewayContext> for proxy_oracle_owner::ProposeOwner {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.proxy_oracle(body.oracle_id).own_propose_owner(
+                ctx.near().proxy_oracle(body.oracle_id).own_propose_owner(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),
@@ -65,12 +67,14 @@ impl PlanWrite<GatewayContext> for proxy_oracle_owner::AcceptOwner {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.proxy_oracle(request.body.oracle_id).own_accept_owner(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .one_yocto()
-                        .tgas(300),
-                    (),
-                )?,
+                ctx.near()
+                    .proxy_oracle(request.body.oracle_id)
+                    .own_accept_owner(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .one_yocto()
+                            .tgas(300),
+                        (),
+                    )?,
             ))
         })
     }
@@ -83,7 +87,8 @@ impl PlanWrite<GatewayContext> for proxy_oracle_owner::RenounceOwner {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.proxy_oracle(request.body.oracle_id)
+                ctx.near()
+                    .proxy_oracle(request.body.oracle_id)
                     .own_renounce_owner(
                         ContractWriteOptions::new(request.signer_account_id)
                             .one_yocto()

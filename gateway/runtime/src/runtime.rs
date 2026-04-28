@@ -1,10 +1,8 @@
-use std::{collections::HashMap, thread::JoinHandle};
+use std::thread::JoinHandle;
 
+use crate::ReadActor;
 use actix::Addr;
 use templar_gateway_core::GatewayContext;
-use templar_gateway_types::ManagedAccountId;
-
-use crate::{ManagedSigner, ReadActor, WriteActors};
 
 pub struct GatewayRuntime {
     system: actix::System,
@@ -18,21 +16,17 @@ impl GatewayRuntime {
     }
 }
 
-pub fn spawn_runtime(
-    context: GatewayContext,
-    signers: HashMap<ManagedAccountId, ManagedSigner>,
-) -> (GatewayRuntime, Addr<ReadActor>, WriteActors) {
+pub fn spawn_runtime(context: GatewayContext) -> (GatewayRuntime, Addr<ReadActor>) {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let runner = actix::System::new();
         let system = actix::System::current();
         let arbiter = system.arbiter().clone();
 
-        let write = WriteActors::spawn(&arbiter, &context, signers);
         let read = ReadActor::spawn(&arbiter, context);
 
         ready_tx
-            .send((system, read, write))
+            .send((system, read))
             .expect("gateway actor runtime receiver should be available during startup");
 
         runner
@@ -40,9 +34,9 @@ pub fn spawn_runtime(
             .expect("gateway actor runtime should stop cleanly");
     });
 
-    let (system, read, write) = ready_rx
+    let (system, read) = ready_rx
         .recv()
         .expect("gateway actor runtime should initialize before use");
 
-    (GatewayRuntime { system, thread }, read, write)
+    (GatewayRuntime { system, thread }, read)
 }

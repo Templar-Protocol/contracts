@@ -23,7 +23,8 @@ impl DispatchRead<GatewayContext> for storage::GetBalanceBounds {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.storage(request.params.contract_id)
+            ctx.near()
+                .storage(request.params.contract_id)
                 .cached_storage_balance_bounds()
                 .await
                 .map(|bounds| storage::GetBalanceBoundsResult {
@@ -42,7 +43,8 @@ impl DispatchRead<GatewayContext> for storage::GetBalanceOf {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.storage(request.params.contract_id)
+            ctx.near()
+                .storage(request.params.contract_id)
                 .storage_balance_of(StorageBalanceOfArgs {
                     account_id: request.params.account_id,
                 })
@@ -64,15 +66,17 @@ impl PlanWrite<GatewayContext> for storage::Deposit {
     ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.storage(request.body.contract_id).storage_deposit(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .gas(templar_gateway_types::NearGas::from_tgas(100))
-                        .deposit(request.body.deposit),
-                    StorageDepositArgs {
-                        account_id: request.body.beneficiary_id,
-                        registration_only: request.body.registration_only,
-                    },
-                )?,
+                ctx.near()
+                    .storage(request.body.contract_id)
+                    .storage_deposit(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .gas(templar_gateway_types::NearGas::from_tgas(100))
+                            .deposit(request.body.deposit),
+                        StorageDepositArgs {
+                            account_id: request.body.beneficiary_id,
+                            registration_only: request.body.registration_only,
+                        },
+                    )?,
             ))
         })
     }
@@ -85,14 +89,16 @@ impl PlanWrite<GatewayContext> for storage::Unregister {
     ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.storage(request.body.contract_id).storage_unregister(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .gas(templar_gateway_types::NearGas::from_tgas(100))
-                        .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
-                    StorageUnregisterArgs {
-                        force: request.body.force,
-                    },
-                )?,
+                ctx.near()
+                    .storage(request.body.contract_id)
+                    .storage_unregister(
+                        ContractWriteOptions::new(request.signer_account_id)
+                            .gas(templar_gateway_types::NearGas::from_tgas(100))
+                            .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
+                        StorageUnregisterArgs {
+                            force: request.body.force,
+                        },
+                    )?,
             ))
         })
     }
@@ -109,10 +115,12 @@ impl PlanWrite<GatewayContext> for storage::EnsureDeposit {
             let account_id = body.account_id.clone();
 
             let bounds = ctx
+                .near()
                 .storage(contract_id.clone())
                 .cached_storage_balance_bounds()
                 .await?;
             let balance = ctx
+                .near()
                 .storage(contract_id.clone())
                 .storage_balance_of(StorageBalanceOfArgs {
                     account_id: account_id.clone(),
@@ -126,7 +134,7 @@ impl PlanWrite<GatewayContext> for storage::EnsureDeposit {
             }
 
             Ok(single_transaction_plan(
-                ctx.storage(body.contract_id).storage_deposit(
+                ctx.near().storage(body.contract_id).storage_deposit(
                     ContractWriteOptions::new(request.signer_account_id)
                         .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .deposit(plan.deposit),

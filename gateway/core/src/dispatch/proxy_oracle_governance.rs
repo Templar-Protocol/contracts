@@ -18,7 +18,8 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetNextId {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.proxy_oracle(request.params.oracle_id)
+            ctx.near()
+                .proxy_oracle(request.params.oracle_id)
                 .gov_next_id(())
                 .await
         })
@@ -32,6 +33,7 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetTtl {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let ttl_ns = ctx
+                .near()
                 .proxy_oracle(request.params.oracle_id)
                 .gov_ttl_ns(())
                 .await?;
@@ -46,7 +48,8 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetCount {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.proxy_oracle(request.params.oracle_id)
+            ctx.near()
+                .proxy_oracle(request.params.oracle_id)
                 .gov_count(())
                 .await
         })
@@ -59,7 +62,8 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::List {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.proxy_oracle(request.params.oracle_id)
+            ctx.near()
+                .proxy_oracle(request.params.oracle_id)
                 .gov_list(GovListArgs {
                     offset: request.params.offset,
                     count: request.params.count,
@@ -77,7 +81,8 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::Get {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.proxy_oracle(params.oracle_id)
+            ctx.near()
+                .proxy_oracle(params.oracle_id)
                 .gov_get(GovGetArgs { id: params.id })
                 .await
                 .map(|proposal| proxy_oracle_governance::GetResult { proposal })
@@ -93,7 +98,7 @@ impl PlanWrite<GatewayContext> for proxy_oracle_governance::Create {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.proxy_oracle(body.oracle_id).gov_create(
+                ctx.near().proxy_oracle(body.oracle_id).gov_create(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),
@@ -115,7 +120,7 @@ impl PlanWrite<GatewayContext> for proxy_oracle_governance::Cancel {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.proxy_oracle(body.oracle_id).gov_cancel(
+                ctx.near().proxy_oracle(body.oracle_id).gov_cancel(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),
@@ -134,7 +139,7 @@ impl PlanWrite<GatewayContext> for proxy_oracle_governance::Execute {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.proxy_oracle(body.oracle_id).gov_execute(
+                ctx.near().proxy_oracle(body.oracle_id).gov_execute(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),

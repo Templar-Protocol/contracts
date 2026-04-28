@@ -19,6 +19,7 @@ impl DispatchRead<GatewayContext> for ft::GetBalanceOf {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let balance = ctx
+                .near()
                 .ft(request.params.contract_id)
                 .ft_balance_of(GetBalanceOfArgs {
                     account_id: request.params.account_id,
@@ -37,7 +38,7 @@ impl PlanWrite<GatewayContext> for ft::Transfer {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.ft(request.body.contract_id).ft_transfer(
+                ctx.near().ft(request.body.contract_id).ft_transfer(
                     ContractWriteOptions::new(request.signer_account_id)
                         .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
@@ -59,7 +60,7 @@ impl PlanWrite<GatewayContext> for ft::TransferCall {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.ft(request.body.contract_id).ft_transfer_call(
+                ctx.near().ft(request.body.contract_id).ft_transfer_call(
                     ContractWriteOptions::new(request.signer_account_id)
                         .gas(templar_gateway_types::NearGas::from_tgas(100))
                         .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),

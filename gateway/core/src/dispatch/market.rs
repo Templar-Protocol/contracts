@@ -32,7 +32,8 @@ impl DispatchRead<GatewayContext> for market::GetConfiguration {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_configuration(())
                 .await
         })
@@ -45,7 +46,8 @@ impl DispatchRead<GatewayContext> for market::GetCurrentSnapshot {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_current_snapshot(())
                 .await
         })
@@ -58,7 +60,8 @@ impl DispatchRead<GatewayContext> for market::GetFinalizedSnapshotsLen {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_finalized_snapshots_len(())
                 .await
         })
@@ -71,7 +74,8 @@ impl DispatchRead<GatewayContext> for market::ListFinalizedSnapshots {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .list_finalized_snapshots(request.params.args)
                 .await
                 .map(|snapshots| market::ListFinalizedSnapshotsResult { snapshots })
@@ -85,7 +89,8 @@ impl DispatchRead<GatewayContext> for market::GetBorrowAssetMetrics {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_borrow_asset_metrics(())
                 .await
         })
@@ -98,7 +103,8 @@ impl DispatchRead<GatewayContext> for market::ListBorrowPositions {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .list_borrow_positions(request.params.args)
                 .await
                 .map(|positions| market::ListBorrowPositionsResult { positions })
@@ -112,7 +118,8 @@ impl DispatchRead<GatewayContext> for market::GetBorrowPosition {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_borrow_position(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -129,7 +136,8 @@ impl DispatchRead<GatewayContext> for market::GetBorrowPositionPendingInterest {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.market(params.market_id)
+            ctx.near()
+                .market(params.market_id)
                 .get_borrow_position_pending_interest(GetBorrowPositionPendingInterestArgs {
                     account_id: params.account_id,
                     snapshot_limit: params.snapshot_limit,
@@ -147,7 +155,8 @@ impl DispatchRead<GatewayContext> for market::GetBorrowStatus {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.market(params.market_id)
+            ctx.near()
+                .market(params.market_id)
                 .get_borrow_status(GetBorrowStatusArgs {
                     account_id: params.account_id,
                     oracle_response: params.oracle_response,
@@ -164,7 +173,8 @@ impl DispatchRead<GatewayContext> for market::ListSupplyPositions {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .list_supply_positions(request.params.args)
                 .await
                 .map(|positions| market::ListSupplyPositionsResult { positions })
@@ -178,7 +188,8 @@ impl DispatchRead<GatewayContext> for market::GetSupplyPosition {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_supply_position(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -195,7 +206,8 @@ impl DispatchRead<GatewayContext> for market::GetSupplyPositionPendingYield {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.market(params.market_id)
+            ctx.near()
+                .market(params.market_id)
                 .get_supply_position_pending_yield(GetSupplyPositionPendingYieldArgs {
                     account_id: params.account_id,
                     snapshot_limit: params.snapshot_limit,
@@ -212,7 +224,8 @@ impl DispatchRead<GatewayContext> for market::GetSupplyWithdrawalRequestStatus {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_supply_withdrawal_request_status(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -228,7 +241,8 @@ impl DispatchRead<GatewayContext> for market::GetSupplyWithdrawalQueueStatus {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_supply_withdrawal_queue_status(())
                 .await
         })
@@ -241,7 +255,8 @@ impl DispatchRead<GatewayContext> for market::GetLastYieldRate {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_last_yield_rate(())
                 .await
         })
@@ -254,7 +269,8 @@ impl DispatchRead<GatewayContext> for market::GetStaticYield {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.market(request.params.market_id)
+            ctx.near()
+                .market(request.params.market_id)
                 .get_static_yield(AccountIdArg {
                     account_id: request.params.account_id,
                 })
@@ -271,7 +287,7 @@ impl PlanWrite<GatewayContext> for market::Borrow {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.market(request.body.market_id).borrow(
+                ctx.near().market(request.body.market_id).borrow(
                     ContractWriteOptions::new(request.signer_account_id).tgas(300),
                     AmountArg {
                         amount: request.body.amount,
@@ -345,6 +361,7 @@ impl PlanWrite<GatewayContext> for market::Supply {
         Box::pin(async move {
             let body = request.body;
             let configuration = ctx
+                .near()
                 .market(body.market_id.clone())
                 .cached_get_configuration()
                 .await?;
@@ -395,12 +412,14 @@ impl PlanWrite<GatewayContext> for market::WithdrawCollateral {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.market(request.body.market_id).withdraw_collateral(
-                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                    AmountArg {
-                        amount: request.body.amount,
-                    },
-                )?,
+                ctx.near()
+                    .market(request.body.market_id)
+                    .withdraw_collateral(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AmountArg {
+                            amount: request.body.amount,
+                        },
+                    )?,
             ))
         })
     }
@@ -414,7 +433,7 @@ impl PlanWrite<GatewayContext> for market::ApplyInterest {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.market(body.market_id).apply_interest(
+                ctx.near().market(body.market_id).apply_interest(
                     ContractWriteOptions::new(request.signer_account_id).tgas(300),
                     ApplyInterestArgs {
                         account_id: body.account_id,
@@ -434,6 +453,7 @@ impl PlanWrite<GatewayContext> for market::Repay {
         Box::pin(async move {
             let body = request.body;
             let configuration = ctx
+                .near()
                 .market(body.market_id.clone())
                 .cached_get_configuration()
                 .await?;
@@ -476,7 +496,8 @@ impl PlanWrite<GatewayContext> for market::CreateSupplyWithdrawalRequest {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.market(request.body.market_id)
+                ctx.near()
+                    .market(request.body.market_id)
                     .create_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id).tgas(300),
                         AmountArg {
@@ -495,7 +516,8 @@ impl PlanWrite<GatewayContext> for market::CancelSupplyWithdrawalRequest {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.market(request.body.market_id)
+                ctx.near()
+                    .market(request.body.market_id)
                     .cancel_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id).tgas(300),
                         (),
@@ -512,7 +534,8 @@ impl PlanWrite<GatewayContext> for market::ExecuteNextSupplyWithdrawalRequest {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.market(request.body.market_id)
+                ctx.near()
+                    .market(request.body.market_id)
                     .execute_next_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id).tgas(300),
                         BatchLimitArg {
@@ -532,10 +555,12 @@ impl PlanWrite<GatewayContext> for market::WithdrawSupply {
         Box::pin(async move {
             let body = request.body;
             let configuration = ctx
+                .near()
                 .market(body.market_id.clone())
                 .cached_get_configuration()
                 .await?;
             let queue_status = ctx
+                .near()
                 .market(body.market_id.clone())
                 .get_supply_withdrawal_queue_status(())
                 .await?;
@@ -555,7 +580,8 @@ impl PlanWrite<GatewayContext> for market::WithdrawSupply {
             }
 
             steps.push(
-                ctx.market(body.market_id.clone())
+                ctx.near()
+                    .market(body.market_id.clone())
                     .create_supply_withdrawal_request(
                         ContractWriteOptions::new(request.signer_account_id.clone()).tgas(300),
                         AmountArg {
@@ -566,7 +592,8 @@ impl PlanWrite<GatewayContext> for market::WithdrawSupply {
 
             if queue_status.length == 0 {
                 steps.push(
-                    ctx.market(body.market_id)
+                    ctx.near()
+                        .market(body.market_id)
                         .execute_next_supply_withdrawal_request(
                             ContractWriteOptions::new(request.signer_account_id).tgas(300),
                             BatchLimitArg {
@@ -589,6 +616,7 @@ impl PlanWrite<GatewayContext> for market::Liquidate {
         Box::pin(async move {
             let body = request.body;
             let configuration = ctx
+                .near()
                 .market(body.market_id.clone())
                 .cached_get_configuration()
                 .await?;
@@ -645,7 +673,7 @@ impl PlanWrite<GatewayContext> for market::HarvestYield {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.market(body.market_id).harvest_yield(
+                ctx.near().market(body.market_id).harvest_yield(
                     ContractWriteOptions::new(request.signer_account_id).tgas(300),
                     HarvestYieldArgs {
                         account_id: body.account_id,
@@ -665,7 +693,7 @@ impl PlanWrite<GatewayContext> for market::AccumulateStaticYield {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.market(body.market_id).accumulate_static_yield(
+                ctx.near().market(body.market_id).accumulate_static_yield(
                     ContractWriteOptions::new(request.signer_account_id).tgas(300),
                     AccumulateStaticYieldArgs {
                         account_id: body.account_id,
@@ -684,12 +712,14 @@ impl PlanWrite<GatewayContext> for market::WithdrawStaticYield {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             Ok(single_transaction_plan(
-                ctx.market(request.body.market_id).withdraw_static_yield(
-                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                    AmountArg {
-                        amount: request.body.amount,
-                    },
-                )?,
+                ctx.near()
+                    .market(request.body.market_id)
+                    .withdraw_static_yield(
+                        ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                        AmountArg {
+                            amount: request.body.amount,
+                        },
+                    )?,
             ))
         })
     }
@@ -706,6 +736,7 @@ async fn ensure_storage_registration(
     };
 
     let balance = ctx
+        .near()
         .storage(contract_id.clone())
         .storage_balance_of(StorageBalanceOfArgs {
             account_id: account_id.clone(),
@@ -716,7 +747,7 @@ async fn ensure_storage_registration(
         return Ok(None);
     }
 
-    let tx_result = ctx.storage(contract_id).storage_deposit(
+    let tx_result = ctx.near().storage(contract_id).storage_deposit(
         ContractWriteOptions::new(signer_account_id)
             .tgas(100)
             .deposit(templar_gateway_types::NearToken::from_yoctonear(
@@ -734,7 +765,8 @@ async fn storage_balance_bounds_if_supported(
     ctx: &GatewayContext,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<StorageBalanceBoundsView>> {
-    ctx.storage(contract_id)
+    ctx.near()
+        .storage(contract_id)
         .cached_storage_balance_bounds_if_supported()
         .await
 }
@@ -747,7 +779,7 @@ fn transfer_call_asset<T: templar_common::asset::AssetClass>(
     amount: impl Into<u128>,
     msg: &DepositMsg,
 ) -> GatewayResult<PlannedTransaction> {
-    ctx.token(asset).transfer_call(
+    ctx.near().token(asset).transfer_call(
         ContractWriteOptions::new(signer_account_id)
             .tgas(300)
             .one_yocto(),

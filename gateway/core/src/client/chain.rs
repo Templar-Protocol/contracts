@@ -1,6 +1,6 @@
-use near_api::{types::transaction::result::ExecutionFinalResult, Transaction};
+use near_api::types::transaction::result::ExecutionFinalResult;
 
-use crate::{client::NearClient, GatewayError, GatewayResult};
+use crate::{client::NearClient, GatewayResult, ReadNear};
 
 #[derive(Clone, Copy)]
 pub struct ChainClient<'a> {
@@ -14,11 +14,12 @@ impl ChainClient<'_> {
         sender_account_id: near_account_id::AccountId,
         wait_until: near_api::types::TxExecutionStatus,
     ) -> GatewayResult<ExecutionFinalResult> {
-        let result = Transaction::status_with_options(sender_account_id, tx_hash, wait_until)
-            .fetch_from(self.inner.network())
-            .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-
-        Ok(result)
+        <NearClient as ReadNear>::view_transaction_status(
+            self.inner,
+            sender_account_id,
+            tx_hash,
+            wait_until,
+        )
+        .await
     }
 }

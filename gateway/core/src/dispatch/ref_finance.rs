@@ -11,6 +11,7 @@ impl DispatchRead<GatewayContext> for ref_finance::GetPools {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let pools = ctx
+                .near()
                 .ref_finance(request.params.exchange_id)
                 .get_pools(GetPoolsArgs {
                     from_index: request.params.from_index,

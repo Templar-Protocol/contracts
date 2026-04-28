@@ -19,7 +19,8 @@ impl DispatchRead<GatewayContext> for registry::ListDeployments {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.registry(request.params.registry_id)
+            ctx.near()
+                .registry(request.params.registry_id)
                 .list_deployments(request.params.args)
                 .await
                 .map(|account_ids| registry::ListDeploymentsResult { account_ids })
@@ -33,7 +34,8 @@ impl DispatchRead<GatewayContext> for registry::GetDeployment {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.registry(request.params.registry_id)
+            ctx.near()
+                .registry(request.params.registry_id)
                 .get_deployment(GetDeploymentArgs {
                     account_id: request.params.account_id,
                 })
@@ -49,7 +51,8 @@ impl DispatchRead<GatewayContext> for registry::ListVersions {
         ctx: GatewayContext,
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.registry(request.params.registry_id)
+            ctx.near()
+                .registry(request.params.registry_id)
                 .list_versions(request.params.args)
                 .await
                 .map(|values| registry::ListVersionsResult { values })
@@ -65,6 +68,7 @@ impl DispatchRead<GatewayContext> for registry::ListDeploymentsByKind {
         Box::pin(async move {
             let params = request.params;
             let account_ids = ctx
+                .near()
                 .registry(params.registry_id)
                 .list_deployments(templar_gateway_types::common::Pagination::default())
                 .await?;
@@ -96,9 +100,13 @@ impl PlanWrite<GatewayContext> for registry::AddVersion {
     ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
+            let registry_version = ctx
+                .near()
+                .contract(body.registry_id.0.clone())
+                .version()
+                .await?;
             Ok(single_transaction_plan(
-                ctx.registry(body.registry_id).add_version(
+                ctx.near().registry(body.registry_id).add_version(
                     ContractWriteOptions::new(request.signer_account_id)
                         .tgas(300)
                         .deposit(body.deposit),
@@ -131,9 +139,13 @@ pub(crate) async fn plan_deploy_from_registry(
     body: registry::DeployBody,
 ) -> GatewayResult<OperationPlan> {
     let deposit = body.deposit;
-    let registry_version = ctx.contract(body.registry_id.0.clone()).version().await?;
+    let registry_version = ctx
+        .near()
+        .contract(body.registry_id.0.clone())
+        .version()
+        .await?;
     Ok(single_transaction_plan(
-        ctx.registry(body.registry_id).deploy(
+        ctx.near().registry(body.registry_id).deploy(
             ContractWriteOptions::new(signer_account_id)
                 .tgas(300)
                 .deposit(deposit),
@@ -158,7 +170,7 @@ impl PlanWrite<GatewayContext> for registry::RemoveVersion {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.registry(body.registry_id).remove_version(
+                ctx.near().registry(body.registry_id).remove_version(
                     ContractWriteOptions::new(request.signer_account_id)
                         .tgas(300)
                         .one_yocto(),

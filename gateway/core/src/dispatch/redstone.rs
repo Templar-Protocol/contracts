@@ -19,7 +19,11 @@ impl DispatchRead<GatewayContext> for redstone::GetConfig {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            let config = ctx.redstone_oracle(params.oracle_id).get_config(()).await?;
+            let config = ctx
+                .near()
+                .redstone_oracle(params.oracle_id)
+                .get_config(())
+                .await?;
             Ok(redstone::GetConfigResult { config })
         })
     }
@@ -34,6 +38,7 @@ impl DispatchRead<GatewayContext> for redstone::ReadPriceData {
             let params = request.params;
             let feed_ids = params.feed_ids;
             let response = ctx
+                .near()
                 .redstone_oracle(params.oracle_id)
                 .read_price_data(ReadPriceDataArgs {
                     feed_ids: feed_ids.clone(),
@@ -62,6 +67,7 @@ impl DispatchRead<GatewayContext> for redstone::ListRole {
         Box::pin(async move {
             let params = request.params;
             let account_ids = ctx
+                .near()
                 .redstone_oracle(params.oracle_id)
                 .list_role(ListRoleArgs {
                     role: params.role.into(),
@@ -80,7 +86,7 @@ impl PlanWrite<GatewayContext> for redstone::SetRole {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.redstone_oracle(body.oracle_id).set_role(
+                ctx.near().redstone_oracle(body.oracle_id).set_role(
                     ContractWriteOptions::new(request.signer_account_id)
                         .tgas(100)
                         .one_yocto(),
@@ -103,7 +109,7 @@ impl PlanWrite<GatewayContext> for redstone::WritePrices {
         Box::pin(async move {
             let body = request.body;
             Ok(single_transaction_plan(
-                ctx.redstone_oracle(body.oracle_id).write_prices(
+                ctx.near().redstone_oracle(body.oracle_id).write_prices(
                     ContractWriteOptions::new(request.signer_account_id).tgas(300),
                     WritePricesArgs {
                         feed_ids: body.feed_ids,

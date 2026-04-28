@@ -11,6 +11,7 @@ impl DispatchRead<GatewayContext> for contract::ViewFunction {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let value = ctx
+                .near()
                 .contract(request.params.contract_id.clone())
                 .view_function(
                     &request.params.method_name.0,
@@ -30,6 +31,7 @@ impl DispatchRead<GatewayContext> for contract::GetVersion {
     ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let metadata = ctx
+                .near()
                 .contract(request.params.contract_id)
                 .cached_contract_source_metadata()
                 .await?;
@@ -135,6 +137,7 @@ async fn try_registry_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
+        .near()
         .registry(templar_gateway_types::RegistryId(contract_id))
         .list_versions(templar_gateway_types::common::Pagination::default())
         .await
@@ -150,6 +153,7 @@ async fn try_market_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
+        .near()
         .market(templar_gateway_types::MarketId(contract_id))
         .get_configuration(())
         .await
@@ -165,6 +169,7 @@ async fn try_universal_account_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
+        .near()
         .universal_account(templar_gateway_types::UniversalAccountId(contract_id))
         .get_key(crate::client::universal_account::UaGetKeyArgs {
             key: templar_universal_account::KeyId::Ed25519Raw(
@@ -186,6 +191,7 @@ async fn try_proxy_oracle_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
+        .near()
         .proxy_oracle(contract_id)
         .list_proxies(crate::client::proxy_oracle::ListProxiesArgs {
             offset: None,
@@ -204,6 +210,7 @@ async fn try_lst_oracle_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
+        .near()
         .lst_oracle(contract_id)
         .list_transformers(crate::client::lst_oracle::ListTransformersArgs {
             offset: None,
@@ -221,7 +228,7 @@ async fn try_redstone_oracle_kind(
     ctx: &GatewayContext,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
-    match ctx.redstone_oracle(contract_id).get_config(()).await {
+    match ctx.near().redstone_oracle(contract_id).get_config(()).await {
         Ok(_) => Ok(Some(contract::ContractKind::RedstoneOracle)),
         Err(error) if is_method_not_found(&error) => Ok(None),
         Err(error) => Err(error),
@@ -233,6 +240,7 @@ async fn try_pyth_oracle_kind(
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
+        .near()
         .pyth_oracle(contract_id)
         .list_ema_prices_unsafe(crate::client::pyth_oracle::ListEmaPricesUnsafeArgs {
             price_ids: vec![],

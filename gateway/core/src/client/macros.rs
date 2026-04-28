@@ -3,10 +3,12 @@ macro_rules! contract_views {
         $(
             $vis async fn $fn_name(&self, args: $args_ty) -> $crate::GatewayResult<$contract_return_type> {
                 let client = $crate::client::BoundContractClient::client(self);
-                let result: $contract_return_type = client
-                    .contract($crate::client::BoundContractClient::contract_id(self).to_owned())
-                    .view_function(contract_views!(@method $fn_name $(, $method)?), ::serde_json::to_vec(&args)?)
-                    .await?;
+                let result: $contract_return_type = $crate::ReadNear::view_function(
+                    client,
+                    $crate::client::BoundContractClient::contract_id(self).to_owned(),
+                    contract_views!(@method $fn_name $(, $method)?),
+                    ::serde_json::to_vec(&args)?,
+                ).await?;
 
                 Ok(result)
             }
