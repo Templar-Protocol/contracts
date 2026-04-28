@@ -2,12 +2,10 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Install stellar-cli v25 for Templar Soroban vault deployment.
+# Install stellar-cli v26 for Templar Soroban vault deployment.
 #
-# The project toolchain is pinned to Rust 1.86 (NEAR compatibility), but
-# stellar-cli v25 requires Rust 1.89 to compile.  This script installs
-# 1.89 as a side-by-side toolchain and builds the CLI with it.  The
-# resulting binary works independently of the project toolchain.
+# stellar-cli v26 requires Rust 1.92 to compile. This script makes that
+# toolchain available and builds the matching CLI.
 #
 # Usage:
 #   ./scripts/install-stellar-cli.sh
@@ -21,8 +19,8 @@ set -euo pipefail
 #       macOS:          (not needed — dbus is optional)
 # ---------------------------------------------------------------------------
 
-STELLAR_CLI_VERSION="25.0.0"
-RUST_TOOLCHAIN="1.89.0"
+STELLAR_CLI_VERSION="26.0.0"
+RUST_TOOLCHAIN="1.92.0"
 
 info()  { printf '\033[1;34m→\033[0m %s\n' "$*"; }
 ok()    { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
@@ -40,7 +38,7 @@ if ! command -v pkg-config >/dev/null 2>&1; then
     exit 1
 fi
 
-# dbus is only required on Linux
+# dbus is required by stellar-cli's default additional-libs feature.
 if [[ "$(uname -s)" == "Linux" ]]; then
     if ! pkg-config --exists dbus-1 2>/dev/null; then
         err "libdbus development headers not found."

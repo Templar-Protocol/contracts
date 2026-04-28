@@ -68,7 +68,7 @@ jobs:
         run: sudo apt install libdbus-1-dev pkg-config
 
       - name: Install stellar CLI
-        run: curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
+        run: contract/vault/soroban/scripts/install-stellar-cli.sh
 
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check

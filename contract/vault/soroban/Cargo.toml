@@ -25,11 +25,11 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 
 # Soroban SDK for Stellar smart contracts
-soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
 
 [dev-dependencies]
 proptest = "1.4"
-soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
+soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc", "experimental_spec_shaking_v2"] }
 rstest.workspace = true
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
 templar-soroban-blend-adapter = { path = "./blend-adapter" }

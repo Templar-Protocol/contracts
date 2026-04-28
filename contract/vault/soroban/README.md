@@ -114,11 +114,9 @@ sequenceDiagram
 
 ### Stellar CLI
 
-The Stellar testnet runs protocol 25, so you need `stellar-cli` v25.  The catch:
-v25 requires **Rust 1.89** to compile, but the project toolchain is pinned to
-**Rust 1.86** for NEAR contract compatibility.  The solution is to build the CLI
-binary with a separate 1.89 toolchain — the resulting binary works regardless of
-the project toolchain.
+The Stellar testnet is on the protocol 26 upgrade path, so use `stellar-cli`
+v26. The workspace toolchain is **Rust 1.92** because the current Stellar CLI
+and OpenZeppelin Stellar crates require it.
 
 **With devenv** (handles it automatically):
 
@@ -126,8 +124,8 @@ the project toolchain.
 devenv shell
 ```
 
-On first entry, devenv installs Rust 1.89 as a side-by-side toolchain and
-builds `stellar-cli` v25.  Subsequent entries skip this (~3-4 min first time).
+On first entry, devenv installs Rust 1.92 and builds `stellar-cli` v26.
+Subsequent entries skip this (~3-4 min first time).
 
 **Without devenv:**
 
@@ -135,8 +133,9 @@ builds `stellar-cli` v25.  Subsequent entries skip this (~3-4 min first time).
 ./scripts/install-stellar-cli.sh
 ```
 
-The script installs Rust 1.89 (via rustup) and builds the CLI.  System
-prerequisites:
+The script installs Rust 1.92 (via rustup) and builds the CLI. The optimized
+contract build path requires the CLI's default native integrations, so Linux
+hosts need dbus development headers:
 
 | OS | Packages |
 |----|----------|
@@ -181,13 +180,13 @@ After deployment, register the adapter as a vault market before allocation.
 
 The Soroban justfile builds two runtime artifacts:
 
-- `templar_soroban_runtime.optimized.wasm` with Stellar optimizer output
+- `templar_soroban_runtime.wasm` with Stellar optimizer output and contractspec metadata
 - `templar_soroban_runtime.deploy.wasm` with contractspec metadata stripped for deployment and
   size-budget checks
 
 Useful commands:
 
-- `wasm-path` -> default runtime artifact, currently `templar_soroban_runtime.optimized.wasm`
+- `wasm-path` -> default runtime artifact, currently `templar_soroban_runtime.wasm`
 - `optimized-wasm-path` -> explicit optimized artifact path
 - `deploy-wasm-path` -> contractspec-stripped deploy artifact path used for deployment and size verification
 - `size-budget-check` -> verifies `templar_soroban_runtime.deploy.wasm <= 131072` bytes

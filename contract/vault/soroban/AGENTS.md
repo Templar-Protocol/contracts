@@ -65,7 +65,7 @@ Use these commands:
 Important details:
 
 - The size gate checks `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`.
-- `build` also emits `templar_soroban_runtime.optimized.wasm`; the deploy artifact is the
+- `build` emits the optimized `templar_soroban_runtime.wasm`; the deploy artifact is the
   contractspec-stripped one.
 - `scripts/strip_contractspec.py` typically saves about `7 KiB` by removing `contractspecv0`.
 - Recent local evidence from PR #417 records the deploy artifact at about `128807` bytes
@@ -96,7 +96,6 @@ directly and keep the commands/results in the task notes or PR description.
 Release artifacts to inspect after `just -f contract/vault/soroban/justfile build`:
 
 - `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
-- `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.optimized.wasm`
 - `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
 
 Recommended workflow:
@@ -110,7 +109,7 @@ Recommended workflow:
 
 Commands:
 
-- `stat -c '%s %n' target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.optimized.wasm target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
+- `stat -c '%s %n' target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
 - `wasm-objdump -h target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
 - `wasm-objdump -x target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm > /tmp/templar_soroban_runtime.deploy.objdump.txt`
 - `twiggy top target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm -n 80`
@@ -131,8 +130,8 @@ What to look for:
 
 Interpretation guidance:
 
-- If `deploy.wasm` grew but `optimized.wasm` did not, check stripping/output-path issues first.
-- If both `optimized.wasm` and `deploy.wasm` grew similarly, inspect retained code shape with
+- If `deploy.wasm` grew but `templar_soroban_runtime.wasm` did not, check stripping/output-path issues first.
+- If both `templar_soroban_runtime.wasm` and `deploy.wasm` grew similarly, inspect retained code shape with
   `twiggy`.
 - If section growth is concentrated in custom/data sections, inspect serialization payloads,
   event/spec metadata, and embedded strings before changing control flow.

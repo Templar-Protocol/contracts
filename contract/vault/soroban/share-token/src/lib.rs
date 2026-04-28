@@ -3,7 +3,7 @@
 mod types;
 pub use types::*;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, MuxedAddress, String};
 use stellar_tokens::fungible::{
     burnable::{emit_burn, FungibleBurnable},
     Base, FungibleToken,
@@ -33,7 +33,7 @@ impl FungibleToken for SorobanShareTokenContract {
         Base::allowance(e, &owner, &spender)
     }
 
-    fn transfer(e: &Env, from: Address, to: Address, amount: i128) {
+    fn transfer(e: &Env, from: Address, to: MuxedAddress, amount: i128) {
         extend_instance_ttl(e);
         Base::transfer(e, &from, &to, amount);
     }

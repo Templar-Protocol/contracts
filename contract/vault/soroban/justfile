@@ -17,7 +17,7 @@ set dotenv-load := false
 #
 # PREREQUISITES:
 #   - Rust toolchain with wasm32-unknown-unknown target
-#   - Stellar CLI: cargo install --locked stellar-cli --features opt
+#   - Stellar CLI: cargo install --locked stellar-cli
 #   - curl (for friendbot funding)
 #
 # ENVIRONMENT VARIABLES (optional overrides):
@@ -39,13 +39,13 @@ root := justfile_directory() + "/../../.."
 wasm_dir := root + "/target/wasm32-unknown-unknown/release-soroban"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
-optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
+optimized_wasm := wasm_dir + "/templar_soroban_runtime.wasm"
 deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
 remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 default_wasm := optimized_wasm
-blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
-governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
-share_token_wasm := wasm_dir + "/templar_soroban_share_token.optimized.wasm"
+blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
+governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
+share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -90,25 +90,23 @@ deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter depl
 # BUILD
 # =============================================================================
 
-# Optimize a built WASM artifact.
-# Prefer the non-deprecated `stellar contract build --optimize`; if unavailable
-# in the local toolchain (for example missing wasm32v1-none support), fall back
-# to `stellar contract optimize` on the prebuilt wasm32-unknown-unknown artifact.
+# Build and optimize a WASM artifact. Spec shaking v2 requires
+# `stellar contract build` from stellar-cli v25.2.0+.
 _optimize-wasm package wasm_path:
-	@if RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
-		:; \
-	else \
-		stellar contract optimize --wasm "{{wasm_path}}" >/dev/null 2>&1; \
+	@if ! command -v stellar >/dev/null 2>&1; then \
+		echo "Error: stellar CLI not found. Install with:"; \
+		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
+		exit 1; \
+	fi
+	@if ! CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}"; then \
+		echo "Error: failed to build {{package}} with stellar CLI."; \
+		echo "Spec shaking v2 requires stellar-cli v25.2.0+; v26 is recommended."; \
+		exit 1; \
 	fi
 
 # Build and optimize the Soroban vault WASM.
 build:
 	@echo "Building Soroban vault/governance/share-token WASMs..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
-		--manifest-path "{{root}}/Cargo.toml" \
-		-p templar-soroban-runtime \
-		-p templar-soroban-governance \
-		-p templar-soroban-share-token
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-runtime "{{wasm_dir}}/templar_soroban_runtime.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-governance "{{wasm_dir}}/templar_soroban_governance.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-share-token "{{wasm_dir}}/templar_soroban_share_token.wasm"
@@ -128,8 +126,6 @@ size-budget-check max_bytes="131072": build
 # Build and optimize the Blend adapter WASM.
 build-blend-adapter:
 	@echo "Building Blend adapter WASM..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
-		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-blend-adapter
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
 
@@ -154,7 +150,7 @@ wasm-analyze rows="250" lines="120":
 		exit 1; \
 	fi
 	@echo "Building debug WASM for analysis..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
+	@SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
 	@mkdir -p "{{wasm_analysis_dir}}"
 	@twiggy top "{{debug_wasm}}" -n "{{rows}}" > "{{wasm_analysis_dir}}/top.txt"
@@ -166,12 +162,12 @@ wasm-analyze rows="250" lines="120":
 	@echo "  {{wasm_analysis_dir}}/monos.txt"
 	@echo ""
 	@echo "Computing release/optimized WASM sizes..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
+	@SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime >/dev/null
 	@if [ -d "/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib" ]; then \
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \
 	fi; \
-	if RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
+	if CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
 		:; \
 	else \
 		stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null 2>&1; \
@@ -225,7 +221,7 @@ network-init:
 	passphrase="${SOROBAN_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"; \
 	if ! command -v stellar >/dev/null 2>&1; then \
 		echo "Error: stellar CLI not found. Install with:"; \
-		echo "  cargo install --locked stellar-cli --features opt"; \
+		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
 		exit 1; \
 	fi; \
 	echo "Configuring network: $network"; \

@@ -8,7 +8,7 @@ use super::*;
 use soroban_sdk::{
     contracttype,
     testutils::{Address as _, Ledger, LedgerInfo},
-    Bytes,
+    Bytes, String as SdkString,
 };
 use templar_soroban_shared_types::{
     GovernanceCommand, GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,

@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::{Ledger, LedgerInfo};
-use soroban_sdk::{contract, contractimpl, IntoVal};
+use soroban_sdk::{contract, contractimpl, IntoVal, MuxedAddress};
 
 #[contract]
 struct VaultCaller;
@@ -30,7 +30,7 @@ fn setup() -> (Env, Address, Address, Address) {
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
         timestamp: 100,
-        protocol_version: 23,
+        protocol_version: 25,
         sequence_number: 100,
         ..Default::default()
     });
@@ -100,7 +100,7 @@ fn user_can_transfer_with_auth() {
     env.invoke_contract::<()>(
         &token,
         &soroban_sdk::Symbol::new(&env, "transfer"),
-        (&from, &to, &250i128).into_val(&env),
+        (&from, MuxedAddress::from(to.clone()), &250i128).into_val(&env),
     );
 
     let from_bal: i128 = env.invoke_contract(
@@ -134,7 +134,7 @@ fn transfer_without_from_auth_panics() {
     env.invoke_contract::<()>(
         &token,
         &soroban_sdk::Symbol::new(&env, "transfer"),
-        (&from, &to, &1i128).into_val(&env),
+        (&from, MuxedAddress::from(to), &1i128).into_val(&env),
     );
 }
 

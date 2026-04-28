@@ -25,24 +25,6 @@ use templar_soroban_shared_types::{
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
-type ProxyCoreView = (
-    (
-        soroban_sdk::Address,
-        soroban_sdk::Address,
-        soroban_sdk::Address,
-        soroban_sdk::Address,
-    ),
-    (i128, i128, bool),
-    (i128, i128, i128, i128),
-    (i128, u64, i128, i128),
-);
-type ProxyPolicyView = (
-    soroban_sdk::Vec<u32>,
-    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
-);
-type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
-type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
-
 fn required_address(
     value: Option<soroban_sdk::Address>,
 ) -> Result<soroban_sdk::Address, ContractError> {
@@ -862,7 +844,27 @@ impl SorobanVaultContract {
         owner: soroban_sdk::Address,
         assets: i128,
         shares: i128,
-    ) -> Result<ProxyViewResponse, ContractError> {
+    ) -> Result<
+        (
+            (
+                (
+                    soroban_sdk::Address,
+                    soroban_sdk::Address,
+                    soroban_sdk::Address,
+                    soroban_sdk::Address,
+                ),
+                (i128, i128, bool),
+                (i128, i128, i128, i128),
+                (i128, u64, i128, i128),
+            ),
+            (
+                soroban_sdk::Vec<u32>,
+                soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
+            ),
+            (i128, i128, i128, i128, i128, i128, i128, i128),
+        ),
+        ContractError,
+    > {
         let (virtual_shares, virtual_assets) = load_virtual_offsets(&env);
         let storage = SorobanStorage::new(&env);
         let mut queue = soroban_sdk::Vec::new(&env);

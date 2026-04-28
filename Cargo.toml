@@ -108,12 +108,8 @@ uniffi = "0.31.0"
 wiremock = "0.5.22"
 zeroize = "1.8.2"
 
-stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat", default-features = false }
-stellar-tokens = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-tokens", branch = "templar/rust-1.86-compat", default-features = false }
-
-[patch.crates-io]
-stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-contract-utils", branch = "templar/rust-1.86-compat" }
-stellar-tokens = { git = "https://github.com/Templar-Protocol/stellar-contracts.git", package = "stellar-tokens", branch = "templar/rust-1.86-compat" }
+stellar-contract-utils = { version = "0.7.1", default-features = false }
+stellar-tokens = { version = "0.7.1", default-features = false }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

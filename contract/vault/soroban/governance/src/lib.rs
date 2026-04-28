@@ -8,7 +8,7 @@ pub use types::*;
 use alloc::string::String as AllocString;
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String as SdkString, Symbol, Vec,
+    contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Vec,
 };
 use templar_curator_primitives::governance::{
     timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
@@ -51,8 +51,8 @@ enum GovernanceActionKey {
     Sentinel,
     Cap(u32),
     MarketRemoval(u32),
-    CapGroupCap(SdkString),
-    CapGroupRelativeCap(SdkString),
+    CapGroupCap(String),
+    CapGroupRelativeCap(String),
     CapGroupMembership(u32),
     SkimRecipient,
     Skim(Address),
@@ -263,7 +263,7 @@ impl SorobanVaultGovernanceContract {
     pub fn submit_set_group_cap(
         env: Env,
         caller: Address,
-        cap_group_id: SdkString,
+        cap_group_id: String,
         new_cap: i128,
     ) -> Result<u64, GovernanceError> {
         Self::submit(
@@ -276,7 +276,7 @@ impl SorobanVaultGovernanceContract {
     pub fn submit_set_group_rel_cap(
         env: Env,
         caller: Address,
-        cap_group_id: SdkString,
+        cap_group_id: String,
         new_relative_cap_wad: i128,
     ) -> Result<u64, GovernanceError> {
         Self::submit(
@@ -290,7 +290,7 @@ impl SorobanVaultGovernanceContract {
         env: Env,
         caller: Address,
         market_id: u32,
-        cap_group_id: SdkString,
+        cap_group_id: String,
     ) -> Result<u64, GovernanceError> {
         Self::submit(
             env,
@@ -779,7 +779,7 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
-            let current: Option<SdkString> = env
+            let current: Option<String> = env
                 .storage()
                 .instance()
                 .get(&DataKey::CurrentCapGroupMembership(*market_id));
@@ -788,7 +788,7 @@ fn decide_submission(
             } else {
                 Some(cap_group_id)
             };
-            match TimelockDecision::from_membership_assignment_change::<SdkString>(
+            match TimelockDecision::from_membership_assignment_change::<String>(
                 current.as_ref(),
                 proposed,
             ) {
@@ -1293,7 +1293,7 @@ fn sdk_address_to_alloc_string(address: &Address) -> Result<AllocString, Governa
     AllocString::from_utf8(raw).map_err(|_| GovernanceError::InvalidInput)
 }
 
-fn sdk_string_to_alloc_string(value: &SdkString) -> Result<AllocString, GovernanceError> {
+fn sdk_string_to_alloc_string(value: &String) -> Result<AllocString, GovernanceError> {
     AllocString::from_utf8(value.to_bytes().to_alloc_vec())
         .map_err(|_| GovernanceError::InvalidInput)
 }

@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contracterror, contractevent, contracttype, Address, BytesN, String as SdkString, Symbol, Vec,
+    contracterror, contractevent, contracttype, Address, BytesN, String, Symbol, Vec,
 };
 
 #[contracttype]
@@ -189,9 +189,9 @@ pub enum GovernanceAction {
     SetSentinel(Address),
     SetCap(u32, i128),
     RemoveMarket(u32),
-    SetGroupCap(SdkString, i128),
-    SetGroupRelCap(SdkString, i128),
-    SetGroupMember(u32, SdkString),
+    SetGroupCap(String, i128),
+    SetGroupRelCap(String, i128),
+    SetGroupMember(u32, String),
     SetSkimRecipient(Address),
     Skim(Address),
     SetTimelock(TimelockKind, u64),
