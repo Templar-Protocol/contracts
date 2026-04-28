@@ -87,7 +87,7 @@ pub struct RealAssetsReport {
 pub enum IdleResyncOutcome {
     /// Resync succeeded.
     Ok,
-    /// ft_balance_of call failed.
+    /// `ft_balance_of` call failed.
     BalanceReadFailed,
     /// Vault not in expected state.
     UnexpectedState,
@@ -230,7 +230,7 @@ impl From<Fees<U128>> for Fees<Wad> {
 pub struct VaultConfiguration {
     /// The account that owns this vault.
     pub owner: AccountId,
-    /// The account that can submit allocation plans. See [AllocationMode].
+    /// The account that can submit allocation plans. See [`AllocationMode`].
     pub curator: AccountId,
     /// The emergency role that can cancel withdrawals and trigger deallocations.
     pub sentinel: AccountId,

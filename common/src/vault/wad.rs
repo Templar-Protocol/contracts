@@ -105,11 +105,11 @@ impl Number {
             return Number::zero();
         }
         let prod = x.0.full_mul(y.0);
-        let d = U512::from(denom.0);
-        let q = prod / d;
-        let r = prod % d;
-        let base = Number(Self::as_u256_trunc(q));
-        if r.is_zero() {
+        let divisor = U512::from(denom.0);
+        let quotient = prod / divisor;
+        let remainder = prod % divisor;
+        let base = Number(Self::as_u256_trunc(quotient));
+        if remainder.is_zero() {
             base
         } else {
             base.saturating_add(Number::one())
@@ -241,7 +241,7 @@ impl<'de> Deserialize<'de> for Wad {
 impl Wad {
     pub const SCALE: u128 = 1_000_000_000_000_000_000u128;
     pub const ZERO: Self = Wad(Number::ZERO);
-    pub const ONE: Self = Wad(Number(U256([Self::SCALE as u64, 0, 0, 0])));
+    pub const ONE: Self = Wad(Number(U256([1_000_000_000_000_000_000, 0, 0, 0])));
 
     #[inline]
     #[must_use]

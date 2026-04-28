@@ -119,10 +119,13 @@ redundant_closure_for_method_calls = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-unwrap_used = "warn"
+unwrap_used = "allow"
 expect_used = "warn"
 large_digit_groups = "warn"
 wildcard_imports = "allow"
+doc_markdown = "allow"
+result_large_err = "allow"
+ignore_without_reason = "allow"
 
 [profile.dev]
 incremental = true

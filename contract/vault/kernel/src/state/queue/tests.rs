@@ -928,11 +928,7 @@ proptest! {
         let settlement = compute_settlement(escrow_shares, expected_assets, actual_assets);
 
         let expected_burn = (escrow_shares * actual_assets) / expected_assets;
-        let diff = if settlement.to_burn > expected_burn {
-            settlement.to_burn - expected_burn
-        } else {
-            expected_burn - settlement.to_burn
-        };
+        let diff = settlement.to_burn.abs_diff(expected_burn);
 
         prop_assert!(diff <= 1, "burn not proportional: expected ~{}, got {}", expected_burn, settlement.to_burn);
     }
