@@ -65,7 +65,7 @@ jobs:
         run: cargo nextest run -p templar-soroban-runtime
 
       - name: Install packages
-        run: sudo apt install libdbus-1-dev pkg-config
+        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
 
       - name: Install stellar CLI
         run: contract/vault/soroban/scripts/install-stellar-cli.sh
