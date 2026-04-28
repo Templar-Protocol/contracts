@@ -120,6 +120,14 @@ fn read_bytes<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], Runti
     read_exact(bytes, cursor, len)
 }
 
+fn finish_decode(bytes: &[u8], cursor: usize) -> Result<(), RuntimeError> {
+    if cursor == bytes.len() {
+        Ok(())
+    } else {
+        Err(RuntimeError::storage_error(""))
+    }
+}
+
 fn encode_cap_group_id(id: &CapGroupId, out: &mut Vec<u8>) {
     push_bytes(out, id.as_str().as_bytes());
 }
@@ -159,11 +167,13 @@ pub(crate) fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeE
     for _ in 0..len {
         addresses.push(read_address(bytes, &mut cursor)?);
     }
-    match tag {
-        0 => Ok(Restrictions::blacklist(addresses)),
-        1 => Ok(Restrictions::whitelist(addresses)),
-        _ => Err(RuntimeError::storage_error("")),
-    }
+    let restrictions = match tag {
+        0 => Restrictions::blacklist(addresses),
+        1 => Restrictions::whitelist(addresses),
+        _ => return Err(RuntimeError::storage_error("")),
+    };
+    finish_decode(bytes, cursor)?;
+    Ok(restrictions)
 }
 
 pub(crate) fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
@@ -194,10 +204,13 @@ pub(crate) fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeEr
         entries.push(entry);
     }
     let max_length = core::num::NonZeroU32::new(max_length);
-    SupplyQueue::try_from_entries(entries, max_length).map_err(|_| RuntimeError::storage_error(""))
+    let queue = SupplyQueue::try_from_entries(entries, max_length)
+        .map_err(|_| RuntimeError::storage_error(""))?;
+    finish_decode(bytes, cursor)?;
+    Ok(queue)
 }
 
-fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
+pub(crate) fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
     let mut out = Vec::new();
     push_u32(&mut out, cap_groups.len() as u32);
     for (id, record) in cap_groups.iter() {
@@ -221,7 +234,9 @@ fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec
     out
 }
 
-fn decode_cap_groups(bytes: &[u8]) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
+pub(crate) fn decode_cap_groups(
+    bytes: &[u8],
+) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut cap_groups = OrderedMap::new();
@@ -251,6 +266,7 @@ fn decode_cap_groups(bytes: &[u8]) -> Result<OrderedMap<CapGroupId, CapGroupReco
         cap.set_relative_cap(relative_cap);
         let _ = cap_groups.insert(id, CapGroupRecord { cap, principal });
     }
+    finish_decode(bytes, cursor)?;
     Ok(cap_groups)
 }
 
@@ -293,6 +309,7 @@ pub(crate) fn decode_markets(
         };
         let _ = markets.insert(target_id, MarketConfig::new(enabled, cap, cap_group_id));
     }
+    finish_decode(bytes, cursor)?;
     Ok(markets)
 }
 
@@ -315,6 +332,7 @@ pub(crate) fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u12
         let principal = read_u128(bytes, &mut cursor)?;
         let _ = principals.insert(target_id, principal);
     }
+    finish_decode(bytes, cursor)?;
     Ok(principals)
 }
 
@@ -370,6 +388,7 @@ pub(crate) fn decode_policy_locks(bytes: &[u8]) -> Result<MarketLeaseRegistry, R
         );
         let _ = leases_by_target.insert(target_id, lease);
     }
+    finish_decode(bytes, cursor)?;
     Ok(MarketLeaseRegistry::from_parts(
         leases_by_target,
         next_fencing_token,

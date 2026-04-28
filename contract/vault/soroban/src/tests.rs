@@ -1932,8 +1932,8 @@ mod storage_tests {
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
-    use templar_curator_primitives::policy::cap_group::CapGroupId;
-    use templar_curator_primitives::policy::state::MarketConfig;
+    use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
+    use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
         GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
@@ -2263,6 +2263,10 @@ mod storage_tests {
         let decoded =
             fuzz_api::decode_restrictions_bytes(&encoded).expect("restrictions roundtrip");
         assert_eq!(decoded, restrictions);
+
+        let mut trailing = encoded;
+        trailing.push(0xff);
+        assert!(fuzz_api::decode_restrictions_bytes(&trailing).is_err());
     }
 
     #[rstest]
@@ -2307,6 +2311,10 @@ mod storage_tests {
         let decoded = fuzz_api::decode_supply_queue_bytes(&encoded).expect("queue roundtrip");
         assert_eq!(decoded, queue);
 
+        let mut trailing = encoded.clone();
+        trailing.push(0xff);
+        assert!(fuzz_api::decode_supply_queue_bytes(&trailing).is_err());
+
         for len in 0..encoded.len() {
             let _ = fuzz_api::decode_supply_queue_bytes(&encoded[..len]);
         }
@@ -2349,6 +2357,10 @@ mod storage_tests {
             fuzz_api::decode_policy_locks_bytes(&encoded).expect("policy locks roundtrip");
         assert_eq!(decoded, registry);
 
+        let mut trailing = encoded.clone();
+        trailing.push(0xff);
+        assert!(fuzz_api::decode_policy_locks_bytes(&trailing).is_err());
+
         for len in 0..encoded.len() {
             let _ = fuzz_api::decode_policy_locks_bytes(&encoded[..len]);
         }
@@ -2375,6 +2387,10 @@ mod storage_tests {
         let decoded = fuzz_api::decode_markets_bytes(&encoded).expect("markets roundtrip");
         assert_eq!(decoded, markets);
 
+        let mut trailing = encoded.clone();
+        trailing.push(0xff);
+        assert!(fuzz_api::decode_markets_bytes(&trailing).is_err());
+
         let mut bad_enabled = encoded.clone();
         if bad_enabled.len() > 9 {
             bad_enabled[8] = 2;
@@ -2389,9 +2405,39 @@ mod storage_tests {
     }
 
     #[test]
-    fn storage_codec_roundtrip_principals_and_truncated_bytes_fail_cleanly() {
-        use templar_curator_primitives::policy::state::OrderedMap;
+    fn storage_codec_roundtrip_cap_groups_and_trailing_bytes_fail_cleanly() {
+        let mut cap = CapGroup::default();
+        cap.set_absolute_cap(Some(1_000));
+        cap.set_relative_cap(Some(templar_vault_kernel::Wad::one() / 2));
 
+        let mut cap_groups = OrderedMap::new();
+        let _ = cap_groups.insert(
+            CapGroupId::try_from(AllocString::from("grp-a")).expect("cap group id"),
+            CapGroupRecord {
+                cap,
+                principal: 500,
+            },
+        );
+
+        let encoded = fuzz_api::encode_cap_groups_bytes(&cap_groups);
+        let decoded = fuzz_api::decode_cap_groups_bytes(&encoded).expect("cap groups roundtrip");
+        let decoded_record = decoded
+            .get(&CapGroupId::try_from(AllocString::from("grp-a")).expect("cap group id"))
+            .expect("decoded cap group");
+        assert_eq!(decoded_record.principal, 500);
+        assert_eq!(decoded_record.cap.absolute_cap(), Some(1_000));
+        assert_eq!(
+            decoded_record.cap.relative_cap(),
+            Some(templar_vault_kernel::Wad::one() / 2)
+        );
+
+        let mut trailing = encoded;
+        trailing.push(0xff);
+        assert!(fuzz_api::decode_cap_groups_bytes(&trailing).is_err());
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_principals_and_truncated_bytes_fail_cleanly() {
         let mut principals = OrderedMap::new();
         let _ = principals.insert(1, 111);
         let _ = principals.insert(2, u128::MAX - 5);
@@ -2399,6 +2445,10 @@ mod storage_tests {
         let encoded = fuzz_api::encode_principals_bytes(&principals);
         let decoded = fuzz_api::decode_principals_bytes(&encoded).expect("principals roundtrip");
         assert_eq!(decoded, principals);
+
+        let mut trailing = encoded.clone();
+        trailing.push(0xff);
+        assert!(fuzz_api::decode_principals_bytes(&trailing).is_err());
 
         for len in 0..encoded.len() {
             let _ = fuzz_api::decode_principals_bytes(&encoded[..len]);
