@@ -299,9 +299,9 @@ impl Decimal {
         reason = "Lossiness is acceptable for this function"
     )]
     pub fn to_f64_lossy(self) -> f64 {
-        let frac = self.repr.low_u128() as f64 / 2f64.powi(FRACTIONAL_BITS as i32);
+        let frac = self.repr.low_u128() as f64 / f64_pow2(FRACTIONAL_BITS as i32);
         let low = (self.repr >> FRACTIONAL_BITS).low_u128() as f64;
-        let high = (self.repr >> (FRACTIONAL_BITS * 2)).low_u128() as f64 * 2f64.powi(128);
+        let high = (self.repr >> (FRACTIONAL_BITS * 2)).low_u128() as f64 * f64_pow2(128);
 
         high + low + frac
     }
@@ -366,6 +366,17 @@ impl Decimal {
         // Safety: all digits are guaranteed to be in range 0x30..=0x39
         (unsafe { String::from_utf8_unchecked(s) }, overflow)
     }
+}
+
+#[inline]
+#[allow(clippy::cast_sign_loss)]
+/// Calculates 2^exponent as an f64
+const fn f64_pow2(exponent: i32) -> f64 {
+    debug_assert!(
+        !(exponent < -1022 || exponent > 1023),
+        "Exponent out of range for f64"
+    );
+    f64::from_bits(((1023 + exponent) as u64) << 52)
 }
 
 pub mod error {
@@ -996,6 +1007,16 @@ mod tests {
             assert_eq!(n, parsed);
             println!("{n:?}");
             println!("");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn const_pow2() {
+        for i in -1022..=1023 {
+            let f = f64_pow2(i);
+            let e = 2f64.powi(i);
+            assert_eq!(f, e);
         }
     }
 }
