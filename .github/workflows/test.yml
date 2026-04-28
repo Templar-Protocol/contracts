@@ -89,6 +89,102 @@ jobs:
       - name: Test curator-primitives (boundary)
         run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
 
+  feature-matrix:
+    name: Feature Matrix (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep this as an explicit curated list rather than a Cartesian product.
+        # The crates need different commands, feature sets, and one row needs a
+        # wasm target, so include-rows stay clearer than generate-and-exclude.
+        include:
+          - name: primitives std
+            package: templar-primitives
+            cargo_command: test
+            features: std
+
+          - name: primitives serde
+            package: templar-primitives
+            cargo_command: check
+            features: serde,std
+
+          - name: primitives borsh
+            package: templar-primitives
+            cargo_command: check
+            features: borsh,std
+
+          - name: primitives schemars
+            package: templar-primitives
+            cargo_command: check
+            features: schemars,std
+
+          - name: primitives near
+            package: templar-primitives
+            cargo_command: check
+            features: near
+            target: wasm32-unknown-unknown
+
+          - name: primitives redstone
+            package: templar-primitives
+            cargo_command: check
+            features: redstone,std
+
+          - name: primitives full-serialization
+            package: templar-primitives
+            cargo_command: check
+            features: borsh,serde,schemars,std
+
+          - name: proxy-oracle-kernel std
+            package: templar-proxy-oracle-kernel
+            cargo_command: test
+            features: std
+
+          - name: proxy-oracle-kernel borsh
+            package: templar-proxy-oracle-kernel
+            cargo_command: check
+            features: borsh,std
+
+          - name: proxy-oracle-kernel serde
+            package: templar-proxy-oracle-kernel
+            cargo_command: check
+            features: serde,std
+
+          - name: proxy-oracle-kernel schemars
+            package: templar-proxy-oracle-kernel
+            cargo_command: check
+            features: schemars,std
+
+          - name: proxy-oracle-kernel full-feature-set
+            package: templar-proxy-oracle-kernel
+            cargo_command: test
+            features: borsh,serde,schemars,std
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust
+
+      - name: Run feature matrix command
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          command=(
+            cargo
+            ${{ matrix.cargo_command }}
+            -p
+            ${{ matrix.package }}
+            --no-default-features
+            --features
+            "${{ matrix.features }}"
+          )
+
+          if [ -n "$MATRIX_TARGET" ]; then
+            command+=(--target "$MATRIX_TARGET")
+          fi
+
+          "${command[@]}"
+
   tests:
     name: Tests
     timeout-minutes: 40
