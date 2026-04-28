@@ -105,6 +105,8 @@ fn postcard_feature_preserves_human_readable_fees_spec_shape() {
     assert!(json["performance"].get("fee_wad").is_some());
     assert!(json["performance"].get("recipient").is_some());
     assert!(json.get("management").is_some());
+    assert!(json["management"].get("fee_wad").is_some());
+    assert!(json["management"].get("recipient").is_some());
     assert!(json.get("max_total_assets_growth_rate").is_some());
 }
 

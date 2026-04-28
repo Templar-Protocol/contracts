@@ -95,7 +95,7 @@ deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter depl
 # in the local toolchain (for example missing wasm32v1-none support), fall back
 # to `stellar contract optimize` on the prebuilt wasm32-unknown-unknown artifact.
 _optimize-wasm package wasm_path:
-	@if stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
+	@if RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
 		:; \
 	else \
 		stellar contract optimize --wasm "{{wasm_path}}" >/dev/null 2>&1; \
@@ -138,6 +138,7 @@ check-4626-proxy:
 	@echo "Checking Soroban ERC-4626 proxy crate..."
 	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
 		--manifest-path "{{root}}/Cargo.toml" \
+		--target wasm32-unknown-unknown \
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
 
@@ -170,7 +171,7 @@ wasm-analyze rows="250" lines="120":
 	@if [ -d "/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib" ]; then \
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \
 	fi; \
-	if stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
+	if RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
 		:; \
 	else \
 		stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null 2>&1; \

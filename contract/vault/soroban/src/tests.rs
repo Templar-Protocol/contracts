@@ -292,7 +292,7 @@ mod contract_tests {
     use crate::storage::{SorobanStorage, Storage};
     use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
     use alloc::collections::BTreeMap;
-    use alloc::string::String as AllocString;
+    use alloc::string::{String as AllocString, ToString};
     use alloc::vec;
     use alloc::vec::Vec;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
@@ -477,6 +477,28 @@ mod contract_tests {
 
         assert_eq!(derived, templar_vault_kernel::Address(expected));
         assert_ne!(derived, templar_vault_kernel::Address(raw_hash));
+    }
+
+    #[test]
+    fn address_from_alloc_string_rejects_invalid_strkey() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        let invalid = AllocString::from("not-a-stellar-address");
+        let valid = SdkAddress::generate(&env).to_string().to_string();
+        let mut bad_checksum = valid.clone();
+        bad_checksum.pop();
+        bad_checksum.push(if valid.ends_with('A') { 'B' } else { 'A' });
+
+        assert!(address_from_alloc_string(&env, &valid).is_ok());
+        assert_eq!(
+            address_from_alloc_string(&env, &invalid),
+            Err(crate::error::ContractError::InvalidInput)
+        );
+        assert_eq!(
+            address_from_alloc_string(&env, &bad_checksum),
+            Err(crate::error::ContractError::InvalidInput)
+        );
     }
 
     #[test]
@@ -1718,6 +1740,22 @@ mod effects_tests {
 
         let events = env.events().all().filter_by_contract(&contract_id);
         assert_eq!(events.events().len(), 1);
+    }
+
+    #[test]
+    fn kernel_event_payload_starts_with_codec_version_then_event_tag() {
+        use crate::effects::{encode_kernel_event, KERNEL_EVENT_CODEC_VERSION};
+        use templar_vault_kernel::effects::KernelEvent;
+
+        let payload = encode_kernel_event(&KernelEvent::DepositProcessed {
+            owner: templar_vault_kernel::Address([1u8; 32]),
+            receiver: templar_vault_kernel::Address([2u8; 32]),
+            assets_in: 3,
+            shares_out: 4,
+        });
+
+        assert_eq!(payload[0], KERNEL_EVENT_CODEC_VERSION);
+        assert_eq!(payload[1], 10);
     }
 }
 

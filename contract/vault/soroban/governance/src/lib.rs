@@ -778,13 +778,20 @@ fn decide_submission(
                 }
             }
         }
-        GovernanceAction::SetGroupMember(_, cap_group_id) => {
+        GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            let current: Option<SdkString> = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentCapGroupMembership(*market_id));
             let proposed = if cap_group_id.is_empty() {
                 None
             } else {
                 Some(cap_group_id)
             };
-            match TimelockDecision::from_membership_assignment_change::<SdkString>(None, proposed) {
+            match TimelockDecision::from_membership_assignment_change::<SdkString>(
+                current.as_ref(),
+                proposed,
+            ) {
                 Ok(decision) => Ok(decision),
                 Err(MembershipChangeError::NoChange) => Err(GovernanceError::NoChange),
             }
@@ -1053,9 +1060,17 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
         GovernanceAction::SetCap(_, _)
         | GovernanceAction::RemoveMarket(_)
         | GovernanceAction::SetGroupCap(_, _)
-        | GovernanceAction::SetGroupRelCap(_, _)
-        | GovernanceAction::SetGroupMember(_, _) => {
+        | GovernanceAction::SetGroupRelCap(_, _) => {
             execute_vault_governance_action(env, &vault, action)?
+        }
+        GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            let key = DataKey::CurrentCapGroupMembership(*market_id);
+            if cap_group_id.is_empty() {
+                env.storage().instance().remove(&key);
+            } else {
+                env.storage().instance().set(&key, cap_group_id);
+            }
         }
         GovernanceAction::SetSkimRecipient(recipient) => {
             execute_vault_governance_action(env, &vault, action)?;

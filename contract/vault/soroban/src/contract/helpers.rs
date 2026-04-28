@@ -23,7 +23,72 @@ pub(crate) fn address_from_alloc_string(
     env: &Env,
     value: &AllocString,
 ) -> Result<SdkAddress, ContractError> {
+    validate_address_strkey(value.as_bytes())?;
     Ok(SdkAddress::from_str(env, value))
+}
+
+fn validate_address_strkey(bytes: &[u8]) -> Result<(), ContractError> {
+    const STRKEY_LEN: usize = 56;
+    const BINARY_LEN: usize = 35;
+    const ACCOUNT_VERSION: u8 = 6 << 3;
+    const CONTRACT_VERSION: u8 = 2 << 3;
+
+    if bytes.len() != STRKEY_LEN {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let mut out = [0u8; BINARY_LEN];
+    let mut buffer = 0u16;
+    let mut bits = 0u8;
+    let mut cursor = 0usize;
+    for byte in bytes {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => return Err(ContractError::InvalidInput),
+        };
+        buffer = (buffer << 5) | u16::from(value);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            if cursor >= BINARY_LEN {
+                return Err(ContractError::InvalidInput);
+            }
+            out[cursor] = (buffer >> bits) as u8;
+            cursor += 1;
+            buffer &= (1u16 << bits) - 1;
+        }
+    }
+
+    if cursor != BINARY_LEN
+        || bits != 0
+        || (out[0] != ACCOUNT_VERSION && out[0] != CONTRACT_VERSION)
+    {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let expected = u16::from_le_bytes([out[BINARY_LEN - 2], out[BINARY_LEN - 1]]);
+    let actual = crc16_xmodem(&out[..BINARY_LEN - 2]);
+    if expected != actual {
+        return Err(ContractError::InvalidInput);
+    }
+
+    Ok(())
+}
+
+fn crc16_xmodem(bytes: &[u8]) -> u16 {
+    let mut crc = 0u16;
+    for byte in bytes {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 == 0 {
+                crc <<= 1;
+            } else {
+                crc = (crc << 1) ^ 0x1021;
+            }
+        }
+    }
+    crc
 }
 
 pub(crate) fn addresses_from_alloc_strings(

@@ -930,6 +930,69 @@ fn empty_group_member_string_is_treated_as_membership_removal() {
 }
 
 #[test]
+fn cap_group_membership_clear_uses_mirrored_current_membership() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let group = SdkString::from_str(&env, "senior");
+    let empty = SdkString::from_str(&env, "");
+
+    let assign_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            7,
+            group,
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), assign_id).unwrap()
+    });
+
+    let clear_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            7,
+            empty.clone(),
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 112,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), clear_id).unwrap()
+    });
+
+    let duplicate_clear = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(env.clone(), admin, 7, empty)
+    });
+    assert_eq!(duplicate_clear, Err(GovernanceError::NoChange));
+}
+
+#[test]
 fn governance_change_is_timelocked_and_routes_to_vault() {
     let env = Env::default();
     env.mock_all_auths();
