@@ -153,6 +153,43 @@ fn execute_withdraw_idle_starts_withdrawal() {
 }
 
 #[test]
+fn execute_withdraw_insufficient_idle_leaves_queue_and_idle() {
+    let mut state = balanced_state();
+    let config = test_config();
+    let owner = addr(3);
+    let receiver = addr(4);
+
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            600,
+            600,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::ExecuteWithdrawInsufficientIdleAssets
+        ))
+    ));
+}
+
+#[test]
 fn execute_withdraw_withdrawing_advances_index() {
     let mut state = idle_state(1_000, 1_000);
     let config = test_config();
@@ -1051,6 +1088,55 @@ fn finish_allocating_with_pending_withdrawal() {
 
     // Should transition to Withdrawing instead of Idle
     assert!(result.state.op_state.as_withdrawing().is_some());
+}
+
+#[test]
+fn finish_allocating_insufficient_idle_does_not_chain_withdrawal() {
+    use crate::state::op_state::AllocatingState;
+
+    let mut state = balanced_state();
+    let owner = addr(10);
+    let receiver = addr(11);
+    let config = test_config();
+
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            600,
+            600,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 5,
+        index: 1,
+        remaining: 0,
+        plan: vec![alloc_step(1, 500)],
+    });
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::FinishAllocating {
+            op_id: 5,
+            now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    let (_head_id, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdrawal should remain queued");
+    assert_eq!(head.expected_assets, 600);
 }
 
 #[test]

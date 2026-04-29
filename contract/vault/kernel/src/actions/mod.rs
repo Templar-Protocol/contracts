@@ -1222,6 +1222,7 @@ fn handle_execute_withdraw(
             }
         }
         WithdrawalQueueOutcome::Ready(request) => {
+            let request = require_fully_funded_withdrawal_request(&state, request)?;
             let transition = start_withdrawal(mem::take(&mut state.op_state), request);
             let mut result = apply_transition_result(state, transition)?;
             skipped_effects.append(&mut result.effects);
@@ -1289,7 +1290,9 @@ fn handle_finish_allocating(
             now_ns,
             &mut skipped_effects,
         )? {
-            WithdrawalQueueOutcome::Ready(request) => Some(request),
+            WithdrawalQueueOutcome::Ready(request) => {
+                (state.idle_assets >= request.amount).then_some(request)
+            }
             WithdrawalQueueOutcome::None | WithdrawalQueueOutcome::CoolingDown { .. } => None,
         }
     };
@@ -1734,6 +1737,20 @@ fn is_globally_paused(config: &VaultConfig, restrictions: Option<&Restrictions>)
     config.paused
 }
 
+#[inline]
+fn require_fully_funded_withdrawal_request(
+    state: &VaultState,
+    request: WithdrawalRequest,
+) -> Result<WithdrawalRequest, KernelError> {
+    if state.idle_assets >= request.amount {
+        Ok(request)
+    } else {
+        Err(KernelError::from(
+            InvalidStateCode::ExecuteWithdrawInsufficientIdleAssets,
+        ))
+    }
+}
+
 mod planning {
     use super::*;
 
@@ -1771,15 +1788,12 @@ mod planning {
             ));
         }
 
-        let available_assets = state.idle_assets;
-        if available_assets < request_expected
-            && available_assets < crate::state::queue::MIN_WITHDRAWAL_ASSETS
-        {
+        if state.idle_assets < request_expected {
             return Ok(None);
         }
 
         let Some(settlement) =
-            compute_idle_settlement(request_escrow, request_expected, available_assets)
+            compute_idle_settlement(request_escrow, request_expected, state.idle_assets)
         else {
             return Ok(None);
         };

@@ -8,8 +8,10 @@
 //!
 //! - `total_assets` includes external (market-deployed) assets tracked by the kernel.
 //! - `withdraw` / `redeem` are **atomic from idle assets only**: they require the
-//!   vault to be in `Idle` state and sufficient `idle_assets`. For the general case
-//!   (assets deployed to markets), use `request_withdraw` + `execute_withdraw`.
+//!   vault to be in `Idle` state and sufficient `idle_assets`. They never enqueue
+//!   a withdrawal or free liquidity from adapters. For the general case (assets
+//!   deployed to markets), use `request_withdraw`; keeper/allocator progression
+//!   later calls `execute_withdraw` after enough liquidity has become idle.
 //! - Conversion math uses the kernel's `effective_totals` formula which includes
 //!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 

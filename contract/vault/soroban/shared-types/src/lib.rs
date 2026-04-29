@@ -229,6 +229,20 @@ pub enum VaultCommand {
         caller: String,
         markets: Vec<u32>,
     },
+    AtomicWithdraw {
+        owner: String,
+        receiver: String,
+        operator: String,
+        assets: i128,
+        max_shares_burned: i128,
+    },
+    AtomicRedeem {
+        owner: String,
+        receiver: String,
+        operator: String,
+        shares: i128,
+        min_assets_out: i128,
+    },
     ResyncIdleBalance,
     CancelMigration {
         caller: String,
@@ -335,6 +349,34 @@ impl VaultCommand {
                 push_string(&mut out, caller);
                 push_u32_vec(&mut out, markets);
             }
+            Self::AtomicWithdraw {
+                owner,
+                receiver,
+                operator,
+                assets,
+                max_shares_burned,
+            } => {
+                push_u8(&mut out, 5);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_string(&mut out, operator);
+                push_i128(&mut out, *assets);
+                push_i128(&mut out, *max_shares_burned);
+            }
+            Self::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+            } => {
+                push_u8(&mut out, 6);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_string(&mut out, operator);
+                push_i128(&mut out, *shares);
+                push_i128(&mut out, *min_assets_out);
+            }
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
                 push_u8(&mut out, 9);
@@ -376,6 +418,20 @@ impl VaultCommand {
             4 => Ok(Self::RefreshMarkets {
                 caller: read_string(bytes, &mut cursor)?,
                 markets: read_u32_vec(bytes, &mut cursor)?,
+            }),
+            5 => Ok(Self::AtomicWithdraw {
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                operator: read_string(bytes, &mut cursor)?,
+                assets: read_i128(bytes, &mut cursor)?,
+                max_shares_burned: read_i128(bytes, &mut cursor)?,
+            }),
+            6 => Ok(Self::AtomicRedeem {
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                operator: read_string(bytes, &mut cursor)?,
+                shares: read_i128(bytes, &mut cursor)?,
+                min_assets_out: read_i128(bytes, &mut cursor)?,
             }),
             8 => Ok(Self::ResyncIdleBalance),
             9 => Ok(Self::CancelMigration {
@@ -514,6 +570,20 @@ mod tests {
                 assets: 100,
                 min_shares_out: 1,
             },
+            VaultCommand::AtomicWithdraw {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                operator: String::from("operator"),
+                assets: 100,
+                max_shares_burned: 101,
+            },
+            VaultCommand::AtomicRedeem {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                operator: String::from("operator"),
+                shares: 100,
+                min_assets_out: 99,
+            },
             VaultCommand::ResyncIdleBalance,
             VaultCommand::CancelMigration {
                 caller: String::from("caller"),
@@ -525,6 +595,24 @@ mod tests {
             let decoded = VaultCommand::decode(&encoded).expect("decode vault command");
             assert_eq!(decoded, command);
         }
+    }
+
+    #[test]
+    fn vault_command_decode_rejects_trailing_bytes() {
+        let mut encoded = VaultCommand::AtomicWithdraw {
+            owner: String::from("owner"),
+            receiver: String::from("receiver"),
+            operator: String::from("operator"),
+            assets: 100,
+            max_shares_burned: 101,
+        }
+        .encode();
+        encoded.push(0xFF);
+
+        assert_eq!(
+            VaultCommand::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
     }
 
     #[test]

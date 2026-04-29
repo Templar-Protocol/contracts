@@ -669,7 +669,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn test_execute_withdraw_respects_min_withdrawal_assets() {
+    fn test_execute_withdraw_insufficient_idle_below_min_assets_errors() {
         let mut vault = create_test_vault();
         let allocator = templar_vault_kernel::Address([3u8; 32]);
         let owner = templar_vault_kernel::Address([1u8; 32]);
@@ -705,12 +705,13 @@ mod contract_tests {
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("insufficient idle should not start queued withdrawal");
+        assert_eq!(error, RuntimeError::KernelError);
 
-        assert_eq!(summary.assets_transferred, 0);
-        assert_eq!(summary.shares_burned, 0);
         let state = vault.state().unwrap();
-        assert!(state.op_state.is_withdrawing());
+        assert!(state.op_state.is_idle());
         let (head_id_after, head_after) = state
             .withdraw_queue
             .head()
@@ -723,14 +724,13 @@ mod contract_tests {
             state.total_assets,
             state.idle_assets.saturating_add(state.external_assets)
         );
-        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
-        assert_eq!(summary.shares_transferred, 0);
+        assert_eq!(state.total_shares, deposit_amount);
         assert_eq!(head_id, 0);
         assert_eq!(head_expected_before, deposit_amount);
     }
 
     #[test]
-    fn test_execute_withdraw_insufficient_idle_partially_settles() {
+    fn test_execute_withdraw_insufficient_idle_above_min_assets_errors() {
         let mut vault = create_test_vault();
         let allocator = templar_vault_kernel::Address([3u8; 32]);
         let owner = templar_vault_kernel::Address([1u8; 32]);
@@ -750,7 +750,7 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
-        let (_head_id, head_escrow_before, head_expected_before) = {
+        let (head_id, head_escrow_before, head_expected_before) = {
             let (id, head) = vault
                 .state()
                 .unwrap()
@@ -766,26 +766,26 @@ mod contract_tests {
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("insufficient idle should never partially settle");
+        assert_eq!(error, RuntimeError::KernelError);
 
-        assert_eq!(
-            summary.assets_transferred,
-            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
-        );
-        assert_eq!(
-            summary.shares_burned,
-            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
-        );
         let state = vault.state().unwrap();
         assert!(state.op_state.is_idle());
-        assert!(state.withdraw_queue.is_empty());
-        assert_eq!(state.idle_assets, 0);
-        assert_eq!(state.total_assets, state.external_assets);
-        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
+        let (head_id_after, head_after) = state
+            .withdraw_queue
+            .head()
+            .expect("withdrawal should remain queued");
+        assert_eq!(head_id_after, head_id);
+        assert_eq!(head_after.escrow_shares, head_escrow_before);
+        assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_add(1));
         assert_eq!(
-            summary.shares_transferred,
-            head_escrow_before - summary.shares_burned
+            state.total_assets,
+            state.idle_assets.saturating_add(state.external_assets)
         );
+        assert_eq!(state.total_shares, deposit_amount);
         assert_eq!(head_expected_before, deposit_amount);
     }
 
@@ -1295,6 +1295,179 @@ mod contract_tests {
             (&owner, &operator).into_val(&env),
         );
         assert!(remaining_allowance < 1_000);
+    }
+
+    #[test]
+    fn test_atomic_command_withdraw_and_redeem_use_idle_assets() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator,
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_500,
+                    idle_assets: 1_500,
+                    ..Default::default()
+                })
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &1_500);
+        share_admin_client.mint(&owner, &1_500);
+
+        let burned = env
+            .as_contract(&contract_id, || {
+                execute_command(
+                    &env,
+                    &VaultCommand::AtomicWithdraw {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        operator: sdk_text(&owner),
+                        assets: 500,
+                        max_shares_burned: i128::MAX,
+                    },
+                )
+            })
+            .expect("atomic withdraw command should execute");
+        assert_eq!(burned, VaultCommandResult::I128(500));
+
+        let redeemed = env
+            .as_contract(&contract_id, || {
+                execute_command(
+                    &env,
+                    &VaultCommand::AtomicRedeem {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        operator: sdk_text(&owner),
+                        shares: 250,
+                        min_assets_out: 0,
+                    },
+                )
+            })
+            .expect("atomic redeem command should execute");
+        assert_eq!(redeemed, VaultCommandResult::I128(250));
+
+        let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        assert_eq!(asset_client.balance(&receiver), 750);
+        assert_eq!(asset_client.balance(&contract_id), 750);
+        assert_eq!(share_client.balance(&owner), 750);
+    }
+
+    #[test]
+    fn test_atomic_commands_reject_external_assets_as_liquidity() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator,
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_500,
+                    idle_assets: 500,
+                    external_assets: 1_000,
+                    ..Default::default()
+                })
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &500);
+        share_admin_client.mint(&owner, &1_500);
+
+        let withdraw = env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::AtomicWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&receiver),
+                    operator: sdk_text(&owner),
+                    assets: 600,
+                    max_shares_burned: i128::MAX,
+                },
+            )
+        });
+        assert_eq!(withdraw, Err(crate::error::ContractError::KernelError));
+
+        let redeem = env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::AtomicRedeem {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&receiver),
+                    operator: sdk_text(&owner),
+                    shares: 600,
+                    min_assets_out: 0,
+                },
+            )
+        });
+        assert_eq!(redeem, Err(crate::error::ContractError::KernelError));
+
+        let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        assert_eq!(asset_client.balance(&receiver), 0);
+        assert_eq!(asset_client.balance(&contract_id), 500);
+        assert_eq!(share_client.balance(&owner), 1_500);
     }
 
     #[test]

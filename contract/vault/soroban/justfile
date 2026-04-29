@@ -8,7 +8,7 @@ set dotenv-load := false
 #   1. just setup              # Build, configure network, create & fund identity
 #   2. just deploy-all         # Deploy vault + share token + governance + test token, initialize
 #   3. just demo-deposit       # Deposit test tokens
-#   4. just demo-withdraw      # Request and execute withdrawal
+#   4. just demo-withdraw      # Atomic idle withdrawal, or request async withdrawal
 #
 # WITH BLEND INTEGRATION (for yield):
 #   1. just setup
@@ -709,7 +709,7 @@ demo-deposit:
 # WITHDRAWAL OPERATIONS
 # =============================================================================
 
-# Request a withdrawal (queues for execution).
+# Request an async withdrawal (queues shares; does not pull adapter liquidity itself).
 # Usage: just request-withdraw <owner> <receiver> <shares> [min_assets_out]
 request-withdraw owner receiver shares min_assets_out="0":
 	@echo "Requesting withdrawal of {{shares}} shares..."
@@ -726,14 +726,15 @@ request-withdraw-self shares min_assets_out="0":
 	echo "Requesting withdrawal of {{shares}} shares to self ($addr)..."; \
 	just request-withdraw "$addr" "$addr" "{{shares}}" "{{min_assets_out}}"
 
-# Execute the next pending withdrawal.
+# Execute the next pending withdrawal. This is keeper/allocator progression and
+# succeeds only when the cooled-down queue head is fully backed by idle assets.
 execute-withdraw:
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	echo "Executing pending withdrawal..."; \
 	just invoke execute_withdraw --caller "$addr"
 	@echo "✓ Withdrawal executed"
 
-# Demo: Request withdrawal of 500 shares and execute.
+# Demo: Request withdrawal of 500 shares and execute if it is already idle-funded.
 demo-withdraw:
 	@echo "=== WITHDRAWAL DEMO ==="
 	@echo "Step 1: Request withdrawal"
@@ -744,7 +745,7 @@ demo-withdraw:
 	@echo ""
 	@just vault-state
 
-# Atomic withdraw (immediate, requires idle vault with sufficient assets).
+# Atomic withdraw (ERC-4626-style immediate exit; idle assets only, never queues).
 # Usage: just withdraw <assets> <receiver> <owner>
 withdraw assets receiver owner:
 	@echo "Atomic withdrawal of {{assets}} assets..."
