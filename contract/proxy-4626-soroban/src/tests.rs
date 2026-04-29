@@ -1,7 +1,9 @@
 use alloc::{format, string::String as AllocString};
 
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Vec,
+};
 use templar_soroban_shared_types::{
     VaultCommand as WireVaultCommand, VaultCommandResult as WireVaultCommandResult,
 };
@@ -130,6 +132,32 @@ impl MockVaultContract {
             (Vec::new(&env), Vec::new(&env)),
             preview.into_preview(),
         )
+    }
+}
+
+#[contracterror]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum MockVaultError {
+    Unauthorized = 1,
+}
+
+#[contract]
+struct MockFailingVaultContract;
+
+#[contractimpl]
+impl MockFailingVaultContract {
+    pub fn execute(_env: Env, _payload: Bytes) -> Result<Bytes, MockVaultError> {
+        Err(MockVaultError::Unauthorized)
+    }
+
+    pub fn proxy_view(
+        _env: Env,
+        _owner: Address,
+        _assets: i128,
+        _shares: i128,
+    ) -> Result<ProxyViewResponse, MockVaultError> {
+        Err(MockVaultError::Unauthorized)
     }
 }
 
@@ -270,6 +298,105 @@ fn test_initialize_already_initialized() {
     let result = fixture.initialize();
 
     assert_eq!(result, Err(ContractError::AlreadyInitialized));
+}
+
+#[test]
+fn test_rejects_negative_amounts_before_vault_call() {
+    let fixture = Fixture::new();
+    let caller = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.initialize().expect("initialize succeeds");
+
+    let deposit = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::deposit(fixture.env.clone(), caller.clone(), -1, receiver.clone())
+    });
+    let mint = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::mint(fixture.env.clone(), caller.clone(), -1, receiver.clone())
+    });
+    let withdraw = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::withdraw(
+            fixture.env.clone(),
+            caller.clone(),
+            -1,
+            receiver.clone(),
+            owner.clone(),
+        )
+    });
+    let redeem = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::redeem(
+            fixture.env.clone(),
+            caller.clone(),
+            -1,
+            receiver.clone(),
+            owner.clone(),
+        )
+    });
+    let request = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::request_withdraw(
+            fixture.env.clone(),
+            owner.clone(),
+            receiver,
+            1,
+            -1,
+        )
+    });
+
+    assert_eq!(deposit, Err(ContractError::InvalidInput));
+    assert_eq!(mint, Err(ContractError::InvalidInput));
+    assert_eq!(withdraw, Err(ContractError::InvalidInput));
+    assert_eq!(redeem, Err(ContractError::InvalidInput));
+    assert_eq!(request, Err(ContractError::InvalidInput));
+    assert_eq!(fixture.recorded_payloads().len(), 0);
+}
+
+#[test]
+fn test_vault_error_codes_do_not_decode_as_proxy_errors() {
+    let fixture = Fixture::new();
+    let failing_vault = fixture.env.register(MockFailingVaultContract, ());
+    let caller = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::initialize(
+            fixture.env.clone(),
+            failing_vault,
+            fixture.asset.clone(),
+            fixture.share.clone(),
+        )
+        .expect("initialize succeeds");
+    });
+    fixture.env.mock_all_auths();
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::deposit(fixture.env.clone(), caller, 100, receiver)
+    });
+
+    assert_eq!(result, Err(ContractError::VaultError));
+}
+
+#[test]
+fn test_withdraw_rejects_negative_preview_shares_before_allowance() {
+    let fixture = Fixture::new();
+    let caller = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+    fixture.set_preview(MockPreviewConfig {
+        preview_withdraw_shares: -1,
+        ..Default::default()
+    });
+    fixture.set_allowance(&owner, &fixture.proxy, 0);
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::withdraw(fixture.env.clone(), caller, 111, receiver, owner)
+    });
+
+    assert_eq!(result, Err(ContractError::InvalidInput));
+    assert_eq!(fixture.recorded_payloads().len(), 0);
 }
 
 #[test]
@@ -451,7 +578,7 @@ fn test_withdraw_queued_flow() {
 }
 
 #[test]
-fn test_withdraw_emits_event() {
+fn test_withdraw_emits_redeem_request_event() {
     let fixture = Fixture::new();
     let owner = Address::generate(&fixture.env);
     let receiver = Address::generate(&fixture.env);
@@ -481,8 +608,8 @@ fn test_withdraw_emits_event() {
         .filter_by_contract(&fixture.proxy);
     assert_eq!(events.events().len(), 1);
     let rendered = fixture.proxy_events_debug();
-    assert!(rendered.contains("Withdraw"));
-    assert!(rendered.contains("222"));
+    assert!(rendered.contains("RedeemRequest"));
+    assert!(rendered.contains("42"));
     assert!(rendered.contains("61"));
 }
 
