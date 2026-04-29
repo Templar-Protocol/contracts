@@ -20,12 +20,9 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
-templar-gateway-oracle-pyth.workspace = true
-templar-gateway-oracle-redstone.workspace = true
 templar-gateway-types.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true
-url.workspace = true
 
 [lints]
 workspace = true

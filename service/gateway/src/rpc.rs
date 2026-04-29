@@ -3,7 +3,10 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
     RpcModule,
 };
-use templar_gateway_core::{DispatchRead, GatewayContext, GatewayError, PlanWrite};
+use templar_gateway_core::{
+    DispatchRead, GatewayError, HasNearClient, PlanWrite, ProvidesPythSource,
+    ProvidesRedStoneSource,
+};
 use templar_gateway_types::{
     account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
     proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
@@ -19,26 +22,25 @@ fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(GATEWAY_SERVER_ERROR_CODE, error.to_string(), None::<()>)
 }
 
-struct GatewayRpcBuilder {
-    module: RpcModule<GatewayService>,
+struct GatewayRpcBuilder<ContextType: Clone + Send + std::marker::Unpin + 'static> {
+    module: RpcModule<GatewayService<ContextType>>,
 }
 
-impl GatewayRpcBuilder {
-    fn new(service: GatewayService) -> Self {
+impl<ContextType> GatewayRpcBuilder<ContextType>
+where
+    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+{
+    fn new(service: GatewayService<ContextType>) -> Self {
         Self {
             module: RpcModule::new(service),
         }
     }
 
-    fn finish(self) -> RpcModule<GatewayService> {
+    fn finish(self) -> RpcModule<GatewayService<ContextType>> {
         self.module
     }
 
-    fn register_write<Spec: PlanWrite<GatewayContext>>(&mut self) -> Result<(), RegisterMethodError>
-    where
-        Spec::Input: Clone + serde::Serialize,
-        Spec::Output: serde::de::DeserializeOwned,
-    {
+    fn register_write<Spec: PlanWrite<ContextType>>(&mut self) -> Result<(), RegisterMethodError> {
         self.module.register_async_method(
             Spec::RPC_METHOD,
             move |params, service, _| async move {
@@ -53,7 +55,7 @@ impl GatewayRpcBuilder {
         Ok(())
     }
 
-    fn register_read<Spec: DispatchRead<GatewayContext>>(
+    fn register_read<Spec: DispatchRead<ContextType>>(
         &mut self,
     ) -> Result<(), RegisterMethodError> {
         self.module.register_async_method(
@@ -87,7 +89,12 @@ impl GatewayRpcBuilder {
 }
 
 #[allow(clippy::too_many_lines)]
-fn register_gateway_methods(builder: &mut GatewayRpcBuilder) -> Result<(), RegisterMethodError> {
+fn register_gateway_methods<ContextType>(
+    builder: &mut GatewayRpcBuilder<ContextType>,
+) -> Result<(), RegisterMethodError>
+where
+    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+{
     builder.register_read::<account::Get>()?;
     builder.register_write::<account::Delete>()?;
     builder.register_read::<contract::ViewFunction>()?;
@@ -195,9 +202,12 @@ fn register_gateway_methods(builder: &mut GatewayRpcBuilder) -> Result<(), Regis
     Ok(())
 }
 
-pub fn attach_gateway(
-    service: GatewayService,
-) -> Result<RpcModule<GatewayService>, RegisterMethodError> {
+pub fn attach_gateway<ContextType>(
+    service: GatewayService<ContextType>,
+) -> Result<RpcModule<GatewayService<ContextType>>, RegisterMethodError>
+where
+    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+{
     let mut builder = GatewayRpcBuilder::new(service);
     register_gateway_methods(&mut builder)?;
     Ok(builder.finish())

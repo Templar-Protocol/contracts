@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::Result;
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
@@ -13,7 +13,6 @@ use templar_gateway_types::{
     tx, ContractMethodName, ManagedAccountId, NearGas,
 };
 use test_utils::FtController;
-use url::Url;
 
 #[tokio::test]
 async fn core_can_be_used_directly_without_runtime() -> Result<()> {
@@ -40,11 +39,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     )
     .await?;
 
-    let context = GatewayContext::new(
-        network.clone(),
-        Url::parse("https://hermes-beta.pyth.network")?,
-        Path::new("node"),
-    )?;
+    let context = GatewayContext::new(network.clone())?;
 
     let account = <account::Get as DispatchRead<GatewayContext>>::dispatch(
         ReadRequest {

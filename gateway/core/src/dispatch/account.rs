@@ -4,17 +4,18 @@ use templar_gateway_types::account;
 
 use crate::{
     operation::{OperationPlan, PlannedTransaction},
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
-impl DispatchRead<GatewayContext> for account::Get {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for account::Get {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            let account = ctx.near().account().get(request.params.account_id).await?;
+            let account = ctx
+                .near_client()
+                .account()
+                .get(request.params.account_id)
+                .await?;
 
             let (code_hash, global_contract_hash, global_contract_account_id) =
                 match account.contract_state {
@@ -50,23 +51,17 @@ impl DispatchRead<GatewayContext> for account::Get {
     }
 }
 
-impl PlanWrite<GatewayContext> for account::Delete {
-    fn plan(
-        request: Self::Input,
-        _context: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C> PlanWrite<C> for account::Delete {
+    fn plan(request: Self::Input, _context: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            Ok(OperationPlan {
-                steps: vec![PlannedTransaction {
-                    signer_account_id: request.signer_account_id.clone(),
-                    wait_until:
-                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-                    receiver_id: request.signer_account_id.0,
-                    actions: vec![Action::DeleteAccount(DeleteAccountAction {
-                        beneficiary_id: request.body.beneficiary_id,
-                    })],
-                }],
-            })
+            Ok(OperationPlan::single(PlannedTransaction {
+                signer_account_id: request.signer_account_id.clone(),
+                wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
+                receiver_id: request.signer_account_id.0,
+                actions: vec![Action::DeleteAccount(DeleteAccountAction {
+                    beneficiary_id: request.body.beneficiary_id,
+                })],
+            }))
         })
     }
 }

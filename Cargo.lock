@@ -13299,14 +13299,11 @@ dependencies = [
  "serde_json",
  "sqlx",
  "templar-common",
- "templar-gateway-oracle-pyth",
- "templar-gateway-oracle-redstone",
  "templar-gateway-types",
  "templar-universal-account",
  "test-utils",
  "thiserror 2.0.18",
  "tokio",
- "url",
 ]
 
 [[package]]
@@ -13345,6 +13342,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-gateway-oracle-updates"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "near-account-id",
+ "near-sdk",
+ "templar-common",
+ "templar-gateway-core",
+ "templar-gateway-oracle-pyth",
+ "templar-gateway-oracle-redstone",
+ "templar-gateway-types",
+ "url",
+]
+
+[[package]]
 name = "templar-gateway-runtime"
 version = "0.1.0"
 dependencies = [
@@ -13380,6 +13393,7 @@ dependencies = [
  "sqlx",
  "templar-common",
  "templar-gateway-core",
+ "templar-gateway-oracle-updates",
  "templar-gateway-runtime",
  "templar-gateway-store",
  "templar-gateway-testing",

@@ -2,7 +2,6 @@ use std::thread::JoinHandle;
 
 use crate::ReadActor;
 use actix::Addr;
-use templar_gateway_core::GatewayContext;
 
 pub struct GatewayRuntime {
     system: actix::System,
@@ -16,7 +15,12 @@ impl GatewayRuntime {
     }
 }
 
-pub fn spawn_runtime(context: GatewayContext) -> (GatewayRuntime, Addr<ReadActor>) {
+pub fn spawn_runtime<ContextType>(
+    context: ContextType,
+) -> (GatewayRuntime, Addr<ReadActor<ContextType>>)
+where
+    ContextType: Send + Clone + std::marker::Unpin + 'static,
+{
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let runner = actix::System::new();

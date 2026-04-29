@@ -1,39 +1,33 @@
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use near_api::NetworkConfig;
 use templar_gateway_types::ManagedAccountId;
-use url::Url;
 
-use crate::{
-    client::tx::TxClient, GatewayResult, NearClient, PythHttpClient, RedStoneBridgeClient,
-};
+use crate::{client::tx::TxClient, GatewayResult, HasNearClient, NearClient};
+
+#[derive(Debug, Clone)]
+pub struct GatewayContextBuilder<C> {
+    context: C,
+}
 
 #[derive(Debug, Clone)]
 pub struct GatewayContext {
     near: NearClient,
-    pyth_http: PythHttpClient,
-    redstone_bridge: RedStoneBridgeClient,
 }
 
 impl GatewayContext {
-    pub fn new(
-        network: NetworkConfig,
-        pyth_hermes_url: Url,
-        node_path: &Path,
-    ) -> GatewayResult<Self> {
-        let near = NearClient::new(network);
-        let pyth_http = PythHttpClient::new(pyth_hermes_url);
-        let redstone_bridge = RedStoneBridgeClient::new(node_path)?;
-
+    pub fn new(network: NetworkConfig) -> GatewayResult<Self> {
         Ok(Self {
-            near,
-            pyth_http,
-            redstone_bridge,
+            near: NearClient::new(network),
         })
     }
 
-    pub fn near(&self) -> &NearClient {
-        &self.near
+    pub fn builder(network: NetworkConfig) -> GatewayContextBuilder<Self> {
+        GatewayContextBuilder::new(Self::from_near_client(NearClient::new(network)))
+    }
+
+    pub fn from_near_client(near: NearClient) -> Self {
+        Self { near }
     }
 
     pub fn network(&self) -> &NetworkConfig {
@@ -47,12 +41,26 @@ impl GatewayContext {
     ) -> TxClient<'_> {
         self.near.tx(signer_account_id, signer)
     }
+}
 
-    pub fn pyth_source(&self) -> &PythHttpClient {
-        &self.pyth_http
+impl<C> GatewayContextBuilder<C> {
+    pub fn new(context: C) -> Self {
+        Self { context }
     }
 
-    pub fn redstone_source(&self) -> &RedStoneBridgeClient {
-        &self.redstone_bridge
+    pub fn map<T>(self, f: impl FnOnce(C) -> T) -> GatewayContextBuilder<T> {
+        GatewayContextBuilder {
+            context: f(self.context),
+        }
+    }
+
+    pub fn build(self) -> C {
+        self.context
+    }
+}
+
+impl HasNearClient for GatewayContext {
+    fn near_client(&self) -> &NearClient {
+        &self.near
     }
 }

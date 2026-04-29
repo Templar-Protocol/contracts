@@ -8,6 +8,7 @@ use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use near_api::NetworkConfig;
 use templar_gateway_core::GatewayContext;
+use templar_gateway_oracle_updates::GatewayContextBuilderOracleExt;
 use tokio::signal;
 
 use crate::config::Config;
@@ -26,12 +27,12 @@ async fn main() {
         .build_store()
         .await
         .expect("failed to initialize gateway operation store");
-    let context = GatewayContext::new(
-        NetworkConfig::from_rpc_url("gateway", config.near_rpc_url),
-        config.pyth_hermes_url,
-        &config.redstone_node_path,
-    )
-    .expect("failed to initialize gateway context");
+    let context =
+        GatewayContext::builder(NetworkConfig::from_rpc_url("gateway", config.near_rpc_url))
+            .with_pyth_source(config.pyth_hermes_url)
+            .with_redstone_source(&config.redstone_node_path)
+            .expect("failed to initialize gateway update sources")
+            .build();
     let service = GatewayService::spawn(context, signers, store);
 
     let server = ServerBuilder::default()

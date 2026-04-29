@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
-use templar_gateway_core::{DispatchRead, GatewayContext, GatewayError, GatewayResult};
+use templar_gateway_core::{DispatchRead, GatewayError, GatewayResult};
 use templar_gateway_types::MethodSpec;
 use tokio::sync::Semaphore;
 
@@ -22,27 +22,31 @@ pub fn map_mailbox_error(error: actix::MailboxError, actor_name: &'static str) -
 }
 
 #[derive(Clone)]
-pub struct ReadActor {
-    context: GatewayContext,
+pub struct ReadActor<ContextType> {
+    context: ContextType,
     semaphore: Arc<Semaphore>,
 }
 
-impl ReadActor {
-    fn new(context: GatewayContext) -> Self {
+impl<ContextType> ReadActor<ContextType>
+where
+    ContextType: Clone + Send + std::marker::Unpin + 'static,
+{
+    fn new(context: ContextType) -> Self {
         Self {
             context,
             semaphore: Arc::new(Semaphore::new(READ_ACTOR_MAX_CONCURRENCY)),
         }
     }
 
-    pub fn spawn(arbiter: &ArbiterHandle, context: GatewayContext) -> Addr<Self> {
+    pub fn spawn(arbiter: &ArbiterHandle, context: ContextType) -> Addr<Self> {
         Self::start_in_arbiter(arbiter, move |_ctx| Self::new(context))
     }
 }
 
-impl<Spec> Handler<RpcMessage<Spec>> for ReadActor
+impl<Spec, ContextType> Handler<RpcMessage<Spec>> for ReadActor<ContextType>
 where
-    Spec: DispatchRead<GatewayContext>,
+    Spec: DispatchRead<ContextType>,
+    ContextType: Clone + Send + std::marker::Unpin + 'static,
 {
     type Result = ResponseFuture<GatewayResult<Spec::Output>>;
 
@@ -60,7 +64,10 @@ where
     }
 }
 
-impl Actor for ReadActor {
+impl<ContextType> Actor for ReadActor<ContextType>
+where
+    ContextType: Clone + Send + std::marker::Unpin + 'static,
+{
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {

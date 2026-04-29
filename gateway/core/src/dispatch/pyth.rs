@@ -10,9 +10,8 @@ use crate::{
         },
         ContractWriteOptions,
     },
-    dispatch::single_transaction_plan,
     operation::OperationPlan,
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
@@ -32,16 +31,13 @@ fn prices_in_request_order(
         .collect()
 }
 
-impl DispatchRead<GatewayContext> for pyth::ListEmaPricesNoOlderThan {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for pyth::ListEmaPricesNoOlderThan {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let price_ids = params.price_ids;
             let response = ctx
-                .near()
+                .near_client()
                 .pyth_oracle(params.oracle_id)
                 .list_ema_prices_no_older_than(ListEmaPricesNoOlderThanArgs {
                     price_ids: price_ids.clone(),
@@ -55,16 +51,13 @@ impl DispatchRead<GatewayContext> for pyth::ListEmaPricesNoOlderThan {
     }
 }
 
-impl DispatchRead<GatewayContext> for pyth::ListEmaPricesUnsafe {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for pyth::ListEmaPricesUnsafe {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let price_ids = params.price_ids;
             let response = ctx
-                .near()
+                .near_client()
                 .pyth_oracle(params.oracle_id)
                 .list_ema_prices_unsafe(ListEmaPricesUnsafeArgs {
                     price_ids: price_ids.clone(),
@@ -77,23 +70,21 @@ impl DispatchRead<GatewayContext> for pyth::ListEmaPricesUnsafe {
     }
 }
 
-impl PlanWrite<GatewayContext> for pyth::UpdatePriceFeeds {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for pyth::UpdatePriceFeeds {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            Ok(single_transaction_plan(
-                ctx.near().pyth_oracle(body.oracle_id).update_price_feeds(
+            ctx.near_client()
+                .pyth_oracle(body.oracle_id)
+                .update_price_feeds(
                     ContractWriteOptions::new(request.signer_account_id)
                         .tgas(300)
                         .deposit(NearToken::from_yoctonear(10_000_000_000_000_000_000_000)),
                     UpdatePriceFeedsArgs {
                         data: hex::encode(body.data.0),
                     },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }

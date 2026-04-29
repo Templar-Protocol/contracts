@@ -4,9 +4,9 @@ use actix::Addr;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_core::{
-    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayContext,
-    GatewayResult, HasIdempotencyKey, HasSignerAccountId, NearOperationExecutor,
-    NearTransactionSigner, PlanWrite, SharedExecuteOperation, SharedOperationStore,
+    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayResult,
+    HasIdempotencyKey, HasNearClient, HasSignerAccountId, NearOperationExecutor,
+    NearTransactionSigner, OperationPlan, PlanWrite, SharedExecuteOperation, SharedOperationStore,
     SharedSignTransaction, StoredOperation, SucceededStep,
 };
 use templar_gateway_runtime::{
@@ -18,22 +18,27 @@ use templar_gateway_types::{
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
-pub struct GatewayService {
-    inner: Arc<GatewayInner>,
+pub struct GatewayService<
+    ContextType: Clone + Send + std::marker::Unpin + 'static = templar_gateway_core::GatewayContext,
+> {
+    inner: Arc<GatewayInner<ContextType>>,
     runtime: Arc<Mutex<Option<GatewayRuntime>>>,
 }
 
-struct GatewayInner {
-    context: GatewayContext,
+struct GatewayInner<ContextType: Clone + Send + std::marker::Unpin + 'static> {
+    context: ContextType,
     operation_executor: SharedExecuteOperation,
-    read: Addr<ReadActor>,
+    read: Addr<ReadActor<ContextType>>,
     transaction_signer: SharedSignTransaction,
     store: SharedOperationStore,
 }
 
-impl GatewayService {
+impl<ContextType> GatewayService<ContextType>
+where
+    ContextType: HasNearClient + Clone + Send + std::marker::Unpin + 'static,
+{
     pub fn spawn(
-        context: GatewayContext,
+        context: ContextType,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
         store: SharedOperationStore,
     ) -> Self {
@@ -42,19 +47,21 @@ impl GatewayService {
             .map(|(account_id, signer)| (account_id, signer.signer))
             .collect();
 
-        Self::spawn_with_backends(
+        Self::spawn_inner(
             context.clone(),
             store,
             Arc::new(NearTransactionSigner::new(
-                context.network().clone(),
+                context.near_client().network().clone(),
                 signers,
             )),
-            Arc::new(NearOperationExecutor::new(context.network().clone())),
+            Arc::new(NearOperationExecutor::new(
+                context.near_client().network().clone(),
+            )),
         )
     }
 
-    pub fn spawn_with_backends(
-        context: GatewayContext,
+    fn spawn_inner(
+        context: ContextType,
         store: SharedOperationStore,
         transaction_signer: SharedSignTransaction,
         operation_executor: SharedExecuteOperation,
@@ -93,8 +100,9 @@ impl GatewayService {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: DispatchRead<GatewayContext>,
-        ReadActor: actix::Handler<RpcMessage<Request>>,
+        Request: DispatchRead<ContextType>,
+        ReadActor<ContextType>: actix::Actor<Context = actix::Context<ReadActor<ContextType>>>
+            + actix::Handler<RpcMessage<Request>>,
     {
         self.inner
             .read
@@ -120,16 +128,28 @@ impl GatewayService {
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: PlanWrite<GatewayContext>,
+        Request: PlanWrite<ContextType>,
+    {
+        let plan = Request::plan(params.clone(), self.read_context()).await?;
+        self.complete_write(Request::RPC_METHOD, params, plan).await
+    }
+
+    async fn complete_write<Input>(
+        &self,
+        rpc_method: &'static str,
+        params: Input,
+        plan: OperationPlan,
+    ) -> GatewayResult<WriteOperationResult>
+    where
+        Input: Clone + Serialize + HasIdempotencyKey + HasSignerAccountId,
     {
         let request_payload = serde_json::to_vec(&params)?;
-        let fingerprint = make_request_fingerprint(Request::RPC_METHOD, &params)?;
-        let plan = Request::plan(params.clone(), self.read_context()).await?;
+        let fingerprint = make_request_fingerprint(rpc_method, &params)?;
         let operation = match self
             .inner
             .store
             .create_or_get_operation(
-                Request::RPC_METHOD,
+                rpc_method,
                 params.signer_account_id().to_owned(),
                 params.idempotency_key().cloned(),
                 fingerprint,
@@ -255,7 +275,7 @@ impl GatewayService {
         Ok(operation)
     }
 
-    fn read_context(&self) -> GatewayContext {
+    pub fn read_context(&self) -> ContextType {
         self.inner.context.clone()
     }
 
@@ -287,21 +307,19 @@ fn make_request_fingerprint<T: Serialize>(method: &str, params: &T) -> GatewayRe
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::Path, sync::Arc};
+    use std::{collections::HashMap, sync::Arc};
 
+    use super::*;
     use anyhow::Result;
     use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
     use near_sandbox::Sandbox;
     use near_token::NearToken as SandboxNearToken;
-    use templar_gateway_core::GatewayError;
+    use templar_gateway_core::{GatewayContext, GatewayError};
     use templar_gateway_types::{
         common::{ContractArgs, WriteRequest},
         tx, ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
     };
     use test_utils::FtController;
-    use url::Url;
-
-    use super::*;
 
     struct TestHarness {
         _sandbox: Sandbox,
@@ -347,11 +365,7 @@ mod tests {
         )
         .await?;
 
-        let context = GatewayContext::new(
-            network.clone(),
-            Url::parse("https://hermes-beta.pyth.network")?,
-            Path::new("node"),
-        )?;
+        let context = GatewayContext::new(network.clone())?;
         let service = GatewayService::spawn(
             context,
             gateway_signers,

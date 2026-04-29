@@ -6,19 +6,15 @@ use crate::{
         proxy_oracle::{GovActionArgs, GovCreateArgs, GovGetArgs, GovListArgs},
         ContractWriteOptions,
     },
-    dispatch::single_transaction_plan,
     operation::OperationPlan,
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
-impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetNextId {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle_governance::GetNextId {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(request.params.oracle_id)
                 .gov_next_id(())
                 .await
@@ -26,14 +22,11 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetNextId {
     }
 }
 
-impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetTtl {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle_governance::GetTtl {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let ttl_ns = ctx
-                .near()
+                .near_client()
                 .proxy_oracle(request.params.oracle_id)
                 .gov_ttl_ns(())
                 .await?;
@@ -42,13 +35,10 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetTtl {
     }
 }
 
-impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetCount {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle_governance::GetCount {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(request.params.oracle_id)
                 .gov_count(())
                 .await
@@ -56,13 +46,10 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::GetCount {
     }
 }
 
-impl DispatchRead<GatewayContext> for proxy_oracle_governance::List {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle_governance::List {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(request.params.oracle_id)
                 .gov_list(GovListArgs {
                     offset: request.params.offset,
@@ -74,14 +61,11 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::List {
     }
 }
 
-impl DispatchRead<GatewayContext> for proxy_oracle_governance::Get {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle_governance::Get {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(params.oracle_id)
                 .gov_get(GovGetArgs { id: params.id })
                 .await
@@ -90,15 +74,13 @@ impl DispatchRead<GatewayContext> for proxy_oracle_governance::Get {
     }
 }
 
-impl PlanWrite<GatewayContext> for proxy_oracle_governance::Create {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for proxy_oracle_governance::Create {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            Ok(single_transaction_plan(
-                ctx.near().proxy_oracle(body.oracle_id).gov_create(
+            ctx.near_client()
+                .proxy_oracle(body.oracle_id)
+                .gov_create(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),
@@ -106,46 +88,42 @@ impl PlanWrite<GatewayContext> for proxy_oracle_governance::Create {
                         id: body.id,
                         operation: body.operation,
                     },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }
 
-impl PlanWrite<GatewayContext> for proxy_oracle_governance::Cancel {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for proxy_oracle_governance::Cancel {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            Ok(single_transaction_plan(
-                ctx.near().proxy_oracle(body.oracle_id).gov_cancel(
+            ctx.near_client()
+                .proxy_oracle(body.oracle_id)
+                .gov_cancel(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),
                     GovActionArgs { id: body.id },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }
 
-impl PlanWrite<GatewayContext> for proxy_oracle_governance::Execute {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for proxy_oracle_governance::Execute {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            Ok(single_transaction_plan(
-                ctx.near().proxy_oracle(body.oracle_id).gov_execute(
+            ctx.near_client()
+                .proxy_oracle(body.oracle_id)
+                .gov_execute(
                     ContractWriteOptions::new(request.signer_account_id)
                         .one_yocto()
                         .tgas(300),
                     GovActionArgs { id: body.id },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }

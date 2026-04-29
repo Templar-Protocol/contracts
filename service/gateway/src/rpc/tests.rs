@@ -17,8 +17,8 @@ mod universal_account_tests;
 
 use super::*;
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use jsonrpsee::server::{ServerBuilder, ServerHandle};
@@ -34,6 +34,9 @@ use templar_common::oracle::{
 use templar_common::primitive_types::U256;
 use templar_common::time::Nanoseconds;
 use templar_gateway_core::GatewayContext;
+use templar_gateway_oracle_updates::{
+    GatewayContextBuilderOracleExt, WithPythSource, WithRedStoneSource,
+};
 use templar_gateway_store::MemoryStore;
 use templar_gateway_testing::{SandboxHarness, TestController};
 use templar_gateway_types::{
@@ -55,9 +58,11 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+type TestContext = WithRedStoneSource<WithPythSource<GatewayContext>>;
+
 struct TestStack {
     harness: SandboxHarness,
-    gateway: GatewayService,
+    gateway: GatewayService<TestContext>,
     handle: ServerHandle,
     controller: TestController,
 }
@@ -70,8 +75,10 @@ impl TestStack {
 
     async fn start_with_oracle_update_config(pyth_hermes_url: Url) -> Result<Self> {
         let harness = SandboxHarness::start().await?;
-        let context =
-            GatewayContext::new(harness.network.clone(), pyth_hermes_url, Path::new(&"node"))?;
+        let context = GatewayContext::builder(harness.network.clone())
+            .with_pyth_source(pyth_hermes_url)
+            .with_redstone_source(std::path::Path::new("node"))?
+            .build();
         let gateway = GatewayService::spawn(
             context,
             harness.gateway_signers.clone(),

@@ -6,18 +6,15 @@ use templar_gateway_types::tx;
 
 use crate::{
     operation::{OperationPlan, PlannedTransaction},
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
-impl DispatchRead<GatewayContext> for tx::Get {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for tx::Get {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let result = ctx
-                .near()
+                .near_client()
                 .chain()
                 .get_transaction(
                     request.params.tx_hash.into(),
@@ -48,97 +45,73 @@ impl DispatchRead<GatewayContext> for tx::Get {
     }
 }
 
-impl PlanWrite<GatewayContext> for tx::FunctionCall {
-    fn plan(
-        request: Self::Input,
-        _context: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C> PlanWrite<C> for tx::FunctionCall {
+    fn plan(request: Self::Input, _context: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            Ok(OperationPlan {
-                steps: vec![PlannedTransaction {
-                    signer_account_id: request.signer_account_id,
-                    wait_until:
-                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-                    receiver_id: request.body.receiver_id,
-                    actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+            Ok(OperationPlan::single(PlannedTransaction {
+                signer_account_id: request.signer_account_id,
+                wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
+                receiver_id: request.body.receiver_id,
+                actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                    method_name: request.body.method_name.0,
+                    args: request.body.args.try_into_bytes()?,
+                    gas: request.body.gas,
+                    deposit: request.body.deposit,
+                }))],
+            }))
+        })
+    }
+}
+
+impl<C> PlanWrite<C> for tx::Transfer {
+    fn plan(request: Self::Input, _context: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan::single(PlannedTransaction {
+                signer_account_id: request.signer_account_id,
+                wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
+                receiver_id: request.body.receiver_id,
+                actions: vec![Action::Transfer(TransferAction {
+                    deposit: request.body.amount,
+                })],
+            }))
+        })
+    }
+}
+
+impl<C> PlanWrite<C> for tx::DeployContract {
+    fn plan(request: Self::Input, _context: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan::single(PlannedTransaction {
+                signer_account_id: request.signer_account_id,
+                wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
+                receiver_id: request.body.account_id,
+                actions: vec![Action::DeployContract(DeployContractAction {
+                    code: request.body.code.0,
+                })],
+            }))
+        })
+    }
+}
+
+impl<C> PlanWrite<C> for tx::DeployAndInit {
+    fn plan(request: Self::Input, _context: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+        Box::pin(async move {
+            Ok(OperationPlan::single(PlannedTransaction {
+                signer_account_id: request.signer_account_id,
+                wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
+                receiver_id: request.body.account_id,
+                actions: vec![
+                    Action::DeployContract(DeployContractAction {
+                        code: request.body.code.0,
+                    }),
+                    Action::FunctionCall(Box::new(FunctionCallAction {
                         method_name: request.body.method_name.0,
                         args: request.body.args.try_into_bytes()?,
                         gas: request.body.gas,
                         deposit: request.body.deposit,
-                    }))],
-                }],
-            })
-        })
-    }
-}
-
-impl PlanWrite<GatewayContext> for tx::Transfer {
-    fn plan(
-        request: Self::Input,
-        _context: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            Ok(OperationPlan {
-                steps: vec![PlannedTransaction {
-                    signer_account_id: request.signer_account_id,
-                    wait_until:
-                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-                    receiver_id: request.body.receiver_id,
-                    actions: vec![Action::Transfer(TransferAction {
-                        deposit: request.body.amount,
-                    })],
-                }],
-            })
-        })
-    }
-}
-
-impl PlanWrite<GatewayContext> for tx::DeployContract {
-    fn plan(
-        request: Self::Input,
-        _context: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            Ok(OperationPlan {
-                steps: vec![PlannedTransaction {
-                    signer_account_id: request.signer_account_id,
-                    wait_until:
-                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-                    receiver_id: request.body.account_id,
-                    actions: vec![Action::DeployContract(DeployContractAction {
-                        code: request.body.code.0,
-                    })],
-                }],
-            })
-        })
-    }
-}
-
-impl PlanWrite<GatewayContext> for tx::DeployAndInit {
-    fn plan(
-        request: Self::Input,
-        _context: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            Ok(OperationPlan {
-                steps: vec![PlannedTransaction {
-                    signer_account_id: request.signer_account_id,
-                    wait_until:
-                        templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-                    receiver_id: request.body.account_id,
-                    actions: vec![
-                        Action::DeployContract(DeployContractAction {
-                            code: request.body.code.0,
-                        }),
-                        Action::FunctionCall(Box::new(FunctionCallAction {
-                            method_name: request.body.method_name.0,
-                            args: request.body.args.try_into_bytes()?,
-                            gas: request.body.gas,
-                            deposit: request.body.deposit,
-                        })),
-                    ],
-                }],
-            })
+                    })),
+                ],
+            }))
         })
     }
 }

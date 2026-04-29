@@ -7,9 +7,9 @@ use crate::{
         universal_account::{UaExecuteArgs, UaGetKeyArgs},
         ContractWriteOptions,
     },
-    dispatch::{registry::plan_deploy_from_registry, single_transaction_plan},
+    dispatch::registry::plan_deploy_from_registry,
     operation::OperationPlan,
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
@@ -31,13 +31,10 @@ fn into_parameters_view(
     }
 }
 
-impl DispatchRead<GatewayContext> for universal_account::GetKey {
-    fn dispatch(
-        params: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for universal_account::GetKey {
+    fn dispatch(params: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .universal_account(params.params.account_id.clone())
                 .get_key(UaGetKeyArgs {
                     key: params.params.key,
@@ -50,32 +47,24 @@ impl DispatchRead<GatewayContext> for universal_account::GetKey {
     }
 }
 
-impl PlanWrite<GatewayContext> for universal_account::Execute {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for universal_account::Execute {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            Ok(single_transaction_plan(
-                ctx.near()
-                    .universal_account(request.body.account_id)
-                    .execute(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .gas(templar_gateway_types::NearGas::from_tgas(300)),
-                        UaExecuteArgs {
-                            args: request.body.args,
-                        },
-                    )?,
-            ))
+            ctx.near_client()
+                .universal_account(request.body.account_id)
+                .execute(
+                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                    UaExecuteArgs {
+                        args: request.body.args,
+                    },
+                )
+                .map(OperationPlan::from)
         })
     }
 }
 
-impl PlanWrite<GatewayContext> for universal_account::Create {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for universal_account::Create {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
             plan_deploy_from_registry(

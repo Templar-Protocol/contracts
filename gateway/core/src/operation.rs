@@ -76,6 +76,12 @@ impl OperationPlan {
     }
 }
 
+impl From<PlannedTransaction> for OperationPlan {
+    fn from(step: PlannedTransaction) -> Self {
+        Self::single(step)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SucceededStep {
     #[allow(dead_code)]

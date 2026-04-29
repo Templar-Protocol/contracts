@@ -16,6 +16,8 @@ pub enum GatewayError {
     NearTransaction(String),
     #[error("external service failed: {0}")]
     ExternalService(String),
+    #[error("unsupported feature: {0}")]
+    UnsupportedFeature(String),
     #[error("invalid stored operation: {0}")]
     InvalidStoredOperation(String),
     #[error("sql error: {0}")]
@@ -30,26 +32,6 @@ pub enum GatewayError {
         #[source]
         source: actix::MailboxError,
     },
-}
-
-impl From<templar_gateway_oracle_pyth::PythClientError> for GatewayError {
-    fn from(error: templar_gateway_oracle_pyth::PythClientError) -> Self {
-        match error {
-            templar_gateway_oracle_pyth::PythClientError::HttpRequest(message) => {
-                Self::HttpRequest(message)
-            }
-        }
-    }
-}
-
-impl From<templar_gateway_oracle_redstone::RedStoneBridgeError> for GatewayError {
-    fn from(error: templar_gateway_oracle_redstone::RedStoneBridgeError) -> Self {
-        match error {
-            templar_gateway_oracle_redstone::RedStoneBridgeError::ExternalService(message) => {
-                Self::ExternalService(message)
-            }
-        }
-    }
 }
 
 pub type GatewayResult<T> = Result<T, GatewayError>;

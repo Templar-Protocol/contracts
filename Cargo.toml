@@ -109,6 +109,7 @@ stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
 templar-gateway-core = { path = "./gateway/core" }
 templar-gateway-macros = { path = "./gateway/macros" }
+templar-gateway-oracle-updates = { path = "./gateway/oracle-updates" }
 templar-gateway-oracle-pyth = { path = "./gateway/oracle-pyth" }
 templar-gateway-oracle-redstone = { path = "./gateway/oracle-redstone" }
 templar-gateway-runtime = { path = "./gateway/runtime" }

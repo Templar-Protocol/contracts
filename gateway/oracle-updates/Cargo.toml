@@ -1,0 +1,21 @@
+[package]
+name = "templar-gateway-oracle-updates"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+hex.workspace = true
+near-account-id.workspace = true
+near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
+templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-gateway-core.workspace = true
+templar-gateway-oracle-pyth.workspace = true
+templar-gateway-oracle-redstone.workspace = true
+templar-gateway-types.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

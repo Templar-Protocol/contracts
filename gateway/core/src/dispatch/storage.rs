@@ -12,18 +12,15 @@ use crate::{
         },
         ContractWriteOptions,
     },
-    dispatch::single_transaction_plan,
-    GatewayContext, GatewayResult,
+    operation::OperationPlan,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
-impl DispatchRead<GatewayContext> for storage::GetBalanceBounds {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for storage::GetBalanceBounds {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .storage(request.params.contract_id)
                 .cached_storage_balance_bounds()
                 .await
@@ -37,13 +34,10 @@ impl DispatchRead<GatewayContext> for storage::GetBalanceBounds {
     }
 }
 
-impl DispatchRead<GatewayContext> for storage::GetBalanceOf {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for storage::GetBalanceOf {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .storage(request.params.contract_id)
                 .storage_balance_of(StorageBalanceOfArgs {
                     account_id: request.params.account_id,
@@ -59,68 +53,57 @@ impl DispatchRead<GatewayContext> for storage::GetBalanceOf {
     }
 }
 
-impl PlanWrite<GatewayContext> for storage::Deposit {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for storage::Deposit {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            Ok(single_transaction_plan(
-                ctx.near()
-                    .storage(request.body.contract_id)
-                    .storage_deposit(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .gas(templar_gateway_types::NearGas::from_tgas(100))
-                            .deposit(request.body.deposit),
-                        StorageDepositArgs {
-                            account_id: request.body.beneficiary_id,
-                            registration_only: request.body.registration_only,
-                        },
-                    )?,
-            ))
+            ctx.near_client()
+                .storage(request.body.contract_id)
+                .storage_deposit(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .tgas(100)
+                        .deposit(request.body.deposit),
+                    StorageDepositArgs {
+                        account_id: request.body.beneficiary_id,
+                        registration_only: request.body.registration_only,
+                    },
+                )
+                .map(OperationPlan::from)
         })
     }
 }
 
-impl PlanWrite<GatewayContext> for storage::Unregister {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for storage::Unregister {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
-            Ok(single_transaction_plan(
-                ctx.near()
-                    .storage(request.body.contract_id)
-                    .storage_unregister(
-                        ContractWriteOptions::new(request.signer_account_id)
-                            .gas(templar_gateway_types::NearGas::from_tgas(100))
-                            .deposit(templar_gateway_types::NearToken::from_yoctonear(1)),
-                        StorageUnregisterArgs {
-                            force: request.body.force,
-                        },
-                    )?,
-            ))
+            ctx.near_client()
+                .storage(request.body.contract_id)
+                .storage_unregister(
+                    ContractWriteOptions::new(request.signer_account_id)
+                        .tgas(100)
+                        .one_yocto(),
+                    StorageUnregisterArgs {
+                        force: request.body.force,
+                    },
+                )
+                .map(OperationPlan::from)
         })
     }
 }
 
-impl PlanWrite<GatewayContext> for storage::EnsureDeposit {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<crate::operation::OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for storage::EnsureDeposit {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
             let contract_id = body.contract_id.clone();
             let account_id = body.account_id.clone();
 
             let bounds = ctx
-                .near()
+                .near_client()
                 .storage(contract_id.clone())
                 .cached_storage_balance_bounds()
                 .await?;
             let balance = ctx
-                .near()
+                .near_client()
                 .storage(contract_id.clone())
                 .storage_balance_of(StorageBalanceOfArgs {
                     account_id: account_id.clone(),
@@ -130,20 +113,21 @@ impl PlanWrite<GatewayContext> for storage::EnsureDeposit {
             let plan = required_deposit(&body.mode, &bounds, balance.as_ref());
 
             if plan.deposit.is_zero() {
-                return Ok(crate::operation::OperationPlan { steps: vec![] });
+                return Ok(OperationPlan { steps: vec![] });
             }
 
-            Ok(single_transaction_plan(
-                ctx.near().storage(body.contract_id).storage_deposit(
+            ctx.near_client()
+                .storage(body.contract_id)
+                .storage_deposit(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(templar_gateway_types::NearGas::from_tgas(100))
+                        .tgas(100)
                         .deposit(plan.deposit),
                     StorageDepositArgs {
                         account_id: Some(body.account_id),
                         registration_only: plan.registration_only,
                     },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }

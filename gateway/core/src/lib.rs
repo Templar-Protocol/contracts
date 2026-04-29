@@ -6,28 +6,30 @@ mod dispatch;
 mod error;
 mod executor;
 mod methods;
+mod near_client_provider;
 mod operation;
+mod oracle_source_provider;
 mod read;
 
 use async_trait::async_trait;
 use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
 
 pub use client::{ContractWriteOptions, NearClient};
-pub use context::GatewayContext;
+pub use context::{GatewayContext, GatewayContextBuilder};
 pub use error::{GatewayError, GatewayResult};
 pub use executor::{
     ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,
     SharedSignTransaction, SignTransaction,
 };
 pub use methods::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
+pub use near_client_provider::HasNearClient;
 pub use operation::{
     CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation, PlannedTransaction,
     PreparedCurrentStep, PreparedTransactionResult, SharedOperationStore, StoredOperation,
     SubmittedCurrentStep, SucceededStep,
 };
+pub use oracle_source_provider::{ProvidesPythSource, ProvidesRedStoneSource};
 pub use read::ReadNear;
-pub use templar_gateway_oracle_pyth::PythHttpClient;
-pub use templar_gateway_oracle_redstone::RedStoneBridgeClient;
 pub use templar_gateway_types::OraclePayloadSource;
 
 pub enum CreateOperationResult {

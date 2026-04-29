@@ -9,9 +9,8 @@ use crate::{
         },
         ContractWriteOptions,
     },
-    dispatch::single_transaction_plan,
     operation::OperationPlan,
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 use crate::{DispatchRead, PlanWrite};
 
@@ -22,15 +21,12 @@ fn approval(approval: Option<mt::MtApproval>) -> Option<Approval> {
     })
 }
 
-impl DispatchRead<GatewayContext> for mt::GetBalanceOf {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for mt::GetBalanceOf {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let balance = ctx
-                .near()
+                .near_client()
                 .mt(params.contract_id)
                 .mt_balance_of(GetBalanceOfArgs {
                     account_id: params.account_id,
@@ -42,16 +38,13 @@ impl DispatchRead<GatewayContext> for mt::GetBalanceOf {
     }
 }
 
-impl DispatchRead<GatewayContext> for mt::GetBatchBalanceOf {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for mt::GetBatchBalanceOf {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let token_ids = params.token_ids;
             let values = ctx
-                .near()
+                .near_client()
                 .mt(params.contract_id)
                 .mt_batch_balance_of(GetBatchBalanceOfArgs {
                     account_id: params.account_id,
@@ -69,15 +62,12 @@ impl DispatchRead<GatewayContext> for mt::GetBatchBalanceOf {
     }
 }
 
-impl DispatchRead<GatewayContext> for mt::GetSupply {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for mt::GetSupply {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let supply = ctx
-                .near()
+                .near_client()
                 .mt(params.contract_id)
                 .mt_supply(GetSupplyArgs {
                     token_id: params.token_id,
@@ -88,16 +78,13 @@ impl DispatchRead<GatewayContext> for mt::GetSupply {
     }
 }
 
-impl DispatchRead<GatewayContext> for mt::GetBatchSupply {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for mt::GetBatchSupply {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
             let token_ids = params.token_ids;
             let values = ctx
-                .near()
+                .near_client()
                 .mt(params.contract_id)
                 .mt_batch_supply(GetBatchSupplyArgs {
                     token_ids: token_ids.clone(),
@@ -114,17 +101,15 @@ impl DispatchRead<GatewayContext> for mt::GetBatchSupply {
     }
 }
 
-impl PlanWrite<GatewayContext> for mt::Transfer {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for mt::Transfer {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            Ok(single_transaction_plan(
-                ctx.near().mt(body.contract_id).mt_transfer(
+            ctx.near_client()
+                .mt(body.contract_id)
+                .mt_transfer(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(templar_gateway_types::NearGas::from_tgas(100))
+                        .tgas(100)
                         .one_yocto(),
                     TransferArgs {
                         receiver_id: body.receiver_id,
@@ -133,23 +118,21 @@ impl PlanWrite<GatewayContext> for mt::Transfer {
                         approval: approval(body.approval),
                         memo: body.memo,
                     },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }
 
-impl PlanWrite<GatewayContext> for mt::TransferCall {
-    fn plan(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
+impl<C: HasNearClient> PlanWrite<C> for mt::TransferCall {
+    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
         Box::pin(async move {
             let body = request.body;
-            Ok(single_transaction_plan(
-                ctx.near().mt(body.contract_id).mt_transfer_call(
+            ctx.near_client()
+                .mt(body.contract_id)
+                .mt_transfer_call(
                     ContractWriteOptions::new(request.signer_account_id)
-                        .gas(templar_gateway_types::NearGas::from_tgas(300))
+                        .tgas(300)
                         .one_yocto(),
                     TransferCallArgs {
                         receiver_id: body.receiver_id,
@@ -159,8 +142,8 @@ impl PlanWrite<GatewayContext> for mt::TransferCall {
                         memo: body.memo,
                         msg: body.msg,
                     },
-                )?,
-            ))
+                )
+                .map(OperationPlan::from)
         })
     }
 }

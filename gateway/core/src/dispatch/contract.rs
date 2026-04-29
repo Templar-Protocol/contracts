@@ -2,16 +2,13 @@ use futures::future::BoxFuture;
 use templar_gateway_types::contract;
 
 use crate::DispatchRead;
-use crate::{client::cache::load_cached, GatewayContext, GatewayError, GatewayResult};
+use crate::{client::cache::load_cached, GatewayError, GatewayResult, HasNearClient};
 
-impl DispatchRead<GatewayContext> for contract::ViewFunction {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for contract::ViewFunction {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let value = ctx
-                .near()
+                .near_client()
                 .contract(request.params.contract_id.clone())
                 .view_function(
                     &request.params.method_name.0,
@@ -24,14 +21,11 @@ impl DispatchRead<GatewayContext> for contract::ViewFunction {
     }
 }
 
-impl DispatchRead<GatewayContext> for contract::GetVersion {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for contract::GetVersion {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let metadata = ctx
-                .near()
+                .near_client()
                 .contract(request.params.contract_id)
                 .cached_contract_source_metadata()
                 .await?;
@@ -49,11 +43,8 @@ impl DispatchRead<GatewayContext> for contract::GetVersion {
     }
 }
 
-impl DispatchRead<GatewayContext> for contract::GetKind {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for contract::GetKind {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let kind = query_contract_kind(&ctx, request.params.contract_id).await?;
             Ok(contract::GetKindResult { kind })
@@ -61,12 +52,12 @@ impl DispatchRead<GatewayContext> for contract::GetKind {
     }
 }
 
-pub(crate) async fn query_contract_kind(
-    ctx: &GatewayContext,
+pub async fn query_contract_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<contract::ContractKind> {
     load_cached(
-        &ctx.near().cache().contract.contract_kind,
+        &ctx.near_client().cache().contract.contract_kind,
         contract_id.clone(),
         {
             let ctx = ctx.clone();
@@ -76,8 +67,8 @@ pub(crate) async fn query_contract_kind(
     .await
 }
 
-async fn detect_contract_kind(
-    ctx: &GatewayContext,
+async fn detect_contract_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<contract::ContractKind> {
     if matches!(
@@ -132,12 +123,12 @@ async fn detect_contract_kind(
     Ok(contract::ContractKind::Unknown)
 }
 
-async fn try_registry_kind(
-    ctx: &GatewayContext,
+async fn try_registry_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .near()
+        .near_client()
         .registry(templar_gateway_types::RegistryId(contract_id))
         .list_versions(templar_gateway_types::common::Pagination::default())
         .await
@@ -148,12 +139,12 @@ async fn try_registry_kind(
     }
 }
 
-async fn try_market_kind(
-    ctx: &GatewayContext,
+async fn try_market_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .near()
+        .near_client()
         .market(templar_gateway_types::MarketId(contract_id))
         .get_configuration(())
         .await
@@ -164,12 +155,12 @@ async fn try_market_kind(
     }
 }
 
-async fn try_universal_account_kind(
-    ctx: &GatewayContext,
+async fn try_universal_account_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .near()
+        .near_client()
         .universal_account(templar_gateway_types::UniversalAccountId(contract_id))
         .get_key(crate::client::universal_account::UaGetKeyArgs {
             key: templar_universal_account::KeyId::Ed25519Raw(
@@ -186,12 +177,12 @@ async fn try_universal_account_kind(
     }
 }
 
-async fn try_proxy_oracle_kind(
-    ctx: &GatewayContext,
+async fn try_proxy_oracle_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .near()
+        .near_client()
         .proxy_oracle(contract_id)
         .list_proxies(crate::client::proxy_oracle::ListProxiesArgs {
             offset: None,
@@ -205,12 +196,12 @@ async fn try_proxy_oracle_kind(
     }
 }
 
-async fn try_lst_oracle_kind(
-    ctx: &GatewayContext,
+async fn try_lst_oracle_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .near()
+        .near_client()
         .lst_oracle(contract_id)
         .list_transformers(crate::client::lst_oracle::ListTransformersArgs {
             offset: None,
@@ -224,23 +215,28 @@ async fn try_lst_oracle_kind(
     }
 }
 
-async fn try_redstone_oracle_kind(
-    ctx: &GatewayContext,
+async fn try_redstone_oracle_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
-    match ctx.near().redstone_oracle(contract_id).get_config(()).await {
+    match ctx
+        .near_client()
+        .redstone_oracle(contract_id)
+        .get_config(())
+        .await
+    {
         Ok(_) => Ok(Some(contract::ContractKind::RedstoneOracle)),
         Err(error) if is_method_not_found(&error) => Ok(None),
         Err(error) => Err(error),
     }
 }
 
-async fn try_pyth_oracle_kind(
-    ctx: &GatewayContext,
+async fn try_pyth_oracle_kind<C: HasNearClient>(
+    ctx: &C,
     contract_id: near_account_id::AccountId,
 ) -> GatewayResult<Option<contract::ContractKind>> {
     match ctx
-        .near()
+        .near_client()
         .pyth_oracle(contract_id)
         .list_ema_prices_unsafe(crate::client::pyth_oracle::ListEmaPricesUnsafeArgs {
             price_ids: vec![],

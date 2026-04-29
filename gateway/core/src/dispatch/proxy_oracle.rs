@@ -4,16 +4,13 @@ use templar_gateway_types::proxy_oracle;
 use crate::DispatchRead;
 use crate::{
     client::proxy_oracle::{GetProxyArgs, ListProxiesArgs, PriceFeedExistsArgs},
-    GatewayContext, GatewayResult,
+    GatewayResult, HasNearClient,
 };
 
-impl DispatchRead<GatewayContext> for proxy_oracle::ListProxies {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle::ListProxies {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(request.params.oracle_id)
                 .list_proxies(ListProxiesArgs {
                     offset: request.params.offset,
@@ -25,14 +22,11 @@ impl DispatchRead<GatewayContext> for proxy_oracle::ListProxies {
     }
 }
 
-impl DispatchRead<GatewayContext> for proxy_oracle::GetProxy {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle::GetProxy {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(params.oracle_id)
                 .cached_get_proxy(GetProxyArgs { id: params.id })
                 .await
@@ -41,14 +35,11 @@ impl DispatchRead<GatewayContext> for proxy_oracle::GetProxy {
     }
 }
 
-impl DispatchRead<GatewayContext> for proxy_oracle::PriceFeedExists {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for proxy_oracle::PriceFeedExists {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let params = request.params;
-            ctx.near()
+            ctx.near_client()
                 .proxy_oracle(params.oracle_id)
                 .price_feed_exists(PriceFeedExistsArgs {
                     price_identifier: params.price_identifier,

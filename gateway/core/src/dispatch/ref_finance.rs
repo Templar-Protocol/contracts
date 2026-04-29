@@ -2,16 +2,13 @@ use futures::future::BoxFuture;
 use templar_gateway_types::ref_finance;
 
 use crate::DispatchRead;
-use crate::{client::ref_finance::GetPoolsArgs, GatewayContext, GatewayResult};
+use crate::{client::ref_finance::GetPoolsArgs, GatewayResult, HasNearClient};
 
-impl DispatchRead<GatewayContext> for ref_finance::GetPools {
-    fn dispatch(
-        request: Self::Input,
-        ctx: GatewayContext,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>> {
+impl<C: HasNearClient> DispatchRead<C> for ref_finance::GetPools {
+    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
         Box::pin(async move {
             let pools = ctx
-                .near()
+                .near_client()
                 .ref_finance(request.params.exchange_id)
                 .get_pools(GetPoolsArgs {
                     from_index: request.params.from_index,
