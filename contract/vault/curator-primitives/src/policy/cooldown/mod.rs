@@ -36,12 +36,11 @@ impl Cooldown {
             return TimeGate::ready_now();
         }
 
-        match self.last_event_ns {
-            Some(last) => TimeGate::schedule_from(
-                TimestampNs(last),
-                DurationNs(self.interval_ns.unwrap().get()),
-            ),
-            None => TimeGate::ready_now(),
+        match (self.last_event_ns, self.interval_ns) {
+            (Some(last), Some(interval)) => {
+                TimeGate::schedule_from(TimestampNs(last), DurationNs(interval.get()))
+            }
+            _ => TimeGate::ready_now(),
         }
     }
 

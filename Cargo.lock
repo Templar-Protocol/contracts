@@ -12566,6 +12566,7 @@ version = "0.1.0"
 dependencies = [
  "soroban-sdk",
  "templar-curator-primitives",
+ "templar-soroban-governance",
  "templar-soroban-runtime",
  "templar-soroban-shared-types",
  "templar-vault-kernel",

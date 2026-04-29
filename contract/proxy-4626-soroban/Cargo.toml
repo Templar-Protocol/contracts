@@ -22,4 +22,5 @@ templar-curator-primitives = { path = "../vault/curator-primitives", features = 
 
 [dev-dependencies]
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
+templar-soroban-governance = { path = "../vault/soroban/governance" }
 templar-soroban-runtime = { path = "../vault/soroban", features = ["testutils"] }
