@@ -155,10 +155,15 @@ jobs:
             cargo_command: check
             features: schemars,std
 
-          - name: proxy-oracle-kernel full-feature-set
+          - name: proxy-oracle-kernel serialization-set
             package: templar-proxy-oracle-kernel
             cargo_command: test
             features: borsh,serde,schemars,std
+
+          - name: proxy-oracle-kernel near
+            package: templar-proxy-oracle-kernel
+            cargo_command: test
+            features: near
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

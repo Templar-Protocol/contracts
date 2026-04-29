@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::*;
 
 use super::Aggregate;
@@ -31,8 +33,9 @@ impl<S> Aggregate<S> for Priority<S> {
         }
 
         prices
-            .iter()
-            .find_map(|p| p.clone())
+            .into_iter()
+            .flatten()
+            .next()
             .ok_or(super::Error::TooFewValidSources {
                 expected: 1,
                 actual: 0,

@@ -27,7 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
 templar-primitives.workspace = true
-templar-proxy-oracle-kernel.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["near"] }
 templar-proxy-oracle-near-common.workspace = true
 templar-redstone-bridge.workspace = true
 templar-tools-common.workspace = true

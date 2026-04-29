@@ -1,6 +1,7 @@
 mod specific_price;
 
 use crate::*;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use super::Aggregate;
@@ -129,16 +130,15 @@ impl<V: MedianVariant, S> Aggregate<S> for Median<V, S> {
             });
         }
 
-        let mut values = prices
-            .into_iter()
-            .zip(&self.sources)
-            .filter_map(|(price, source)| price.map(|price| (price, source)))
-            .flat_map(|(price, source)| {
+        let mut values = Vec::with_capacity(valid_sources.saturating_mul(2));
+        for (price, source) in prices.into_iter().zip(&self.sources) {
+            if let Some(price) = price {
                 // Split apart prices so that we don't need to worry about confidence when sorting.
                 let (lower, upper) = SpecificPrice::split(&price);
-                [(lower, source.weight), (upper, source.weight)]
-            })
-            .collect::<Vec<_>>();
+                values.push((lower, source.weight));
+                values.push((upper, source.weight));
+            }
+        }
 
         values.sort_unstable();
 

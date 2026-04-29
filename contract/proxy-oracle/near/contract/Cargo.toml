@@ -32,7 +32,7 @@ getrandom.workspace = true
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 templar-common.workspace = true
-templar-proxy-oracle-kernel.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["near"] }
 templar-proxy-oracle-near-common.workspace = true
 
 [dev-dependencies]

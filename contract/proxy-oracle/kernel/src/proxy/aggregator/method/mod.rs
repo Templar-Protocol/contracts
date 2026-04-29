@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 pub mod median;
 pub mod priority;
 

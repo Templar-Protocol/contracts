@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 pub mod aggregator;
 pub mod freshness_filter;
 
@@ -71,22 +73,17 @@ impl<S> Proxy<S> {
 
     pub fn resolve(
         &self,
-        prices: Vec<Option<Price>>,
+        mut prices: Vec<Option<Price>>,
         now: Nanoseconds,
     ) -> Result<Price, aggregator::method::Error> {
-        let prices = prices
-            .into_iter()
-            .map(|price| {
-                if price
-                    .as_ref()
-                    .is_some_and(|p| self.freshness_filter.accepts(p, now))
-                {
-                    price
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        for price in &mut prices {
+            if price
+                .as_ref()
+                .is_none_or(|p| !self.freshness_filter.accepts(p, now))
+            {
+                *price = None;
+            }
+        }
 
         self.aggregator.aggregate(prices)
     }
@@ -94,6 +91,7 @@ impl<S> Proxy<S> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
     use rstest::rstest;
     use templar_primitives::Nanoseconds;
 
@@ -102,7 +100,7 @@ mod tests {
             aggregator::method::{median::MedianLow, Error},
             Aggregator, FreshnessFilter, Proxy, WeightedSource,
         },
-        vec, Price,
+        Price,
     };
 
     fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {

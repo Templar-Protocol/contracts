@@ -7,7 +7,7 @@ version = "0.1.0"
 
 [dependencies]
 templar-common.workspace = true
-templar-proxy-oracle-kernel.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["near"] }
 thiserror.workspace = true
 near-sdk.workspace = true
 near-primitives = { workspace = true, optional = true }
