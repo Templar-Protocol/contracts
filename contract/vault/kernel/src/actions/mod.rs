@@ -1898,7 +1898,7 @@ mod planning {
         }
 
         let Some(settlement) =
-            compute_idle_settlement(request_escrow, request_expected, available_assets)
+            compute_idle_settlement(request_escrow, request_expected, state.idle_assets)
         else {
             return Err(KernelError::from(
                 InvalidStateCode::WithdrawalLiquidityBelowMinimum,
