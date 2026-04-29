@@ -12,8 +12,8 @@ pub use {
     contract::Soroban4626ProxyContract,
     error::ContractError,
     templar_soroban_shared_types::{
-        ProxyPreviewFields, ProxyPreviewView, ProxyViewFields, ProxyViewResponse,
-        VaultCommandResult,
+        DepositReceipt, ExecuteWithdrawReceipt, ProxyPreviewFields, ProxyPreviewView,
+        ProxyViewFields, ProxyViewResponse, ReceiptAddress, RequestWithdrawReceipt,
     },
 };
 

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "test utility example intentionally fails fast on invalid setup"
+)]
+
 use std::fs;
 
 use templar_common::registry::DeployMode;

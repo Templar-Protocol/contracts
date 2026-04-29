@@ -72,6 +72,7 @@ pub enum PayoutOutcome {
 pub struct IdlePayoutPlan {
     pub op_id: u64,
     pub request_id: u64,
+    pub owner: Address,
     pub receiver: Address,
     pub assets_out: u128,
     pub burn_shares: u128,
@@ -1902,6 +1903,7 @@ mod planning {
         Ok(IdlePayoutPlan {
             op_id: withdrawing.op_id,
             request_id: withdrawing.request_id,
+            owner: withdrawing.owner,
             receiver: withdrawing.receiver,
             assets_out: settlement.assets_out,
             burn_shares: settlement.settlement.to_burn,
