@@ -85,6 +85,7 @@ impl Soroban4626ProxyContract {
         assets: i128,
         receiver: Address,
     ) -> Result<i128, ContractError> {
+        require_non_negative(assets)?;
         caller.require_auth();
         let shares = expect_i128_result(invoke_vault_execute(
             &env,
@@ -105,9 +106,11 @@ impl Soroban4626ProxyContract {
         shares: i128,
         receiver: Address,
     ) -> Result<i128, ContractError> {
+        require_non_negative(shares)?;
         caller.require_auth();
         let preview = call_proxy_view(&env, &caller, 0, shares)?;
         let assets = preview.6;
+        require_non_negative(assets)?;
         expect_i128_result(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
@@ -128,9 +131,11 @@ impl Soroban4626ProxyContract {
         receiver: Address,
         owner: Address,
     ) -> Result<u64, ContractError> {
+        require_non_negative(assets)?;
         let share_token = read_share_token(&env)?;
         let preview = call_proxy_view(&env, &owner, assets, 0)?;
         let shares = preview.7;
+        require_non_negative(shares)?;
         require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
@@ -141,7 +146,7 @@ impl Soroban4626ProxyContract {
                 min_assets_out: assets,
             },
         )?)?;
-        emit_withdraw_event(&env, &caller, &receiver, &owner, assets, shares);
+        emit_redeem_request_event(&env, &receiver, &owner, request_id, &caller, shares);
         Ok(request_id)
     }
 
@@ -152,10 +157,12 @@ impl Soroban4626ProxyContract {
         receiver: Address,
         owner: Address,
     ) -> Result<u64, ContractError> {
+        require_non_negative(shares)?;
         let share_token = read_share_token(&env)?;
         require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
         let preview = call_proxy_view(&env, &owner, 0, shares)?;
         let assets = preview.1;
+        require_non_negative(assets)?;
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
@@ -165,7 +172,7 @@ impl Soroban4626ProxyContract {
                 min_assets_out: assets,
             },
         )?)?;
-        emit_withdraw_event(&env, &caller, &receiver, &owner, assets, shares);
+        emit_redeem_request_event(&env, &receiver, &owner, request_id, &caller, shares);
         Ok(request_id)
     }
 
@@ -176,16 +183,20 @@ impl Soroban4626ProxyContract {
         shares: i128,
         min_assets_out: i128,
     ) -> Result<u64, ContractError> {
+        require_non_negative(shares)?;
+        require_non_negative(min_assets_out)?;
         owner.require_auth();
-        expect_u64_result(invoke_vault_execute(
+        let request_id = expect_u64_result(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
-                owner,
-                receiver,
+                owner: owner.clone(),
+                receiver: receiver.clone(),
                 shares,
                 min_assets_out,
             },
-        )?)
+        )?)?;
+        emit_redeem_request_event(&env, &receiver, &owner, request_id, &owner, shares);
+        Ok(request_id)
     }
 
     pub fn execute_withdraw(env: Env, caller: Address) -> Result<(), ContractError> {
@@ -317,6 +328,12 @@ pub(crate) fn require_initialized(env: &Env) -> Result<(), ContractError> {
         .ok_or(ContractError::NotInitialized)
 }
 
+fn require_non_negative(amount: i128) -> Result<(), ContractError> {
+    (amount >= 0)
+        .then_some(())
+        .ok_or(ContractError::InvalidInput)
+}
+
 pub(crate) fn read_vault_address(env: &Env) -> Result<Address, ContractError> {
     require_initialized(env)?;
     env.storage()
@@ -350,7 +367,7 @@ pub(crate) fn invoke_vault_execute(
     let payload = Bytes::from_slice(env, &command.encode());
     let execute = Symbol::new(env, "execute");
 
-    let result = env.try_invoke_contract::<Bytes, ContractError>(
+    let result = env.try_invoke_contract::<Bytes, InvokeError>(
         &vault_address,
         &execute,
         (&payload,).into_val(env),
@@ -359,13 +376,8 @@ pub(crate) fn invoke_vault_execute(
     let bytes = match result {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(_)) => return Err(ContractError::VaultError),
-        Err(Ok(error)) => return Err(error),
-        Err(Err(invoke_error)) => {
-            return Err(match invoke_error {
-                InvokeError::Abort => ContractError::VaultError,
-                InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
-            })
-        }
+        Err(Ok(invoke_error)) => return Err(map_vault_invoke_error(invoke_error)),
+        Err(Err(invoke_error)) => return Err(map_vault_invoke_error(invoke_error)),
     };
 
     WireVaultCommandResult::decode(&bytes.to_alloc_vec()).map_err(Into::into)
@@ -379,7 +391,7 @@ fn call_proxy_view_full(
 ) -> Result<ProxyViewResponse, ContractError> {
     let vault_address = read_vault_address(env)?;
     let proxy_view = Symbol::new(env, "proxy_view");
-    let result = env.try_invoke_contract::<ProxyViewResponse, ContractError>(
+    let result = env.try_invoke_contract::<ProxyViewResponse, InvokeError>(
         &vault_address,
         &proxy_view,
         (owner.clone(), assets, shares).into_val(env),
@@ -388,11 +400,15 @@ fn call_proxy_view_full(
     match result {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(_)) => Err(ContractError::VaultError),
-        Err(Ok(error)) => Err(error),
-        Err(Err(invoke_error)) => Err(match invoke_error {
-            InvokeError::Abort => ContractError::VaultError,
-            InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
-        }),
+        Err(Ok(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
+        Err(Err(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
+    }
+}
+
+fn map_vault_invoke_error(error: InvokeError) -> ContractError {
+    match error {
+        InvokeError::Abort => ContractError::VaultError,
+        InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
     }
 }
 
@@ -523,22 +539,22 @@ pub(crate) fn emit_deposit_event(
 }
 
 #[allow(deprecated)]
-pub(crate) fn emit_withdraw_event(
+pub(crate) fn emit_redeem_request_event(
     env: &Env,
-    caller: &Address,
-    receiver: &Address,
+    controller: &Address,
     owner: &Address,
-    assets: i128,
+    request_id: u64,
+    sender: &Address,
     shares: i128,
 ) {
     env.events().publish(
         (
-            symbol_short!("Withdraw"),
-            caller.clone(),
-            receiver.clone(),
+            Symbol::new(env, "RedeemRequest"),
+            controller.clone(),
             owner.clone(),
+            request_id,
         ),
-        (assets, shares),
+        (sender.clone(), shares),
     );
 }
 
