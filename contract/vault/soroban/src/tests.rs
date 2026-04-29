@@ -2414,6 +2414,187 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_atomic_command_withdraw_and_redeem_use_idle_assets() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_500,
+                    idle_assets: 1_500,
+                    ..Default::default()
+                })
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &1_500);
+        share_admin_client.mint(&owner, &1_500);
+
+        let burned = env
+            .as_contract(&contract_id, || {
+                execute_command(
+                    &env,
+                    &VaultCommand::AtomicWithdraw {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        operator: sdk_text(&owner),
+                        assets: 500,
+                        max_shares_burned: i128::MAX,
+                    },
+                )
+            })
+            .expect("atomic withdraw command should execute");
+        assert_eq!(burned, VaultCommandResult::I128(500));
+
+        let redeemed = env
+            .as_contract(&contract_id, || {
+                execute_command(
+                    &env,
+                    &VaultCommand::AtomicRedeem {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        operator: sdk_text(&owner),
+                        shares: 250,
+                        min_assets_out: 0,
+                    },
+                )
+            })
+            .expect("atomic redeem command should execute");
+        assert_eq!(redeemed, VaultCommandResult::I128(250));
+
+        let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        assert_eq!(asset_client.balance(&receiver), 750);
+        assert_eq!(asset_client.balance(&contract_id), 750);
+        assert_eq!(share_client.balance(&owner), 750);
+    }
+
+    #[test]
+    fn test_atomic_commands_reject_external_assets_as_liquidity() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_500,
+                    idle_assets: 500,
+                    external_assets: 1_000,
+                    ..Default::default()
+                })
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &500);
+        share_admin_client.mint(&owner, &1_500);
+
+        let withdraw = env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::AtomicWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&receiver),
+                    operator: sdk_text(&owner),
+                    assets: 600,
+                    max_shares_burned: i128::MAX,
+                },
+            )
+        });
+        assert_eq!(withdraw, Err(crate::error::ContractError::KernelError));
+
+        let redeem = env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::AtomicRedeem {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&receiver),
+                    operator: sdk_text(&owner),
+                    shares: 600,
+                    min_assets_out: 0,
+                },
+            )
+        });
+        assert_eq!(redeem, Err(crate::error::ContractError::KernelError));
+
+        let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        assert_eq!(asset_client.balance(&receiver), 0);
+        assert_eq!(asset_client.balance(&contract_id), 500);
+        assert_eq!(share_client.balance(&owner), 1_500);
+    }
+
+    #[test]
     fn test_phase1_deposit_with_min_resource_probe() {
         use soroban_sdk::testutils::Address as _;
         use soroban_sdk::token::StellarAssetClient;
