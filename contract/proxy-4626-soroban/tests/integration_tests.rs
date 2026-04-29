@@ -1,27 +1,24 @@
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger as _, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, IntoVal, Symbol,
 };
 use templar_4626_proxy_soroban::Soroban4626ProxyContract;
 use templar_soroban_runtime::SorobanVaultContract;
+use templar_soroban_shared_types::{ProxyViewFields, ProxyViewResponse};
 use templar_vault_kernel::DEFAULT_COOLDOWN_NS;
-
-type ProxyCoreView = (
-    (Address, Address, Address, Address),
-    (i128, i128, bool),
-    (i128, i128, i128, i128),
-    (i128, u64, i128, i128),
-);
-type ProxyPolicyView = (
-    soroban_sdk::Vec<u32>,
-    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
-);
-type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
-type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
 
 const INITIAL_TIMESTAMP: u64 = 100;
 const AUTH_EXPIRATION_LEDGER: u32 = 200;
+
+#[contract]
+struct DummyGovernanceContract;
+
+#[contractimpl]
+impl DummyGovernanceContract {
+    pub fn noop() {}
+}
 
 #[derive(Clone)]
 struct Users {
@@ -48,7 +45,7 @@ fn setup_harness() -> Harness {
 
     let users = Users {
         curator: Address::generate(&env),
-        governance: Address::generate(&env),
+        governance: env.register(DummyGovernanceContract, ()),
         asset_token_admin: Address::generate(&env),
         user: Address::generate(&env),
         receiver: Address::generate(&env),
@@ -129,7 +126,10 @@ fn share_client(harness: &Harness) -> TokenClient<'_> {
 }
 
 fn vault_total_shares(harness: &Harness) -> i128 {
-    vault_proxy_view(harness, &harness.proxy, 0, 0).0 .2 .0
+    vault_proxy_fields(harness, &harness.proxy, 0, 0)
+        .core
+        .totals
+        .total_shares
 }
 
 fn mint_and_approve_assets(harness: &Harness, owner: &Address, amount: i128) {
@@ -240,6 +240,16 @@ fn vault_proxy_view(
     )
 }
 
+fn vault_proxy_fields(
+    harness: &Harness,
+    owner: &Address,
+    assets: i128,
+    shares: i128,
+) -> ProxyViewFields {
+    ProxyViewFields::try_from(vault_proxy_view(harness, owner, assets, shares))
+        .expect("proxy view response decodes")
+}
+
 #[test]
 fn deposit_flow_mints_shares_and_increases_total_assets() {
     let harness = setup_harness();
@@ -280,10 +290,10 @@ fn view_methods_match_vault_proxy_view() {
         &harness.users.user,
     );
 
-    let vault_view = vault_proxy_view(&harness, &harness.users.receiver, preview_assets, 0);
-    let expected_total_assets = vault_view.0 .2 .3;
-    let expected_convert_to_shares = vault_view.2 .0;
-    let expected_max_deposit = vault_view.2 .2;
+    let vault_view = vault_proxy_fields(&harness, &harness.users.receiver, preview_assets, 0);
+    let expected_total_assets = vault_view.core.totals.total_assets;
+    let expected_convert_to_shares = vault_view.preview.convert_to_shares;
+    let expected_max_deposit = vault_view.preview.max_deposit;
 
     assert_eq!(proxy_total_assets(&harness), expected_total_assets);
     assert_eq!(

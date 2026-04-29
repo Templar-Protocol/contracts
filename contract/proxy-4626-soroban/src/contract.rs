@@ -6,10 +6,11 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, Bytes, Env, IntoVal, InvokeError, Symbol,
 };
 use templar_soroban_shared_types::{
-    VaultCommand as WireVaultCommand, VaultCommandResult as WireVaultCommandResult,
+    ProxyPreviewFields, ProxyViewFields, ProxyViewResponse, VaultCommand as WireVaultCommand,
+    VaultCommandResult as WireVaultCommandResult,
 };
 
-use crate::{error::ContractError, ProxyPreviewView, ProxyViewResponse};
+use crate::error::ContractError;
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) enum VaultCommand {
@@ -109,7 +110,7 @@ impl Soroban4626ProxyContract {
         require_non_negative(shares)?;
         caller.require_auth();
         let preview = call_proxy_view(&env, &caller, 0, shares)?;
-        let assets = preview.6;
+        let assets = preview.preview_mint_assets;
         require_non_negative(assets)?;
         expect_i128_result(invoke_vault_execute(
             &env,
@@ -134,7 +135,7 @@ impl Soroban4626ProxyContract {
         require_non_negative(assets)?;
         let share_token = read_share_token(&env)?;
         let preview = call_proxy_view(&env, &owner, assets, 0)?;
-        let shares = preview.7;
+        let shares = preview.preview_withdraw_shares;
         require_non_negative(shares)?;
         require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
         let request_id = expect_u64_result(invoke_vault_execute(
@@ -161,7 +162,7 @@ impl Soroban4626ProxyContract {
         let share_token = read_share_token(&env)?;
         require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
         let preview = call_proxy_view(&env, &owner, 0, shares)?;
-        let assets = preview.1;
+        let assets = preview.convert_to_assets;
         require_non_negative(assets)?;
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
@@ -213,7 +214,7 @@ impl Soroban4626ProxyContract {
 
     pub fn total_assets(env: Env) -> Result<i128, ContractError> {
         let response = call_proxy_view_full(&env, &env.current_contract_address(), 0, 0)?;
-        Ok(response.0 .2 .3)
+        Ok(response.core.totals.total_assets)
     }
 
     pub fn total_supply(env: Env) -> Result<i128, ContractError> {
@@ -228,12 +229,12 @@ impl Soroban4626ProxyContract {
 
     pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), assets, 0)?;
-        Ok(preview.0)
+        Ok(preview.convert_to_shares)
     }
 
     pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), 0, shares)?;
-        Ok(preview.1)
+        Ok(preview.convert_to_assets)
     }
 
     pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, ContractError> {
@@ -242,12 +243,12 @@ impl Soroban4626ProxyContract {
 
     pub fn preview_mint(env: Env, shares: i128) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), 0, shares)?;
-        Ok(preview.6)
+        Ok(preview.preview_mint_assets)
     }
 
     pub fn preview_withdraw(env: Env, assets: i128) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &env.current_contract_address(), assets, 0)?;
-        Ok(preview.7)
+        Ok(preview.preview_withdraw_shares)
     }
 
     pub fn preview_redeem(env: Env, shares: i128) -> Result<i128, ContractError> {
@@ -256,22 +257,22 @@ impl Soroban4626ProxyContract {
 
     pub fn max_deposit(env: Env, receiver: Address) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &receiver, 0, 0)?;
-        Ok(preview.2)
+        Ok(preview.max_deposit)
     }
 
     pub fn max_mint(env: Env, receiver: Address) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &receiver, 0, 0)?;
-        Ok(preview.3)
+        Ok(preview.max_mint)
     }
 
     pub fn max_withdraw(env: Env, owner: Address) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &owner, 0, 0)?;
-        Ok(preview.4)
+        Ok(preview.max_withdraw)
     }
 
     pub fn max_redeem(env: Env, owner: Address) -> Result<i128, ContractError> {
         let preview = call_proxy_view(&env, &owner, 0, 0)?;
-        Ok(preview.5)
+        Ok(preview.max_redeem)
     }
 
     pub fn decimals(env: Env) -> Result<u32, ContractError> {
@@ -388,7 +389,7 @@ fn call_proxy_view_full(
     owner: &Address,
     assets: i128,
     shares: i128,
-) -> Result<ProxyViewResponse, ContractError> {
+) -> Result<ProxyViewFields, ContractError> {
     let vault_address = read_vault_address(env)?;
     let proxy_view = Symbol::new(env, "proxy_view");
     let result = env.try_invoke_contract::<ProxyViewResponse, InvokeError>(
@@ -398,7 +399,7 @@ fn call_proxy_view_full(
     );
 
     match result {
-        Ok(Ok(response)) => Ok(response),
+        Ok(Ok(response)) => ProxyViewFields::try_from(response).map_err(|error| match error {}),
         Ok(Err(_)) => Err(ContractError::VaultError),
         Err(Ok(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
         Err(Err(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
@@ -417,10 +418,9 @@ fn call_proxy_view(
     owner: &Address,
     assets: i128,
     shares: i128,
-) -> Result<ProxyPreviewView, ContractError> {
+) -> Result<ProxyPreviewFields, ContractError> {
     let response = call_proxy_view_full(env, owner, assets, shares)?;
-    let (_, _, preview) = response;
-    Ok(preview)
+    Ok(response.preview)
 }
 
 fn call_token_view_no_args<T>(env: &Env, token: &Address, method: &str) -> Result<T, ContractError>
@@ -480,7 +480,7 @@ fn expect_u64_result(result: WireVaultCommandResult) -> Result<u64, ContractErro
 
 fn expect_unit_result(result: WireVaultCommandResult) -> Result<(), ContractError> {
     match result {
-        WireVaultCommandResult::Unit => Ok(()),
+        WireVaultCommandResult::Unit | WireVaultCommandResult::ExecuteWithdrawStatus(_) => Ok(()),
         _ => Err(ContractError::VaultError),
     }
 }

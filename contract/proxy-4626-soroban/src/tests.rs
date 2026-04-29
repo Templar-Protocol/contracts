@@ -5,7 +5,8 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Vec,
 };
 use templar_soroban_shared_types::{
-    VaultCommand as WireVaultCommand, VaultCommandResult as WireVaultCommandResult,
+    ExecuteWithdrawStatus, VaultCommand as WireVaultCommand,
+    VaultCommandResult as WireVaultCommandResult,
 };
 
 use crate::{
@@ -93,7 +94,14 @@ impl MockVaultContract {
         let result = match command {
             WireVaultCommand::DepositWithMin { .. } => WireVaultCommandResult::I128(1000),
             WireVaultCommand::RequestWithdraw { .. } => WireVaultCommandResult::U64(42),
-            WireVaultCommand::ExecuteWithdraw { .. } => WireVaultCommandResult::Unit,
+            WireVaultCommand::ExecuteWithdraw { .. } => {
+                WireVaultCommandResult::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
+                    op_state_before: 0,
+                    op_state_after: 0,
+                    assets_transferred: 0,
+                    events_emitted: 0,
+                })
+            }
             _ => WireVaultCommandResult::Unit,
         };
 
@@ -127,7 +135,7 @@ impl MockVaultContract {
                 ),
                 (0, 0, false),
                 (0, 0, 0, 0),
-                (0, 0, 0, 0),
+                (0, 0, 0, 0, 0),
             ),
             (Vec::new(&env), Vec::new(&env)),
             preview.into_preview(),
