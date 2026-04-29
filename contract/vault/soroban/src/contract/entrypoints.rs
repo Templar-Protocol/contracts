@@ -673,6 +673,62 @@ fn abort_withdrawing_impl(
     with_contract_vault_contract_error(env, &mut call)
 }
 
+fn atomic_withdraw_impl(
+    env: &Env,
+    owner: soroban_sdk::Address,
+    receiver: soroban_sdk::Address,
+    operator: soroban_sdk::Address,
+    assets: i128,
+    max_shares_burned: i128,
+) -> Result<i128, ContractError> {
+    if assets <= 0 || max_shares_burned < 0 {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let mut burned = 0i128;
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        burned = vault.atomic_withdraw(
+            env,
+            assets,
+            max_shares_burned,
+            receiver.clone(),
+            owner.clone(),
+            operator.clone(),
+        )?;
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+    Ok(burned)
+}
+
+fn atomic_redeem_impl(
+    env: &Env,
+    owner: soroban_sdk::Address,
+    receiver: soroban_sdk::Address,
+    operator: soroban_sdk::Address,
+    shares: i128,
+    min_assets_out: i128,
+) -> Result<i128, ContractError> {
+    if shares <= 0 || min_assets_out < 0 {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let mut assets_out = 0i128;
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        assets_out = vault.atomic_redeem(
+            env,
+            shares,
+            min_assets_out,
+            receiver.clone(),
+            owner.clone(),
+            operator.clone(),
+        )?;
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+    Ok(assets_out)
+}
+
 fn allocate_impl(
     env: &Env,
     caller: soroban_sdk::Address,
@@ -1118,6 +1174,34 @@ fn execute_public_command(
             abort_withdrawing_impl(env, address_from_alloc_string(env, &caller)?, op_id)?;
             Ok(VaultCommandResult::Unit)
         }
+        VaultCommand::AtomicWithdraw {
+            owner,
+            receiver,
+            operator,
+            assets,
+            max_shares_burned,
+        } => Ok(VaultCommandResult::I128(atomic_withdraw_impl(
+            env,
+            address_from_alloc_string(env, &owner)?,
+            address_from_alloc_string(env, &receiver)?,
+            address_from_alloc_string(env, &operator)?,
+            assets,
+            max_shares_burned,
+        )?)),
+        VaultCommand::AtomicRedeem {
+            owner,
+            receiver,
+            operator,
+            shares,
+            min_assets_out,
+        } => Ok(VaultCommandResult::I128(atomic_redeem_impl(
+            env,
+            address_from_alloc_string(env, &owner)?,
+            address_from_alloc_string(env, &receiver)?,
+            address_from_alloc_string(env, &operator)?,
+            shares,
+            min_assets_out,
+        )?)),
         VaultCommand::Allocate {
             caller,
             market,
@@ -1390,7 +1474,7 @@ impl SorobanVaultContract {
     #[allow(clippy::too_many_lines)]
     pub fn proxy_view(
         env: Env,
-        _owner: soroban_sdk::Address,
+        owner: soroban_sdk::Address,
         assets: i128,
         shares: i128,
     ) -> Result<
@@ -1529,10 +1613,16 @@ impl SorobanVaultContract {
             (0, 0)
         };
 
-        // The deployed public command ABI does not expose atomic withdraw/redeem. Keep
-        // ERC-4626-style max-withdraw/max-redeem truthful until those commands exist.
-        let max_withdraw_value = 0;
-        let max_redeem_value = 0;
+        let owner_shares = share_balance(&env, &owner).max(0) as u128;
+        let (max_withdraw_value, max_redeem_value) = if state.op_state.is_idle() && !config.paused {
+            let max_redeem_u128 =
+                owner_shares.min(convert_to_shares(&state, &config, state.idle_assets));
+            let max_withdraw_u128 =
+                convert_to_assets(&state, &config, owner_shares).min(state.idle_assets);
+            (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
+        } else {
+            (0, 0)
+        };
 
         let preview_mint_value = if shares <= 0 {
             0

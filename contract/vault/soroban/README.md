@@ -56,7 +56,7 @@ sequenceDiagram
     participant Interp as SorobanEffectInterpreter
     participant Storage as SorobanStorage
 
-    Caller->>Entry: invoke deposit / withdraw / admin action
+    Caller->>Entry: invoke deposit / atomic withdraw / queued action
     Entry->>Entry: require_auth()
     Entry->>Vault: load bootstrap + map addresses
     Vault->>Storage: load versioned state / config
@@ -105,9 +105,18 @@ the post-deposit anchor is written, so deposit principal cannot erase already ac
 
 ### Soroban-Specific Withdrawal Path
 
+The vault intentionally exposes two withdrawal modes:
+
+- `withdraw` / `redeem` are ERC-4626-style atomic exits from idle liquidity only. They never
+  enqueue work, never pull from adapters, and fail if the requested assets exceed `idle_assets`.
+- `request_withdraw` is the async path for positions that may require allocator/keeper work.
+  `execute_withdraw` advances the queue only when the head request is cooled down and fully
+  covered by idle assets; otherwise it fails atomically and leaves the request queued.
+
 ```mermaid
 sequenceDiagram
     actor User
+    actor Keeper
     participant Contract as SorobanVaultContract
     participant Vault as CuratorVault
     participant Kernel as apply_action()
@@ -121,18 +130,18 @@ sequenceDiagram
     Vault->>Share: transfer owner shares into escrow
     Contract-->>User: request_id
 
-    User->>Contract: execute_withdraw(caller)
+    Keeper->>Contract: execute_withdraw(caller)
     Contract->>Vault: execute_withdraw(...)
     Vault->>Kernel: ExecuteWithdraw
-    alt idle assets are sufficient
+    alt queue head is cooled down and fully idle-funded
         Vault->>Vault: complete_withdrawal_from_idle()
         Vault->>Asset: transfer assets to receiver
         Vault->>Kernel: SettlePayout
         Vault->>Share: burn escrow shares / refund remainder
-    else more liquidity must be freed
-        Note over Vault: allocator path updates market principals\nvia allocation + rebalance actions
+    else liquidity must be freed first
+        Note over Vault: transaction fails atomically; no partial payout is made\nallocator path must free liquidity before retry
     end
-    Contract-->>User: ok
+    Contract-->>Keeper: ok
 ```
 
 The typed `execute_withdraw` entrypoint keeps returning `Result<(), _>` for
