@@ -92,10 +92,16 @@ jobs:
         with:
           tool: just,nextest
 
-      - name: Run Soroban runtime tests
+      - name: Run Soroban contract tests
         env:
+          RUSTUP_TOOLCHAIN: 1.89.0
           SQLX_OFFLINE: true
-        run: cargo nextest run -p templar-soroban-runtime
+        run: |
+          cargo nextest run \
+            -p templar-soroban-runtime \
+            -p templar-soroban-governance \
+            -p templar-soroban-share-token \
+            -p templar-soroban-blend-adapter
 
       - name: Install packages
         run: sudo apt install libdbus-1-dev libudev-dev pkg-config

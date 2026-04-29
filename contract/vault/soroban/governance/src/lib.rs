@@ -639,6 +639,10 @@ fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
     }
 }
 
+fn cap_to_u128(value: i128) -> Result<u128, GovernanceError> {
+    nonnegative_i128_to_u128(value).ok_or(GovernanceError::InvalidInput)
+}
+
 #[allow(clippy::too_many_lines)]
 fn decide_submission(
     env: &Env,
@@ -748,8 +752,13 @@ fn decide_submission(
                 Ok(TimelockDecision::Immediate)
             }
         }
-        GovernanceAction::SetCap(_, new_cap) => {
-            let decision = TimelockDecision::from_cap_change(None, to_wad(*new_cap)?.into());
+        GovernanceAction::SetCap(market_id, new_cap) => {
+            let current: Option<i128> = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentCap(*market_id));
+            let current = current.map(cap_to_u128).transpose()?;
+            let decision = TimelockDecision::from_cap_change(current, cap_to_u128(*new_cap)?);
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
@@ -757,18 +766,28 @@ fn decide_submission(
             }
         }
         GovernanceAction::RemoveMarket(_) => Ok(TimelockDecision::from_requires_timelock(true)),
-        GovernanceAction::SetGroupCap(_, new_cap) => {
+        GovernanceAction::SetGroupCap(cap_group_id, new_cap) => {
+            let current: Option<i128> = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentCapGroupCap(cap_group_id.clone()));
+            let current = current.map(cap_to_u128).transpose()?;
             let decision =
-                TimelockDecision::from_cap_group_cap_change(None, Some(to_wad(*new_cap)?.into()));
+                TimelockDecision::from_cap_group_cap_change(current, Some(cap_to_u128(*new_cap)?));
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
                 Err(CapChangeError::NoChange) => Err(GovernanceError::NoChange),
             }
         }
-        GovernanceAction::SetGroupRelCap(_, new_relative_cap_wad) => {
+        GovernanceAction::SetGroupRelCap(cap_group_id, new_relative_cap_wad) => {
+            let current: Option<i128> = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentCapGroupRelCap(cap_group_id.clone()));
+            let current = current.map(to_wad).transpose()?;
             match TimelockDecision::from_relative_cap_change(
-                None,
+                current,
                 Some(to_wad(*new_relative_cap_wad)?),
             ) {
                 Ok(decision) => Ok(decision),
@@ -1057,11 +1076,33 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             execute_vault_governance_action(env, &vault, action)?;
             env.storage().instance().set(&DataKey::Sentinel, sentinel);
         }
-        GovernanceAction::SetCap(_, _)
-        | GovernanceAction::RemoveMarket(_)
-        | GovernanceAction::SetGroupCap(_, _)
-        | GovernanceAction::SetGroupRelCap(_, _) => {
-            execute_vault_governance_action(env, &vault, action)?
+        GovernanceAction::SetCap(market_id, cap) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentCap(*market_id), cap);
+        }
+        GovernanceAction::RemoveMarket(market_id) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage()
+                .instance()
+                .remove(&DataKey::CurrentCap(*market_id));
+            env.storage()
+                .instance()
+                .remove(&DataKey::CurrentCapGroupMembership(*market_id));
+        }
+        GovernanceAction::SetGroupCap(cap_group_id, cap) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentCapGroupCap(cap_group_id.clone()), cap);
+        }
+        GovernanceAction::SetGroupRelCap(cap_group_id, relative_cap) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage().instance().set(
+                &DataKey::CurrentCapGroupRelCap(cap_group_id.clone()),
+                relative_cap,
+            );
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
             execute_vault_governance_action(env, &vault, action)?;

@@ -153,7 +153,7 @@ fn apply_cap_policy(
 ) -> Result<(), ContractError> {
     let new_cap_u128 = to_u128(new_cap)?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.set_cap(caller_kernel, market_id, new_cap_u128)
+        vault.apply_governance_cap(caller_kernel, market_id, new_cap_u128)
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -164,7 +164,7 @@ fn apply_remove_market_policy(
     market_id: u32,
 ) -> Result<(), ContractError> {
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.remove_market(caller_kernel, market_id)
+        vault.apply_governance_remove_market(caller_kernel, market_id)
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -246,7 +246,7 @@ fn apply_group_policy(
         let update = internal
             .take()
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
-        vault.update_cap_group(caller_kernel, update)
+        vault.apply_governance_cap_group_update(caller_kernel, update)
     };
     with_contract_vault_contract_error(env, &mut call)
 }

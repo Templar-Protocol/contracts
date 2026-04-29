@@ -39,6 +39,7 @@ use soroban_sdk::{
 };
 use templar_curator_primitives::governance::TimelockDecision;
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, CapGroupUpdate};
+use templar_curator_primitives::policy::state::MarketConfig;
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 use templar_curator_primitives::PolicyState;

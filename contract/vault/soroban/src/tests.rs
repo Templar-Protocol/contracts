@@ -1976,8 +1976,8 @@ mod storage_tests {
     use templar_soroban_shared_types::{
         GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
         GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-        GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_GROUP,
-        GOVERNANCE_POLICY_KIND_PAUSED,
+        GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP,
+        GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
@@ -2704,6 +2704,256 @@ mod storage_tests {
                     .and_then(|config| config.cap_group_id.clone()),
                 None
             );
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_cap_increase_applies_to_runtime_policy() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = PolicyState::default();
+            policy_state
+                .set_market_config(7, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_CAP,
+                    target_ids: None,
+                    mode: None,
+                    accounts: None,
+                    market_id: Some(7),
+                    cap_group_id: None,
+                    value: Some(200),
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded.market_config(7).map(|config| config.cap),
+                Some(200)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_cap_creates_new_runtime_market_after_timelock() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_CAP,
+                    target_ids: None,
+                    mode: None,
+                    accounts: None,
+                    market_id: Some(9),
+                    cap_group_id: None,
+                    value: Some(123),
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
+
+            let storage = SorobanStorage::new(&env);
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded.market_config(9).map(|config| config.cap),
+                Some(123)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_group_cap_increase_and_membership_apply() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let cap_group_id = CapGroupId::try_from("group-c".to_string()).unwrap();
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = PolicyState::default();
+            policy_state.set_cap_group_absolute_cap(cap_group_id.clone(), Some(100));
+            policy_state
+                .set_market_config(7, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_GROUP,
+                target_ids: None,
+                mode: Some(0),
+                accounts: None,
+                market_id: None,
+                cap_group_id: Some("group-c".to_string()),
+                value: Some(200),
+                value_b: None,
+                value_c: None,
+            },
+        );
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_GROUP,
+                target_ids: None,
+                mode: Some(2),
+                accounts: None,
+                market_id: Some(7),
+                cap_group_id: Some("group-c".to_string()),
+                value: None,
+                value_b: None,
+                value_c: None,
+            },
+        );
+
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.absolute_cap()),
+                Some(200)
+            );
+            assert_eq!(
+                reloaded
+                    .market_config(7)
+                    .and_then(|config| config.cap_group_id.clone()),
+                Some(cap_group_id)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_remove_market_with_principal_after_timelock() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = PolicyState::default();
+            policy_state
+                .set_market_config(7, MarketConfig::new(true, 0, None))
+                .unwrap();
+            policy_state.set_principal(7, 50).unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+                    target_ids: None,
+                    mode: None,
+                    accounts: None,
+                    market_id: Some(7),
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert!(reloaded.market_config(7).is_none());
+            assert_eq!(reloaded.principal_entry(7), None);
         });
     }
 

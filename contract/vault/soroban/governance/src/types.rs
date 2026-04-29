@@ -21,6 +21,9 @@ pub(crate) enum DataKey {
     CurrentCapGroupMembership(u32),
     Abdicated(GovernanceActionKind),
     SkimRecipient,
+    CurrentCap(u32),
+    CurrentCapGroupCap(String),
+    CurrentCapGroupRelCap(String),
 }
 
 #[contracttype]

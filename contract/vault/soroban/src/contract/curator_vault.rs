@@ -1057,6 +1057,28 @@ where
         Ok(())
     }
 
+    pub fn apply_governance_cap(
+        &mut self,
+        caller: Address,
+        market_id: TargetId,
+        new_cap: u128,
+    ) -> Result<(), RuntimeError> {
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+
+        if self.policy_state.market_config(market_id).is_some() {
+            self.policy_state
+                .set_market_cap(market_id, new_cap)
+                .map_err(|_| RuntimeError::invalid_input(""))?;
+        } else {
+            self.policy_state
+                .set_market_config(market_id, MarketConfig::new(true, new_cap, None))
+                .map_err(|_| RuntimeError::invalid_input(""))?;
+        }
+
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(())
+    }
+
     pub fn remove_market(
         &mut self,
         caller: Address,
@@ -1079,6 +1101,30 @@ where
         if TimelockDecision::from_requires_timelock(principal > 0).requires_timelock() {
             return Err(RuntimeError::invalid_input(
                 "market with principal requires timelock",
+            ));
+        }
+
+        let _ = self
+            .policy_state
+            .remove_market(market_id)
+            .map_err(|_| RuntimeError::invalid_input(""))?;
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(())
+    }
+
+    pub fn apply_governance_remove_market(
+        &mut self,
+        caller: Address,
+        market_id: TargetId,
+    ) -> Result<(), RuntimeError> {
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+
+        let Some(config) = self.policy_state.market_config(market_id) else {
+            return Err(RuntimeError::invalid_input(""));
+        };
+        if config.cap > 0 {
+            return Err(RuntimeError::invalid_input(
+                "cannot remove market with non-zero cap",
             ));
         }
 
@@ -1166,6 +1212,42 @@ where
                             RuntimeError::invalid_input("")
                         }
                     })?;
+            }
+        }
+
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(())
+    }
+
+    pub fn apply_governance_cap_group_update(
+        &mut self,
+        caller: Address,
+        update: CapGroupUpdate,
+    ) -> Result<(), RuntimeError> {
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+
+        match update {
+            CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => {
+                self.policy_state
+                    .set_cap_group_absolute_cap(cap_group_id, new_cap);
+            }
+            CapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap,
+            } => {
+                self.policy_state
+                    .set_cap_group_relative_cap(cap_group_id, new_relative_cap);
+            }
+            CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => {
+                self.policy_state
+                    .set_market_cap_group(market_id, cap_group_id)
+                    .map_err(|_| RuntimeError::invalid_input(""))?;
             }
         }
 
