@@ -12,6 +12,205 @@ pub enum CodecError {
     InvalidEncoding,
 }
 
+pub type ProxyAddressesView = (
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+);
+pub type ProxyVirtualOffsetsView = (i128, i128, bool);
+pub type ProxyTotalsView = (i128, i128, i128, i128);
+pub type ProxyFeesView = (i128, u64, i128, i128, i128);
+pub type ProxyCoreView = (
+    ProxyAddressesView,
+    ProxyVirtualOffsetsView,
+    ProxyTotalsView,
+    ProxyFeesView,
+);
+pub type ProxyCapGroupView = (soroban_sdk::String, i128, i128);
+pub type ProxyPolicyView = (soroban_sdk::Vec<u32>, soroban_sdk::Vec<ProxyCapGroupView>);
+pub type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
+pub type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
+
+#[derive(Clone)]
+pub struct ProxyAddressesFields {
+    pub curator: soroban_sdk::Address,
+    pub governance: soroban_sdk::Address,
+    pub asset_token: soroban_sdk::Address,
+    pub share_token: soroban_sdk::Address,
+}
+
+#[derive(Clone)]
+pub struct ProxyVirtualOffsetsFields {
+    pub virtual_shares: i128,
+    pub virtual_assets: i128,
+    pub paused: bool,
+}
+
+#[derive(Clone)]
+pub struct ProxyTotalsFields {
+    pub total_shares: i128,
+    pub idle_assets: i128,
+    pub external_assets: i128,
+    pub total_assets: i128,
+}
+
+#[derive(Clone)]
+pub struct ProxyFeesFields {
+    pub fee_total_assets: i128,
+    pub fee_timestamp_ns: u64,
+    pub management_fee_wad: i128,
+    pub performance_fee_wad: i128,
+    pub max_total_assets_growth_rate_wad: i128,
+}
+
+#[derive(Clone)]
+pub struct ProxyCoreFields {
+    pub addresses: ProxyAddressesFields,
+    pub virtual_offsets: ProxyVirtualOffsetsFields,
+    pub totals: ProxyTotalsFields,
+    pub fees: ProxyFeesFields,
+}
+
+#[derive(Clone)]
+pub struct ProxyPolicyFields {
+    pub supply_queue: soroban_sdk::Vec<u32>,
+    pub cap_groups: soroban_sdk::Vec<ProxyCapGroupView>,
+}
+
+#[derive(Clone)]
+pub struct ProxyPreviewFields {
+    pub convert_to_shares: i128,
+    pub convert_to_assets: i128,
+    pub max_deposit: i128,
+    pub max_mint: i128,
+    pub max_withdraw: i128,
+    pub max_redeem: i128,
+    pub preview_mint_assets: i128,
+    pub preview_withdraw_shares: i128,
+}
+
+#[derive(Clone)]
+pub struct ProxyViewFields {
+    pub core: ProxyCoreFields,
+    pub policy: ProxyPolicyFields,
+    pub preview: ProxyPreviewFields,
+}
+
+impl From<ProxyAddressesView> for ProxyAddressesFields {
+    fn from(value: ProxyAddressesView) -> Self {
+        let (curator, governance, asset_token, share_token) = value;
+        Self {
+            curator,
+            governance,
+            asset_token,
+            share_token,
+        }
+    }
+}
+
+impl From<ProxyVirtualOffsetsView> for ProxyVirtualOffsetsFields {
+    fn from(value: ProxyVirtualOffsetsView) -> Self {
+        let (virtual_shares, virtual_assets, paused) = value;
+        Self {
+            virtual_shares,
+            virtual_assets,
+            paused,
+        }
+    }
+}
+
+impl From<ProxyTotalsView> for ProxyTotalsFields {
+    fn from(value: ProxyTotalsView) -> Self {
+        let (total_shares, idle_assets, external_assets, total_assets) = value;
+        Self {
+            total_shares,
+            idle_assets,
+            external_assets,
+            total_assets,
+        }
+    }
+}
+
+impl From<ProxyFeesView> for ProxyFeesFields {
+    fn from(value: ProxyFeesView) -> Self {
+        let (
+            fee_total_assets,
+            fee_timestamp_ns,
+            management_fee_wad,
+            performance_fee_wad,
+            max_total_assets_growth_rate_wad,
+        ) = value;
+        Self {
+            fee_total_assets,
+            fee_timestamp_ns,
+            management_fee_wad,
+            performance_fee_wad,
+            max_total_assets_growth_rate_wad,
+        }
+    }
+}
+
+impl From<ProxyCoreView> for ProxyCoreFields {
+    fn from(value: ProxyCoreView) -> Self {
+        let (addresses, virtual_offsets, totals, fees) = value;
+        Self {
+            addresses: addresses.into(),
+            virtual_offsets: virtual_offsets.into(),
+            totals: totals.into(),
+            fees: fees.into(),
+        }
+    }
+}
+
+impl From<ProxyPolicyView> for ProxyPolicyFields {
+    fn from(value: ProxyPolicyView) -> Self {
+        let (supply_queue, cap_groups) = value;
+        Self {
+            supply_queue,
+            cap_groups,
+        }
+    }
+}
+
+impl From<ProxyPreviewView> for ProxyPreviewFields {
+    fn from(value: ProxyPreviewView) -> Self {
+        let (
+            convert_to_shares,
+            convert_to_assets,
+            max_deposit,
+            max_mint,
+            max_withdraw,
+            max_redeem,
+            preview_mint_assets,
+            preview_withdraw_shares,
+        ) = value;
+        Self {
+            convert_to_shares,
+            convert_to_assets,
+            max_deposit,
+            max_mint,
+            max_withdraw,
+            max_redeem,
+            preview_mint_assets,
+            preview_withdraw_shares,
+        }
+    }
+}
+
+impl TryFrom<ProxyViewResponse> for ProxyViewFields {
+    type Error = core::convert::Infallible;
+
+    fn try_from(value: ProxyViewResponse) -> Result<Self, Self::Error> {
+        let (core, policy, preview) = value;
+        Ok(Self {
+            core: core.into(),
+            policy: policy.into(),
+            preview: preview.into(),
+        })
+    }
+}
+
 fn push_u8(out: &mut Vec<u8>, value: u8) {
     out.push(value);
 }
@@ -558,6 +757,14 @@ impl VaultCommandResult {
 mod tests {
     use super::*;
     use alloc::{string::String, vec};
+    use soroban_sdk::{Address, Env, String as SdkString, Vec as SdkVec};
+
+    fn sdk_address(env: &Env) -> Address {
+        Address::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        )
+    }
 
     #[test]
     fn vault_command_roundtrip_representative() {
@@ -781,5 +988,56 @@ mod tests {
         let encoded = result.encode();
         let decoded = VaultCommandResult::decode(&encoded).expect("decode command result");
         assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn proxy_view_fields_map_wire_tuple_positions() {
+        let env = Env::default();
+        let address = sdk_address(&env);
+        let mut queue = SdkVec::new(&env);
+        queue.push_back(7);
+        let group_id = SdkString::from_str(&env, "senior");
+        let mut groups = SdkVec::new(&env);
+        groups.push_back((group_id.clone(), 8, 9));
+
+        let fields = ProxyViewFields::try_from((
+            (
+                (
+                    address.clone(),
+                    address.clone(),
+                    address.clone(),
+                    address.clone(),
+                ),
+                (10, 11, true),
+                (20, 21, 22, 23),
+                (30, 31, 32, 33, 34),
+            ),
+            (queue.clone(), groups.clone()),
+            (40, 41, 42, 43, 44, 45, 46, 47),
+        ))
+        .expect("proxy view response decodes");
+
+        assert_eq!(fields.core.virtual_offsets.virtual_shares, 10);
+        assert_eq!(fields.core.virtual_offsets.virtual_assets, 11);
+        assert!(fields.core.virtual_offsets.paused);
+        assert_eq!(fields.core.totals.total_shares, 20);
+        assert_eq!(fields.core.totals.idle_assets, 21);
+        assert_eq!(fields.core.totals.external_assets, 22);
+        assert_eq!(fields.core.totals.total_assets, 23);
+        assert_eq!(fields.core.fees.fee_total_assets, 30);
+        assert_eq!(fields.core.fees.fee_timestamp_ns, 31);
+        assert_eq!(fields.core.fees.management_fee_wad, 32);
+        assert_eq!(fields.core.fees.performance_fee_wad, 33);
+        assert_eq!(fields.core.fees.max_total_assets_growth_rate_wad, 34);
+        assert!(fields.policy.supply_queue == queue);
+        assert!(fields.policy.cap_groups == groups);
+        assert_eq!(fields.preview.convert_to_shares, 40);
+        assert_eq!(fields.preview.convert_to_assets, 41);
+        assert_eq!(fields.preview.max_deposit, 42);
+        assert_eq!(fields.preview.max_mint, 43);
+        assert_eq!(fields.preview.max_withdraw, 44);
+        assert_eq!(fields.preview.max_redeem, 45);
+        assert_eq!(fields.preview.preview_mint_assets, 46);
+        assert_eq!(fields.preview.preview_withdraw_shares, 47);
     }
 }
