@@ -401,8 +401,9 @@ pub fn validate_allocations(
         let (_, canonical_record, prior_cumulative) = match existing {
             Some(existing) => existing,
             None => {
+                let index = cumulative.len();
                 cumulative.push((group_id, (*record).clone(), 0));
-                cumulative.last_mut().unwrap()
+                &mut cumulative[index]
             }
         };
 

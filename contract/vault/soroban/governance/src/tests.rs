@@ -11,7 +11,7 @@ use soroban_sdk::{
     Bytes, BytesN, String as SdkString,
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    EmptyReceipt, GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
     GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
@@ -279,7 +279,7 @@ impl MockVault {
                     &MockVaultKey::LastCancelMigrationCaller,
                     &sdk_address(&env, &caller),
                 );
-                Bytes::from_slice(&env, &VaultCommandResult::Unit.encode())
+                Bytes::from_slice(&env, &EmptyReceipt.encode())
             }
             _ => panic!("unexpected vault command"),
         }

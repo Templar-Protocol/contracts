@@ -72,6 +72,15 @@ def read_i128(data: bytes, cursor: int) -> tuple[int, int]:
     return int.from_bytes(raw, "little", signed=True), cursor
 
 
+def read_string(data: bytes, cursor: int) -> tuple[str, int]:
+    length, cursor = read_u32(data, cursor)
+    raw, cursor = read_exact(data, cursor, length)
+    try:
+        return raw.decode("utf-8"), cursor
+    except UnicodeDecodeError as exc:
+        raise ValueError("invalid UTF-8 string") from exc
+
+
 def parse_u32_json(value: str) -> list[int]:
     parsed = json.loads(value)
     if not isinstance(parsed, list):
@@ -144,33 +153,65 @@ def encode_vault(args: argparse.Namespace) -> str:
     return out.hex()
 
 
-def decode_result(hex_payload: str) -> dict[str, object]:
+def read_execute_withdraw_status(data: bytes, cursor: int) -> tuple[dict[str, object], int]:
+    before, cursor = read_u32(data, cursor)
+    after, cursor = read_u32(data, cursor)
+    assets, cursor = read_u128(data, cursor)
+    events, cursor = read_u32(data, cursor)
+    return {
+        "op_state_before": before,
+        "op_state_after": after,
+        "assets_transferred": assets,
+        "events_emitted": events,
+    }, cursor
+
+
+def decode_receipt(hex_payload: str) -> dict[str, object]:
     data = bytes.fromhex(hex_payload.removeprefix("0x"))
     tag, cursor = read_u8(data, 0)
     if tag == 0:
-        result: dict[str, object] = {"kind": "unit"}
+        shares, cursor = read_i128(data, cursor)
+        result: dict[str, object] = {"kind": "deposit", "shares_out": shares}
     elif tag == 1:
+        request_id, cursor = read_u64(data, cursor)
+        shares, cursor = read_i128(data, cursor)
+        result = {
+            "kind": "request_withdraw",
+            "request_id": request_id,
+            "shares_escrowed": shares,
+        }
+    elif tag == 2:
+        variant, cursor = read_u8(data, cursor)
+        if variant == 0:
+            status, cursor = read_execute_withdraw_status(data, cursor)
+            result = {"kind": "execute_withdraw_no_payout", "status": status}
+        elif variant == 1:
+            request_id, cursor = read_u64(data, cursor)
+            owner, cursor = read_string(data, cursor)
+            receiver, cursor = read_string(data, cursor)
+            assets_out, cursor = read_u128(data, cursor)
+            shares_burned, cursor = read_u128(data, cursor)
+            status, cursor = read_execute_withdraw_status(data, cursor)
+            result = {
+                "kind": "execute_withdraw_completed",
+                "request_id": request_id,
+                "owner": owner,
+                "receiver": receiver,
+                "assets_out": assets_out,
+                "shares_burned": shares_burned,
+                "status": status,
+            }
+        else:
+            raise ValueError(f"invalid execute-withdraw receipt tag: {variant}")
+    elif tag == 3:
         value, cursor = read_i128(data, cursor)
         result = {"kind": "i128", "value": value}
-    elif tag == 2:
-        value, cursor = read_u64(data, cursor)
-        result = {"kind": "u64", "value": value}
-    elif tag == 3:
-        before, cursor = read_u32(data, cursor)
-        after, cursor = read_u32(data, cursor)
-        assets, cursor = read_u128(data, cursor)
-        events, cursor = read_u32(data, cursor)
-        result = {
-            "kind": "execute_withdraw_status",
-            "op_state_before": before,
-            "op_state_after": after,
-            "assets_transferred": assets,
-            "events_emitted": events,
-        }
+    elif tag == 4:
+        result = {"kind": "empty"}
     else:
-        raise ValueError(f"invalid result tag: {tag}")
+        raise ValueError(f"invalid receipt tag: {tag}")
     if cursor != len(data):
-        raise ValueError("trailing bytes in result")
+        raise ValueError("trailing bytes in receipt")
     return result
 
 
@@ -233,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vault_sub.add_parser("extend-ttl")
 
-    result = subcommands.add_parser("result", help="decode a VaultCommandResult hex payload")
+    result = subcommands.add_parser("result", help="decode a vault execute receipt hex payload")
     result.add_argument("hex")
     return parser
 
@@ -244,7 +285,7 @@ def main() -> int:
         if args.mode == "vault":
             print(encode_vault(args))
         elif args.mode == "result":
-            print(json.dumps(decode_result(args.hex), sort_keys=True))
+            print(json.dumps(decode_receipt(args.hex), sort_keys=True))
         else:
             raise ValueError(f"unknown mode: {args.mode}")
     except Exception as exc:

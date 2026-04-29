@@ -145,7 +145,10 @@ impl SupplyQueue {
 
     #[must_use]
     pub fn len(&self) -> usize {
-        usize::try_from(self.len).unwrap()
+        match usize::try_from(self.len) {
+            Ok(len) => len,
+            Err(_) => unreachable!("u32 supply queue length must fit usize"),
+        }
     }
 
     #[must_use]
@@ -172,9 +175,10 @@ impl SupplyQueue {
         entry.validate()?;
 
         if self.is_full() {
-            return Err(SupplyQueueError::QueueFull {
-                max_length: self.max_length.unwrap(),
-            });
+            let Some(max_length) = self.max_length else {
+                return Err(SupplyQueueError::LengthOverflow);
+            };
+            return Err(SupplyQueueError::QueueFull { max_length });
         }
 
         self.push_validated_entry(entry)
@@ -218,8 +222,9 @@ impl SupplyQueue {
             {
                 Some((_, total)) => total,
                 None => {
+                    let index = totals.len();
                     totals.push((entry.target_id, 0));
-                    &mut totals.last_mut().unwrap().1
+                    &mut totals[index].1
                 }
             };
             *sum = (*sum)
