@@ -418,8 +418,9 @@ impl PolicyState {
 
     pub fn set_cap_group_absolute_cap(&mut self, cap_group_id: CapGroupId, new_cap: Option<u128>) {
         self.ensure_cap_group(cap_group_id.clone());
-        let record = self.cap_groups.get_mut(&cap_group_id).unwrap();
-        record.cap.set_absolute_cap(new_cap);
+        if let Some(record) = self.cap_groups.get_mut(&cap_group_id) {
+            record.cap.set_absolute_cap(new_cap);
+        }
     }
 
     pub fn set_cap_group_relative_cap(
@@ -428,8 +429,9 @@ impl PolicyState {
         new_relative_cap: Option<templar_vault_kernel::Wad>,
     ) {
         self.ensure_cap_group(cap_group_id.clone());
-        let record = self.cap_groups.get_mut(&cap_group_id).unwrap();
-        record.cap.set_relative_cap(new_relative_cap);
+        if let Some(record) = self.cap_groups.get_mut(&cap_group_id) {
+            record.cap.set_relative_cap(new_relative_cap);
+        }
     }
 
     pub fn recompute_cap_group_principals(&mut self) -> Result<(), PolicyStateError> {

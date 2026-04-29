@@ -18,15 +18,15 @@ use super::*;
 use crate::storage::{SorobanStorage, Storage};
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
-    ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
-    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-    GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus, GovernanceCommand,
+    I128Receipt, RequestWithdrawReceipt, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
@@ -590,7 +590,7 @@ fn request_withdraw_impl(
     receiver: soroban_sdk::Address,
     shares: i128,
     min_assets_out: i128,
-) -> Result<u64, ContractError> {
+) -> Result<RequestWithdrawReceipt, ContractError> {
     require_signed(&owner);
     if shares <= 0 {
         return Err(ContractError::InvalidInput);
@@ -604,15 +604,20 @@ fn request_withdraw_impl(
     let now_ns = ledger_timestamp_ns(env)?;
 
     let mut request_id = 0u64;
+    let mut shares_escrowed = 0u128;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result =
             vault.request_withdraw(caller_k, receiver_k, shares_u128, min_assets_u128, now_ns)?;
         request_id = result.request_id;
+        shares_escrowed = result.shares_escrowed;
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
-    Ok(request_id)
+    Ok(RequestWithdrawReceipt {
+        request_id,
+        shares_escrowed: to_i128(shares_escrowed)?,
+    })
 }
 
 fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
@@ -635,7 +640,7 @@ fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
 fn execute_withdraw_impl(
     env: &Env,
     caller: soroban_sdk::Address,
-) -> Result<ExecuteWithdrawStatus, ContractError> {
+) -> Result<ExecuteWithdrawReceipt, ContractError> {
     require_signed(&caller);
     let now_ns = ledger_timestamp_ns(env)?;
 
@@ -645,17 +650,39 @@ fn execute_withdraw_impl(
         assets_transferred: 0,
         events_emitted: 0,
     };
+    let mut completed = None;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         status.op_state_before = vault.state()?.op_state.kind_code();
         let caller_k = vault.map_caller(env, &caller)?;
-        let summary = vault.execute_withdraw(caller_k, now_ns)?;
+        let result = vault.execute_withdraw(caller_k, now_ns)?;
         status.op_state_after = vault.state()?.op_state.kind_code();
-        status.assets_transferred = summary.assets_transferred;
-        status.events_emitted = summary.events_emitted;
+        status.assets_transferred = result.summary.assets_transferred;
+        status.events_emitted = result.summary.events_emitted;
+        completed = result.completed;
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
-    Ok(status)
+
+    let Some(completed) = completed else {
+        return Ok(ExecuteWithdrawReceipt::NoPayout { status });
+    };
+
+    let storage = SorobanStorage::new(env);
+    let owner = storage
+        .load_address(&completed.owner)
+        .ok_or(ContractError::StorageError)?;
+    let receiver = storage
+        .load_address(&completed.receiver)
+        .ok_or(ContractError::StorageError)?;
+
+    Ok(ExecuteWithdrawReceipt::Completed {
+        request_id: completed.request_id,
+        owner: sdk_string_to_alloc(owner.to_string())?,
+        receiver: sdk_string_to_alloc(receiver.to_string())?,
+        assets_out: completed.assets_out,
+        shares_burned: completed.shares_burned,
+        status,
+    })
 }
 
 fn abort_withdrawing_impl(
@@ -1138,41 +1165,45 @@ fn require_governance_command_authorization(
     }
 }
 
-fn execute_public_command(
-    env: &Env,
-    command: VaultCommand,
-) -> Result<VaultCommandResult, ContractError> {
+fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, ContractError> {
     match command {
         VaultCommand::DepositWithMin {
             owner,
             receiver,
             assets,
             min_shares_out,
-        } => Ok(VaultCommandResult::I128(deposit_with_min_impl(
-            env,
-            address_from_alloc_string(env, &owner)?,
-            address_from_alloc_string(env, &receiver)?,
-            assets,
-            min_shares_out,
-        )?)),
+        } => {
+            let shares_out = deposit_with_min_impl(
+                env,
+                address_from_alloc_string(env, &owner)?,
+                address_from_alloc_string(env, &receiver)?,
+                assets,
+                min_shares_out,
+            )?;
+            Ok(encode_receipt(env, &DepositReceipt { shares_out }.encode()))
+        }
         VaultCommand::RequestWithdraw {
             owner,
             receiver,
             shares,
             min_assets_out,
-        } => Ok(VaultCommandResult::U64(request_withdraw_impl(
-            env,
-            address_from_alloc_string(env, &owner)?,
-            address_from_alloc_string(env, &receiver)?,
-            shares,
-            min_assets_out,
-        )?)),
-        VaultCommand::ExecuteWithdraw { caller } => Ok(VaultCommandResult::ExecuteWithdrawStatus(
-            execute_withdraw_impl(env, address_from_alloc_string(env, &caller)?)?,
-        )),
+        } => {
+            let receipt = request_withdraw_impl(
+                env,
+                address_from_alloc_string(env, &owner)?,
+                address_from_alloc_string(env, &receiver)?,
+                shares,
+                min_assets_out,
+            )?;
+            Ok(encode_receipt(env, &receipt.encode()))
+        }
+        VaultCommand::ExecuteWithdraw { caller } => {
+            let receipt = execute_withdraw_impl(env, address_from_alloc_string(env, &caller)?)?;
+            Ok(encode_receipt(env, &receipt.encode()))
+        }
         VaultCommand::AbortWithdrawing { caller, op_id } => {
             abort_withdrawing_impl(env, address_from_alloc_string(env, &caller)?, op_id)?;
-            Ok(VaultCommandResult::Unit)
+            Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
         VaultCommand::AtomicWithdraw {
             owner,
@@ -1180,66 +1211,73 @@ fn execute_public_command(
             operator,
             assets,
             max_shares_burned,
-        } => Ok(VaultCommandResult::I128(atomic_withdraw_impl(
-            env,
-            address_from_alloc_string(env, &owner)?,
-            address_from_alloc_string(env, &receiver)?,
-            address_from_alloc_string(env, &operator)?,
-            assets,
-            max_shares_burned,
-        )?)),
+        } => {
+            let value = atomic_withdraw_impl(
+                env,
+                address_from_alloc_string(env, &owner)?,
+                address_from_alloc_string(env, &receiver)?,
+                address_from_alloc_string(env, &operator)?,
+                assets,
+                max_shares_burned,
+            )?;
+            Ok(encode_receipt(env, &I128Receipt { value }.encode()))
+        }
         VaultCommand::AtomicRedeem {
             owner,
             receiver,
             operator,
             shares,
             min_assets_out,
-        } => Ok(VaultCommandResult::I128(atomic_redeem_impl(
-            env,
-            address_from_alloc_string(env, &owner)?,
-            address_from_alloc_string(env, &receiver)?,
-            address_from_alloc_string(env, &operator)?,
-            shares,
-            min_assets_out,
-        )?)),
+        } => {
+            let value = atomic_redeem_impl(
+                env,
+                address_from_alloc_string(env, &owner)?,
+                address_from_alloc_string(env, &receiver)?,
+                address_from_alloc_string(env, &operator)?,
+                shares,
+                min_assets_out,
+            )?;
+            Ok(encode_receipt(env, &I128Receipt { value }.encode()))
+        }
         VaultCommand::Allocate {
             caller,
             market,
             amount,
             supply,
-        } => Ok(VaultCommandResult::I128(allocate_impl(
-            env,
-            address_from_alloc_string(env, &caller)?,
-            market,
-            amount,
-            supply,
-        )?)),
+        } => {
+            let value = allocate_impl(
+                env,
+                address_from_alloc_string(env, &caller)?,
+                market,
+                amount,
+                supply,
+            )?;
+            Ok(encode_receipt(env, &I128Receipt { value }.encode()))
+        }
         VaultCommand::RefreshMarkets { caller, markets } => {
             let mut sdk_markets = soroban_sdk::Vec::new(env);
             for market in markets {
                 sdk_markets.push_back(market);
             }
-            Ok(VaultCommandResult::I128(refresh_markets_impl(
-                env,
-                address_from_alloc_string(env, &caller)?,
-                sdk_markets,
-            )?))
+            let value =
+                refresh_markets_impl(env, address_from_alloc_string(env, &caller)?, sdk_markets)?;
+            Ok(encode_receipt(env, &I128Receipt { value }.encode()))
         }
         VaultCommand::RefreshFees => {
             refresh_fees_impl(env)?;
-            Ok(VaultCommandResult::Unit)
+            Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
         VaultCommand::ResyncIdleBalance => {
             resync_idle_balance_impl(env)?;
-            Ok(VaultCommandResult::Unit)
+            Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
         VaultCommand::CancelMigration { caller } => {
             cancel_migration_impl(env, address_from_alloc_string(env, &caller)?)?;
-            Ok(VaultCommandResult::Unit)
+            Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
         VaultCommand::ExtendTtl => {
             extend_storage_ttl(env);
-            Ok(VaultCommandResult::Unit)
+            Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
     }
 }
@@ -1451,8 +1489,7 @@ impl SorobanVaultContract {
 
     pub fn execute(env: Env, payload: Bytes) -> Result<Bytes, ContractError> {
         let command = decode_command(&payload)?;
-        let result = execute_public_command(&env, command)?;
-        encode_command_result(&env, &result)
+        execute_public_command(&env, command)
     }
 
     pub fn execute_governance(

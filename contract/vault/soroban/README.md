@@ -175,25 +175,36 @@ signature and the vault then authorizes the caller under `ActionKind::ExecuteWit
 the allocator policy class in the default RBAC policy. Ordinary users use atomic `withdraw` /
 `redeem` for idle liquidity or `request_withdraw` for the queued path.
 
-The typed `execute_withdraw` entrypoint keeps returning `Result<(), _>` for the stable contract
-ABI. The generic `execute(payload)` command path returns
-`VaultCommandResult::ExecuteWithdrawStatus` for `VaultCommand::ExecuteWithdraw`, with:
+The typed entrypoints keep returning their stable contract ABI values. The generic
+`execute(payload)` command path returns compact typed receipt bytes:
 
-- `op_state_before` and `op_state_after`: kernel operation-state codes
-  (`0 = Idle`, `1 = Allocating`, `2 = Withdrawing`, `3 = Refreshing`,
-  `4 = Payout`).
-- `assets_transferred`: assets paid to receivers during this command.
-- `events_emitted`: kernel/runtime events emitted while processing the command.
+| Command | Receipt |
+|---|---|
+| `DepositWithMin` | `DepositReceipt { shares_out: i128 }` |
+| `RequestWithdraw` | `RequestWithdrawReceipt { request_id: u64, shares_escrowed: i128 }` |
+| `ExecuteWithdraw` | `ExecuteWithdrawReceipt` |
+| `AtomicWithdraw`, `AtomicRedeem`, `Allocate`, `RefreshMarkets` | `I128Receipt { value: i128 }` |
+| `AbortWithdrawing`, `RefreshFees`, `ResyncIdleBalance`, `CancelMigration`, `ExtendTtl` | `EmptyReceipt` |
+
+`VaultCommand::ExecuteWithdraw` returns `ExecuteWithdrawReceipt` with:
+
+- tag `0`: `ExecuteWithdrawReceipt::NoPayout { status }`.
+- tag `1`: `ExecuteWithdrawReceipt::Completed { request_id, owner, receiver, assets_out,
+  shares_burned, status }`, where `assets_out` and `shares_burned` are unsigned asset/share
+  amounts.
+
+Both receipt variants include `status`, which carries `op_state_before`, `op_state_after`,
+`assets_transferred`, and `events_emitted` for keeper diagnostics.
 
 Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity error as a signal to
 free market liquidity before retrying. The error is intentionally compact and does not carry
 `needed` / `available` amounts; automation should derive the head request's `expected_assets` from
 the indexed `WithdrawalRequested` event stream and compare it with the current idle assets exposed
-by `proxy_view` before choosing how much liquidity to free. A successful command with
-`assets_transferred == 0` and a non-idle `op_state_after` should be alerted as an unexpected
-no-progress withdrawal state. The A-002 fix is intended to reject that zero-progress transition
-before it is persisted, but the structured result keeps automation from relying on a bare `Unit`
-success.
+by `proxy_view` before choosing how much liquidity to free. A `NoPayout` receipt means no request
+settled and should be handled as a signal to free liquidity and retry once the head can be covered.
+A `Completed` receipt with `assets_out == 0` is an unexpected no-progress state and should be
+alerted. The A-002 fix is intended to reject zero-progress transitions before they are persisted,
+so automation should not rely on a bare `Unit` success from the typed entrypoint.
 
 Finishing an allocation does not advance the withdrawal queue. `FinishAllocating` returns the vault
 to idle and leaves any queued requests untouched, even when the queue head is cooled down and fully
