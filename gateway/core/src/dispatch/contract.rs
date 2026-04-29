@@ -1,54 +1,59 @@
-use futures::future::BoxFuture;
-use templar_gateway_types::contract;
+use async_trait::async_trait;
+use templar_gateway_types::{contract, MethodSpec};
 
+use super::Dispatch;
 use crate::DispatchRead;
 use crate::{client::cache::load_cached, GatewayError, GatewayResult, HasNearClient};
 
-impl<C: HasNearClient> DispatchRead<C> for contract::ViewFunction {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let value = ctx
-                .near_client()
-                .contract(request.params.contract_id.clone())
-                .view_function(
-                    &request.params.method_name.0,
-                    request.params.args.try_into_bytes()?,
-                )
-                .await?;
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<contract::ViewFunction, C> for Dispatch {
+    async fn dispatch(
+        request: <contract::ViewFunction as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<contract::ViewFunctionResult> {
+        let value = ctx
+            .near_client()
+            .contract(request.params.contract_id.clone())
+            .view_function(
+                &request.params.method_name.0,
+                request.params.args.try_into_bytes()?,
+            )
+            .await?;
 
-            Ok(contract::ViewFunctionResult { value })
+        Ok(contract::ViewFunctionResult { value })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<contract::GetVersion, C> for Dispatch {
+    async fn dispatch(
+        request: <contract::GetVersion as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<contract::VersionResult> {
+        let metadata = ctx
+            .near_client()
+            .contract(request.params.contract_id)
+            .cached_contract_source_metadata()
+            .await?;
+        let version_string = metadata.version.ok_or_else(|| {
+            crate::GatewayError::NearQuery("contract metadata does not contain version".to_owned())
+        })?;
+
+        Ok(contract::VersionResult {
+            parsed: version_string.parse().ok(),
+            version_string,
         })
     }
 }
 
-impl<C: HasNearClient> DispatchRead<C> for contract::GetVersion {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let metadata = ctx
-                .near_client()
-                .contract(request.params.contract_id)
-                .cached_contract_source_metadata()
-                .await?;
-            let version_string = metadata.version.ok_or_else(|| {
-                crate::GatewayError::NearQuery(
-                    "contract metadata does not contain version".to_owned(),
-                )
-            })?;
-
-            Ok(contract::VersionResult {
-                parsed: version_string.parse().ok(),
-                version_string,
-            })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for contract::GetKind {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let kind = query_contract_kind(&ctx, request.params.contract_id).await?;
-            Ok(contract::GetKindResult { kind })
-        })
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<contract::GetKind, C> for Dispatch {
+    async fn dispatch(
+        request: <contract::GetKind as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<contract::GetKindResult> {
+        let kind = query_contract_kind(&ctx, request.params.contract_id).await?;
+        Ok(contract::GetKindResult { kind })
     }
 }
 

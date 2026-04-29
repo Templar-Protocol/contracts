@@ -1,24 +1,18 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::operation::OperationPlan;
+use super::Dispatch;
+use crate::DispatchRead;
 use crate::{
     client::{
-        lst_oracle::GetTransformerArgs,
-        proxy_oracle::GetProxyArgs,
-        pyth_oracle::{ListEmaPricesNoOlderThanArgs, UpdatePriceFeedsArgs},
-        redstone_oracle::{ReadPriceDataArgs, WritePricesArgs},
-        ContractWriteOptions,
+        lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs,
+        pyth_oracle::ListEmaPricesNoOlderThanArgs, redstone_oracle::ReadPriceDataArgs,
     },
     dispatch::contract::query_contract_kind,
-    GatewayError, GatewayResult, HasNearClient, PlanWrite, ProvidesPythSource,
-    ProvidesRedStoneSource,
+    GatewayError, GatewayResult, HasNearClient,
 };
-use crate::{DispatchRead, PlannedTransaction};
-use futures::future::BoxFuture;
+use async_trait::async_trait;
 use near_account_id::AccountId;
-use near_sdk::json_types::Base64VecU8;
-use near_sdk::NearToken;
 use templar_common::oracle::{price_transformer, proxy};
 use templar_common::{
     number::Decimal,
@@ -34,9 +28,7 @@ use templar_gateway_types::oracle::{
     self, GetPriceResolutionDependenciesResult, OracleContractKind, RedStoneOraclePrices,
     RedStonePriceEntry, ResolvePricesResult, ResolvedPrice,
 };
-use templar_gateway_types::OraclePayloadSource;
-
-const PYTH_UPDATE_DEPOSIT: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000_000);
+use templar_gateway_types::MethodSpec;
 
 async fn get_proxy<C: HasNearClient>(
     ctx: &C,
@@ -49,187 +41,106 @@ async fn get_proxy<C: HasNearClient>(
         .await
 }
 
-impl<C: HasNearClient> DispatchRead<C> for oracle::GetPriceResolutionDependencies {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let kind = query_oracle_kind(&ctx, params.oracle_id.clone()).await?;
-            let requests =
-                resolve_dependencies(&ctx, params.oracle_id, params.price_id, &kind).await?;
-            Ok(GetPriceResolutionDependenciesResult { kind, requests })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for oracle::ResolvePrice {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let inputs = ResolutionInputs::new(params.pyth, params.redstone);
-            let price = resolve_price(
-                &ctx,
-                &inputs,
-                params.oracle_id,
-                params.price_id,
-                Nanoseconds::from_secs(params.age),
-            )
-            .await?;
-            Ok(oracle::ResolvePriceResult { price })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for oracle::ResolvePrices {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let inputs = ResolutionInputs::new(params.pyth, params.redstone);
-            let max_age = Nanoseconds::from_secs(params.age);
-            let mut prices = Vec::with_capacity(params.price_ids.len());
-            for price_id in params.price_ids {
-                let price =
-                    resolve_price(&ctx, &inputs, params.oracle_id.clone(), price_id, max_age)
-                        .await?;
-                prices.push(ResolvedPrice { price_id, price });
-            }
-            Ok(ResolvePricesResult { prices })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for oracle::GetPrice {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let price = get_price_onchain(
-                &ctx,
-                params.oracle_id,
-                params.price_id,
-                Nanoseconds::from_secs(params.age),
-            )
-            .await?;
-            Ok(oracle::GetPriceResult { price })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for oracle::GetPrices {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let max_age = Nanoseconds::from_secs(params.age);
-            let mut prices = Vec::with_capacity(params.price_ids.len());
-            for price_id in params.price_ids {
-                let price =
-                    get_price_onchain(&ctx, params.oracle_id.clone(), price_id, max_age).await?;
-                prices.push(ResolvedPrice { price_id, price });
-            }
-            Ok(ResolvePricesResult { prices })
-        })
-    }
-}
-
-impl<C> PlanWrite<C> for oracle::UpdatePyth
+#[async_trait]
+impl<C> DispatchRead<oracle::GetPriceResolutionDependencies, C> for Dispatch
 where
-    C: HasNearClient + ProvidesPythSource,
+    C: HasNearClient,
 {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            submit_pyth_update(
-                &ctx,
-                request.signer_account_id,
-                request.body.oracle_id,
-                request.body.vaa.0,
-            )
-            .map(OperationPlan::from)
-        })
+    async fn dispatch(
+        request: <oracle::GetPriceResolutionDependencies as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<GetPriceResolutionDependenciesResult> {
+        let params = request.params;
+        let kind = query_oracle_kind(&ctx, params.oracle_id.clone()).await?;
+        let requests = resolve_dependencies(&ctx, params.oracle_id, params.price_id, &kind).await?;
+        Ok(GetPriceResolutionDependenciesResult { kind, requests })
     }
 }
 
-impl<C> PlanWrite<C> for oracle::UpdateRedStone
+#[async_trait]
+impl<C> DispatchRead<oracle::ResolvePrice, C> for Dispatch
 where
-    C: HasNearClient + ProvidesRedStoneSource,
+    C: HasNearClient,
 {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let oracle_id = request.body.oracle_id;
-            let feed_id = request.body.feed_id;
-            let payload =
-                OraclePayloadSource::fetch_payload(ctx.redstone_source(), &[feed_id.clone()])
-                    .await
-                    .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
-            submit_redstone_update(
-                &ctx,
-                request.signer_account_id,
-                oracle_id,
-                vec![feed_id],
-                payload,
-            )
-            .map(OperationPlan::from)
-        })
+    async fn dispatch(
+        request: <oracle::ResolvePrice as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<oracle::ResolvePriceResult> {
+        let params = request.params;
+        let inputs = ResolutionInputs::new(params.pyth, params.redstone);
+        let price = resolve_price(
+            &ctx,
+            &inputs,
+            params.oracle_id,
+            params.price_id,
+            Nanoseconds::from_secs(params.age),
+        )
+        .await?;
+        Ok(oracle::ResolvePriceResult { price })
     }
 }
 
-impl<C> PlanWrite<C> for oracle::UpdatePrices
+#[async_trait]
+impl<C> DispatchRead<oracle::ResolvePrices, C> for Dispatch
 where
-    C: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource,
+    C: HasNearClient,
 {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let requests =
-                resolve_update_requests(&ctx, request.body.oracle_id, request.body.price_ids)
-                    .await?;
+    async fn dispatch(
+        request: <oracle::ResolvePrices as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<ResolvePricesResult> {
+        let params = request.params;
+        let inputs = ResolutionInputs::new(params.pyth, params.redstone);
+        let max_age = Nanoseconds::from_secs(params.age);
+        let mut prices = Vec::with_capacity(params.price_ids.len());
+        for price_id in params.price_ids {
+            let price =
+                resolve_price(&ctx, &inputs, params.oracle_id.clone(), price_id, max_age).await?;
+            prices.push(ResolvedPrice { price_id, price });
+        }
+        Ok(ResolvePricesResult { prices })
+    }
+}
 
-            let mut steps = Vec::new();
-            let mut pyth_updates = BTreeMap::<AccountId, BTreeSet<PriceIdentifier>>::new();
-            let mut redstone_updates = BTreeMap::<AccountId, BTreeSet<redstone::FeedId>>::new();
+#[async_trait]
+impl<C> DispatchRead<oracle::GetPrice, C> for Dispatch
+where
+    C: HasNearClient,
+{
+    async fn dispatch(
+        request: <oracle::GetPrice as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<<oracle::GetPrice as MethodSpec>::Output> {
+        let params = request.params;
+        let price = get_price_onchain(
+            &ctx,
+            params.oracle_id,
+            params.price_id,
+            Nanoseconds::from_secs(params.age),
+        )
+        .await?;
+        Ok(oracle::GetPriceResult { price })
+    }
+}
 
-            for request in requests {
-                match request {
-                    OracleRequest::Pyth(request) => {
-                        pyth_updates
-                            .entry(request.oracle_id)
-                            .or_default()
-                            .insert(request.price_id);
-                    }
-                    OracleRequest::RedStone(request) => {
-                        redstone_updates
-                            .entry(request.oracle_id)
-                            .or_default()
-                            .insert(request.price_id);
-                    }
-                }
-            }
-
-            for (oracle_id, price_ids) in pyth_updates {
-                let price_ids = price_ids.into_iter().collect::<Vec<_>>();
-                let vaa = OraclePayloadSource::fetch_payload(ctx.pyth_source(), &price_ids)
-                    .await
-                    .map_err(|error| GatewayError::HttpRequest(error.to_string()))?;
-                steps.push(submit_pyth_update(
-                    &ctx,
-                    request.signer_account_id.clone(),
-                    oracle_id,
-                    vaa,
-                )?);
-            }
-
-            for (oracle_id, feed_ids) in redstone_updates {
-                let feed_ids = feed_ids.into_iter().collect::<Vec<_>>();
-                let payload = OraclePayloadSource::fetch_payload(ctx.redstone_source(), &feed_ids)
-                    .await
-                    .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
-                steps.push(submit_redstone_update(
-                    &ctx,
-                    request.signer_account_id.clone(),
-                    oracle_id,
-                    feed_ids,
-                    payload,
-                )?);
-            }
-
-            Ok(OperationPlan { steps })
-        })
+#[async_trait]
+impl<C> DispatchRead<oracle::GetPrices, C> for Dispatch
+where
+    C: HasNearClient,
+{
+    async fn dispatch(
+        request: <oracle::GetPrices as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<ResolvePricesResult> {
+        let params = request.params;
+        let max_age = Nanoseconds::from_secs(params.age);
+        let mut prices = Vec::with_capacity(params.price_ids.len());
+        for price_id in params.price_ids {
+            let price =
+                get_price_onchain(&ctx, params.oracle_id.clone(), price_id, max_age).await?;
+            prices.push(ResolvedPrice { price_id, price });
+        }
+        Ok(ResolvePricesResult { prices })
     }
 }
 
@@ -560,53 +471,6 @@ fn validate_price_age(price: pyth::Price, max_age: Nanoseconds) -> Option<pyth::
         return None;
     }
     Some(price)
-}
-
-pub async fn resolve_update_requests<C: HasNearClient>(
-    ctx: &C,
-    oracle_id: AccountId,
-    price_ids: Vec<PriceIdentifier>,
-) -> GatewayResult<Vec<OracleRequest>> {
-    let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
-    let mut requests = BTreeSet::new();
-
-    for price_id in price_ids {
-        requests.extend(resolve_dependencies(ctx, oracle_id.clone(), price_id, &kind).await?);
-    }
-
-    Ok(requests.into_iter().collect())
-}
-
-fn submit_pyth_update<C: HasNearClient>(
-    ctx: &C,
-    signer_account_id: templar_gateway_types::ManagedAccountId,
-    oracle_id: AccountId,
-    vaa: Vec<u8>,
-) -> GatewayResult<PlannedTransaction> {
-    ctx.near_client().pyth_oracle(oracle_id).update_price_feeds(
-        ContractWriteOptions::new(signer_account_id)
-            .tgas(300)
-            .deposit(PYTH_UPDATE_DEPOSIT),
-        UpdatePriceFeedsArgs {
-            data: hex::encode(vaa),
-        },
-    )
-}
-
-fn submit_redstone_update<C: HasNearClient>(
-    ctx: &C,
-    signer_account_id: templar_gateway_types::ManagedAccountId,
-    oracle_id: AccountId,
-    feed_ids: Vec<redstone::FeedId>,
-    payload: Vec<u8>,
-) -> GatewayResult<PlannedTransaction> {
-    ctx.near_client().redstone_oracle(oracle_id).write_prices(
-        ContractWriteOptions::new(signer_account_id).tgas(300),
-        WritePricesArgs {
-            feed_ids,
-            payload: Base64VecU8(payload),
-        },
-    )
 }
 
 fn system_time() -> Nanoseconds {

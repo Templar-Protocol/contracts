@@ -1,6 +1,7 @@
-use futures::future::BoxFuture;
-use templar_gateway_types::mt;
+use async_trait::async_trait;
+use templar_gateway_types::{mt, MethodSpec};
 
+use super::Dispatch;
 use crate::{
     client::{
         mt::{
@@ -10,9 +11,8 @@ use crate::{
         ContractWriteOptions,
     },
     operation::OperationPlan,
-    GatewayResult, HasNearClient,
+    DispatchRead, GatewayResult, HasNearClient, PlanWrite,
 };
-use crate::{DispatchRead, PlanWrite};
 
 fn approval(approval: Option<mt::MtApproval>) -> Option<Approval> {
     approval.map(|approval| Approval {
@@ -21,129 +21,141 @@ fn approval(approval: Option<mt::MtApproval>) -> Option<Approval> {
     })
 }
 
-impl<C: HasNearClient> DispatchRead<C> for mt::GetBalanceOf {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let balance = ctx
-                .near_client()
-                .mt(params.contract_id)
-                .mt_balance_of(GetBalanceOfArgs {
-                    account_id: params.account_id,
-                    token_id: params.token_id,
-                })
-                .await?;
-            Ok(mt::GetBalanceOfResult { balance })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for mt::GetBatchBalanceOf {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let token_ids = params.token_ids;
-            let values = ctx
-                .near_client()
-                .mt(params.contract_id)
-                .mt_batch_balance_of(GetBatchBalanceOfArgs {
-                    account_id: params.account_id,
-                    token_ids: token_ids.clone(),
-                })
-                .await?;
-            Ok(mt::GetBatchBalanceOfResult {
-                balances: token_ids
-                    .into_iter()
-                    .zip(values)
-                    .map(|(token_id, balance)| mt::BalanceEntry { token_id, balance })
-                    .collect(),
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<mt::GetBalanceOf, C> for Dispatch {
+    async fn dispatch(
+        request: <mt::GetBalanceOf as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<mt::GetBalanceOfResult> {
+        let params = request.params;
+        let balance = ctx
+            .near_client()
+            .mt(params.contract_id)
+            .mt_balance_of(GetBalanceOfArgs {
+                account_id: params.account_id,
+                token_id: params.token_id,
             })
-        })
+            .await?;
+        Ok(mt::GetBalanceOfResult { balance })
     }
 }
 
-impl<C: HasNearClient> DispatchRead<C> for mt::GetSupply {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let supply = ctx
-                .near_client()
-                .mt(params.contract_id)
-                .mt_supply(GetSupplyArgs {
-                    token_id: params.token_id,
-                })
-                .await?;
-            Ok(mt::GetSupplyResult { supply })
-        })
-    }
-}
-
-impl<C: HasNearClient> DispatchRead<C> for mt::GetBatchSupply {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let token_ids = params.token_ids;
-            let values = ctx
-                .near_client()
-                .mt(params.contract_id)
-                .mt_batch_supply(GetBatchSupplyArgs {
-                    token_ids: token_ids.clone(),
-                })
-                .await?;
-            Ok(mt::GetBatchSupplyResult {
-                supplies: token_ids
-                    .into_iter()
-                    .zip(values)
-                    .map(|(token_id, supply)| mt::SupplyEntry { token_id, supply })
-                    .collect(),
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<mt::GetBatchBalanceOf, C> for Dispatch {
+    async fn dispatch(
+        request: <mt::GetBatchBalanceOf as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<mt::GetBatchBalanceOfResult> {
+        let params = request.params;
+        let token_ids = params.token_ids;
+        let values = ctx
+            .near_client()
+            .mt(params.contract_id)
+            .mt_batch_balance_of(GetBatchBalanceOfArgs {
+                account_id: params.account_id,
+                token_ids: token_ids.clone(),
             })
+            .await?;
+        Ok(mt::GetBatchBalanceOfResult {
+            balances: token_ids
+                .into_iter()
+                .zip(values)
+                .map(|(token_id, balance)| mt::BalanceEntry { token_id, balance })
+                .collect(),
         })
     }
 }
 
-impl<C: HasNearClient> PlanWrite<C> for mt::Transfer {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let body = request.body;
-            ctx.near_client()
-                .mt(body.contract_id)
-                .mt_transfer(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .tgas(100)
-                        .one_yocto(),
-                    TransferArgs {
-                        receiver_id: body.receiver_id,
-                        token_id: body.token_id,
-                        amount: body.amount,
-                        approval: approval(body.approval),
-                        memo: body.memo,
-                    },
-                )
-                .map(OperationPlan::from)
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<mt::GetSupply, C> for Dispatch {
+    async fn dispatch(
+        request: <mt::GetSupply as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<mt::GetSupplyResult> {
+        let params = request.params;
+        let supply = ctx
+            .near_client()
+            .mt(params.contract_id)
+            .mt_supply(GetSupplyArgs {
+                token_id: params.token_id,
+            })
+            .await?;
+        Ok(mt::GetSupplyResult { supply })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<mt::GetBatchSupply, C> for Dispatch {
+    async fn dispatch(
+        request: <mt::GetBatchSupply as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<mt::GetBatchSupplyResult> {
+        let params = request.params;
+        let token_ids = params.token_ids;
+        let values = ctx
+            .near_client()
+            .mt(params.contract_id)
+            .mt_batch_supply(GetBatchSupplyArgs {
+                token_ids: token_ids.clone(),
+            })
+            .await?;
+        Ok(mt::GetBatchSupplyResult {
+            supplies: token_ids
+                .into_iter()
+                .zip(values)
+                .map(|(token_id, supply)| mt::SupplyEntry { token_id, supply })
+                .collect(),
         })
     }
 }
 
-impl<C: HasNearClient> PlanWrite<C> for mt::TransferCall {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let body = request.body;
-            ctx.near_client()
-                .mt(body.contract_id)
-                .mt_transfer_call(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .tgas(300)
-                        .one_yocto(),
-                    TransferCallArgs {
-                        receiver_id: body.receiver_id,
-                        token_id: body.token_id,
-                        amount: body.amount,
-                        approval: approval(body.approval),
-                        memo: body.memo,
-                        msg: body.msg,
-                    },
-                )
-                .map(OperationPlan::from)
-        })
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<mt::Transfer, C> for Dispatch {
+    async fn plan(
+        request: <mt::Transfer as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .mt(body.contract_id)
+            .mt_transfer(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(100)
+                    .one_yocto(),
+                TransferArgs {
+                    receiver_id: body.receiver_id,
+                    token_id: body.token_id,
+                    amount: body.amount,
+                    approval: approval(body.approval),
+                    memo: body.memo,
+                },
+            )
+            .map(OperationPlan::from)
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<mt::TransferCall, C> for Dispatch {
+    async fn plan(
+        request: <mt::TransferCall as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .mt(body.contract_id)
+            .mt_transfer_call(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(300)
+                    .one_yocto(),
+                TransferCallArgs {
+                    receiver_id: body.receiver_id,
+                    token_id: body.token_id,
+                    amount: body.amount,
+                    approval: approval(body.approval),
+                    memo: body.memo,
+                    msg: body.msg,
+                },
+            )
+            .map(OperationPlan::from)
     }
 }

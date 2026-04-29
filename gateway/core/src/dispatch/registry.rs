@@ -1,6 +1,7 @@
-use futures::future::BoxFuture;
-use templar_gateway_types::registry;
+use async_trait::async_trait;
+use templar_gateway_types::{registry, MethodSpec};
 
+use super::Dispatch;
 use crate::{
     client::{
         registry::{AddVersionArgs, DeployArgs, GetDeploymentArgs, RemoveVersionArgs},
@@ -8,110 +9,130 @@ use crate::{
     },
     dispatch::contract::query_contract_kind,
     operation::OperationPlan,
-    GatewayResult, HasNearClient,
+    DispatchRead, GatewayResult, HasNearClient, PlanWrite,
 };
-use crate::{DispatchRead, PlanWrite};
 
-impl<C: HasNearClient> DispatchRead<C> for registry::ListDeployments {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            ctx.near_client()
-                .registry(request.params.registry_id)
-                .list_deployments(request.params.args)
-                .await
-                .map(|account_ids| registry::ListDeploymentsResult { account_ids })
-        })
+#[async_trait]
+impl<C> DispatchRead<registry::ListDeployments, C> for Dispatch
+where
+    C: HasNearClient,
+{
+    async fn dispatch(
+        request: <registry::ListDeployments as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<registry::ListDeploymentsResult> {
+        ctx.near_client()
+            .registry(request.params.registry_id)
+            .list_deployments(request.params.args)
+            .await
+            .map(|account_ids| registry::ListDeploymentsResult { account_ids })
     }
 }
 
-impl<C: HasNearClient> DispatchRead<C> for registry::GetDeployment {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            ctx.near_client()
-                .registry(request.params.registry_id)
-                .get_deployment(GetDeploymentArgs {
-                    account_id: request.params.account_id,
-                })
-                .await
-                .map(|deployment| registry::GetDeploymentResult { deployment })
-        })
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<registry::GetDeployment, C> for Dispatch {
+    async fn dispatch(
+        request: <registry::GetDeployment as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<registry::GetDeploymentResult> {
+        ctx.near_client()
+            .registry(request.params.registry_id)
+            .get_deployment(GetDeploymentArgs {
+                account_id: request.params.account_id,
+            })
+            .await
+            .map(|deployment| registry::GetDeploymentResult { deployment })
     }
 }
 
-impl<C: HasNearClient> DispatchRead<C> for registry::ListVersions {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            ctx.near_client()
-                .registry(request.params.registry_id)
-                .list_versions(request.params.args)
-                .await
-                .map(|values| registry::ListVersionsResult { values })
-        })
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<registry::ListVersions, C> for Dispatch {
+    async fn dispatch(
+        request: <registry::ListVersions as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<registry::ListVersionsResult> {
+        ctx.near_client()
+            .registry(request.params.registry_id)
+            .list_versions(request.params.args)
+            .await
+            .map(|values| registry::ListVersionsResult { values })
     }
 }
 
-impl<C: HasNearClient> DispatchRead<C> for registry::ListDeploymentsByKind {
-    fn dispatch(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            let params = request.params;
-            let account_ids = ctx
-                .near_client()
-                .registry(params.registry_id)
-                .list_deployments(templar_gateway_types::common::Pagination::default())
-                .await?;
+#[async_trait]
+impl<C> DispatchRead<registry::ListDeploymentsByKind, C> for Dispatch
+where
+    C: HasNearClient,
+{
+    async fn dispatch(
+        request: <registry::ListDeploymentsByKind as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<registry::ListDeploymentsResult> {
+        let params = request.params;
+        let account_ids = ctx
+            .near_client()
+            .registry(params.registry_id)
+            .list_deployments(templar_gateway_types::common::Pagination::default())
+            .await?;
 
-            let mut filtered = Vec::new();
-            for account_id in account_ids {
-                if query_contract_kind(&ctx, account_id.clone()).await? == params.kind {
-                    filtered.push(account_id);
-                }
+        let mut filtered = Vec::new();
+        for account_id in account_ids {
+            if query_contract_kind(&ctx, account_id.clone()).await? == params.kind {
+                filtered.push(account_id);
             }
+        }
 
-            let offset = params.args.offset.unwrap_or_default() as usize;
-            let limit = params.args.limit.map(|value| value as usize);
-            let account_ids = if let Some(limit) = limit {
-                filtered.into_iter().skip(offset).take(limit).collect()
-            } else {
-                filtered.into_iter().skip(offset).collect()
-            };
+        let offset = params.args.offset.unwrap_or_default() as usize;
+        let limit = params.args.limit.map(|value| value as usize);
+        let account_ids = if let Some(limit) = limit {
+            filtered.into_iter().skip(offset).take(limit).collect()
+        } else {
+            filtered.into_iter().skip(offset).collect()
+        };
 
-            Ok(registry::ListDeploymentsResult { account_ids })
-        })
+        Ok(registry::ListDeploymentsResult { account_ids })
     }
 }
 
-impl<C: HasNearClient> PlanWrite<C> for registry::AddVersion {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let body = request.body;
-            let registry_version = ctx
-                .near_client()
-                .contract(body.registry_id.0.clone())
-                .version()
-                .await?;
-            ctx.near_client()
-                .registry(body.registry_id)
-                .add_version(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .tgas(300)
-                        .deposit(body.deposit),
-                    registry_version,
-                    AddVersionArgs {
-                        version_key: body.version_key,
-                        mode: body.deploy_mode,
-                        code: body.code.0,
-                    },
-                )
-                .map(OperationPlan::from)
-        })
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<registry::AddVersion, C> for Dispatch {
+    async fn plan(
+        request: <registry::AddVersion as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let registry_version = ctx
+            .near_client()
+            .contract(body.registry_id.0.clone())
+            .version()
+            .await?;
+        ctx.near_client()
+            .registry(body.registry_id)
+            .add_version(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(300)
+                    .deposit(body.deposit),
+                registry_version,
+                AddVersionArgs {
+                    version_key: body.version_key,
+                    mode: body.deploy_mode,
+                    code: body.code.0,
+                },
+            )
+            .map(OperationPlan::from)
     }
 }
 
-impl<C: HasNearClient> PlanWrite<C> for registry::Deploy {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            plan_deploy_from_registry(&ctx, request.signer_account_id, request.body).await
-        })
+#[async_trait]
+impl<C> PlanWrite<registry::Deploy, C> for Dispatch
+where
+    C: HasNearClient,
+{
+    async fn plan(
+        request: <registry::Deploy as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        plan_deploy_from_registry(&ctx, request.signer_account_id, request.body).await
     }
 }
 
@@ -144,21 +165,23 @@ pub(crate) async fn plan_deploy_from_registry<C: HasNearClient>(
     ))
 }
 
-impl<C: HasNearClient> PlanWrite<C> for registry::RemoveVersion {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let body = request.body;
-            ctx.near_client()
-                .registry(body.registry_id)
-                .remove_version(
-                    ContractWriteOptions::new(request.signer_account_id)
-                        .tgas(300)
-                        .one_yocto(),
-                    RemoveVersionArgs {
-                        version_key: body.version_key,
-                    },
-                )
-                .map(OperationPlan::from)
-        })
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<registry::RemoveVersion, C> for Dispatch {
+    async fn plan(
+        request: <registry::RemoveVersion as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .registry(body.registry_id)
+            .remove_version(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(300)
+                    .one_yocto(),
+                RemoveVersionArgs {
+                    version_key: body.version_key,
+                },
+            )
+            .map(OperationPlan::from)
     }
 }

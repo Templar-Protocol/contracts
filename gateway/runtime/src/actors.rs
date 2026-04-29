@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use actix::{Actor, Addr, ArbiterHandle, Context, Handler, ResponseFuture};
 use templar_gateway_core::{DispatchRead, GatewayError, GatewayResult};
@@ -8,9 +8,9 @@ use tokio::sync::Semaphore;
 const READ_ACTOR_NAME: &str = "read-actor";
 const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
 
-pub struct RpcMessage<Spec: MethodSpec>(pub Spec::Input);
+pub struct RpcMessage<Spec: MethodSpec, Impl>(pub Spec::Input, pub PhantomData<Impl>);
 
-impl<Spec: MethodSpec> actix::Message for RpcMessage<Spec> {
+impl<Spec: MethodSpec, Impl> actix::Message for RpcMessage<Spec, Impl> {
     type Result = GatewayResult<Spec::Output>;
 }
 
@@ -43,14 +43,19 @@ where
     }
 }
 
-impl<Spec, ContextType> Handler<RpcMessage<Spec>> for ReadActor<ContextType>
+impl<Spec, Impl, ContextType> Handler<RpcMessage<Spec, Impl>> for ReadActor<ContextType>
 where
-    Spec: DispatchRead<ContextType>,
+    Spec: MethodSpec,
+    Impl: DispatchRead<Spec, ContextType>,
     ContextType: Clone + Send + std::marker::Unpin + 'static,
 {
     type Result = ResponseFuture<GatewayResult<Spec::Output>>;
 
-    fn handle(&mut self, message: RpcMessage<Spec>, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        message: RpcMessage<Spec, Impl>,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
         let context = self.context.clone();
         let semaphore = self.semaphore.clone();
 
@@ -59,7 +64,7 @@ where
                 .acquire_owned()
                 .await
                 .map_err(|_error| GatewayError::ActorUnavailable(READ_ACTOR_NAME))?;
-            Spec::dispatch(message.0, context).await
+            Impl::dispatch(message.0, context).await
         })
     }
 }

@@ -1,4 +1,4 @@
-use futures::future::BoxFuture;
+use async_trait::async_trait;
 use templar_gateway_types::common::WriteRequest;
 use templar_gateway_types::rpc::common::WriteOperationResult;
 use templar_gateway_types::{IdempotencyKey, ManagedAccountId, MethodSpec};
@@ -25,21 +25,19 @@ impl<T> HasSignerAccountId for WriteRequest<T> {
     }
 }
 
-pub trait DispatchRead<Context>: MethodSpec + Sized + Send + 'static {
-    fn dispatch(
-        request: Self::Input,
-        context: Context,
-    ) -> BoxFuture<'static, GatewayResult<Self::Output>>;
+#[async_trait]
+pub trait DispatchRead<Spec, Context>: Send + 'static
+where
+    Spec: MethodSpec,
+{
+    async fn dispatch(request: Spec::Input, context: Context) -> GatewayResult<Spec::Output>;
 }
 
-pub trait PlanWrite<Context>:
-    MethodSpec<Output = WriteOperationResult, Input: HasIdempotencyKey + HasSignerAccountId>
-    + Sized
-    + Send
-    + 'static
+#[async_trait]
+pub trait PlanWrite<Spec, Context>: Send + 'static
+where
+    Spec: MethodSpec<Output = WriteOperationResult>,
+    Spec::Input: HasIdempotencyKey + HasSignerAccountId,
 {
-    fn plan(
-        request: Self::Input,
-        context: Context,
-    ) -> BoxFuture<'static, GatewayResult<OperationPlan>>;
+    async fn plan(request: Spec::Input, context: Context) -> GatewayResult<OperationPlan>;
 }

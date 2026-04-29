@@ -1,3 +1,7 @@
+pub struct Dispatch;
+
+pub use contract::query_contract_kind;
+
 mod account;
 mod contract;
 mod ft;

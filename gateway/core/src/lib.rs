@@ -16,6 +16,7 @@ use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccou
 
 pub use client::{ContractWriteOptions, NearClient};
 pub use context::{GatewayContext, GatewayContextBuilder};
+pub use dispatch::{query_contract_kind, Dispatch};
 pub use error::{GatewayError, GatewayResult};
 pub use executor::{
     ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,

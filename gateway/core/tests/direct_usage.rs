@@ -4,8 +4,8 @@ use anyhow::Result;
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
 use templar_gateway_core::{
-    DispatchRead, ExecuteOperation, GatewayContext, NearOperationExecutor, NearTransactionSigner,
-    PlanWrite, SignTransaction,
+    Dispatch, DispatchRead, ExecuteOperation, GatewayContext, NearOperationExecutor,
+    NearTransactionSigner, PlanWrite, SignTransaction,
 };
 use templar_gateway_types::{
     account,
@@ -41,7 +41,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
 
     let context = GatewayContext::new(network.clone())?;
 
-    let account = <account::Get as DispatchRead<GatewayContext>>::dispatch(
+    let account = <Dispatch as DispatchRead<account::Get, GatewayContext>>::dispatch(
         ReadRequest {
             params: account::GetParams {
                 account_id: signer_account_id.0.clone(),
@@ -57,7 +57,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     );
     assert_eq!(account.locked, NearToken::from_yoctonear(0));
 
-    let plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
+    let plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
         WriteRequest {
             signer_account_id: signer_account_id.clone(),
             idempotency_key: None,

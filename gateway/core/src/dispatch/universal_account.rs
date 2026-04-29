@@ -1,7 +1,8 @@
-use futures::future::BoxFuture;
-use templar_gateway_types::{registry::DeployBody, universal_account};
+use async_trait::async_trait;
+use templar_gateway_types::{registry::DeployBody, universal_account, MethodSpec};
 use templar_universal_account::InitArgs;
 
+use super::Dispatch;
 use crate::{
     client::{
         universal_account::{UaExecuteArgs, UaGetKeyArgs},
@@ -9,9 +10,8 @@ use crate::{
     },
     dispatch::registry::plan_deploy_from_registry,
     operation::OperationPlan,
-    GatewayResult, HasNearClient,
+    DispatchRead, GatewayResult, HasNearClient, PlanWrite,
 };
-use crate::{DispatchRead, PlanWrite};
 
 fn into_parameters_view(
     parameters: templar_universal_account::PayloadExecutionParameters,
@@ -31,60 +31,66 @@ fn into_parameters_view(
     }
 }
 
-impl<C: HasNearClient> DispatchRead<C> for universal_account::GetKey {
-    fn dispatch(params: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<Self::Output>> {
-        Box::pin(async move {
-            ctx.near_client()
-                .universal_account(params.params.account_id.clone())
-                .get_key(UaGetKeyArgs {
-                    key: params.params.key,
-                })
-                .await
-                .map(|parameters| universal_account::GetKeyResult {
-                    parameters: parameters.map(into_parameters_view),
-                })
-        })
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<universal_account::GetKey, C> for Dispatch {
+    async fn dispatch(
+        params: <universal_account::GetKey as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<universal_account::GetKeyResult> {
+        ctx.near_client()
+            .universal_account(params.params.account_id.clone())
+            .get_key(UaGetKeyArgs {
+                key: params.params.key,
+            })
+            .await
+            .map(|parameters| universal_account::GetKeyResult {
+                parameters: parameters.map(into_parameters_view),
+            })
     }
 }
 
-impl<C: HasNearClient> PlanWrite<C> for universal_account::Execute {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            ctx.near_client()
-                .universal_account(request.body.account_id)
-                .execute(
-                    ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                    UaExecuteArgs {
-                        args: request.body.args,
-                    },
-                )
-                .map(OperationPlan::from)
-        })
-    }
-}
-
-impl<C: HasNearClient> PlanWrite<C> for universal_account::Create {
-    fn plan(request: Self::Input, ctx: C) -> BoxFuture<'static, GatewayResult<OperationPlan>> {
-        Box::pin(async move {
-            let body = request.body;
-            plan_deploy_from_registry(
-                &ctx,
-                request.signer_account_id,
-                DeployBody {
-                    registry_id: body.registry_id,
-                    name: body.account_name,
-                    version_key: body.version_key,
-                    init_args: serde_json::to_vec(&InitArgs {
-                        key: body.key,
-                        chain_id: body.chain_id.0.into(),
-                        execute: body.execute.map(|transactions| transactions.into_vec()),
-                    })?
-                    .into(),
-                    full_access_keys: body.full_access_keys,
-                    deposit: body.deposit,
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<universal_account::Execute, C> for Dispatch {
+    async fn plan(
+        request: <universal_account::Execute as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        ctx.near_client()
+            .universal_account(request.body.account_id)
+            .execute(
+                ContractWriteOptions::new(request.signer_account_id).tgas(300),
+                UaExecuteArgs {
+                    args: request.body.args,
                 },
             )
-            .await
-        })
+            .map(OperationPlan::from)
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<universal_account::Create, C> for Dispatch {
+    async fn plan(
+        request: <universal_account::Create as MethodSpec>::Input,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        plan_deploy_from_registry(
+            &ctx,
+            request.signer_account_id,
+            DeployBody {
+                registry_id: body.registry_id,
+                name: body.account_name,
+                version_key: body.version_key,
+                init_args: serde_json::to_vec(&InitArgs {
+                    key: body.key,
+                    chain_id: body.chain_id.0.into(),
+                    execute: body.execute.map(|transactions| transactions.into_vec()),
+                })?
+                .into(),
+                full_access_keys: body.full_access_keys,
+                deposit: body.deposit,
+            },
+        )
+        .await
     }
 }

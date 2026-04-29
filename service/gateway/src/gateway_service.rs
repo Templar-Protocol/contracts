@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use actix::Addr;
 use serde::Serialize;
@@ -95,18 +95,19 @@ where
         }
     }
 
-    pub async fn request_read<Request>(
+    pub async fn request_read<Request, Impl>(
         &self,
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: DispatchRead<ContextType>,
+        Request: templar_gateway_types::MethodSpec + 'static,
+        Impl: DispatchRead<Request, ContextType>,
         ReadActor<ContextType>: actix::Actor<Context = actix::Context<ReadActor<ContextType>>>
-            + actix::Handler<RpcMessage<Request>>,
+            + actix::Handler<RpcMessage<Request, Impl>>,
     {
         self.inner
             .read
-            .send(RpcMessage(params))
+            .send(RpcMessage(params, PhantomData))
             .await
             .map_err(|error| map_mailbox_error(error, "read-actor"))?
     }
@@ -123,14 +124,16 @@ where
             .map(|operation| operation.operation_record()))
     }
 
-    pub async fn request_write<Request>(
+    pub async fn request_write<Request, Impl>(
         &self,
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: PlanWrite<ContextType>,
+        Request: templar_gateway_types::MethodSpec<Output = WriteOperationResult> + 'static,
+        Request::Input: HasIdempotencyKey + HasSignerAccountId,
+        Impl: PlanWrite<Request, ContextType>,
     {
-        let plan = Request::plan(params.clone(), self.read_context()).await?;
+        let plan = Impl::plan(params.clone(), self.read_context()).await?;
         self.complete_write(Request::RPC_METHOD, params, plan).await
     }
 
@@ -388,7 +391,7 @@ mod tests {
         let (harness, service) = start_service().await?;
 
         let first = service
-            .request_write::<tx::FunctionCall>(WriteRequest {
+            .request_write::<tx::FunctionCall, templar_gateway_core::Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
                 body: tx::FunctionCallBody {
@@ -404,7 +407,7 @@ mod tests {
             .await?;
 
         let second = service
-            .request_write::<tx::FunctionCall>(WriteRequest {
+            .request_write::<tx::FunctionCall, templar_gateway_core::Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
                 body: tx::FunctionCallBody {
@@ -444,10 +447,10 @@ mod tests {
 
         let fingerprint = make_request_fingerprint(tx::FunctionCall::RPC_METHOD, &request)?;
         let payload = serde_json::to_vec(&request)?;
-        let plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
-            request.clone(),
-            service.read_context(),
-        )
+        let plan = <templar_gateway_core::Dispatch as PlanWrite<
+            tx::FunctionCall,
+            GatewayContext,
+        >>::plan(request.clone(), service.read_context())
         .await?;
         let mut operation = match service
             .inner
@@ -536,15 +539,15 @@ mod tests {
             },
         };
 
-        let mut first_plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
-            first_request.clone(),
-            service.read_context(),
-        )
+        let mut first_plan = <templar_gateway_core::Dispatch as PlanWrite<
+            tx::FunctionCall,
+            GatewayContext,
+        >>::plan(first_request.clone(), service.read_context())
         .await?;
-        let second_plan = <tx::FunctionCall as PlanWrite<GatewayContext>>::plan(
-            second_request,
-            service.read_context(),
-        )
+        let second_plan = <templar_gateway_core::Dispatch as PlanWrite<
+            tx::FunctionCall,
+            GatewayContext,
+        >>::plan(second_request, service.read_context())
         .await?;
         first_plan.push(
             second_plan
