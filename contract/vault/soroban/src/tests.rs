@@ -298,7 +298,7 @@ mod contract_tests {
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
-        GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        DepositReceipt, GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
@@ -373,11 +373,9 @@ mod contract_tests {
     fn execute_command(
         env: &Env,
         command: &VaultCommand,
-    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+    ) -> Result<Bytes, crate::error::ContractError> {
         let payload = Bytes::from_slice(env, &command.encode());
-        let result = SorobanVaultContract::execute(env.clone(), payload)?;
-        VaultCommandResult::decode(&result.to_alloc_vec())
-            .map_err(|_| crate::error::ContractError::InvalidInput)
+        SorobanVaultContract::execute(env.clone(), payload)
     }
 
     fn execute_governance_command(
@@ -705,10 +703,12 @@ mod contract_tests {
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let result = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let summary = result.summary;
 
         assert_eq!(summary.assets_transferred, 0);
         assert_eq!(summary.shares_burned, 0);
+        assert_eq!(result.completed, None);
         let state = vault.state().unwrap();
         assert!(state.op_state.is_withdrawing());
         let (head_id_after, head_after) = state
@@ -766,7 +766,8 @@ mod contract_tests {
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let result = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let summary = result.summary;
 
         assert_eq!(
             summary.assets_transferred,
@@ -785,6 +786,16 @@ mod contract_tests {
         assert_eq!(
             summary.shares_transferred,
             head_escrow_before - summary.shares_burned
+        );
+        assert_eq!(
+            result.completed,
+            Some(CompletedWithdrawal {
+                request_id: 0,
+                owner,
+                receiver,
+                assets_out: MIN_WITHDRAWAL_ASSETS.saturating_add(1),
+                shares_burned: MIN_WITHDRAWAL_ASSETS.saturating_add(1),
+            })
         );
         assert_eq!(head_expected_before, deposit_amount);
     }
@@ -862,11 +873,12 @@ mod contract_tests {
                 .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
                 .saturating_add(1);
             let executor_kernel = next_vault.map_caller(&env, &executor).unwrap();
-            let summary = next_vault
+            let result = next_vault
                 .execute_withdraw(executor_kernel, exec_time)
                 .unwrap();
 
-            assert!(summary.assets_transferred > 0);
+            assert!(result.summary.assets_transferred > 0);
+            assert!(result.completed.is_some());
             assert!(next_vault.interpreter.has_address(&receiver_kernel));
         });
     }
@@ -1353,9 +1365,9 @@ mod contract_tests {
                 )
             })
             .expect("deposit_with_min should succeed");
-        let VaultCommandResult::I128(minted) = minted else {
-            panic!("expected i128 result")
-        };
+        let minted = DepositReceipt::decode(&minted.to_alloc_vec())
+            .expect("decode deposit receipt")
+            .shares_out;
         let resources = env.cost_estimate().resources();
 
         std::println!(

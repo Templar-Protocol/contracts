@@ -24,8 +24,11 @@ pub(crate) type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i1
 pub(crate) type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
 
 pub use {
-    contract::Soroban4626ProxyContract, error::ContractError,
-    templar_soroban_shared_types::VaultCommandResult,
+    contract::Soroban4626ProxyContract,
+    error::ContractError,
+    templar_soroban_shared_types::{
+        DepositReceipt, ExecuteWithdrawReceipt, RequestWithdrawReceipt,
+    },
 };
 
 #[cfg(test)]

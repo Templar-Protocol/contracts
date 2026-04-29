@@ -42,7 +42,7 @@ use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, 
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 use templar_curator_primitives::PolicyState;
-use templar_soroban_shared_types::{VaultCommand, VaultCommandResult};
+use templar_soroban_shared_types::VaultCommand;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -60,12 +60,8 @@ pub(crate) fn decode_command(payload: &Bytes) -> Result<VaultCommand, ContractEr
     VaultCommand::decode(&payload.to_alloc_vec()).map_err(|_| ContractError::InvalidInput)
 }
 
-pub(crate) fn encode_command_result(
-    env: &Env,
-    result: &VaultCommandResult,
-) -> Result<Bytes, ContractError> {
-    let bytes = result.encode();
-    Ok(Bytes::from_slice(env, &bytes))
+pub(crate) fn encode_receipt(env: &Env, bytes: &[u8]) -> Bytes {
+    Bytes::from_slice(env, bytes)
 }
 
 pub(crate) type ContractVault<'a> = CuratorVault<

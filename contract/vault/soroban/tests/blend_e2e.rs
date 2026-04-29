@@ -15,8 +15,9 @@ use templar_soroban_runtime::{
     storage::{SorobanStorage, Storage},
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
-    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    DepositReceipt, GovernanceCommand, I128Receipt, VaultCommand,
+    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 fn address_wire(address: &Address) -> AllocString {
@@ -26,11 +27,18 @@ fn address_wire(address: &Address) -> AllocString {
 fn execute_command(
     env: &Env,
     command: &VaultCommand,
-) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+) -> Result<i128, templar_soroban_runtime::ContractError> {
     let payload = Bytes::from_slice(env, &command.encode());
     let result = SorobanVaultContract::execute(env.clone(), payload)?;
-    VaultCommandResult::decode(&result.to_alloc_vec())
-        .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+    let bytes = result.to_alloc_vec();
+    match command {
+        VaultCommand::DepositWithMin { .. } => DepositReceipt::decode(&bytes)
+            .map(|receipt| receipt.shares_out)
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput),
+        _ => I128Receipt::decode(&bytes)
+            .map(|receipt| receipt.value)
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput),
+    }
 }
 
 fn execute_governance_command(
@@ -229,9 +237,6 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(minted) = minted else {
-        panic!("expected i128 result")
-    };
     assert_eq!(minted, deposit_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),
@@ -251,9 +256,6 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(new_external) = new_external else {
-        panic!("expected i128 result")
-    };
     assert_eq!(new_external, supply_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),
@@ -280,9 +282,6 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(refreshed_external) = refreshed_external else {
-        panic!("expected i128 result")
-    };
     assert_eq!(refreshed_external, supply_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),
@@ -306,9 +305,6 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(remaining_external) = remaining_external else {
-        panic!("expected i128 result")
-    };
     assert_eq!(remaining_external, supply_amount - withdraw_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),

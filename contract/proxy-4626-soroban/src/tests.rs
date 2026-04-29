@@ -5,7 +5,8 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Vec,
 };
 use templar_soroban_shared_types::{
-    VaultCommand as WireVaultCommand, VaultCommandResult as WireVaultCommandResult,
+    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, RequestWithdrawReceipt,
+    VaultCommand as WireVaultCommand,
 };
 
 use crate::{
@@ -20,6 +21,7 @@ enum MockVaultDataKey {
     Preview,
     RecordedPayloads,
     LastProxyViewCall,
+    CompletedWithdrawal,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -58,6 +60,15 @@ struct MockProxyViewCall {
     shares: i128,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+struct MockCompletedWithdrawal {
+    owner: Address,
+    receiver: Address,
+    assets_out: i128,
+    shares_burned: i128,
+}
+
 #[contract]
 struct MockVaultContract;
 
@@ -82,6 +93,24 @@ impl MockVaultContract {
             .get(&MockVaultDataKey::LastProxyViewCall)
     }
 
+    pub fn set_completed_withdrawal(
+        env: Env,
+        owner: Address,
+        receiver: Address,
+        assets_out: i128,
+        shares_burned: i128,
+    ) {
+        env.storage().instance().set(
+            &MockVaultDataKey::CompletedWithdrawal,
+            &MockCompletedWithdrawal {
+                owner,
+                receiver,
+                assets_out,
+                shares_burned,
+            },
+        );
+    }
+
     pub fn execute(env: Env, payload: Bytes) -> Bytes {
         let mut payloads = Self::recorded_payloads(env.clone());
         payloads.push_back(payload.clone());
@@ -91,13 +120,31 @@ impl MockVaultContract {
 
         let command = WireVaultCommand::decode(&payload.to_alloc_vec()).expect("decode command");
         let result = match command {
-            WireVaultCommand::DepositWithMin { .. } => WireVaultCommandResult::I128(1000),
-            WireVaultCommand::RequestWithdraw { .. } => WireVaultCommandResult::U64(42),
-            WireVaultCommand::ExecuteWithdraw { .. } => WireVaultCommandResult::Unit,
-            _ => WireVaultCommandResult::Unit,
+            WireVaultCommand::DepositWithMin { .. } => DepositReceipt { shares_out: 1000 }.encode(),
+            WireVaultCommand::RequestWithdraw { shares, .. } => RequestWithdrawReceipt {
+                request_id: 42,
+                shares_escrowed: shares,
+            }
+            .encode(),
+            WireVaultCommand::ExecuteWithdraw { .. } => env
+                .storage()
+                .instance()
+                .get::<_, MockCompletedWithdrawal>(&MockVaultDataKey::CompletedWithdrawal)
+                .map(|completed| {
+                    ExecuteWithdrawReceipt::Completed {
+                        request_id: 42,
+                        owner: address_wire(&completed.owner),
+                        receiver: address_wire(&completed.receiver),
+                        assets_out: completed.assets_out,
+                        shares_burned: completed.shares_burned,
+                    }
+                    .encode()
+                })
+                .unwrap_or_else(|| ExecuteWithdrawReceipt::NoPayout.encode()),
+            _ => EmptyReceipt.encode(),
         };
 
-        Bytes::from_slice(&env, &result.encode())
+        Bytes::from_slice(&env, &result)
     }
 
     pub fn proxy_view(env: Env, owner: Address, assets: i128, shares: i128) -> ProxyViewResponse {
@@ -234,6 +281,24 @@ impl Fixture {
                 owner.clone(),
                 spender.clone(),
                 amount,
+            )
+        });
+    }
+
+    fn set_completed_withdrawal(
+        &self,
+        owner: &Address,
+        receiver: &Address,
+        assets_out: i128,
+        shares_burned: i128,
+    ) {
+        self.env.as_contract(&self.vault, || {
+            MockVaultContract::set_completed_withdrawal(
+                self.env.clone(),
+                owner.clone(),
+                receiver.clone(),
+                assets_out,
+                shares_burned,
             )
         });
     }
@@ -538,6 +603,55 @@ fn test_execute_withdraw_returns_unit() {
     });
 
     assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn test_execute_withdraw_no_payout_emits_no_withdraw_event() {
+    let fixture = Fixture::new();
+    let caller = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::execute_withdraw(fixture.env.clone(), caller)
+    });
+
+    assert_eq!(result, Ok(()));
+    let events = fixture
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&fixture.proxy);
+    assert_eq!(events.events().len(), 0);
+}
+
+#[test]
+fn test_execute_withdraw_completed_emits_withdraw_event() {
+    let fixture = Fixture::new();
+    let caller = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+    fixture.set_completed_withdrawal(&owner, &receiver, 123, 45);
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::execute_withdraw(fixture.env.clone(), caller.clone())
+    });
+
+    assert_eq!(result, Ok(()));
+    let events = fixture
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&fixture.proxy);
+    assert_eq!(events.events().len(), 1);
+    let rendered = fixture.proxy_events_debug();
+    assert!(rendered.contains("Withdraw"));
+    assert!(rendered.contains("123"));
+    assert!(rendered.contains("45"));
 }
 
 #[test]

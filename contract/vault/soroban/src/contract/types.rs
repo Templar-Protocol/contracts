@@ -34,6 +34,23 @@ pub struct WithdrawRequestResult {
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
+pub struct CompletedWithdrawal {
+    pub request_id: u64,
+    pub owner: Address,
+    pub receiver: Address,
+    pub assets_out: u128,
+    pub shares_burned: u128,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
+pub struct ExecuteWithdrawResult {
+    pub summary: EffectSummary,
+    pub completed: Option<CompletedWithdrawal>,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AllocationResult {
     pub op_id: u64,
     pub new_external_assets: u128,

@@ -6,7 +6,8 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, Bytes, Env, IntoVal, InvokeError, Symbol,
 };
 use templar_soroban_shared_types::{
-    VaultCommand as WireVaultCommand, VaultCommandResult as WireVaultCommandResult,
+    DepositReceipt, ExecuteWithdrawReceipt, RequestWithdrawReceipt,
+    VaultCommand as WireVaultCommand,
 };
 
 use crate::{error::ContractError, ProxyPreviewView, ProxyViewResponse};
@@ -87,7 +88,7 @@ impl Soroban4626ProxyContract {
     ) -> Result<i128, ContractError> {
         require_non_negative(assets)?;
         caller.require_auth();
-        let shares = expect_i128_result(invoke_vault_execute(
+        let receipt = decode_deposit_receipt(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
                 owner: caller.clone(),
@@ -96,6 +97,7 @@ impl Soroban4626ProxyContract {
                 min_shares_out: 0,
             },
         )?)?;
+        let shares = receipt.shares_out;
         emit_deposit_event(&env, &caller, &receiver, assets, shares);
         Ok(shares)
     }
@@ -111,7 +113,7 @@ impl Soroban4626ProxyContract {
         let preview = call_proxy_view(&env, &caller, 0, shares)?;
         let assets = preview.6;
         require_non_negative(assets)?;
-        expect_i128_result(invoke_vault_execute(
+        let receipt = decode_deposit_receipt(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
                 owner: caller.clone(),
@@ -120,7 +122,7 @@ impl Soroban4626ProxyContract {
                 min_shares_out: shares,
             },
         )?)?;
-        emit_deposit_event(&env, &caller, &receiver, assets, shares);
+        emit_deposit_event(&env, &caller, &receiver, assets, receipt.shares_out);
         Ok(assets)
     }
 
@@ -137,7 +139,7 @@ impl Soroban4626ProxyContract {
         let shares = preview.7;
         require_non_negative(shares)?;
         require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
-        let request_id = expect_u64_result(invoke_vault_execute(
+        let receipt = decode_request_withdraw_receipt(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
                 owner: owner.clone(),
@@ -146,8 +148,15 @@ impl Soroban4626ProxyContract {
                 min_assets_out: assets,
             },
         )?)?;
-        emit_redeem_request_event(&env, &receiver, &owner, request_id, &caller, shares);
-        Ok(request_id)
+        emit_redeem_request_event(
+            &env,
+            &receiver,
+            &owner,
+            receipt.request_id,
+            &caller,
+            receipt.shares_escrowed,
+        );
+        Ok(receipt.request_id)
     }
 
     pub fn redeem(
@@ -163,7 +172,7 @@ impl Soroban4626ProxyContract {
         let preview = call_proxy_view(&env, &owner, 0, shares)?;
         let assets = preview.1;
         require_non_negative(assets)?;
-        let request_id = expect_u64_result(invoke_vault_execute(
+        let receipt = decode_request_withdraw_receipt(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
                 owner: owner.clone(),
@@ -172,8 +181,15 @@ impl Soroban4626ProxyContract {
                 min_assets_out: assets,
             },
         )?)?;
-        emit_redeem_request_event(&env, &receiver, &owner, request_id, &caller, shares);
-        Ok(request_id)
+        emit_redeem_request_event(
+            &env,
+            &receiver,
+            &owner,
+            receipt.request_id,
+            &caller,
+            receipt.shares_escrowed,
+        );
+        Ok(receipt.request_id)
     }
 
     pub fn request_withdraw(
@@ -186,7 +202,7 @@ impl Soroban4626ProxyContract {
         require_non_negative(shares)?;
         require_non_negative(min_assets_out)?;
         owner.require_auth();
-        let request_id = expect_u64_result(invoke_vault_execute(
+        let receipt = decode_request_withdraw_receipt(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
                 owner: owner.clone(),
@@ -195,16 +211,38 @@ impl Soroban4626ProxyContract {
                 min_assets_out,
             },
         )?)?;
-        emit_redeem_request_event(&env, &receiver, &owner, request_id, &owner, shares);
-        Ok(request_id)
+        emit_redeem_request_event(
+            &env,
+            &receiver,
+            &owner,
+            receipt.request_id,
+            &owner,
+            receipt.shares_escrowed,
+        );
+        Ok(receipt.request_id)
     }
 
     pub fn execute_withdraw(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
-        expect_unit_result(invoke_vault_execute(
+        let receipt = decode_execute_withdraw_receipt(invoke_vault_execute(
             &env,
-            VaultCommand::ExecuteWithdraw { caller },
-        )?)
+            VaultCommand::ExecuteWithdraw {
+                caller: caller.clone(),
+            },
+        )?)?;
+        if let ExecuteWithdrawReceipt::Completed {
+            owner,
+            receiver,
+            assets_out,
+            shares_burned,
+            ..
+        } = receipt
+        {
+            let owner = address_from_wire(&env, &owner)?;
+            let receiver = address_from_wire(&env, &receiver)?;
+            emit_withdraw_event(&env, &caller, &receiver, &owner, assets_out, shares_burned);
+        }
+        Ok(())
     }
 
     pub fn asset(env: Env) -> Result<Address, ContractError> {
@@ -361,7 +399,7 @@ pub(crate) fn read_share_token(env: &Env) -> Result<Address, ContractError> {
 pub(crate) fn invoke_vault_execute(
     env: &Env,
     command: VaultCommand,
-) -> Result<WireVaultCommandResult, ContractError> {
+) -> Result<Bytes, ContractError> {
     let vault_address = read_vault_address(env)?;
     let command = command.into_wire()?;
     let payload = Bytes::from_slice(env, &command.encode());
@@ -380,7 +418,7 @@ pub(crate) fn invoke_vault_execute(
         Err(Err(invoke_error)) => return Err(map_vault_invoke_error(invoke_error)),
     };
 
-    WireVaultCommandResult::decode(&bytes.to_alloc_vec()).map_err(Into::into)
+    Ok(bytes)
 }
 
 fn call_proxy_view_full(
@@ -464,25 +502,16 @@ where
     }
 }
 
-fn expect_i128_result(result: WireVaultCommandResult) -> Result<i128, ContractError> {
-    match result {
-        WireVaultCommandResult::I128(value) => Ok(value),
-        _ => Err(ContractError::VaultError),
-    }
+fn decode_deposit_receipt(bytes: Bytes) -> Result<DepositReceipt, ContractError> {
+    DepositReceipt::decode(&bytes.to_alloc_vec()).map_err(Into::into)
 }
 
-fn expect_u64_result(result: WireVaultCommandResult) -> Result<u64, ContractError> {
-    match result {
-        WireVaultCommandResult::U64(value) => Ok(value),
-        _ => Err(ContractError::VaultError),
-    }
+fn decode_request_withdraw_receipt(bytes: Bytes) -> Result<RequestWithdrawReceipt, ContractError> {
+    RequestWithdrawReceipt::decode(&bytes.to_alloc_vec()).map_err(Into::into)
 }
 
-fn expect_unit_result(result: WireVaultCommandResult) -> Result<(), ContractError> {
-    match result {
-        WireVaultCommandResult::Unit => Ok(()),
-        _ => Err(ContractError::VaultError),
-    }
+fn decode_execute_withdraw_receipt(bytes: Bytes) -> Result<ExecuteWithdrawReceipt, ContractError> {
+    ExecuteWithdrawReceipt::decode(&bytes.to_alloc_vec()).map_err(Into::into)
 }
 
 pub(crate) fn require_auth_or_allowance(
@@ -558,7 +587,96 @@ pub(crate) fn emit_redeem_request_event(
     );
 }
 
+#[allow(deprecated)]
+pub(crate) fn emit_withdraw_event(
+    env: &Env,
+    sender: &Address,
+    receiver: &Address,
+    owner: &Address,
+    assets: i128,
+    shares: i128,
+) {
+    env.events().publish(
+        (
+            symbol_short!("Withdraw"),
+            sender.clone(),
+            receiver.clone(),
+            owner.clone(),
+        ),
+        (assets, shares),
+    );
+}
+
 fn address_to_wire(address: &Address) -> Result<AllocString, ContractError> {
     let raw = address.to_string().to_bytes().to_alloc_vec();
     AllocString::from_utf8(raw).map_err(|_| ContractError::InvalidInput)
+}
+
+fn address_from_wire(env: &Env, value: &AllocString) -> Result<Address, ContractError> {
+    validate_address_strkey(value.as_bytes())?;
+    Ok(Address::from_str(env, value))
+}
+
+fn validate_address_strkey(bytes: &[u8]) -> Result<(), ContractError> {
+    const STRKEY_LEN: usize = 56;
+    const BINARY_LEN: usize = 35;
+    const ACCOUNT_VERSION: u8 = 6 << 3;
+    const CONTRACT_VERSION: u8 = 2 << 3;
+
+    if bytes.len() != STRKEY_LEN {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let mut out = [0u8; BINARY_LEN];
+    let mut buffer = 0u16;
+    let mut bits = 0u8;
+    let mut cursor = 0usize;
+    for byte in bytes {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => return Err(ContractError::InvalidInput),
+        };
+        buffer = (buffer << 5) | u16::from(value);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            if cursor >= BINARY_LEN {
+                return Err(ContractError::InvalidInput);
+            }
+            out[cursor] = (buffer >> bits) as u8;
+            cursor += 1;
+            buffer &= (1u16 << bits) - 1;
+        }
+    }
+
+    if cursor != BINARY_LEN
+        || bits != 0
+        || (out[0] != ACCOUNT_VERSION && out[0] != CONTRACT_VERSION)
+    {
+        return Err(ContractError::InvalidInput);
+    }
+
+    let expected = u16::from_le_bytes([out[BINARY_LEN - 2], out[BINARY_LEN - 1]]);
+    let actual = crc16_xmodem(&out[..BINARY_LEN - 2]);
+    if expected != actual {
+        return Err(ContractError::InvalidInput);
+    }
+
+    Ok(())
+}
+
+fn crc16_xmodem(bytes: &[u8]) -> u16 {
+    let mut crc = 0u16;
+    for byte in bytes {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 == 0 {
+                crc <<= 1;
+            } else {
+                crc = (crc << 1) ^ 0x1021;
+            }
+        }
+    }
+    crc
 }

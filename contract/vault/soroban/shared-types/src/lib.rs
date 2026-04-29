@@ -262,11 +262,35 @@ pub enum GovernanceCommand {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum VaultCommandResult {
-    Unit,
-    I128(i128),
-    U64(u64),
+pub struct DepositReceipt {
+    pub shares_out: i128,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestWithdrawReceipt {
+    pub request_id: u64,
+    pub shares_escrowed: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecuteWithdrawReceipt {
+    NoPayout,
+    Completed {
+        request_id: u64,
+        owner: String,
+        receiver: String,
+        assets_out: i128,
+        shares_burned: i128,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct I128Receipt {
+    pub value: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmptyReceipt;
 
 pub const GOVERNANCE_CONFIG_KIND_CURATOR: u32 = 0;
 pub const GOVERNANCE_CONFIG_KIND_GOVERNANCE: u32 = 1;
@@ -469,19 +493,72 @@ impl GovernanceCommand {
     }
 }
 
-impl VaultCommandResult {
+impl DepositReceipt {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        push_u8(&mut out, 0);
+        push_i128(&mut out, self.shares_out);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 0 {
+            return Err(CodecError::InvalidTag);
+        }
+        let result = Self {
+            shares_out: read_i128(bytes, &mut cursor)?,
+        };
+        ensure_finished(bytes, cursor)?;
+        Ok(result)
+    }
+}
+
+impl RequestWithdrawReceipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 1);
+        push_u64(&mut out, self.request_id);
+        push_i128(&mut out, self.shares_escrowed);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 1 {
+            return Err(CodecError::InvalidTag);
+        }
+        let result = Self {
+            request_id: read_u64(bytes, &mut cursor)?,
+            shares_escrowed: read_i128(bytes, &mut cursor)?,
+        };
+        ensure_finished(bytes, cursor)?;
+        Ok(result)
+    }
+}
+
+impl ExecuteWithdrawReceipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 2);
         match self {
-            Self::Unit => push_u8(&mut out, 0),
-            Self::I128(value) => {
+            Self::NoPayout => push_u8(&mut out, 0),
+            Self::Completed {
+                request_id,
+                owner,
+                receiver,
+                assets_out,
+                shares_burned,
+            } => {
                 push_u8(&mut out, 1);
-                push_i128(&mut out, *value);
-            }
-            Self::U64(value) => {
-                push_u8(&mut out, 2);
-                push_u64(&mut out, *value);
+                push_u64(&mut out, *request_id);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_i128(&mut out, *assets_out);
+                push_i128(&mut out, *shares_burned);
             }
         }
         out
@@ -489,14 +566,62 @@ impl VaultCommandResult {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
         let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 2 {
+            return Err(CodecError::InvalidTag);
+        }
         let result = match read_u8(bytes, &mut cursor)? {
-            0 => Ok(Self::Unit),
-            1 => Ok(Self::I128(read_i128(bytes, &mut cursor)?)),
-            2 => Ok(Self::U64(read_u64(bytes, &mut cursor)?)),
-            _ => Err(CodecError::InvalidTag),
-        }?;
+            0 => Self::NoPayout,
+            1 => Self::Completed {
+                request_id: read_u64(bytes, &mut cursor)?,
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                assets_out: read_i128(bytes, &mut cursor)?,
+                shares_burned: read_i128(bytes, &mut cursor)?,
+            },
+            _ => return Err(CodecError::InvalidTag),
+        };
         ensure_finished(bytes, cursor)?;
         Ok(result)
+    }
+}
+
+impl I128Receipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 3);
+        push_i128(&mut out, self.value);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 3 {
+            return Err(CodecError::InvalidTag);
+        }
+        let result = Self {
+            value: read_i128(bytes, &mut cursor)?,
+        };
+        ensure_finished(bytes, cursor)?;
+        Ok(result)
+    }
+}
+
+impl EmptyReceipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 4);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 4 {
+            return Err(CodecError::InvalidTag);
+        }
+        ensure_finished(bytes, cursor)?;
+        Ok(Self)
     }
 }
 
@@ -595,5 +720,71 @@ mod tests {
         .encode();
 
         assert!(VaultCommand::decode(&governance).is_err());
+    }
+
+    #[test]
+    fn command_receipts_roundtrip_representative() {
+        let deposit = DepositReceipt { shares_out: 12 };
+        assert_eq!(
+            DepositReceipt::decode(&deposit.encode()).expect("decode deposit receipt"),
+            deposit
+        );
+
+        let request = RequestWithdrawReceipt {
+            request_id: 7,
+            shares_escrowed: 34,
+        };
+        assert_eq!(
+            RequestWithdrawReceipt::decode(&request.encode()).expect("decode request receipt"),
+            request
+        );
+
+        let completed = ExecuteWithdrawReceipt::Completed {
+            request_id: 7,
+            owner: String::from("owner"),
+            receiver: String::from("receiver"),
+            assets_out: 21,
+            shares_burned: 34,
+        };
+        assert_eq!(
+            ExecuteWithdrawReceipt::decode(&completed.encode()).expect("decode completed receipt"),
+            completed
+        );
+
+        let scalar = I128Receipt { value: -5 };
+        assert_eq!(
+            I128Receipt::decode(&scalar.encode()).expect("decode scalar receipt"),
+            scalar
+        );
+
+        assert_eq!(
+            EmptyReceipt::decode(&EmptyReceipt.encode()).expect("decode empty receipt"),
+            EmptyReceipt
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_trailing_bytes() {
+        let mut encoded = RequestWithdrawReceipt {
+            request_id: 1,
+            shares_escrowed: 2,
+        }
+        .encode();
+        encoded.push(0);
+
+        assert_eq!(
+            RequestWithdrawReceipt::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_wrong_tags() {
+        let encoded = I128Receipt { value: 1 }.encode();
+
+        assert_eq!(
+            DepositReceipt::decode(&encoded),
+            Err(CodecError::InvalidTag)
+        );
     }
 }

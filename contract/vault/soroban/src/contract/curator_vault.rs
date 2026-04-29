@@ -336,10 +336,11 @@ where
         &mut self,
         caller: Address,
         now_ns: u64,
-    ) -> Result<EffectSummary, RuntimeError> {
+    ) -> Result<ExecuteWithdrawResult, RuntimeError> {
         self.authorize(ActionKind::ExecuteWithdraw, caller)?;
 
         let mut summary = EffectSummary::new();
+        let mut completed = None;
 
         {
             let op_state = &self.state()?.op_state;
@@ -358,11 +359,12 @@ where
         }
 
         if self.state()?.op_state.is_withdrawing() {
-            let settle_summary = self.complete_withdrawal_from_idle(now_ns)?;
-            summary.merge(settle_summary);
+            let settle_result = self.complete_withdrawal_from_idle(now_ns)?;
+            summary.merge(settle_result.summary);
+            completed = settle_result.completed;
         }
 
-        Ok(summary)
+        Ok(ExecuteWithdrawResult { summary, completed })
     }
 
     /// Map vault + caller SDK address to kernel address.
@@ -503,17 +505,30 @@ where
     fn complete_withdrawal_from_idle(
         &mut self,
         now_ns: u64,
-    ) -> Result<EffectSummary, RuntimeError> {
+    ) -> Result<ExecuteWithdrawResult, RuntimeError> {
         let Some(idle_payout) = transition_to_runtime(plan_idle_payout(self.state()?))? else {
-            return Ok(EffectSummary::new());
+            return Ok(ExecuteWithdrawResult {
+                summary: EffectSummary::new(),
+                completed: None,
+            });
         };
 
         let assets_out = idle_payout.assets_out;
         if assets_out == 0 {
-            return Ok(EffectSummary::new());
+            return Ok(ExecuteWithdrawResult {
+                summary: EffectSummary::new(),
+                completed: None,
+            });
         }
         let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
+        let completed = CompletedWithdrawal {
+            request_id: idle_payout.request_id,
+            owner: idle_payout.owner,
+            receiver: idle_payout.receiver,
+            assets_out,
+            shares_burned: burn_shares,
+        };
 
         let collected = {
             let op_state = mem::take(&mut self.state_mut()?.op_state);
@@ -542,7 +557,10 @@ where
         )?;
         summary.merge(settle_summary);
 
-        Ok(summary)
+        Ok(ExecuteWithdrawResult {
+            summary,
+            completed: Some(completed),
+        })
     }
 
     pub fn pause(&mut self, caller: Address, paused: bool) -> Result<(), RuntimeError> {

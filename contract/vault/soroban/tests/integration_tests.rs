@@ -20,7 +20,7 @@ use templar_soroban_runtime::{
     Storage, // Import the trait
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    EmptyReceipt, GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -175,21 +175,19 @@ impl<'a> VaultProxy<'a> {
     fn execute(
         &self,
         command: &VaultCommand,
-    ) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+    ) -> Result<Bytes, templar_soroban_runtime::ContractError> {
         let payload = Bytes::from_slice(self.env, &command.encode());
-        let result = SorobanVaultContract::execute(self.env.clone(), payload)?;
-        VaultCommandResult::decode(&result.to_alloc_vec())
-            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+        SorobanVaultContract::execute(self.env.clone(), payload)
     }
 
     fn execute_unit(
         &self,
         command: &VaultCommand,
     ) -> Result<(), templar_soroban_runtime::ContractError> {
-        match self.execute(command)? {
-            VaultCommandResult::Unit => Ok(()),
-            _ => Err(templar_soroban_runtime::ContractError::InvalidInput),
-        }
+        let bytes = self.execute(command)?;
+        EmptyReceipt::decode(&bytes.to_alloc_vec())
+            .map(|_| ())
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
     }
 
     fn execute_governance_unit(
