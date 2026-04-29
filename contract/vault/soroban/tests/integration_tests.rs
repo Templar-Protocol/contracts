@@ -101,6 +101,7 @@ struct SorobanContractFixture {
     env: Env,
     contract_id: soroban_sdk::Address,
     asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
 }
 
 struct VaultProxy<'a> {
@@ -262,7 +263,7 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
             curator,
             governance,
             asset.clone(),
-            share,
+            share.clone(),
             0,
             0,
         )
@@ -273,6 +274,7 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
         env,
         contract_id,
         asset_token: asset,
+        share_token: share,
     }
 }
 
@@ -908,13 +910,20 @@ fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
 }
 
 #[rstest]
-fn soroban_contract_proxy_view_reports_zero_atomic_limits_until_atomic_abi_exists(
+fn soroban_contract_proxy_view_reports_owner_idle_atomic_limits(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let share_token = soroban_contract_fixture.share_token;
     let proxy = VaultProxy::new(&env);
     let owner = soroban_sdk::Address::generate(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let share_admin_client = StellarAssetClient::new(&env, &share_token);
+
+    asset_admin_client.mint(&contract_id, &1_000);
+    share_admin_client.mint(&owner, &600);
 
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
@@ -927,8 +936,8 @@ fn soroban_contract_proxy_view_reports_zero_atomic_limits_until_atomic_abi_exist
             })
             .expect("save state");
 
-        assert_eq!(proxy.max_withdraw(owner.clone()).unwrap(), 0);
-        assert_eq!(proxy.max_redeem(owner).unwrap(), 0);
+        assert_eq!(proxy.max_withdraw(owner.clone()).unwrap(), 600);
+        assert_eq!(proxy.max_redeem(owner).unwrap(), 600);
     });
 }
 

@@ -441,6 +441,20 @@ pub enum VaultCommand {
         markets: Vec<u32>,
     },
     RefreshFees,
+    AtomicWithdraw {
+        owner: String,
+        receiver: String,
+        operator: String,
+        assets: i128,
+        max_shares_burned: i128,
+    },
+    AtomicRedeem {
+        owner: String,
+        receiver: String,
+        operator: String,
+        shares: i128,
+        min_assets_out: i128,
+    },
     ResyncIdleBalance,
     CancelMigration {
         caller: String,
@@ -568,6 +582,34 @@ impl VaultCommand {
                 push_u32_vec(&mut out, markets);
             }
             Self::RefreshFees => push_u8(&mut out, 5),
+            Self::AtomicWithdraw {
+                owner,
+                receiver,
+                operator,
+                assets,
+                max_shares_burned,
+            } => {
+                push_u8(&mut out, 6);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_string(&mut out, operator);
+                push_i128(&mut out, *assets);
+                push_i128(&mut out, *max_shares_burned);
+            }
+            Self::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+            } => {
+                push_u8(&mut out, 7);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_string(&mut out, operator);
+                push_i128(&mut out, *shares);
+                push_i128(&mut out, *min_assets_out);
+            }
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
                 push_u8(&mut out, 9);
@@ -615,6 +657,20 @@ impl VaultCommand {
                 markets: read_u32_vec(bytes, &mut cursor)?,
             }),
             5 => Ok(Self::RefreshFees),
+            6 => Ok(Self::AtomicWithdraw {
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                operator: read_string(bytes, &mut cursor)?,
+                assets: read_i128(bytes, &mut cursor)?,
+                max_shares_burned: read_i128(bytes, &mut cursor)?,
+            }),
+            7 => Ok(Self::AtomicRedeem {
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                operator: read_string(bytes, &mut cursor)?,
+                shares: read_i128(bytes, &mut cursor)?,
+                min_assets_out: read_i128(bytes, &mut cursor)?,
+            }),
             8 => Ok(Self::ResyncIdleBalance),
             9 => Ok(Self::CancelMigration {
                 caller: read_string(bytes, &mut cursor)?,
@@ -773,6 +829,20 @@ mod tests {
                 assets: 100,
                 min_shares_out: 1,
             },
+            VaultCommand::AtomicWithdraw {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                operator: String::from("operator"),
+                assets: 100,
+                max_shares_burned: 101,
+            },
+            VaultCommand::AtomicRedeem {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                operator: String::from("operator"),
+                shares: 100,
+                min_assets_out: 99,
+            },
             VaultCommand::ResyncIdleBalance,
             VaultCommand::RefreshFees,
             VaultCommand::CancelMigration {
@@ -801,6 +871,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vault_command_decode_rejects_trailing_bytes() {
+        let mut encoded = VaultCommand::AtomicWithdraw {
+            owner: String::from("owner"),
+            receiver: String::from("receiver"),
+            operator: String::from("operator"),
+            assets: 100,
+            max_shares_burned: 101,
+        }
+        .encode();
+        encoded.push(0xFF);
+
+        assert_eq!(
+            VaultCommand::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
     #[test]
     fn governance_command_roundtrip_representative() {
         let commands = vec![
