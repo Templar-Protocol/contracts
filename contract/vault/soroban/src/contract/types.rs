@@ -162,6 +162,7 @@ impl VaultDataKey {
     pub const Guardians: Symbol = soroban_sdk::symbol_short!("guards");
     pub const Allocators: Symbol = soroban_sdk::symbol_short!("allctrs");
     pub const AllowedAdapters: Symbol = soroban_sdk::symbol_short!("adapters");
+    pub const AdapterBindings: Symbol = soroban_sdk::symbol_short!("adapmap");
     pub const SkimRecipient: Symbol = soroban_sdk::symbol_short!("skimrcp");
     pub const VirtualShares: Symbol = soroban_sdk::symbol_short!("vshares");
     pub const VirtualAssets: Symbol = soroban_sdk::symbol_short!("vassets");

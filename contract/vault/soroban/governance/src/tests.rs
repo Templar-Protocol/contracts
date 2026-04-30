@@ -32,6 +32,7 @@ enum MockVaultKey {
     Governance,
     SkimRecipient,
     SupplyQueue,
+    SupplyQueueAdapters,
     LastFeeAccounts,
     RestrictionMode,
     RestrictionAccounts,
@@ -295,6 +296,13 @@ impl MockVault {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    pub fn supply_queue_adapters(env: Env) -> Option<Vec<Address>> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::SupplyQueueAdapters)
+            .unwrap_or(None)
+    }
+
     pub fn last_fee_accounts(env: Env) -> Option<Vec<Address>> {
         env.storage().instance().get(&MockVaultKey::LastFeeAccounts)
     }
@@ -451,6 +459,9 @@ impl MockVault {
                     .instance()
                     .set(&MockVaultKey::SupplyQueue, &ids);
             }
+            env.storage()
+                .instance()
+                .set(&MockVaultKey::SupplyQueueAdapters, &accounts);
         }
         if kind == GOVERNANCE_POLICY_KIND_RESTRICTIONS {
             if let Some(m) = mode {
@@ -1111,12 +1122,21 @@ fn supply_queue_submission_routes_to_vault() {
     );
 
     let target_ids = sdk_u32_vec(&env, &[1u32, 2u32, 3u32]);
+    let adapters = Vec::from_array(
+        &env,
+        [
+            env.register(MockVault, ()),
+            env.register(MockVault, ()),
+            env.register(MockVault, ()),
+        ],
+    );
 
     let proposal_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_supply_queue(
             env.clone(),
             admin.clone(),
             target_ids.clone(),
+            adapters.clone(),
         )
         .unwrap()
     });
@@ -1138,6 +1158,9 @@ fn supply_queue_submission_routes_to_vault() {
 
     let on_vault = env.as_contract(&vault, || MockVault::supply_queue(env.clone()));
     assert_eq!(on_vault, target_ids);
+    let adapters_on_vault =
+        env.as_contract(&vault, || MockVault::supply_queue_adapters(env.clone()));
+    assert_eq!(adapters_on_vault, Some(adapters));
 }
 
 #[test]

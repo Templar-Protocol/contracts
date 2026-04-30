@@ -1962,8 +1962,8 @@ mod market_tests {
 
 mod storage_tests {
     use crate::contract::helpers::set_config_address;
-    use crate::contract::SorobanVaultContract;
-    use crate::error::RuntimeError;
+    use crate::contract::{adapter_for_market, SorobanVaultContract};
+    use crate::error::{ContractError, RuntimeError};
     use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
     use crate::test_utils::{fuzz_api, MemoryStorage};
     use alloc::string::{String as AllocString, ToString};
@@ -1972,12 +1972,14 @@ mod storage_tests {
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
     use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
     use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
+    use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
         GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
         GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
         GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP,
         GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+        GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
@@ -1987,6 +1989,86 @@ mod storage_tests {
     fn sdk_text(address: &SdkAddress) -> AllocString {
         AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec())
             .expect("valid address")
+    }
+
+    fn supply_queue_from_ids(ids: &[u32]) -> SupplyQueue {
+        SupplyQueue::try_from_entries(
+            ids.iter()
+                .map(|target_id| SupplyQueueEntry::new(*target_id, 100).unwrap())
+                .collect(),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn policy_state_with_supply_queue(ids: &[u32]) -> PolicyState {
+        let mut policy_state = PolicyState::default();
+        for target_id in ids {
+            policy_state
+                .set_market_config(*target_id, MarketConfig::new(true, 100, None))
+                .unwrap();
+        }
+        policy_state
+            .replace_supply_queue(supply_queue_from_ids(ids))
+            .unwrap();
+        policy_state
+    }
+
+    fn initialize_governance_test_contract(env: &Env, governance: &SdkAddress) {
+        let curator = SdkAddress::generate(env);
+        let asset_token = SdkAddress::generate(env);
+        let share_token = SdkAddress::generate(env);
+        set_config_address(env, &crate::contract::VaultDataKey::Curator, &curator);
+        set_config_address(env, &crate::contract::VaultDataKey::Governance, governance);
+        set_config_address(
+            env,
+            &crate::contract::VaultDataKey::AssetToken,
+            &asset_token,
+        );
+        set_config_address(
+            env,
+            &crate::contract::VaultDataKey::ShareToken,
+            &share_token,
+        );
+        set_config_address(
+            env,
+            &crate::contract::VaultDataKey::SkimRecipient,
+            governance,
+        );
+        let mut storage = SorobanStorage::new(env);
+        storage.save_state(&VaultState::default()).unwrap();
+        storage.save_paused(false).unwrap();
+    }
+
+    fn adapter_contract(env: &Env) -> SdkAddress {
+        env.register(SorobanVaultContract, ())
+    }
+
+    fn account_address(env: &Env) -> SdkAddress {
+        SdkAddress::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        )
+    }
+
+    fn store_allowed_adapters(env: &Env, adapters: &[SdkAddress]) {
+        let mut values = SdkVec::new(env);
+        for adapter in adapters {
+            values.push_back(adapter.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&crate::contract::VaultDataKey::AllowedAdapters, &values);
+    }
+
+    fn store_test_adapter_bindings(env: &Env, pairs: &[(u32, SdkAddress)]) {
+        let mut bindings = soroban_sdk::Map::new(env);
+        for (target_id, adapter) in pairs {
+            bindings.set(*target_id, adapter.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&crate::contract::VaultDataKey::AdapterBindings, &bindings);
     }
 
     fn execute_governance_command(
@@ -2596,7 +2678,9 @@ mod storage_tests {
         let (env, contract_id) = contract_env;
         env.mock_all_auths_allowing_non_root_auth();
         let governance = SdkAddress::generate(&env);
-        let updated_adapters = SdkVec::from_array(&env, [SdkAddress::generate(&env)]);
+        let updated_adapter_one = adapter_contract(&env);
+        let updated_adapter_two = adapter_contract(&env);
+        let updated_adapters = SdkVec::from_array(&env, [updated_adapter_one, updated_adapter_two]);
 
         env.as_contract(&contract_id, || {
             set_config_address(
@@ -2604,6 +2688,9 @@ mod storage_tests {
                 &crate::contract::VaultDataKey::Governance,
                 &governance,
             );
+            let mut storage = SorobanStorage::new(&env);
+            let policy_state = policy_state_with_supply_queue(&[1]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
             env.storage().instance().set(
                 &crate::contract::VaultDataKey::AllowedAdapters,
                 &SdkVec::from_array(
@@ -2636,6 +2723,509 @@ mod storage_tests {
                     .get(&crate::contract::VaultDataKey::AllowedAdapters),
                 Some(updated_adapters)
             );
+        });
+    }
+
+    #[rstest]
+    fn test_governance_config_rejects_non_contract_allowed_adapter(
+        contract_env: (Env, soroban_sdk::Address),
+    ) {
+        let (env, contract_id) = contract_env;
+        env.mock_all_auths_allowing_non_root_auth();
+        let governance = SdkAddress::generate(&env);
+        let non_contract_adapter = account_address(&env);
+
+        env.as_contract(&contract_id, || {
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let updated = alloc::vec![sdk_text(&non_contract_adapter)];
+            let payload = soroban_sdk::Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                    primary: None,
+                    many: Some(updated),
+                    value_a: None,
+                    value_b: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_supply_queue_binds_new_market_from_proposal_adapters() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+        let adapter_for_market_two = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = policy_state_with_supply_queue(&[1]);
+            policy_state
+                .set_market_config(2, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(
+                &env,
+                &[
+                    adapter_for_market_one.clone(),
+                    adapter_for_market_two.clone(),
+                ],
+            );
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1, 2]),
+                    mode: None,
+                    accounts: Some(alloc::vec![
+                        sdk_text(&adapter_for_market_one),
+                        sdk_text(&adapter_for_market_two),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+            assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
+        });
+    }
+
+    #[test]
+    fn test_governance_rejects_new_supply_queue_market_without_adapter() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = policy_state_with_supply_queue(&[1]);
+            policy_state
+                .set_market_config(2, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1, 2]),
+                    mode: None,
+                    accounts: None,
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_rejects_new_supply_queue_adapter_not_allowed() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+        let disallowed_adapter = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = policy_state_with_supply_queue(&[1]);
+            policy_state
+                .set_market_config(2, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(&env, &[adapter_for_market_one.clone()]);
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1, 2]),
+                    mode: None,
+                    accounts: Some(alloc::vec![
+                        sdk_text(&adapter_for_market_one),
+                        sdk_text(&disallowed_adapter),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+            assert_eq!(
+                adapter_for_market(&env, 2),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_rejects_new_supply_queue_adapter_non_contract() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+        let non_contract_adapter = account_address(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = policy_state_with_supply_queue(&[1]);
+            policy_state
+                .set_market_config(2, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(
+                &env,
+                &[adapter_for_market_one.clone(), non_contract_adapter.clone()],
+            );
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1, 2]),
+                    mode: None,
+                    accounts: Some(alloc::vec![
+                        sdk_text(&adapter_for_market_one),
+                        sdk_text(&non_contract_adapter),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+            assert_eq!(
+                adapter_for_market(&env, 2),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_rejects_supply_queue_adapter_rebinding() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+        let replacement_adapter = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let policy_state = policy_state_with_supply_queue(&[1]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(
+                &env,
+                &[adapter_for_market_one.clone(), replacement_adapter.clone()],
+            );
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1]),
+                    mode: None,
+                    accounts: Some(alloc::vec![sdk_text(&replacement_adapter)]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+        });
+    }
+
+    #[test]
+    fn test_governance_supply_queue_reorder_does_not_require_adapters() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+        let adapter_for_market_two = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let policy_state = policy_state_with_supply_queue(&[1, 2]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_test_adapter_bindings(
+                &env,
+                &[
+                    (1, adapter_for_market_one.clone()),
+                    (2, adapter_for_market_two.clone()),
+                ],
+            );
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![2, 1]),
+                    mode: None,
+                    accounts: None,
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+            assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
+        });
+    }
+
+    #[test]
+    fn test_governance_supply_queue_removal_preserves_adapter_binding() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+        let adapter_for_market_two = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let policy_state = policy_state_with_supply_queue(&[1, 2]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_test_adapter_bindings(
+                &env,
+                &[
+                    (1, adapter_for_market_one.clone()),
+                    (2, adapter_for_market_two.clone()),
+                ],
+            );
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![2]),
+                    mode: None,
+                    accounts: None,
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
+                .unwrap();
+            let bindings: soroban_sdk::Map<u32, SdkAddress> = env
+                .storage()
+                .instance()
+                .get(&crate::contract::VaultDataKey::AdapterBindings)
+                .expect("adapter bindings stored");
+            assert_eq!(bindings.get(1).unwrap(), adapter_for_market_one);
+            assert_eq!(bindings.get(2).unwrap(), adapter_for_market_two);
+        });
+    }
+
+    #[test]
+    fn test_adapter_lookup_requires_keyed_binding() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let adapter_for_market_one = adapter_contract(&env);
+        let adapter_for_market_two = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let policy_state = policy_state_with_supply_queue(&[1, 2]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            let adapters = SdkVec::from_array(
+                &env,
+                [
+                    adapter_for_market_one.clone(),
+                    adapter_for_market_two.clone(),
+                ],
+            );
+            env.storage()
+                .instance()
+                .set(&crate::contract::VaultDataKey::AllowedAdapters, &adapters);
+
+            assert_eq!(
+                adapter_for_market(&env, 1),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_adapter_binding_survives_supply_queue_reorder() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let adapter_for_market_one = adapter_contract(&env);
+        let adapter_for_market_two = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = policy_state_with_supply_queue(&[1, 2]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            let adapters = SdkVec::from_array(
+                &env,
+                [
+                    adapter_for_market_one.clone(),
+                    adapter_for_market_two.clone(),
+                ],
+            );
+            env.storage()
+                .instance()
+                .set(&crate::contract::VaultDataKey::AllowedAdapters, &adapters);
+            store_test_adapter_bindings(
+                &env,
+                &[
+                    (1, adapter_for_market_one.clone()),
+                    (2, adapter_for_market_two.clone()),
+                ],
+            );
+            let bindings: soroban_sdk::Map<u32, SdkAddress> = env
+                .storage()
+                .instance()
+                .get(&crate::contract::VaultDataKey::AdapterBindings)
+                .expect("adapter bindings stored");
+            assert_eq!(bindings.get(1).unwrap(), adapter_for_market_one);
+            assert_eq!(bindings.get(2).unwrap(), adapter_for_market_two);
+
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+            assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
+
+            policy_state
+                .replace_supply_queue(supply_queue_from_ids(&[2, 1]))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+            assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
+        });
+    }
+
+    #[test]
+    fn test_adapter_binding_survives_multiple_supply_queue_permutations() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let adapters = [
+            adapter_contract(&env),
+            adapter_contract(&env),
+            adapter_contract(&env),
+            adapter_contract(&env),
+        ];
+        let expected = [
+            (10, adapters[0].clone()),
+            (20, adapters[1].clone()),
+            (30, adapters[2].clone()),
+            (40, adapters[3].clone()),
+        ];
+        let permutations = [
+            [40, 30, 20, 10],
+            [20, 10, 40, 30],
+            [30, 40, 10, 20],
+            [10, 40, 20, 30],
+        ];
+
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = policy_state_with_supply_queue(&[10, 20, 30, 40]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_test_adapter_bindings(
+                &env,
+                &[
+                    (10, adapters[0].clone()),
+                    (20, adapters[1].clone()),
+                    (30, adapters[2].clone()),
+                    (40, adapters[3].clone()),
+                ],
+            );
+
+            for (market, adapter) in expected.iter() {
+                assert_eq!(adapter_for_market(&env, *market).unwrap(), *adapter);
+            }
+
+            for permutation in permutations {
+                policy_state
+                    .replace_supply_queue(supply_queue_from_ids(&permutation))
+                    .unwrap();
+                Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+                for (market, adapter) in expected.iter() {
+                    assert_eq!(adapter_for_market(&env, *market).unwrap(), *adapter);
+                }
+            }
         });
     }
 

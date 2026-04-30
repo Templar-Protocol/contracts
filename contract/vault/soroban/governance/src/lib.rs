@@ -66,7 +66,7 @@ impl GovernanceAction {
             Self::SetPaused(_) => GovernanceActionKey::Pause,
             Self::SetCurator(_) => GovernanceActionKey::Curator,
             Self::SetGovernance(_) => GovernanceActionKey::Governance,
-            Self::SetSupplyQueue(_) => GovernanceActionKey::SupplyQueue,
+            Self::SetSupplyQueue(_, _) => GovernanceActionKey::SupplyQueue,
             Self::SetFees(_) => GovernanceActionKey::Fees,
             Self::SetRestrictions(_, _) => GovernanceActionKey::Restrictions,
             Self::SetGuardian(_) => GovernanceActionKey::Guardian,
@@ -177,8 +177,13 @@ impl SorobanVaultGovernanceContract {
         env: Env,
         caller: Address,
         target_ids: Vec<u32>,
+        adapters: Vec<Address>,
     ) -> Result<u64, GovernanceError> {
-        Self::submit(env, caller, GovernanceAction::SetSupplyQueue(target_ids))
+        Self::submit(
+            env,
+            caller,
+            GovernanceAction::SetSupplyQueue(target_ids, adapters),
+        )
     }
 
     pub fn submit_set_fees(
@@ -572,7 +577,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetPaused(_) => GovernanceActionKind::Pause,
         GovernanceAction::SetCurator(_) => GovernanceActionKind::Curator,
         GovernanceAction::SetGovernance(_) => GovernanceActionKind::Governance,
-        GovernanceAction::SetSupplyQueue(_) => GovernanceActionKind::SupplyQueue,
+        GovernanceAction::SetSupplyQueue(_, _) => GovernanceActionKind::SupplyQueue,
         GovernanceAction::SetFees(_) => GovernanceActionKind::Fees,
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
         GovernanceAction::SetGuardian(_) => GovernanceActionKind::Guardian,
@@ -595,7 +600,7 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetPaused(_) => TimelockKind::Pause,
         GovernanceAction::SetCurator(_) => TimelockKind::Curator,
         GovernanceAction::SetGovernance(_) => TimelockKind::Governance,
-        GovernanceAction::SetSupplyQueue(_) => TimelockKind::SupplyQueue,
+        GovernanceAction::SetSupplyQueue(_, _) => TimelockKind::SupplyQueue,
         GovernanceAction::SetFees(_) => TimelockKind::Fees,
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
         GovernanceAction::SetGuardian(_) => TimelockKind::Guardian,
@@ -614,6 +619,15 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
 fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
     match action {
         GovernanceAction::SetGovernance(governance) => require_contract_address(governance),
+        GovernanceAction::SetSupplyQueue(target_ids, adapters) => {
+            if !adapters.is_empty() && adapters.len() != target_ids.len() {
+                return Err(GovernanceError::InvalidInput);
+            }
+            for adapter in adapters.iter() {
+                require_contract_address(&adapter)?;
+            }
+            Ok(())
+        }
         GovernanceAction::SetFees(params) => {
             let _ = to_wad(params.performance_fee_wad)?;
             let _ = to_wad(params.management_fee_wad)?;
@@ -825,7 +839,7 @@ fn decide_submission(
         GovernanceAction::Skim(_) => Ok(TimelockDecision::Immediate),
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
-        | GovernanceAction::SetSupplyQueue(_) => Ok(TimelockDecision::Timelocked),
+        | GovernanceAction::SetSupplyQueue(_, _) => Ok(TimelockDecision::Timelocked),
         GovernanceAction::Other(key, payload_hash) => {
             let approved: bool = env
                 .storage()
@@ -1052,7 +1066,7 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
         }
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
-        | GovernanceAction::SetSupplyQueue(_) => {
+        | GovernanceAction::SetSupplyQueue(_, _) => {
             execute_vault_governance_action(env, &vault, action)?
         }
         GovernanceAction::SetFees(params) => {
@@ -1206,12 +1220,16 @@ fn governance_payload_for_action(
         GovernanceAction::Skim(token) => Some(GovernanceCommand::Skim {
             token: sdk_address_to_alloc_string(token)?,
         }),
-        GovernanceAction::SetSupplyQueue(target_ids) => {
+        GovernanceAction::SetSupplyQueue(target_ids, adapters) => {
             Some(GovernanceCommand::SetGovernancePolicy {
                 kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
                 target_ids: Some(soroban_u32_vec_to_alloc(target_ids)),
                 mode: None,
-                accounts: None,
+                accounts: if adapters.is_empty() {
+                    None
+                } else {
+                    Some(soroban_address_vec_to_alloc(adapters)?)
+                },
                 market_id: None,
                 cap_group_id: None,
                 value: None,
