@@ -181,16 +181,12 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         execute_governance_command(
             &env,
             &governance,
-            &GovernanceCommand::SetGovernancePolicy {
-                kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
-                target_ids: Some(vec![0u32]),
-                mode: None,
-                accounts: None,
-                market_id: None,
-                cap_group_id: None,
-                value: None,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                primary: None,
+                many: Some(vec![address_wire(&adapter)]),
+                value_a: None,
                 value_b: None,
-                value_c: None,
             },
         )
         .unwrap();
@@ -199,12 +195,16 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         execute_governance_command(
             &env,
             &governance,
-            &GovernanceCommand::SetGovernanceConfig {
-                kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-                primary: None,
-                many: Some(vec![address_wire(&adapter)]),
-                value_a: None,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                target_ids: Some(vec![0u32]),
+                mode: None,
+                accounts: Some(vec![address_wire(&adapter)]),
+                market_id: None,
+                cap_group_id: None,
+                value: None,
                 value_b: None,
+                value_c: None,
             },
         )
         .unwrap();

@@ -119,16 +119,40 @@ fn apply_supply_queue_policy(
     env: &Env,
     caller_kernel: Address,
     target_ids: soroban_sdk::Vec<u32>,
+    adapters: Option<soroban_sdk::Vec<SdkAddress>>,
 ) -> Result<(), ContractError> {
-    if let Some(adapters) = env
+    let mut bindings = env
         .storage()
         .instance()
-        .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
-    {
+        .get::<_, soroban_sdk::Map<u32, SdkAddress>>(&VaultDataKey::AdapterBindings)
+        .unwrap_or_else(|| soroban_sdk::Map::new(env));
+
+    if let Some(adapters) = adapters.as_ref() {
         if adapters.len() != target_ids.len() {
             return Err(ContractError::InvalidInput);
         }
     }
+
+    for (idx, target_id) in target_ids.iter().enumerate() {
+        let proposed_adapter = adapters
+            .as_ref()
+            .map(|values| {
+                let index = u32::try_from(idx).map_err(|_| ContractError::InvalidInput)?;
+                values.get(index).ok_or(ContractError::InvalidInput)
+            })
+            .transpose()?;
+        if let Some(existing_adapter) = bindings.get(target_id) {
+            if let Some(proposed_adapter) = proposed_adapter {
+                if proposed_adapter != existing_adapter {
+                    return Err(ContractError::InvalidInput);
+                }
+            }
+        } else {
+            let adapter = proposed_adapter.ok_or(ContractError::InvalidInput)?;
+            bindings.set(target_id, adapter);
+        }
+    }
+
     let mut queue_targets: Option<Vec<TargetId>> = {
         let mut v = Vec::with_capacity(target_ids.len() as usize);
         for target_id in target_ids.iter() {
@@ -142,7 +166,13 @@ fn apply_supply_queue_policy(
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
         vault.set_supply_queue(caller_kernel, targets)
     };
-    with_contract_vault_contract_error(env, &mut call)
+    with_contract_vault_contract_error(env, &mut call)?;
+    if !bindings.is_empty() {
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::AdapterBindings, &bindings);
+    }
+    Ok(())
 }
 
 fn apply_cap_policy(
@@ -530,6 +560,7 @@ fn set_governance_policy_impl(
             env,
             caller_kernel,
             target_ids.ok_or(ContractError::InvalidInput)?,
+            accounts,
         ),
         GOVERNANCE_POLICY_KIND_CAP => apply_cap_policy(
             env,
