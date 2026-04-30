@@ -303,7 +303,8 @@ mod contract_tests {
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
-        FeeAccrualAnchor, FeesSpec, Restrictions, VaultState, MIN_WITHDRAWAL_ASSETS,
+        FeeAccrualAnchor, FeesSpec, OpState, Restrictions, VaultState, WithdrawingState,
+        MIN_WITHDRAWAL_ASSETS,
     };
 
     #[derive(Clone, Copy, Default)]
@@ -706,12 +707,13 @@ mod contract_tests {
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("low-liquidity withdrawal should not start");
 
-        assert_eq!(summary.assets_transferred, 0);
-        assert_eq!(summary.shares_burned, 0);
+        assert_eq!(error, RuntimeError::KernelError);
         let state = vault.state().unwrap();
-        assert!(state.op_state.is_withdrawing());
+        assert!(state.op_state.is_idle());
         let (head_id_after, head_after) = state
             .withdraw_queue
             .head()
@@ -724,8 +726,7 @@ mod contract_tests {
             state.total_assets,
             state.idle_assets.saturating_add(state.external_assets)
         );
-        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
-        assert_eq!(summary.shares_transferred, 0);
+        assert_eq!(state.total_shares, deposit_amount);
         assert_eq!(head_id, 0);
         assert_eq!(head_expected_before, deposit_amount);
     }
@@ -754,18 +755,30 @@ mod contract_tests {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
+                (
+                    request_id,
+                    head.owner,
+                    head.receiver,
+                    head.escrow_shares,
+                    head.expected_assets,
+                )
+            };
+            let op_id = state.allocate_op_id();
+            state.op_state = OpState::Withdrawing(WithdrawingState {
+                op_id,
+                request_id,
+                index: 0,
+                remaining: expected_assets,
+                collected: 0,
+                owner,
+                receiver,
+                escrow_shares,
+            });
         }
 
-        let stuck_summary = vault.execute_withdraw(allocator, exec_time).unwrap();
-        assert_eq!(stuck_summary.assets_transferred, 0);
-
-        let op_id = vault
-            .state()
-            .unwrap()
-            .op_state
-            .as_withdrawing()
-            .expect("withdrawal should be stuck")
-            .op_id;
+        let op_id = vault.state().unwrap().op_state.op_id().unwrap();
         let recovery_summary = vault
             .abort_withdrawing(allocator, op_id, exec_time.saturating_add(1))
             .unwrap();
@@ -787,7 +800,7 @@ mod contract_tests {
 
     proptest! {
         #[test]
-        fn prop_low_liquidity_withdrawing_has_abort_recovery(
+        fn prop_low_liquidity_execute_refuses_and_stale_withdrawing_has_abort_recovery(
             deposit_multiple in 2u128..=32,
             extra_assets in 0u128..=MIN_WITHDRAWAL_ASSETS,
             low_idle in 0u128..MIN_WITHDRAWAL_ASSETS,
@@ -819,17 +832,43 @@ mod contract_tests {
                 state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             }
 
-            let summary = vault
+            let error = vault
                 .execute_withdraw(allocator, exec_time)
-                .expect("execute should enter or retry withdrawing");
-            prop_assert_eq!(summary.assets_transferred, 0);
-            prop_assert!(vault.state().expect("state is loaded").op_state.is_withdrawing());
+                .expect_err("low-liquidity execution should be refused");
+            prop_assert_eq!(error, RuntimeError::KernelError);
+            prop_assert!(vault.state().expect("state is loaded").op_state.is_idle());
+            prop_assert!(!vault.state().expect("state is loaded").withdraw_queue.is_empty());
+
+            {
+                let state = vault.state_mut().expect("state is loaded");
+                let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                    let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
+                    (
+                        request_id,
+                        head.owner,
+                        head.receiver,
+                        head.escrow_shares,
+                        head.expected_assets,
+                    )
+                };
+                let op_id = state.allocate_op_id();
+                state.op_state = OpState::Withdrawing(WithdrawingState {
+                    op_id,
+                    request_id,
+                    index: 0,
+                    remaining: expected_assets,
+                    collected: 0,
+                    owner,
+                    receiver,
+                    escrow_shares,
+                });
+            }
 
             for offset in 0..retry_count {
-                let retry_summary = vault
+                let retry_error = vault
                     .execute_withdraw(allocator, exec_time.saturating_add(offset as u64 + 1))
-                    .expect("retry should not make state unrecoverable");
-                prop_assert_eq!(retry_summary.assets_transferred, 0);
+                    .expect_err("stale low-liquidity withdrawal should remain blocked");
+                prop_assert_eq!(retry_error, RuntimeError::KernelError);
                 prop_assert!(vault.state().expect("state is loaded").op_state.is_withdrawing());
             }
 
@@ -1608,22 +1647,41 @@ mod contract_tests {
                         caller: sdk_text(&curator),
                     },
                 )
-                .unwrap(),
-                VaultCommandResult::Unit
+                .expect_err("low-liquidity withdrawal should not start"),
+                crate::error::ContractError::KernelError
             );
         });
 
         let op_id = env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let state = storage
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = storage
                 .load_state()
                 .unwrap()
                 .expect("initialized vault state");
-            state
-                .op_state
-                .as_withdrawing()
-                .expect("withdrawal should be stuck")
-                .op_id
+            assert!(state.op_state.is_idle());
+            let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
+                (
+                    request_id,
+                    head.owner,
+                    head.receiver,
+                    head.escrow_shares,
+                    head.expected_assets,
+                )
+            };
+            let op_id = state.allocate_op_id();
+            state.op_state = OpState::Withdrawing(WithdrawingState {
+                op_id,
+                request_id,
+                index: 0,
+                remaining: expected_assets,
+                collected: 0,
+                owner,
+                receiver,
+                escrow_shares,
+            });
+            storage.save_state(&state).unwrap();
+            op_id
         });
 
         env.as_contract(&contract_id, || {

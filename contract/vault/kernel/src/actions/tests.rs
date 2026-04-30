@@ -4,7 +4,7 @@ use crate::error::InvalidStateCode;
 use crate::fee::{FeeSlot, FeesSpec};
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
 use crate::state::op_state::{AllocatingState, AllocationPlanEntry, WithdrawingState};
-use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING};
+use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING, MIN_WITHDRAWAL_ASSETS};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::Number;
 
@@ -1097,6 +1097,168 @@ fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
 
     // Should transition to Idle since withdrawal is not ready
     assert!(result.state.is_idle());
+}
+
+#[test]
+fn execute_withdraw_low_liquidity_below_minimum_fails_before_withdrawing() {
+    let mut config = test_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+    config.withdrawal_cooldown_ns = 0;
+
+    let owner = addr(10);
+    let receiver = addr(11);
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS - 1;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::WithdrawalLiquidityBelowMinimum
+        ))
+    ));
+}
+
+#[test]
+fn execute_withdraw_low_liquidity_at_minimum_still_starts_partial_payout() {
+    let mut config = test_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+    config.withdrawal_cooldown_ns = 0;
+
+    let owner = addr(10);
+    let receiver = addr(11);
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
+    assert_eq!(withdrawing.owner, owner);
+    assert_eq!(withdrawing.receiver, receiver);
+    assert_eq!(withdrawing.remaining, total_assets);
+}
+
+#[test]
+fn finish_allocating_with_low_liquidity_pending_withdrawal_finishes_idle() {
+    let mut config = test_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+    config.withdrawal_cooldown_ns = 0;
+
+    let owner = addr(10);
+    let receiver = addr(11);
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS - 1;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 6,
+        index: 1,
+        remaining: 0,
+        plan: vec![alloc_step(1, 500)],
+    });
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::FinishAllocating {
+            op_id: 6,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(
+        result.state.withdraw_queue.head().map(|(id, _)| id),
+        Some(0)
+    );
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::AllocationCompleted {
+                    op_id: 6,
+                    has_withdrawal: false
+                },
+            }
+        )
+    }));
 }
 
 #[test]
@@ -3261,6 +3423,83 @@ fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
                     receiver,
                     expected_assets: 0,
                     reason: WithdrawalSkipReason::ZeroExpectedAssets,
+                    ..
+                },
+            } if *owner == skipped_owner && *receiver == skipped_receiver
+        )
+    }));
+}
+
+#[test]
+fn execute_withdraw_persists_skips_before_low_liquidity_head() {
+    let mut config = base_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS - 1;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    let skipped_owner = Address([3u8; 32]);
+    let skipped_receiver = Address([4u8; 32]);
+    let waiting_owner = Address([5u8; 32]);
+    let waiting_receiver = Address([6u8; 32]);
+    let self_id = Address([9u8; 32]);
+
+    state
+        .withdraw_queue
+        .enqueue(
+            skipped_owner,
+            skipped_receiver,
+            500,
+            500,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue skipped head");
+    state
+        .withdraw_queue
+        .enqueue(
+            waiting_owner,
+            waiting_receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue low-liquidity head");
+
+    let restrictions = Restrictions::blacklist(vec![skipped_owner]);
+    let result = apply_action(
+        state,
+        &config,
+        Some(&restrictions),
+        &self_id,
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
+    )
+    .expect("skip effects should be persisted before low-liquidity stop");
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(
+        result.state.withdraw_queue.head().map(|(id, _)| id),
+        Some(1)
+    );
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    owner,
+                    receiver,
+                    reason: WithdrawalSkipReason::Restricted,
                     ..
                 },
             } if *owner == skipped_owner && *receiver == skipped_receiver
