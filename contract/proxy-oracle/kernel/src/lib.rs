@@ -6,20 +6,19 @@ extern crate std;
 #[cfg(not(feature = "std"))]
 pub(crate) use alloc as std;
 
-#[doc(hidden)]
-pub mod derive_prelude {
-    pub use crate::std::borrow::ToOwned;
-    pub use crate::std::boxed::Box;
-    pub use crate::std::format;
-    pub use crate::std::string::ToString;
-    pub use crate::std::vec;
-}
+#[cfg(feature = "schemars")]
+pub(crate) use crate::std::borrow::ToOwned;
+#[cfg(feature = "schemars")]
+pub(crate) use crate::std::boxed::Box;
+#[cfg(feature = "schemars")]
+pub(crate) use crate::std::format;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+pub(crate) use crate::std::string::ToString;
+#[cfg(feature = "schemars")]
+pub(crate) use crate::std::vec;
 
 macro_rules! serialize {
     ($i: item) => {
-        #[allow(unused_imports)]
-        use crate::derive_prelude::*;
-
         #[cfg_attr(
             feature = "borsh",
             derive(

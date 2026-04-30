@@ -26,7 +26,7 @@ impl Validatable for Operation {
         match self {
             Operation::SetProxy {
                 proxy: Some(proxy), ..
-            } if proxy.sources().is_empty() => Err(ValidationError::EmptyProxyDefinition),
+            } if proxy.sources().len() == 0 => Err(ValidationError::EmptyProxyDefinition),
             _ => Ok(()),
         }
     }

@@ -20,11 +20,13 @@ impl<S> Priority<S> {
 }
 
 impl<S> Aggregate<S> for Priority<S> {
-    fn sources(&self) -> Vec<&S> {
-        self.sources.iter().collect()
-    }
+    fn aggregate<I>(&self, prices: I) -> Result<Price, super::Error>
+    where
+        I: IntoIterator<Item = Option<Price>>,
+        I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
+    {
+        let prices = prices.into_iter();
 
-    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, super::Error> {
         if prices.len() != self.sources.len() {
             return Err(super::Error::LengthMismatch {
                 expected: self.sources.len(),
@@ -33,7 +35,6 @@ impl<S> Aggregate<S> for Priority<S> {
         }
 
         prices
-            .into_iter()
             .flatten()
             .next()
             .ok_or(super::Error::TooFewValidSources {

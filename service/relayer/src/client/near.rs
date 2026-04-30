@@ -956,7 +956,6 @@ impl Near {
                 {
                     let requests = proxy
                         .sources()
-                        .into_iter()
                         .map(|source| match source {
                             Source::Transformer(transformer) => transformer.request.clone(),
                             Source::Request(request) => request.clone(),

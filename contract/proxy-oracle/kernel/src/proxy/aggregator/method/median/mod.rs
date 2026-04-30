@@ -108,36 +108,39 @@ impl<V: MedianVariant, S> Median<V, S> {
 }
 
 impl<V: MedianVariant, S> Aggregate<S> for Median<V, S> {
-    fn sources(&self) -> Vec<&S> {
-        self.sources.iter().map(|entry| &entry.source).collect()
-    }
+    fn aggregate<I>(&self, prices: I) -> Result<Price, super::Error>
+    where
+        I: IntoIterator<Item = Option<Price>>,
+        I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
+    {
+        let prices = prices.into_iter();
+        let actual = prices.len();
 
-    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, super::Error> {
-        if prices.len() != self.sources.len() {
+        if actual != self.sources.len() {
             return Err(super::Error::LengthMismatch {
                 expected: self.sources.len(),
-                actual: prices.len(),
+                actual,
             });
         }
 
-        let min_sources = self.min_sources.max(1);
-        let valid_sources = prices.iter().filter(|price| price.is_some()).count();
-
-        if valid_sources < min_sources as usize {
-            return Err(super::Error::TooFewValidSources {
-                expected: min_sources as usize,
-                actual: valid_sources,
-            });
-        }
-
-        let mut values = Vec::with_capacity(valid_sources.saturating_mul(2));
-        for (price, source) in prices.into_iter().zip(&self.sources) {
+        let mut values = Vec::with_capacity(actual.saturating_mul(2));
+        for (price, source) in prices.zip(&self.sources) {
             if let Some(price) = price {
                 // Split apart prices so that we don't need to worry about confidence when sorting.
                 let (lower, upper) = SpecificPrice::split(&price);
                 values.push((lower, source.weight));
                 values.push((upper, source.weight));
             }
+        }
+
+        let min_sources = self.min_sources.max(1);
+        let valid_sources = values.len() / 2;
+
+        if valid_sources < min_sources as usize {
+            return Err(super::Error::TooFewValidSources {
+                expected: min_sources as usize,
+                actual: valid_sources,
+            });
         }
 
         values.sort_unstable();

@@ -1,14 +1,12 @@
-use alloc::vec::Vec;
-
 pub mod aggregator;
 pub mod freshness_filter;
 
 use crate::*;
 
+use aggregator::method::Aggregate;
 pub use aggregator::Aggregator;
 pub use freshness_filter::FreshnessFilter;
 
-use aggregator::method::Aggregate;
 use templar_primitives::time::Nanoseconds;
 
 serialize! {
@@ -67,25 +65,24 @@ impl<S> Proxy<S> {
         self
     }
 
-    pub fn sources(&self) -> Vec<&S> {
+    pub fn sources(&self) -> aggregator::SourceIter<'_, S> {
         self.aggregator.sources()
     }
 
-    pub fn resolve(
+    pub fn resolve<I>(
         &self,
-        mut prices: Vec<Option<Price>>,
+        prices: I,
         now: Nanoseconds,
-    ) -> Result<Price, aggregator::method::Error> {
-        for price in &mut prices {
-            if price
-                .as_ref()
-                .is_none_or(|p| !self.freshness_filter.accepts(p, now))
-            {
-                *price = None;
-            }
-        }
-
-        self.aggregator.aggregate(prices)
+    ) -> Result<Price, aggregator::method::Error>
+    where
+        I: IntoIterator<Item = Option<Price>>,
+        I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
+    {
+        self.aggregator.aggregate(
+            prices
+                .into_iter()
+                .map(|price| price.filter(|price| self.freshness_filter.accepts(price, now))),
+        )
     }
 }
 

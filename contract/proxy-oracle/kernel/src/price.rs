@@ -1,7 +1,8 @@
+use crate::*;
 use templar_primitives::time::Nanoseconds;
 
 serialize! {
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Copy, Debug)]
     pub struct Price {
         pub price: i64,
         /// Confidence interval around the price

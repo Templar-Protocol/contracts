@@ -1,13 +1,13 @@
-use alloc::vec::Vec;
-
 pub mod median;
 pub mod priority;
 
 use crate::*;
 
 pub trait Aggregate<S> {
-    fn sources(&self) -> Vec<&S>;
-    fn aggregate(&self, prices: Vec<Option<Price>>) -> Result<Price, Error>;
+    fn aggregate<I>(&self, prices: I) -> Result<Price, Error>
+    where
+        I: IntoIterator<Item = Option<Price>>,
+        I::IntoIter: ExactSizeIterator<Item = Option<Price>>;
 }
 
 #[derive(thiserror::Error, Debug)]
