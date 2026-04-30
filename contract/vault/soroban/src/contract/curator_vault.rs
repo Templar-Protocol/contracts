@@ -515,14 +515,11 @@ where
         &mut self,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let Some(idle_payout) = transition_to_runtime(plan_idle_payout(self.state()?))? else {
-            return Ok(EffectSummary::new());
-        };
+        let min_withdrawal_assets = self.kernel_config().min_withdrawal_assets;
+        let idle_payout =
+            transition_to_runtime(plan_idle_payout(self.state()?, min_withdrawal_assets))?;
 
         let assets_out = idle_payout.assets_out;
-        if assets_out == 0 {
-            return Ok(EffectSummary::new());
-        }
         let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
 

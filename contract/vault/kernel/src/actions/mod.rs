@@ -136,10 +136,13 @@ struct ExternalAssetSyncPlan {
 
 /// Plan an idle-funded payout from the current vault state.
 ///
-/// Returns `Ok(None)` when the vault is in a valid withdrawing state but there is
-/// not enough idle liquidity to satisfy the queue head yet.
-pub fn plan_idle_payout(state: &VaultState) -> Result<Option<IdlePayoutPlan>, KernelError> {
-    planning::plan_idle_payout(state)
+/// Returns an error when the current idle liquidity cannot produce an actionable
+/// payout for the queue head.
+pub fn plan_idle_payout(
+    state: &VaultState,
+    min_withdrawal_assets: u128,
+) -> Result<IdlePayoutPlan, KernelError> {
+    planning::plan_idle_payout(state, min_withdrawal_assets)
 }
 
 /// Kernel actions supported by the dispatcher.
@@ -1779,7 +1782,8 @@ mod planning {
 
     pub(super) fn plan_idle_payout(
         state: &VaultState,
-    ) -> Result<Option<IdlePayoutPlan>, KernelError> {
+        min_withdrawal_assets: u128,
+    ) -> Result<IdlePayoutPlan, KernelError> {
         let (request_owner, request_receiver, request_escrow, request_expected) = state
             .withdraw_queue
             .head()
@@ -1815,7 +1819,7 @@ mod planning {
         if !has_actionable_withdrawal_liquidity(
             request_expected,
             available_assets,
-            crate::state::queue::MIN_WITHDRAWAL_ASSETS,
+            min_withdrawal_assets,
         ) {
             return Err(KernelError::from(
                 InvalidStateCode::WithdrawalLiquidityBelowMinimum,
@@ -1836,13 +1840,13 @@ mod planning {
             ));
         }
 
-        Ok(Some(IdlePayoutPlan {
+        Ok(IdlePayoutPlan {
             op_id: withdrawing.op_id,
             request_id: withdrawing.request_id,
             receiver: withdrawing.receiver,
             assets_out: settlement.assets_out,
             burn_shares: settlement.settlement.to_burn,
-        }))
+        })
     }
 }
 
