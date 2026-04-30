@@ -365,6 +365,21 @@ fn execute_withdraw_impl(env: &Env, caller: soroban_sdk::Address) -> Result<(), 
     with_contract_vault_contract_error(env, &mut call)
 }
 
+fn abort_withdrawing_impl(
+    env: &Env,
+    caller: soroban_sdk::Address,
+    op_id: u64,
+) -> Result<(), ContractError> {
+    require_signed(&caller);
+    let now_ns = ledger_timestamp_ns(env)?;
+
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        let caller_k = vault.map_caller(env, &caller)?;
+        vault.abort_withdrawing(caller_k, op_id, now_ns).map(|_| ())
+    };
+    with_contract_vault_contract_error(env, &mut call)
+}
+
 fn allocate_impl(
     env: &Env,
     caller: soroban_sdk::Address,
@@ -673,6 +688,10 @@ fn execute_public_command(
         )?)),
         VaultCommand::ExecuteWithdraw { caller } => {
             execute_withdraw_impl(env, address_from_alloc_string(env, &caller)?)?;
+            Ok(VaultCommandResult::Unit)
+        }
+        VaultCommand::AbortWithdrawing { caller, op_id } => {
+            abort_withdrawing_impl(env, address_from_alloc_string(env, &caller)?, op_id)?;
             Ok(VaultCommandResult::Unit)
         }
         VaultCommand::Allocate {

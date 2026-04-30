@@ -110,6 +110,14 @@ sequenceDiagram
     Contract-->>User: ok
 ```
 
+If withdrawal execution enters `Withdrawing` and cannot progress because idle
+liquidity remains below the kernel minimum, an allocator-emergency actor can
+submit `VaultCommand::AbortWithdrawing { caller, op_id }` through `execute`.
+The command reuses the kernel recovery transition: it validates the active
+operation id and queue head, refunds escrowed shares, emits the kernel
+`WithdrawalStopped` event, dequeues the request, and returns the vault to
+`Idle`.
+
 ## Prerequisites
 
 ### Stellar CLI

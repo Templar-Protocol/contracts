@@ -365,6 +365,17 @@ where
         Ok(summary)
     }
 
+    #[inline(never)]
+    pub fn abort_withdrawing(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.authorize(ActionKind::AbortWithdrawing, caller)?;
+        self.apply_kernel_action(KernelAction::abort_withdrawing(op_id), now_ns)
+    }
+
     /// Map vault + caller SDK address to kernel address.
     pub fn map_caller(&mut self, env: &Env, caller: &SdkAddress) -> Result<Address, RuntimeError> {
         self.ensure_vault_mapped(env)?;

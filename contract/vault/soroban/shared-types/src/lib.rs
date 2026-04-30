@@ -219,6 +219,10 @@ pub enum VaultCommand {
     ExecuteWithdraw {
         caller: String,
     },
+    AbortWithdrawing {
+        caller: String,
+        op_id: u64,
+    },
     Allocate {
         caller: String,
         market: u32,
@@ -318,6 +322,11 @@ impl VaultCommand {
                 push_u8(&mut out, 2);
                 push_string(&mut out, caller);
             }
+            Self::AbortWithdrawing { caller, op_id } => {
+                push_u8(&mut out, 11);
+                push_string(&mut out, caller);
+                push_u64(&mut out, *op_id);
+            }
             Self::Allocate {
                 caller,
                 market,
@@ -362,6 +371,10 @@ impl VaultCommand {
             }),
             2 => Ok(Self::ExecuteWithdraw {
                 caller: read_string(bytes, &mut cursor)?,
+            }),
+            11 => Ok(Self::AbortWithdrawing {
+                caller: read_string(bytes, &mut cursor)?,
+                op_id: read_u64(bytes, &mut cursor)?,
             }),
             3 => Ok(Self::Allocate {
                 caller: read_string(bytes, &mut cursor)?,
@@ -517,6 +530,10 @@ mod tests {
             VaultCommand::ResyncIdleBalance,
             VaultCommand::CancelMigration {
                 caller: String::from("caller"),
+            },
+            VaultCommand::AbortWithdrawing {
+                caller: String::from("caller"),
+                op_id: 42,
             },
         ];
 
