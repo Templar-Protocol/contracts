@@ -1,18 +1,13 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use templar_gateway_types::{pyth, MethodSpec, NearToken};
+use templar_gateway_types::{pyth, MethodSpec};
 
 use super::Dispatch;
 use crate::{
-    client::{
-        pyth_oracle::{
-            ListEmaPricesNoOlderThanArgs, ListEmaPricesUnsafeArgs, UpdatePriceFeedsArgs,
-        },
-        ContractWriteOptions,
-    },
+    client::pyth_oracle::{ListEmaPricesNoOlderThanArgs, ListEmaPricesUnsafeArgs},
     operation::OperationPlan,
-    DispatchRead, GatewayResult, HasNearClient, PlanWrite,
+    plan_pyth_update, DispatchRead, GatewayResult, HasNearClient, PlanWrite,
 };
 
 fn prices_in_request_order(
@@ -81,16 +76,12 @@ impl<C: HasNearClient> PlanWrite<pyth::UpdatePriceFeeds, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        ctx.near_client()
-            .pyth_oracle(body.oracle_id)
-            .update_price_feeds(
-                ContractWriteOptions::new(request.signer_account_id)
-                    .tgas(300)
-                    .deposit(NearToken::from_yoctonear(10_000_000_000_000_000_000_000)),
-                UpdatePriceFeedsArgs {
-                    data: hex::encode(body.data.0),
-                },
-            )
-            .map(OperationPlan::from)
+        plan_pyth_update(
+            ctx.near_client(),
+            request.signer_account_id,
+            body.oracle_id,
+            body.data.0,
+        )
+        .map(OperationPlan::from)
     }
 }

@@ -4,11 +4,11 @@ use templar_gateway_types::{redstone, MethodSpec};
 use super::Dispatch;
 use crate::{
     client::{
-        redstone_oracle::{ListRoleArgs, ReadPriceDataArgs, SetRoleArgs, WritePricesArgs},
+        redstone_oracle::{ListRoleArgs, ReadPriceDataArgs, SetRoleArgs},
         ContractWriteOptions,
     },
     operation::OperationPlan,
-    DispatchRead, GatewayResult, HasNearClient, PlanWrite,
+    plan_redstone_write_prices, DispatchRead, GatewayResult, HasNearClient, PlanWrite,
 };
 
 #[async_trait]
@@ -104,15 +104,13 @@ impl<C: HasNearClient> PlanWrite<redstone::WritePrices, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        ctx.near_client()
-            .redstone_oracle(body.oracle_id)
-            .write_prices(
-                ContractWriteOptions::new(request.signer_account_id).tgas(300),
-                WritePricesArgs {
-                    feed_ids: body.feed_ids,
-                    payload: near_sdk::json_types::Base64VecU8(body.payload.0),
-                },
-            )
-            .map(OperationPlan::from)
+        plan_redstone_write_prices(
+            ctx.near_client(),
+            request.signer_account_id,
+            body.oracle_id,
+            body.feed_ids,
+            body.payload.0,
+        )
+        .map(OperationPlan::from)
     }
 }

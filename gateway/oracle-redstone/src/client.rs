@@ -2,7 +2,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use templar_common::oracle::redstone::FeedId;
-use templar_gateway_types::OraclePayloadSource;
+use templar_gateway_core::OraclePayloadSource;
 use templar_redstone_bridge::Bridge;
 use thiserror::Error;
 

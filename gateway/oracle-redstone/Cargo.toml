@@ -8,7 +8,7 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
-templar-gateway-types.workspace = true
+templar-gateway-core.workspace = true
 templar-redstone-bridge.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

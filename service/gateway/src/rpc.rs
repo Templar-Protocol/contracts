@@ -4,14 +4,16 @@ use jsonrpsee::{
     RpcModule,
 };
 use templar_gateway_core::{
-    Dispatch as CoreDispatch, DispatchRead, GatewayError, HasNearClient, PlanWrite,
-    ProvidesPythSource, ProvidesRedStoneSource,
+    Dispatch as CoreDispatch, DispatchRead, GatewayError, HasIdempotencyKey, HasNearClient,
+    HasSignerAccountId, PlanWrite,
 };
-use templar_gateway_oracle_updates::Dispatch as OracleUpdatesDispatch;
+use templar_gateway_oracle::{
+    Dispatch as OracleDispatch, ProvidesPythSource, ProvidesRedStoneSource,
+};
 use templar_gateway_types::{
     account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
-    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
-    token, tx, universal_account, MethodSpec,
+    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry,
+    rpc::common::WriteOperationResult, storage, token, tx, universal_account, MethodSpec,
 };
 
 use crate::gateway_service::GatewayService;
@@ -27,10 +29,7 @@ struct GatewayRpcBuilder<ContextType: Clone + Send + std::marker::Unpin + 'stati
     module: RpcModule<GatewayService<ContextType>>,
 }
 
-impl<ContextType> GatewayRpcBuilder<ContextType>
-where
-    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
-{
+impl<ContextType: HasNearClient + std::marker::Unpin> GatewayRpcBuilder<ContextType> {
     fn new(service: GatewayService<ContextType>) -> Self {
         Self {
             module: RpcModule::new(service),
@@ -43,10 +42,8 @@ where
 
     fn register_write<Spec, Impl>(&mut self) -> Result<(), RegisterMethodError>
     where
-        Spec:
-            MethodSpec<Output = templar_gateway_types::rpc::common::WriteOperationResult> + 'static,
-        Spec::Input:
-            templar_gateway_core::HasIdempotencyKey + templar_gateway_core::HasSignerAccountId,
+        Spec: MethodSpec<Output = WriteOperationResult> + 'static,
+        Spec::Input: HasIdempotencyKey + HasSignerAccountId,
         Impl: PlanWrite<Spec, ContextType>,
     {
         self.module.register_async_method(
@@ -99,11 +96,11 @@ where
 }
 
 #[allow(clippy::too_many_lines)]
-fn register_gateway_methods<ContextType>(
+fn register_core_gateway_methods<ContextType>(
     builder: &mut GatewayRpcBuilder<ContextType>,
 ) -> Result<(), RegisterMethodError>
 where
-    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+    ContextType: HasNearClient + std::marker::Unpin,
 {
     builder.register_read::<account::Get, CoreDispatch>()?;
     builder.register_write::<account::Delete, CoreDispatch>()?;
@@ -152,14 +149,6 @@ where
     builder.register_read::<mt::GetBatchSupply, CoreDispatch>()?;
     builder.register_write::<mt::Transfer, CoreDispatch>()?;
     builder.register_write::<mt::TransferCall, CoreDispatch>()?;
-    builder.register_read::<oracle::GetPriceResolutionDependencies, CoreDispatch>()?;
-    builder.register_read::<oracle::ResolvePrice, CoreDispatch>()?;
-    builder.register_read::<oracle::ResolvePrices, CoreDispatch>()?;
-    builder.register_read::<oracle::GetPrice, CoreDispatch>()?;
-    builder.register_read::<oracle::GetPrices, CoreDispatch>()?;
-    builder.register_write::<oracle::UpdatePyth, OracleUpdatesDispatch>()?;
-    builder.register_write::<oracle::UpdateRedStone, OracleUpdatesDispatch>()?;
-    builder.register_write::<oracle::UpdatePrices, OracleUpdatesDispatch>()?;
     builder.register_read::<pyth::ListEmaPricesNoOlderThan, CoreDispatch>()?;
     builder.register_read::<pyth::ListEmaPricesUnsafe, CoreDispatch>()?;
     builder.register_write::<pyth::UpdatePriceFeeds, CoreDispatch>()?;
@@ -212,6 +201,23 @@ where
     Ok(())
 }
 
+fn register_oracle_gateway_methods<ContextType>(
+    builder: &mut GatewayRpcBuilder<ContextType>,
+) -> Result<(), RegisterMethodError>
+where
+    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+{
+    builder.register_read::<oracle::GetPriceResolutionDependencies, OracleDispatch>()?;
+    builder.register_read::<oracle::ResolvePrice, OracleDispatch>()?;
+    builder.register_read::<oracle::ResolvePrices, OracleDispatch>()?;
+    builder.register_read::<oracle::GetPrice, OracleDispatch>()?;
+    builder.register_read::<oracle::GetPrices, OracleDispatch>()?;
+    builder.register_write::<oracle::UpdatePyth, OracleDispatch>()?;
+    builder.register_write::<oracle::UpdateRedStone, OracleDispatch>()?;
+    builder.register_write::<oracle::UpdatePrices, OracleDispatch>()?;
+    Ok(())
+}
+
 pub fn attach_gateway<ContextType>(
     service: GatewayService<ContextType>,
 ) -> Result<RpcModule<GatewayService<ContextType>>, RegisterMethodError>
@@ -219,7 +225,8 @@ where
     ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
 {
     let mut builder = GatewayRpcBuilder::new(service);
-    register_gateway_methods(&mut builder)?;
+    register_core_gateway_methods(&mut builder)?;
+    register_oracle_gateway_methods(&mut builder)?;
     Ok(builder.finish())
 }
 

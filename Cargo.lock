@@ -13316,33 +13316,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-gateway-oracle-pyth"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "hex",
- "reqwest 0.12.28",
- "serde",
- "templar-common",
- "templar-gateway-types",
- "thiserror 2.0.18",
- "url",
-]
-
-[[package]]
-name = "templar-gateway-oracle-redstone"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "templar-common",
- "templar-gateway-types",
- "templar-redstone-bridge",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "templar-gateway-oracle-updates"
+name = "templar-gateway-oracle"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -13355,6 +13329,32 @@ dependencies = [
  "templar-gateway-oracle-redstone",
  "templar-gateway-types",
  "url",
+]
+
+[[package]]
+name = "templar-gateway-oracle-pyth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "reqwest 0.12.28",
+ "serde",
+ "templar-common",
+ "templar-gateway-core",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
+name = "templar-gateway-oracle-redstone"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "templar-common",
+ "templar-gateway-core",
+ "templar-redstone-bridge",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -13393,7 +13393,7 @@ dependencies = [
  "sqlx",
  "templar-common",
  "templar-gateway-core",
- "templar-gateway-oracle-updates",
+ "templar-gateway-oracle",
  "templar-gateway-runtime",
  "templar-gateway-store",
  "templar-gateway-testing",
@@ -13450,7 +13450,6 @@ dependencies = [
 name = "templar-gateway-types"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "borsh 1.6.1",
  "near-account-id",

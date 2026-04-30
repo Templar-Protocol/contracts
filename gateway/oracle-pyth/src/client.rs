@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use templar_common::oracle::pyth::PriceIdentifier;
-use templar_gateway_types::OraclePayloadSource;
+use templar_gateway_core::OraclePayloadSource;
 use thiserror::Error;
 use url::Url;
 

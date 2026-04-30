@@ -8,7 +8,7 @@ use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use near_api::NetworkConfig;
 use templar_gateway_core::GatewayContext;
-use templar_gateway_oracle_updates::GatewayContextBuilderOracleExt;
+use templar_gateway_oracle::GatewayContextBuilderOracleExt;
 use tokio::signal;
 
 use crate::config::Config;

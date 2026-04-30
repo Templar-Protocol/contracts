@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-async-trait.workspace = true
 base64.workspace = true
 borsh.workspace = true
 near-api-types = "0.8.5"

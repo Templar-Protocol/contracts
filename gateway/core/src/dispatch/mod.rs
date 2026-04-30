@@ -8,7 +8,6 @@ mod ft;
 mod lst_oracle;
 mod market;
 mod mt;
-pub mod oracle;
 mod proxy_oracle;
 mod proxy_oracle_governance;
 mod proxy_oracle_owner;

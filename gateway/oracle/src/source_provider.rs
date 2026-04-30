@@ -1,5 +1,6 @@
 use templar_common::oracle::{pyth::PriceIdentifier, redstone::FeedId};
-use templar_gateway_types::OraclePayloadSource;
+
+use templar_gateway_core::OraclePayloadSource;
 
 pub trait ProvidesPythSource {
     type PythSource: OraclePayloadSource<PriceId = PriceIdentifier>;
