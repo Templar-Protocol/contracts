@@ -10,10 +10,45 @@ pub trait Aggregate<S> {
         I::IntoIter: ExactSizeIterator<Item = Option<Price>>;
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum ErrorCode {
+    LengthMismatch = 1,
+    TooFewValidSources = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    #[error("length mismatch: expected {expected}, actual {actual}")]
     LengthMismatch { expected: usize, actual: usize },
-    #[error("too few valid sources: expected {expected}, actual {actual}")]
     TooFewValidSources { expected: usize, actual: usize },
 }
+
+impl Error {
+    #[must_use]
+    pub const fn code(self) -> ErrorCode {
+        match self {
+            Self::LengthMismatch { .. } => ErrorCode::LengthMismatch,
+            Self::TooFewValidSources { .. } => ErrorCode::TooFewValidSources,
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::LengthMismatch { expected, actual } => {
+                write!(f, "length mismatch: expected {expected}, actual {actual}")
+            }
+            Self::TooFewValidSources { expected, actual } => {
+                write!(
+                    f,
+                    "too few valid sources: expected {expected}, actual {actual}"
+                )
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {}

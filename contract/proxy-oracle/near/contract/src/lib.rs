@@ -15,7 +15,7 @@ use templar_common::{
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Decimal, Nanoseconds, UnwrapReject,
 };
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{aggregator::method::Error, Proxy};
 use templar_proxy_oracle_near_common::{
     input::Source, kernel_to_pyth, pyth_to_kernel, request::OracleRequest, state,
 };
@@ -209,7 +209,17 @@ impl Contract {
             let result = proxy.resolve(prices, now);
 
             if let Err(ref error) = result {
-                near_sdk::log!("Aggregation error: {error}");
+                match error {
+                    Error::LengthMismatch { expected, actual }
+                    | Error::TooFewValidSources { expected, actual } => {
+                        near_sdk::log!(
+                            "Aggregation error code={:?} expected={} actual={}",
+                            error.code(),
+                            expected,
+                            actual,
+                        );
+                    }
+                }
             }
             results.insert(price_id, result.ok().as_ref().and_then(kernel_to_pyth));
         }

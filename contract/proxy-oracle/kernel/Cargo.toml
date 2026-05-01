@@ -12,7 +12,6 @@ near-sdk = { workspace = true, optional = true, features = ["non-contract-usage"
 serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
 schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
 templar-primitives = { workspace = true, features = [] }
-thiserror = { version = "2", default-features = false, features = [] }
 
 [dev-dependencies]
 hex-literal.workspace = true
@@ -27,7 +26,7 @@ workspace = true
 
 [features]
 default = []
-std = ["templar-primitives/std", "borsh/std", "hex/std", "serde/std", "thiserror/std"]
+std = ["templar-primitives/std", "borsh/std", "hex/std", "serde/std"]
 borsh = ["dep:borsh", "templar-primitives/borsh"]
 schemars = ["std", "dep:schemars", "schemars/derive", "templar-primitives/schemars"]
 serde = ["dep:hex", "dep:serde", "hex/serde", "templar-primitives/serde"]
