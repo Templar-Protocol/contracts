@@ -4,9 +4,13 @@ use anyhow::{Context, Result};
 use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_sandbox::Sandbox;
 use near_token::NearToken;
-use templar_common::oracle::redstone::config as redstone_config;
-use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
-use templar_common::{market::MarketConfiguration, market::YieldWeights};
+use templar_common::{
+    market::{MarketConfiguration, YieldWeights},
+    oracle::{
+        price_transformer::PriceTransformer, pyth::PriceIdentifier,
+        redstone::config as redstone_config,
+    },
+};
 use templar_gateway_core::NearClient;
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::{ManagedAccountId, RegistryId, UniversalAccountId};
@@ -29,6 +33,7 @@ pub struct SandboxHarness {
     pub universal_account_signer_account_id: ManagedAccountId,
     pub proxy_oracle_signer_account_id: ManagedAccountId,
     pub gateway_signers: HashMap<ManagedAccountId, ManagedSigner>,
+    registry_signer: Arc<Signer>,
     pub ft_contract_id: AccountId,
     pub beneficiary_account_id: AccountId,
 }
@@ -65,9 +70,16 @@ impl SandboxHarness {
 
         let registry_signer_account_id = ManagedAccountId("registry.near".parse()?);
         let registry_secret_key = test_secret_key()?;
+        sandbox
+            .create_account(registry_signer_account_id.0.clone())
+            .initial_balance(NearToken::from_near(100))
+            .public_key(registry_secret_key.public_key().to_string())
+            .send()
+            .await?;
         let registry_signer = ManagedSigner::new([registry_secret_key])
             .await
             .context("failed to initialize registry signer")?;
+        let registry_deploy_signer = registry_signer.signer.clone();
 
         let universal_account_signer_account_id = ManagedAccountId("ua.near".parse()?);
         let universal_account_secret_key = test_secret_key()?;
@@ -136,6 +148,7 @@ impl SandboxHarness {
             universal_account_signer_account_id,
             proxy_oracle_signer_account_id,
             gateway_signers,
+            registry_signer: registry_deploy_signer,
             ft_contract_id,
             beneficiary_account_id,
         })
@@ -202,12 +215,10 @@ impl SandboxHarness {
 
     pub async fn deploy_registry(&self) -> Result<RegistryId> {
         let account_id: AccountId = "registry.near".parse()?;
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
         deploy_contract(
             &self.network,
             account_id.clone(),
-            signer,
+            self.registry_signer.clone(),
             RegistryController::wasm().await.to_vec(),
             "new",
             serde_json::json!({}),

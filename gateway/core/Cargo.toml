@@ -25,6 +25,7 @@ templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-types.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

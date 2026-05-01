@@ -35,6 +35,12 @@ transparent_newtype!(
 #[serde(transparent)]
 pub struct CryptoHash(pub NearCryptoHash);
 
+impl std::fmt::Display for CryptoHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl From<NearCryptoHash> for CryptoHash {
     fn from(value: NearCryptoHash) -> Self {
         Self(value)

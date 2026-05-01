@@ -59,7 +59,12 @@ where
         tokio::spawn({
             let driver = service.inner.driver.clone();
             async move {
-                let _ = driver.resume_incomplete_operations().await;
+                if let Err(error) = driver.resume_incomplete_operations().await {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to list or persist incomplete gateway operations during startup recovery"
+                    );
+                }
             }
         });
 

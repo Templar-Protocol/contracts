@@ -98,6 +98,12 @@ pub struct WriteOperationResult {
     pub operation: OperationRecord,
 }
 
+impl From<OperationRecord> for WriteOperationResult {
+    fn from(operation: OperationRecord) -> Self {
+        Self { operation }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StorageBalanceBounds {
     pub min: NearToken,

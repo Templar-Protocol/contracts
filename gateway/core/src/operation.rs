@@ -1,10 +1,10 @@
+use std::{collections::VecDeque, sync::Arc};
+
 use near_api::types::{
     transaction::{actions::Action, SignedTransaction},
     AccountId,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::Arc;
 use templar_gateway_types::{
     common::TxExecutionStatus, operation::OperationRecord, ManagedAccountId, OperationId,
     OperationStatus, StepStatus,
@@ -157,7 +157,7 @@ impl StoredOperation {
         &self.id
     }
 
-    pub fn operation_record(&self) -> OperationRecord {
+    pub fn record(&self) -> OperationRecord {
         OperationRecord {
             id: self.id.clone(),
             signer_account_id: self.signer_account_id.clone(),

@@ -39,7 +39,7 @@ impl OperationDriver {
             .store
             .get_by_id(operation_id)
             .await?
-            .map(|operation| operation.operation_record()))
+            .map(|operation| operation.record()))
     }
 
     pub async fn complete_write<Input>(
@@ -66,13 +66,13 @@ impl OperationDriver {
             .await?
         {
             CreateOperationResult::Existing(existing) => {
-                return Ok(operation_result_from_stored(existing));
+                return Ok(existing.record().into());
             }
             CreateOperationResult::Created(created) => created,
         };
 
         let operation = self.execute_remaining_steps(operation).await?;
-        Ok(operation_result_from_stored(operation))
+        Ok(operation.record().into())
     }
 
     pub async fn create_planned_operation<Input>(
@@ -107,13 +107,20 @@ impl OperationDriver {
 
     pub async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
         for mut operation in self.store.list_incomplete_operations().await? {
+            let operation_id = operation.operation_id().clone();
             if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
                 self.reconcile_submitted_step(&mut operation).await;
                 self.store.save_operation(operation).await?;
                 continue;
             }
 
-            let _ = self.execute_remaining_steps(operation).await;
+            if let Err(error) = self.execute_remaining_steps(operation).await {
+                tracing::warn!(
+                    operation_id = %operation_id.0,
+                    %error,
+                    "failed to resume incomplete gateway operation"
+                );
+            }
         }
         Ok(())
     }
@@ -224,14 +231,34 @@ impl OperationDriver {
                 .query_transaction(&transaction.signer_account_id, tx_hash)
                 .await
             {
-                Ok(execution) if execution.is_success() => {
-                    operation.succeeded_steps.push(SucceededStep {
-                        transaction,
-                        tx_hash,
-                    });
-                    operation.current_step = None;
-                }
-                Ok(_) | Err(_) => {
+                Ok(execution) => match execution.into_result() {
+                    Ok(_) => {
+                        operation.succeeded_steps.push(SucceededStep {
+                            transaction,
+                            tx_hash,
+                        });
+                        operation.current_step = None;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            operation_id = %operation.id.0,
+                            %tx_hash,
+                            %error,
+                            "current step transaction failed"
+                        );
+                        operation.current_step = Some(CurrentStep::Failed {
+                            transaction,
+                            tx_hash: Some(tx_hash),
+                        });
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        operation_id = %operation.id.0,
+                        %tx_hash,
+                        %error,
+                        "failed to reconcile submitted gateway transaction"
+                    );
                     operation.current_step = Some(CurrentStep::Failed {
                         transaction,
                         tx_hash: Some(tx_hash),
@@ -239,12 +266,6 @@ impl OperationDriver {
                 }
             }
         }
-    }
-}
-
-fn operation_result_from_stored(operation: StoredOperation) -> WriteOperationResult {
-    WriteOperationResult {
-        operation: operation.operation_record(),
     }
 }
 
