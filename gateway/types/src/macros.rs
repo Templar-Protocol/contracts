@@ -1,6 +1,5 @@
 macro_rules! transparent_newtype {
-    ($(#[$meta:meta])* $vis:vis struct $name:ident($inner:ty);) => {
-        $(#[$meta])*
+    (pub struct $name:ident($inner:ty);) => {
         #[derive(
             Debug,
             Clone,
@@ -14,9 +13,22 @@ macro_rules! transparent_newtype {
             schemars::JsonSchema,
         )]
         #[serde(transparent)]
-        $vis struct $name(pub $inner);
+        pub struct $name(pub $inner);
+
+        impl std::ops::Deref for $name {
+            type Target = $inner;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl From<$inner> for $name {
+            fn from(value: $inner) -> Self {
+                Self(value)
+            }
+        }
     };
 }
 
-pub(crate) use templar_gateway_macros::{read_method_spec, write_method_spec};
 pub(crate) use transparent_newtype;

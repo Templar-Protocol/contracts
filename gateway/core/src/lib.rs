@@ -2,14 +2,14 @@
 
 pub mod client;
 mod context;
-mod dispatch;
+mod contract_kind;
 mod error;
 mod executor;
-mod methods;
 mod near_client_provider;
 mod operation;
 mod oracle_write;
 mod payload;
+mod planning;
 mod read;
 
 use async_trait::async_trait;
@@ -17,13 +17,12 @@ use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccou
 
 pub use client::{ContractWriteOptions, NearClient};
 pub use context::{GatewayContext, GatewayContextBuilder};
-pub use dispatch::{query_contract_kind, Dispatch};
+pub use contract_kind::query_contract_kind;
 pub use error::{GatewayError, GatewayResult};
 pub use executor::{
     ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,
     SharedSignTransaction, SignTransaction,
 };
-pub use methods::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use near_client_provider::HasNearClient;
 pub use operation::{
     CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation, PlannedTransaction,
@@ -32,6 +31,7 @@ pub use operation::{
 };
 pub use oracle_write::{plan_pyth_update, plan_redstone_write_prices};
 pub use payload::OraclePayloadSource;
+pub use planning::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use read::ReadNear;
 
 pub enum CreateOperationResult {

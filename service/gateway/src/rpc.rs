@@ -4,17 +4,19 @@ use jsonrpsee::{
     RpcModule,
 };
 use templar_gateway_core::{
-    Dispatch as CoreDispatch, DispatchRead, GatewayError, HasIdempotencyKey, HasNearClient,
-    HasSignerAccountId, PlanWrite,
+    DispatchRead, GatewayError, HasIdempotencyKey, HasNearClient, HasSignerAccountId, PlanWrite,
 };
-use templar_gateway_oracle::{
-    Dispatch as OracleDispatch, ProvidesPythSource, ProvidesRedStoneSource,
-};
-use templar_gateway_types::{
+use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
+use templar_gateway_methods_spec::{
     account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
-    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry,
-    rpc::common::WriteOperationResult, storage, token, tx, universal_account, MethodSpec,
+    proxy_oracle_governance, proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage,
+    token, tx, universal_account,
 };
+use templar_gateway_oracle_updates_dispatch::{
+    Dispatch as OracleUpdatesDispatch, ProvidesPythSource, ProvidesRedStoneSource,
+};
+use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
+use templar_gateway_types::{rpc::common::WriteOperationResult, MethodSpec};
 
 use crate::gateway_service::GatewayService;
 
@@ -96,125 +98,116 @@ impl<ContextType: HasNearClient + std::marker::Unpin> GatewayRpcBuilder<ContextT
 }
 
 #[allow(clippy::too_many_lines)]
-fn register_core_gateway_methods<ContextType>(
-    builder: &mut GatewayRpcBuilder<ContextType>,
-) -> Result<(), RegisterMethodError>
-where
-    ContextType: HasNearClient + std::marker::Unpin,
-{
-    builder.register_read::<account::Get, CoreDispatch>()?;
-    builder.register_write::<account::Delete, CoreDispatch>()?;
-    builder.register_read::<contract::ViewFunction, CoreDispatch>()?;
-    builder.register_read::<contract::GetKind, CoreDispatch>()?;
-    builder.register_read::<contract::GetVersion, CoreDispatch>()?;
-    builder.register_read::<ft::GetBalanceOf, CoreDispatch>()?;
-    builder.register_write::<ft::Transfer, CoreDispatch>()?;
-    builder.register_write::<ft::TransferCall, CoreDispatch>()?;
-    builder.register_read::<lst_oracle::GetOracleId, CoreDispatch>()?;
-    builder.register_read::<lst_oracle::ListTransformers, CoreDispatch>()?;
-    builder.register_read::<lst_oracle::GetTransformer, CoreDispatch>()?;
-    builder.register_read::<market::GetConfiguration, CoreDispatch>()?;
-    builder.register_read::<market::GetCurrentSnapshot, CoreDispatch>()?;
-    builder.register_read::<market::GetFinalizedSnapshotsLen, CoreDispatch>()?;
-    builder.register_read::<market::ListFinalizedSnapshots, CoreDispatch>()?;
-    builder.register_read::<market::GetBorrowAssetMetrics, CoreDispatch>()?;
-    builder.register_read::<market::ListBorrowPositions, CoreDispatch>()?;
-    builder.register_read::<market::GetBorrowPosition, CoreDispatch>()?;
-    builder.register_read::<market::GetBorrowPositionPendingInterest, CoreDispatch>()?;
-    builder.register_read::<market::GetBorrowStatus, CoreDispatch>()?;
-    builder.register_read::<market::ListSupplyPositions, CoreDispatch>()?;
-    builder.register_read::<market::GetSupplyPosition, CoreDispatch>()?;
-    builder.register_read::<market::GetSupplyPositionPendingYield, CoreDispatch>()?;
-    builder.register_read::<market::GetSupplyWithdrawalRequestStatus, CoreDispatch>()?;
-    builder.register_read::<market::GetSupplyWithdrawalQueueStatus, CoreDispatch>()?;
-    builder.register_read::<market::GetLastYieldRate, CoreDispatch>()?;
-    builder.register_read::<market::GetStaticYield, CoreDispatch>()?;
-    builder.register_write::<market::Create, CoreDispatch>()?;
-    builder.register_write::<market::Borrow, CoreDispatch>()?;
-    builder.register_write::<market::Supply, CoreDispatch>()?;
-    builder.register_write::<market::WithdrawCollateral, CoreDispatch>()?;
-    builder.register_write::<market::ApplyInterest, CoreDispatch>()?;
-    builder.register_write::<market::Repay, CoreDispatch>()?;
-    builder.register_write::<market::CreateSupplyWithdrawalRequest, CoreDispatch>()?;
-    builder.register_write::<market::CancelSupplyWithdrawalRequest, CoreDispatch>()?;
-    builder.register_write::<market::ExecuteNextSupplyWithdrawalRequest, CoreDispatch>()?;
-    builder.register_write::<market::WithdrawSupply, CoreDispatch>()?;
-    builder.register_write::<market::Liquidate, CoreDispatch>()?;
-    builder.register_write::<market::HarvestYield, CoreDispatch>()?;
-    builder.register_write::<market::AccumulateStaticYield, CoreDispatch>()?;
-    builder.register_write::<market::WithdrawStaticYield, CoreDispatch>()?;
-    builder.register_read::<mt::GetBalanceOf, CoreDispatch>()?;
-    builder.register_read::<mt::GetBatchBalanceOf, CoreDispatch>()?;
-    builder.register_read::<mt::GetSupply, CoreDispatch>()?;
-    builder.register_read::<mt::GetBatchSupply, CoreDispatch>()?;
-    builder.register_write::<mt::Transfer, CoreDispatch>()?;
-    builder.register_write::<mt::TransferCall, CoreDispatch>()?;
-    builder.register_read::<pyth::ListEmaPricesNoOlderThan, CoreDispatch>()?;
-    builder.register_read::<pyth::ListEmaPricesUnsafe, CoreDispatch>()?;
-    builder.register_write::<pyth::UpdatePriceFeeds, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle::ListProxies, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle::GetProxy, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle::PriceFeedExists, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_governance::GetNextId, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_governance::GetTtl, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_governance::GetCount, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_governance::List, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_governance::Get, CoreDispatch>()?;
-    builder.register_write::<proxy_oracle_governance::Create, CoreDispatch>()?;
-    builder.register_write::<proxy_oracle_governance::Cancel, CoreDispatch>()?;
-    builder.register_write::<proxy_oracle_governance::Execute, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_owner::GetOwner, CoreDispatch>()?;
-    builder.register_read::<proxy_oracle_owner::GetProposedOwner, CoreDispatch>()?;
-    builder.register_write::<proxy_oracle_owner::ProposeOwner, CoreDispatch>()?;
-    builder.register_write::<proxy_oracle_owner::AcceptOwner, CoreDispatch>()?;
-    builder.register_write::<proxy_oracle_owner::RenounceOwner, CoreDispatch>()?;
-    builder.register_read::<redstone::GetConfig, CoreDispatch>()?;
-    builder.register_read::<redstone::ReadPriceData, CoreDispatch>()?;
-    builder.register_read::<redstone::ListRole, CoreDispatch>()?;
-    builder.register_write::<redstone::SetRole, CoreDispatch>()?;
-    builder.register_write::<redstone::WritePrices, CoreDispatch>()?;
-    builder.register_read::<ref_finance::GetPools, CoreDispatch>()?;
-    builder.register_read::<registry::GetDeployment, CoreDispatch>()?;
-    builder.register_read::<registry::ListDeployments, CoreDispatch>()?;
-    builder.register_read::<registry::ListDeploymentsByKind, CoreDispatch>()?;
-    builder.register_read::<registry::ListVersions, CoreDispatch>()?;
-    builder.register_write::<registry::AddVersion, CoreDispatch>()?;
-    builder.register_write::<registry::RemoveVersion, CoreDispatch>()?;
-    builder.register_write::<registry::Deploy, CoreDispatch>()?;
-    builder.register_read::<storage::GetBalanceBounds, CoreDispatch>()?;
-    builder.register_read::<storage::GetBalanceOf, CoreDispatch>()?;
-    builder.register_write::<storage::Deposit, CoreDispatch>()?;
-    builder.register_write::<storage::EnsureDeposit, CoreDispatch>()?;
-    builder.register_write::<storage::Unregister, CoreDispatch>()?;
-    builder.register_read::<token::GetBalanceOf, CoreDispatch>()?;
-    builder.register_write::<token::Transfer, CoreDispatch>()?;
-    builder.register_write::<token::TransferCall, CoreDispatch>()?;
-    builder.register_read::<tx::Get, CoreDispatch>()?;
-    builder.register_write::<tx::FunctionCall, CoreDispatch>()?;
-    builder.register_write::<tx::Transfer, CoreDispatch>()?;
-    builder.register_write::<tx::DeployContract, CoreDispatch>()?;
-    builder.register_write::<tx::DeployAndInit, CoreDispatch>()?;
-    builder.register_read::<universal_account::GetKey, CoreDispatch>()?;
-    builder.register_write::<universal_account::Execute, CoreDispatch>()?;
-    builder.register_write::<universal_account::Create, CoreDispatch>()?;
-    builder.register_operation_get()?;
-    Ok(())
-}
-
-fn register_oracle_gateway_methods<ContextType>(
+fn register_gateway_methods<ContextType>(
     builder: &mut GatewayRpcBuilder<ContextType>,
 ) -> Result<(), RegisterMethodError>
 where
     ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
 {
-    builder.register_read::<oracle::GetPriceResolutionDependencies, OracleDispatch>()?;
-    builder.register_read::<oracle::ResolvePrice, OracleDispatch>()?;
-    builder.register_read::<oracle::ResolvePrices, OracleDispatch>()?;
-    builder.register_read::<oracle::GetPrice, OracleDispatch>()?;
-    builder.register_read::<oracle::GetPrices, OracleDispatch>()?;
-    builder.register_write::<oracle::UpdatePyth, OracleDispatch>()?;
-    builder.register_write::<oracle::UpdateRedStone, OracleDispatch>()?;
-    builder.register_write::<oracle::UpdatePrices, OracleDispatch>()?;
+    builder.register_read::<account::Get, MethodsDispatch>()?;
+    builder.register_write::<account::Delete, MethodsDispatch>()?;
+    builder.register_read::<contract::ViewFunction, MethodsDispatch>()?;
+    builder.register_read::<contract::GetKind, MethodsDispatch>()?;
+    builder.register_read::<contract::GetVersion, MethodsDispatch>()?;
+    builder.register_read::<ft::GetBalanceOf, MethodsDispatch>()?;
+    builder.register_write::<ft::Transfer, MethodsDispatch>()?;
+    builder.register_write::<ft::TransferCall, MethodsDispatch>()?;
+    builder.register_read::<lst_oracle::GetOracleId, MethodsDispatch>()?;
+    builder.register_read::<lst_oracle::ListTransformers, MethodsDispatch>()?;
+    builder.register_read::<lst_oracle::GetTransformer, MethodsDispatch>()?;
+    builder.register_read::<market::GetConfiguration, MethodsDispatch>()?;
+    builder.register_read::<market::GetCurrentSnapshot, MethodsDispatch>()?;
+    builder.register_read::<market::GetFinalizedSnapshotsLen, MethodsDispatch>()?;
+    builder.register_read::<market::ListFinalizedSnapshots, MethodsDispatch>()?;
+    builder.register_read::<market::GetBorrowAssetMetrics, MethodsDispatch>()?;
+    builder.register_read::<market::ListBorrowPositions, MethodsDispatch>()?;
+    builder.register_read::<market::GetBorrowPosition, MethodsDispatch>()?;
+    builder.register_read::<market::GetBorrowPositionPendingInterest, MethodsDispatch>()?;
+    builder.register_read::<market::GetBorrowStatus, MethodsDispatch>()?;
+    builder.register_read::<market::ListSupplyPositions, MethodsDispatch>()?;
+    builder.register_read::<market::GetSupplyPosition, MethodsDispatch>()?;
+    builder.register_read::<market::GetSupplyPositionPendingYield, MethodsDispatch>()?;
+    builder.register_read::<market::GetSupplyWithdrawalRequestStatus, MethodsDispatch>()?;
+    builder.register_read::<market::GetSupplyWithdrawalQueueStatus, MethodsDispatch>()?;
+    builder.register_read::<market::GetLastYieldRate, MethodsDispatch>()?;
+    builder.register_read::<market::GetStaticYield, MethodsDispatch>()?;
+    builder.register_write::<market::Create, MethodsDispatch>()?;
+    builder.register_write::<market::Borrow, MethodsDispatch>()?;
+    builder.register_write::<market::Supply, MethodsDispatch>()?;
+    builder.register_write::<market::WithdrawCollateral, MethodsDispatch>()?;
+    builder.register_write::<market::ApplyInterest, MethodsDispatch>()?;
+    builder.register_write::<market::Repay, MethodsDispatch>()?;
+    builder.register_write::<market::CreateSupplyWithdrawalRequest, MethodsDispatch>()?;
+    builder.register_write::<market::CancelSupplyWithdrawalRequest, MethodsDispatch>()?;
+    builder.register_write::<market::ExecuteNextSupplyWithdrawalRequest, MethodsDispatch>()?;
+    builder.register_write::<market::WithdrawSupply, MethodsDispatch>()?;
+    builder.register_write::<market::Liquidate, MethodsDispatch>()?;
+    builder.register_write::<market::HarvestYield, MethodsDispatch>()?;
+    builder.register_write::<market::AccumulateStaticYield, MethodsDispatch>()?;
+    builder.register_write::<market::WithdrawStaticYield, MethodsDispatch>()?;
+    builder.register_read::<mt::GetBalanceOf, MethodsDispatch>()?;
+    builder.register_read::<mt::GetBatchBalanceOf, MethodsDispatch>()?;
+    builder.register_read::<mt::GetSupply, MethodsDispatch>()?;
+    builder.register_read::<mt::GetBatchSupply, MethodsDispatch>()?;
+    builder.register_write::<mt::Transfer, MethodsDispatch>()?;
+    builder.register_write::<mt::TransferCall, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle::ListProxies, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle::GetProxy, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle::PriceFeedExists, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_governance::GetNextId, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_governance::GetTtl, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_governance::GetCount, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_governance::List, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_governance::Get, MethodsDispatch>()?;
+    builder.register_write::<proxy_oracle_governance::Create, MethodsDispatch>()?;
+    builder.register_write::<proxy_oracle_governance::Cancel, MethodsDispatch>()?;
+    builder.register_write::<proxy_oracle_governance::Execute, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_owner::GetOwner, MethodsDispatch>()?;
+    builder.register_read::<proxy_oracle_owner::GetProposedOwner, MethodsDispatch>()?;
+    builder.register_write::<proxy_oracle_owner::ProposeOwner, MethodsDispatch>()?;
+    builder.register_write::<proxy_oracle_owner::AcceptOwner, MethodsDispatch>()?;
+    builder.register_write::<proxy_oracle_owner::RenounceOwner, MethodsDispatch>()?;
+    builder.register_read::<ref_finance::GetPools, MethodsDispatch>()?;
+    builder.register_read::<registry::GetDeployment, MethodsDispatch>()?;
+    builder.register_read::<registry::ListDeployments, MethodsDispatch>()?;
+    builder.register_read::<registry::ListDeploymentsByKind, MethodsDispatch>()?;
+    builder.register_read::<registry::ListVersions, MethodsDispatch>()?;
+    builder.register_write::<registry::AddVersion, MethodsDispatch>()?;
+    builder.register_write::<registry::RemoveVersion, MethodsDispatch>()?;
+    builder.register_write::<registry::Deploy, MethodsDispatch>()?;
+    builder.register_read::<storage::GetBalanceBounds, MethodsDispatch>()?;
+    builder.register_read::<storage::GetBalanceOf, MethodsDispatch>()?;
+    builder.register_write::<storage::Deposit, MethodsDispatch>()?;
+    builder.register_write::<storage::EnsureDeposit, MethodsDispatch>()?;
+    builder.register_write::<storage::Unregister, MethodsDispatch>()?;
+    builder.register_read::<token::GetBalanceOf, MethodsDispatch>()?;
+    builder.register_write::<token::Transfer, MethodsDispatch>()?;
+    builder.register_write::<token::TransferCall, MethodsDispatch>()?;
+    builder.register_read::<tx::Get, MethodsDispatch>()?;
+    builder.register_write::<tx::FunctionCall, MethodsDispatch>()?;
+    builder.register_write::<tx::Transfer, MethodsDispatch>()?;
+    builder.register_write::<tx::DeployContract, MethodsDispatch>()?;
+    builder.register_write::<tx::DeployAndInit, MethodsDispatch>()?;
+    builder.register_read::<universal_account::GetKey, MethodsDispatch>()?;
+    builder.register_write::<universal_account::Execute, MethodsDispatch>()?;
+    builder.register_write::<universal_account::Create, MethodsDispatch>()?;
+    builder.register_operation_get()?;
+    builder.register_read::<oracle::GetPriceResolutionDependencies, MethodsDispatch>()?;
+    builder.register_read::<oracle::ResolvePrice, MethodsDispatch>()?;
+    builder.register_read::<oracle::ResolvePrices, MethodsDispatch>()?;
+    builder.register_read::<oracle::GetPrice, MethodsDispatch>()?;
+    builder.register_read::<oracle::GetPrices, MethodsDispatch>()?;
+    builder.register_write::<oracle_updates::UpdatePyth, OracleUpdatesDispatch>()?;
+    builder.register_write::<oracle_updates::UpdateRedStone, OracleUpdatesDispatch>()?;
+    builder.register_write::<oracle_updates::UpdatePrices, OracleUpdatesDispatch>()?;
+    builder.register_read::<pyth::ListEmaPricesNoOlderThan, MethodsDispatch>()?;
+    builder.register_read::<pyth::ListEmaPricesUnsafe, MethodsDispatch>()?;
+    builder.register_write::<pyth::UpdatePriceFeeds, MethodsDispatch>()?;
+    builder.register_read::<redstone::GetConfig, MethodsDispatch>()?;
+    builder.register_read::<redstone::ReadPriceData, MethodsDispatch>()?;
+    builder.register_read::<redstone::ListRole, MethodsDispatch>()?;
+    builder.register_write::<redstone::SetRole, MethodsDispatch>()?;
+    builder.register_write::<redstone::WritePrices, MethodsDispatch>()?;
     Ok(())
 }
 
@@ -225,8 +218,7 @@ where
     ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
 {
     let mut builder = GatewayRpcBuilder::new(service);
-    register_core_gateway_methods(&mut builder)?;
-    register_oracle_gateway_methods(&mut builder)?;
+    register_gateway_methods(&mut builder)?;
     Ok(builder.finish())
 }
 

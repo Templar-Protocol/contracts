@@ -23,31 +23,31 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
 
     assert_eq!(
         kind_of(&stack, registry_id.0.clone()).await?,
-        contract::ContractKind::Registry
+        templar_gateway_types::ContractKind::Registry
     );
     assert_eq!(
         kind_of(&stack, market_id.0.clone()).await?,
-        contract::ContractKind::Market
+        templar_gateway_types::ContractKind::Market
     );
     assert_eq!(
         kind_of(&stack, proxy_oracle_id).await?,
-        contract::ContractKind::ProxyOracle
+        templar_gateway_types::ContractKind::ProxyOracle
     );
     assert_eq!(
         kind_of(&stack, lst_oracle_id).await?,
-        contract::ContractKind::LstOracle
+        templar_gateway_types::ContractKind::LstOracle
     );
     assert_eq!(
         kind_of(&stack, universal_account_id.0).await?,
-        contract::ContractKind::UniversalAccount
+        templar_gateway_types::ContractKind::UniversalAccount
     );
     assert_eq!(
         kind_of(&stack, redstone_oracle_id).await?,
-        contract::ContractKind::RedstoneOracle
+        templar_gateway_types::ContractKind::RedstoneOracle
     );
     assert_eq!(
         kind_of(&stack, stack.harness.ft_contract_id.clone()).await?,
-        contract::ContractKind::Unknown
+        templar_gateway_types::ContractKind::Unknown
     );
 
     stack.shutdown().await;
@@ -57,7 +57,7 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
 async fn kind_of(
     stack: &TestStack,
     contract_id: near_account_id::AccountId,
-) -> Result<contract::ContractKind> {
+) -> Result<templar_gateway_types::ContractKind> {
     Ok(stack
         .controller
         .request::<contract::GetKind>(&ReadRequest {

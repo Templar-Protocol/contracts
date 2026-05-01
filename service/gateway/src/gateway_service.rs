@@ -318,9 +318,11 @@ mod tests {
     use near_sandbox::Sandbox;
     use near_token::NearToken as SandboxNearToken;
     use templar_gateway_core::{GatewayContext, GatewayError};
+    use templar_gateway_methods_dispatch::Dispatch;
+    use templar_gateway_methods_spec::tx;
     use templar_gateway_types::{
         common::{ContractArgs, WriteRequest},
-        tx, ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
+        ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
     };
     use test_utils::FtController;
 
@@ -391,7 +393,7 @@ mod tests {
         let (harness, service) = start_service().await?;
 
         let first = service
-            .request_write::<tx::FunctionCall, templar_gateway_core::Dispatch>(WriteRequest {
+            .request_write::<tx::FunctionCall, Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
                 body: tx::FunctionCallBody {
@@ -407,7 +409,7 @@ mod tests {
             .await?;
 
         let second = service
-            .request_write::<tx::FunctionCall, templar_gateway_core::Dispatch>(WriteRequest {
+            .request_write::<tx::FunctionCall, Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
                 body: tx::FunctionCallBody {
@@ -447,10 +449,10 @@ mod tests {
 
         let fingerprint = make_request_fingerprint(tx::FunctionCall::RPC_METHOD, &request)?;
         let payload = serde_json::to_vec(&request)?;
-        let plan = <templar_gateway_core::Dispatch as PlanWrite<
-            tx::FunctionCall,
-            GatewayContext,
-        >>::plan(request.clone(), service.read_context())
+        let plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
+            request.clone(),
+            service.read_context(),
+        )
         .await?;
         let mut operation = match service
             .inner
@@ -539,15 +541,15 @@ mod tests {
             },
         };
 
-        let mut first_plan = <templar_gateway_core::Dispatch as PlanWrite<
-            tx::FunctionCall,
-            GatewayContext,
-        >>::plan(first_request.clone(), service.read_context())
+        let mut first_plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
+            first_request.clone(),
+            service.read_context(),
+        )
         .await?;
-        let second_plan = <templar_gateway_core::Dispatch as PlanWrite<
-            tx::FunctionCall,
-            GatewayContext,
-        >>::plan(second_request, service.read_context())
+        let second_plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
+            second_request,
+            service.read_context(),
+        )
         .await?;
         first_plan.push(
             second_plan

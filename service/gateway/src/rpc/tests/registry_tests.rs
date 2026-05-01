@@ -83,7 +83,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
             params: registry::ListDeploymentsByKindParams {
                 registry_id: registry_id.clone(),
                 args: templar_gateway_types::common::Pagination::default(),
-                kind: contract::ContractKind::Market,
+                kind: templar_gateway_types::ContractKind::Market,
             },
         })
         .await?;
@@ -94,7 +94,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
             params: registry::ListDeploymentsByKindParams {
                 registry_id: registry_id.clone(),
                 args: templar_gateway_types::common::Pagination::default(),
-                kind: contract::ContractKind::Unknown,
+                kind: templar_gateway_types::ContractKind::Unknown,
             },
         })
         .await?;

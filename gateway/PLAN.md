@@ -29,12 +29,13 @@ All gateway code lives under `gateway/`, with the transport binary under `servic
 Current crates:
 
 1. `gateway/core`
-2. `gateway/runtime`
-3. `gateway/store`
-4. `gateway/oracle-pyth`
-5. `gateway/oracle-redstone`
-6. `gateway/testing`
-7. `service/gateway`
+2. `gateway/oracle-updates-spec`
+3. `gateway/runtime`
+4. `gateway/store`
+5. `gateway/oracle-pyth`
+6. `gateway/oracle-redstone`
+7. `gateway/testing`
+8. `service/gateway`
 
 ### `gateway/core`
 
@@ -42,12 +43,11 @@ This is the transport-agnostic source of truth for gateway behavior.
 
 Responsibilities:
 
-- request and response types
-- method taxonomy
-- operation plan and operation state types
+- method planning traits and dispatch interfaces
+- operation plan and durable workflow state types
 - gateway error taxonomy
 - NEAR client/query surface used by planning
-- current dispatch and write-planning logic
+- shared contract/query helpers used by dispatch and workflow
 - shared traits such as the oracle payload source abstraction
 
 Requirements:
@@ -56,7 +56,28 @@ Requirements:
 - no runtime ownership
 - no actor lifecycle management
 - no durable store implementation
-- expose lightweight functions and traits that define operation behavior
+- keep gateway planning and workflow semantics together unless `PlanWrite` stops returning workflow-native types
+
+Internal structure direction:
+
+- `client/`
+  - `NearClient` and contract/query helpers
+- `dispatch/`
+  - per-domain `DispatchRead` / `PlanWrite` implementations
+- `workflow/`
+  - `OperationPlan`, `PlannedTransaction`, `StoredOperation`, current-step state, and workflow transitions
+- `execution/`
+  - `OperationStore`, `SignTransaction`, `ExecuteOperation` traits plus concrete NEAR executor/signer adapters if they remain closely coupled to the workflow model
+- `context/`
+  - `GatewayContext` and core capability/provider traits
+
+The key decision is to keep planning and workflow in the same crate.
+
+Why:
+
+- `PlanWrite` currently returns `OperationPlan`
+- durable execution is modeled directly in terms of planned transactions
+- splitting those into separate crates would introduce artificial coupling rather than reducing it
 
 The long-term direction is for `gateway/core` to move further toward a single-phase requirements model:
 
@@ -65,6 +86,19 @@ The long-term direction is for `gateway/core` to move further toward a single-ph
 3. finalize a plan from resolved inputs
 
 That refactor is not complete yet, but `core` is the place where it should land.
+
+The shorter-term refactor goal is not a new crate split. It is a clearer internal module split so the crate reads as one gateway kernel instead of a flat mixed bag of planning, workflow, client, and execution code.
+
+### `gateway/oracle-updates-spec`
+
+This crate owns optional oracle-update preparation support.
+
+Responsibilities:
+
+- update-oriented `oracle.update*` methods that depend on external oracle payload sources
+- oracle source/provider capability traits for Pyth Hermes and the RedStone bridge
+- gateway context builder extensions for wiring those external sources
+- dependency resolution needed specifically for preparing update transactions
 
 ### `gateway/runtime`
 
@@ -90,10 +124,15 @@ This crate owns durable operation storage.
 
 Responsibilities:
 
-- operation store interfaces and implementations
+- operation store implementations
 - idempotency persistence
 - in-memory and Postgres-backed stores
 - migrations and `sqlx` metadata
+
+Requirements:
+
+- depend on the core workflow model and traits
+- do not own workflow semantics or status-transition rules
 
 Current structure:
 
@@ -112,7 +151,7 @@ This crate owns the Hermes/Pyth integration.
 
 Responsibilities:
 
-- fetch Pyth update payloads
+- fetch Pyth update payloads for update-preparation flows
 - implement the shared oracle payload trait for Pyth price IDs
 
 ### `gateway/oracle-redstone`
@@ -122,7 +161,7 @@ This crate owns the RedStone bridge integration.
 Responsibilities:
 
 - communicate with the RedStone bridge
-- fetch RedStone payloads
+- fetch RedStone payloads for update-preparation flows
 - implement the shared oracle payload trait for RedStone feed IDs
 
 ### `gateway/testing`

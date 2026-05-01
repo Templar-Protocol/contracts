@@ -34,15 +34,20 @@ use templar_common::oracle::{
 use templar_common::primitive_types::U256;
 use templar_common::time::Nanoseconds;
 use templar_gateway_core::GatewayContext;
-use templar_gateway_oracle::{GatewayContextBuilderOracleExt, WithPythSource, WithRedStoneSource};
+use templar_gateway_methods_spec::{
+    account, contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
+    proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
+    universal_account,
+};
+use templar_gateway_oracle_updates_dispatch::{
+    GatewayContextBuilderOracleExt, WithPythSource, WithRedStoneSource,
+};
+use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
 use templar_gateway_store::MemoryStore;
 use templar_gateway_testing::{SandboxHarness, TestController};
 use templar_gateway_types::{
-    account,
     common::{ContractArgs, ReadRequest, WriteRequest},
-    contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
-    proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
-    universal_account, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
 use templar_universal_account::{
     authentication::with_raw_string::WithRawString,

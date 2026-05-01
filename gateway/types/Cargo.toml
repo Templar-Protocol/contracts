@@ -18,7 +18,6 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["abi", "non-contract-usage"] }
-templar-gateway-macros.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

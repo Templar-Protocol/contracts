@@ -130,15 +130,15 @@ fn expand_method(
         #(#attrs)*
         pub struct #ident;
 
-        impl crate::MethodSpec for #ident {
+        impl templar_gateway_types::MethodSpec for #ident {
             type Input = #request_ty;
             type Output = #output_ty;
 
             const RPC_METHOD: &'static str = #rpc_method;
         }
 
-        impl crate::spec::RpcMethodMeta for #ident {
-            const KIND: crate::spec::MethodKind = #method_kind;
+        impl templar_gateway_types::spec::RpcMethodMeta for #ident {
+            const KIND: templar_gateway_types::spec::MethodKind = #method_kind;
             const SUMMARY: &'static str = #summary;
             const DESCRIPTION: &'static str = #doc;
             const DEPRECATED: bool = #deprecated;
@@ -161,9 +161,9 @@ pub fn read_method_spec(input: TokenStream) -> TokenStream {
         attrs,
         rpc_method,
         ident,
-        quote!(crate::common::ReadRequest<#input>),
+        quote!(templar_gateway_types::common::ReadRequest<#input>),
         quote!(#output),
-        quote!(crate::spec::MethodKind::Read),
+        quote!(templar_gateway_types::spec::MethodKind::Read),
     )
 }
 
@@ -180,8 +180,8 @@ pub fn write_method_spec(input: TokenStream) -> TokenStream {
         attrs,
         rpc_method,
         ident,
-        quote!(crate::common::WriteRequest<#input>),
-        quote!(crate::rpc::common::WriteOperationResult),
-        quote!(crate::spec::MethodKind::Write),
+        quote!(templar_gateway_types::common::WriteRequest<#input>),
+        quote!(templar_gateway_types::rpc::common::WriteOperationResult),
+        quote!(templar_gateway_types::spec::MethodKind::Write),
     )
 }

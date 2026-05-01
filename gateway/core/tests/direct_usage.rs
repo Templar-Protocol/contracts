@@ -4,13 +4,14 @@ use anyhow::Result;
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
 use templar_gateway_core::{
-    Dispatch, DispatchRead, ExecuteOperation, GatewayContext, NearOperationExecutor,
-    NearTransactionSigner, PlanWrite, SignTransaction,
+    DispatchRead, ExecuteOperation, GatewayContext, NearOperationExecutor, NearTransactionSigner,
+    PlanWrite, SignTransaction,
 };
+use templar_gateway_methods_dispatch::Dispatch;
+use templar_gateway_methods_spec::{account, tx};
 use templar_gateway_types::{
-    account,
     common::{ContractArgs, ReadRequest, WriteRequest},
-    tx, ContractMethodName, ManagedAccountId, NearGas,
+    ContractMethodName, ManagedAccountId, NearGas,
 };
 use test_utils::FtController;
 

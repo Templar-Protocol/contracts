@@ -16,10 +16,10 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
 
     let pyth_result = stack
         .controller
-        .request::<oracle::UpdatePyth>(&WriteRequest {
+        .request::<oracle_updates::UpdatePyth>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: oracle::UpdatePythBody {
+            body: oracle_updates::UpdatePythBody {
                 oracle_id: pyth_oracle_id.clone(),
                 vaa: Base64Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
             },
@@ -45,10 +45,10 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
 
     let redstone_result = stack
         .controller
-        .request::<oracle::UpdateRedStone>(&WriteRequest {
+        .request::<oracle_updates::UpdateRedStone>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: oracle::UpdateRedStoneBody {
+            body: oracle_updates::UpdateRedStoneBody {
                 oracle_id: redstone_oracle_id.clone(),
                 feed_id: "BTC".into(),
             },
@@ -158,10 +158,10 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
 
     let update_result = stack
         .controller
-        .request::<oracle::UpdatePrices>(&WriteRequest {
+        .request::<oracle_updates::UpdatePrices>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: oracle::UpdatePricesBody {
+            body: oracle_updates::UpdatePricesBody {
                 oracle_id: proxy_oracle_id,
                 price_ids: vec![proxy_direct_id, proxy_redstone_id],
             },

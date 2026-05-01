@@ -13299,6 +13299,8 @@ dependencies = [
  "serde_json",
  "sqlx",
  "templar-common",
+ "templar-gateway-methods-dispatch",
+ "templar-gateway-methods-spec",
  "templar-gateway-types",
  "templar-universal-account",
  "test-utils",
@@ -13316,19 +13318,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-gateway-oracle"
+name = "templar-gateway-methods-dispatch"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "hex",
  "near-account-id",
- "near-sdk",
+ "near-api",
+ "near-contract-standards",
+ "serde",
+ "serde_json",
  "templar-common",
  "templar-gateway-core",
- "templar-gateway-oracle-pyth",
- "templar-gateway-oracle-redstone",
+ "templar-gateway-methods-spec",
  "templar-gateway-types",
- "url",
+ "templar-universal-account",
+]
+
+[[package]]
+name = "templar-gateway-methods-spec"
+version = "0.1.0"
+dependencies = [
+ "near-account-id",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "templar-common",
+ "templar-gateway-macros",
+ "templar-gateway-types",
+ "templar-universal-account",
 ]
 
 [[package]]
@@ -13355,6 +13372,43 @@ dependencies = [
  "templar-redstone-bridge",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "templar-gateway-oracle-updates-dispatch"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "near-account-id",
+ "near-sdk",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "templar-common",
+ "templar-gateway-core",
+ "templar-gateway-methods-spec",
+ "templar-gateway-oracle-pyth",
+ "templar-gateway-oracle-redstone",
+ "templar-gateway-oracle-updates-spec",
+ "templar-gateway-types",
+ "templar-universal-account",
+ "url",
+]
+
+[[package]]
+name = "templar-gateway-oracle-updates-spec"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "near-account-id",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "templar-common",
+ "templar-gateway-macros",
+ "templar-gateway-types",
+ "templar-universal-account",
 ]
 
 [[package]]
@@ -13393,7 +13447,10 @@ dependencies = [
  "sqlx",
  "templar-common",
  "templar-gateway-core",
- "templar-gateway-oracle",
+ "templar-gateway-methods-dispatch",
+ "templar-gateway-methods-spec",
+ "templar-gateway-oracle-updates-dispatch",
+ "templar-gateway-oracle-updates-spec",
  "templar-gateway-runtime",
  "templar-gateway-store",
  "templar-gateway-testing",
@@ -13462,7 +13519,6 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
- "templar-gateway-macros",
  "templar-universal-account",
  "thiserror 2.0.18",
  "uuid 1.23.0",

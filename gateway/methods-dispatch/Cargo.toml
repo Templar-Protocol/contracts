@@ -1,0 +1,23 @@
+[package]
+name = "templar-gateway-methods-dispatch"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+near-account-id = { workspace = true, features = ["serde", "schemars"] }
+near-api.workspace = true
+near-contract-standards.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-gateway-core.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-types.workspace = true
+templar-universal-account.workspace = true
+
+
+[lints]
+workspace = true

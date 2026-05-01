@@ -1,7 +1,16 @@
 use near_api::{types::transaction::result::TransactionResult, Contract};
-use templar_gateway_types::tx;
+use templar_gateway_types::{common::ContractArgs, ContractMethodName, NearGas, NearToken};
 
 use crate::{client::NearClient, GatewayError, GatewayResult};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionCallRequest {
+    pub receiver_id: near_account_id::AccountId,
+    pub method_name: ContractMethodName,
+    pub args: ContractArgs,
+    pub gas: NearGas,
+    pub deposit: NearToken,
+}
 
 #[derive(Clone)]
 pub struct TxClient<'a> {
@@ -13,7 +22,7 @@ pub struct TxClient<'a> {
 impl TxClient<'_> {
     pub async fn function_call(
         &self,
-        body: tx::FunctionCallBody,
+        body: FunctionCallRequest,
         wait_until: templar_gateway_types::common::TxExecutionStatus,
     ) -> GatewayResult<TransactionResult> {
         Contract(body.receiver_id)
