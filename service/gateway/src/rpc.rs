@@ -22,7 +22,7 @@ use crate::gateway_service::GatewayService;
 
 const GATEWAY_SERVER_ERROR_CODE: i32 = -32000;
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, reason = "ease of use")]
 fn map_gateway_error(error: GatewayError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(GATEWAY_SERVER_ERROR_CODE, error.to_string(), None::<()>)
 }
@@ -97,7 +97,7 @@ impl<ContextType: HasNearClient + std::marker::Unpin> GatewayRpcBuilder<ContextT
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, reason = "prefer flat RPC registration table")]
 fn register_gateway_methods<ContextType>(
     builder: &mut GatewayRpcBuilder<ContextType>,
 ) -> Result<(), RegisterMethodError>

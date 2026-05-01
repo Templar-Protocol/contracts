@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
@@ -96,19 +96,18 @@ pub struct Config {
 }
 
 impl Config {
-    #[allow(clippy::expect_used, reason = "only called on startup")]
-    pub async fn build_signers(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
+    pub async fn build_signers(&self) -> Result<HashMap<ManagedAccountId, ManagedSigner>> {
         let mut signers = HashMap::new();
 
         for config in &self.managed_signers {
             let secret_keys = config.secret_keys.iter().cloned();
-            let entry = ManagedSigner::new(secret_keys)
-                .await
-                .expect("failed to initialize signer");
+            let entry = ManagedSigner::new(secret_keys).await.with_context(|| {
+                format!("failed to initialize signer for {}", config.account_id)
+            })?;
             signers.insert(ManagedAccountId(config.account_id.clone()), entry);
         }
 
-        signers
+        Ok(signers)
     }
 
     pub async fn build_store(&self) -> Result<SharedOperationStore> {

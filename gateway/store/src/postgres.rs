@@ -39,24 +39,39 @@ enum OperationStepStateRow {
     Failed,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct OperationRow {
     id: uuid::Uuid,
     rpc_method: String,
     signer_account_id: String,
+    #[allow(
+        dead_code,
+        reason = "loaded from the audit table for row-shape completeness"
+    )]
     idempotency_key: Option<String>,
     request_fingerprint_hash: Vec<u8>,
     request_payload: Value,
     status: OperationStatusRow,
+    #[allow(
+        dead_code,
+        reason = "operation audit timestamp retained in the row DTO"
+    )]
     created_at: DateTime<Utc>,
+    #[allow(
+        dead_code,
+        reason = "operation audit timestamp retained in the row DTO"
+    )]
     updated_at: DateTime<Utc>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct OperationStepRow {
+    #[allow(
+        dead_code,
+        reason = "loaded from the audit table for row-shape completeness"
+    )]
     operation_id: uuid::Uuid,
+    #[allow(dead_code, reason = "step ordering metadata retained in the row DTO")]
     step_index: i32,
     signer_account_id: String,
     receiver_id: String,
@@ -65,12 +80,13 @@ struct OperationStepRow {
     state: OperationStepStateRow,
     tx_hash: Option<String>,
     signed_transaction: Option<Vec<u8>>,
+    #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
     created_at: DateTime<Utc>,
+    #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
     updated_at: DateTime<Utc>,
 }
 
 impl PostgresStore {
-    #[allow(dead_code)]
     pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -78,12 +94,10 @@ impl PostgresStore {
         Ok(Self { pool })
     }
 
-    #[allow(dead_code)]
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
         sqlx::migrate!("./migrations").run(&self.pool).await
     }
 
-    #[allow(dead_code)]
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }

@@ -84,7 +84,6 @@ impl From<PlannedTransaction> for OperationPlan {
 
 #[derive(Debug, Clone)]
 pub struct SucceededStep {
-    #[allow(dead_code)]
     pub transaction: PlannedTransaction,
     pub tx_hash: templar_gateway_types::CryptoHash,
 }
@@ -101,7 +100,6 @@ pub enum CurrentStep {
         tx_hash: templar_gateway_types::CryptoHash,
     },
     Failed {
-        #[allow(dead_code)]
         transaction: PlannedTransaction,
         tx_hash: Option<templar_gateway_types::CryptoHash>,
     },
@@ -111,7 +109,6 @@ pub enum CurrentStep {
 pub struct StoredOperation {
     pub rpc_method: String,
     pub request_fingerprint_hash: [u8; 32],
-    #[allow(dead_code)]
     pub request_payload: Vec<u8>,
     pub id: OperationId,
     pub signer_account_id: ManagedAccountId,
