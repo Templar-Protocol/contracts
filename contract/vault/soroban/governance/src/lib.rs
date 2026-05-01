@@ -12,8 +12,8 @@ use soroban_sdk::{
 };
 use templar_curator_primitives::governance::{
     timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
-    PendingActions, PendingValue, RelativeCapChangeError, Restrictions as SharedRestrictions,
-    TakePending, TimelockConfigError, TimelockDecision,
+    PendingActions, PendingValue, RelativeCapChangeError, TakePending, TimelockConfigError,
+    TimelockDecision,
 };
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_soroban_shared_types::{
@@ -212,6 +212,43 @@ impl SorobanVaultGovernanceContract {
             caller,
             GovernanceAction::SetRestrictions(mode, accounts),
         )
+    }
+
+    pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        require_sentinel(&env, &caller)?;
+        if !paused {
+            return Err(GovernanceError::InvalidInput);
+        }
+
+        let action = GovernanceAction::SetPaused(paused);
+        let vault = get_address(&env, DataKey::Vault)?;
+        execute_vault_governance_action_as_caller(&env, &vault, &caller, &action)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentPaused, &paused);
+        Ok(())
+    }
+
+    pub fn set_restrictions(
+        env: Env,
+        caller: Address,
+        mode: u32,
+        accounts: Vec<Address>,
+    ) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        require_sentinel(&env, &caller)?;
+        let mode = RestrictionMode::from_u32(mode)?;
+        let action = GovernanceAction::SetRestrictions(mode, accounts.clone());
+        let vault = get_address(&env, DataKey::Vault)?;
+        execute_vault_governance_action_as_caller(&env, &vault, &caller, &action)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentRestrictionMode, &mode);
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentRestrictionAccounts, &accounts);
+        Ok(())
     }
 
     pub fn submit_set_guardian(
@@ -650,6 +687,10 @@ fn decide_submission(
 ) -> Result<TimelockDecision, GovernanceError> {
     match action {
         GovernanceAction::SetPaused(paused) => {
+            if *paused {
+                return Err(GovernanceError::InvalidInput);
+            }
+
             let current = env
                 .storage()
                 .instance()
@@ -658,11 +699,8 @@ fn decide_submission(
             if *paused == current {
                 return Err(GovernanceError::NoChange);
             }
-            if *paused {
-                Ok(TimelockDecision::Immediate)
-            } else {
-                Ok(TimelockDecision::Timelocked)
-            }
+
+            Ok(TimelockDecision::Timelocked)
         }
         GovernanceAction::SetGuardian(next) => {
             let current: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
@@ -742,15 +780,7 @@ fn decide_submission(
                 return Err(GovernanceError::NoChange);
             }
 
-            let current_restrictions = to_shared_restrictions(current_mode, &current_accounts);
-            let proposed_restrictions = to_shared_restrictions(*mode, accounts);
-
-            if SharedRestrictions::determine_relaxed(&current_restrictions, &proposed_restrictions)
-            {
-                Ok(TimelockDecision::Timelocked)
-            } else {
-                Ok(TimelockDecision::Immediate)
-            }
+            Ok(TimelockDecision::Timelocked)
         }
         GovernanceAction::SetCap(market_id, new_cap) => {
             let current: Option<i128> = env
@@ -838,31 +868,6 @@ fn decide_submission(
             Ok(TimelockDecision::Timelocked)
         }
     }
-}
-
-fn to_shared_restrictions(
-    mode: RestrictionMode,
-    accounts: &Vec<Address>,
-) -> Option<SharedRestrictions<Address>> {
-    match mode {
-        RestrictionMode::None => None,
-        RestrictionMode::Blacklist => {
-            Some(SharedRestrictions::Blacklist(accounts_to_vec(accounts)))
-        }
-        RestrictionMode::Whitelist => {
-            Some(SharedRestrictions::Whitelist(accounts_to_vec(accounts)))
-        }
-    }
-}
-
-fn accounts_to_vec(accounts: &Vec<Address>) -> alloc::vec::Vec<Address> {
-    let mut deduped = alloc::vec::Vec::new();
-    for account in accounts.iter() {
-        if !deduped.iter().any(|existing| existing == &account) {
-            deduped.push(account.clone());
-        }
-    }
-    deduped
 }
 
 fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
@@ -1159,6 +1164,22 @@ fn execute_vault_governance_action(
     Ok(())
 }
 
+fn execute_vault_governance_action_as_caller(
+    env: &Env,
+    vault: &Address,
+    caller: &Address,
+    action: &GovernanceAction,
+) -> Result<(), GovernanceError> {
+    let payload =
+        governance_payload_for_action(env, action)?.ok_or(GovernanceError::InvalidInput)?;
+    env.invoke_contract::<()>(
+        vault,
+        &Symbol::new(env, "execute_governance"),
+        Vec::from_array(env, [caller.clone().into_val(env), payload.into_val(env)]),
+    );
+    Ok(())
+}
+
 fn governance_payload_for_action(
     env: &Env,
     action: &GovernanceAction,
@@ -1401,6 +1422,15 @@ fn require_revoker(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
     if guardian.as_ref() == Some(caller) {
         return Ok(());
     }
+    let sentinel: Option<Address> = env.storage().instance().get(&DataKey::Sentinel);
+    if sentinel.as_ref() == Some(caller) {
+        return Ok(());
+    }
+    Err(GovernanceError::Unauthorized)
+}
+
+fn require_sentinel(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
+    caller.require_auth();
     let sentinel: Option<Address> = env.storage().instance().get(&DataKey::Sentinel);
     if sentinel.as_ref() == Some(caller) {
         return Ok(());
