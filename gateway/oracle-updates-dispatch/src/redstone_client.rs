@@ -27,13 +27,6 @@ impl RedStoneBridgeClient {
                 .map_err(|error| RedStoneBridgeError::ExternalService(error.to_string()))?,
         })
     }
-
-    pub async fn fetch_payload(&self, feed_ids: Vec<FeedId>) -> RedStoneResult<Vec<u8>> {
-        self.bridge
-            .fetch(feed_ids)
-            .await
-            .map_err(|error| RedStoneBridgeError::ExternalService(error.to_string()))
-    }
 }
 
 #[async_trait]

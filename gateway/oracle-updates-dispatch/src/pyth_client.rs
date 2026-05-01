@@ -26,10 +26,6 @@ impl PythHttpClient {
             hermes_url,
         }
     }
-
-    pub async fn fetch_latest_vaa(&self, price_ids: &[PriceIdentifier]) -> PythResult<Vec<u8>> {
-        self.fetch_payload(price_ids).await
-    }
 }
 
 #[async_trait]

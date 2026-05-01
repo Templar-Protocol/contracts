@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use templar_gateway_types::{
-    operation::OperationRecord, rpc::common::TxExecutionStatus, ManagedAccountId, OperationId,
+    common::TxExecutionStatus, operation::OperationRecord, ManagedAccountId, OperationId,
     OperationStatus, StepStatus,
 };
 

@@ -92,6 +92,7 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_json_canonicalizer = "0.3.2"
 sqlx = { version = "0.8", features = [
     "chrono",
     "runtime-tokio",
@@ -113,8 +114,6 @@ templar-gateway-methods-dispatch = { path = "./gateway/methods-dispatch" }
 templar-gateway-methods-spec = { path = "./gateway/methods-spec" }
 templar-gateway-oracle-updates-dispatch = { path = "./gateway/oracle-updates-dispatch" }
 templar-gateway-oracle-updates-spec = { path = "./gateway/oracle-updates-spec" }
-templar-gateway-oracle-pyth = { path = "./gateway/oracle-pyth" }
-templar-gateway-oracle-redstone = { path = "./gateway/oracle-redstone" }
 templar-gateway-runtime = { path = "./gateway/runtime" }
 templar-gateway-store = { path = "./gateway/store" }
 templar-gateway-testing = { path = "./gateway/testing" }

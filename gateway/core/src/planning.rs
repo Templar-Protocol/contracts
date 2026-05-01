@@ -1,7 +1,8 @@
 use async_trait::async_trait;
-use templar_gateway_types::common::WriteRequest;
-use templar_gateway_types::rpc::common::WriteOperationResult;
-use templar_gateway_types::{IdempotencyKey, ManagedAccountId, MethodSpec};
+use templar_gateway_types::{
+    common::{WriteOperationResult, WriteRequest},
+    IdempotencyKey, ManagedAccountId, MethodSpec,
+};
 
 use crate::{GatewayResult, OperationPlan};
 

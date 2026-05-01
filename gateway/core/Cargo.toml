@@ -17,7 +17,9 @@ near-contract-standards.workspace = true
 near-openapi-client.workspace = true
 near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
 serde.workspace = true
+serde_json_canonicalizer.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-types.workspace = true

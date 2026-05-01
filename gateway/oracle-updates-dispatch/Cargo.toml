@@ -10,17 +10,19 @@ async-trait.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
 near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
+reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-spec.workspace = true
-templar-gateway-oracle-pyth.workspace = true
-templar-gateway-oracle-redstone.workspace = true
 templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-types.workspace = true
+templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 url.workspace = true
 
 [lints]

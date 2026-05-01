@@ -16,7 +16,7 @@ use templar_gateway_oracle_updates_dispatch::{
     Dispatch as OracleUpdatesDispatch, ProvidesPythSource, ProvidesRedStoneSource,
 };
 use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
-use templar_gateway_types::{rpc::common::WriteOperationResult, MethodSpec};
+use templar_gateway_types::{common::WriteOperationResult, MethodSpec};
 
 use crate::gateway_service::GatewayService;
 

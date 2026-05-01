@@ -13297,6 +13297,8 @@ dependencies = [
  "near-token",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
  "sqlx",
  "templar-common",
  "templar-gateway-methods-dispatch",
@@ -13349,32 +13351,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-gateway-oracle-pyth"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "hex",
- "reqwest 0.12.28",
- "serde",
- "templar-common",
- "templar-gateway-core",
- "thiserror 2.0.18",
- "url",
-]
-
-[[package]]
-name = "templar-gateway-oracle-redstone"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "templar-common",
- "templar-gateway-core",
- "templar-redstone-bridge",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "templar-gateway-oracle-updates-dispatch"
 version = "0.1.0"
 dependencies = [
@@ -13382,17 +13358,19 @@ dependencies = [
  "hex",
  "near-account-id",
  "near-sdk",
+ "reqwest 0.12.28",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "templar-common",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
- "templar-gateway-oracle-pyth",
- "templar-gateway-oracle-redstone",
  "templar-gateway-oracle-updates-spec",
  "templar-gateway-types",
+ "templar-redstone-bridge",
  "templar-universal-account",
+ "thiserror 2.0.18",
+ "tokio",
  "url",
 ]
 
@@ -13442,8 +13420,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
  "sqlx",
  "templar-common",
  "templar-gateway-core",

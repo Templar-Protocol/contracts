@@ -181,7 +181,7 @@ pub fn write_method_spec(input: TokenStream) -> TokenStream {
         rpc_method,
         ident,
         quote!(templar_gateway_types::common::WriteRequest<#input>),
-        quote!(templar_gateway_types::rpc::common::WriteOperationResult),
+        quote!(templar_gateway_types::common::WriteOperationResult),
         quote!(templar_gateway_types::spec::MethodKind::Write),
     )
 }

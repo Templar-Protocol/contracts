@@ -1,36 +1,30 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use actix::Addr;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 use templar_gateway_core::{
-    CreateOperationResult, CurrentStep, CurrentStepRef, DispatchRead, GatewayResult,
-    HasIdempotencyKey, HasNearClient, HasSignerAccountId, NearOperationExecutor,
-    NearTransactionSigner, OperationPlan, PlanWrite, SharedExecuteOperation, SharedOperationStore,
-    SharedSignTransaction, StoredOperation, SucceededStep,
+    DispatchRead, GatewayContext, GatewayResult, HasIdempotencyKey, HasNearClient,
+    HasSignerAccountId, NearOperationExecutor, NearTransactionSigner, OperationDriver, PlanWrite,
+    SharedOperationStore,
 };
 use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
 };
 use templar_gateway_types::{
-    operation::OperationStatus, rpc::common::WriteOperationResult, ManagedAccountId,
+    common::WriteOperationResult, ManagedAccountId, MethodSpec, OperationId, OperationRecord,
 };
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
-pub struct GatewayService<
-    ContextType: Clone + Send + std::marker::Unpin + 'static = templar_gateway_core::GatewayContext,
-> {
+pub struct GatewayService<ContextType: Clone + Send + std::marker::Unpin + 'static = GatewayContext>
+{
     inner: Arc<GatewayInner<ContextType>>,
     runtime: Arc<Mutex<Option<GatewayRuntime>>>,
 }
 
 struct GatewayInner<ContextType: Clone + Send + std::marker::Unpin + 'static> {
     context: ContextType,
-    operation_executor: SharedExecuteOperation,
+    driver: OperationDriver,
     read: Addr<ReadActor<ContextType>>,
-    transaction_signer: SharedSignTransaction,
-    store: SharedOperationStore,
 }
 
 impl<ContextType> GatewayService<ContextType>
@@ -47,42 +41,25 @@ where
             .map(|(account_id, signer)| (account_id, signer.signer))
             .collect();
 
-        Self::spawn_inner(
-            context.clone(),
-            store,
-            Arc::new(NearTransactionSigner::new(
-                context.near_client().network().clone(),
-                signers,
-            )),
-            Arc::new(NearOperationExecutor::new(
-                context.near_client().network().clone(),
-            )),
-        )
-    }
+        let signer = NearTransactionSigner::new(context.near_client().network().clone(), signers);
+        let executor = NearOperationExecutor::new(context.near_client().network().clone());
+        let driver = OperationDriver::new(store, Arc::new(signer), Arc::new(executor));
 
-    fn spawn_inner(
-        context: ContextType,
-        store: SharedOperationStore,
-        transaction_signer: SharedSignTransaction,
-        operation_executor: SharedExecuteOperation,
-    ) -> Self {
         let (runtime, read) = spawn_runtime(context.clone());
 
         let service = Self {
             inner: Arc::new(GatewayInner {
                 context,
-                operation_executor,
+                driver,
                 read,
-                transaction_signer,
-                store,
             }),
             runtime: Arc::new(Mutex::new(Some(runtime))),
         };
 
         tokio::spawn({
-            let service = service.clone();
+            let driver = service.inner.driver.clone();
             async move {
-                let _ = service.resume_incomplete_operations().await;
+                let _ = driver.resume_incomplete_operations().await;
             }
         });
 
@@ -100,7 +77,7 @@ where
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: templar_gateway_types::MethodSpec + 'static,
+        Request: MethodSpec + 'static,
         Impl: DispatchRead<Request, ContextType>,
         ReadActor<ContextType>: actix::Actor<Context = actix::Context<ReadActor<ContextType>>>
             + actix::Handler<RpcMessage<Request, Impl>>,
@@ -114,14 +91,9 @@ where
 
     pub async fn get_operation(
         &self,
-        operation_id: &templar_gateway_types::OperationId,
-    ) -> GatewayResult<Option<templar_gateway_types::OperationRecord>> {
-        Ok(self
-            .inner
-            .store
-            .get_by_id(operation_id)
-            .await?
-            .map(|operation| operation.operation_record()))
+        operation_id: &OperationId,
+    ) -> GatewayResult<Option<OperationRecord>> {
+        self.inner.driver.get_operation(operation_id).await
     }
 
     pub async fn request_write<Request, Impl>(
@@ -129,183 +101,16 @@ where
         params: Request::Input,
     ) -> GatewayResult<Request::Output>
     where
-        Request: templar_gateway_types::MethodSpec<Output = WriteOperationResult> + 'static,
+        Request: MethodSpec<Output = WriteOperationResult> + 'static,
         Request::Input: HasIdempotencyKey + HasSignerAccountId,
         Impl: PlanWrite<Request, ContextType>,
     {
-        let plan = Impl::plan(params.clone(), self.read_context()).await?;
-        self.complete_write(Request::RPC_METHOD, params, plan).await
-    }
-
-    async fn complete_write<Input>(
-        &self,
-        rpc_method: &'static str,
-        params: Input,
-        plan: OperationPlan,
-    ) -> GatewayResult<WriteOperationResult>
-    where
-        Input: Clone + Serialize + HasIdempotencyKey + HasSignerAccountId,
-    {
-        let request_payload = serde_json::to_vec(&params)?;
-        let fingerprint = make_request_fingerprint(rpc_method, &params)?;
-        let operation = match self
-            .inner
-            .store
-            .create_or_get_operation(
-                rpc_method,
-                params.signer_account_id().to_owned(),
-                params.idempotency_key().cloned(),
-                fingerprint,
-                request_payload,
-                plan,
-            )
-            .await?
-        {
-            CreateOperationResult::Existing(existing) => {
-                return Ok(operation_result_from_stored(existing));
-            }
-            CreateOperationResult::Created(created) => created,
-        };
-
-        let operation = self.execute_remaining_steps(operation).await?;
-        Ok(operation_result_from_stored(operation))
-    }
-
-    async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
-        for mut operation in self.inner.store.list_incomplete_operations().await? {
-            if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
-                if let Some(CurrentStep::Submitted {
-                    transaction,
-                    tx_hash,
-                }) = operation.current_step.take()
-                {
-                    match self
-                        .query_submitted_transaction(&transaction.signer_account_id, tx_hash)
-                        .await
-                    {
-                        Ok(execution) if execution.is_success() => {
-                            operation.succeeded_steps.push(SucceededStep {
-                                transaction,
-                                tx_hash,
-                            });
-                            operation.current_step = None;
-                        }
-                        Ok(_) | Err(_) => {
-                            operation.current_step = Some(CurrentStep::Failed {
-                                transaction,
-                                tx_hash: Some(tx_hash),
-                            });
-                        }
-                    }
-                }
-                self.inner.store.save_operation(operation).await?;
-                continue;
-            }
-
-            let _ = self.execute_remaining_steps(operation).await;
-        }
-        Ok(())
-    }
-
-    async fn execute_remaining_steps(
-        &self,
-        mut operation: StoredOperation,
-    ) -> GatewayResult<StoredOperation> {
-        while matches!(
-            operation.status(),
-            OperationStatus::Pending | OperationStatus::InProgress
-        ) {
-            operation = self.execute_next_step(operation).await?;
-            if operation.status() == OperationStatus::Failed {
-                break;
-            }
-        }
-        Ok(operation)
-    }
-
-    async fn execute_next_step(
-        &self,
-        mut operation: StoredOperation,
-    ) -> GatewayResult<StoredOperation> {
-        if operation.current_step_is_failed() {
-            return Ok(operation);
-        }
-
-        if let Some(pending) = operation.begin_next_preparation(self.inner.store.clone()) {
-            let prepared = self
-                .inner
-                .transaction_signer
-                .sign_transaction(pending.transaction().clone())
-                .await?;
-            pending.finish(prepared).await?;
-        }
-
-        match operation.current(self.inner.store.clone()) {
-            Some(CurrentStepRef::Prepared(prepared_step)) => {
-                let wait_until = prepared_step.wait_until();
-                let (signed_transaction, submitted_step) = prepared_step.submit().await?;
-                let tx_hash = submitted_step.tx_hash();
-
-                match self
-                    .inner
-                    .operation_executor
-                    .submit_transaction(signed_transaction, wait_until)
-                    .await
-                {
-                    Ok(tx_result) => {
-                        if let Some(full) = tx_result.into_full() {
-                            let final_hash = full.outcome().transaction_hash.into();
-                            if full.is_success() {
-                                submitted_step.succeed(final_hash).await?;
-                            } else {
-                                submitted_step.fail(Some(final_hash)).await?;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        submitted_step.fail(Some(tx_hash)).await?;
-                        return Err(error);
-                    }
-                }
-            }
-            Some(CurrentStepRef::Submitted(submitted_step)) => {
-                let tx_hash = submitted_step.tx_hash();
-                submitted_step.fail(Some(tx_hash)).await?;
-            }
-            Some(CurrentStepRef::Failed) | None => {}
-        }
-
-        Ok(operation)
-    }
-
-    pub fn read_context(&self) -> ContextType {
-        self.inner.context.clone()
-    }
-
-    async fn query_submitted_transaction(
-        &self,
-        signer_account_id: &ManagedAccountId,
-        tx_hash: templar_gateway_types::CryptoHash,
-    ) -> GatewayResult<near_api::types::transaction::result::ExecutionFinalResult> {
+        let plan = Impl::plan(params.clone(), self.inner.context.clone()).await?;
         self.inner
-            .operation_executor
-            .query_transaction(signer_account_id, tx_hash)
+            .driver
+            .complete_write(Request::RPC_METHOD, params, plan)
             .await
     }
-}
-
-fn operation_result_from_stored(operation: StoredOperation) -> WriteOperationResult {
-    WriteOperationResult {
-        operation: operation.operation_record(),
-    }
-}
-
-fn make_request_fingerprint<T: Serialize>(method: &str, params: &T) -> GatewayResult<[u8; 32]> {
-    let payload = serde_json_canonicalizer::to_vec(&serde_json::json!({
-        "method": method,
-        "params": params,
-    }))?;
-    Ok(Sha256::digest(payload).into())
 }
 
 #[cfg(test)]
@@ -317,12 +122,12 @@ mod tests {
     use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
     use near_sandbox::Sandbox;
     use near_token::NearToken as SandboxNearToken;
-    use templar_gateway_core::{GatewayContext, GatewayError};
+    use templar_gateway_core::{CreateOperationResult, GatewayContext, GatewayError};
     use templar_gateway_methods_dispatch::Dispatch;
     use templar_gateway_methods_spec::tx;
     use templar_gateway_types::{
         common::{ContractArgs, WriteRequest},
-        ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken,
+        ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken, OperationStatus,
     };
     use test_utils::FtController;
 
@@ -447,59 +252,32 @@ mod tests {
             },
         };
 
-        let fingerprint = make_request_fingerprint(tx::FunctionCall::RPC_METHOD, &request)?;
-        let payload = serde_json::to_vec(&request)?;
         let plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
             request.clone(),
-            service.read_context(),
+            service.inner.context.clone(),
         )
         .await?;
-        let mut operation = match service
+        let operation = match service
             .inner
-            .store
-            .create_or_get_operation(
-                tx::FunctionCall::RPC_METHOD,
-                request.signer_account_id().to_owned(),
-                request.idempotency_key().cloned(),
-                fingerprint,
-                payload,
-                plan,
-            )
+            .driver
+            .create_planned_operation(tx::FunctionCall::RPC_METHOD, &request, plan)
             .await?
         {
             CreateOperationResult::Created(operation) => operation,
             CreateOperationResult::Existing(_) => panic!("expected new operation"),
         };
 
-        let pending = operation
-            .begin_next_preparation(service.inner.store.clone())
-            .expect("step should be preparable");
-        let prepared = service
+        service
             .inner
-            .transaction_signer
-            .sign_transaction(pending.transaction().clone())
+            .driver
+            .submit_next_step_unchecked(operation)
             .await?;
-        pending.finish(prepared).await?;
 
-        let (signed_transaction, submitted_step) =
-            match operation.current(service.inner.store.clone()) {
-                Some(CurrentStepRef::Prepared(prepared_step)) => prepared_step.submit().await?,
-                _ => panic!("expected prepared current step"),
-            };
-        let wait_until = submitted_step.transaction().wait_until;
-
-        let _ = service
-            .inner
-            .operation_executor
-            .submit_transaction(signed_transaction, wait_until)
-            .await?;
-        drop(submitted_step);
-
-        service.resume_incomplete_operations().await?;
+        service.inner.driver.resume_incomplete_operations().await?;
 
         let stored = service
             .inner
-            .store
+            .driver
             .get_by_idempotency_key(&IdempotencyKey("recovery-key".to_owned()))
             .await?
             .expect("stored operation should exist");
@@ -543,12 +321,12 @@ mod tests {
 
         let mut first_plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
             first_request.clone(),
-            service.read_context(),
+            service.inner.context.clone(),
         )
         .await?;
         let second_plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
             second_request,
-            service.read_context(),
+            service.inner.context.clone(),
         )
         .await?;
         first_plan.push(
@@ -559,25 +337,20 @@ mod tests {
                 .expect("second step should exist"),
         );
 
-        let fingerprint = make_request_fingerprint(tx::FunctionCall::RPC_METHOD, &first_request)?;
-        let payload = serde_json::to_vec(&first_request)?;
         let operation = match service
             .inner
-            .store
-            .create_or_get_operation(
-                tx::FunctionCall::RPC_METHOD,
-                harness.gateway_signer_account_id.clone(),
-                Some(IdempotencyKey("multi-step-sequence".to_owned())),
-                fingerprint,
-                payload,
-                first_plan,
-            )
+            .driver
+            .create_planned_operation(tx::FunctionCall::RPC_METHOD, &first_request, first_plan)
             .await?
         {
             CreateOperationResult::Created(operation) => operation,
             CreateOperationResult::Existing(_) => panic!("expected new operation"),
         };
-        let stored = service.execute_remaining_steps(operation).await?;
+        let stored = service
+            .inner
+            .driver
+            .execute_remaining_steps(operation)
+            .await?;
 
         assert_eq!(stored.status(), OperationStatus::Succeeded);
         assert!(stored.current_step.is_none());

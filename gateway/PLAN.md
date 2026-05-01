@@ -32,10 +32,8 @@ Current crates:
 2. `gateway/oracle-updates-spec`
 3. `gateway/runtime`
 4. `gateway/store`
-5. `gateway/oracle-pyth`
-6. `gateway/oracle-redstone`
-7. `gateway/testing`
-8. `service/gateway`
+5. `gateway/testing`
+6. `service/gateway`
 
 ### `gateway/core`
 
@@ -91,7 +89,7 @@ The shorter-term refactor goal is not a new crate split. It is a clearer interna
 
 ### `gateway/oracle-updates-spec`
 
-This crate owns optional oracle-update preparation support.
+This crate owns optional oracle-update preparation support and the small external clients needed to fetch update payloads.
 
 Responsibilities:
 
@@ -99,6 +97,7 @@ Responsibilities:
 - oracle source/provider capability traits for Pyth Hermes and the RedStone bridge
 - gateway context builder extensions for wiring those external sources
 - dependency resolution needed specifically for preparing update transactions
+- small Pyth Hermes and RedStone bridge clients used only by those update flows
 
 ### `gateway/runtime`
 
@@ -144,25 +143,6 @@ Notes:
 - run migrations from `gateway/store/`
 - regenerate `.sqlx` from `gateway/store/`
 - normal builds should use offline metadata
-
-### `gateway/oracle-pyth`
-
-This crate owns the Hermes/Pyth integration.
-
-Responsibilities:
-
-- fetch Pyth update payloads for update-preparation flows
-- implement the shared oracle payload trait for Pyth price IDs
-
-### `gateway/oracle-redstone`
-
-This crate owns the RedStone bridge integration.
-
-Responsibilities:
-
-- communicate with the RedStone bridge
-- fetch RedStone payloads for update-preparation flows
-- implement the shared oracle payload trait for RedStone feed IDs
 
 ### `gateway/testing`
 
