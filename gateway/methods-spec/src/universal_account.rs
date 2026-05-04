@@ -1,12 +1,13 @@
+use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::{read_method_spec, write_method_spec};
-use templar_gateway_types::{primitive::PublicKey, RegistryId, UniversalAccountId};
+use templar_gateway_types::primitive::PublicKey;
 use templar_universal_account::{transaction::Transaction, ExecuteArgs, KeyId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GetKeyParams {
-    pub account_id: UniversalAccountId,
+    pub account_id: AccountId,
     pub key: KeyId,
 }
 
@@ -18,7 +19,7 @@ pub struct PayloadExecutionParametersView {
     pub name: Option<String>,
     pub version: Option<String>,
     pub chain_id: Option<u128>,
-    pub verifying_contract: near_account_id::AccountId,
+    pub verifying_contract: AccountId,
     pub salt: Option<String>,
 }
 
@@ -34,7 +35,7 @@ read_method_spec!(
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExecuteBody {
-    pub account_id: UniversalAccountId,
+    pub account_id: AccountId,
     pub args: ExecuteArgs<Box<[Transaction]>>,
 }
 
@@ -45,7 +46,7 @@ write_method_spec!(
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateBody {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     pub account_name: String,
     pub version_key: String,
     pub key: KeyId,

@@ -1,7 +1,5 @@
 use near_account_id::AccountId;
-use templar_gateway_types::{
-    common::Pagination, contract::ContractKind, MarketId, RegistryId, UniversalAccountId,
-};
+use templar_gateway_types::{common::Pagination, contract::ContractKind};
 use templar_universal_account::authentication::ed25519;
 
 use crate::{
@@ -61,7 +59,7 @@ async fn try_registry_kind<C: HasNearClient>(
 ) -> GatewayResult<bool> {
     probe_kind(
         ctx.near_client()
-            .registry(RegistryId(contract_id))
+            .registry(contract_id)
             .list_versions(Pagination::default())
             .await,
     )
@@ -70,7 +68,7 @@ async fn try_registry_kind<C: HasNearClient>(
 async fn try_market_kind<C: HasNearClient>(ctx: &C, contract_id: AccountId) -> GatewayResult<bool> {
     probe_kind(
         ctx.near_client()
-            .market(MarketId(contract_id))
+            .market(contract_id)
             .get_configuration(())
             .await,
     )
@@ -82,7 +80,7 @@ async fn try_universal_account_kind<C: HasNearClient>(
 ) -> GatewayResult<bool> {
     probe_kind(
         ctx.near_client()
-            .universal_account(UniversalAccountId(contract_id))
+            .universal_account(contract_id)
             .get_key(UaGetKeyArgs {
                 key: ed25519::raw::VerifyKey([0_u8; 32].into()).into(),
             })

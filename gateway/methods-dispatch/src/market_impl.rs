@@ -293,7 +293,6 @@ impl<C: HasNearClient> PlanWrite<market::Create, C> for Dispatch {
         let body = request.body;
         let market_account_id = body
             .registry_id
-            .0
             .sub_account(&body.name)
             .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
         let configuration = body.configuration;
@@ -357,7 +356,7 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
                 &ctx,
                 request.signer_account_id.clone(),
                 asset_id,
-                body.market_id.0.clone(),
+                body.market_id.clone(),
             )
             .await?
             {
@@ -368,7 +367,7 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
         if let Some(tx_result) = ensure_storage_registration(
             &ctx,
             request.signer_account_id.clone(),
-            body.market_id.0.clone(),
+            body.market_id.clone(),
             request.signer_account_id.0.clone(),
         )
         .await?
@@ -380,7 +379,7 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
             &ctx,
             request.signer_account_id,
             configuration.borrow_asset,
-            body.market_id.0,
+            body.market_id,
             body.amount,
             &DepositMsg::Supply,
         )?);
@@ -449,7 +448,7 @@ impl<C: HasNearClient> PlanWrite<market::Repay, C> for Dispatch {
                 &ctx,
                 request.signer_account_id.clone(),
                 asset_id,
-                body.market_id.0.clone(),
+                body.market_id.clone(),
             )
             .await?
             {
@@ -461,7 +460,7 @@ impl<C: HasNearClient> PlanWrite<market::Repay, C> for Dispatch {
             &ctx,
             request.signer_account_id,
             configuration.borrow_asset,
-            body.market_id.0,
+            body.market_id,
             body.amount,
             &deposit_msg,
         )?);
@@ -601,7 +600,7 @@ impl<C: HasNearClient> PlanWrite<market::Liquidate, C> for Dispatch {
                 &ctx,
                 request.signer_account_id.clone(),
                 asset_id,
-                body.market_id.0.clone(),
+                body.market_id.clone(),
             )
             .await?
             {
@@ -626,7 +625,7 @@ impl<C: HasNearClient> PlanWrite<market::Liquidate, C> for Dispatch {
             &ctx,
             request.signer_account_id,
             configuration.borrow_asset,
-            body.market_id.0,
+            body.market_id,
             body.liquidation_amount,
             &DepositMsg::Liquidate(LiquidateMsg {
                 account_id: body.account_id,

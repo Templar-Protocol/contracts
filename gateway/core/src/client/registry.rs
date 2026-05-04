@@ -1,5 +1,6 @@
 use std::{borrow::Borrow, io::ErrorKind};
 
+use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use templar_common::registry::DeployMode;
 use templar_gateway_types::{
@@ -20,7 +21,7 @@ use super::{BoundContractClient, ContractWriteOptions};
 
 #[derive(Debug, serde::Serialize)]
 pub struct GetDeploymentArgs {
-    pub account_id: near_account_id::AccountId,
+    pub account_id: AccountId,
 }
 
 #[derive(Debug)]
@@ -46,12 +47,12 @@ pub struct RemoveVersionArgs {
 #[derive(Clone)]
 pub struct RegistryClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) contract_id: templar_gateway_types::RegistryId,
+    pub(crate) contract_id: AccountId,
 }
 
 impl BoundContractClient for RegistryClient<'_> {
     fn contract_id(&self) -> &near_account_id::AccountIdRef {
-        &self.contract_id.0
+        &self.contract_id
     }
 
     fn client(&self) -> &NearClient {
@@ -62,7 +63,7 @@ impl BoundContractClient for RegistryClient<'_> {
 impl RegistryClient<'_> {
     contract_views! {
         pub fn get_deployment(GetDeploymentArgs) -> Option<templar_common::registry::Deployment>;
-        pub fn list_deployments(Pagination) -> Vec<near_account_id::AccountId>;
+        pub fn list_deployments(Pagination) -> Vec<AccountId>;
         pub fn list_versions(Pagination) -> Vec<String>;
     }
 

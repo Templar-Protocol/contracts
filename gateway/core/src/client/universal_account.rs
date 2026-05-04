@@ -1,3 +1,4 @@
+use near_account_id::AccountId;
 use templar_universal_account::{
     transaction::Transaction, ExecuteArgs, PayloadExecutionParameters,
 };
@@ -22,7 +23,7 @@ pub struct UaExecuteArgs {
 #[derive(Clone)]
 pub struct UniversalAccountClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) contract_id: templar_gateway_types::UniversalAccountId,
+    pub(crate) contract_id: AccountId,
 }
 
 impl BoundContractClient for UniversalAccountClient<'_> {
@@ -31,7 +32,7 @@ impl BoundContractClient for UniversalAccountClient<'_> {
     }
 
     fn contract_id(&self) -> &near_account_id::AccountIdRef {
-        &self.contract_id.0
+        &self.contract_id
     }
 }
 

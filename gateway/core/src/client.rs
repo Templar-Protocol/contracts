@@ -17,6 +17,8 @@ pub mod token;
 pub mod tx;
 pub mod universal_account;
 
+use std::sync::Arc;
+
 use account::AccountClient;
 use cache::NearClientCache;
 use chain::ChainClient;
@@ -32,12 +34,9 @@ use pyth_oracle::PythOracleClient;
 use redstone_oracle::RedStoneOracleClient;
 use ref_finance::RefFinanceClient;
 use registry::RegistryClient;
-use std::sync::Arc;
 use storage::StorageClient;
 use templar_common::asset::{AssetClass, FungibleAsset};
-use templar_gateway_types::{
-    ManagedAccountId, MarketId, NearGas, NearToken, RegistryId, UniversalAccountId,
-};
+use templar_gateway_types::{ManagedAccountId, NearGas, NearToken};
 use token::TokenClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
@@ -197,14 +196,14 @@ impl NearClient {
         }
     }
 
-    pub fn registry(&self, contract_id: RegistryId) -> RegistryClient<'_> {
+    pub fn registry(&self, contract_id: AccountId) -> RegistryClient<'_> {
         RegistryClient {
             inner: self,
             contract_id,
         }
     }
 
-    pub fn market(&self, contract_id: MarketId) -> MarketClient<'_> {
+    pub fn market(&self, contract_id: AccountId) -> MarketClient<'_> {
         MarketClient {
             inner: self,
             contract_id,
@@ -218,7 +217,7 @@ impl NearClient {
         }
     }
 
-    pub fn universal_account(&self, contract_id: UniversalAccountId) -> UniversalAccountClient<'_> {
+    pub fn universal_account(&self, contract_id: AccountId) -> UniversalAccountClient<'_> {
         UniversalAccountClient {
             inner: self,
             contract_id,

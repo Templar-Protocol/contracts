@@ -121,7 +121,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         ensure_registered(
             &stack,
             signer_account_id.clone(),
-            market_id.0.clone(),
+            market_id.clone(),
             signer_account_id.0.clone(),
         )
         .await?;
@@ -130,14 +130,14 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         &stack,
         stack.harness.gateway_signer_account_id.clone(),
         borrow_asset_id.clone(),
-        market_id.0.clone(),
+        market_id.clone(),
     )
     .await?;
     ensure_registered(
         &stack,
         stack.harness.gateway_signer_account_id.clone(),
         collateral_asset_id.clone(),
-        market_id.0.clone(),
+        market_id.clone(),
     )
     .await?;
 
@@ -239,7 +239,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         collateral_asset_id.clone(),
         "ft_transfer_call",
         serde_json::json!({
-            "receiver_id": market_id.0.clone(),
+            "receiver_id": market_id.clone(),
             "amount": "200000",
             "msg": serde_json::to_string(&DepositMsg::Collateralize)?,
         }),
@@ -482,10 +482,9 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
     assert_eq!(create.operation.steps.len(), 3);
 
     let market_account_id = registry_id
-        .0
         .sub_account("market-created")
         .expect("created market id should be valid");
-    let market_id = templar_gateway_types::MarketId(market_account_id.clone());
+    let market_id = market_account_id.clone();
 
     let returned_configuration = stack
         .controller

@@ -100,7 +100,7 @@ impl<C: HasNearClient> PlanWrite<registry::AddVersion, C> for Dispatch {
         let body = request.body;
         let registry_version = ctx
             .near_client()
-            .contract(body.registry_id.0.clone())
+            .contract(body.registry_id.clone())
             .version()
             .await?;
         ctx.near_client()
@@ -141,7 +141,7 @@ pub async fn plan_deploy_from_registry<C: HasNearClient>(
     let deposit = body.deposit;
     let registry_version = ctx
         .near_client()
-        .contract(body.registry_id.0.clone())
+        .contract(body.registry_id.clone())
         .version()
         .await?;
     Ok(OperationPlan::single(

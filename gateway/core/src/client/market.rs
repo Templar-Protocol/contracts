@@ -92,7 +92,7 @@ pub struct AccumulateStaticYieldArgs {
 #[derive(Clone)]
 pub struct MarketClient<'a> {
     pub(crate) inner: &'a NearClient,
-    pub(crate) contract_id: templar_gateway_types::MarketId,
+    pub(crate) contract_id: AccountId,
 }
 
 impl BoundContractClient for MarketClient<'_> {
@@ -101,7 +101,7 @@ impl BoundContractClient for MarketClient<'_> {
     }
 
     fn contract_id(&self) -> &near_account_id::AccountIdRef {
-        &self.contract_id.0
+        &self.contract_id
     }
 }
 
@@ -109,7 +109,7 @@ impl MarketClient<'_> {
     pub async fn cached_get_configuration(&self) -> crate::GatewayResult<MarketConfiguration> {
         load_cached(
             &self.inner.cache().market.configuration,
-            self.contract_id.0.clone(),
+            self.contract_id.clone(),
             {
                 let near = self.inner.clone();
                 let contract_id = self.contract_id.clone();

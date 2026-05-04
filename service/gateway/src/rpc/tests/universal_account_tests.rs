@@ -1,3 +1,8 @@
+use near_account_id::AccountId;
+use templar_gateway_types::OperationStatus;
+use templar_universal_account::PayloadExecutionParameters;
+use test_utils::UniversalAccountController;
+
 use super::*;
 
 #[tokio::test]
@@ -39,13 +44,13 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .expect("deployed universal account should expose its key parameters");
 
     let payload = WithRawString::from_parsed(Payload::new(
-        templar_universal_account::PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
             .with_key_parameters(KeyParameters {
                 block_height: key.block_height.into(),
                 index: key.index.into(),
                 nonce: (key.nonce + 1).into(),
             })
-            .verifying_contract(account_id.0.clone())
+            .verifying_contract(account_id.clone())
             .build_salt(),
         vec![Transaction {
             receiver_id: stack.harness.ft_contract_id.clone(),
@@ -80,7 +85,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
                 contract_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("get_counter".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
-                    "account_id": account_id.0,
+                    "account_id": account_id,
                 })),
             },
         })
@@ -98,11 +103,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
                 registry_id: registry_id.clone(),
                 version_key: "ua@1.0.0".to_owned(),
                 deploy_mode: templar_common::registry::DeployMode::Normal,
-                code: Base64Bytes(
-                    test_utils::UniversalAccountController::wasm()
-                        .await
-                        .to_vec(),
-                ),
+                code: Base64Bytes(UniversalAccountController::wasm().await.to_vec()),
                 deposit: NearToken::from_yoctonear(1),
             },
         })
@@ -126,12 +127,9 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         })
         .await?;
 
-    assert_eq!(
-        create.operation.status,
-        templar_gateway_types::OperationStatus::Succeeded
-    );
+    assert_eq!(create.operation.status, OperationStatus::Succeeded);
 
-    let created_account_id: near_account_id::AccountId = format!("ua-created.{}", registry_id.0)
+    let created_account_id: AccountId = format!("ua-created.{registry_id}")
         .parse()
         .expect("created universal account id should be valid");
 
@@ -139,7 +137,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .controller
         .request::<universal_account::GetKey>(&ReadRequest {
             params: universal_account::GetKeyParams {
-                account_id: templar_gateway_types::UniversalAccountId(created_account_id),
+                account_id: created_account_id,
                 key: signer.id(),
             },
         })

@@ -1,21 +1,21 @@
+use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::{
     common::Pagination, contract::ContractKind, primitive::PublicKey, Base64Bytes, NearToken,
-    RegistryId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListDeploymentsParams {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListDeploymentsResult {
-    pub account_ids: Vec<near_account_id::AccountId>,
+    pub account_ids: Vec<AccountId>,
 }
 
 read_method_spec!(
@@ -25,7 +25,7 @@ read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListDeploymentsByKindParams {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
     pub kind: ContractKind,
@@ -38,7 +38,7 @@ read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListVersionsParams {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
 }
@@ -55,8 +55,8 @@ read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetDeploymentParams {
-    pub registry_id: RegistryId,
-    pub account_id: near_account_id::AccountId,
+    pub registry_id: AccountId,
+    pub account_id: AccountId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -71,7 +71,7 @@ read_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AddVersionBody {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     pub version_key: String,
     pub deploy_mode: templar_common::registry::DeployMode,
     pub code: Base64Bytes,
@@ -85,13 +85,13 @@ write_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeployBody {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     pub name: String,
     pub version_key: String,
     pub init_args: Base64Bytes,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_access_keys: Option<Vec<PublicKey>>,
-    pub deposit: templar_gateway_types::NearToken,
+    pub deposit: NearToken,
 }
 
 write_method_spec!(
@@ -101,7 +101,7 @@ write_method_spec!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RemoveVersionBody {
-    pub registry_id: RegistryId,
+    pub registry_id: AccountId,
     pub version_key: String,
 }
 

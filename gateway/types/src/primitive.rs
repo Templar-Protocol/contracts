@@ -16,15 +16,6 @@ transparent_newtype!(
     pub struct ManagedAccountId(AccountId);
 );
 transparent_newtype!(
-    pub struct RegistryId(AccountId);
-);
-transparent_newtype!(
-    pub struct MarketId(AccountId);
-);
-transparent_newtype!(
-    pub struct UniversalAccountId(AccountId);
-);
-transparent_newtype!(
     pub struct ContractMethodName(String);
 );
 transparent_newtype!(

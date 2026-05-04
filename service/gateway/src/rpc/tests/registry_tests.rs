@@ -1,3 +1,6 @@
+use near_account_id::AccountId;
+use templar_gateway_types::{common::Pagination, ContractKind, OperationStatus};
+
 use super::*;
 
 #[tokio::test]
@@ -27,7 +30,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListVersions>(&ReadRequest {
             params: registry::ListVersionsParams {
                 registry_id: registry_id.clone(),
-                args: templar_gateway_types::common::Pagination::default(),
+                args: Pagination::default(),
             },
         })
         .await?;
@@ -53,7 +56,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
 
-    let deployed_account_id: near_account_id::AccountId = format!("deployed-ft.{}", registry_id.0)
+    let deployed_account_id: AccountId = format!("deployed-ft.{registry_id}")
         .parse()
         .expect("deployed registry subaccount should be valid");
 
@@ -72,7 +75,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListDeployments>(&ReadRequest {
             params: registry::ListDeploymentsParams {
                 registry_id: registry_id.clone(),
-                args: templar_gateway_types::common::Pagination::default(),
+                args: Pagination::default(),
             },
         })
         .await?;
@@ -82,8 +85,8 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListDeploymentsByKind>(&ReadRequest {
             params: registry::ListDeploymentsByKindParams {
                 registry_id: registry_id.clone(),
-                args: templar_gateway_types::common::Pagination::default(),
-                kind: templar_gateway_types::ContractKind::Market,
+                args: Pagination::default(),
+                kind: ContractKind::Market,
             },
         })
         .await?;
@@ -93,8 +96,8 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::ListDeploymentsByKind>(&ReadRequest {
             params: registry::ListDeploymentsByKindParams {
                 registry_id: registry_id.clone(),
-                args: templar_gateway_types::common::Pagination::default(),
-                kind: templar_gateway_types::ContractKind::Unknown,
+                args: Pagination::default(),
+                kind: ContractKind::Unknown,
             },
         })
         .await?;
@@ -122,16 +125,13 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
 
     assert_eq!(
         deployments.account_ids,
-        vec![format!("deployed-ft.{}", registry_id.0).parse::<near_account_id::AccountId>()?]
+        vec![format!("deployed-ft.{registry_id}").parse::<AccountId>()?]
     );
     assert!(deployment.deployment.is_some());
     assert!(!version.version_string.is_empty());
     assert!(markets_only.account_ids.is_empty());
     assert_eq!(unknown_only.account_ids, deployments.account_ids);
-    assert_eq!(
-        deploy.operation.status,
-        templar_gateway_types::OperationStatus::Succeeded
-    );
+    assert_eq!(deploy.operation.status, OperationStatus::Succeeded);
 
     stack.shutdown().await;
     Ok(())

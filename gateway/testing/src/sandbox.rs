@@ -13,7 +13,7 @@ use templar_common::{
 };
 use templar_gateway_core::NearClient;
 use templar_gateway_runtime::ManagedSigner;
-use templar_gateway_types::{ManagedAccountId, RegistryId, UniversalAccountId};
+use templar_gateway_types::ManagedAccountId;
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
@@ -164,7 +164,7 @@ impl SandboxHarness {
         Ok(account_id)
     }
 
-    pub async fn deploy_registry(&self) -> Result<RegistryId> {
+    pub async fn deploy_registry(&self) -> Result<AccountId> {
         let account_id: AccountId = "registry.near".parse()?;
         deploy_contract(
             &self.network,
@@ -175,12 +175,10 @@ impl SandboxHarness {
             serde_json::json!({}),
         )
         .await?;
-        Ok(RegistryId(account_id))
+        Ok(account_id)
     }
 
-    pub async fn deploy_market(
-        &self,
-    ) -> Result<(templar_gateway_types::MarketId, MarketConfiguration)> {
+    pub async fn deploy_market(&self) -> Result<(AccountId, MarketConfiguration)> {
         let borrow_asset_id: AccountId = "borrow-ft.near".parse()?;
         let collateral_asset_id: AccountId = "collateral-ft.near".parse()?;
         let oracle_id: AccountId = "oracle.near".parse()?;
@@ -249,10 +247,10 @@ impl SandboxHarness {
         )
         .await?;
 
-        Ok((templar_gateway_types::MarketId(market_id), configuration))
+        Ok((market_id, configuration))
     }
 
-    pub async fn deploy_universal_account(&self) -> Result<(UniversalAccountId, TestSigner)> {
+    pub async fn deploy_universal_account(&self) -> Result<(AccountId, TestSigner)> {
         let account_id = self.universal_account_signer_account_id.0.clone();
         let signer = Signer::from_secret_key(test_secret_key()?)
             .context("failed to initialize universal account deploy signer")?;
@@ -274,7 +272,7 @@ impl SandboxHarness {
         )
         .await?;
 
-        Ok((UniversalAccountId(account_id), test_signer))
+        Ok((account_id, test_signer))
     }
 
     pub async fn deploy_proxy_oracle(&self) -> Result<AccountId> {
