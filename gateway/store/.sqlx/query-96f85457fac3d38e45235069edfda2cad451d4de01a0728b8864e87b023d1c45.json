@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id,\n                rpc_method,\n                signer_account_id,\n                idempotency_key,\n                request_fingerprint_hash,\n                request_payload,\n                status as \"status: OperationStatusRow\",\n                created_at,\n                updated_at\n            FROM gateway_operations\n            WHERE id = $1\n            ",
+  "query": "\nSELECT\n    id,\n    rpc_method,\n    signer_account_id,\n    idempotency_key,\n    request_fingerprint_hash,\n    request_payload,\n    STATUS AS \"status: OperationStatusRow\",\n    created_at,\n    updated_at\nFROM\n    gateway_operations\nWHERE\n    id = $1\n",
   "describe": {
     "columns": [
       {
@@ -78,5 +78,5 @@
       false
     ]
   },
-  "hash": "b939ceb44310350015732cd0f133521427ef55304b9741e364d5e70ed8e35696"
+  "hash": "96f85457fac3d38e45235069edfda2cad451d4de01a0728b8864e87b023d1c45"
 }

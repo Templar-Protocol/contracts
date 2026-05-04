@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO gateway_operations (\n            id,\n            rpc_method,\n            signer_account_id,\n            idempotency_key,\n            request_fingerprint_hash,\n            request_payload,\n            status\n        ) VALUES ($1, $2, $3, $4, $5, $6, $7)\n        ",
+  "query": "\nINSERT INTO\n    gateway_operations (\n        id,\n        rpc_method,\n        signer_account_id,\n        idempotency_key,\n        request_fingerprint_hash,\n        request_payload,\n        STATUS\n    )\nVALUES\n    ($1, $2, $3, $4, $5, $6, $7)\n",
   "describe": {
     "columns": [],
     "parameters": {
@@ -28,5 +28,5 @@
     },
     "nullable": []
   },
-  "hash": "c9521d59652e96564f745a54203255f47337fb59cc8c71b7697bb85242b3ea31"
+  "hash": "718ec4a295a3e6f5b000e3f683fc9a00a808332c3ae66c570128b57fedd71d70"
 }

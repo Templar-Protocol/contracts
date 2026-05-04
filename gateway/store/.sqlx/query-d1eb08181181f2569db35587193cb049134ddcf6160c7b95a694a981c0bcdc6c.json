@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO gateway_operation_steps (\n            operation_id,\n            step_index,\n            signer_account_id,\n            receiver_id,\n            wait_until,\n            actions,\n            state,\n            tx_hash,\n            signed_transaction\n        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        ",
+  "query": "\nINSERT INTO\n    gateway_operation_steps (\n        operation_id,\n        step_index,\n        signer_account_id,\n        receiver_id,\n        wait_until,\n        actions,\n        state,\n        tx_hash,\n        signed_transaction\n    )\nVALUES\n    ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n",
   "describe": {
     "columns": [],
     "parameters": {
@@ -31,5 +31,5 @@
     },
     "nullable": []
   },
-  "hash": "23606b4aabdd71c5f4b8b205f718a96e18ae30101f2a3097d833292e941c58b4"
+  "hash": "d1eb08181181f2569db35587193cb049134ddcf6160c7b95a694a981c0bcdc6c"
 }
