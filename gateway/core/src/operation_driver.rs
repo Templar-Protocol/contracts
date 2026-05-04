@@ -241,7 +241,7 @@ impl OperationDriver {
                                     tx_hash = %final_hash,
                                     "gateway operation step failed"
                                 );
-                                submitted_step.fail(Some(final_hash)).await?;
+                                submitted_step.fail(final_hash).await?;
                             }
                         }
                     }
@@ -252,14 +252,14 @@ impl OperationDriver {
                             %error,
                             "gateway operation step submission failed"
                         );
-                        submitted_step.fail(Some(tx_hash)).await?;
+                        submitted_step.fail(tx_hash).await?;
                         return Err(error);
                     }
                 }
             }
             Some(CurrentStepRef::Submitted(submitted_step)) => {
                 let tx_hash = submitted_step.tx_hash();
-                submitted_step.fail(Some(tx_hash)).await?;
+                submitted_step.fail(tx_hash).await?;
             }
             Some(CurrentStepRef::Failed) | None => {}
         }
@@ -295,7 +295,7 @@ impl OperationDriver {
                         );
                         operation.current_step = Some(CurrentStep::Failed {
                             transaction,
-                            tx_hash: Some(tx_hash),
+                            tx_hash,
                         });
                     }
                 },
@@ -308,7 +308,7 @@ impl OperationDriver {
                     );
                     operation.current_step = Some(CurrentStep::Failed {
                         transaction,
-                        tx_hash: Some(tx_hash),
+                        tx_hash,
                     });
                 }
             }

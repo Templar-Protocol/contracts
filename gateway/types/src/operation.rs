@@ -21,7 +21,7 @@ pub enum StepStatus {
     Prepared { tx_hash: CryptoHash },
     Submitted { tx_hash: CryptoHash },
     Succeeded { tx_hash: CryptoHash },
-    Failed { tx_hash: Option<CryptoHash> },
+    Failed { tx_hash: CryptoHash },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

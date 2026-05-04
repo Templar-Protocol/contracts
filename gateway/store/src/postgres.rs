@@ -113,19 +113,21 @@ impl OperationStore for PostgresStore {
             .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
         let Some(row) = sqlx::query!(
             r#"
-            SELECT
-                id,
-                rpc_method,
-                signer_account_id,
-                idempotency_key,
-                request_fingerprint_hash,
-                request_payload,
-                status as "status: OperationStatusRow",
-                created_at,
-                updated_at
-            FROM gateway_operations
-            WHERE id = $1
-            "#,
+SELECT
+    id,
+    rpc_method,
+    signer_account_id,
+    idempotency_key,
+    request_fingerprint_hash,
+    request_payload,
+    STATUS AS "status: OperationStatusRow",
+    created_at,
+    updated_at
+FROM
+    gateway_operations
+WHERE
+    id = $1
+"#,
             operation_uuid,
         )
         .fetch_optional(&self.pool)
@@ -156,19 +158,21 @@ impl OperationStore for PostgresStore {
     ) -> GatewayResult<Option<StoredOperation>> {
         let Some(row) = sqlx::query!(
             r#"
-            SELECT
-                id,
-                rpc_method,
-                signer_account_id,
-                idempotency_key,
-                request_fingerprint_hash,
-                request_payload,
-                status as "status: OperationStatusRow",
-                created_at,
-                updated_at
-            FROM gateway_operations
-            WHERE idempotency_key = $1
-            "#,
+SELECT
+    id,
+    rpc_method,
+    signer_account_id,
+    idempotency_key,
+    request_fingerprint_hash,
+    request_payload,
+    STATUS AS "status: OperationStatusRow",
+    created_at,
+    updated_at
+FROM
+    gateway_operations
+WHERE
+    idempotency_key = $1
+"#,
             idempotency_key.0.as_str(),
         )
         .fetch_optional(&self.pool)
@@ -245,20 +249,23 @@ impl OperationStore for PostgresStore {
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
         let rows = sqlx::query!(
             r#"
-            SELECT
-                id,
-                rpc_method,
-                signer_account_id,
-                idempotency_key,
-                request_fingerprint_hash,
-                request_payload,
-                status as "status: OperationStatusRow",
-                created_at,
-                updated_at
-            FROM gateway_operations
-            WHERE status IN ('pending', 'in_progress')
-            ORDER BY created_at ASC
-            "#,
+SELECT
+    id,
+    rpc_method,
+    signer_account_id,
+    idempotency_key,
+    request_fingerprint_hash,
+    request_payload,
+    STATUS AS "status: OperationStatusRow",
+    created_at,
+    updated_at
+FROM
+    gateway_operations
+WHERE
+    STATUS IN ('pending', 'in_progress')
+ORDER BY
+    created_at ASC
+"#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -297,9 +304,11 @@ async fn save_operation_tx(
 
         sqlx::query!(
             r#"
-            DELETE FROM gateway_operation_steps
-            WHERE operation_id = $1
-            "#,
+DELETE FROM
+    gateway_operation_steps
+WHERE
+    operation_id = $1
+"#,
             operation_uuid,
         )
         .execute(&mut *tx)
@@ -307,9 +316,11 @@ async fn save_operation_tx(
 
         sqlx::query!(
             r#"
-            DELETE FROM gateway_operations
-            WHERE id = $1
-            "#,
+DELETE FROM
+    gateway_operations
+WHERE
+    id = $1
+"#,
             operation_uuid,
         )
         .execute(&mut *tx)
@@ -337,16 +348,19 @@ async fn insert_operation_row(
 
     sqlx::query!(
         r#"
-        INSERT INTO gateway_operations (
-            id,
-            rpc_method,
-            signer_account_id,
-            idempotency_key,
-            request_fingerprint_hash,
-            request_payload,
-            status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        "#,
+INSERT INTO
+    gateway_operations (
+        id,
+        rpc_method,
+        signer_account_id,
+        idempotency_key,
+        request_fingerprint_hash,
+        request_payload,
+        STATUS
+    )
+VALUES
+    ($1, $2, $3, $4, $5, $6, $7)
+"#,
         operation_uuid,
         operation.rpc_method,
         operation.signer_account_id.0.to_string(),
@@ -423,7 +437,7 @@ async fn insert_operation_steps(
                     current_index,
                     transaction,
                     OperationStepStateRow::Failed,
-                    *tx_hash,
+                    Some(*tx_hash),
                     None,
                 )
                 .await?;
@@ -471,18 +485,21 @@ async fn insert_step_row(
 
     sqlx::query!(
         r#"
-        INSERT INTO gateway_operation_steps (
-            operation_id,
-            step_index,
-            signer_account_id,
-            receiver_id,
-            wait_until,
-            actions,
-            state,
-            tx_hash,
-            signed_transaction
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        "#,
+INSERT INTO
+    gateway_operation_steps (
+        operation_id,
+        step_index,
+        signer_account_id,
+        receiver_id,
+        wait_until,
+        actions,
+        state,
+        tx_hash,
+        signed_transaction
+    )
+VALUES
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+"#,
         operation_id,
         step_index,
         transaction.signer_account_id.0.to_string(),
@@ -505,22 +522,25 @@ async fn load_step_rows(
 ) -> GatewayResult<Vec<OperationStepRow>> {
     let rows = sqlx::query!(
         r#"
-        SELECT
-            operation_id,
-            step_index,
-            signer_account_id,
-            receiver_id,
-            wait_until,
-            actions,
-            state as "state: OperationStepStateRow",
-            tx_hash,
-            signed_transaction,
-            created_at,
-            updated_at
-        FROM gateway_operation_steps
-        WHERE operation_id = $1
-        ORDER BY step_index ASC
-        "#,
+SELECT
+    operation_id,
+    step_index,
+    signer_account_id,
+    receiver_id,
+    wait_until,
+    actions,
+    state AS "state: OperationStepStateRow",
+    tx_hash,
+    signed_transaction,
+    created_at,
+    updated_at
+FROM
+    gateway_operation_steps
+WHERE
+    operation_id = $1
+ORDER BY
+    step_index ASC
+"#,
         operation_id,
     )
     .fetch_all(pool)
@@ -632,9 +652,10 @@ fn apply_step_row(
             });
         }
         OperationStepStateRow::Failed => {
+            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "failed")?;
             *current_step = Some(templar_gateway_core::CurrentStep::Failed {
                 transaction,
-                tx_hash: parse_crypto_hash(row.tx_hash.as_deref())?,
+                tx_hash,
             });
         }
         OperationStepStateRow::NotStarted => remaining_steps.push_back(transaction),
@@ -739,7 +760,7 @@ mod tests {
                 succeeded_steps: vec![],
                 current_step: Some(CurrentStep::Failed {
                     transaction,
-                    tx_hash: Some(CryptoHash(NearCryptoHash::default())),
+                    tx_hash: CryptoHash(NearCryptoHash::default()),
                 }),
                 remaining_steps: VecDeque::new(),
             },
@@ -766,7 +787,7 @@ mod tests {
                 succeeded_steps: vec![],
                 current_step: Some(CurrentStep::Failed {
                     transaction,
-                    tx_hash: Some(CryptoHash(NearCryptoHash::default())),
+                    tx_hash: CryptoHash(NearCryptoHash::default()),
                 }),
                 remaining_steps: VecDeque::new(),
             },

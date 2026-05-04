@@ -101,7 +101,7 @@ pub enum CurrentStep {
     },
     Failed {
         transaction: PlannedTransaction,
-        tx_hash: Option<CryptoHash>,
+        tx_hash: CryptoHash,
     },
 }
 
@@ -328,10 +328,10 @@ impl SubmittedCurrentStep<'_> {
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub async fn fail(self, tx_hash: Option<CryptoHash>) -> GatewayResult<()> {
+    pub async fn fail(self, tx_hash: CryptoHash) -> GatewayResult<()> {
         self.operation.current_step = Some(CurrentStep::Failed {
             transaction: self.transaction,
-            tx_hash: tx_hash.or(Some(self.tx_hash)),
+            tx_hash,
         });
         self.store.save_operation(self.operation.clone()).await
     }
