@@ -23,6 +23,7 @@ templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 url.workspace = true
 
 [lints]

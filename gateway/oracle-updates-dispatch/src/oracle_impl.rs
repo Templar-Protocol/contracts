@@ -49,6 +49,11 @@ where
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
         let feed_id = body.feed_id;
+        tracing::debug!(
+            oracle_id = %body.oracle_id,
+            feed_id = %feed_id,
+            "fetching RedStone payload for gateway oracle update"
+        );
         let payload = OraclePayloadSource::fetch_payload(ctx.redstone_source(), &[feed_id.clone()])
             .await
             .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
@@ -98,8 +103,19 @@ where
             }
         }
 
+        tracing::debug!(
+            pyth_oracle_count = pyth_updates.len(),
+            redstone_oracle_count = redstone_updates.len(),
+            "resolved oracle update dependencies"
+        );
+
         for (oracle_id, price_ids) in pyth_updates {
             let price_ids = price_ids.into_iter().collect::<Vec<_>>();
+            tracing::debug!(
+                %oracle_id,
+                price_count = price_ids.len(),
+                "fetching Pyth payload for gateway oracle update"
+            );
             let vaa = OraclePayloadSource::fetch_payload(ctx.pyth_source(), &price_ids)
                 .await
                 .map_err(|error| GatewayError::HttpRequest(error.to_string()))?;
@@ -113,6 +129,11 @@ where
 
         for (oracle_id, feed_ids) in redstone_updates {
             let feed_ids = feed_ids.into_iter().collect::<Vec<_>>();
+            tracing::debug!(
+                %oracle_id,
+                feed_count = feed_ids.len(),
+                "fetching RedStone payload for gateway oracle update"
+            );
             let payload = OraclePayloadSource::fetch_payload(ctx.redstone_source(), &feed_ids)
                 .await
                 .map_err(|error| GatewayError::ExternalService(error.to_string()))?;

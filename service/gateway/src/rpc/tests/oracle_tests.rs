@@ -412,11 +412,11 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     assert_eq!(prices.prices.len(), 2);
     assert_eq!(prices.prices[0].price_id, proxy_direct_id);
-    assert_same_pyth_price_value(prices.prices[0].price.clone(), pyth_price(100.0));
+    assert_same_pyth_price_value(prices.prices[0].price.clone(), &pyth_price(100.0));
     assert_eq!(prices.prices[1].price_id, proxy_redstone_id);
     assert_same_pyth_price_value(
         prices.prices[1].price.clone(),
-        redstone_price(42.0)
+        &redstone_price(42.0)
             .to_pyth_price()
             .expect("redstone price should convert to pyth price"),
     );

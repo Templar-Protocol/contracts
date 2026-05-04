@@ -113,14 +113,14 @@ fn summary_from_doc(doc: &str) -> String {
 }
 
 fn expand_method(
-    attrs: Vec<Attribute>,
-    rpc_method: LitStr,
-    ident: Ident,
-    request_ty: proc_macro2::TokenStream,
-    output_ty: proc_macro2::TokenStream,
-    method_kind: proc_macro2::TokenStream,
+    attrs: &[Attribute],
+    rpc_method: &LitStr,
+    ident: &Ident,
+    request_ty: &proc_macro2::TokenStream,
+    output_ty: &proc_macro2::TokenStream,
+    method_kind: &proc_macro2::TokenStream,
 ) -> TokenStream {
-    let doc = cleaned_doc_text(&attrs);
+    let doc = cleaned_doc_text(attrs);
     let summary = summary_from_doc(&doc);
     let deprecated = attrs.iter().any(|attr| attr.path().is_ident("deprecated"));
 
@@ -158,12 +158,12 @@ pub fn read_method_spec(input: TokenStream) -> TokenStream {
     } = parse_macro_input!(input as ReadMethodSpecInput);
 
     expand_method(
-        attrs,
-        rpc_method,
-        ident,
-        quote!(templar_gateway_types::common::ReadRequest<#input>),
-        quote!(#output),
-        quote!(templar_gateway_types::spec::MethodKind::Read),
+        &attrs,
+        &rpc_method,
+        &ident,
+        &quote!(templar_gateway_types::common::ReadRequest<#input>),
+        &quote!(#output),
+        &quote!(templar_gateway_types::spec::MethodKind::Read),
     )
 }
 
@@ -177,11 +177,11 @@ pub fn write_method_spec(input: TokenStream) -> TokenStream {
     } = parse_macro_input!(input as WriteMethodSpecInput);
 
     expand_method(
-        attrs,
-        rpc_method,
-        ident,
-        quote!(templar_gateway_types::common::WriteRequest<#input>),
-        quote!(templar_gateway_types::common::WriteOperationResult),
-        quote!(templar_gateway_types::spec::MethodKind::Write),
+        &attrs,
+        &rpc_method,
+        &ident,
+        &quote!(templar_gateway_types::common::WriteRequest<#input>),
+        &quote!(templar_gateway_types::common::WriteOperationResult),
+        &quote!(templar_gateway_types::spec::MethodKind::Write),
     )
 }

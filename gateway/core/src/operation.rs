@@ -6,8 +6,8 @@ use near_api::types::{
 };
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::{
-    common::TxExecutionStatus, operation::OperationRecord, ManagedAccountId, OperationId,
-    OperationStatus, StepStatus,
+    common::TxExecutionStatus, operation::OperationRecord, CryptoHash, ManagedAccountId,
+    OperationId, OperationStatus, StepStatus,
 };
 
 use crate::{GatewayResult, OperationStore};
@@ -23,7 +23,7 @@ pub struct PlannedTransaction {
 #[derive(Debug, Clone)]
 pub struct PreparedTransactionResult {
     pub transaction: PlannedTransaction,
-    pub tx_hash: templar_gateway_types::CryptoHash,
+    pub tx_hash: CryptoHash,
     pub signed_transaction: SignedTransaction,
 }
 
@@ -85,7 +85,7 @@ impl From<PlannedTransaction> for OperationPlan {
 #[derive(Debug, Clone)]
 pub struct SucceededStep {
     pub transaction: PlannedTransaction,
-    pub tx_hash: templar_gateway_types::CryptoHash,
+    pub tx_hash: CryptoHash,
 }
 
 #[derive(Debug, Clone)]
@@ -93,15 +93,15 @@ pub enum CurrentStep {
     Prepared {
         transaction: PlannedTransaction,
         signed_transaction: Box<SignedTransaction>,
-        tx_hash: templar_gateway_types::CryptoHash,
+        tx_hash: CryptoHash,
     },
     Submitted {
         transaction: PlannedTransaction,
-        tx_hash: templar_gateway_types::CryptoHash,
+        tx_hash: CryptoHash,
     },
     Failed {
         transaction: PlannedTransaction,
-        tx_hash: Option<templar_gateway_types::CryptoHash>,
+        tx_hash: Option<CryptoHash>,
     },
 }
 
@@ -132,7 +132,7 @@ pub struct PreparedCurrentStep<'a> {
     store: SharedOperationStore,
     transaction: PlannedTransaction,
     signed_transaction: SignedTransaction,
-    tx_hash: templar_gateway_types::CryptoHash,
+    tx_hash: CryptoHash,
 }
 
 #[must_use]
@@ -140,7 +140,7 @@ pub struct SubmittedCurrentStep<'a> {
     operation: &'a mut StoredOperation,
     store: SharedOperationStore,
     transaction: PlannedTransaction,
-    tx_hash: templar_gateway_types::CryptoHash,
+    tx_hash: CryptoHash,
 }
 
 pub enum CurrentStepRef<'a> {
@@ -237,16 +237,17 @@ impl StoredOperation {
                 + usize::from(self.current_step.is_some()),
         );
 
-        for (index, step) in self.succeeded_steps.iter().enumerate() {
+        let mut next_index = 0_u32;
+        for step in &self.succeeded_steps {
             steps.push(templar_gateway_types::TransactionStepRecord {
-                index: index as u32,
+                index: next_index,
                 status: StepStatus::Succeeded {
                     tx_hash: step.tx_hash,
                 },
             });
+            next_index = next_index.saturating_add(1);
         }
 
-        let mut next_index = steps.len() as u32;
         if let Some(current) = &self.current_step {
             let status = match current {
                 CurrentStep::Prepared { tx_hash, .. } => StepStatus::Prepared { tx_hash: *tx_hash },
@@ -259,7 +260,7 @@ impl StoredOperation {
                 index: next_index,
                 status,
             });
-            next_index += 1;
+            next_index = next_index.saturating_add(1);
         }
 
         for transaction in &self.remaining_steps {
@@ -268,7 +269,7 @@ impl StoredOperation {
                 index: next_index,
                 status: StepStatus::NotStarted,
             });
-            next_index += 1;
+            next_index = next_index.saturating_add(1);
         }
 
         steps
@@ -318,7 +319,7 @@ impl SubmittedCurrentStep<'_> {
         &self.transaction
     }
 
-    pub async fn succeed(self, tx_hash: templar_gateway_types::CryptoHash) -> GatewayResult<()> {
+    pub async fn succeed(self, tx_hash: CryptoHash) -> GatewayResult<()> {
         self.operation.succeeded_steps.push(SucceededStep {
             transaction: self.transaction,
             tx_hash,
@@ -327,10 +328,7 @@ impl SubmittedCurrentStep<'_> {
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub async fn fail(
-        self,
-        tx_hash: Option<templar_gateway_types::CryptoHash>,
-    ) -> GatewayResult<()> {
+    pub async fn fail(self, tx_hash: Option<CryptoHash>) -> GatewayResult<()> {
         self.operation.current_step = Some(CurrentStep::Failed {
             transaction: self.transaction,
             tx_hash: tx_hash.or(Some(self.tx_hash)),
@@ -338,7 +336,7 @@ impl SubmittedCurrentStep<'_> {
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub fn tx_hash(&self) -> templar_gateway_types::CryptoHash {
+    pub fn tx_hash(&self) -> CryptoHash {
         self.tx_hash
     }
 }

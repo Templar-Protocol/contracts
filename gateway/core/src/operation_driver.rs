@@ -51,6 +51,13 @@ impl OperationDriver {
     where
         Input: Clone + Serialize + HasIdempotencyKey + HasSignerAccountId,
     {
+        let step_count = plan.steps.len();
+        tracing::debug!(
+            rpc_method,
+            signer_account_id = %params.signer_account_id().0,
+            step_count,
+            "creating or reusing gateway operation"
+        );
         let request_payload = serde_json::to_vec(&params)?;
         let fingerprint = request_fingerprint(rpc_method, &params)?;
         let operation = match self
@@ -66,9 +73,21 @@ impl OperationDriver {
             .await?
         {
             CreateOperationResult::Existing(existing) => {
+                tracing::debug!(
+                    rpc_method,
+                    operation_id = %existing.operation_id().0,
+                    "reusing existing gateway operation"
+                );
                 return Ok(existing.record().into());
             }
-            CreateOperationResult::Created(created) => created,
+            CreateOperationResult::Created(created) => {
+                tracing::debug!(
+                    rpc_method,
+                    operation_id = %created.operation_id().0,
+                    "created gateway operation"
+                );
+                created
+            }
         };
 
         let operation = self.execute_remaining_steps(operation).await?;
@@ -106,7 +125,12 @@ impl OperationDriver {
     }
 
     pub async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
-        for mut operation in self.store.list_incomplete_operations().await? {
+        let operations = self.store.list_incomplete_operations().await?;
+        tracing::debug!(
+            operation_count = operations.len(),
+            "resuming incomplete gateway operations"
+        );
+        for mut operation in operations {
             let operation_id = operation.operation_id().clone();
             if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
                 self.reconcile_submitted_step(&mut operation).await;
@@ -183,11 +207,18 @@ impl OperationDriver {
             pending.finish(prepared).await?;
         }
 
+        let operation_id = operation.operation_id().clone();
         match operation.current(self.store.clone()) {
             Some(CurrentStepRef::Prepared(prepared_step)) => {
                 let wait_until = prepared_step.wait_until();
                 let (signed_transaction, submitted_step) = prepared_step.submit().await?;
                 let tx_hash = submitted_step.tx_hash();
+                tracing::debug!(
+                    operation_id = %operation_id.0,
+                    %tx_hash,
+                    ?wait_until,
+                    "submitting gateway operation step"
+                );
 
                 match self
                     .operation_executor
@@ -198,13 +229,29 @@ impl OperationDriver {
                         if let Some(full) = tx_result.into_full() {
                             let final_hash = full.outcome().transaction_hash.into();
                             if full.is_success() {
+                                tracing::debug!(
+                                    operation_id = %operation_id.0,
+                                    tx_hash = %final_hash,
+                                    "gateway operation step succeeded"
+                                );
                                 submitted_step.succeed(final_hash).await?;
                             } else {
+                                tracing::debug!(
+                                    operation_id = %operation_id.0,
+                                    tx_hash = %final_hash,
+                                    "gateway operation step failed"
+                                );
                                 submitted_step.fail(Some(final_hash)).await?;
                             }
                         }
                     }
                     Err(error) => {
+                        tracing::debug!(
+                            operation_id = %operation_id.0,
+                            %tx_hash,
+                            %error,
+                            "gateway operation step submission failed"
+                        );
                         submitted_step.fail(Some(tx_hash)).await?;
                         return Err(error);
                     }

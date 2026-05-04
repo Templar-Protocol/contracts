@@ -13372,6 +13372,7 @@ dependencies = [
  "templar-universal-account",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -13401,6 +13402,7 @@ dependencies = [
  "templar-gateway-core",
  "templar-gateway-types",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

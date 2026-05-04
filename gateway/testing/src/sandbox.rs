@@ -43,67 +43,18 @@ impl SandboxHarness {
         let sandbox = Sandbox::start_sandbox().await?;
         let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
-        let gateway_signer_account_id = ManagedAccountId("gateway.near".parse()?);
-        let gateway_secret_key = test_secret_key()?;
-        sandbox
-            .create_account(gateway_signer_account_id.0.clone())
-            .initial_balance(NearToken::from_near(100))
-            .public_key(gateway_secret_key.public_key().to_string())
-            .send()
-            .await?;
-
-        let gateway_signer = ManagedSigner::new([gateway_secret_key])
-            .await
-            .context("failed to initialize gateway signer")?;
-
-        let cleanup_signer_account_id = ManagedAccountId("cleanup.near".parse()?);
-        let cleanup_secret_key = test_secret_key()?;
-        sandbox
-            .create_account(cleanup_signer_account_id.0.clone())
-            .initial_balance(NearToken::from_near(100))
-            .public_key(cleanup_secret_key.public_key().to_string())
-            .send()
-            .await?;
-        let cleanup_signer = ManagedSigner::new([cleanup_secret_key])
-            .await
-            .context("failed to initialize cleanup signer")?;
-
-        let registry_signer_account_id = ManagedAccountId("registry.near".parse()?);
-        let registry_secret_key = test_secret_key()?;
-        sandbox
-            .create_account(registry_signer_account_id.0.clone())
-            .initial_balance(NearToken::from_near(100))
-            .public_key(registry_secret_key.public_key().to_string())
-            .send()
-            .await?;
-        let registry_signer = ManagedSigner::new([registry_secret_key])
-            .await
-            .context("failed to initialize registry signer")?;
+        let (gateway_signer_account_id, gateway_signer) =
+            create_managed_signer_account(&sandbox, "gateway.near", "gateway").await?;
+        let (cleanup_signer_account_id, cleanup_signer) =
+            create_managed_signer_account(&sandbox, "cleanup.near", "cleanup").await?;
+        let (registry_signer_account_id, registry_signer) =
+            create_managed_signer_account(&sandbox, "registry.near", "registry").await?;
         let registry_deploy_signer = registry_signer.signer.clone();
 
-        let universal_account_signer_account_id = ManagedAccountId("ua.near".parse()?);
-        let universal_account_secret_key = test_secret_key()?;
-        sandbox
-            .create_account(universal_account_signer_account_id.0.clone())
-            .initial_balance(NearToken::from_near(100))
-            .public_key(universal_account_secret_key.public_key().to_string())
-            .send()
-            .await?;
-        let universal_account_signer = ManagedSigner::new([universal_account_secret_key])
-            .await
-            .context("failed to initialize universal account signer")?;
-
-        let proxy_oracle_signer_account_id = ManagedAccountId("proxy-oracle.near".parse()?);
-        let proxy_oracle_secret_key = test_secret_key()?;
-        sandbox
-            .create_account(proxy_oracle_signer_account_id.0.clone())
-            .initial_balance(NearToken::from_near(100))
-            .public_key(proxy_oracle_secret_key.public_key().to_string())
-            .send()
-            .await?;
-        let proxy_oracle_signer = ManagedSigner::new([proxy_oracle_secret_key])
-            .await
-            .context("failed to initialize proxy oracle signer")?;
+        let (universal_account_signer_account_id, universal_account_signer) =
+            create_managed_signer_account(&sandbox, "ua.near", "universal account").await?;
+        let (proxy_oracle_signer_account_id, proxy_oracle_signer) =
+            create_managed_signer_account(&sandbox, "proxy-oracle.near", "proxy oracle").await?;
 
         let gateway_signers = HashMap::from([
             (gateway_signer_account_id.clone(), gateway_signer),
@@ -490,6 +441,25 @@ async fn create_account_signer(
         .await?;
 
     Signer::from_secret_key(secret_key).context("failed to initialize account signer")
+}
+
+async fn create_managed_signer_account(
+    sandbox: &Sandbox,
+    account_id: &str,
+    label: &str,
+) -> Result<(ManagedAccountId, ManagedSigner)> {
+    let account_id = ManagedAccountId(account_id.parse()?);
+    let secret_key = test_secret_key()?;
+    sandbox
+        .create_account(account_id.0.clone())
+        .initial_balance(NearToken::from_near(100))
+        .public_key(secret_key.public_key().to_string())
+        .send()
+        .await?;
+    let signer = ManagedSigner::new([secret_key])
+        .await
+        .with_context(|| format!("failed to initialize {label} signer"))?;
+    Ok((account_id, signer))
 }
 
 async fn deploy_contract(

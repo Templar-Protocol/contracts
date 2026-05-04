@@ -13,6 +13,7 @@ near-api.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-types.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

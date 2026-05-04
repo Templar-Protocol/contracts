@@ -67,11 +67,11 @@ impl OperationStore for MemoryStore {
 
         if let Some(idempotency_key) = &idempotency_key {
             if let Some(operation_id) = state.idempotency.get(idempotency_key) {
-                let existing = state
-                    .operations
-                    .get(operation_id)
-                    .cloned()
-                    .expect("idempotency mapping should reference existing operation");
+                let existing = state.operations.get(operation_id).cloned().ok_or_else(|| {
+                    GatewayError::InvalidStoredOperation(
+                        "idempotency mapping references missing operation".to_owned(),
+                    )
+                })?;
                 if existing.request_fingerprint_hash != request_fingerprint_hash {
                     return Err(GatewayError::IdempotencyConflict);
                 }

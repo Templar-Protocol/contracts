@@ -1,3 +1,8 @@
+#![allow(
+    clippy::too_many_lines,
+    reason = "RPC integration tests are end-to-end scenarios and are easier to audit as single flows"
+)]
+
 mod account_tests;
 mod contract_tests;
 mod ft_tests;
@@ -86,7 +91,7 @@ impl TestStack {
             context,
             harness.gateway_signers.clone(),
             Arc::new(MemoryStore::new()),
-        );
+        )?;
 
         let server = ServerBuilder::default().build("127.0.0.1:0").await?;
         let local_addr = server.local_addr()?;
@@ -177,12 +182,18 @@ async fn start_mock_hermes_server(vaa_hex: &str) -> Result<MockServer> {
 }
 
 fn pyth_price(price: f64) -> templar_common::oracle::pyth::Price {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
+    let scaled_price = ((price * 10000.0).round().to_string())
+        .parse::<i64>()
+        .unwrap_or_default();
     templar_common::oracle::pyth::Price {
-        price: I64((price * 10000.0) as i64),
+        price: I64(scaled_price),
         conf: U64(0),
         expo: -4,
         publish_time: PythTimestamp::from_ms(now_ms),
@@ -190,13 +201,19 @@ fn pyth_price(price: f64) -> templar_common::oracle::pyth::Price {
 }
 
 fn redstone_price(price: f64) -> FeedData {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
     let now_ms = Nanoseconds::from_ms(now_ms);
+    let scaled_price = ((price * 1e8).round().to_string())
+        .parse::<u128>()
+        .unwrap_or_default();
     FeedData {
-        price: U256::from((price * 1e8) as u128).into(),
+        price: U256::from(scaled_price).into(),
         package_timestamp: now_ms,
         write_timestamp: now_ms,
     }
@@ -204,14 +221,13 @@ fn redstone_price(price: f64) -> FeedData {
 
 fn assert_same_pyth_price_value(
     actual: Option<templar_common::oracle::pyth::Price>,
-    expected: templar_common::oracle::pyth::Price,
+    expected: &templar_common::oracle::pyth::Price,
 ) {
     let actual = actual.expect("expected price to be present");
     assert_eq!(actual.price, expected.price);
     assert_eq!(actual.conf, expected.conf);
     assert_eq!(actual.expo, expected.expo);
 }
-
 async fn view_contract_json(
     stack: &TestStack,
     contract_id: near_account_id::AccountId,

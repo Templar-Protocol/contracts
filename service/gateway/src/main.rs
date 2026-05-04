@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
             .with_redstone_source(&config.redstone_node_path)
             .map_err(anyhow::Error::from)?
             .build();
-    let service = GatewayService::spawn(context, signers, store);
+    let service = GatewayService::spawn(context, signers, store)?;
 
     let server = ServerBuilder::default().build(config.listen_addr).await?;
     let local_addr = server.local_addr()?;

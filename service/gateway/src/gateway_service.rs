@@ -35,7 +35,8 @@ where
         context: ContextType,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
         store: SharedOperationStore,
-    ) -> Self {
+    ) -> GatewayResult<Self> {
+        let signer_count = signers.len();
         let signers = signers
             .into_iter()
             .map(|(account_id, signer)| (account_id, signer.signer))
@@ -45,7 +46,8 @@ where
         let executor = NearOperationExecutor::new(context.near_client().network().clone());
         let driver = OperationDriver::new(store, Arc::new(signer), Arc::new(executor));
 
-        let (runtime, read) = spawn_runtime(context.clone());
+        let (runtime, read) = spawn_runtime(context.clone())?;
+        tracing::debug!(signer_count, "gateway service runtime initialized");
 
         let service = Self {
             inner: Arc::new(GatewayInner {
@@ -68,7 +70,7 @@ where
             }
         });
 
-        service
+        Ok(service)
     }
 
     pub async fn shutdown(self) {
@@ -110,7 +112,18 @@ where
         Request::Input: HasIdempotencyKey + HasSignerAccountId,
         Impl: PlanWrite<Request, ContextType>,
     {
+        tracing::debug!(
+            rpc_method = Request::RPC_METHOD,
+            signer_account_id = %params.signer_account_id().0,
+            has_idempotency_key = params.idempotency_key().is_some(),
+            "planning gateway write request"
+        );
         let plan = Impl::plan(params.clone(), self.inner.context.clone()).await?;
+        tracing::debug!(
+            rpc_method = Request::RPC_METHOD,
+            step_count = plan.steps.len(),
+            "planned gateway write request"
+        );
         self.inner
             .driver
             .complete_write(Request::RPC_METHOD, params, plan)
@@ -185,7 +198,7 @@ mod tests {
             context,
             gateway_signers,
             Arc::new(templar_gateway_store::MemoryStore::new()),
-        );
+        )?;
 
         Ok((
             TestHarness {

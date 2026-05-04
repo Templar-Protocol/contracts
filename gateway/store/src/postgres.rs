@@ -219,7 +219,11 @@ impl OperationStore for PostgresStore {
                 if database_error.constraint()
                     == Some("gateway_operations_idempotency_key_unique") =>
             {
-                let key = idempotency_key.expect("idempotency key should exist on unique conflict");
+                let Some(key) = idempotency_key else {
+                    return Err(GatewayError::InvalidStoredOperation(
+                        "idempotency unique conflict without idempotency key".to_owned(),
+                    ));
+                };
                 let existing = self.get_by_idempotency_key(&key).await?.ok_or_else(|| {
                     GatewayError::InvalidStoredOperation(
                         "idempotency conflict without existing operation".to_owned(),
@@ -314,6 +318,19 @@ async fn save_operation_tx(
 
     let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
         .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+    insert_operation_row(&mut tx, operation_uuid, operation, idempotency_key).await?;
+    insert_operation_steps(&mut tx, operation_uuid, operation).await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn insert_operation_row(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    operation: &StoredOperation,
+    idempotency_key: Option<&IdempotencyKey>,
+) -> GatewayResult<()> {
     let status = operation_status_row(operation.status());
     let request_payload = serde_json::from_slice::<Value>(&operation.request_payload)
         .map_err(GatewayError::JsonSerialization)?;
@@ -338,14 +355,22 @@ async fn save_operation_tx(
         request_payload,
         status as OperationStatusRow,
     )
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
 
+    Ok(())
+}
+
+async fn insert_operation_steps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    operation: &StoredOperation,
+) -> GatewayResult<()> {
     for (index, step) in operation.succeeded_steps.iter().enumerate() {
         insert_step_row(
-            &mut tx,
+            tx,
             operation_uuid,
-            index as i32,
+            step_index(index)?,
             &step.transaction,
             OperationStepStateRow::Succeeded,
             Some(step.tx_hash),
@@ -354,7 +379,7 @@ async fn save_operation_tx(
         .await?;
     }
 
-    let mut current_index = operation.succeeded_steps.len() as i32;
+    let mut current_index = step_index(operation.succeeded_steps.len())?;
     if let Some(current_step) = &operation.current_step {
         match current_step {
             templar_gateway_core::CurrentStep::Prepared {
@@ -363,7 +388,7 @@ async fn save_operation_tx(
                 tx_hash,
             } => {
                 insert_step_row(
-                    &mut tx,
+                    tx,
                     operation_uuid,
                     current_index,
                     transaction,
@@ -378,7 +403,7 @@ async fn save_operation_tx(
                 tx_hash,
             } => {
                 insert_step_row(
-                    &mut tx,
+                    tx,
                     operation_uuid,
                     current_index,
                     transaction,
@@ -393,7 +418,7 @@ async fn save_operation_tx(
                 tx_hash,
             } => {
                 insert_step_row(
-                    &mut tx,
+                    tx,
                     operation_uuid,
                     current_index,
                     transaction,
@@ -409,9 +434,9 @@ async fn save_operation_tx(
 
     for (offset, step) in operation.remaining_steps.iter().enumerate() {
         insert_step_row(
-            &mut tx,
+            tx,
             operation_uuid,
-            current_index + offset as i32,
+            current_index + step_index(offset)?,
             step,
             OperationStepStateRow::NotStarted,
             None,
@@ -420,8 +445,13 @@ async fn save_operation_tx(
         .await?;
     }
 
-    tx.commit().await?;
     Ok(())
+}
+
+fn step_index(index: usize) -> GatewayResult<i32> {
+    i32::try_from(index).map_err(|_| {
+        GatewayError::InvalidStoredOperation("operation step index exceeds i32 range".to_owned())
+    })
 }
 
 async fn insert_step_row(
@@ -523,78 +553,12 @@ fn rows_to_stored_operation(
     let mut remaining_steps = VecDeque::new();
 
     for row in step_rows {
-        let transaction = PlannedTransaction {
-            signer_account_id: ManagedAccountId(
-                row.signer_account_id
-                    .parse::<near_account_id::AccountId>()
-                    .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
-            ),
-            wait_until: serde_json::from_str(&row.wait_until)
-                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
-            receiver_id: row
-                .receiver_id
-                .parse::<near_account_id::AccountId>()
-                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
-            actions: serde_json::from_value(row.actions)?,
-        };
-
-        match row.state {
-            OperationStepStateRow::Succeeded => {
-                let tx_hash = parse_crypto_hash(row.tx_hash.as_deref())?;
-                succeeded_steps.push(SucceededStep {
-                    transaction,
-                    tx_hash: tx_hash.ok_or_else(|| {
-                        GatewayError::InvalidStoredOperation(
-                            "succeeded step missing transaction hash".to_owned(),
-                        )
-                    })?,
-                });
-            }
-            OperationStepStateRow::Prepared => {
-                let tx_hash = parse_crypto_hash(row.tx_hash.as_deref())?.ok_or_else(|| {
-                    GatewayError::InvalidStoredOperation(
-                        "prepared step missing transaction hash".to_owned(),
-                    )
-                })?;
-                let signed_transaction = row
-                    .signed_transaction
-                    .ok_or_else(|| {
-                        GatewayError::InvalidStoredOperation(
-                            "prepared step missing signed transaction".to_owned(),
-                        )
-                    })
-                    .and_then(|bytes| {
-                        SignedTransaction::try_from_slice(&bytes).map_err(|error| {
-                            GatewayError::InvalidStoredOperation(error.to_string())
-                        })
-                    })?;
-                current_step = Some(templar_gateway_core::CurrentStep::Prepared {
-                    transaction,
-                    signed_transaction: Box::new(signed_transaction),
-                    tx_hash,
-                });
-            }
-            OperationStepStateRow::Submitted => {
-                let tx_hash = parse_crypto_hash(row.tx_hash.as_deref())?.ok_or_else(|| {
-                    GatewayError::InvalidStoredOperation(
-                        "submitted step missing transaction hash".to_owned(),
-                    )
-                })?;
-                current_step = Some(templar_gateway_core::CurrentStep::Submitted {
-                    transaction,
-                    tx_hash,
-                });
-            }
-            OperationStepStateRow::Failed => {
-                current_step = Some(templar_gateway_core::CurrentStep::Failed {
-                    transaction,
-                    tx_hash: parse_crypto_hash(row.tx_hash.as_deref())?,
-                });
-            }
-            OperationStepStateRow::NotStarted => {
-                remaining_steps.push_back(transaction);
-            }
-        }
+        apply_step_row(
+            row,
+            &mut succeeded_steps,
+            &mut current_step,
+            &mut remaining_steps,
+        )?;
     }
 
     let id = OperationId(operation_row.id.to_string());
@@ -634,6 +598,84 @@ fn rows_to_stored_operation(
     }
 
     Ok(operation)
+}
+
+fn apply_step_row(
+    row: OperationStepRow,
+    succeeded_steps: &mut Vec<SucceededStep>,
+    current_step: &mut Option<templar_gateway_core::CurrentStep>,
+    remaining_steps: &mut VecDeque<PlannedTransaction>,
+) -> GatewayResult<()> {
+    let transaction = step_row_transaction(&row)?;
+    match row.state {
+        OperationStepStateRow::Succeeded => {
+            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "succeeded")?;
+            succeeded_steps.push(SucceededStep {
+                transaction,
+                tx_hash,
+            });
+        }
+        OperationStepStateRow::Prepared => {
+            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "prepared")?;
+            let signed_transaction = parse_signed_transaction(row.signed_transaction)?;
+            *current_step = Some(templar_gateway_core::CurrentStep::Prepared {
+                transaction,
+                signed_transaction: Box::new(signed_transaction),
+                tx_hash,
+            });
+        }
+        OperationStepStateRow::Submitted => {
+            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "submitted")?;
+            *current_step = Some(templar_gateway_core::CurrentStep::Submitted {
+                transaction,
+                tx_hash,
+            });
+        }
+        OperationStepStateRow::Failed => {
+            *current_step = Some(templar_gateway_core::CurrentStep::Failed {
+                transaction,
+                tx_hash: parse_crypto_hash(row.tx_hash.as_deref())?,
+            });
+        }
+        OperationStepStateRow::NotStarted => remaining_steps.push_back(transaction),
+    }
+    Ok(())
+}
+
+fn step_row_transaction(row: &OperationStepRow) -> GatewayResult<PlannedTransaction> {
+    Ok(PlannedTransaction {
+        signer_account_id: ManagedAccountId(
+            row.signer_account_id
+                .parse::<near_account_id::AccountId>()
+                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
+        ),
+        wait_until: serde_json::from_str(&row.wait_until)
+            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
+        receiver_id: row
+            .receiver_id
+            .parse::<near_account_id::AccountId>()
+            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
+        actions: serde_json::from_value(row.actions.clone())?,
+    })
+}
+
+fn parse_required_crypto_hash(value: Option<&str>, state: &str) -> GatewayResult<CryptoHash> {
+    parse_crypto_hash(value)?.ok_or_else(|| {
+        GatewayError::InvalidStoredOperation(format!("{state} step missing transaction hash"))
+    })
+}
+
+fn parse_signed_transaction(value: Option<Vec<u8>>) -> GatewayResult<SignedTransaction> {
+    value
+        .ok_or_else(|| {
+            GatewayError::InvalidStoredOperation(
+                "prepared step missing signed transaction".to_owned(),
+            )
+        })
+        .and_then(|bytes| {
+            SignedTransaction::try_from_slice(&bytes)
+                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))
+        })
 }
 
 fn parse_crypto_hash(value: Option<&str>) -> GatewayResult<Option<CryptoHash>> {

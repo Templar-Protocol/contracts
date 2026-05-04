@@ -12,7 +12,7 @@ use crate::Dispatch;
 
 fn prices_in_request_order(
     price_ids: Vec<templar_common::oracle::pyth::PriceIdentifier>,
-    response: HashMap<
+    response: &HashMap<
         templar_common::oracle::pyth::PriceIdentifier,
         Option<templar_common::oracle::pyth::Price>,
     >,
@@ -43,7 +43,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesNoOlderThan, C> for Dispa
             })
             .await?;
         Ok(pyth::ListEmaPricesNoOlderThanResult {
-            prices: prices_in_request_order(price_ids, response),
+            prices: prices_in_request_order(price_ids, &response),
         })
     }
 }
@@ -64,7 +64,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesUnsafe, C> for Dispatch {
             })
             .await?;
         Ok(pyth::ListEmaPricesUnsafeResult {
-            prices: prices_in_request_order(price_ids, response),
+            prices: prices_in_request_order(price_ids, &response),
         })
     }
 }

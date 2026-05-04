@@ -188,6 +188,10 @@ impl ExecuteOperation for NearOperationExecutor {
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "zeroed ED25519 secret key is locally constructed and should always parse"
+)]
 fn null_signer() -> Arc<near_api::Signer> {
     Signer::from_secret_key(SecretKey::ED25519(ED25519SecretKey::from_secret_key(
         [0; 32],
