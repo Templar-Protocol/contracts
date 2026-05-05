@@ -1683,6 +1683,72 @@ fn test_refresh_state_roundtrip() {
     assert!(matches!(result.new_state, OpState::Refreshing(_)));
 }
 #[rstest]
+#[ignore = "A-015 donation/resync accounting spec: deposits must not mint against stale NAV before implementation"]
+fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let governance = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let depositor = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 500,
+                total_shares: 500,
+                idle_assets: 500,
+                fee_anchor: FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &500);
+    asset_admin_client.mint(&contract_id, &300);
+    asset_admin_client.mint(&depositor, &100);
+
+    let proxy = VaultProxy::new(&env);
+    let minted = env.as_contract(&contract_id, || {
+        proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&depositor),
+                receiver: sdk_wire(&depositor),
+                assets: 100,
+                min_shares_out: 0,
+            })
+            .unwrap()
+    });
+
+    let VaultCommandResult::I128(minted_shares) = minted else {
+        panic!("deposit should return minted shares");
+    };
+
+    assert!(
+        minted_shares <= 62,
+        "deposit minted {minted_shares} shares against stale total_assets instead of actual donated NAV"
+    );
+}
+
+#[rstest]
 fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
     let env = Env::default();
     env.mock_all_auths();
