@@ -528,6 +528,19 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "A-018 fee-anchor lifecycle spec: deployed command ABI needs an explicit fee refresh path before implementation"]
+    fn vault_command_surface_exposes_fee_refresh() {
+        let mut encoded = Vec::new();
+        encoded.push(5);
+        encoded.extend_from_slice(&1_000u64.to_le_bytes());
+
+        assert!(
+            VaultCommand::decode(&encoded).is_ok(),
+            "VaultCommand has no fee-refresh command tag; persisted fee accrual is unreachable through the deployed ABI"
+        );
+    }
+
+    #[test]
     fn governance_command_roundtrip_representative() {
         let commands = vec![
             GovernanceCommand::SetGovernanceConfig {
