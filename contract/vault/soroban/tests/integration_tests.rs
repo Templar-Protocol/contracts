@@ -587,6 +587,68 @@ fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
 }
 
 #[rstest]
+fn soroban_contract_refresh_fees_command_updates_anchor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let proxy = VaultProxy::new(&env);
+    let contract_id = env.register(SorobanVaultContract, ());
+    let governance = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_500,
+                total_shares: 1_000,
+                idle_assets: 1_500,
+                fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &1500);
+
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        proxy.execute_unit(&VaultCommand::RefreshFees).unwrap();
+
+        let stored_state = storage
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(stored_state.fee_anchor.total_assets, 1_500);
+        assert_eq!(
+            stored_state.fee_anchor.timestamp_ns,
+            templar_vault_kernel::TimestampNs(100_000_000_000)
+        );
+    });
+}
+
+#[rstest]
 fn soroban_contract_preview_withdraw_matches_kernel(
     soroban_contract_fixture: SorobanContractFixture,
 ) {

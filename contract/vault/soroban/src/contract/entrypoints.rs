@@ -388,6 +388,16 @@ fn request_withdraw_impl(
     Ok(request_id)
 }
 
+fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
+    let now_ns = ledger_timestamp_ns(env)?;
+
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        reconcile_current_idle_assets(env, vault, now_ns)?;
+        vault.refresh_fees(now_ns)
+    };
+    with_contract_vault_contract_error(env, &mut call)
+}
+
 fn execute_withdraw_impl(env: &Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
     require_signed(&caller);
     let now_ns = ledger_timestamp_ns(env)?;
@@ -715,6 +725,10 @@ fn execute_public_command(
                 address_from_alloc_string(env, &caller)?,
                 sdk_markets,
             )?))
+        }
+        VaultCommand::RefreshFees => {
+            refresh_fees_impl(env)?;
+            Ok(VaultCommandResult::Unit)
         }
         VaultCommand::ResyncIdleBalance => {
             resync_idle_balance_impl(env)?;
