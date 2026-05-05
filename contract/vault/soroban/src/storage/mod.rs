@@ -28,12 +28,19 @@ pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 /// For a vault contract holding real assets, maximum TTL prevents state
 /// loss during extended pauses or periods of inactivity.
 pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
-pub(crate) const SOROBAN_MAX_PENDING_WITHDRAWALS: u32 = 512;
-pub(crate) const SOROBAN_MAX_RESTRICTION_ADDRESSES: usize = 1024;
+pub(crate) const SOROBAN_MAX_PENDING_WITHDRAWALS: u32 = templar_vault_kernel::MAX_PENDING as u32;
+pub(crate) const SOROBAN_MAX_RESTRICTION_ADDRESSES: usize = 3_072;
 
 const MAX_CONTRACT_DATA_ENTRY_SIZE_BYTES: usize = 64 * 1024;
+const BLOB_PAGE_BYTES: usize = 32 * 1024;
+const BLOB_MAGIC: [u8; 3] = *b"TVP";
+const BLOB_VERSION_CURRENT: u8 = 1;
+const BLOB_INLINE: u8 = 0;
+const BLOB_PAGED: u8 = 1;
 const STORAGE_MAGIC: [u8; 3] = *b"TVS";
 const STORAGE_VERSION_CURRENT: u8 = 1;
+const STORAGE_VERSION_STATE_PAGED: u8 = 2;
+const WITHDRAW_QUEUE_PAGE_SIZE: u64 = 128;
 const STORAGE_KIND_STATE: u8 = 1;
 const STORAGE_KIND_RESTRICTIONS: u8 = 2;
 const STORAGE_KIND_SUPPLY_QUEUE: u8 = 3;
@@ -85,10 +92,14 @@ impl SorobanStorageKey {
     pub const PausedState: Symbol = symbol_short!("paused_s");
 }
 
-fn push_storage_header(out: &mut Vec<u8>, kind: u8) {
+fn push_storage_header_version(out: &mut Vec<u8>, kind: u8, version: u8) {
     out.extend_from_slice(&STORAGE_MAGIC);
     push_u8(out, kind);
-    push_u8(out, STORAGE_VERSION_CURRENT);
+    push_u8(out, version);
+}
+
+fn push_storage_header(out: &mut Vec<u8>, kind: u8) {
+    push_storage_header_version(out, kind, STORAGE_VERSION_CURRENT);
 }
 
 fn storage_payload(bytes: &[u8], kind: StorageKind) -> Result<(u8, &[u8]), RuntimeError> {
@@ -132,6 +143,74 @@ fn ensure_contract_data_entry_size(bytes: &[u8]) -> Result<(), RuntimeError> {
         Ok(())
     } else {
         Err(RuntimeError::storage_error("persistent entry too large"))
+    }
+}
+
+fn push_blob_header(out: &mut Vec<u8>, mode: u8) {
+    out.extend_from_slice(&BLOB_MAGIC);
+    push_u8(out, BLOB_VERSION_CURRENT);
+    push_u8(out, mode);
+}
+
+fn encode_blob_inline(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(9 + bytes.len());
+    push_blob_header(&mut out, BLOB_INLINE);
+    push_u32(&mut out, bytes.len() as u32);
+    out.extend_from_slice(bytes);
+    out
+}
+
+fn encode_blob_manifest(bytes_len: usize, page_count: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(13);
+    push_blob_header(&mut out, BLOB_PAGED);
+    push_u32(&mut out, bytes_len as u32);
+    push_u32(&mut out, page_count);
+    out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlobManifest {
+    Inline,
+    Paged { len: usize, page_count: u32 },
+}
+
+fn decode_blob_manifest(bytes: &[u8]) -> Result<Option<BlobManifest>, RuntimeError> {
+    if bytes.len() < 5 || bytes[..3] != BLOB_MAGIC {
+        return Ok(None);
+    }
+
+    let version = bytes[3];
+    if version != BLOB_VERSION_CURRENT {
+        return Err(RuntimeError::storage_error(
+            "unsupported blob storage version",
+        ));
+    }
+
+    let mut cursor = 4usize;
+    match read_u8(bytes, &mut cursor)? {
+        BLOB_INLINE => {
+            let len = read_u32(bytes, &mut cursor)? as usize;
+            if bytes.len().saturating_sub(cursor) != len {
+                return Err(RuntimeError::storage_error("invalid inline blob"));
+            }
+            Ok(Some(BlobManifest::Inline))
+        }
+        BLOB_PAGED => {
+            let len = read_u32(bytes, &mut cursor)? as usize;
+            let page_count = read_u32(bytes, &mut cursor)?;
+            finish_decode(bytes, cursor)?;
+            if page_count == 0 || len == 0 {
+                return Err(RuntimeError::storage_error("invalid paged blob"));
+            }
+            let capacity = (page_count as usize)
+                .checked_mul(BLOB_PAGE_BYTES)
+                .ok_or_else(|| RuntimeError::storage_error("paged blob too large"))?;
+            if len > capacity || len <= capacity.saturating_sub(BLOB_PAGE_BYTES) {
+                return Err(RuntimeError::storage_error("invalid paged blob length"));
+            }
+            Ok(Some(BlobManifest::Paged { len, page_count }))
+        }
+        _ => Err(RuntimeError::storage_error("invalid blob storage mode")),
     }
 }
 
@@ -542,6 +621,7 @@ fn decode_policy_locks_v1(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeEr
     ))
 }
 
+#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
 fn encode_withdraw_queue(queue: &WithdrawQueue, out: &mut Vec<u8>) {
     push_u64(out, queue.next_withdraw_to_execute);
     push_u64(out, queue.next_pending_withdrawal_id);
@@ -557,6 +637,7 @@ fn encode_withdraw_queue(queue: &WithdrawQueue, out: &mut Vec<u8>) {
     }
 }
 
+#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
 fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQueue, RuntimeError> {
     let next_withdraw_to_execute = read_u64(bytes, cursor)?;
     let next_pending_withdrawal_id = read_u64(bytes, cursor)?;
@@ -610,6 +691,129 @@ fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQue
             "withdraw queue invariant failed",
         ))
     }
+}
+
+#[derive(Clone, Copy)]
+struct WithdrawQueueHeader {
+    next_withdraw_to_execute: u64,
+    next_pending_withdrawal_id: u64,
+    pending_count: u32,
+}
+
+struct StoredStateHeader {
+    total_assets: u128,
+    total_shares: u128,
+    idle_assets: u128,
+    external_assets: u128,
+    fee_anchor: FeeAccrualAnchor,
+    op_state: OpState,
+    withdraw_queue: WithdrawQueueHeader,
+    next_op_id: u64,
+}
+
+fn queue_page_id(withdrawal_id: u64) -> u64 {
+    withdrawal_id / WITHDRAW_QUEUE_PAGE_SIZE
+}
+
+fn queue_page_range(queue: &WithdrawQueue) -> Option<(u64, u64)> {
+    if queue.is_empty() {
+        return None;
+    }
+    let tail_id = queue.next_pending_withdrawal_id.checked_sub(1)?;
+    Some((
+        queue_page_id(queue.next_withdraw_to_execute),
+        queue_page_id(tail_id),
+    ))
+}
+
+fn queue_header_page_range(header: WithdrawQueueHeader) -> Option<(u64, u64)> {
+    if header.next_withdraw_to_execute >= header.next_pending_withdrawal_id {
+        return None;
+    }
+    let tail_id = header.next_pending_withdrawal_id.checked_sub(1)?;
+    Some((
+        queue_page_id(header.next_withdraw_to_execute),
+        queue_page_id(tail_id),
+    ))
+}
+
+fn encode_withdraw_queue_header(queue: &WithdrawQueue, out: &mut Vec<u8>) {
+    push_u64(out, queue.next_withdraw_to_execute);
+    push_u64(out, queue.next_pending_withdrawal_id);
+    push_u32(out, queue.len() as u32);
+}
+
+fn decode_withdraw_queue_header(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<WithdrawQueueHeader, RuntimeError> {
+    let header = WithdrawQueueHeader {
+        next_withdraw_to_execute: read_u64(bytes, cursor)?,
+        next_pending_withdrawal_id: read_u64(bytes, cursor)?,
+        pending_count: read_u32(bytes, cursor)?,
+    };
+    if header.next_withdraw_to_execute > header.next_pending_withdrawal_id {
+        return Err(RuntimeError::storage_error("withdraw queue invalid ids"));
+    }
+    if header.pending_count > SOROBAN_MAX_PENDING_WITHDRAWALS {
+        return Err(RuntimeError::storage_error(
+            "withdraw queue exceeds soroban cap",
+        ));
+    }
+    if header.pending_count == 0
+        && header.next_withdraw_to_execute != header.next_pending_withdrawal_id
+    {
+        return Err(RuntimeError::storage_error(
+            "empty withdraw queue invalid ids",
+        ));
+    }
+    if header.pending_count > 0
+        && header.next_withdraw_to_execute >= header.next_pending_withdrawal_id
+    {
+        return Err(RuntimeError::storage_error(
+            "non-empty withdraw queue invalid ids",
+        ));
+    }
+    Ok(header)
+}
+
+fn encode_withdraw_queue_page<'a>(
+    entries: impl IntoIterator<Item = (u64, &'a PendingWithdrawal)>,
+) -> Vec<u8> {
+    let entries: Vec<_> = entries.into_iter().collect();
+    let mut out = Vec::new();
+    push_u32(&mut out, entries.len() as u32);
+    for (id, withdrawal) in entries {
+        push_u64(&mut out, id);
+        push_address(&mut out, &withdrawal.owner);
+        push_address(&mut out, &withdrawal.receiver);
+        push_u128(&mut out, withdrawal.escrow_shares);
+        push_u128(&mut out, withdrawal.expected_assets);
+        push_u64(&mut out, withdrawal.requested_at_ns.as_u64());
+    }
+    out
+}
+
+fn decode_withdraw_queue_page(bytes: &[u8]) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
+    let mut cursor = 0usize;
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    if count > WITHDRAW_QUEUE_PAGE_SIZE as usize {
+        return Err(RuntimeError::storage_error("withdraw queue page too large"));
+    }
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = read_u64(bytes, &mut cursor)?;
+        let withdrawal = PendingWithdrawal::new(
+            read_address(bytes, &mut cursor)?,
+            read_address(bytes, &mut cursor)?,
+            read_u128(bytes, &mut cursor)?,
+            read_u128(bytes, &mut cursor)?,
+            templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?),
+        );
+        entries.push((id, withdrawal));
+    }
+    finish_decode(bytes, cursor)?;
+    Ok(entries)
 }
 
 fn encode_op_state(op_state: &OpState, out: &mut Vec<u8>) {
@@ -714,6 +918,7 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
     }
 }
 
+#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
 pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
     let mut out = Vec::new();
     push_storage_header(&mut out, STORAGE_KIND_STATE);
@@ -729,6 +934,22 @@ pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
     out
 }
 
+fn encode_state_header_blob(state: &VaultState) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_storage_header_version(&mut out, STORAGE_KIND_STATE, STORAGE_VERSION_STATE_PAGED);
+    push_u128(&mut out, state.total_assets);
+    push_u128(&mut out, state.total_shares);
+    push_u128(&mut out, state.idle_assets);
+    push_u128(&mut out, state.external_assets);
+    push_u128(&mut out, state.fee_anchor.total_assets);
+    push_u64(&mut out, state.fee_anchor.timestamp_ns.as_u64());
+    encode_op_state(&state.op_state, &mut out);
+    encode_withdraw_queue_header(&state.withdraw_queue, &mut out);
+    push_u64(&mut out, state.next_op_id);
+    out
+}
+
+#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
 pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
     decode_storage_payload(
         bytes,
@@ -737,6 +958,7 @@ pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError
     )
 }
 
+#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
 fn decode_state_blob_v1(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
     let mut cursor = 0usize;
     let state = VaultState {
@@ -760,6 +982,61 @@ fn decode_state_blob_v1(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
     }
 
     Ok(state)
+}
+
+fn decode_state_header_blob(bytes: &[u8]) -> Result<StoredStateHeader, RuntimeError> {
+    let (version, payload) = storage_payload(bytes, StorageKind::State)?;
+    if version != STORAGE_VERSION_STATE_PAGED {
+        return Err(RuntimeError::storage_error(
+            "unsupported state storage version",
+        ));
+    }
+    decode_state_header_blob_v2(payload)
+}
+
+fn decode_state_header_blob_v2(bytes: &[u8]) -> Result<StoredStateHeader, RuntimeError> {
+    let mut cursor = 0usize;
+    let header = StoredStateHeader {
+        total_assets: read_u128(bytes, &mut cursor)?,
+        total_shares: read_u128(bytes, &mut cursor)?,
+        idle_assets: read_u128(bytes, &mut cursor)?,
+        external_assets: read_u128(bytes, &mut cursor)?,
+        fee_anchor: FeeAccrualAnchor::new(
+            read_u128(bytes, &mut cursor)?,
+            templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?),
+        ),
+        op_state: decode_op_state(bytes, &mut cursor)?,
+        withdraw_queue: decode_withdraw_queue_header(bytes, &mut cursor)?,
+        next_op_id: read_u64(bytes, &mut cursor)?,
+    };
+    finish_decode(bytes, cursor)?;
+    Ok(header)
+}
+
+fn compose_state_from_header(
+    header: StoredStateHeader,
+    withdraw_queue: WithdrawQueue,
+) -> Result<VaultState, RuntimeError> {
+    if withdraw_queue.next_withdraw_to_execute != header.withdraw_queue.next_withdraw_to_execute
+        || withdraw_queue.next_pending_withdrawal_id
+            != header.withdraw_queue.next_pending_withdrawal_id
+        || withdraw_queue.len() as u32 != header.withdraw_queue.pending_count
+        || !withdraw_queue.check_invariants_with_max(SOROBAN_MAX_PENDING_WITHDRAWALS)
+    {
+        return Err(RuntimeError::storage_error(
+            "withdraw queue pages do not match state header",
+        ));
+    }
+    Ok(VaultState {
+        total_assets: header.total_assets,
+        total_shares: header.total_shares,
+        idle_assets: header.idle_assets,
+        external_assets: header.external_assets,
+        fee_anchor: header.fee_anchor,
+        op_state: header.op_state,
+        withdraw_queue,
+        next_op_id: header.next_op_id,
+    })
 }
 
 pub(crate) fn compose_policy_state(
@@ -807,6 +1084,8 @@ impl<'a> SorobanStorage<'a> {
     }
 
     const SK_ADDRBOOK: Symbol = symbol_short!("addrbook");
+    const SK_BLOBPAGE: Symbol = symbol_short!("blobpage");
+    const SK_WQPAGE: Symbol = symbol_short!("wqpage");
 
     fn address_key(&self, kernel_addr: &Address) -> (Symbol, BytesN<32>) {
         (
@@ -815,19 +1094,224 @@ impl<'a> SorobanStorage<'a> {
         )
     }
 
-    fn load_blob(&self, key: &Symbol) -> Option<Vec<u8>> {
-        self.env
-            .storage()
-            .persistent()
-            .get::<_, Bytes>(key)
-            .map(|bytes| bytes.to_alloc_vec())
+    fn blob_page_key(&self, key: &Symbol, page: u32) -> (Symbol, Symbol, u32) {
+        (Self::SK_BLOBPAGE, key.clone(), page)
     }
 
-    fn save_blob(&self, key: &Symbol, bytes: &[u8]) {
+    fn withdraw_queue_page_key(&self, page: u64) -> (Symbol, u64) {
+        (Self::SK_WQPAGE, page)
+    }
+
+    fn stored_blob_manifest(&self, key: &Symbol) -> Result<Option<BlobManifest>, RuntimeError> {
+        let Some(bytes) = self.env.storage().persistent().get::<_, Bytes>(key) else {
+            return Ok(None);
+        };
+        decode_blob_manifest(&bytes.to_alloc_vec())
+    }
+
+    fn load_blob(&self, key: &Symbol) -> Result<Option<Vec<u8>>, RuntimeError> {
+        let Some(stored) = self.env.storage().persistent().get::<_, Bytes>(key) else {
+            return Ok(None);
+        };
+        let stored = stored.to_alloc_vec();
+        match decode_blob_manifest(&stored)? {
+            Some(BlobManifest::Inline) => {
+                let mut cursor = 5usize;
+                let len = read_u32(&stored, &mut cursor)? as usize;
+                Ok(Some(stored[cursor..cursor + len].to_vec()))
+            }
+            Some(BlobManifest::Paged { len, page_count }) => {
+                let mut out = Vec::with_capacity(len);
+                let p = self.env.storage().persistent();
+                for page in 0..page_count {
+                    let page_key = self.blob_page_key(key, page);
+                    let page_bytes = p
+                        .get::<_, Bytes>(&page_key)
+                        .ok_or_else(|| RuntimeError::storage_error("missing blob page"))?
+                        .to_alloc_vec();
+                    if page_bytes.len() > BLOB_PAGE_BYTES {
+                        return Err(RuntimeError::storage_error("blob page too large"));
+                    }
+                    out.extend_from_slice(&page_bytes);
+                }
+                if out.len() != len {
+                    return Err(RuntimeError::storage_error("invalid paged blob length"));
+                }
+                Ok(Some(out))
+            }
+            None => Err(RuntimeError::storage_error("invalid blob storage envelope")),
+        }
+    }
+
+    fn save_blob(&self, key: &Symbol, bytes: &[u8]) -> Result<(), RuntimeError> {
+        let previous_page_count = match self.stored_blob_manifest(key)? {
+            Some(BlobManifest::Paged { page_count, .. }) => page_count,
+            _ => 0,
+        };
+
+        let p = self.env.storage().persistent();
+        if bytes.len() <= BLOB_PAGE_BYTES {
+            let stored = encode_blob_inline(bytes);
+            ensure_contract_data_entry_size(&stored)?;
+            p.set(key, &Bytes::from_slice(self.env, &stored));
+            for page in 0..previous_page_count {
+                p.remove(&self.blob_page_key(key, page));
+            }
+            return Ok(());
+        }
+
+        let page_count = bytes.len().div_ceil(BLOB_PAGE_BYTES) as u32;
+        let manifest = encode_blob_manifest(bytes.len(), page_count);
+        ensure_contract_data_entry_size(&manifest)?;
+        for (page, chunk) in bytes.chunks(BLOB_PAGE_BYTES).enumerate() {
+            let page_key = self.blob_page_key(key, page as u32);
+            p.set(&page_key, &Bytes::from_slice(self.env, chunk));
+        }
+        p.set(key, &Bytes::from_slice(self.env, &manifest));
+        for page in page_count..previous_page_count {
+            p.remove(&self.blob_page_key(key, page));
+        }
+        Ok(())
+    }
+
+    fn clear_blob(&self, key: &Symbol) {
+        let page_count = match self.stored_blob_manifest(key) {
+            Ok(Some(BlobManifest::Paged { page_count, .. })) => page_count,
+            _ => 0,
+        };
+        let p = self.env.storage().persistent();
+        p.remove(key);
+        for page in 0..page_count {
+            p.remove(&self.blob_page_key(key, page));
+        }
+    }
+
+    fn extend_blob_ttl(&self, key: &Symbol, threshold: u32, extend_to: u32) {
+        let p = self.env.storage().persistent();
+        if !p.has(key) {
+            return;
+        }
+        p.extend_ttl(key, threshold, extend_to);
+        if let Ok(Some(BlobManifest::Paged { page_count, .. })) = self.stored_blob_manifest(key) {
+            for page in 0..page_count {
+                let page_key = self.blob_page_key(key, page);
+                if p.has(&page_key) {
+                    p.extend_ttl(&page_key, threshold, extend_to);
+                }
+            }
+        }
+    }
+
+    fn load_withdraw_queue_page(
+        &self,
+        page: u64,
+    ) -> Result<Option<Vec<(u64, PendingWithdrawal)>>, RuntimeError> {
+        let key = self.withdraw_queue_page_key(page);
         self.env
             .storage()
             .persistent()
-            .set(key, &Bytes::from_slice(self.env, bytes));
+            .get::<_, Bytes>(&key)
+            .map(|bytes| decode_withdraw_queue_page(&bytes.to_alloc_vec()))
+            .transpose()
+    }
+
+    fn load_withdraw_queue_pages(
+        &self,
+        header: WithdrawQueueHeader,
+    ) -> Result<WithdrawQueue, RuntimeError> {
+        let Some((first_page, last_page)) = queue_header_page_range(header) else {
+            return Ok(WithdrawQueue::with_state(
+                Vec::<(u64, PendingWithdrawal)>::new(),
+                header.next_pending_withdrawal_id,
+                header.next_pending_withdrawal_id,
+            ));
+        };
+
+        let mut entries = Vec::new();
+        let mut last_id = None;
+        for page in first_page..=last_page {
+            if let Some(page_entries) = self.load_withdraw_queue_page(page)? {
+                for (id, _) in &page_entries {
+                    if queue_page_id(*id) != page
+                        || *id < header.next_withdraw_to_execute
+                        || *id >= header.next_pending_withdrawal_id
+                        || last_id.is_some_and(|last| last >= *id)
+                    {
+                        return Err(RuntimeError::storage_error(
+                            "withdraw queue page entries invalid",
+                        ));
+                    }
+                    last_id = Some(*id);
+                }
+                entries.extend(page_entries);
+            }
+        }
+        Ok(WithdrawQueue::with_state(
+            entries,
+            header.next_withdraw_to_execute,
+            header.next_pending_withdrawal_id,
+        ))
+    }
+
+    fn save_withdraw_queue_pages(&self, queue: &WithdrawQueue) -> Result<(), RuntimeError> {
+        let previous_range = self
+            .load_state_blob()?
+            .and_then(|stored| decode_state_header_blob(&stored).ok())
+            .and_then(|header| queue_header_page_range(header.withdraw_queue));
+
+        let current_range = queue_page_range(queue);
+        let p = self.env.storage().persistent();
+
+        if let Some((first_page, last_page)) = current_range {
+            for page in first_page..=last_page {
+                let entries = queue
+                    .iter()
+                    .filter(|(id, _)| queue_page_id(*id) == page)
+                    .collect::<Vec<_>>();
+                let key = self.withdraw_queue_page_key(page);
+                if entries.is_empty() {
+                    p.remove(&key);
+                    continue;
+                }
+                let encoded = encode_withdraw_queue_page(entries);
+                ensure_contract_data_entry_size(&encoded)?;
+                let current = p.get::<_, Bytes>(&key).map(|bytes| bytes.to_alloc_vec());
+                if current.as_deref() != Some(encoded.as_slice()) {
+                    p.set(&key, &Bytes::from_slice(self.env, &encoded));
+                }
+            }
+        }
+
+        if let Some((first_page, last_page)) = previous_range {
+            for page in first_page..=last_page {
+                let still_live = current_range
+                    .map(|(first, last)| page >= first && page <= last)
+                    .unwrap_or(false);
+                if !still_live {
+                    p.remove(&self.withdraw_queue_page_key(page));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn extend_withdraw_queue_page_ttls(
+        &self,
+        header: WithdrawQueueHeader,
+        threshold: u32,
+        extend_to: u32,
+    ) {
+        let Some((first_page, last_page)) = queue_header_page_range(header) else {
+            return;
+        };
+        let p = self.env.storage().persistent();
+        for page in first_page..=last_page {
+            let key = self.withdraw_queue_page_key(page);
+            if p.has(&key) {
+                p.extend_ttl(&key, threshold, extend_to);
+            }
+        }
     }
 
     /// Load a kernel-to-Soroban address mapping from persistent storage.
@@ -879,70 +1363,67 @@ impl<'a> SorobanStorage<'a> {
         }
     }
 
-    pub(crate) fn load_state_blob(&self) -> Option<Vec<u8>> {
+    pub(crate) fn load_state_blob(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::StateBlob)
     }
 
-    pub(crate) fn save_state_blob(&self, state: &[u8]) {
-        self.save_blob(&SorobanStorageKey::StateBlob, state);
+    pub(crate) fn save_state_blob(&self, state: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::StateBlob, state)
     }
 
-    pub fn load_policy_locks(&self) -> Option<Vec<u8>> {
+    pub fn load_policy_locks(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::PolicyLocks)
     }
 
-    pub fn save_policy_locks(&self, state: &[u8]) {
-        self.save_blob(&SorobanStorageKey::PolicyLocks, state);
+    pub fn save_policy_locks(&self, state: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::PolicyLocks, state)
     }
 
-    pub fn load_policy_supply_queue(&self) -> Option<Vec<u8>> {
+    pub fn load_policy_supply_queue(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::PolicySupplyQueue)
     }
 
-    pub fn save_policy_supply_queue(&self, state: &[u8]) {
-        self.save_blob(&SorobanStorageKey::PolicySupplyQueue, state);
+    pub fn save_policy_supply_queue(&self, state: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::PolicySupplyQueue, state)
     }
 
-    pub fn load_policy_markets(&self) -> Option<Vec<u8>> {
+    pub fn load_policy_markets(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::PolicyMarkets)
     }
 
-    pub fn save_policy_markets(&self, state: &[u8]) {
-        self.save_blob(&SorobanStorageKey::PolicyMarkets, state);
+    pub fn save_policy_markets(&self, state: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::PolicyMarkets, state)
     }
 
-    pub fn load_policy_principals(&self) -> Option<Vec<u8>> {
+    pub fn load_policy_principals(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::PolicyPrincipals)
     }
 
-    pub fn save_policy_principals(&self, state: &[u8]) {
-        self.save_blob(&SorobanStorageKey::PolicyPrincipals, state);
+    pub fn save_policy_principals(&self, state: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::PolicyPrincipals, state)
     }
 
-    pub fn load_policy_cap_groups(&self) -> Option<Vec<u8>> {
+    pub fn load_policy_cap_groups(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::PolicyCapGroups)
     }
 
-    pub fn save_policy_cap_groups(&self, state: &[u8]) {
-        self.save_blob(&SorobanStorageKey::PolicyCapGroups, state);
+    pub fn save_policy_cap_groups(&self, state: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::PolicyCapGroups, state)
     }
 
     /// Load restrictions from persistent storage.
-    pub fn load_restrictions(&self) -> Option<Vec<u8>> {
+    pub fn load_restrictions(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::Restrictions)
     }
 
     /// Save restrictions to persistent storage.
-    pub fn save_restrictions(&self, restrictions: &[u8]) {
-        self.save_blob(&SorobanStorageKey::Restrictions, restrictions);
+    pub fn save_restrictions(&self, restrictions: &[u8]) -> Result<(), RuntimeError> {
+        self.save_blob(&SorobanStorageKey::Restrictions, restrictions)
     }
 
     /// Clear restrictions from persistent storage.
     pub fn clear_restrictions(&self) {
-        self.env
-            .storage()
-            .persistent()
-            .remove(&SorobanStorageKey::Restrictions);
+        self.clear_blob(&SorobanStorageKey::Restrictions);
     }
 
     /// Check if the contract is paused.
@@ -1005,7 +1486,6 @@ impl<'a> SorobanStorage<'a> {
             .storage()
             .instance()
             .extend_ttl(threshold, extend_to);
-        let p = self.env.storage().persistent();
         // Extend each persistent key if it exists.
         for key in &[
             SorobanStorageKey::StateBlob,
@@ -1016,13 +1496,16 @@ impl<'a> SorobanStorage<'a> {
             SorobanStorageKey::PolicyCapGroups,
             SorobanStorageKey::Restrictions,
         ] {
-            if p.has(key) {
-                p.extend_ttl(key, threshold, extend_to);
-            }
+            self.extend_blob_ttl(key, threshold, extend_to);
         }
-        if let Some(stored) = self.load_state_blob() {
-            if let Ok(state) = decode_state_blob(&stored) {
-                self.extend_state_address_ttls(&state, threshold, extend_to);
+        if let Ok(Some(stored)) = self.load_state_blob() {
+            if let Ok(header) = decode_state_header_blob(&stored) {
+                self.extend_withdraw_queue_page_ttls(header.withdraw_queue, threshold, extend_to);
+                if let Ok(queue) = self.load_withdraw_queue_pages(header.withdraw_queue) {
+                    if let Ok(state) = compose_state_from_header(header, queue) {
+                        self.extend_state_address_ttls(&state, threshold, extend_to);
+                    }
+                }
             }
         }
     }
@@ -1034,8 +1517,10 @@ impl<'a> SorobanStorage<'a> {
 
 impl Storage for SorobanStorage<'_> {
     fn load_state(&self) -> Result<Option<VaultState>, RuntimeError> {
-        if let Some(stored) = self.load_state_blob() {
-            return Ok(Some(decode_state_blob(&stored)?));
+        if let Some(stored) = self.load_state_blob()? {
+            let header = decode_state_header_blob(&stored)?;
+            let withdraw_queue = self.load_withdraw_queue_pages(header.withdraw_queue)?;
+            return Ok(Some(compose_state_from_header(header, withdraw_queue)?));
         }
 
         Ok(None)
@@ -1050,9 +1535,9 @@ impl Storage for SorobanStorage<'_> {
                 "withdraw queue exceeds soroban cap",
             ));
         }
-        let state_blob = encode_state_blob(state);
-        ensure_contract_data_entry_size(&state_blob)?;
-        self.save_state_blob(&state_blob);
+        self.save_withdraw_queue_pages(&state.withdraw_queue)?;
+        let state_blob = encode_state_header_blob(state);
+        self.save_state_blob(&state_blob)?;
         self.extend_default_ttl();
         Ok(())
     }
@@ -1072,23 +1557,23 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        let leases = match self.load_policy_locks() {
+        let leases = match self.load_policy_locks()? {
             Some(stored) => Some(decode_policy_locks(&stored)?),
             None => None,
         };
-        let supply_queue = match self.load_policy_supply_queue() {
+        let supply_queue = match self.load_policy_supply_queue()? {
             Some(stored) => Some(decode_supply_queue(&stored)?),
             None => None,
         };
-        let markets = match self.load_policy_markets() {
+        let markets = match self.load_policy_markets()? {
             Some(stored) => Some(decode_markets(&stored)?),
             None => None,
         };
-        let principals = match self.load_policy_principals() {
+        let principals = match self.load_policy_principals()? {
             Some(stored) => Some(decode_principals(&stored)?),
             None => None,
         };
-        let cap_groups = match self.load_policy_cap_groups() {
+        let cap_groups = match self.load_policy_cap_groups()? {
             Some(stored) => Some(decode_cap_groups(&stored)?),
             None => None,
         };
@@ -1102,20 +1587,17 @@ impl Storage for SorobanStorage<'_> {
         let markets = encode_markets(state.markets());
         let principals = encode_principals(state.principals());
         let cap_groups = encode_cap_groups(state.cap_groups());
-        for bytes in [&locks, &supply_queue, &markets, &principals, &cap_groups] {
-            ensure_contract_data_entry_size(bytes)?;
-        }
-        self.save_policy_locks(&locks);
-        self.save_policy_supply_queue(&supply_queue);
-        self.save_policy_markets(&markets);
-        self.save_policy_principals(&principals);
-        self.save_policy_cap_groups(&cap_groups);
+        self.save_policy_locks(&locks)?;
+        self.save_policy_supply_queue(&supply_queue)?;
+        self.save_policy_markets(&markets)?;
+        self.save_policy_principals(&principals)?;
+        self.save_policy_cap_groups(&cap_groups)?;
         self.extend_default_ttl();
         Ok(())
     }
 
     fn load_restrictions(&self) -> Result<Option<Restrictions>, RuntimeError> {
-        let restrictions = match SorobanStorage::load_restrictions(self) {
+        let restrictions = match SorobanStorage::load_restrictions(self)? {
             Some(stored) => Some(decode_restrictions(&stored)?),
             None => None,
         };
@@ -1137,8 +1619,7 @@ impl Storage for SorobanStorage<'_> {
                 return Err(RuntimeError::storage_error("restrictions too large"));
             }
             let bytes = encode_restrictions(restrictions);
-            ensure_contract_data_entry_size(&bytes)?;
-            SorobanStorage::save_restrictions(self, &bytes);
+            SorobanStorage::save_restrictions(self, &bytes)?;
         } else {
             SorobanStorage::clear_restrictions(self);
         }

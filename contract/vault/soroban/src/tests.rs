@@ -2121,7 +2121,7 @@ mod storage_tests {
 
             // Fresh storage should not be initialized
             assert!(!storage.is_initialized());
-            assert!(storage.load_state_blob().is_none());
+            assert!(storage.load_state_blob().unwrap().is_none());
 
             // Save state
             let kernel = VaultState {
@@ -2278,7 +2278,9 @@ mod storage_tests {
         let (env, contract_id) = contract_env;
         env.as_contract(&contract_id, || {
             let storage = SorobanStorage::new(&env);
-            storage.save_state_blob(&alloc::vec![1, 2, 3, 4, 5]);
+            storage
+                .save_state_blob(&alloc::vec![1, 2, 3, 4, 5])
+                .unwrap();
 
             let err = Storage::load_state(&storage).unwrap_err();
             assert_eq!(err, RuntimeError::StorageError);
@@ -2384,17 +2386,16 @@ mod storage_tests {
             )
             .unwrap();
 
-            let storage = SorobanStorage::new(&env);
-            let versioned = fuzz_api::encode_state_blob_bytes(&VaultState::default());
-            storage.save_state_blob(&versioned);
+            let mut storage = SorobanStorage::new(&env);
+            let state = state_with_pending_withdrawals(2);
+            Storage::save_state(&mut storage, &state).unwrap();
             env.storage()
                 .instance()
                 .set(&soroban_sdk::symbol_short!("migrate"), &true);
 
             SorobanVaultContract::migrate(env.clone(), governance).unwrap();
 
-            let stored = storage.load_state_blob().expect("rewritten state blob");
-            assert_eq!(stored, versioned);
+            assert_eq!(Storage::load_state(&storage).unwrap(), Some(state));
             assert_eq!(
                 env.storage()
                     .instance()
@@ -2420,18 +2421,36 @@ mod storage_tests {
         env.as_contract(&contract_id, || {
             let mut storage = SorobanStorage::new(&env);
             let safe = state_with_pending_withdrawals(SOROBAN_MAX_PENDING_WITHDRAWALS);
-            assert!(fuzz_api::encode_state_blob_bytes(&safe).len() < 64 * 1024);
+            assert!(fuzz_api::encode_state_blob_bytes(&safe).len() > 64 * 1024);
             storage.save_state(&safe).expect("safe queue cap persists");
+            assert_eq!(Storage::load_state(&storage).unwrap(), Some(safe));
 
             let too_large = state_with_pending_withdrawals(SOROBAN_MAX_PENDING_WITHDRAWALS + 1);
-            assert!(fuzz_api::encode_state_blob_bytes(&too_large).len() < 64 * 1024);
             assert_eq!(
                 storage.save_state(&too_large).unwrap_err(),
                 RuntimeError::StorageError
             );
+        });
+    }
 
-            let kernel_max = state_with_pending_withdrawals(1024);
-            assert!(fuzz_api::encode_state_blob_bytes(&kernel_max).len() > 64 * 1024);
+    #[rstest]
+    fn soroban_storage_rejects_missing_withdraw_queue_page(
+        contract_env: (Env, soroban_sdk::Address),
+    ) {
+        let (env, contract_id) = contract_env;
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            let state = state_with_pending_withdrawals(129);
+            storage.save_state(&state).expect("paged queue persists");
+
+            env.storage()
+                .persistent()
+                .remove(&(soroban_sdk::symbol_short!("wqpage"), 1u64));
+
+            assert_eq!(
+                Storage::load_state(&storage).unwrap_err(),
+                RuntimeError::StorageError
+            );
         });
     }
 
@@ -2458,14 +2477,28 @@ mod storage_tests {
         let (env, contract_id) = contract_env;
         env.as_contract(&contract_id, || {
             let mut storage = SorobanStorage::new(&env);
-            let addresses = (0..=SOROBAN_MAX_RESTRICTION_ADDRESSES)
+            let addresses = (0..SOROBAN_MAX_RESTRICTION_ADDRESSES)
                 .map(|i| {
                     let mut raw = [0u8; 32];
                     raw[..8].copy_from_slice(&(i as u64).to_le_bytes());
                     KernelAddress(raw)
                 })
                 .collect::<alloc::vec::Vec<_>>();
-            let restrictions = Some(Restrictions::blacklist(addresses));
+            let restrictions = Some(Restrictions::blacklist(addresses.clone()));
+            Storage::save_restrictions(&mut storage, &restrictions).unwrap();
+            assert_eq!(
+                Storage::load_restrictions(&storage).unwrap(),
+                Some(Restrictions::blacklist(addresses))
+            );
+
+            let oversized = (0..=SOROBAN_MAX_RESTRICTION_ADDRESSES)
+                .map(|i| {
+                    let mut raw = [0u8; 32];
+                    raw[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    KernelAddress(raw)
+                })
+                .collect::<alloc::vec::Vec<_>>();
+            let restrictions = Some(Restrictions::blacklist(oversized));
 
             assert_eq!(
                 Storage::save_restrictions(&mut storage, &restrictions).unwrap_err(),
@@ -2578,7 +2611,9 @@ mod storage_tests {
             let storage = SorobanStorage::new(&env);
             let mut markets = OrderedMap::new();
             let _ = markets.insert(1, MarketConfig::new(true, 100, None));
-            storage.save_policy_markets(&fuzz_api::encode_markets_bytes(&markets));
+            storage
+                .save_policy_markets(&fuzz_api::encode_markets_bytes(&markets))
+                .unwrap();
 
             assert_eq!(
                 Storage::load_policy_state(&storage).unwrap_err(),
@@ -2765,7 +2800,7 @@ mod storage_tests {
             let storage = SorobanStorage::new(&env);
             let mut bytes = fuzz_api::encode_state_blob_bytes(&VaultState::default());
             bytes.push(0xff);
-            storage.save_state_blob(&bytes);
+            storage.save_state_blob(&bytes).unwrap();
 
             let err = Storage::load_state(&storage).unwrap_err();
             assert_eq!(err, RuntimeError::StorageError);

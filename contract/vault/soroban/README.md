@@ -194,9 +194,10 @@ Useful commands:
 ## State Size and Operational Limits
 
 - Soroban enforces per-entry and per-transaction resource limits. Current network values are documented by Stellar: https://developers.stellar.org/docs/networks/resource-limits-fees
-- Vault runtime state is persisted as a single versioned `StateBlob`, so serialized `VaultState` size is the practical storage-pressure point.
-- The shared kernel still has an absolute `MAX_PENDING = 1024`, but Soroban uses the chain-specific `SOROBAN_MAX_PENDING_WITHDRAWALS = 512` runtime cap to stay below the 64 KiB contract-data-entry limit with room for schema growth.
-- In-flight operation plans (`Allocating.plan`, `Refreshing.plan`) are expected to remain small under allocator policy, so the 512 Soroban pending-withdrawal cap is the dominant operational bound in practice.
+- Vault runtime state is persisted as a compact versioned `StateBlob` header plus domain-paged withdrawal queue entries. Each `wqpage` stores up to 128 pending withdrawals, so the queue can use the kernel `MAX_PENDING = 1024` cap without coupling the whole queue to one 64 KiB storage entry.
+- Restrictions and policy blobs use the generic blob-paging transport. Small payloads are stored inline; larger payloads are split into bounded 32 KiB pages.
+- One contract invocation is still bounded by Soroban transaction resource limits. Very large sanctions-list style updates should use a batched governance/update flow instead of one giant replacement payload.
+- In-flight operation plans (`Allocating.plan`, `Refreshing.plan`) are expected to remain small under allocator policy; if that assumption changes, the paged blob transport protects storage entry size but not per-transaction CPU/write-byte budgets.
 - Persistent storage blobs carry a compact `TVS` version header. Decoders reject pre-header bytes and unsupported versions; schema upgrades should add explicit per-version decode/migration dispatch before any layout change.
 
 ## Practical Risk Model
