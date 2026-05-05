@@ -24,6 +24,10 @@ fn push_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
+fn push_u128(out: &mut Vec<u8>, value: u128) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
 fn push_i128(out: &mut Vec<u8>, value: i128) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -119,6 +123,12 @@ fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, CodecError> {
     let mut raw = [0u8; 8];
     raw.copy_from_slice(read_exact(bytes, cursor, 8)?);
     Ok(u64::from_le_bytes(raw))
+}
+
+fn read_u128(bytes: &[u8], cursor: &mut usize) -> Result<u128, CodecError> {
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(read_exact(bytes, cursor, 16)?);
+    Ok(u128::from_le_bytes(raw))
 }
 
 fn read_i128(bytes: &[u8], cursor: &mut usize) -> Result<i128, CodecError> {
@@ -219,6 +229,10 @@ pub enum VaultCommand {
     ExecuteWithdraw {
         caller: String,
     },
+    AbortWithdrawing {
+        caller: String,
+        op_id: u64,
+    },
     Allocate {
         caller: String,
         market: u32,
@@ -266,6 +280,15 @@ pub enum VaultCommandResult {
     Unit,
     I128(i128),
     U64(u64),
+    ExecuteWithdrawStatus(ExecuteWithdrawStatus),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecuteWithdrawStatus {
+    pub op_state_before: u32,
+    pub op_state_after: u32,
+    pub assets_transferred: u128,
+    pub events_emitted: u32,
 }
 
 pub const GOVERNANCE_CONFIG_KIND_CURATOR: u32 = 0;
@@ -318,6 +341,11 @@ impl VaultCommand {
                 push_u8(&mut out, 2);
                 push_string(&mut out, caller);
             }
+            Self::AbortWithdrawing { caller, op_id } => {
+                push_u8(&mut out, 11);
+                push_string(&mut out, caller);
+                push_u64(&mut out, *op_id);
+            }
             Self::Allocate {
                 caller,
                 market,
@@ -362,6 +390,10 @@ impl VaultCommand {
             }),
             2 => Ok(Self::ExecuteWithdraw {
                 caller: read_string(bytes, &mut cursor)?,
+            }),
+            11 => Ok(Self::AbortWithdrawing {
+                caller: read_string(bytes, &mut cursor)?,
+                op_id: read_u64(bytes, &mut cursor)?,
             }),
             3 => Ok(Self::Allocate {
                 caller: read_string(bytes, &mut cursor)?,
@@ -483,6 +515,13 @@ impl VaultCommandResult {
                 push_u8(&mut out, 2);
                 push_u64(&mut out, *value);
             }
+            Self::ExecuteWithdrawStatus(status) => {
+                push_u8(&mut out, 3);
+                push_u32(&mut out, status.op_state_before);
+                push_u32(&mut out, status.op_state_after);
+                push_u128(&mut out, status.assets_transferred);
+                push_u32(&mut out, status.events_emitted);
+            }
         }
         out
     }
@@ -493,6 +532,12 @@ impl VaultCommandResult {
             0 => Ok(Self::Unit),
             1 => Ok(Self::I128(read_i128(bytes, &mut cursor)?)),
             2 => Ok(Self::U64(read_u64(bytes, &mut cursor)?)),
+            3 => Ok(Self::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
+                op_state_before: read_u32(bytes, &mut cursor)?,
+                op_state_after: read_u32(bytes, &mut cursor)?,
+                assets_transferred: read_u128(bytes, &mut cursor)?,
+                events_emitted: read_u32(bytes, &mut cursor)?,
+            })),
             _ => Err(CodecError::InvalidTag),
         }?;
         ensure_finished(bytes, cursor)?;
@@ -517,6 +562,10 @@ mod tests {
             VaultCommand::ResyncIdleBalance,
             VaultCommand::CancelMigration {
                 caller: String::from("caller"),
+            },
+            VaultCommand::AbortWithdrawing {
+                caller: String::from("caller"),
+                op_id: 42,
             },
         ];
 
@@ -595,5 +644,19 @@ mod tests {
         .encode();
 
         assert!(VaultCommand::decode(&governance).is_err());
+    }
+
+    #[test]
+    fn vault_command_result_roundtrip_execute_withdraw_status() {
+        let result = VaultCommandResult::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
+            op_state_before: 0,
+            op_state_after: 2,
+            assets_transferred: 1_000,
+            events_emitted: 3,
+        });
+
+        let encoded = result.encode();
+        let decoded = VaultCommandResult::decode(&encoded).expect("decode command result");
+        assert_eq!(decoded, result);
     }
 }
