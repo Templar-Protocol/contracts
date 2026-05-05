@@ -116,7 +116,7 @@ impl SorobanShareTokenContract {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
         require_contract_address(&env, &vault);
-        env.storage().instance().set(&DataKey::Vault, &vault);
+        panic_with_error!(&env, ShareTokenError::VaultImmutable);
     }
 
     pub fn set_metadata(env: Env, caller: Address, name: String, symbol: String, decimals: u32) {

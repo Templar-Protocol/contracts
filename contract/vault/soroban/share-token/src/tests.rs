@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::{Ledger, LedgerInfo};
-use soroban_sdk::{contract, contractimpl, IntoVal, MuxedAddress};
+use soroban_sdk::{contract, contractimpl, IntoVal, MuxedAddress, Symbol};
 
 #[contract]
 struct VaultCaller;
@@ -196,4 +196,67 @@ fn total_supply_tracks_mint_and_burn() {
         ().into_val(&env),
     );
     assert_eq!(supply, 300);
+}
+
+#[test]
+fn admin_cannot_rebind_vault_after_init() {
+    let (env, admin, vault, token) = setup();
+    let replacement_vault = env.register(VaultCaller, ());
+
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &Symbol::new(&env, "set_vault"),
+        (&admin, &replacement_vault).into_val(&env),
+    );
+    assert_eq!(err, Err(Ok(ShareTokenError::VaultImmutable)));
+
+    let configured_vault: Address =
+        env.invoke_contract(&token, &Symbol::new(&env, "vault"), ().into_val(&env));
+    assert_eq!(configured_vault, vault);
+}
+
+#[test]
+fn non_admin_cannot_rebind_vault() {
+    let (env, _admin, vault, token) = setup();
+    let attacker = Address::generate(&env);
+    let replacement_vault = env.register(VaultCaller, ());
+
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &Symbol::new(&env, "set_vault"),
+        (&attacker, &replacement_vault).into_val(&env),
+    );
+    assert_eq!(err, Err(Ok(ShareTokenError::Unauthorized)));
+
+    let configured_vault: Address =
+        env.invoke_contract(&token, &Symbol::new(&env, "vault"), ().into_val(&env));
+    assert_eq!(configured_vault, vault);
+}
+
+#[test]
+fn original_vault_keeps_mint_burn_authority_after_failed_rebind() {
+    let (env, admin, vault, token) = setup();
+    let replacement_vault = env.register(VaultCaller, ());
+    let user = Address::generate(&env);
+
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &Symbol::new(&env, "set_vault"),
+        (&admin, &replacement_vault).into_val(&env),
+    );
+    assert_eq!(err, Err(Ok(ShareTokenError::VaultImmutable)));
+
+    env.as_contract(&vault, || {
+        VaultCaller::mint(env.clone(), token.clone(), user.clone(), 500);
+    });
+    env.as_contract(&vault, || {
+        VaultCaller::burn(env.clone(), token.clone(), user.clone(), 125);
+    });
+
+    let balance: i128 = env.invoke_contract(
+        &token,
+        &Symbol::new(&env, "balance"),
+        (&user,).into_val(&env),
+    );
+    assert_eq!(balance, 375);
 }
