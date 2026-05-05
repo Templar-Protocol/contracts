@@ -488,7 +488,6 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
 }
 
 #[rstest]
-#[ignore = "A-007 fee-anchor lifecycle spec: initial anchor must not inflate proxy_view before implementation"]
 fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
     soroban_contract_fixture: SorobanContractFixture,
 ) {

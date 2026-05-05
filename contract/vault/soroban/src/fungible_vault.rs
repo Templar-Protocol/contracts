@@ -32,9 +32,16 @@ fn preview_state_with_fee_accrual(
     config: &VaultConfig,
 ) -> Result<VaultState, ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
-    let anchor = state.fee_anchor;
+    if state.total_shares == 0 {
+        return Ok(state);
+    }
 
-    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns.as_u64() {
+    let anchor = state.fee_anchor;
+    if anchor.is_uninitialized() {
+        state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+        return Ok(state);
+    }
+    if now_ns <= anchor.timestamp_ns.as_u64() {
         return Ok(state);
     }
 
