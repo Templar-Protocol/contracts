@@ -22,7 +22,7 @@ use templar_vault_kernel::{
 };
 
 use crate::contract::{load_fees_spec, load_virtual_offsets, VaultDataKey};
-use crate::convert::{ledger_timestamp_ns, runtime_to_contract};
+use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_u128};
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage};
 
@@ -85,11 +85,36 @@ fn preview_state_with_fee_accrual(
     Ok(state)
 }
 
+fn load_actual_idle_assets(env: &Env) -> Result<u128, ContractError> {
+    let asset_token: Option<SdkAddress> = env.storage().instance().get(&VaultDataKey::AssetToken);
+    let Some(asset_token) = asset_token else {
+        return Ok(0);
+    };
+    to_u128(token::Client::new(env, &asset_token).balance(&env.current_contract_address()))
+}
+
+pub(crate) fn reconcile_actual_idle_assets(
+    state: &mut VaultState,
+    actual_idle_assets: u128,
+    now_ns: u64,
+) {
+    if !state.is_idle() || state.idle_assets == actual_idle_assets {
+        return;
+    }
+
+    state.idle_assets = actual_idle_assets;
+    state.sync_total_assets();
+    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+}
+
 /// Load kernel state and a default config for read-only conversion math.
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
     let stored_state = storage.load_state();
-    let state = runtime_to_contract(stored_state)?.unwrap_or_default();
+    let mut state = runtime_to_contract(stored_state)?.unwrap_or_default();
+    let now_ns = ledger_timestamp_ns(env)?;
+    let actual_idle_assets = load_actual_idle_assets(env)?;
+    reconcile_actual_idle_assets(&mut state, actual_idle_assets, now_ns);
     let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
     let config = VaultConfig {
         fees: runtime_to_contract(load_fees_spec(env))?,

@@ -41,6 +41,39 @@ fn required_i128(value: Option<i128>) -> Result<i128, ContractError> {
     value.ok_or(ContractError::InvalidInput)
 }
 
+fn current_idle_assets(env: &Env) -> Result<u128, ContractError> {
+    let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
+    let client = soroban_sdk::token::Client::new(env, &asset_token);
+    to_u128(client.balance(&env.current_contract_address()))
+}
+
+fn reconcile_current_idle_assets(
+    env: &Env,
+    vault: &mut ContractVault<'_>,
+    now_ns: u64,
+) -> Result<(), RuntimeError> {
+    let actual_idle_assets =
+        current_idle_assets(env).map_err(|_| RuntimeError::storage_error(""))?;
+    let state = vault.state_mut()?;
+    reconcile_actual_idle_assets(state, actual_idle_assets, now_ns);
+    Ok(())
+}
+
+fn reconcile_current_idle_assets_while_idle(
+    env: &Env,
+    vault: &mut ContractVault<'_>,
+    now_ns: u64,
+) -> Result<(), RuntimeError> {
+    if !vault.state()?.op_state.is_idle() {
+        return Err(RuntimeError::invalid_state(""));
+    }
+    reconcile_current_idle_assets(env, vault, now_ns)?;
+    if !vault.state()?.op_state.is_idle() {
+        return Err(RuntimeError::invalid_state(""));
+    }
+    Ok(())
+}
+
 fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) {
     set_config_address(env, &VaultDataKey::Curator, &new_curator);
     emit_admin_event(env, symbol_short!("s_curatr"));
@@ -314,6 +347,7 @@ fn deposit_with_min_impl(
 
     let mut shares_minted = 0u128;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        reconcile_current_idle_assets(env, vault, now_ns)?;
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result = vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
         shares_minted = result.shares_minted;
@@ -604,24 +638,8 @@ fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
     if last_ns != 0 && now_ns.saturating_sub(last_ns) < cooldown_ns {
         return Err(ContractError::InvalidState);
     }
-    let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
-    let client = soroban_sdk::token::Client::new(env, &asset_token);
-    let actual_balance = to_u128(client.balance(&env.current_contract_address()))?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        let state = vault.state_mut()?;
-        let before_idle = state.idle_assets;
-        if !state.op_state.is_idle() {
-            return Err(RuntimeError::invalid_state(""));
-        }
-
-        state.idle_assets = actual_balance;
-        state.sync_total_assets();
-
-        if actual_balance > before_idle {
-            let delta = actual_balance - before_idle;
-            state.fee_anchor.total_assets = state.fee_anchor.total_assets.saturating_add(delta);
-        }
-
+        reconcile_current_idle_assets_while_idle(env, vault, now_ns)?;
         vault.save_state()?;
         Ok(())
     };
