@@ -3085,7 +3085,7 @@ fn refresh_fees_overflow_total_supply_rejected() {
         None,
     );
     let mut state = base_state(1_000, u128::MAX - 1);
-    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(1, TimestampNs(0));
 
     let result = apply_action(
         state,
