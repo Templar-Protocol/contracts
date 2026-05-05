@@ -488,6 +488,55 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
 }
 
 #[rstest]
+#[ignore = "A-007 fee-anchor lifecycle spec: initial anchor must not inflate proxy_view before implementation"]
+fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 2, Address([1u8; 32])),
+            FeeSlot::new(Wad::zero(), Address([2u8; 32])),
+            None,
+        );
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 1_000,
+                fee_anchor: FeeAccrualAnchor::new(0, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        let total_shares = proxy.view(owner, 0, 0).unwrap().0 .2 .0;
+        assert_eq!(total_shares, 1_000);
+    });
+}
+
+#[rstest]
 fn soroban_contract_preview_withdraw_matches_kernel(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
