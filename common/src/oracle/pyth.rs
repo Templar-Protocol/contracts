@@ -7,9 +7,7 @@
 //!
 //! Licensed under the Apache License, Version 2.0 (the "License");
 //! you may not use this file except in compliance with the License.
-//! You may obtain a copy of the License at
-//!
-//!     http://www.apache.org/licenses/LICENSE-2.0
+//! You may obtain a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 //!
 //! Unless required by applicable law or agreed to in writing, software
 //! distributed under the License is distributed on an "AS IS" BASIS,
@@ -151,6 +149,7 @@ pub trait Pyth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use templar_primitives::Nanoseconds;
 
     #[test]
     fn can_parse_real_price() {
@@ -161,5 +160,35 @@ mod tests {
         assert_eq!(parsed.conf.0, 2_696_300_000);
         assert_eq!(parsed.expo, -8);
         assert_eq!(parsed.publish_time.as_secs(), 1_773_381_271);
+    }
+
+    #[test]
+    fn try_into_time_handles_negative_millisecond_inputs_per_current_truncation() {
+        // `from_ms` stores whole seconds, so negative sub-second values truncate toward zero.
+        let truncated_to_zero = PythTimestamp::from_ms(-1);
+        assert_eq!(truncated_to_zero.try_into_time(), Some(Nanoseconds::zero()));
+
+        // Negative whole-second values remain negative and cannot convert to unsigned time.
+        let negative_second = PythTimestamp::from_ms(-1_000);
+        assert_eq!(negative_second.try_into_time(), None);
+    }
+
+    #[test]
+    fn try_from_time_accepts_max_representable_nanoseconds_range() {
+        let value = Nanoseconds::from_ns(u64::MAX);
+        let expected = PythTimestamp::from_ms(i64::try_from(value.as_ms()).unwrap());
+
+        assert_eq!(PythTimestamp::try_from_time(value), Some(expected));
+    }
+
+    #[test]
+    fn try_from_time_and_try_into_time_round_trip_truncates_to_whole_seconds() {
+        let value = Nanoseconds::from_ns(1_234_567_890);
+
+        let round_tripped = PythTimestamp::try_from_time(value)
+            .and_then(PythTimestamp::try_into_time)
+            .unwrap();
+
+        assert_eq!(round_tripped, Nanoseconds::from_secs(1));
     }
 }
