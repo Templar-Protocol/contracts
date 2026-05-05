@@ -194,15 +194,16 @@ Useful commands:
 ## State Size and Operational Limits
 
 - Soroban enforces per-entry and per-transaction resource limits. Current network values are documented by Stellar: https://developers.stellar.org/docs/networks/resource-limits-fees
-- Vault runtime state is persisted as a single `StateBlob`, so serialized `VaultState` size is the practical storage-pressure point.
-- The main long-lived growth vector is pending withdrawals, which are bounded by `MAX_PENDING = 1024`.
-- In-flight operation plans (`Allocating.plan`, `Refreshing.plan`) are expected to remain small under allocator policy, so the 1024 pending-withdrawal cap is the dominant operational bound in practice.
+- Vault runtime state is persisted as a single versioned `StateBlob`, so serialized `VaultState` size is the practical storage-pressure point.
+- The shared kernel still has an absolute `MAX_PENDING = 1024`, but Soroban uses the chain-specific `SOROBAN_MAX_PENDING_WITHDRAWALS = 512` runtime cap to stay below the 64 KiB contract-data-entry limit with room for schema growth.
+- In-flight operation plans (`Allocating.plan`, `Refreshing.plan`) are expected to remain small under allocator policy, so the 512 Soroban pending-withdrawal cap is the dominant operational bound in practice.
+- Persistent storage blobs carry a compact `TVS` version header on new writes. Decoders still accept the pre-header legacy layout so governed `migrate()` can validate and rewrite old blobs in place.
 
 ## Practical Risk Model
 
 - TVL growth by itself does not significantly increase serialized state size.
 - Risk comes from queue backlog plus unusually large in-flight plans.
-- If state exceeds Soroban storage write limits, the transaction fails atomically (no partial state commit).
+- If state would exceed Soroban storage write limits, storage save paths return a typed runtime storage error before the host storage write.
 
 ## Parity Tests
 

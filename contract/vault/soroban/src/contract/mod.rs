@@ -50,12 +50,15 @@ use templar_vault_kernel::{
     apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
     convert_to_shares_ceil, plan_idle_payout, withdrawal_settled, Address, FeeAccrualAnchor,
     FeeSlot, FeesSpec, KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, TimestampNs,
-    VaultConfig, VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
+    VaultConfig, VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
     MIN_WITHDRAWAL_ASSETS,
 };
 
+use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
+
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
+pub(crate) const LEGACY_PAUSED_MIGRATED_KEY: soroban_sdk::Symbol = symbol_short!("pmigdn");
 
 pub(crate) fn decode_command(payload: &Bytes) -> Result<VaultCommand, ContractError> {
     VaultCommand::decode(&payload.to_alloc_vec()).map_err(|_| ContractError::InvalidInput)

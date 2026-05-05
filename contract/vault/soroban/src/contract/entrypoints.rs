@@ -10,7 +10,7 @@ use super::helpers::{
     load_virtual_offsets, migrate_legacy_paused, migration_in_progress, require_contract_address,
     require_governance, require_signed, sdk_string_to_alloc, set_config_address,
     set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    with_contract_vault_contract_error,
+    validate_and_rewrite_storage, with_contract_vault_contract_error,
 };
 use super::*;
 use templar_soroban_shared_types::{
@@ -989,6 +989,7 @@ impl SorobanVaultContract {
         }
 
         migrate_legacy_paused(&env);
+        runtime_to_contract(validate_and_rewrite_storage(&env))?;
         extend_storage_ttl(&env);
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));

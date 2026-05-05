@@ -28,6 +28,19 @@ pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 /// For a vault contract holding real assets, maximum TTL prevents state
 /// loss during extended pauses or periods of inactivity.
 pub(crate) const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
+pub(crate) const SOROBAN_MAX_PENDING_WITHDRAWALS: u32 = 512;
+pub(crate) const SOROBAN_MAX_RESTRICTION_ADDRESSES: usize = 1024;
+
+const MAX_CONTRACT_DATA_ENTRY_SIZE_BYTES: usize = 64 * 1024;
+const STORAGE_MAGIC: [u8; 3] = *b"TVS";
+const STORAGE_VERSION_CURRENT: u8 = 1;
+const STORAGE_KIND_STATE: u8 = 1;
+const STORAGE_KIND_RESTRICTIONS: u8 = 2;
+const STORAGE_KIND_SUPPLY_QUEUE: u8 = 3;
+const STORAGE_KIND_MARKETS: u8 = 4;
+const STORAGE_KIND_PRINCIPALS: u8 = 5;
+const STORAGE_KIND_CAP_GROUPS: u8 = 6;
+const STORAGE_KIND_POLICY_LOCKS: u8 = 7;
 
 /// Internal persistent storage keys. Using Symbol constants instead of a
 /// `#[contracttype]` enum to avoid contractspec bloat and enum conversion codegen.
@@ -45,6 +58,30 @@ impl SorobanStorageKey {
     pub const Restrictions: Symbol = symbol_short!("restrict");
     pub const Paused: Symbol = symbol_short!("paused_l"); // legacy pause key (migration)
     pub const PausedState: Symbol = symbol_short!("paused_s");
+}
+
+fn push_storage_header(out: &mut Vec<u8>, kind: u8) {
+    out.extend_from_slice(&STORAGE_MAGIC);
+    push_u8(out, kind);
+    push_u8(out, STORAGE_VERSION_CURRENT);
+}
+
+fn storage_payload(bytes: &[u8], kind: u8) -> Result<&[u8], RuntimeError> {
+    if bytes.len() >= 5 && bytes[..3] == STORAGE_MAGIC && bytes[3] == kind {
+        return match bytes[4] {
+            STORAGE_VERSION_CURRENT => Ok(&bytes[5..]),
+            _ => Err(RuntimeError::storage_error("unsupported storage version")),
+        };
+    }
+    Ok(bytes)
+}
+
+fn ensure_contract_data_entry_size(bytes: &[u8]) -> Result<(), RuntimeError> {
+    if bytes.len() <= MAX_CONTRACT_DATA_ENTRY_SIZE_BYTES {
+        Ok(())
+    } else {
+        Err(RuntimeError::storage_error("persistent entry too large"))
+    }
 }
 
 fn push_u8(out: &mut Vec<u8>, value: u8) {
@@ -140,6 +177,7 @@ fn decode_cap_group_id(bytes: &[u8], cursor: &mut usize) -> Result<CapGroupId, R
 
 pub(crate) fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_RESTRICTIONS);
     match mode {
         Restrictions::Blacklist(addresses) => {
             push_u8(&mut out, 0);
@@ -160,9 +198,13 @@ pub(crate) fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
 }
 
 pub(crate) fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_RESTRICTIONS)?;
     let mut cursor = 0usize;
     let tag = read_u8(bytes, &mut cursor)?;
     let len = read_u32(bytes, &mut cursor)? as usize;
+    if len > SOROBAN_MAX_RESTRICTION_ADDRESSES {
+        return Err(RuntimeError::storage_error("restrictions too large"));
+    }
     let mut addresses = Vec::with_capacity(len);
     for _ in 0..len {
         addresses.push(read_address(bytes, &mut cursor)?);
@@ -178,6 +220,7 @@ pub(crate) fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeE
 
 pub(crate) fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_SUPPLY_QUEUE);
     let max_length = queue.max_length().map(|value| value.get()).unwrap_or(0);
     push_u32(&mut out, max_length);
     let entries = queue.entries();
@@ -191,6 +234,7 @@ pub(crate) fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
 }
 
 pub(crate) fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_SUPPLY_QUEUE)?;
     let mut cursor = 0usize;
     let max_length = read_u32(bytes, &mut cursor)?;
     let count = read_u32(bytes, &mut cursor)? as usize;
@@ -212,6 +256,7 @@ pub(crate) fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeEr
 
 pub(crate) fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_CAP_GROUPS);
     push_u32(&mut out, cap_groups.len() as u32);
     for (id, record) in cap_groups.iter() {
         encode_cap_group_id(id, &mut out);
@@ -237,6 +282,7 @@ pub(crate) fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupReco
 pub(crate) fn decode_cap_groups(
     bytes: &[u8],
 ) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_CAP_GROUPS)?;
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut cap_groups = OrderedMap::new();
@@ -272,6 +318,7 @@ pub(crate) fn decode_cap_groups(
 
 pub(crate) fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_MARKETS);
     push_u32(&mut out, markets.len() as u32);
     for (target_id, config) in markets.iter() {
         push_u32(&mut out, *target_id);
@@ -291,6 +338,7 @@ pub(crate) fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Ve
 pub(crate) fn decode_markets(
     bytes: &[u8],
 ) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_MARKETS)?;
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut markets = OrderedMap::new();
@@ -315,6 +363,7 @@ pub(crate) fn decode_markets(
 
 pub(crate) fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_PRINCIPALS);
     push_u32(&mut out, principals.len() as u32);
     for (target_id, principal) in principals.iter() {
         push_u32(&mut out, *target_id);
@@ -324,6 +373,7 @@ pub(crate) fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<
 }
 
 pub(crate) fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_PRINCIPALS)?;
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut principals = OrderedMap::new();
@@ -338,6 +388,7 @@ pub(crate) fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u12
 
 pub(crate) fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_POLICY_LOCKS);
     push_u32(&mut out, leases.stored_len() as u32);
     push_u64(&mut out, leases.next_fencing_token());
     for (_, lease) in leases.iter() {
@@ -358,6 +409,7 @@ pub(crate) fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
 }
 
 pub(crate) fn decode_policy_locks(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_POLICY_LOCKS)?;
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let next_fencing_token = read_u64(bytes, &mut cursor)?;
@@ -414,9 +466,34 @@ fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQue
     let next_withdraw_to_execute = read_u64(bytes, cursor)?;
     let next_pending_withdrawal_id = read_u64(bytes, cursor)?;
     let count = read_u32(bytes, cursor)? as usize;
+    if count > SOROBAN_MAX_PENDING_WITHDRAWALS as usize {
+        return Err(RuntimeError::storage_error("withdraw queue too large"));
+    }
+    if next_withdraw_to_execute > next_pending_withdrawal_id {
+        return Err(RuntimeError::storage_error("withdraw queue invalid ids"));
+    }
+    if count == 0 && next_withdraw_to_execute != next_pending_withdrawal_id {
+        return Err(RuntimeError::storage_error(
+            "empty withdraw queue invalid ids",
+        ));
+    }
     let mut entries = Vec::with_capacity(count);
+    let mut previous_id = None;
     for _ in 0..count {
         let id = read_u64(bytes, cursor)?;
+        if id < next_withdraw_to_execute || id >= next_pending_withdrawal_id {
+            return Err(RuntimeError::storage_error(
+                "withdraw queue id out of range",
+            ));
+        }
+        if let Some(previous) = previous_id {
+            if id <= previous {
+                return Err(RuntimeError::storage_error("withdraw queue ids unsorted"));
+            }
+        } else if id != next_withdraw_to_execute {
+            return Err(RuntimeError::storage_error("withdraw queue head missing"));
+        }
+        previous_id = Some(id);
         let withdrawal = PendingWithdrawal::new(
             read_address(bytes, cursor)?,
             read_address(bytes, cursor)?,
@@ -426,11 +503,18 @@ fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQue
         );
         entries.push((id, withdrawal));
     }
-    Ok(WithdrawQueue::with_state(
+    let queue = WithdrawQueue::with_state(
         entries,
         next_withdraw_to_execute,
         next_pending_withdrawal_id,
-    ))
+    );
+    if queue.check_invariants() {
+        Ok(queue)
+    } else {
+        Err(RuntimeError::storage_error(
+            "withdraw queue invariant failed",
+        ))
+    }
 }
 
 fn encode_op_state(op_state: &OpState, out: &mut Vec<u8>) {
@@ -537,6 +621,7 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
 
 pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
     let mut out = Vec::new();
+    push_storage_header(&mut out, STORAGE_KIND_STATE);
     push_u128(&mut out, state.total_assets);
     push_u128(&mut out, state.total_shares);
     push_u128(&mut out, state.idle_assets);
@@ -550,6 +635,7 @@ pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
 }
 
 pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
+    let bytes = storage_payload(bytes, STORAGE_KIND_STATE)?;
     let mut cursor = 0usize;
     let state = VaultState {
         total_assets: read_u128(bytes, &mut cursor)?,
@@ -590,14 +676,14 @@ pub(crate) fn compose_policy_state(
         return Ok(None);
     }
 
-    let state = PolicyState::from_parts(
-        markets.unwrap_or_default(),
-        principals.unwrap_or_default(),
-        cap_groups.unwrap_or_default(),
-        leases.unwrap_or_default(),
-        supply_queue.unwrap_or_default(),
-    )
-    .map_err(|_| RuntimeError::storage_error(""))?;
+    let (Some(markets), Some(principals), Some(cap_groups), Some(leases), Some(supply_queue)) =
+        (markets, principals, cap_groups, leases, supply_queue)
+    else {
+        return Err(RuntimeError::storage_error("partial policy state"));
+    };
+
+    let state = PolicyState::from_parts(markets, principals, cap_groups, leases, supply_queue)
+        .map_err(|_| RuntimeError::storage_error(""))?;
 
     Ok(Some(state))
 }
@@ -649,7 +735,11 @@ impl<'a> SorobanStorage<'a> {
     }
 
     /// Save a kernel-to-Soroban address mapping to persistent storage.
-    pub fn save_address(&self, kernel_addr: &Address, soroban_addr: &SdkAddress) {
+    pub fn save_address(
+        &self,
+        kernel_addr: &Address,
+        soroban_addr: &SdkAddress,
+    ) -> Result<(), RuntimeError> {
         let key = self.address_key(kernel_addr);
         self.env.storage().persistent().set(&key, soroban_addr);
         self.env.storage().persistent().extend_ttl(
@@ -658,6 +748,33 @@ impl<'a> SorobanStorage<'a> {
             DEFAULT_TTL_EXTEND_TO,
         );
         self.extend_default_ttl();
+        Ok(())
+    }
+
+    pub(crate) fn extend_address_ttl(&self, kernel_addr: &Address, threshold: u32, extend_to: u32) {
+        let key = self.address_key(kernel_addr);
+        let p = self.env.storage().persistent();
+        if p.has(&key) {
+            p.extend_ttl(&key, threshold, extend_to);
+        }
+    }
+
+    fn extend_state_address_ttls(&self, state: &VaultState, threshold: u32, extend_to: u32) {
+        for (_, withdrawal) in state.withdraw_queue.iter() {
+            self.extend_address_ttl(&withdrawal.owner, threshold, extend_to);
+            self.extend_address_ttl(&withdrawal.receiver, threshold, extend_to);
+        }
+        match &state.op_state {
+            OpState::Withdrawing(withdrawing) => {
+                self.extend_address_ttl(&withdrawing.owner, threshold, extend_to);
+                self.extend_address_ttl(&withdrawing.receiver, threshold, extend_to);
+            }
+            OpState::Payout(payout) => {
+                self.extend_address_ttl(&payout.owner, threshold, extend_to);
+                self.extend_address_ttl(&payout.receiver, threshold, extend_to);
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn load_state_blob(&self) -> Option<Vec<u8>> {
@@ -801,6 +918,11 @@ impl<'a> SorobanStorage<'a> {
                 p.extend_ttl(key, threshold, extend_to);
             }
         }
+        if let Some(stored) = self.load_state_blob() {
+            if let Ok(state) = decode_state_blob(&stored) {
+                self.extend_state_address_ttls(&state, threshold, extend_to);
+            }
+        }
     }
 
     fn extend_default_ttl(&self) {
@@ -818,7 +940,16 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_state(&mut self, state: &VaultState) -> Result<(), RuntimeError> {
+        if !state
+            .withdraw_queue
+            .check_invariants_with_max(SOROBAN_MAX_PENDING_WITHDRAWALS)
+        {
+            return Err(RuntimeError::storage_error(
+                "withdraw queue exceeds soroban cap",
+            ));
+        }
         let state_blob = encode_state_blob(state);
+        ensure_contract_data_entry_size(&state_blob)?;
         self.save_state_blob(&state_blob);
         self.extend_default_ttl();
         Ok(())
@@ -864,11 +995,19 @@ impl Storage for SorobanStorage<'_> {
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        self.save_policy_locks(&encode_policy_locks(state.leases()));
-        self.save_policy_supply_queue(&encode_supply_queue(state.supply_queue()));
-        self.save_policy_markets(&encode_markets(state.markets()));
-        self.save_policy_principals(&encode_principals(state.principals()));
-        self.save_policy_cap_groups(&encode_cap_groups(state.cap_groups()));
+        let locks = encode_policy_locks(state.leases());
+        let supply_queue = encode_supply_queue(state.supply_queue());
+        let markets = encode_markets(state.markets());
+        let principals = encode_principals(state.principals());
+        let cap_groups = encode_cap_groups(state.cap_groups());
+        for bytes in [&locks, &supply_queue, &markets, &principals, &cap_groups] {
+            ensure_contract_data_entry_size(bytes)?;
+        }
+        self.save_policy_locks(&locks);
+        self.save_policy_supply_queue(&supply_queue);
+        self.save_policy_markets(&markets);
+        self.save_policy_principals(&principals);
+        self.save_policy_cap_groups(&cap_groups);
         self.extend_default_ttl();
         Ok(())
     }
@@ -887,7 +1026,17 @@ impl Storage for SorobanStorage<'_> {
         restrictions: &Option<Restrictions>,
     ) -> Result<(), RuntimeError> {
         if let Some(restrictions) = restrictions {
-            SorobanStorage::save_restrictions(self, &encode_restrictions(restrictions));
+            let len = match restrictions {
+                Restrictions::Blacklist(addresses) | Restrictions::Whitelist(addresses) => {
+                    addresses.len()
+                }
+            };
+            if len > SOROBAN_MAX_RESTRICTION_ADDRESSES {
+                return Err(RuntimeError::storage_error("restrictions too large"));
+            }
+            let bytes = encode_restrictions(restrictions);
+            ensure_contract_data_entry_size(&bytes)?;
+            SorobanStorage::save_restrictions(self, &bytes);
         } else {
             SorobanStorage::clear_restrictions(self);
         }
@@ -904,8 +1053,7 @@ impl Storage for SorobanStorage<'_> {
         kernel_addr: &Address,
         soroban_addr: &SdkAddress,
     ) -> Result<(), RuntimeError> {
-        SorobanStorage::save_address(self, kernel_addr, soroban_addr);
-        Ok(())
+        SorobanStorage::save_address(self, kernel_addr, soroban_addr)
     }
 }
 
