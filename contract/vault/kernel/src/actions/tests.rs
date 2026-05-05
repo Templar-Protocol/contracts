@@ -2933,7 +2933,6 @@ fn base_state(total_assets: u128, total_shares: u128) -> VaultState {
 }
 
 #[test]
-#[ignore = "A-006 fee-anchor lifecycle spec: deposit must advance anchor before implementation"]
 fn deposit_advances_fee_anchor_to_post_deposit_assets() {
     let config = base_config();
     let mut state = base_state(1_000, 1_000);
