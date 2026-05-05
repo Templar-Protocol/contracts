@@ -2933,6 +2933,33 @@ fn base_state(total_assets: u128, total_shares: u128) -> VaultState {
 }
 
 #[test]
+#[ignore = "A-006 fee-anchor lifecycle spec: deposit must advance anchor before implementation"]
+fn deposit_advances_fee_anchor_to_post_deposit_assets() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(10));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &Address([0u8; 32]),
+        KernelAction::Deposit {
+            owner: Address([1u8; 32]),
+            receiver: Address([2u8; 32]),
+            assets_in: 250,
+            min_shares_out: 0,
+            now_ns: TimestampNs(20),
+        },
+    )
+    .expect("deposit succeeds");
+
+    assert_eq!(result.state.total_assets, 1_250);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_250);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(20));
+}
+
+#[test]
 fn convert_to_shares_ceil_matches_floor_on_exact_multiple() {
     let config = base_config();
     let state = base_state(100, 100);
