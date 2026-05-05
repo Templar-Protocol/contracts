@@ -67,6 +67,20 @@ sequenceDiagram
     Entry-->>Caller: return result
 ```
 
+### Fee Anchor And Idle Balance Accounting
+
+The Soroban vault treats unsolicited underlying transfers as idle assets for existing
+shareholders, not as profit that the next depositor can capture. Read-only conversion and preview
+helpers first compare the persisted `idle_assets` value with the asset token balance held by the
+vault and simulate the reconciled state before quoting shares or assets.
+
+State-changing paths that depend on current share pricing use the same lazy reconciliation rule
+before executing kernel actions. `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` all read
+the live asset token balance, update `idle_assets`, recompute `total_assets`, and reset the
+`fee_anchor` to the reconciled total at the current ledger timestamp. This keeps direct transfers,
+fee refreshes, and later deposits on one accounting baseline without requiring a separate keeper
+transaction before every user deposit.
+
 ### Governance Control-Plane Boundary
 
 - The governance contract owns proposal submission, timelocks, approval/revocation, and abdication.
