@@ -229,6 +229,7 @@ pub enum VaultCommand {
         caller: String,
         markets: Vec<u32>,
     },
+    RefreshFees,
     ResyncIdleBalance,
     CancelMigration {
         caller: String,
@@ -335,6 +336,7 @@ impl VaultCommand {
                 push_string(&mut out, caller);
                 push_u32_vec(&mut out, markets);
             }
+            Self::RefreshFees => push_u8(&mut out, 5),
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
                 push_u8(&mut out, 9);
@@ -377,6 +379,7 @@ impl VaultCommand {
                 caller: read_string(bytes, &mut cursor)?,
                 markets: read_u32_vec(bytes, &mut cursor)?,
             }),
+            5 => Ok(Self::RefreshFees),
             8 => Ok(Self::ResyncIdleBalance),
             9 => Ok(Self::CancelMigration {
                 caller: read_string(bytes, &mut cursor)?,
@@ -515,6 +518,7 @@ mod tests {
                 min_shares_out: 1,
             },
             VaultCommand::ResyncIdleBalance,
+            VaultCommand::RefreshFees,
             VaultCommand::CancelMigration {
                 caller: String::from("caller"),
             },
@@ -528,11 +532,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "A-018 fee-anchor lifecycle spec: deployed command ABI needs an explicit fee refresh path before implementation"]
     fn vault_command_surface_exposes_fee_refresh() {
         let mut encoded = Vec::new();
         encoded.push(5);
-        encoded.extend_from_slice(&1_000u64.to_le_bytes());
 
         assert!(
             VaultCommand::decode(&encoded).is_ok(),
