@@ -543,6 +543,15 @@ pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), C
     Ok(())
 }
 
+pub(crate) fn require_sentinel(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+    require_signed(caller);
+    let sentinel: SdkAddress = get_config_address(env, &VaultDataKey::Sentinel)?;
+    if caller != &sentinel {
+        return Err(ContractError::Unauthorized);
+    }
+    Ok(())
+}
+
 #[inline(never)]
 pub(crate) fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
     require_governance(env, caller)?;

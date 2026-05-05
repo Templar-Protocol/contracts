@@ -70,10 +70,16 @@ sequenceDiagram
 ### Governance Control-Plane Boundary
 
 - The governance contract owns proposal submission, timelocks, approval/revocation, and abdication.
+- The configured Sentinel is a separate emergency role holder. The governance contract is not
+  implicitly treated as Sentinel and should not be granted `Role::Sentinel` just to make governance
+  proposals work.
 - The runtime remains the canonical owner of applied vault config/policy state.
 - Vault-bound governance actions cross the boundary through a single bridge:
   `execute_governance(env, caller, payload)`. The payload is a `GovernanceCommand` that the
   runtime decodes and dispatches to the corresponding internal config/policy/state helpers.
+- Emergency pause and restriction tightening are immediate Sentinel actions. Unpause and
+  relaxing/removing restrictions are governance actions and must pass through the configured
+  timelock before the runtime applies them.
 - `execute(payload)` remains for user flows and for the retained execute-path config subset
   (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`). Vault-bound governance mutations use
   `execute_governance`, not the generic user-flow command path.

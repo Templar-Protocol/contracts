@@ -1978,6 +1978,7 @@ mod storage_tests {
         GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
         GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP,
         GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+        GOVERNANCE_POLICY_KIND_RESTRICTIONS,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
@@ -2812,6 +2813,370 @@ mod storage_tests {
                 reloaded.market_config(9).map(|config| config.cap),
                 Some(123)
             );
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_separates_sentinel_pause_from_governance_unpause() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
+        let attacker = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
+                primary: Some(sdk_text(&sentinel)),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+        );
+
+        let governance_pause = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &governance,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                        target_ids: None,
+                        mode: Some(1),
+                        accounts: None,
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            governance_pause,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+
+        let attacker_pause = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &attacker,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                        target_ids: None,
+                        mode: Some(1),
+                        accounts: None,
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            attacker_pause,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &sentinel,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                target_ids: None,
+                mode: Some(1),
+                accounts: None,
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            assert!(SorobanStorage::new(&env).is_paused());
+        });
+
+        let sentinel_unpause = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &sentinel,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                        target_ids: None,
+                        mode: Some(0),
+                        accounts: None,
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            sentinel_unpause,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                target_ids: None,
+                mode: Some(0),
+                accounts: None,
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            assert!(!SorobanStorage::new(&env).is_paused());
+        });
+
+        let invalid_pause_mode = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &sentinel,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                        target_ids: None,
+                        mode: Some(2),
+                        accounts: None,
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            invalid_pause_mode,
+            Err(Ok(crate::error::ContractError::InvalidInput))
+        );
+    }
+
+    #[test]
+    fn test_execute_governance_separates_sentinel_tightening_from_governance_relaxation() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
+        let attacker = SdkAddress::generate(&env);
+        let restricted = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
+                primary: Some(sdk_text(&sentinel)),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+        );
+
+        let governance_tightening = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &governance,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+                        target_ids: None,
+                        mode: Some(1),
+                        accounts: Some(alloc::vec![sdk_text(&restricted)]),
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            governance_tightening,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+
+        let attacker_tightening = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &attacker,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+                        target_ids: None,
+                        mode: Some(1),
+                        accounts: Some(alloc::vec![sdk_text(&restricted)]),
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            attacker_tightening,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &sentinel,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+                target_ids: None,
+                mode: Some(1),
+                accounts: Some(alloc::vec![sdk_text(&restricted)]),
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            assert!(matches!(
+                Storage::load_restrictions(&storage).unwrap(),
+                Some(Restrictions::Blacklist(_))
+            ));
+        });
+
+        let sentinel_relaxation = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &sentinel,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernancePolicy {
+                        kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+                        target_ids: None,
+                        mode: Some(0),
+                        accounts: Some(alloc::vec![]),
+                        market_id: None,
+                        cap_group_id: None,
+                        value: None,
+                        value_b: None,
+                        value_c: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            sentinel_relaxation,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+                target_ids: None,
+                mode: Some(0),
+                accounts: Some(alloc::vec![]),
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            assert_eq!(Storage::load_restrictions(&storage).unwrap(), None);
         });
     }
 

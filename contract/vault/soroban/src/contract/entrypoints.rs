@@ -8,11 +8,12 @@ use super::helpers::{
     current_supply_queue_len, emit_admin_event, emit_alloc_event, emit_pause_state_event,
     extend_storage_ttl, get_config_address, governance_caller, kernel_address_from_sdk,
     load_virtual_offsets, migrate_legacy_paused, migration_in_progress, require_contract_address,
-    require_governance, require_signed, sdk_string_to_alloc, set_config_address,
+    require_governance, require_sentinel, require_signed, sdk_string_to_alloc, set_config_address,
     set_migration_in_progress, store_fees_spec, store_virtual_offsets,
     with_contract_vault_contract_error,
 };
 use super::*;
+use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
@@ -171,30 +172,70 @@ fn apply_remove_market_policy(
 
 fn apply_restrictions_policy(
     env: &Env,
-    caller_kernel: Address,
+    caller: soroban_sdk::Address,
     mode: u32,
     accounts: soroban_sdk::Vec<soroban_sdk::Address>,
 ) -> Result<(), ContractError> {
+    let next_restrictions = restrictions_from_policy(env, mode, accounts)?;
+    let storage = SorobanStorage::new(env);
+    let current_restrictions = runtime_to_contract(Storage::load_restrictions(&storage))?;
+    let relaxed = GovernanceRestrictions::determine_relaxed(
+        &governance_restrictions(&current_restrictions),
+        &governance_restrictions(&next_restrictions),
+    );
+
+    if relaxed {
+        require_governance(env, &caller)?;
+        let mut storage = SorobanStorage::new(env);
+        runtime_to_contract(Storage::save_restrictions(&mut storage, &next_restrictions))?;
+    } else {
+        require_sentinel(env, &caller)?;
+        let caller_kernel = kernel_address_from_sdk(env, &caller);
+        let mut restrictions = Some(next_restrictions);
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            let next_restrictions = restrictions
+                .take()
+                .ok_or_else(|| RuntimeError::invalid_state(""))?;
+            vault.set_restrictions(caller_kernel, next_restrictions)?;
+            Ok(())
+        };
+        with_contract_vault_contract_error(env, &mut call)?;
+    }
+
+    emit_admin_event(env, symbol_short!("s_rstrct"));
+    Ok(())
+}
+
+fn restrictions_from_policy(
+    env: &Env,
+    mode: u32,
+    accounts: soroban_sdk::Vec<soroban_sdk::Address>,
+) -> Result<Option<Restrictions>, ContractError> {
     let mut kernel_accounts = Vec::with_capacity(accounts.len() as usize);
     for account in accounts.iter() {
         kernel_accounts.push(kernel_address_from_sdk(env, &account));
     }
-    let mut restrictions = Some(match mode {
-        0 => None,
-        1 => Some(Restrictions::blacklist(kernel_accounts)),
-        2 => Some(Restrictions::whitelist(kernel_accounts)),
-        _ => return Err(ContractError::InvalidInput),
-    });
-    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        let next_restrictions = restrictions
-            .take()
-            .ok_or_else(|| RuntimeError::invalid_state(""))?;
-        vault.set_restrictions(caller_kernel, next_restrictions)?;
-        Ok(())
-    };
-    with_contract_vault_contract_error(env, &mut call)?;
-    emit_admin_event(env, symbol_short!("s_rstrct"));
-    Ok(())
+
+    match mode {
+        0 => Ok(None),
+        1 => Ok(Some(Restrictions::blacklist(kernel_accounts))),
+        2 => Ok(Some(Restrictions::whitelist(kernel_accounts))),
+        _ => Err(ContractError::InvalidInput),
+    }
+}
+
+fn governance_restrictions(
+    restrictions: &Option<Restrictions>,
+) -> Option<GovernanceRestrictions<Address>> {
+    match restrictions {
+        None => None,
+        Some(Restrictions::Blacklist(addresses)) => {
+            Some(GovernanceRestrictions::blacklist(addresses.clone()))
+        }
+        Some(Restrictions::Whitelist(addresses)) => {
+            Some(GovernanceRestrictions::whitelist(addresses.clone()))
+        }
+    }
 }
 
 fn apply_group_policy(
@@ -253,13 +294,22 @@ fn apply_group_policy(
 
 fn apply_paused_policy(
     env: &Env,
-    caller_kernel: Address,
+    caller: soroban_sdk::Address,
     paused: bool,
 ) -> Result<(), ContractError> {
-    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.pause(caller_kernel, paused)
-    };
-    with_contract_vault_contract_error(env, &mut call)?;
+    if paused {
+        require_sentinel(env, &caller)?;
+        let caller_kernel = kernel_address_from_sdk(env, &caller);
+        let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+            vault.pause(caller_kernel, true)
+        };
+        with_contract_vault_contract_error(env, &mut call)?;
+    } else {
+        require_governance(env, &caller)?;
+        let mut storage = SorobanStorage::new(env);
+        runtime_to_contract(storage.save_paused(false))?;
+    }
+
     emit_pause_state_event(env, paused);
     runtime_to_contract(crate::effects::publish_kernel_event(
         env,
@@ -524,50 +574,58 @@ fn set_governance_policy_impl(
     value_b: Option<i128>,
     value_c: Option<i128>,
 ) -> Result<(), ContractError> {
-    let caller_kernel = governance_caller(env, &caller)?;
     match kind {
-        GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE => apply_supply_queue_policy(
-            env,
-            caller_kernel,
-            target_ids.ok_or(ContractError::InvalidInput)?,
-        ),
+        GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE => {
+            let caller_kernel = governance_caller(env, &caller)?;
+            apply_supply_queue_policy(
+                env,
+                caller_kernel,
+                target_ids.ok_or(ContractError::InvalidInput)?,
+            )
+        }
         GOVERNANCE_POLICY_KIND_CAP => apply_cap_policy(
             env,
-            caller_kernel,
+            governance_caller(env, &caller)?,
             market_id.ok_or(ContractError::InvalidInput)?,
             required_i128(value)?,
         ),
         GOVERNANCE_POLICY_KIND_REMOVE_MARKET => apply_remove_market_policy(
             env,
-            caller_kernel,
+            governance_caller(env, &caller)?,
             market_id.ok_or(ContractError::InvalidInput)?,
         ),
         GOVERNANCE_POLICY_KIND_RESTRICTIONS => apply_restrictions_policy(
             env,
-            caller_kernel,
+            caller,
             mode.ok_or(ContractError::InvalidInput)?,
             accounts.ok_or(ContractError::InvalidInput)?,
         ),
         GOVERNANCE_POLICY_KIND_GROUP => apply_group_policy(
             env,
-            caller_kernel,
+            governance_caller(env, &caller)?,
             mode.ok_or(ContractError::InvalidInput)?,
             market_id,
             cap_group_id,
             value,
         ),
-        GOVERNANCE_POLICY_KIND_PAUSED => apply_paused_policy(
-            env,
-            caller_kernel,
-            mode.ok_or(ContractError::InvalidInput)? != 0,
-        ),
-        GOVERNANCE_POLICY_KIND_FEES => apply_fees_policy(
-            env,
-            accounts.ok_or(ContractError::InvalidInput)?,
-            required_i128(value)?,
-            required_i128(value_b)?,
-            value_c,
-        ),
+        GOVERNANCE_POLICY_KIND_PAUSED => {
+            let paused = match mode.ok_or(ContractError::InvalidInput)? {
+                0 => false,
+                1 => true,
+                _ => return Err(ContractError::InvalidInput),
+            };
+            apply_paused_policy(env, caller, paused)
+        }
+        GOVERNANCE_POLICY_KIND_FEES => {
+            require_governance(env, &caller)?;
+            apply_fees_policy(
+                env,
+                accounts.ok_or(ContractError::InvalidInput)?,
+                required_i128(value)?,
+                required_i128(value_b)?,
+                value_c,
+            )
+        }
         _ => Err(ContractError::InvalidInput),
     }
 }
