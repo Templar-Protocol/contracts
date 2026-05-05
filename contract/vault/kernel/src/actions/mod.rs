@@ -20,7 +20,7 @@ use crate::{
     state::{
         op_state::{AllocationPlanEntry, OpState, PayoutState, TargetId},
         queue::{compute_idle_settlement, is_past_cooldown, QueueError, WithdrawQueue},
-        vault::{VaultConfig, VaultState},
+        vault::{FeeAccrualAnchor, VaultConfig, VaultState},
     },
     transitions::TransitionResult,
 };
@@ -671,6 +671,7 @@ fn handle_deposit(
     receiver: Address,
     assets_in: u128,
     min_shares_out: u128,
+    now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
     enforce_restrictions(config, restrictions, self_id, &owner)?;
     enforce_restrictions(config, restrictions, self_id, &receiver)?;
@@ -701,6 +702,7 @@ fn handle_deposit(
         .total_shares
         .checked_add(shares_out)
         .ok_or_else(|| KernelError::from(InvalidStateCode::MintOverflowTotalShares))?;
+    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, now_ns);
 
     let effects = vec![
         KernelEffect::TransferAssetsFrom {
@@ -1904,7 +1906,7 @@ mod dispatch {
                 receiver,
                 assets_in,
                 min_shares_out,
-                now_ns: _,
+                now_ns,
             } => handle_deposit(
                 state,
                 config,
@@ -1914,6 +1916,7 @@ mod dispatch {
                 receiver,
                 assets_in,
                 min_shares_out,
+                now_ns,
             ),
 
             KernelAction::AtomicWithdraw {
