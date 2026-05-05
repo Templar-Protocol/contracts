@@ -35,9 +35,6 @@ use alloc::vec::Vec;
 use crate::math::wad::{
     compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
 };
-#[cfg(any(feature = "action-refresh-fees", test))]
-use crate::state::vault::FeeAccrualAnchor;
-
 #[cfg(any(feature = "action-recovery", test))]
 use crate::transitions::stop_withdrawal;
 
@@ -1594,6 +1591,17 @@ fn handle_refresh_fees(
     let mut total_supply = state.total_shares;
     let anchor = state.fee_anchor;
     let mut effects = Vec::new();
+
+    if total_supply > 0 && anchor.is_uninitialized() {
+        state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
+        effects.push(KernelEffect::EmitEvent {
+            event: crate::effects::KernelEvent::FeesRefreshed {
+                now_ns: now_ns.into(),
+                total_assets: cur_total_assets,
+            },
+        });
+        return Ok(KernelResult::new(state, effects));
+    }
 
     // Cap effective total_assets for fee accrual (mitigates donation attacks)
     let fee_total_assets = total_assets_for_fee_accrual(

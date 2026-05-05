@@ -45,6 +45,12 @@ impl FeeAccrualAnchor {
     }
 
     #[inline]
+    #[must_use]
+    pub const fn is_uninitialized(self) -> bool {
+        self.total_assets == 0 && self.timestamp_ns.as_u64() == 0
+    }
+
+    #[inline]
     pub fn update(&mut self, total_assets: u128, timestamp_ns: TimestampNs) {
         self.total_assets = total_assets;
         self.timestamp_ns = timestamp_ns;
