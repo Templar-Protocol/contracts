@@ -2347,7 +2347,7 @@ mod storage_tests {
     }
 
     #[test]
-    fn storage_codec_state_blob_is_versioned_and_legacy_decodes() {
+    fn storage_codec_state_blob_requires_versioned_envelope() {
         let state = state_with_pending_withdrawals(1);
         let encoded = fuzz_api::encode_state_blob_bytes(&state);
         assert_eq!(&encoded[..3], b"TVS");
@@ -2355,14 +2355,15 @@ mod storage_tests {
         let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("versioned state");
         assert_eq!(decoded, state);
 
-        let legacy = encoded[5..].to_vec();
-        let decoded_legacy =
-            fuzz_api::decode_state_blob_bytes(&legacy).expect("legacy state still decodes");
-        assert_eq!(decoded_legacy, state);
+        assert!(fuzz_api::decode_state_blob_bytes(&encoded[5..]).is_err());
+
+        let mut unsupported_version = encoded;
+        unsupported_version[4] = 2;
+        assert!(fuzz_api::decode_state_blob_bytes(&unsupported_version).is_err());
     }
 
     #[test]
-    fn migrate_validates_and_rewrites_legacy_state_blob() {
+    fn migrate_validates_current_version_state_blob() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
@@ -2384,8 +2385,8 @@ mod storage_tests {
             .unwrap();
 
             let storage = SorobanStorage::new(&env);
-            let legacy = fuzz_api::encode_state_blob_bytes(&VaultState::default())[5..].to_vec();
-            storage.save_state_blob(&legacy);
+            let versioned = fuzz_api::encode_state_blob_bytes(&VaultState::default());
+            storage.save_state_blob(&versioned);
             env.storage()
                 .instance()
                 .set(&soroban_sdk::symbol_short!("migrate"), &true);
@@ -2393,7 +2394,7 @@ mod storage_tests {
             SorobanVaultContract::migrate(env.clone(), governance).unwrap();
 
             let stored = storage.load_state_blob().expect("rewritten state blob");
-            assert_eq!(&stored[..3], b"TVS");
+            assert_eq!(stored, versioned);
             assert_eq!(
                 env.storage()
                     .instance()

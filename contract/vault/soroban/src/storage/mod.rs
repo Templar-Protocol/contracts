@@ -42,6 +42,31 @@ const STORAGE_KIND_PRINCIPALS: u8 = 5;
 const STORAGE_KIND_CAP_GROUPS: u8 = 6;
 const STORAGE_KIND_POLICY_LOCKS: u8 = 7;
 
+#[derive(Clone, Copy)]
+enum StorageKind {
+    State,
+    Restrictions,
+    SupplyQueue,
+    Markets,
+    Principals,
+    CapGroups,
+    PolicyLocks,
+}
+
+impl StorageKind {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::State => STORAGE_KIND_STATE,
+            Self::Restrictions => STORAGE_KIND_RESTRICTIONS,
+            Self::SupplyQueue => STORAGE_KIND_SUPPLY_QUEUE,
+            Self::Markets => STORAGE_KIND_MARKETS,
+            Self::Principals => STORAGE_KIND_PRINCIPALS,
+            Self::CapGroups => STORAGE_KIND_CAP_GROUPS,
+            Self::PolicyLocks => STORAGE_KIND_POLICY_LOCKS,
+        }
+    }
+}
+
 /// Internal persistent storage keys. Using Symbol constants instead of a
 /// `#[contracttype]` enum to avoid contractspec bloat and enum conversion codegen.
 #[allow(non_upper_case_globals)]
@@ -66,14 +91,40 @@ fn push_storage_header(out: &mut Vec<u8>, kind: u8) {
     push_u8(out, STORAGE_VERSION_CURRENT);
 }
 
-fn storage_payload(bytes: &[u8], kind: u8) -> Result<&[u8], RuntimeError> {
-    if bytes.len() >= 5 && bytes[..3] == STORAGE_MAGIC && bytes[3] == kind {
-        return match bytes[4] {
-            STORAGE_VERSION_CURRENT => Ok(&bytes[5..]),
-            _ => Err(RuntimeError::storage_error("unsupported storage version")),
-        };
+fn storage_payload(bytes: &[u8], kind: StorageKind) -> Result<(u8, &[u8]), RuntimeError> {
+    if bytes.len() < 5 || bytes[..3] != STORAGE_MAGIC || bytes[3] != kind.tag() {
+        return Err(RuntimeError::storage_error("invalid storage envelope"));
     }
-    Ok(bytes)
+    Ok((bytes[4], &bytes[5..]))
+}
+
+struct StorageVersionDecoder<T> {
+    version: u8,
+    decode: fn(&[u8]) -> Result<T, RuntimeError>,
+}
+
+impl<T> StorageVersionDecoder<T> {
+    const fn current(decode: fn(&[u8]) -> Result<T, RuntimeError>) -> Self {
+        Self {
+            version: STORAGE_VERSION_CURRENT,
+            decode,
+        }
+    }
+}
+
+fn decode_storage_payload<T>(
+    bytes: &[u8],
+    kind: StorageKind,
+    decoders: &[StorageVersionDecoder<T>],
+) -> Result<T, RuntimeError> {
+    let (version, payload) = storage_payload(bytes, kind)?;
+    for decoder in decoders {
+        if decoder.version == version {
+            return (decoder.decode)(payload);
+        }
+    }
+
+    Err(RuntimeError::storage_error("unsupported storage version"))
 }
 
 fn ensure_contract_data_entry_size(bytes: &[u8]) -> Result<(), RuntimeError> {
@@ -198,7 +249,14 @@ pub(crate) fn encode_restrictions(mode: &Restrictions) -> Vec<u8> {
 }
 
 pub(crate) fn decode_restrictions(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_RESTRICTIONS)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::Restrictions,
+        &[StorageVersionDecoder::current(decode_restrictions_v1)],
+    )
+}
+
+fn decode_restrictions_v1(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
     let mut cursor = 0usize;
     let tag = read_u8(bytes, &mut cursor)?;
     let len = read_u32(bytes, &mut cursor)? as usize;
@@ -234,7 +292,14 @@ pub(crate) fn encode_supply_queue(queue: &SupplyQueue) -> Vec<u8> {
 }
 
 pub(crate) fn decode_supply_queue(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_SUPPLY_QUEUE)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::SupplyQueue,
+        &[StorageVersionDecoder::current(decode_supply_queue_v1)],
+    )
+}
+
+fn decode_supply_queue_v1(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
     let mut cursor = 0usize;
     let max_length = read_u32(bytes, &mut cursor)?;
     let count = read_u32(bytes, &mut cursor)? as usize;
@@ -282,7 +347,16 @@ pub(crate) fn encode_cap_groups(cap_groups: &OrderedMap<CapGroupId, CapGroupReco
 pub(crate) fn decode_cap_groups(
     bytes: &[u8],
 ) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_CAP_GROUPS)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::CapGroups,
+        &[StorageVersionDecoder::current(decode_cap_groups_v1)],
+    )
+}
+
+fn decode_cap_groups_v1(
+    bytes: &[u8],
+) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut cap_groups = OrderedMap::new();
@@ -338,7 +412,14 @@ pub(crate) fn encode_markets(markets: &OrderedMap<TargetId, MarketConfig>) -> Ve
 pub(crate) fn decode_markets(
     bytes: &[u8],
 ) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_MARKETS)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::Markets,
+        &[StorageVersionDecoder::current(decode_markets_v1)],
+    )
+}
+
+fn decode_markets_v1(bytes: &[u8]) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut markets = OrderedMap::new();
@@ -373,7 +454,14 @@ pub(crate) fn encode_principals(principals: &OrderedMap<TargetId, u128>) -> Vec<
 }
 
 pub(crate) fn decode_principals(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_PRINCIPALS)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::Principals,
+        &[StorageVersionDecoder::current(decode_principals_v1)],
+    )
+}
+
+fn decode_principals_v1(bytes: &[u8]) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let mut principals = OrderedMap::new();
@@ -409,7 +497,14 @@ pub(crate) fn encode_policy_locks(leases: &MarketLeaseRegistry) -> Vec<u8> {
 }
 
 pub(crate) fn decode_policy_locks(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_POLICY_LOCKS)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::PolicyLocks,
+        &[StorageVersionDecoder::current(decode_policy_locks_v1)],
+    )
+}
+
+fn decode_policy_locks_v1(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     let next_fencing_token = read_u64(bytes, &mut cursor)?;
@@ -635,7 +730,14 @@ pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
 }
 
 pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
-    let bytes = storage_payload(bytes, STORAGE_KIND_STATE)?;
+    decode_storage_payload(
+        bytes,
+        StorageKind::State,
+        &[StorageVersionDecoder::current(decode_state_blob_v1)],
+    )
+}
+
+fn decode_state_blob_v1(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
     let mut cursor = 0usize;
     let state = VaultState {
         total_assets: read_u128(bytes, &mut cursor)?,

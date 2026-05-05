@@ -197,7 +197,7 @@ Useful commands:
 - Vault runtime state is persisted as a single versioned `StateBlob`, so serialized `VaultState` size is the practical storage-pressure point.
 - The shared kernel still has an absolute `MAX_PENDING = 1024`, but Soroban uses the chain-specific `SOROBAN_MAX_PENDING_WITHDRAWALS = 512` runtime cap to stay below the 64 KiB contract-data-entry limit with room for schema growth.
 - In-flight operation plans (`Allocating.plan`, `Refreshing.plan`) are expected to remain small under allocator policy, so the 512 Soroban pending-withdrawal cap is the dominant operational bound in practice.
-- Persistent storage blobs carry a compact `TVS` version header on new writes. Decoders still accept the pre-header legacy layout so governed `migrate()` can validate and rewrite old blobs in place.
+- Persistent storage blobs carry a compact `TVS` version header. Decoders reject pre-header bytes and unsupported versions; schema upgrades should add explicit per-version decode/migration dispatch before any layout change.
 
 ## Practical Risk Model
 
