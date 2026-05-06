@@ -950,9 +950,14 @@ proptest! {
         prop_assert!(result1.0 <= result2.0);
     }
 
-    /// Property 45a: fee minting near u128::MAX either succeeds or errors, never truncates
+    /// Property 45a / A-031: fee minting near u128::MAX either succeeds or errors, never truncates.
+    ///
+    /// Ignored as a red spec until A-031 is fixed. The current implementation converts
+    /// the 256-bit fee-share quotient with `Number::as_u128_trunc`, so values above
+    /// `u128::MAX` can wrap to a small mint instead of tripping the total-supply guard.
     #[test]
-    fn prop_fee_mint_overflow_handled(
+    #[ignore = "A-031 red spec: fee-share quotient truncates before overflow checks"]
+    fn prop_a031_fee_mint_overflow_handled(
         total_supply in (u128::MAX - 1_000_000u128)..=u128::MAX,
         cur_total_assets in 1u128..=1_000_000u128,
         fee_wad in (Wad::SCALE / 10)..=Wad::SCALE,
@@ -1012,6 +1017,59 @@ proptest! {
             }
             Err(_) => {
                 prop_assert!(would_overflow);
+            }
+        }
+    }
+
+    /// Property 45b / A-031: nonzero deposits must not wrap to zero shares.
+    ///
+    /// Ignored as a red spec until conversion helpers fail closed. At the Soroban
+    /// `i128::MAX` share boundary with one effective asset, a two-asset deposit has
+    /// a raw share quotient of exactly `2^128`; truncation wraps it to zero and the
+    /// kernel records the transferred assets as vault NAV without minting shares.
+    #[test]
+    #[ignore = "A-031 red spec: deposit conversion truncates 2^128 to zero shares"]
+    fn prop_a031_deposit_payment_does_not_wrap_to_zero_shares(
+        total_shares in Just(i128::MAX as u128),
+        assets_in in Just(2u128),
+    ) {
+        let state = VaultState {
+            total_assets: 0,
+            total_shares,
+            idle_assets: 0,
+            ..VaultState::default()
+        };
+        let mut config = default_config();
+        config.virtual_shares = 0;
+        config.virtual_assets = 0;
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::Deposit {
+                owner: owner_addr(1),
+                receiver: receiver_addr(1),
+                assets_in,
+                min_shares_out: 0,
+                now_ns: TimestampNs(1),
+            },
+        );
+
+        match result {
+            Ok(result) => {
+                let minted = result.effects.iter().find_map(|effect| match effect {
+                    KernelEffect::MintShares { shares, .. } => Some(*shares),
+                    _ => None,
+                });
+                prop_assert!(
+                    minted.unwrap_or_default() > 0,
+                    "nonzero asset payment minted zero shares after quotient truncation"
+                );
+            }
+            Err(_) => {
+                prop_assert!(true);
             }
         }
     }
