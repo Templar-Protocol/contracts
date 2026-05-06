@@ -1,4 +1,7 @@
-use crate::*;
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::string::ToString;
 
 serialize! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

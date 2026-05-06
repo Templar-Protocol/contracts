@@ -1,8 +1,10 @@
 pub mod aggregator;
 pub mod freshness_filter;
 
-use crate::*;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::{format, string::ToString};
 
+use crate::Price;
 use aggregator::method::Aggregate;
 pub use aggregator::Aggregator;
 pub use freshness_filter::FreshnessFilter;

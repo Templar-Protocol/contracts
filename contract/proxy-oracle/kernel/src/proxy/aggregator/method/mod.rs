@@ -1,7 +1,7 @@
 pub mod median;
 pub mod priority;
 
-use crate::*;
+use crate::Price;
 
 pub trait Aggregate<S> {
     fn aggregate<I>(&self, prices: I) -> Result<Price, Error>

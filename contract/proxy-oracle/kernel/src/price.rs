@@ -1,4 +1,7 @@
-use crate::*;
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::string::ToString;
 use templar_primitives::time::Nanoseconds;
 
 serialize! {

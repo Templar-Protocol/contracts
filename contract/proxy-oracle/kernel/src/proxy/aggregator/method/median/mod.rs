@@ -1,11 +1,15 @@
 mod specific_price;
 
-use crate::*;
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::{format, string::ToString};
 use core::marker::PhantomData;
 
 use super::Aggregate;
 use crate::proxy::WeightedSource;
+use crate::Price;
 use specific_price::SpecificPrice;
 
 /// Calculates the weighted median of a sorted list of weighted items.

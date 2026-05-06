@@ -1,6 +1,11 @@
 pub mod method;
 
-use crate::*;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::format;
+#[cfg(feature = "schemars")]
+use alloc::{boxed::Box, vec};
+
+use crate::Price;
 use method::{
     median::{MedianHigh, MedianLow},
     priority::Priority,

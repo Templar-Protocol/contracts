@@ -1,6 +1,10 @@
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::string::ToString;
 use templar_primitives::time::Nanoseconds;
 
-use crate::*;
+use crate::Price;
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
