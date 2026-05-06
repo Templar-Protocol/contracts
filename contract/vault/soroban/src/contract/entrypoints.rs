@@ -925,14 +925,32 @@ impl SorobanVaultContract {
             0
         } else {
             let assets_u128 = to_u128(assets)?;
-            to_i128(convert_to_shares(&state, &config, assets_u128))?
+            to_i128(
+                convert_to_shares_bounded(
+                    &state,
+                    &config,
+                    assets_u128,
+                    i128::MAX as u128,
+                    InvalidStateCode::MintOverflowTotalShares,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?,
+            )?
         };
 
         let convert_to_assets_value = if shares <= 0 {
             0
         } else {
             let shares_u128 = to_u128(shares)?;
-            to_i128(convert_to_assets(&state, &config, shares_u128))?
+            to_i128(
+                convert_to_assets_bounded(
+                    &state,
+                    &config,
+                    shares_u128,
+                    i128::MAX as u128,
+                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?,
+            )?
         };
 
         let (max_deposit_value, max_mint_value) = if state.op_state.is_idle() && !config.paused {
@@ -949,10 +967,24 @@ impl SorobanVaultContract {
 
         let owner_shares = share_balance(&env, &owner).max(0) as u128;
         let (max_withdraw_value, max_redeem_value) = if state.op_state.is_idle() {
-            let max_redeem_u128 =
-                owner_shares.min(convert_to_shares(&state, &config, state.idle_assets));
-            let max_withdraw_u128 =
-                convert_to_assets(&state, &config, owner_shares).min(state.idle_assets);
+            let max_redeem_u128 = owner_shares.min(
+                convert_to_shares_bounded(
+                    &state,
+                    &config,
+                    state.idle_assets,
+                    i128::MAX as u128,
+                    InvalidStateCode::MintOverflowTotalShares,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?,
+            );
+            let max_withdraw_u128 = convert_to_assets_bounded(
+                &state,
+                &config,
+                owner_shares,
+                state.idle_assets.min(i128::MAX as u128),
+                InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
+            )
+            .map_err(|_| ContractError::ConversionOverflow)?;
             (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
         } else {
             (0, 0)
@@ -962,14 +994,32 @@ impl SorobanVaultContract {
             0
         } else {
             let shares_u128 = to_u128(shares)?;
-            to_i128(convert_to_assets_ceil(&state, &config, shares_u128))?
+            to_i128(
+                convert_to_assets_ceil_bounded(
+                    &state,
+                    &config,
+                    shares_u128,
+                    i128::MAX as u128,
+                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?,
+            )?
         };
 
         let preview_withdraw_value = if assets <= 0 {
             0
         } else {
             let assets_u128 = to_u128(assets)?;
-            to_i128(convert_to_shares_ceil(&state, &config, assets_u128))?
+            to_i128(
+                convert_to_shares_ceil_bounded(
+                    &state,
+                    &config,
+                    assets_u128,
+                    i128::MAX as u128,
+                    InvalidStateCode::AtomicWithdrawBurnExceedsTotalShares,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?,
+            )?
         };
 
         Ok((

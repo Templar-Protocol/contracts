@@ -517,6 +517,50 @@ pub fn convert_to_assets_ceil(state: &VaultState, config: &VaultConfig, shares: 
     conversions::convert_to_assets_ceil(state, config, shares)
 }
 
+/// Convert assets to shares and reject quotients above the operation's legal cap.
+pub fn convert_to_shares_bounded(
+    state: &VaultState,
+    config: &VaultConfig,
+    assets: u128,
+    cap: u128,
+    error: InvalidStateCode,
+) -> Result<u128, KernelError> {
+    conversions::convert_to_shares_bounded(state, config, assets, cap, error)
+}
+
+/// Convert shares to assets and reject quotients above the operation's legal cap.
+pub fn convert_to_assets_bounded(
+    state: &VaultState,
+    config: &VaultConfig,
+    shares: u128,
+    cap: u128,
+    error: InvalidStateCode,
+) -> Result<u128, KernelError> {
+    conversions::convert_to_assets_bounded(state, config, shares, cap, error)
+}
+
+/// Convert assets to shares with ceil rounding and reject quotients above the operation's cap.
+pub fn convert_to_shares_ceil_bounded(
+    state: &VaultState,
+    config: &VaultConfig,
+    assets: u128,
+    cap: u128,
+    error: InvalidStateCode,
+) -> Result<u128, KernelError> {
+    conversions::convert_to_shares_ceil_bounded(state, config, assets, cap, error)
+}
+
+/// Convert shares to assets with ceil rounding and reject quotients above the operation's cap.
+pub fn convert_to_assets_ceil_bounded(
+    state: &VaultState,
+    config: &VaultConfig,
+    shares: u128,
+    cap: u128,
+    error: InvalidStateCode,
+) -> Result<u128, KernelError> {
+    conversions::convert_to_assets_ceil_bounded(state, config, shares, cap, error)
+}
+
 /// Preview the shares minted for a deposit of `assets` using kernel conversions.
 #[inline]
 #[must_use]
@@ -613,7 +657,13 @@ fn mint_fee_shares(
     recipient: Address,
 ) -> Result<(), KernelError> {
     if shares > Number::zero() {
-        let minted: u128 = shares.into();
+        let remaining = u128::MAX.saturating_sub(*total_supply);
+        if shares > Number::from(remaining) {
+            return Err(KernelError::from(
+                InvalidStateCode::FeeMintOverflowTotalSupply,
+            ));
+        }
+        let minted = shares.as_u128_trunc();
         *total_supply = total_supply
             .checked_add(minted)
             .ok_or_else(|| KernelError::from(InvalidStateCode::FeeMintOverflowTotalSupply))?;
@@ -679,7 +729,13 @@ fn handle_deposit(
         return Err(KernelError::ZeroAmount);
     }
 
-    let shares_out = convert_to_shares(&state, config, assets_in);
+    let shares_out = convert_to_shares_bounded(
+        &state,
+        config,
+        assets_in,
+        u128::MAX.saturating_sub(state.total_shares),
+        InvalidStateCode::MintOverflowTotalShares,
+    )?;
     if shares_out < min_shares_out {
         return Err(KernelError::Slippage {
             min: min_shares_out,
@@ -891,7 +947,13 @@ fn plan_withdrawal_request(
     shares: u128,
     min_assets_out: u128,
 ) -> Result<WithdrawalRequestPlan, KernelError> {
-    let expected_assets = convert_to_assets(state, config, shares);
+    let expected_assets = convert_to_assets_bounded(
+        state,
+        config,
+        shares,
+        state.total_assets,
+        InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+    )?;
     if expected_assets < min_assets_out {
         return Err(KernelError::Slippage {
             min: min_assets_out,
@@ -1004,7 +1066,13 @@ fn handle_atomic_withdraw(
         assets_out,
     )?;
 
-    let shares = convert_to_shares_ceil(&state, config, assets_out);
+    let shares = convert_to_shares_ceil_bounded(
+        &state,
+        config,
+        assets_out,
+        state.total_shares,
+        InvalidStateCode::AtomicWithdrawBurnExceedsTotalShares,
+    )?;
     if shares == 0 {
         return Err(KernelError::ZeroAmount);
     }
@@ -1065,7 +1133,13 @@ fn handle_atomic_redeem(
     enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
     require_idle_with_nonzero_amount(&state, InvalidStateCode::AtomicWithdrawRequiresIdle, shares)?;
 
-    let assets_out = convert_to_assets(&state, config, shares);
+    let assets_out = convert_to_assets_bounded(
+        &state,
+        config,
+        shares,
+        state.idle_assets,
+        InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
+    )?;
     if assets_out == 0 {
         return Err(KernelError::ZeroAmount);
     }
@@ -1835,6 +1909,17 @@ mod conversions {
         ))
     }
 
+    pub(super) fn convert_to_shares_bounded(
+        state: &VaultState,
+        config: &VaultConfig,
+        assets: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        let t = effective_totals(state, config);
+        mul_div_floor_bounded_u128(assets, t.supply, t.assets, cap, error)
+    }
+
     pub(super) fn convert_to_assets(
         state: &VaultState,
         config: &VaultConfig,
@@ -1846,6 +1931,17 @@ mod conversions {
             Number::from(t.assets),
             Number::from(t.supply),
         ))
+    }
+
+    pub(super) fn convert_to_assets_bounded(
+        state: &VaultState,
+        config: &VaultConfig,
+        shares: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        let t = effective_totals(state, config);
+        mul_div_floor_bounded_u128(shares, t.assets, t.supply, cap, error)
     }
 
     pub(super) fn convert_to_shares_ceil(
@@ -1861,6 +1957,17 @@ mod conversions {
         ))
     }
 
+    pub(super) fn convert_to_shares_ceil_bounded(
+        state: &VaultState,
+        config: &VaultConfig,
+        assets: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        let t = effective_totals(state, config);
+        mul_div_ceil_bounded_u128(assets, t.supply, t.assets, cap, error)
+    }
+
     pub(super) fn convert_to_assets_ceil(
         state: &VaultState,
         config: &VaultConfig,
@@ -1872,6 +1979,56 @@ mod conversions {
             Number::from(t.assets),
             Number::from(t.supply),
         ))
+    }
+
+    pub(super) fn convert_to_assets_ceil_bounded(
+        state: &VaultState,
+        config: &VaultConfig,
+        shares: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        let t = effective_totals(state, config);
+        mul_div_ceil_bounded_u128(shares, t.assets, t.supply, cap, error)
+    }
+
+    fn mul_div_floor_bounded_u128(
+        x: u128,
+        y: u128,
+        denominator: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        bounded_u128(
+            mul_div_floor(Number::from(x), Number::from(y), Number::from(denominator)),
+            cap,
+            error,
+        )
+    }
+
+    fn mul_div_ceil_bounded_u128(
+        x: u128,
+        y: u128,
+        denominator: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        bounded_u128(
+            mul_div_ceil(Number::from(x), Number::from(y), Number::from(denominator)),
+            cap,
+            error,
+        )
+    }
+
+    fn bounded_u128(
+        quotient: Number,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        if quotient > Number::from(cap) {
+            return Err(KernelError::from(error));
+        }
+        Ok(quotient.as_u128_trunc())
     }
 }
 
