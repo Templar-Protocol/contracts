@@ -1,4 +1,7 @@
-use crate::*;
+#[cfg(any(feature = "serde", feature = "schemars"))]
+use alloc::string::String;
+#[cfg(any(feature = "borsh", feature = "serde", feature = "schemars"))]
+use alloc::string::ToString;
 use primitive_types::U256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

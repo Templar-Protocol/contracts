@@ -1,7 +1,11 @@
-use crate::*;
+#[cfg(feature = "schemars")]
+use alloc::string::ToString;
 use alloc::{
     fmt::{Debug, Display},
+    format,
     str::FromStr,
+    string::String,
+    vec::Vec,
 };
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 

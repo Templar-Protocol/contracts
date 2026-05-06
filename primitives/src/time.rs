@@ -1,14 +1,33 @@
-use crate::{strnum::SU64, *};
+use crate::strnum::SU64;
+use alloc::fmt;
+#[cfg(feature = "schemars")]
+use alloc::string::String;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::string::ToString;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize, borsh::BorshSchema)
 )]
 pub struct Nanoseconds(SU64);
+
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Nanoseconds {
+    fn schema_name() -> String {
+        "Nanoseconds".to_string()
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = schemars::schema::SchemaObject::default();
+        schema.instance_type = Some(schemars::schema::InstanceType::String.into());
+        schema.metadata().description =
+            Some("nanoseconds represented as a decimal string".to_string());
+        schema.into()
+    }
+}
 
 impl Nanoseconds {
     pub const fn zero() -> Self {
@@ -56,8 +75,8 @@ impl Nanoseconds {
     }
 }
 
-impl alloc::fmt::Display for Nanoseconds {
-    fn fmt(&self, f: &mut alloc::fmt::Formatter<'_>) -> alloc::fmt::Result {
+impl fmt::Display for Nanoseconds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}ns", self.as_ns())
     }
 }

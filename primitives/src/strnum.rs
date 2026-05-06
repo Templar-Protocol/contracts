@@ -1,10 +1,13 @@
 mod serializable_u256;
 pub use serializable_u256::SerializableU256 as SU256;
 
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::format;
+#[cfg(feature = "schemars")]
+use alloc::string::String;
+#[cfg(any(feature = "serde", feature = "schemars"))]
+use alloc::string::ToString;
 use core::ops::Deref;
-
-#[allow(unused_imports)]
-use crate::*;
 
 pub type SU64 = StrNum<u64>;
 pub type SU128 = StrNum<u128>;
@@ -78,10 +81,9 @@ where
 
 #[cfg(feature = "serde")]
 mod ser_de {
+    use alloc::string::{String, ToString};
     use core::str::FromStr;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::*;
 
     pub fn serialize<S: Serializer, T: ToString>(t: &T, ser: S) -> Result<S::Ok, S::Error> {
         String::serialize(&t.to_string(), ser)
