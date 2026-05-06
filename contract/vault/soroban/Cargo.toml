@@ -34,3 +34,4 @@ rstest.workspace = true
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
 templar-soroban-blend-adapter = { path = "./blend-adapter" }
 templar-soroban-runtime = { path = ".", features = ["testutils"] }
+templar-soroban-governance = { path = "./governance" }

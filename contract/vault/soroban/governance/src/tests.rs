@@ -8,16 +8,16 @@ use super::*;
 use soroban_sdk::{
     contracttype,
     testutils::{Address as _, Ledger, LedgerInfo},
-    Bytes, String as SdkString,
+    Bytes, BytesN, String as SdkString,
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-    GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
-    GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 #[contract]
@@ -48,6 +48,9 @@ enum MockVaultKey {
     LastGroupMemberMarketId,
     LastGroupMemberGroupId,
     LastSkimToken,
+    LastUpgradeHash,
+    Migrated,
+    LastCancelMigrationCaller,
 }
 
 #[contractimpl]
@@ -264,6 +267,34 @@ impl MockVault {
         }
     }
 
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, _operator: Address) {
+        env.storage()
+            .instance()
+            .set(&MockVaultKey::LastUpgradeHash, &new_wasm_hash);
+    }
+
+    pub fn migrate(env: Env, _operator: Address) {
+        env.storage().instance().set(&MockVaultKey::Migrated, &true);
+    }
+
+    pub fn execute(env: Env, payload: Bytes) -> Bytes {
+        let command = match VaultCommand::decode(&payload.to_alloc_vec()) {
+            Ok(command) => command,
+            Err(_) => panic!("decode vault command failed"),
+        };
+
+        match command {
+            VaultCommand::CancelMigration { caller } => {
+                env.storage().instance().set(
+                    &MockVaultKey::LastCancelMigrationCaller,
+                    &sdk_address(&env, &caller),
+                );
+                Bytes::from_slice(&env, &VaultCommandResult::Unit.encode())
+            }
+            _ => panic!("unexpected vault command"),
+        }
+    }
+
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -382,6 +413,23 @@ impl MockVault {
 
     pub fn last_skim_token(env: Env) -> Option<Address> {
         env.storage().instance().get(&MockVaultKey::LastSkimToken)
+    }
+
+    pub fn last_upgrade_hash(env: Env) -> Option<BytesN<32>> {
+        env.storage().instance().get(&MockVaultKey::LastUpgradeHash)
+    }
+
+    pub fn migrated(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::Migrated)
+            .unwrap_or(false)
+    }
+
+    pub fn last_cancel_migration_caller(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastCancelMigrationCaller)
     }
 
     fn set_governance_config(
@@ -1841,6 +1889,102 @@ fn skim_action_is_timelocked_and_routes_token_to_vault() {
 
     let after = env.as_contract(&vault, || MockVault::last_skim_token(env.clone()));
     assert_eq!(after, Some(token));
+}
+
+#[test]
+fn upgrade_migrate_and_cancel_migration_are_timelocked_and_route_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    let upgrade_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_upgrade(
+            env.clone(),
+            admin.clone(),
+            wasm_hash.clone(),
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id).unwrap()
+    });
+    let routed_hash = env.as_contract(&vault, || MockVault::last_upgrade_hash(env.clone()));
+    assert_eq!(routed_hash, Some(wasm_hash));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let migrate_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_migrate(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 206,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id).unwrap()
+    });
+    assert!(env.as_contract(&vault, || MockVault::migrated(env.clone())));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 300,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let cancel_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_cancel_migration(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 306,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id).unwrap()
+    });
+    let cancel_caller = env.as_contract(&vault, || {
+        MockVault::last_cancel_migration_caller(env.clone())
+    });
+    assert_eq!(cancel_caller, Some(governance));
 }
 
 #[test]

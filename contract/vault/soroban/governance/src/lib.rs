@@ -17,13 +17,13 @@ use templar_curator_primitives::governance::{
 };
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_soroban_shared_types::{
-    GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-    GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
-    GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::math::wad::Wad;
 use templar_vault_kernel::{DurationNs, TimestampNs};
@@ -59,6 +59,9 @@ enum GovernanceActionKey {
     CapGroupMembership(u32),
     SkimRecipient,
     Skim(Address),
+    Upgrade,
+    Migrate,
+    CancelMigration,
     TimelockConfig(TimelockKind),
     Other(Symbol, BytesN<32>),
 }
@@ -87,6 +90,9 @@ impl GovernanceAction {
             }
             Self::SetSkimRecipient(_) => GovernanceActionKey::SkimRecipient,
             Self::Skim(account) => GovernanceActionKey::Skim(account.clone()),
+            Self::Upgrade(_) => GovernanceActionKey::Upgrade,
+            Self::Migrate => GovernanceActionKey::Migrate,
+            Self::CancelMigration => GovernanceActionKey::CancelMigration,
             Self::SetTimelock(kind, _) => GovernanceActionKey::TimelockConfig(*kind),
             Self::Other(key, payload_hash) => {
                 GovernanceActionKey::Other(key.clone(), payload_hash.clone())
@@ -374,6 +380,22 @@ impl SorobanVaultGovernanceContract {
         Self::submit(env, caller, GovernanceAction::Skim(token))
     }
 
+    pub fn submit_upgrade(
+        env: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::Upgrade(new_wasm_hash))
+    }
+
+    pub fn submit_migrate(env: Env, caller: Address) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::Migrate)
+    }
+
+    pub fn submit_cancel_migration(env: Env, caller: Address) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::CancelMigration)
+    }
+
     pub fn abdicate(
         env: Env,
         caller: Address,
@@ -650,6 +672,9 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetSkimRecipient(_) | GovernanceAction::Skim(_) => {
             GovernanceActionKind::Skim
         }
+        GovernanceAction::Upgrade(_) => GovernanceActionKind::Upgrade,
+        GovernanceAction::Migrate => GovernanceActionKind::Migrate,
+        GovernanceAction::CancelMigration => GovernanceActionKind::CancelMigration,
         GovernanceAction::SetTimelock(_, _) => GovernanceActionKind::TimelockConfig,
         GovernanceAction::Other(_, _) => GovernanceActionKind::Other,
     }
@@ -673,6 +698,8 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         | GovernanceAction::SetGroupRelCap(_, _)
         | GovernanceAction::SetGroupMember(_, _) => TimelockKind::CapGroup,
         GovernanceAction::SetSkimRecipient(_) | GovernanceAction::Skim(_) => TimelockKind::Skim,
+        GovernanceAction::Upgrade(_) => TimelockKind::Upgrade,
+        GovernanceAction::Migrate | GovernanceAction::CancelMigration => TimelockKind::Migration,
         GovernanceAction::SetTimelock(_, _) => TimelockKind::TimelockConfig,
         GovernanceAction::Other(_, _) => TimelockKind::Other,
     }
@@ -887,7 +914,10 @@ fn decide_submission(
         | GovernanceAction::SetGovernance(_)
         | GovernanceAction::SetSupplyQueue(_)
         | GovernanceAction::SetAllocators(_)
-        | GovernanceAction::SetAllowedAdapters(_) => Ok(TimelockDecision::Timelocked),
+        | GovernanceAction::SetAllowedAdapters(_)
+        | GovernanceAction::Upgrade(_)
+        | GovernanceAction::Migrate
+        | GovernanceAction::CancelMigration => Ok(TimelockDecision::Timelocked),
         GovernanceAction::Other(key, payload_hash) => {
             let approved: bool = env
                 .storage()
@@ -1159,6 +1189,37 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 .set(&DataKey::SkimRecipient, recipient);
         }
         GovernanceAction::Skim(_) => execute_vault_governance_action(env, &vault, action)?,
+        GovernanceAction::Upgrade(new_wasm_hash) => {
+            let governance = env.current_contract_address();
+            authorize_and_invoke(
+                env,
+                &vault,
+                Symbol::new(env, "upgrade"),
+                Vec::from_array(
+                    env,
+                    [
+                        new_wasm_hash.clone().into_val(env),
+                        governance.into_val(env),
+                    ],
+                ),
+            );
+        }
+        GovernanceAction::Migrate => {
+            let governance = env.current_contract_address();
+            authorize_and_invoke(
+                env,
+                &vault,
+                Symbol::new(env, "migrate"),
+                Vec::from_array(env, [governance.into_val(env)]),
+            );
+        }
+        GovernanceAction::CancelMigration => {
+            let governance = env.current_contract_address();
+            let command = VaultCommand::CancelMigration {
+                caller: sdk_address_to_alloc_string(&governance)?,
+            };
+            execute_vault_command(env, &vault, &command);
+        }
         GovernanceAction::SetTimelock(kind, new_timelock_ns) => {
             validate_timelock_ns(*new_timelock_ns)?;
             let mut timelocks = load_timelocks(env);
@@ -1396,7 +1457,11 @@ fn governance_payload_for_action(
                 value_c: None,
             })
         }
-        GovernanceAction::SetTimelock(_, _) | GovernanceAction::Other(_, _) => None,
+        GovernanceAction::Upgrade(_)
+        | GovernanceAction::Migrate
+        | GovernanceAction::CancelMigration
+        | GovernanceAction::SetTimelock(_, _)
+        | GovernanceAction::Other(_, _) => None,
     };
 
     Ok(command.map(|command| Bytes::from_slice(env, &command.encode())))
@@ -1430,6 +1495,11 @@ fn soroban_address_vec_to_alloc(
     Ok(result)
 }
 
+fn execute_vault_command(env: &Env, vault: &Address, command: &VaultCommand) {
+    let payload = Bytes::from_slice(env, &command.encode());
+    authorize_and_invoke_bytes(env, vault, Symbol::new(env, "execute"), payload);
+}
+
 fn authorize_and_invoke(env: &Env, vault: &Address, fn_name: Symbol, args: Vec<soroban_sdk::Val>) {
     let args_for_auth = args.clone();
 
@@ -1446,6 +1516,25 @@ fn authorize_and_invoke(env: &Env, vault: &Address, fn_name: Symbol, args: Vec<s
     ));
 
     env.invoke_contract::<()>(vault, &fn_name, args);
+}
+
+fn authorize_and_invoke_bytes(env: &Env, vault: &Address, fn_name: Symbol, payload: Bytes) {
+    let args = Vec::from_array(env, [payload.into_val(env)]);
+    let args_for_auth = args.clone();
+
+    env.authorize_as_current_contract(Vec::from_array(
+        env,
+        [InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: vault.clone(),
+                fn_name: fn_name.clone(),
+                args: args_for_auth,
+            },
+            sub_invocations: Vec::new(env),
+        })],
+    ));
+
+    let _result = env.invoke_contract::<Bytes>(vault, &fn_name, args);
 }
 
 fn get_address(env: &Env, key: DataKey) -> Result<Address, GovernanceError> {

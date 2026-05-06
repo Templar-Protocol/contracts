@@ -43,6 +43,8 @@ pub enum TimelockKind {
     MarketRemoval,
     CapGroup,
     Skim,
+    Upgrade,
+    Migration,
     TimelockConfig,
     Other,
 }
@@ -64,6 +66,9 @@ pub enum GovernanceActionKind {
     MarketRemoval,
     CapGroup,
     Skim,
+    Upgrade,
+    Migrate,
+    CancelMigration,
     TimelockConfig,
     Other,
 }
@@ -85,6 +90,8 @@ pub struct Timelocks {
     pub market_removal_ns: u64,
     pub cap_group_ns: u64,
     pub skim_ns: u64,
+    pub upgrade_ns: u64,
+    pub migration_ns: u64,
     pub timelock_config_ns: u64,
     pub other_ns: u64,
 }
@@ -106,6 +113,8 @@ impl Timelocks {
             market_removal_ns: default_ns,
             cap_group_ns: default_ns,
             skim_ns: default_ns,
+            upgrade_ns: default_ns,
+            migration_ns: default_ns,
             timelock_config_ns: default_ns,
             other_ns: default_ns,
         }
@@ -127,6 +136,8 @@ impl Timelocks {
             TimelockKind::MarketRemoval => self.market_removal_ns,
             TimelockKind::CapGroup => self.cap_group_ns,
             TimelockKind::Skim => self.skim_ns,
+            TimelockKind::Upgrade => self.upgrade_ns,
+            TimelockKind::Migration => self.migration_ns,
             TimelockKind::TimelockConfig => self.timelock_config_ns,
             TimelockKind::Other => self.other_ns,
         }
@@ -148,6 +159,8 @@ impl Timelocks {
             TimelockKind::MarketRemoval => self.market_removal_ns = value,
             TimelockKind::CapGroup => self.cap_group_ns = value,
             TimelockKind::Skim => self.skim_ns = value,
+            TimelockKind::Upgrade => self.upgrade_ns = value,
+            TimelockKind::Migration => self.migration_ns = value,
             TimelockKind::TimelockConfig => self.timelock_config_ns = value,
             TimelockKind::Other => self.other_ns = value,
         }
@@ -211,6 +224,9 @@ pub enum GovernanceAction {
     SetGroupMember(u32, String),
     SetSkimRecipient(Address),
     Skim(Address),
+    Upgrade(BytesN<32>),
+    Migrate,
+    CancelMigration,
     SetTimelock(TimelockKind, u64),
     Other(Symbol, BytesN<32>),
 }
