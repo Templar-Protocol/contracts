@@ -663,6 +663,7 @@ impl_from_const!(u64, from_u64);
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use primitive_types::U256;
     use rand::Rng;
     use rstest::rstest;
