@@ -68,27 +68,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn priority_empty_returns_too_few_valid_sources() {
-        let error = Priority::<&'static str> { sources: vec![] }
-            .aggregate(vec![])
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::TooFewValidSources {
-                expected: 1,
-                actual: 0,
-            }
-        ));
-    }
-
-    #[test]
-    fn priority_all_none_returns_too_few_valid_sources() {
-        let error = Priority::<&'static str> {
-            sources: vec!["s1", "s2"],
-        }
-        .aggregate(vec![None, None])
-        .unwrap_err();
+    #[rstest::rstest]
+    #[case(Priority::new([]), vec![])]
+    #[case(Priority::new(["s1", "s2"]), vec![None, None])]
+    fn priority_returns_too_few_valid_sources_when_no_prices_survive(
+        #[case] aggregator: Priority<&'static str>,
+        #[case] prices: Vec<Option<Price>>,
+    ) {
+        let error = aggregator.aggregate(prices).unwrap_err();
 
         assert!(matches!(
             error,

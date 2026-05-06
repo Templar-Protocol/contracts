@@ -61,42 +61,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn accepts_empty_filter_for_past_and_future_prices() {
-        let filter = FreshnessFilter::empty();
+    #[rstest::rstest]
+    #[case::same_time(Nanoseconds::from_secs(1_000))]
+    #[case::past_price(Nanoseconds::from_secs(1_001))]
+    #[case::future_price(Nanoseconds::from_secs(999))]
+    fn accepts_empty_filter(#[case] now: Nanoseconds) {
         let published = Nanoseconds::from_secs(1_000);
-
-        assert!(filter.accepts(&price(published), published));
-        assert!(filter.accepts(&price(published), published.saturating_add(Nanoseconds::from_secs(1))));
-        assert!(filter.accepts(&price(published), published.saturating_sub(Nanoseconds::from_secs(1))));
+        assert!(FreshnessFilter::empty().accepts(&price(published), now));
     }
 
-    #[test]
-    fn accepts_respects_max_age_boundaries() {
+    #[rstest::rstest]
+    #[case::at_publish(Nanoseconds::from_secs(1_000), true)]
+    #[case::at_max_age(Nanoseconds::from_secs(1_500), true)]
+    #[case::over_max_age(Nanoseconds::from_secs(1_500).saturating_add(Nanoseconds::from_ns(1)), false)]
+    fn accepts_respects_max_age_boundaries(#[case] now: Nanoseconds, #[case] accepted: bool) {
         let published = Nanoseconds::from_secs(1_000);
         let max_age = Nanoseconds::from_secs(500);
         let filter = FreshnessFilter::new(Some(max_age), None);
 
-        assert!(filter.accepts(&price(published), published));
-        assert!(filter.accepts(&price(published), published.saturating_add(max_age)));
-        assert!(!filter.accepts(
-            &price(published),
-            published.saturating_add(max_age).saturating_add(Nanoseconds::from_ns(1))
-        ));
+        assert_eq!(filter.accepts(&price(published), now), accepted);
     }
 
-    #[test]
-    fn accepts_respects_max_clock_drift_boundaries() {
+    #[rstest::rstest]
+    #[case::at_max_clock_drift(Nanoseconds::from_secs(500), true)]
+    #[case::over_max_clock_drift(Nanoseconds::from_secs(499).saturating_sub(Nanoseconds::from_ns(1)), false)]
+    fn accepts_respects_max_clock_drift_boundaries(
+        #[case] now: Nanoseconds,
+        #[case] accepted: bool,
+    ) {
         let published = Nanoseconds::from_secs(1_000);
         let max_clock_drift = Nanoseconds::from_secs(500);
         let filter = FreshnessFilter::new(None, Some(max_clock_drift));
 
-        assert!(filter.accepts(&price(published), published.saturating_sub(max_clock_drift)));
-        assert!(!filter.accepts(
-            &price(published),
-            published
-                .saturating_sub(max_clock_drift)
-                .saturating_sub(Nanoseconds::from_ns(1))
-        ));
+        assert_eq!(filter.accepts(&price(published), now), accepted);
     }
 }

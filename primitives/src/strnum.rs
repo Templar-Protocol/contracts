@@ -121,3 +121,28 @@ mod near {
     impl_from_near!(I64, i64);
     impl_from_near!(I128, i128);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SI128, SI64, SU128, SU64};
+
+    #[cfg(feature = "serde")]
+    #[rstest::rstest]
+    #[case(SU64::from(42_u64), "\"42\"")]
+    #[case(
+        SU128::from(340282366920938463463374607431768211455_u128),
+        "\"340282366920938463463374607431768211455\""
+    )]
+    #[case(SI64::from(-42_i64), "\"-42\"")]
+    #[case(SI128::from(-170141183460469231731687303715884105728_i128), "\"-170141183460469231731687303715884105728\"")]
+    fn serde_round_trip_string_numbers<T>(#[case] value: T, #[case] expected_json: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + core::fmt::Debug + PartialEq,
+    {
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert_eq!(serialized, expected_json);
+
+        let deserialized: T = serde_json::from_str(expected_json).unwrap();
+        assert_eq!(deserialized, value);
+    }
+}

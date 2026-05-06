@@ -64,3 +64,23 @@ impl<'de> serde::Deserialize<'de> for SerializableU256 {
             .map_err(serde::de::Error::custom)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use primitive_types::U256;
+
+    use super::SerializableU256;
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_decimal_string() {
+        let value =
+            SerializableU256::from(U256::from_dec_str("123456789012345678901234567890").unwrap());
+
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert_eq!(serialized, "\"123456789012345678901234567890\"");
+
+        let deserialized: SerializableU256 = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, value);
+    }
+}

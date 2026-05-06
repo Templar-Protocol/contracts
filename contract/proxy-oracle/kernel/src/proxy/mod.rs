@@ -91,6 +91,7 @@ impl<S> Proxy<S> {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use alloc::vec::Vec;
     use rstest::rstest;
     use templar_primitives::Nanoseconds;
 
@@ -190,10 +191,7 @@ mod tests {
         #[case] included: bool,
     ) {
         let proxy = median_proxy(
-            FreshnessFilter {
-                max_age_ns: None,
-                max_clock_drift_ns: Some(Nanoseconds::from_secs(max_clock_drift_s)),
-            },
+            FreshnessFilter::new(None, Some(Nanoseconds::from_secs(max_clock_drift_s))),
             1,
         );
         let now = Nanoseconds::from_secs(u64::try_from(now_s).unwrap());
@@ -207,34 +205,29 @@ mod tests {
         assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
     }
 
-    #[test]
-    fn resolve_priority_skips_stale_first_source() {
-        let proxy = priority_proxy(FreshnessFilter {
-            max_age_ns: Some(Nanoseconds::from_secs(500)),
-            max_clock_drift_ns: None,
-        });
-        let prices = vec![
+    #[rstest]
+    #[case(
+        FreshnessFilter::new(Some(Nanoseconds::from_secs(500)), None),
+        vec![
             Some(price(1_000_000, 0, 100)),
             Some(price(2_000_000, 0, 1_000)),
-        ];
-
-        let result = proxy.resolve(prices, Nanoseconds::from_secs(1_000)).unwrap();
-
-        assert_eq!(result.price, 2_000_000);
-    }
-
-    #[test]
-    fn resolve_priority_skips_future_drifted_first_source() {
-        let proxy = priority_proxy(FreshnessFilter {
-            max_age_ns: None,
-            max_clock_drift_ns: Some(Nanoseconds::from_secs(500)),
-        });
-        let prices = vec![
+        ]
+    )]
+    #[case(
+        FreshnessFilter::new(None, Some(Nanoseconds::from_secs(500))),
+        vec![
             Some(price(1_000_000, 0, 1_501)),
             Some(price(2_000_000, 0, 1_000)),
-        ];
-
-        let result = proxy.resolve(prices, Nanoseconds::from_secs(1_000)).unwrap();
+        ]
+    )]
+    fn resolve_priority_skips_filtered_first_source(
+        #[case] freshness_filter: FreshnessFilter,
+        #[case] prices: Vec<Option<Price>>,
+    ) {
+        let proxy = priority_proxy(freshness_filter);
+        let result = proxy
+            .resolve(prices, Nanoseconds::from_secs(1_000))
+            .unwrap();
 
         assert_eq!(result.price, 2_000_000);
     }
