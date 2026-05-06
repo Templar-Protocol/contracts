@@ -21,6 +21,7 @@ use templar_soroban_runtime::{
 };
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_POLICY_KIND_FEES,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -1964,6 +1965,145 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
         assert_eq!(
             stored_state.fee_anchor.timestamp_ns,
             templar_vault_kernel::TimestampNs(100_000_000_000)
+        );
+    });
+}
+
+#[rstest]
+fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let governance = soroban_sdk::Address::generate(&env);
+    let management_recipient = soroban_sdk::Address::generate(&env);
+    let performance_recipient = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let share_client = soroban_sdk::token::Client::new(&env, &share_token);
+    let proxy = VaultProxy::new(&env);
+
+    const STARTING_ASSETS: u128 = 1_000_000_000_000;
+    const DONATED_ASSETS: u128 = 100_000_000_000;
+    const RESYNC_NS: u64 = 100_000_000_000;
+    const REFRESH_NS: u64 = 200_000_000_000;
+    let refreshed_assets = STARTING_ASSETS + DONATED_ASSETS;
+    let management_fee_wad = Wad::one() / 20;
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: STARTING_ASSETS,
+                total_shares: STARTING_ASSETS,
+                idle_assets: STARTING_ASSETS,
+                fee_anchor: FeeAccrualAnchor::new(
+                    STARTING_ASSETS,
+                    templar_vault_kernel::TimestampNs(0),
+                ),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &(refreshed_assets as i128));
+
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_FEES,
+                    target_ids: None,
+                    mode: None,
+                    accounts: Some(vec![
+                        sdk_wire(&performance_recipient),
+                        sdk_wire(&management_recipient),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: Some(0),
+                    value_b: Some(management_fee_wad.as_u128_trunc() as i128),
+                    value_c: None,
+                },
+            )
+            .unwrap();
+        proxy
+            .execute_unit(&VaultCommand::ResyncIdleBalance)
+            .unwrap();
+
+        let stored_state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(stored_state.total_assets, refreshed_assets);
+        assert_eq!(
+            stored_state.fee_anchor,
+            FeeAccrualAnchor::new(
+                refreshed_assets,
+                templar_vault_kernel::TimestampNs(RESYNC_NS)
+            )
+        );
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let expected_management_shares = compute_management_fee_shares(
+        refreshed_assets,
+        refreshed_assets,
+        STARTING_ASSETS,
+        management_fee_wad,
+        RESYNC_NS,
+        REFRESH_NS,
+    )
+    .as_u128_saturating();
+
+    env.as_contract(&contract_id, || {
+        proxy.execute_unit(&VaultCommand::RefreshFees).unwrap();
+
+        let stored_state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(
+            stored_state.total_shares,
+            STARTING_ASSETS + expected_management_shares
+        );
+        assert_eq!(
+            share_client.balance(&management_recipient),
+            expected_management_shares as i128
+        );
+        assert_eq!(share_client.balance(&performance_recipient), 0);
+        assert_eq!(
+            stored_state.fee_anchor,
+            FeeAccrualAnchor::new(
+                refreshed_assets,
+                templar_vault_kernel::TimestampNs(REFRESH_NS)
+            )
         );
     });
 }
