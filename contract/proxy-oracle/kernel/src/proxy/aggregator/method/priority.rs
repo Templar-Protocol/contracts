@@ -49,6 +49,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::proxy::aggregator::method::Error;
 
     fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
         Price {
@@ -72,9 +73,24 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            super::super::Error::TooFewValidSources {
+            Error::TooFewValidSources {
                 expected: 1,
                 actual: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn priority_returns_length_mismatch_when_prices_len_differs_from_sources() {
+        let error = priority(2)
+            .aggregate(vec![Some(price(1_000_000, 0, 0))])
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::LengthMismatch {
+                expected: 2,
+                actual: 1,
             }
         ));
     }
