@@ -49,12 +49,18 @@ impl From<v0::Filter> for FreshnessFilter {
 impl From<v0::Proxy> for Proxy<Source> {
     fn from(value: v0::Proxy) -> Self {
         let freshness_filter = FreshnessFilter::from(value.aggregator.filter.clone());
+        let entries_len = value.entries.len() as u32;
 
         let aggregator = match value.aggregator.method {
             v0::AggregationMethod::MedianLow => {
                 let mut aggregator =
                     MedianLow::new(value.entries.into_iter().map(WeightedSource::from));
-                aggregator.min_sources = value.aggregator.filter.min_sources.unwrap_or(1).max(1);
+                aggregator.min_sources = value
+                    .aggregator
+                    .filter
+                    .min_sources
+                    .unwrap_or(1)
+                    .clamp(1, entries_len);
                 Aggregator::MedianLow(aggregator)
             }
             v0::AggregationMethod::Priority => {
@@ -345,5 +351,33 @@ mod tests {
         });
 
         assert!(matches!(proxy.aggregator, Aggregator::Priority(_)));
+    }
+
+    #[test]
+    fn v0_to_v1_clamps_median_low_min_sources_to_available_entries() {
+        context();
+
+        let proxy = Proxy::from(v0::Proxy {
+            aggregator: v0::Aggregator::median_low(v0::Filter {
+                max_age: None,
+                max_clock_drift: None,
+                min_sources: Some(99),
+            }),
+            entries: vec![
+                v0::Entry::new(OracleRequest::redstone(account("redstone.near"), "BTC"), 3),
+                v0::Entry::new(
+                    OracleRequest::pyth(account("pyth.near"), PriceIdentifier([1; 32])),
+                    1,
+                ),
+            ],
+        });
+
+        match proxy.aggregator {
+            Aggregator::MedianLow(aggregator) => {
+                assert_eq!(aggregator.sources.len(), 2);
+                assert_eq!(aggregator.min_sources, 2);
+            }
+            other => panic!("unexpected aggregator: {other:?}"),
+        }
     }
 }
