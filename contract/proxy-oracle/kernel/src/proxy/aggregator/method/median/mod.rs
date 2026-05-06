@@ -151,6 +151,8 @@ impl<V: MedianVariant, S> Aggregate<S> for Median<V, S> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use crate::proxy::aggregator::method::Error;
 
     use super::*;

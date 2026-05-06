@@ -46,6 +46,8 @@ impl<S> Aggregate<S> for Priority<S> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
