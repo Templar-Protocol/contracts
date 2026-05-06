@@ -104,7 +104,8 @@ pub(crate) fn reconcile_actual_idle_assets(
 
     state.idle_assets = actual_idle_assets;
     state.sync_total_assets();
-    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+    let observed_at = TimestampNs(now_ns);
+    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, observed_at);
 }
 
 /// Load kernel state and a default config for read-only conversion math.
