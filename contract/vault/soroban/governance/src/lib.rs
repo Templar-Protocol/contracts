@@ -17,7 +17,8 @@ use templar_curator_primitives::governance::{
 };
 use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
 use templar_soroban_shared_types::{
-    GovernanceCommand, GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+    GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
     GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL,
     GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
     GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
@@ -49,6 +50,8 @@ enum GovernanceActionKey {
     Restrictions,
     Guardian,
     Sentinel,
+    Allocators,
+    AllowedAdapters,
     Cap(u32),
     MarketRemoval(u32),
     CapGroupCap(String),
@@ -71,6 +74,8 @@ impl GovernanceAction {
             Self::SetRestrictions(_, _) => GovernanceActionKey::Restrictions,
             Self::SetGuardian(_) => GovernanceActionKey::Guardian,
             Self::SetSentinel(_) => GovernanceActionKey::Sentinel,
+            Self::SetAllocators(_) => GovernanceActionKey::Allocators,
+            Self::SetAllowedAdapters(_) => GovernanceActionKey::AllowedAdapters,
             Self::SetCap(market_id, _) => GovernanceActionKey::Cap(*market_id),
             Self::RemoveMarket(market_id) => GovernanceActionKey::MarketRemoval(*market_id),
             Self::SetGroupCap(group, _) => GovernanceActionKey::CapGroupCap(group.clone()),
@@ -270,6 +275,22 @@ impl SorobanVaultGovernanceContract {
         sentinel: Address,
     ) -> Result<u64, GovernanceError> {
         Self::submit(env, caller, GovernanceAction::SetSentinel(sentinel))
+    }
+
+    pub fn submit_set_allocators(
+        env: Env,
+        caller: Address,
+        allocators: Vec<Address>,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetAllocators(allocators))
+    }
+
+    pub fn submit_set_allowed_adapters(
+        env: Env,
+        caller: Address,
+        adapters: Vec<Address>,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetAllowedAdapters(adapters))
     }
 
     pub fn submit_set_timelock(
@@ -619,6 +640,8 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
         GovernanceAction::SetGuardian(_) => GovernanceActionKind::Guardian,
         GovernanceAction::SetSentinel(_) => GovernanceActionKind::Sentinel,
+        GovernanceAction::SetAllocators(_) => GovernanceActionKind::Allocators,
+        GovernanceAction::SetAllowedAdapters(_) => GovernanceActionKind::AllowedAdapters,
         GovernanceAction::SetCap(_, _) => GovernanceActionKind::Cap,
         GovernanceAction::RemoveMarket(_) => GovernanceActionKind::MarketRemoval,
         GovernanceAction::SetGroupCap(_, _)
@@ -642,6 +665,8 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
         GovernanceAction::SetGuardian(_) => TimelockKind::Guardian,
         GovernanceAction::SetSentinel(_) => TimelockKind::Sentinel,
+        GovernanceAction::SetAllocators(_) => TimelockKind::Allocators,
+        GovernanceAction::SetAllowedAdapters(_) => TimelockKind::AllowedAdapters,
         GovernanceAction::SetCap(_, _) => TimelockKind::Cap,
         GovernanceAction::RemoveMarket(_) => TimelockKind::MarketRemoval,
         GovernanceAction::SetGroupCap(_, _)
@@ -860,7 +885,9 @@ fn decide_submission(
         GovernanceAction::Skim(_) => Ok(TimelockDecision::Timelocked),
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
-        | GovernanceAction::SetSupplyQueue(_) => Ok(TimelockDecision::Timelocked),
+        | GovernanceAction::SetSupplyQueue(_)
+        | GovernanceAction::SetAllocators(_)
+        | GovernanceAction::SetAllowedAdapters(_) => Ok(TimelockDecision::Timelocked),
         GovernanceAction::Other(key, payload_hash) => {
             let approved: bool = env
                 .storage()
@@ -1062,7 +1089,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
         }
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
-        | GovernanceAction::SetSupplyQueue(_) => {
+        | GovernanceAction::SetSupplyQueue(_)
+        | GovernanceAction::SetAllocators(_)
+        | GovernanceAction::SetAllowedAdapters(_) => {
             execute_vault_governance_action(env, &vault, action)?
         }
         GovernanceAction::SetFees(params) => {
@@ -1220,6 +1249,24 @@ fn governance_payload_for_action(
             value_a: None,
             value_b: None,
         }),
+        GovernanceAction::SetAllocators(allocators) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+                primary: None,
+                many: Some(soroban_address_vec_to_alloc(allocators)?),
+                value_a: None,
+                value_b: None,
+            })
+        }
+        GovernanceAction::SetAllowedAdapters(adapters) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                primary: None,
+                many: Some(soroban_address_vec_to_alloc(adapters)?),
+                value_a: None,
+                value_b: None,
+            })
+        }
         GovernanceAction::SetSkimRecipient(recipient) => {
             Some(GovernanceCommand::SetGovernanceConfig {
                 kind: GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
