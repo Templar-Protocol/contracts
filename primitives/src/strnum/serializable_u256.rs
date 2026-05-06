@@ -1,4 +1,3 @@
-#[allow(unused_imports)]
 use crate::*;
 use primitive_types::U256;
 

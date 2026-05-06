@@ -1,9 +1,9 @@
 use crate::*;
-use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
-use std::{
+use alloc::{
     fmt::{Debug, Display},
     str::FromStr,
 };
+use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
 use primitive_types::U512;
 
@@ -32,7 +32,7 @@ fn u512_pow10(mut exponent: u32) -> U512 {
 #[macro_export]
 macro_rules! dec {
     ($s:literal) => {
-        <$crate::number::Decimal as std::str::FromStr>::from_str($s).unwrap()
+        <$crate::number::Decimal as core::str::FromStr>::from_str($s).unwrap()
     };
 }
 
@@ -64,7 +64,7 @@ impl schemars::JsonSchema for Decimal {
 #[cfg(feature = "borsh")]
 impl borsh::BorshSchema for Decimal {
     fn add_definitions_recursively(
-        definitions: &mut std::collections::BTreeMap<
+        definitions: &mut alloc::collections::BTreeMap<
             borsh::schema::Declaration,
             borsh::schema::Definition,
         >,
@@ -79,14 +79,14 @@ impl borsh::BorshSchema for Decimal {
 
 #[cfg(feature = "borsh")]
 impl borsh::BorshSerialize for Decimal {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
         borsh::BorshSerialize::serialize(&self.repr.0, writer)
     }
 }
 
 #[cfg(feature = "borsh")]
 impl borsh::BorshDeserialize for Decimal {
-    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
         Ok(Self {
             repr: U512(borsh::BorshDeserialize::deserialize_reader(reader)?),
         })
@@ -430,13 +430,13 @@ impl FromStr for Decimal {
 }
 
 impl Display for Decimal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut alloc::fmt::Formatter<'_>) -> alloc::fmt::Result {
         write!(f, "{}", self.to_f64_lossy())
     }
 }
 
 impl Debug for Decimal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut alloc::fmt::Formatter<'_>) -> alloc::fmt::Result {
         write!(f, "{}", self.to_fixed(FRACTIONAL_DECIMAL_DIGITS))
     }
 }

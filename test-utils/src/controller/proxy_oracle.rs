@@ -48,14 +48,20 @@ impl ProxyOracleController {
     }
 
     pub async fn deploy(account: Account) -> Self {
-        let contract = account.deploy(Self::wasm().await).await.unwrap().unwrap();
+        let contract = account
+            .deploy(Self::wasm().await)
+            .await
+            .expect("proxy oracle deploy RPC failed")
+            .into_result()
+            .expect("proxy oracle deploy transaction failed");
         contract
             .call("new")
             .args_json(json!({}))
             .transact()
             .await
-            .unwrap()
-            .unwrap();
+            .expect("proxy oracle init RPC failed")
+            .into_result()
+            .expect("proxy oracle init transaction failed");
 
         Self { contract }
     }

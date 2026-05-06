@@ -14,7 +14,7 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{serde_json::json, AccountId, NearToken};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use templar_common::{
     oracle::{
         pyth::{self, OracleResponse, PriceIdentifier},
@@ -316,7 +316,7 @@ impl OracleFetcher {
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
     ) -> HashMap<AccountId, Vec<PriceIdentifier>> {
-        let mut targets: HashMap<AccountId, Vec<PriceIdentifier>> = HashMap::new();
+        let mut targets: HashMap<AccountId, HashSet<PriceIdentifier>> = HashMap::new();
 
         // LST oracle: resolve underlying oracle + transform price IDs
         if let Ok(Some(underlying_oracle)) = self.is_lst_oracle(oracle).await {
@@ -338,29 +338,38 @@ impl OracleFetcher {
                 .entry(underlying_oracle)
                 .or_default()
                 .extend(underlying_ids);
-            return targets;
+            return targets
+                .into_iter()
+                .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
+                .collect();
         }
 
         // Proxy oracle: collect Pyth entries from proxy config
         if self.proxy_oracle_cache.read().await.contains(oracle) {
             for &pid in price_ids {
-                let proxy: Option<Proxy<Source>> = view(
+                match view::<Option<Proxy<Source>>>(
                     &self.client,
                     oracle.clone(),
                     "get_proxy",
                     json!({ "id": pid }),
                 )
                 .await
-                .ok()
-                .flatten();
-
-                let Some(proxy) = proxy else { continue };
-
-                for source in proxy.sources() {
-                    Self::collect_pyth_targets_from_source(source, &mut targets);
+                {
+                    Ok(Some(proxy)) => {
+                        for source in proxy.sources() {
+                            Self::collect_pyth_targets_from_source(source, &mut targets);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(oracle = %oracle, price_id = ?pid, error = %error, "Failed to read proxy configuration while resolving Pyth targets");
+                    }
                 }
             }
-            return targets;
+            return targets
+                .into_iter()
+                .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
+                .collect();
         }
 
         // Direct Pyth oracle
@@ -369,19 +378,22 @@ impl OracleFetcher {
             .or_default()
             .extend(price_ids.iter().copied());
         targets
+            .into_iter()
+            .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
+            .collect()
     }
 
     /// Collects Pyth oracle targets from a proxy source entry.
     fn collect_pyth_targets_from_source(
         source: &Source,
-        targets: &mut HashMap<AccountId, Vec<PriceIdentifier>>,
+        targets: &mut HashMap<AccountId, HashSet<PriceIdentifier>>,
     ) {
         match source {
             Source::Request(OracleRequest::Pyth(pyth_req)) => {
                 targets
                     .entry(pyth_req.oracle_id.clone())
                     .or_default()
-                    .push(pyth_req.price_id);
+                    .insert(pyth_req.price_id);
             }
             Source::Request(OracleRequest::RedStone(_)) => {
                 // RedStone prices are pushed by the relayer, not by us

@@ -1,5 +1,5 @@
 #[cfg(feature = "borsh")]
-use crate::std::string::ToString;
+use alloc::string::ToString;
 
 #[cfg_attr(
     feature = "borsh",

@@ -316,6 +316,8 @@ fn generate_v0_state_patch() {
     fs::write(patch_path(), borsh::to_vec(&state_patch).unwrap()).unwrap();
 }
 
+/// These near-workspaces sandbox tests require local port binding and may fail
+/// in restricted environments.
 #[rstest::rstest]
 #[tokio::test]
 async fn init_writes_current_state_version(#[future(awt)] worker: Worker<Sandbox>) {
@@ -326,6 +328,8 @@ async fn init_writes_current_state_version(#[future(awt)] worker: Worker<Sandbox
     assert!(!proxy.needs_migration().await);
 }
 
+/// These near-workspaces sandbox tests require local port binding and may fail
+/// in restricted environments.
 #[rstest::rstest]
 #[tokio::test]
 async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
@@ -406,6 +410,8 @@ async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
     ));
 }
 
+/// These near-workspaces sandbox tests require local port binding and may fail
+/// in restricted environments.
 #[rstest::rstest]
 #[tokio::test]
 #[should_panic = "Smart contract panicked: migrate function is private"]

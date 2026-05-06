@@ -62,7 +62,7 @@ impl OutputStyle for Proposal<Operation> {
                 out,
                 "{}: {}",
                 style("Status").bold(),
-                style("ready").green()
+                style("ready").green(),
             )?;
         } else {
             let ready_at = self.created_at.saturating_add(self.ttl);

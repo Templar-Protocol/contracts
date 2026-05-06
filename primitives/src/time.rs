@@ -15,7 +15,7 @@ impl Nanoseconds {
         Self(SU64::new(0))
     }
 
-    /// Creates a `Nanoseconds` value from milliseconds.
+    /// Creates a `Nanoseconds` value from nanoseconds.
     pub const fn from_ns(value: u64) -> Self {
         Self(SU64::new(value))
     }
@@ -25,7 +25,7 @@ impl Nanoseconds {
         Self(SU64::new(value.saturating_mul(1_000_000)))
     }
 
-    /// Creates a `Milliseconds` value from seconds.
+    /// Creates a `Nanoseconds` value from seconds.
     pub const fn from_secs(value: u64) -> Self {
         Self(SU64::new(value.saturating_mul(1_000_000_000)))
     }
@@ -56,8 +56,8 @@ impl Nanoseconds {
     }
 }
 
-impl std::fmt::Display for Nanoseconds {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl alloc::fmt::Display for Nanoseconds {
+    fn fmt(&self, f: &mut alloc::fmt::Formatter<'_>) -> alloc::fmt::Result {
         write!(f, "{}ns", self.as_ns())
     }
 }

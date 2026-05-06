@@ -13,7 +13,6 @@ pub type SI128 = StrNum<i128>;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize, borsh::BorshSchema)
@@ -54,6 +53,26 @@ impl<T> AsRef<T> for StrNum<T> {
 impl<T> From<T> for StrNum<T> {
     fn from(value: T) -> Self {
         Self(value)
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl<T> schemars::JsonSchema for StrNum<T>
+where
+    T: schemars::JsonSchema + ToString + core::str::FromStr,
+{
+    fn schema_name() -> String {
+        format!("StrNum_{}", T::schema_name())
+    }
+
+    fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = schemars::schema::SchemaObject::default();
+        schema.instance_type = Some(schemars::schema::InstanceType::String.into());
+        schema.metadata().description = Some(format!(
+            "string-serialized wrapper around {}",
+            T::schema_name()
+        ));
+        schema.into()
     }
 }
 

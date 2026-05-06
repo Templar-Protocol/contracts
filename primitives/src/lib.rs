@@ -1,19 +1,14 @@
 #![no_std]
 
-#[cfg(not(feature = "std"))]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
-#[cfg(not(feature = "std"))]
-pub(crate) use alloc as std;
 
 mod imports {
-    use crate::std;
-
-    pub use std::format;
-    pub use std::string::String;
-    pub use std::string::ToString;
-    pub use std::vec::Vec;
+    pub use alloc::format;
+    pub use alloc::string::String;
+    pub use alloc::string::ToString;
+    pub use alloc::vec::Vec;
 }
 pub(crate) use imports::*;
 

@@ -101,14 +101,10 @@ fn migrate_proposal(proposal: Proposal<v0::Operation>) -> Proposal<governance::O
 fn snapshot_proposals(
     governance: &Governance<v0::Operation>,
 ) -> Vec<(u32, Proposal<governance::Operation>)> {
-    (0..governance.next_id)
-        .filter_map(|proposal_id| {
-            governance
-                .proposals
-                .get(&proposal_id)
-                .cloned()
-                .map(|proposal| (proposal_id, migrate_proposal(proposal)))
-        })
+    governance
+        .proposals
+        .iter()
+        .map(|(proposal_id, proposal)| (*proposal_id, migrate_proposal(proposal.clone())))
         .collect()
 }
 

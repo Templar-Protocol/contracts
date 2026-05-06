@@ -3,19 +3,17 @@
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
-#[cfg(not(feature = "std"))]
-pub(crate) use alloc as std;
 
 #[cfg(feature = "schemars")]
-pub(crate) use crate::std::borrow::ToOwned;
+pub(crate) use alloc::borrow::ToOwned;
 #[cfg(feature = "schemars")]
-pub(crate) use crate::std::boxed::Box;
-#[cfg(feature = "schemars")]
-pub(crate) use crate::std::format;
+pub(crate) use alloc::boxed::Box;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
-pub(crate) use crate::std::string::ToString;
+pub(crate) use alloc::format;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
+pub(crate) use alloc::string::ToString;
 #[cfg(feature = "schemars")]
-pub(crate) use crate::std::vec;
+pub(crate) use alloc::vec;
 
 macro_rules! serialize {
     ($i: item) => {
