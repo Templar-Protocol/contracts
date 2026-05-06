@@ -952,21 +952,19 @@ proptest! {
 
     /// Property 45a / A-031: fee minting near u128::MAX either succeeds or errors, never truncates.
     ///
-    /// Ignored as a red spec until A-031 is fixed. The current implementation converts
-    /// the 256-bit fee-share quotient with `Number::as_u128_trunc`, so values above
-    /// `u128::MAX` can wrap to a small mint instead of tripping the total-supply guard.
+    /// Fee minting now checks the full-width quotient against remaining supply before
+    /// converting to `u128`.
     #[test]
-    #[ignore = "A-031 red spec: fee-share quotient truncates before overflow checks"]
     fn prop_a031_fee_mint_overflow_handled(
         total_supply in (u128::MAX - 1_000_000u128)..=u128::MAX,
-        cur_total_assets in 1u128..=1_000_000u128,
+        cur_total_assets in 2u128..=1_000_000u128,
         fee_wad in (Wad::SCALE / 10)..=Wad::SCALE,
     ) {
         let state = VaultState {
             total_assets: cur_total_assets,
             total_shares: total_supply,
             idle_assets: cur_total_assets,
-            fee_anchor: FeeAccrualAnchor::new(0, TimestampNs(0)),
+            fee_anchor: FeeAccrualAnchor::new(1, TimestampNs(0)),
             ..VaultState::default()
         };
 
@@ -986,7 +984,7 @@ proptest! {
         );
 
         let fee_assets =
-            Wad::from(fee_wad).apply_floored(Number::from(cur_total_assets));
+            Wad::from(fee_wad).apply_floored(Number::from(cur_total_assets - 1));
         let fee_shares = compute_fee_shares_from_assets(
             fee_assets,
             Number::from(cur_total_assets),
@@ -1023,12 +1021,10 @@ proptest! {
 
     /// Property 45b / A-031: nonzero deposits must not wrap to zero shares.
     ///
-    /// Ignored as a red spec until conversion helpers fail closed. At the Soroban
-    /// `i128::MAX` share boundary with one effective asset, a two-asset deposit has
-    /// a raw share quotient of exactly `2^128`; truncation wraps it to zero and the
-    /// kernel records the transferred assets as vault NAV without minting shares.
+    /// At the Soroban `i128::MAX` share boundary with one effective asset, a two-asset
+    /// deposit has a raw share quotient of exactly `2^128`; the deposit must reject
+    /// before recording the transferred assets or minting truncated shares.
     #[test]
-    #[ignore = "A-031 red spec: deposit conversion truncates 2^128 to zero shares"]
     fn prop_a031_deposit_payment_does_not_wrap_to_zero_shares(
         total_shares in Just(i128::MAX as u128),
         assets_in in Just(2u128),
