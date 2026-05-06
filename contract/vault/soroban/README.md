@@ -80,6 +80,8 @@ sequenceDiagram
 - Emergency pause and restriction tightening are immediate Sentinel actions. Unpause and
   relaxing/removing restrictions are governance actions and must pass through the configured
   timelock before the runtime applies them.
+- Skim recipient changes and skim execution are governance actions and must pass through the
+  configured `Skim` timelock before the runtime applies them.
 - `execute(payload)` remains for user flows and for the retained execute-path config subset
   (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`). Vault-bound governance mutations use
   `execute_governance`, not the generic user-flow command path.

@@ -1674,7 +1674,7 @@ fn skim_recipient_change_is_timelocked() {
 }
 
 #[test]
-fn skim_action_is_immediate_and_routes_token_to_vault() {
+fn skim_action_is_timelocked_and_routes_token_to_vault() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
@@ -1692,19 +1692,34 @@ fn skim_action_is_immediate_and_routes_token_to_vault() {
 
     let token = Address::generate(&env);
 
-    let _skim_id = env.as_contract(&governance, || {
+    let skim_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_skim(env.clone(), admin.clone(), token.clone())
             .unwrap()
     });
 
-    // Skim should apply immediately
     let pending = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::pending_ids(env.clone())
     });
-    assert_eq!(pending.len(), 0);
+    assert_eq!(pending.len(), 1);
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), skim_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
 
-    let on_vault = env.as_contract(&vault, || MockVault::last_skim_token(env.clone()));
-    assert_eq!(on_vault, Some(token));
+    let before = env.as_contract(&vault, || MockVault::last_skim_token(env.clone()));
+    assert_eq!(before, None);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), skim_id).unwrap()
+    });
+
+    let after = env.as_contract(&vault, || MockVault::last_skim_token(env.clone()));
+    assert_eq!(after, Some(token));
 }
 
 #[test]

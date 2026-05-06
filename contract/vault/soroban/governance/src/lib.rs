@@ -857,7 +857,7 @@ fn decide_submission(
             }
             Ok(TimelockDecision::Timelocked)
         }
-        GovernanceAction::Skim(_) => Ok(TimelockDecision::Immediate),
+        GovernanceAction::Skim(_) => Ok(TimelockDecision::Timelocked),
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
         | GovernanceAction::SetSupplyQueue(_) => Ok(TimelockDecision::Timelocked),
