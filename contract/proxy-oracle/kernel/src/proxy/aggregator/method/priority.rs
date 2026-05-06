@@ -83,6 +83,23 @@ mod tests {
     }
 
     #[test]
+    fn priority_all_none_returns_too_few_valid_sources() {
+        let error = Priority::<&'static str> {
+            sources: vec!["s1", "s2"],
+        }
+        .aggregate(vec![None, None])
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::TooFewValidSources {
+                expected: 1,
+                actual: 0,
+            }
+        ));
+    }
+
+    #[test]
     fn priority_returns_length_mismatch_when_prices_len_differs_from_sources() {
         let error = priority(2)
             .aggregate(vec![Some(price(1_000_000, 0, 0))])

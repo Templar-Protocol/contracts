@@ -49,7 +49,9 @@ impl From<v0::Filter> for FreshnessFilter {
 impl From<v0::Proxy> for Proxy<Source> {
     fn from(value: v0::Proxy) -> Self {
         let freshness_filter = FreshnessFilter::from(value.aggregator.filter.clone());
-        let entries_len = u32::try_from(value.entries.len()).unwrap_or(u32::MAX);
+        let source_count = u32::try_from(value.entries.len())
+            .unwrap_or(u32::MAX)
+            .max(1);
 
         let aggregator = match value.aggregator.method {
             v0::AggregationMethod::MedianLow => {
@@ -60,7 +62,7 @@ impl From<v0::Proxy> for Proxy<Source> {
                     .filter
                     .min_sources
                     .unwrap_or(1)
-                    .clamp(1, entries_len);
+                    .clamp(1, source_count);
                 Aggregator::MedianLow(aggregator)
             }
             v0::AggregationMethod::Priority => {
