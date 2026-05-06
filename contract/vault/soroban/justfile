@@ -29,7 +29,7 @@ set dotenv-load := false
 #   SOROBAN_SHARE_TOKEN      Share token contract ID
 #   SOROBAN_GOVERNANCE       Governance contract ID
 #   SOROBAN_ADMIN            Admin address (defaults to identity)
-#   SOROBAN_GOV_TIMLOCK_NS   Governance timelock in nanoseconds
+#   SOROBAN_GOV_TIMELOCK_NS  Governance timelock in nanoseconds
 #   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
 #   BLEND_POOL_ID            Blend pool address
 #
@@ -385,7 +385,16 @@ deploy-governance:
 	if [ -z "$admin" ]; then \
 		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	fi; \
-	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-0}"; \
+	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-}"; \
+	if [ -z "$timelock_ns" ]; then \
+		echo "Error: set SOROBAN_GOV_TIMELOCK_NS before deploying governance."; \
+		echo "For ephemeral local testing only, set SOROBAN_GOV_TIMELOCK_NS=0 and SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1."; \
+		exit 1; \
+	fi; \
+	if [ "$timelock_ns" = "0" ] && [ "${SOROBAN_ALLOW_ZERO_GOV_TIMELOCK:-0}" != "1" ]; then \
+		echo "Error: zero governance timelock requires SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1."; \
+		exit 1; \
+	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying governance contract..."; \
@@ -912,7 +921,8 @@ register-address address:
 	echo "✓ Address registered"
 
 # Set supply queue via governance (submit + accept).
-# Requires governance contract deployed with timelock=0 for instant acceptance.
+# For instant local acceptance, deploy governance with SOROBAN_GOV_TIMELOCK_NS=0 and
+# SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1.
 set-supply-queue target_ids_json:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
 	if [ -z "$admin" ]; then \
