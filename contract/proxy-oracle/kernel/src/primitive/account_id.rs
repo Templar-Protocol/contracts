@@ -72,11 +72,13 @@ impl schemars::JsonSchema for AccountId {
         alloc::string::String::from("AccountId")
     }
 
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema = generator
-            .subschema_for::<alloc::string::String>()
-            .into_object();
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema = schemars::schema::SchemaObject::default();
+        schema.instance_type = Some(schemars::schema::InstanceType::String.into());
         schema.metadata().description = Some(alloc::string::String::from("Account ID"));
+        schema.string().pattern = Some(alloc::string::String::from("^[0-9a-fA-F]{128}$"));
+        schema.string().min_length = Some(128);
+        schema.string().max_length = Some(128);
         schema.into()
     }
 }
@@ -84,6 +86,19 @@ impl schemars::JsonSchema for AccountId {
 #[cfg(test)]
 mod tests {
     use super::AccountId;
+
+    #[cfg(feature = "schemars")]
+    #[test]
+    fn account_id_schema_is_fixed_length_hex() {
+        let schema = schemars::schema_for!(AccountId).schema;
+        let string = schema
+            .string
+            .expect("AccountId should use string validation");
+
+        assert_eq!(string.pattern.as_deref(), Some("^[0-9a-fA-F]{128}$"));
+        assert_eq!(string.min_length, Some(128));
+        assert_eq!(string.max_length, Some(128));
+    }
 
     #[cfg(feature = "near")]
     #[test]
