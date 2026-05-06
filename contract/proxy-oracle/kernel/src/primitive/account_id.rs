@@ -34,7 +34,7 @@ impl AccountId {
     }
 
     #[cfg(feature = "near")]
-    fn from_near_account_id(account_id: &near_sdk::AccountId) -> Self {
+    fn from_near_account_id_ref(account_id: &near_sdk::AccountIdRef) -> Self {
         let mut bytes = [0u8; 64];
         let source = account_id.as_bytes();
         bytes[..source.len()].copy_from_slice(source);
@@ -45,24 +45,21 @@ impl AccountId {
 #[cfg(feature = "near")]
 impl From<near_sdk::AccountId> for AccountId {
     fn from(account_id: near_sdk::AccountId) -> Self {
-        Self::from_near_account_id(&account_id)
+        Self::from_near_account_id_ref(&account_id)
     }
 }
 
 #[cfg(feature = "near")]
 impl From<&near_sdk::AccountId> for AccountId {
     fn from(account_id: &near_sdk::AccountId) -> Self {
-        Self::from_near_account_id(account_id)
+        Self::from_near_account_id_ref(account_id)
     }
 }
 
 #[cfg(feature = "near")]
 impl From<&near_sdk::AccountIdRef> for AccountId {
     fn from(account_id: &near_sdk::AccountIdRef) -> Self {
-        let mut bytes = [0u8; 64];
-        let source = account_id.as_bytes();
-        bytes[..source.len()].copy_from_slice(source);
-        Self(bytes)
+        Self::from_near_account_id_ref(account_id)
     }
 }
 
