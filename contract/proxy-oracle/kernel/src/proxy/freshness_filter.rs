@@ -45,3 +45,58 @@ impl FreshnessFilter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use templar_primitives::Nanoseconds;
+
+    use super::*;
+
+    fn price(publish_time_ns: Nanoseconds) -> Price {
+        Price {
+            price: 1,
+            conf: 0,
+            expo: 0,
+            publish_time_ns,
+        }
+    }
+
+    #[test]
+    fn accepts_empty_filter_for_past_and_future_prices() {
+        let filter = FreshnessFilter::empty();
+        let published = Nanoseconds::from_secs(1_000);
+
+        assert!(filter.accepts(&price(published), published));
+        assert!(filter.accepts(&price(published), published.saturating_add(Nanoseconds::from_secs(1))));
+        assert!(filter.accepts(&price(published), published.saturating_sub(Nanoseconds::from_secs(1))));
+    }
+
+    #[test]
+    fn accepts_respects_max_age_boundaries() {
+        let published = Nanoseconds::from_secs(1_000);
+        let max_age = Nanoseconds::from_secs(500);
+        let filter = FreshnessFilter::new(Some(max_age), None);
+
+        assert!(filter.accepts(&price(published), published));
+        assert!(filter.accepts(&price(published), published.saturating_add(max_age)));
+        assert!(!filter.accepts(
+            &price(published),
+            published.saturating_add(max_age).saturating_add(Nanoseconds::from_ns(1))
+        ));
+    }
+
+    #[test]
+    fn accepts_respects_max_clock_drift_boundaries() {
+        let published = Nanoseconds::from_secs(1_000);
+        let max_clock_drift = Nanoseconds::from_secs(500);
+        let filter = FreshnessFilter::new(None, Some(max_clock_drift));
+
+        assert!(filter.accepts(&price(published), published.saturating_sub(max_clock_drift)));
+        assert!(!filter.accepts(
+            &price(published),
+            published
+                .saturating_sub(max_clock_drift)
+                .saturating_sub(Nanoseconds::from_ns(1))
+        ));
+    }
+}

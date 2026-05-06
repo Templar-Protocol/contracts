@@ -16,8 +16,6 @@ use specific_price::SpecificPrice;
 ///
 /// If all of the weights are equal (including zero), returns ordinary positional median.
 ///
-/// Only definitely correct for lists where `sum(weights)` does not overflow `u32`.
-///
 /// # Panics
 ///
 /// If the list is empty.
@@ -40,14 +38,14 @@ fn median<T>(sorted_weighted_items: &[(T, u32)]) -> (usize, usize) {
     // case: weights are different
     let mut lo = 0;
     let mut hi = sorted_weighted_items.len() - 1;
-    let mut acc: u32 = 0;
+    let mut acc: u64 = 0;
 
     while lo < hi {
-        acc = acc.saturating_add(sorted_weighted_items[lo].1);
+        acc = acc.saturating_add(u64::from(sorted_weighted_items[lo].1));
         lo += 1;
 
-        while acc >= sorted_weighted_items[hi].1 && hi != 0 {
-            acc = acc.saturating_sub(sorted_weighted_items[hi].1);
+        while acc >= u64::from(sorted_weighted_items[hi].1) && hi != 0 {
+            acc = acc.saturating_sub(u64::from(sorted_weighted_items[hi].1));
             hi -= 1;
         }
     }
@@ -246,6 +244,19 @@ mod tests {
             median(&[("a", 0_u32), ("b", 0_u32), ("c", 0_u32), ("d", 0_u32)]),
             (1, 2)
         );
+    }
+
+    #[test]
+    fn raw_weighted_median_handles_large_cumulative_weight_without_u32_overflow() {
+        let list = [
+            ("a", u32::MAX - 10),
+            ("b", 20),
+            ("c", 10),
+            ("d", u32::MAX - 5),
+        ];
+
+        assert_eq!(Low::median(&list), 1);
+        assert_eq!(High::median(&list), 2);
     }
 
     #[rstest::rstest]

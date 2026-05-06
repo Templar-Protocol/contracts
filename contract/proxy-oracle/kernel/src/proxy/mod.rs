@@ -121,6 +121,10 @@ mod tests {
         Proxy::new(Aggregator::MedianLow(aggregator), freshness_filter)
     }
 
+    fn priority_proxy(freshness_filter: FreshnessFilter) -> Proxy<&'static str> {
+        Proxy::priority(["source-a", "source-b"], freshness_filter)
+    }
+
     #[test]
     fn resolve_applies_min_sources_after_filtering() {
         let proxy = median_proxy(
@@ -204,7 +208,39 @@ mod tests {
     }
 
     #[test]
-    fn resolve_excludes_negative_publish_times() {
+    fn resolve_priority_skips_stale_first_source() {
+        let proxy = priority_proxy(FreshnessFilter {
+            max_age_ns: Some(Nanoseconds::from_secs(500)),
+            max_clock_drift_ns: None,
+        });
+        let prices = vec![
+            Some(price(1_000_000, 0, 100)),
+            Some(price(2_000_000, 0, 1_000)),
+        ];
+
+        let result = proxy.resolve(prices, Nanoseconds::from_secs(1_000)).unwrap();
+
+        assert_eq!(result.price, 2_000_000);
+    }
+
+    #[test]
+    fn resolve_priority_skips_future_drifted_first_source() {
+        let proxy = priority_proxy(FreshnessFilter {
+            max_age_ns: None,
+            max_clock_drift_ns: Some(Nanoseconds::from_secs(500)),
+        });
+        let prices = vec![
+            Some(price(1_000_000, 0, 1_501)),
+            Some(price(2_000_000, 0, 1_000)),
+        ];
+
+        let result = proxy.resolve(prices, Nanoseconds::from_secs(1_000)).unwrap();
+
+        assert_eq!(result.price, 2_000_000);
+    }
+
+    #[test]
+    fn resolve_excludes_zero_publish_time_when_stale() {
         let proxy = median_proxy(
             FreshnessFilter {
                 max_age_ns: Some(Nanoseconds::from_ms(500)),
@@ -219,7 +255,12 @@ mod tests {
                 expo: -6,
                 publish_time_ns: Nanoseconds::zero(),
             }),
-            Some(price(9_999_999, 0, 1_000)),
+            Some(Price {
+                price: 9_999_999,
+                conf: 0,
+                expo: -6,
+                publish_time_ns: Nanoseconds::from_ms(1_000),
+            }),
         ];
 
         let result = proxy.resolve(prices, Nanoseconds::from_ms(1_000)).unwrap();

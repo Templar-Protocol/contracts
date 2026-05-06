@@ -382,4 +382,26 @@ mod tests {
             other => panic!("unexpected aggregator: {other:?}"),
         }
     }
+
+    #[test]
+    fn v0_to_v1_handles_empty_median_low_entries_without_panicking() {
+        context();
+
+        let proxy = Proxy::from(v0::Proxy {
+            aggregator: v0::Aggregator::median_low(v0::Filter {
+                max_age: None,
+                max_clock_drift: None,
+                min_sources: Some(99),
+            }),
+            entries: vec![],
+        });
+
+        match proxy.aggregator {
+            Aggregator::MedianLow(aggregator) => {
+                assert_eq!(aggregator.sources.len(), 0);
+                assert_eq!(aggregator.min_sources, 1);
+            }
+            other => panic!("unexpected aggregator: {other:?}"),
+        }
+    }
 }

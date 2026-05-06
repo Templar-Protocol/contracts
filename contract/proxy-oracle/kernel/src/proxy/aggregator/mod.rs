@@ -55,6 +55,12 @@ impl<S> Aggregator<S> {
         ))
     }
 
+    pub fn median_high(entries: impl IntoIterator<Item = S>) -> Self {
+        Self::MedianHigh(MedianHigh::new(
+            entries.into_iter().map(|s| WeightedSource::new(s, 1)),
+        ))
+    }
+
     pub fn priority(entries: impl IntoIterator<Item = S>) -> Self {
         Self::Priority(Priority::new(entries))
     }
