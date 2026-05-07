@@ -123,6 +123,7 @@ mod near {
 }
 
 #[cfg(test)]
+#[allow(clippy::unreadable_literal)]
 mod tests {
     use super::{SI128, SI64, SU128, SU64};
 

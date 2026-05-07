@@ -31,7 +31,7 @@ sqlx = { version = "0.8", features = [
     "uuid",
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
-templar-proxy-oracle-kernel = { workspace = true, features = ["near"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
 templar-proxy-oracle-near-common = { workspace = true }
 templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true

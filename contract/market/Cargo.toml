@@ -42,7 +42,7 @@ near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
-templar-proxy-oracle-kernel = { workspace = true, features = ["near"] }
+templar-proxy-oracle-kernel.workspace = true
 templar-proxy-oracle-near-common.workspace = true
 templar-relayer = { path = "../../service/relayer" }
 

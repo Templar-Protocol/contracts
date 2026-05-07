@@ -42,10 +42,9 @@ use templar_common::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
+    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::Source,
-    kernel_to_pyth,
     price_transformer::{Call, PriceTransformer},
-    pyth_to_kernel,
     request::OracleRequest,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
@@ -798,7 +797,7 @@ impl Near {
                 self.resolve_proxy_source_price(source, max_age)
                     .await?
                     .as_ref()
-                    .and_then(pyth_to_kernel),
+                    .and_then(pyth_price_try_to_kernel),
             );
         }
 
@@ -808,7 +807,7 @@ impl Near {
 
         tracing::debug!(?price, "Aggregated price");
 
-        Ok(price.as_ref().and_then(kernel_to_pyth))
+        Ok(price.as_ref().and_then(pyth_price_try_from_kernel))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

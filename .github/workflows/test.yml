@@ -160,15 +160,10 @@ jobs:
             cargo_command: test
             features: borsh,serde,schemars,std
 
-          - name: proxy-oracle-kernel near
-            package: templar-proxy-oracle-kernel
-            cargo_command: test
-            features: near
-
-          - name: proxy-oracle-kernel near wasm32
+          - name: proxy-oracle-kernel full wasm32
             package: templar-proxy-oracle-kernel
             cargo_command: check
-            features: near
+            features: borsh,serde,schemars,std
             target: wasm32-unknown-unknown
     steps:
       - name: Checkout repository

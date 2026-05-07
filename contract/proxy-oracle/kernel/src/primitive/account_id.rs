@@ -32,35 +32,6 @@ impl AccountId {
     pub const fn as_bytes(&self) -> &[u8; 64] {
         &self.0
     }
-
-    #[cfg(feature = "near")]
-    fn from_near_account_id_ref(account_id: &near_sdk::AccountIdRef) -> Self {
-        let mut bytes = [0u8; 64];
-        let source = account_id.as_bytes();
-        bytes[..source.len()].copy_from_slice(source);
-        Self(bytes)
-    }
-}
-
-#[cfg(feature = "near")]
-impl From<near_sdk::AccountId> for AccountId {
-    fn from(account_id: near_sdk::AccountId) -> Self {
-        Self::from_near_account_id_ref(&account_id)
-    }
-}
-
-#[cfg(feature = "near")]
-impl From<&near_sdk::AccountId> for AccountId {
-    fn from(account_id: &near_sdk::AccountId) -> Self {
-        Self::from_near_account_id_ref(account_id)
-    }
-}
-
-#[cfg(feature = "near")]
-impl From<&near_sdk::AccountIdRef> for AccountId {
-    fn from(account_id: &near_sdk::AccountIdRef) -> Self {
-        Self::from_near_account_id_ref(account_id)
-    }
 }
 
 #[cfg(feature = "schemars")]
@@ -82,6 +53,7 @@ impl schemars::JsonSchema for AccountId {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "schemars")]
     use super::AccountId;
 
     #[cfg(feature = "schemars")]
@@ -95,20 +67,5 @@ mod tests {
         assert_eq!(string.pattern.as_deref(), Some("^[0-9a-fA-F]{128}$"));
         assert_eq!(string.min_length, Some(128));
         assert_eq!(string.max_length, Some(128));
-    }
-
-    #[cfg(feature = "near")]
-    #[test]
-    fn converts_near_account_id_to_zero_padded_bytes() {
-        let account_id: near_sdk::AccountId = "oracle.near".parse().unwrap();
-        let converted = AccountId::from(account_id.clone());
-
-        assert_eq!(
-            &converted.as_bytes()[..account_id.len()],
-            account_id.as_bytes()
-        );
-        assert!(converted.as_bytes()[account_id.len()..]
-            .iter()
-            .all(|byte| *byte == 0));
     }
 }

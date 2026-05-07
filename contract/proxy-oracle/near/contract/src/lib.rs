@@ -17,7 +17,10 @@ use templar_common::{
 };
 use templar_proxy_oracle_kernel::proxy::{aggregator::method::Error, Proxy};
 use templar_proxy_oracle_near_common::{
-    input::Source, kernel_to_pyth, pyth_to_kernel, request::OracleRequest, state,
+    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
+    input::Source,
+    request::OracleRequest,
+    state,
 };
 
 mod callback_handler;
@@ -203,7 +206,7 @@ impl Contract {
                     Source::Request(request) => callback.get(request),
                 };
 
-                prices.push(source_result.as_ref().and_then(pyth_to_kernel));
+                prices.push(source_result.as_ref().and_then(pyth_price_try_to_kernel));
             }
 
             let result = proxy.resolve(prices, now);
@@ -221,7 +224,10 @@ impl Contract {
                     }
                 }
             }
-            results.insert(price_id, result.ok().as_ref().and_then(kernel_to_pyth));
+            results.insert(
+                price_id,
+                result.ok().as_ref().and_then(pyth_price_try_from_kernel),
+            );
         }
 
         results

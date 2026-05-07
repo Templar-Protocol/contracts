@@ -8,7 +8,6 @@ version = "0.1.0"
 [dependencies]
 borsh = { version = "1.5", default-features = false, features = ["derive", "unstable__schema"], optional = true }
 hex = { version =  "0.4", default-features = false, features = ["alloc"], optional = true }
-near-sdk = { version = "5.25", default-features = false, features = [], optional = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
 schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
 templar-primitives = { path = "../../../primitives", default-features = false, features = [] }
@@ -20,8 +19,6 @@ getrandom = { version = "0.2", default-features = false, features = ["custom"] }
 
 [dev-dependencies]
 hex-literal.workspace = true
-near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -36,4 +33,3 @@ std = ["templar-primitives/std", "borsh?/std", "hex?/std", "serde?/std"]
 borsh = ["dep:borsh", "templar-primitives/borsh"]
 schemars = ["std", "dep:schemars", "schemars/derive", "templar-primitives/schemars"]
 serde = ["dep:hex", "dep:serde", "hex/serde", "templar-primitives/serde"]
-near = ["std", "borsh", "serde", "schemars", "dep:near-sdk", "templar-primitives/near"]

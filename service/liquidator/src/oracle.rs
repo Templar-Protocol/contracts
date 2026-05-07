@@ -24,10 +24,9 @@ use templar_common::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
+    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::{ProxyPriceTransformer, Source},
-    kernel_to_pyth,
     price_transformer::{Call, PriceTransformer},
-    pyth_to_kernel,
     request::OracleRequest,
 };
 
@@ -803,14 +802,17 @@ impl OracleFetcher {
                     }
                 };
 
-                prices.push(price.as_ref().and_then(pyth_to_kernel));
+                prices.push(price.as_ref().and_then(pyth_price_try_to_kernel));
             }
 
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
             let source_count = prices.iter().filter(|price| price.is_some()).count();
             let aggregated = proxy.resolve(prices, now).ok();
-            result.insert(price_id, aggregated.as_ref().and_then(kernel_to_pyth));
+            result.insert(
+                price_id,
+                aggregated.as_ref().and_then(pyth_price_try_from_kernel),
+            );
 
             if result.get(&price_id).and_then(|p| p.as_ref()).is_some() {
                 tracing::debug!(
