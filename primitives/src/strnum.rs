@@ -146,4 +146,42 @@ mod tests {
         let deserialized: T = serde_json::from_str(expected_json).unwrap();
         assert_eq!(deserialized, value);
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_deserialize_malformed_string_numbers() {
+        fn assert_malformed_rejected<T>()
+        where
+            T: serde::de::DeserializeOwned,
+        {
+            for bad in ["\"42x\"", "\"-12abc\""] {
+                assert!(serde_json::from_str::<T>(bad).is_err());
+            }
+        }
+
+        assert_malformed_rejected::<SU64>();
+        assert_malformed_rejected::<SU128>();
+        assert_malformed_rejected::<SI64>();
+        assert_malformed_rejected::<SI128>();
+    }
+
+    #[cfg(feature = "schemars")]
+    #[test]
+    fn schemars_schema_is_string_for_string_numbers() {
+        fn assert_schema_is_string<T>()
+        where
+            T: schemars::JsonSchema,
+        {
+            let schema = schemars::schema_for!(T).schema;
+            assert_eq!(
+                schema.instance_type,
+                Some(schemars::schema::InstanceType::String.into())
+            );
+        }
+
+        assert_schema_is_string::<SU64>();
+        assert_schema_is_string::<SU128>();
+        assert_schema_is_string::<SI64>();
+        assert_schema_is_string::<SI128>();
+    }
 }

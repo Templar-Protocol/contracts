@@ -83,4 +83,15 @@ mod tests {
         let deserialized: SerializableU256 = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, value);
     }
+
+    #[cfg(feature = "schemars")]
+    #[test]
+    fn schemars_schema_is_string() {
+        let schema = schemars::schema_for!(SerializableU256).schema;
+
+        assert_eq!(
+            schema.instance_type,
+            Some(schemars::schema::InstanceType::String.into())
+        );
+    }
 }

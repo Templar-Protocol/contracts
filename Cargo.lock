@@ -13081,6 +13081,7 @@ dependencies = [
  "axum",
  "clap",
  "dotenvy",
+ "futures",
  "hex",
  "near-contract-standards",
  "near-crypto",

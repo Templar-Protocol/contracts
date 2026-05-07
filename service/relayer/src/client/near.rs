@@ -791,15 +791,21 @@ impl Near {
             return Ok(None);
         };
 
-        let mut prices = vec![];
-        for source in proxy.sources() {
-            prices.push(
-                self.resolve_proxy_source_price(source, max_age)
-                    .await?
-                    .as_ref()
-                    .and_then(pyth_price_try_to_kernel),
-            );
-        }
+        let prices = futures::future::join_all(
+            proxy
+                .sources()
+                .map(|source| self.resolve_proxy_source_price(source, max_age)),
+        )
+        .await
+        .into_iter()
+        .map(|result| match result {
+            Ok(price) => price.as_ref().and_then(pyth_price_try_to_kernel),
+            Err(error) => {
+                tracing::debug!(%error, "Failed to resolve proxy source price");
+                None
+            }
+        })
+        .collect::<Vec<_>>();
 
         tracing::debug!(?prices, "Prices to aggregate");
 

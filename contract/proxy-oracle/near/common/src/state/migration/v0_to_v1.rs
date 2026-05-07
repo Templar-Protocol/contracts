@@ -140,6 +140,8 @@ impl StateTransformer for V0ToV1 {
         let next_id = input.governance.next_id;
         let ttl = input.governance.ttl;
 
+        // `governance.proposals` is lazily flushed, so `clear()` needs `flush()` to persist.
+        // `proxies.clear()` writes eagerly, so it intentionally has no matching flush call.
         input.governance.proposals.clear();
         input.governance.proposals.flush();
         input.proxies.clear();
