@@ -354,7 +354,16 @@ mod tests {
             )],
         });
 
-        assert!(matches!(proxy.aggregator, Aggregator::Priority(_)));
+        match proxy.aggregator {
+            Aggregator::Priority(priority) => {
+                assert_eq!(priority.sources.len(), 1);
+                assert!(matches!(
+                    priority.sources[0],
+                    Source::Request(OracleRequest::RedStone(_))
+                ));
+            }
+            other => panic!("unexpected aggregator: {other:?}"),
+        }
     }
 
     #[test]

@@ -809,7 +809,13 @@ impl Near {
 
         tracing::debug!(?prices, "Prices to aggregate");
 
-        let price = proxy.resolve(prices, Self::system_time()).ok();
+        let price = match proxy.resolve(prices, Self::system_time()) {
+            Ok(price) => Some(price),
+            Err(error) => {
+                tracing::debug!(%oracle_id, %price_identifier, ?error, "proxy.resolve failed");
+                None
+            }
+        };
 
         tracing::debug!(?price, "Aggregated price");
 
@@ -951,14 +957,7 @@ impl Near {
             OracleType::Proxy => {
                 tracing::debug!("Price ID resolved: Proxy oracle contract");
 
-                if let Some(proxy) = self
-                    .view::<Option<Proxy<Source>>>(
-                        oracle_id.clone(),
-                        "get_proxy",
-                        json!({ "id": price_identifier }),
-                    )
-                    .await?
-                {
+                if let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? {
                     let requests = proxy
                         .sources()
                         .map(|source| match source {
