@@ -2,7 +2,10 @@ use near_sdk::near;
 use templar_common::{
     gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatusUpdate},
+    Proxy,
+};
 
 use crate::input::Source;
 
@@ -15,6 +18,28 @@ pub enum Operation {
     },
     SetActionTtl {
         new_ttl: Nanoseconds,
+    },
+    SetCircuitBreakerSetConfig {
+        id: PriceIdentifier,
+        config: CircuitBreakerSetConfig,
+    },
+    SetCircuitBreakerSetManualTrip {
+        id: PriceIdentifier,
+        is_manually_tripped: bool,
+    },
+    AddCircuitBreaker {
+        id: PriceIdentifier,
+        order: u32,
+        breaker: CircuitBreaker,
+    },
+    RemoveCircuitBreaker {
+        id: PriceIdentifier,
+        breaker_id: u32,
+    },
+    SetCircuitBreakerStatus {
+        id: PriceIdentifier,
+        breaker_id: u32,
+        status: CircuitBreakerStatusUpdate,
     },
 }
 

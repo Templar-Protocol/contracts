@@ -323,8 +323,8 @@ fn generate_v0_state_patch() {
 async fn init_writes_current_state_version(#[future(awt)] worker: Worker<Sandbox>) {
     let proxy = ProxyOracleController::deploy(worker.dev_create_account().await.unwrap()).await;
 
-    assert_eq!(proxy.get_target_state_version().await, 1);
-    assert_eq!(proxy.get_stored_state_version().await, 1);
+    assert_eq!(proxy.get_target_state_version().await, 2);
+    assert_eq!(proxy.get_stored_state_version().await, 2);
     assert!(!proxy.needs_migration().await);
 }
 
@@ -336,7 +336,7 @@ async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
     let proxy = deploy_from_patch(&worker, patch()).await;
 
     assert_eq!(proxy.get_stored_state_version().await, 0);
-    assert_eq!(proxy.get_target_state_version().await, 1);
+    assert_eq!(proxy.get_target_state_version().await, 2);
     assert!(proxy.needs_migration().await);
 
     let result = proxy
@@ -348,7 +348,19 @@ async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_all_outcomes_success(&result);
     assert_eq!(proxy.get_stored_state_version().await, 1);
-    assert_eq!(proxy.get_target_state_version().await, 1);
+    assert_eq!(proxy.get_target_state_version().await, 2);
+    assert!(proxy.needs_migration().await);
+
+    let result = proxy
+        .migrate(
+            proxy.contract().as_account(),
+            state::migration::Migration::from(state::migration::V1ToV2),
+        )
+        .await;
+
+    assert_all_outcomes_success(&result);
+    assert_eq!(proxy.get_stored_state_version().await, 2);
+    assert_eq!(proxy.get_target_state_version().await, 2);
     assert!(!proxy.needs_migration().await);
 
     assert_eq!(proxy.gov_next_id().await, 6);

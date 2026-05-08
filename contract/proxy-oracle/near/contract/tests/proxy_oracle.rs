@@ -5,6 +5,7 @@
 )]
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use near_sdk::{
     json_types::{I64, U64},
@@ -19,10 +20,13 @@ use templar_common::{
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
     },
-    primitive_types, Nanoseconds,
+    primitive_types, Decimal, Nanoseconds,
 };
 use templar_proxy_oracle_kernel::proxy::{
     aggregator::{method::median::MedianLow, Aggregator},
+    circuit_breaker::{
+        CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, StepwiseChange,
+    },
     FreshnessFilter, Proxy, WeightedSource,
 };
 use templar_proxy_oracle_near_common::{
@@ -47,6 +51,123 @@ fn norm_price(price: &pyth::Price) -> u64 {
     } else {
         p * f
     }
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Worker<Sandbox>) {
+    accounts!(worker, actor, proxy_oracle, pyth_oracle);
+    let pyth_oracle = MockOracleController::deploy(pyth_oracle).await;
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle).await;
+
+    let proxy_id = PriceIdentifier([0x44; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+    proxy_oracle
+        .set_proxy(proxy_oracle.account(), proxy_id, Some(proxy))
+        .await;
+    proxy_oracle
+        .set_circuit_breaker_set_config(
+            proxy_oracle.account(),
+            proxy_id,
+            CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            },
+        )
+        .await;
+    proxy_oracle
+        .add_circuit_breaker(
+            proxy_oracle.account(),
+            proxy_id,
+            0,
+            CircuitBreaker::StepwiseChange(StepwiseChange {
+                max_relative_change: Decimal::from_str("0.10").unwrap(),
+            }),
+        )
+        .await;
+
+    pyth_oracle
+        .set_pyth_price(
+            &actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(100),
+                conf: U64(0),
+                expo: 0,
+                publish_time: PythTimestamp::from_secs(
+                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                ),
+            }),
+        )
+        .await;
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+        .await;
+    assert_eq!(
+        result.get(&proxy_id).unwrap().as_ref().map(norm_price),
+        Some(100)
+    );
+
+    pyth_oracle
+        .set_pyth_price(
+            &actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(120),
+                conf: U64(0),
+                expo: 0,
+                publish_time: PythTimestamp::from_secs(
+                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                ),
+            }),
+        )
+        .await;
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+        .await;
+    assert_eq!(result.get(&proxy_id), Some(&None));
+
+    let set = proxy_oracle
+        .get_proxy_circuit_breaker_set(proxy_id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        set.breakers.get(&0).unwrap().status,
+        CircuitBreakerStatus::Tripped {
+            price_update,
+            ..
+        } if price_update.price.price == 120
+    ));
+
+    pyth_oracle
+        .set_pyth_price(
+            &actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(130),
+                conf: U64(0),
+                expo: 0,
+                publish_time: PythTimestamp::from_secs(
+                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                ),
+            }),
+        )
+        .await;
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+        .await;
+    assert_eq!(result.get(&proxy_id), Some(&None));
+
+    let set = proxy_oracle
+        .get_proxy_circuit_breaker_set(proxy_id)
+        .await
+        .unwrap();
+    assert_eq!(set.history.len(), 2);
+    assert_eq!(set.history.as_slice()[0].price.price, 120);
+    assert_eq!(set.history.as_slice()[1].price.price, 130);
 }
 
 fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {

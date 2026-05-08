@@ -12,11 +12,6 @@ serde = { version = "1", default-features = false, features = ["alloc", "derive"
 schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
 templar-primitives = { path = "../../../primitives", default-features = false, features = [] }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# Keep getrandom/custom available in the standalone kernel wasm feature-matrix check.
-# Without this, primitive-types' rand path hits getrandom's wasm32-unknown-unknown guard.
-getrandom = { version = "0.2", default-features = false, features = ["custom"] }
-
 [dev-dependencies]
 hex-literal.workspace = true
 rstest.workspace = true

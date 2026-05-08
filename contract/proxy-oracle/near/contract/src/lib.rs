@@ -13,9 +13,13 @@ use templar_common::{
     },
     self_ext,
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
-    Decimal, Nanoseconds, UnwrapReject,
+    Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{aggregator::method::Error, Proxy};
+use templar_proxy_oracle_kernel::proxy::{
+    aggregator::method::Error,
+    circuit_breaker::{CircuitBreakerSet, Error as CircuitBreakerError},
+    Proxy, ResolveError,
+};
 use templar_proxy_oracle_near_common::{
     convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::Source,
@@ -27,7 +31,7 @@ mod callback_handler;
 use callback_handler::{callback_result, CallbackHandler, OracleType};
 mod impl_governance;
 
-type State = state::v1::State;
+type State = state::v2::State;
 
 #[derive(Debug, Owner, PanicOnDefault)]
 #[near(contract_state)]
@@ -76,6 +80,10 @@ impl Contract {
         self.proxies.get(&id)
     }
 
+    pub fn get_proxy_circuit_breaker_set(&self, id: PriceIdentifier) -> Option<CircuitBreakerSet> {
+        self.circuit_breakers.get(&id)
+    }
+
     // impl Pyth:
 
     pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
@@ -101,6 +109,7 @@ impl Contract {
         let mut redstone_requests =
             HashMap::<AccountId, HashSet<redstone::FeedId>>::with_capacity(price_ids.len());
         let mut transformer_promises = Vec::with_capacity(price_ids.len());
+        let skipped = OracleResponse::new();
 
         for price_id in &price_ids {
             let Some(proxy) = self.proxies.get(price_id) else {
@@ -157,11 +166,13 @@ impl Contract {
             );
         }
 
-        let promise = oracle_promises
+        let Some(promise) = oracle_promises
             .into_iter()
             .chain(transformer_promises)
             .reduce(near_sdk::Promise::and)
-            .expect_or_reject("No oracle invoked");
+        else {
+            return PromiseOrValue::Value(skipped);
+        };
 
         PromiseOrValue::Promise(
             promise.then(
@@ -170,6 +181,7 @@ impl Contract {
                         oracle_order,
                         invoked,
                         max_age,
+                        skipped,
                     ),
             ),
         )
@@ -177,14 +189,18 @@ impl Contract {
 
     pub const GAS_FOR_LIST_01_CALLBACK: Gas = Gas::from_tgas(19).saturating_div(10);
     #[private]
+    #[allow(
+        unused_mut,
+        reason = "near macro expansion checks the original binding"
+    )]
     pub fn list_ema_prices_no_older_than_01_consume_results(
-        &self,
+        &mut self,
         oracle_order: Vec<OracleType>,
         invoked: Vec<(PriceIdentifier, Proxy<Source>)>,
         max_age: Nanoseconds,
+        mut results: OracleResponse,
     ) -> OracleResponse {
         let callback = CallbackHandler::new(&oracle_order, max_age);
-        let mut results = OracleResponse::with_capacity(invoked.len());
 
         let now = Nanoseconds::near_timestamp();
 
@@ -209,28 +225,66 @@ impl Contract {
                 prices.push(source_result.as_ref().and_then(pyth_price_try_to_kernel));
             }
 
-            let result = proxy.resolve(prices, now);
+            let mut set = self
+                .circuit_breakers
+                .get(&price_id)
+                .unwrap_or_else(CircuitBreakerSet::empty);
+            let result = proxy.resolve(&mut set, prices, now);
+            self.circuit_breakers.insert(&price_id, &set);
 
-            if let Err(ref error) = result {
-                match error {
-                    Error::LengthMismatch { expected, actual }
-                    | Error::TooFewValidSources { expected, actual } => {
-                        near_sdk::log!(
-                            "Aggregation error code={:?} expected={} actual={}",
-                            error.code(),
-                            expected,
-                            actual,
-                        );
-                    }
-                }
+            if let Err(error) = &result {
+                Self::log_resolve_error(price_id, error);
             }
+            let result = result.ok();
+
             results.insert(
                 price_id,
-                result.ok().as_ref().and_then(pyth_price_try_from_kernel),
+                result.as_ref().and_then(pyth_price_try_from_kernel),
             );
         }
 
         results
+    }
+
+    fn log_resolve_error(price_id: PriceIdentifier, error: &ResolveError) {
+        match error {
+            ResolveError::Aggregation(error) => match error {
+                Error::LengthMismatch { expected, actual }
+                | Error::TooFewValidSources { expected, actual } => {
+                    near_sdk::log!(
+                        "Aggregation error code={:?} expected={} actual={}",
+                        error.code(),
+                        expected,
+                        actual,
+                    );
+                }
+            },
+            ResolveError::CircuitBreaker(error) => match error {
+                CircuitBreakerError::ManuallyTripped => {
+                    near_sdk::log!(
+                        "Circuit breaker manual override blocked price_id={:?} error_code={:?}",
+                        price_id,
+                        error.code(),
+                    );
+                }
+                CircuitBreakerError::Tripped { breaker_id } => {
+                    near_sdk::log!(
+                        "Circuit breaker blocked price_id={:?} breaker_id={} error_code={:?}",
+                        price_id,
+                        breaker_id,
+                        error.code(),
+                    );
+                }
+                CircuitBreakerError::BreakerNotFound { .. }
+                | CircuitBreakerError::OrderOccupied { .. } => {
+                    near_sdk::log!(
+                        "Circuit breaker error price_id={:?} error_code={:?}",
+                        price_id,
+                        error.code(),
+                    );
+                }
+            },
+        }
     }
 }
 

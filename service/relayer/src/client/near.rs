@@ -40,7 +40,7 @@ use templar_common::{
     },
     Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::{
     convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::Source,
@@ -672,6 +672,19 @@ impl Near {
             .await
     }
 
+    async fn get_proxy_circuit_breaker_set(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+    ) -> Result<Option<CircuitBreakerSet>, ViewError> {
+        self.view(
+            oracle_id,
+            "get_proxy_circuit_breaker_set",
+            json!({ "id": price_identifier }),
+        )
+        .await
+    }
+
     #[tracing::instrument(skip(self), level = "debug")]
     async fn fetch_oracle_request(
         &self,
@@ -791,6 +804,15 @@ impl Near {
             return Ok(None);
         };
 
+        let mut circuit_breakers = self
+            .get_proxy_circuit_breaker_set(oracle_id.clone(), price_identifier)
+            .await?
+            .unwrap_or_else(CircuitBreakerSet::empty);
+        if circuit_breakers.is_blocking() {
+            tracing::debug!(%oracle_id, %price_identifier, "proxy circuit breaker is tripped");
+            return Ok(None);
+        }
+
         let prices = futures::future::join_all(
             proxy
                 .sources()
@@ -809,7 +831,7 @@ impl Near {
 
         tracing::debug!(?prices, "Prices to aggregate");
 
-        let price = match proxy.resolve(prices, Self::system_time()) {
+        let price = match proxy.resolve(&mut circuit_breakers, prices, Self::system_time()) {
             Ok(price) => Some(price),
             Err(error) => {
                 tracing::debug!(%oracle_id, %price_identifier, ?error, "proxy.resolve failed");

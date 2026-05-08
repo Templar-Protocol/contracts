@@ -22,7 +22,7 @@ use templar_common::{
     },
     Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::{
     convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::{ProxyPriceTransformer, Source},
@@ -791,6 +791,26 @@ impl OracleFetcher {
                 continue;
             };
 
+            let mut set: CircuitBreakerSet = view::<Option<CircuitBreakerSet>>(
+                &self.client,
+                proxy_oracle.clone(),
+                "get_proxy_circuit_breaker_set",
+                json!({ "id": price_id }),
+            )
+            .await
+            .map_err(LiquidatorError::PriceFetchError)?
+            .unwrap_or_else(CircuitBreakerSet::empty);
+
+            if set.is_blocking() {
+                tracing::warn!(
+                    oracle = %proxy_oracle,
+                    price_id = ?price_id,
+                    "Proxy oracle: circuit breaker is tripped"
+                );
+                result.insert(price_id, None);
+                continue;
+            }
+
             // Collect prices from underlying oracles for each entry
             let mut prices = Vec::new();
 
@@ -808,7 +828,7 @@ impl OracleFetcher {
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
             let source_count = prices.iter().filter(|price| price.is_some()).count();
-            let aggregated = proxy.resolve(prices, now).ok();
+            let aggregated = proxy.resolve(&mut set, prices, now).ok();
             result.insert(
                 price_id,
                 aggregated.as_ref().and_then(pyth_price_try_from_kernel),

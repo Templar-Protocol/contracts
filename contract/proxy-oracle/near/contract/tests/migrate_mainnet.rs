@@ -119,6 +119,16 @@ async fn migrate_mainnet_patch_exactly(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_all_outcomes_success(&result);
     assert_eq!(proxy.get_stored_state_version().await, 1);
+
+    let result = proxy
+        .migrate(
+            proxy.contract().as_account(),
+            state::migration::Migration::from(state::migration::V1ToV2),
+        )
+        .await;
+
+    assert_all_outcomes_success(&result);
+    assert_eq!(proxy.get_stored_state_version().await, 2);
     assert_eq!(proxy.gov_count().await, 0);
 
     let mut proxies = proxy.list_proxies(None, None).await;

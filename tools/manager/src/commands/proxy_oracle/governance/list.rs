@@ -87,7 +87,7 @@ impl OutputStyle for ProposalListOutput {
 
         writeln!(
             out,
-            "  {:>4}  {:<12}  {:<44}  {:>10}",
+            "  {:>4}  {:<14}  {:<44}  {:>10}",
             style("ID").bold(),
             style("Operation").bold(),
             style("Created By").bold(),
@@ -98,6 +98,11 @@ impl OutputStyle for ProposalListOutput {
             let operation_name = match &item.proposal.operation {
                 Operation::SetProxy { .. } => "SetProxy",
                 Operation::SetActionTtl { .. } => "SetActionTtl",
+                Operation::SetCircuitBreakerSetConfig { .. } => "SetBreakerCfg",
+                Operation::SetCircuitBreakerSetManualTrip { .. } => "SetManualTrip",
+                Operation::AddCircuitBreaker { .. } => "AddBreaker",
+                Operation::RemoveCircuitBreaker { .. } => "RemoveBreaker",
+                Operation::SetCircuitBreakerStatus { .. } => "SetBreaker",
             };
 
             let status = if item.executable {
@@ -108,7 +113,7 @@ impl OutputStyle for ProposalListOutput {
 
             writeln!(
                 out,
-                "  {:>4}  {:<12}  {:<44}  {:>10}",
+                "  {:>4}  {:<14}  {:<44}  {:>10}",
                 style(item.id).bold(),
                 operation_name,
                 item.proposal.created_by,

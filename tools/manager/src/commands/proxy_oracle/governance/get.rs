@@ -103,6 +103,41 @@ impl OutputStyle for Proposal<Operation> {
                 writeln!(out, "  SetActionTtl")?;
                 writeln!(out, "    new_ttl: {} ({}s)", new_ttl, new_ttl.as_secs())?;
             }
+            Operation::SetCircuitBreakerSetConfig { id, config } => {
+                writeln!(out, "  SetCircuitBreakerSetConfig")?;
+                writeln!(out, "    price_id: {id}")?;
+                writeln!(out, "    sample_interval_ns: {}", config.sample_interval_ns)?;
+                writeln!(out, "    history_len: {}", config.history_len)?;
+            }
+            Operation::SetCircuitBreakerSetManualTrip {
+                id,
+                is_manually_tripped,
+            } => {
+                writeln!(out, "  SetCircuitBreakerSetManualTrip")?;
+                writeln!(out, "    price_id: {id}")?;
+                writeln!(out, "    is_manually_tripped: {is_manually_tripped}")?;
+            }
+            Operation::AddCircuitBreaker { id, order, breaker } => {
+                writeln!(out, "  AddCircuitBreaker")?;
+                writeln!(out, "    price_id: {id}")?;
+                writeln!(out, "    order: {order}")?;
+                writeln!(out, "    breaker: {breaker:?}")?;
+            }
+            Operation::RemoveCircuitBreaker { id, breaker_id } => {
+                writeln!(out, "  RemoveCircuitBreaker")?;
+                writeln!(out, "    price_id: {id}")?;
+                writeln!(out, "    breaker_id: {breaker_id}")?;
+            }
+            Operation::SetCircuitBreakerStatus {
+                id,
+                breaker_id,
+                status,
+            } => {
+                writeln!(out, "  SetCircuitBreakerStatus")?;
+                writeln!(out, "    price_id: {id}")?;
+                writeln!(out, "    breaker_id: {breaker_id}")?;
+                writeln!(out, "    status: {status:?}")?;
+            }
         }
 
         Ok(())

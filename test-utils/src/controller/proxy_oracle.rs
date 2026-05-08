@@ -8,7 +8,12 @@ use templar_common::{
     oracle::pyth::{OracleResponse, PriceIdentifier},
     Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{
+    circuit_breaker::{
+        CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig, CircuitBreakerStatusUpdate,
+    },
+    Proxy,
+};
 use templar_proxy_oracle_near_common::{governance::Operation, input::Source, state};
 use tokio::sync::OnceCell;
 
@@ -78,9 +83,99 @@ impl ProxyOracleController {
         self.gov_execute(executor, op_id).await;
     }
 
+    pub async fn add_circuit_breaker(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        order: u32,
+        breaker: CircuitBreaker,
+    ) {
+        let op_id = self.gov_next_id().await;
+        self.gov_create(
+            executor,
+            op_id,
+            Operation::AddCircuitBreaker { id, order, breaker },
+        )
+        .await;
+        self.gov_execute(executor, op_id).await;
+    }
+
+    pub async fn set_circuit_breaker_set_config(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        config: CircuitBreakerSetConfig,
+    ) {
+        let op_id = self.gov_next_id().await;
+        self.gov_create(
+            executor,
+            op_id,
+            Operation::SetCircuitBreakerSetConfig { id, config },
+        )
+        .await;
+        self.gov_execute(executor, op_id).await;
+    }
+
+    pub async fn set_circuit_breaker_set_manual_trip(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        is_manually_tripped: bool,
+    ) {
+        let op_id = self.gov_next_id().await;
+        self.gov_create(
+            executor,
+            op_id,
+            Operation::SetCircuitBreakerSetManualTrip {
+                id,
+                is_manually_tripped,
+            },
+        )
+        .await;
+        self.gov_execute(executor, op_id).await;
+    }
+
+    pub async fn remove_circuit_breaker(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        breaker_id: u32,
+    ) {
+        let op_id = self.gov_next_id().await;
+        self.gov_create(
+            executor,
+            op_id,
+            Operation::RemoveCircuitBreaker { id, breaker_id },
+        )
+        .await;
+        self.gov_execute(executor, op_id).await;
+    }
+
+    pub async fn set_circuit_breaker_status(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        breaker_id: u32,
+        status: CircuitBreakerStatusUpdate,
+    ) {
+        let op_id = self.gov_next_id().await;
+        self.gov_create(
+            executor,
+            op_id,
+            Operation::SetCircuitBreakerStatus {
+                id,
+                breaker_id,
+                status,
+            },
+        )
+        .await;
+        self.gov_execute(executor, op_id).await;
+    }
+
     define! {
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy<Source>>;
+        #[view] pub fn get_proxy_circuit_breaker_set(id: PriceIdentifier) -> Option<CircuitBreakerSet>;
 
         #[call]
         pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;

@@ -1,4 +1,5 @@
 pub mod aggregator;
+pub mod circuit_breaker;
 pub mod freshness_filter;
 
 #[cfg(any(feature = "borsh", feature = "schemars"))]
@@ -7,6 +8,7 @@ use alloc::{format, string::ToString};
 use crate::Price;
 use aggregator::method::Aggregate;
 pub use aggregator::Aggregator;
+use circuit_breaker::CircuitBreakerSet;
 pub use freshness_filter::FreshnessFilter;
 
 use templar_primitives::time::Nanoseconds;
@@ -18,6 +20,37 @@ serialize! {
         pub weight: u32,
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveError {
+    Aggregation(aggregator::method::Error),
+    CircuitBreaker(circuit_breaker::Error),
+}
+
+impl From<aggregator::method::Error> for ResolveError {
+    fn from(error: aggregator::method::Error) -> Self {
+        Self::Aggregation(error)
+    }
+}
+
+impl From<circuit_breaker::Error> for ResolveError {
+    fn from(error: circuit_breaker::Error) -> Self {
+        Self::CircuitBreaker(error)
+    }
+}
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Aggregation(error) => write!(f, "aggregation failed: {error}"),
+            Self::CircuitBreaker(error) => write!(f, "circuit breaker failed: {error}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ResolveError {}
 
 impl<S> WeightedSource<S> {
     pub fn new(source: impl Into<S>, weight: u32) -> Self {
@@ -73,9 +106,20 @@ impl<S> Proxy<S> {
 
     pub fn resolve<I>(
         &self,
+        circuit_breakers: &mut CircuitBreakerSet,
         prices: I,
         now: Nanoseconds,
-    ) -> Result<Price, aggregator::method::Error>
+    ) -> Result<Price, ResolveError>
+    where
+        I: IntoIterator<Item = Option<Price>>,
+        I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
+    {
+        let price = self.aggregate(prices, now)?;
+        circuit_breakers.evaluate(price, now)?;
+        Ok(price)
+    }
+
+    fn aggregate<I>(&self, prices: I, now: Nanoseconds) -> Result<Price, aggregator::method::Error>
     where
         I: IntoIterator<Item = Option<Price>>,
         I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
@@ -98,10 +142,15 @@ mod tests {
     use crate::{
         proxy::{
             aggregator::method::{median::MedianLow, Error},
-            Aggregator, FreshnessFilter, Proxy, WeightedSource,
+            circuit_breaker::{
+                CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig,
+                Error as CircuitBreakerError, StepwiseChange,
+            },
+            Aggregator, FreshnessFilter, Proxy, ResolveError, WeightedSource,
         },
         Price,
     };
+    use templar_primitives::Decimal;
 
     fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
         Price {
@@ -141,15 +190,19 @@ mod tests {
         ];
 
         let error = proxy
-            .resolve(prices, Nanoseconds::from_secs(1_000))
+            .resolve(
+                &mut CircuitBreakerSet::empty(),
+                prices,
+                Nanoseconds::from_secs(1_000),
+            )
             .unwrap_err();
 
         assert!(matches!(
             error,
-            Error::TooFewValidSources {
+            ResolveError::Aggregation(Error::TooFewValidSources {
                 expected: 2,
                 actual: 1,
-            }
+            })
         ));
     }
 
@@ -176,7 +229,9 @@ mod tests {
             Some(price(9_999_999, 0, u64::try_from(now_s).unwrap())),
         ];
 
-        let result = proxy.resolve(prices, now).unwrap();
+        let result = proxy
+            .resolve(&mut CircuitBreakerSet::empty(), prices, now)
+            .unwrap();
 
         assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
     }
@@ -200,7 +255,9 @@ mod tests {
             Some(price(9_999_999, 0, u64::try_from(now_s).unwrap())),
         ];
 
-        let result = proxy.resolve(prices, now).unwrap();
+        let result = proxy
+            .resolve(&mut CircuitBreakerSet::empty(), prices, now)
+            .unwrap();
 
         assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
     }
@@ -226,7 +283,11 @@ mod tests {
     ) {
         let proxy = priority_proxy(freshness_filter);
         let result = proxy
-            .resolve(prices, Nanoseconds::from_secs(1_000))
+            .resolve(
+                &mut CircuitBreakerSet::empty(),
+                prices,
+                Nanoseconds::from_secs(1_000),
+            )
             .unwrap();
 
         assert_eq!(result.price, 2_000_000);
@@ -256,8 +317,64 @@ mod tests {
             }),
         ];
 
-        let result = proxy.resolve(prices, Nanoseconds::from_ms(1_000)).unwrap();
+        let result = proxy
+            .resolve(
+                &mut CircuitBreakerSet::empty(),
+                prices,
+                Nanoseconds::from_ms(1_000),
+            )
+            .unwrap();
 
         assert_eq!(result.price, 9_999_999);
+    }
+
+    #[test]
+    fn resolve_applies_tripped_circuit_breaker_while_persisting_history() {
+        let proxy = priority_proxy(FreshnessFilter::new(None, None));
+        let mut circuit_breakers = CircuitBreakerSet::new(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 2,
+        });
+        let breaker_id = circuit_breakers
+            .add(
+                0,
+                CircuitBreaker::StepwiseChange(StepwiseChange {
+                    max_relative_change: Decimal::from_u8(1) / 10_u8,
+                }),
+            )
+            .unwrap();
+        let now = Nanoseconds::from_secs(1_000);
+
+        proxy
+            .resolve(
+                &mut circuit_breakers,
+                [Some(price(100, 0, 1_000)), None],
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            proxy.resolve(
+                &mut circuit_breakers,
+                [Some(price(120, 0, 1_000)), None],
+                now
+            ),
+            Err(ResolveError::CircuitBreaker(CircuitBreakerError::Tripped {
+                breaker_id: id
+            })) if id == breaker_id
+        ));
+        assert!(matches!(
+            proxy.resolve(
+                &mut circuit_breakers,
+                [Some(price(130, 0, 1_000)), None],
+                now
+            ),
+            Err(ResolveError::CircuitBreaker(CircuitBreakerError::Tripped {
+                breaker_id: id
+            })) if id == breaker_id
+        ));
+
+        assert_eq!(circuit_breakers.history.len(), 2);
+        assert_eq!(circuit_breakers.history.as_slice()[0].price.price, 120);
+        assert_eq!(circuit_breakers.history.as_slice()[1].price.price, 130);
     }
 }

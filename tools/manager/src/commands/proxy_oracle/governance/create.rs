@@ -5,7 +5,10 @@ use near_sdk::AccountId;
 use near_sdk::NearToken;
 use templar_common::governance::Proposal;
 use templar_common::Nanoseconds;
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatusUpdate},
+    Proxy,
+};
 use templar_proxy_oracle_near_common::{governance::Operation, input::Source};
 use templar_tools_common::near::{self, Function};
 
@@ -36,6 +39,16 @@ pub enum OperationCommand {
     Proxy(ProxyArgs),
     /// Set the governance action TTL
     SetTtl(SetTtlArgs),
+    /// Add a circuit breaker to a price identifier
+    AddCircuitBreaker(AddCircuitBreakerArgs),
+    /// Set shared circuit breaker sampling configuration for a price identifier
+    CircuitBreakerConfig(CircuitBreakerConfigArgs),
+    /// Set or clear the manual trip override for a price identifier
+    CircuitBreakerManualTrip(CircuitBreakerManualTripArgs),
+    /// Remove a circuit breaker from a price identifier
+    RemoveCircuitBreaker(RemoveCircuitBreakerArgs),
+    /// Update one circuit breaker's lifecycle status
+    CircuitBreakerStatus(CircuitBreakerStatusArgs),
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -122,6 +135,71 @@ pub struct SetTtlArgs {
     pub secs: Option<u64>,
 }
 
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddCircuitBreakerArgs {
+    /// Hex-encoded 32-byte price identifier
+    #[arg(long)]
+    price_id: CliPriceIdentifier,
+    /// Evaluation order. Lower values run first.
+    #[arg(long)]
+    order: u32,
+    /// JSON-encoded CircuitBreaker value.
+    #[arg(long)]
+    breaker: Option<String>,
+    /// Path to a JSON file containing CircuitBreaker.
+    #[arg(long)]
+    breaker_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CircuitBreakerConfigArgs {
+    /// Hex-encoded 32-byte price identifier
+    #[arg(long)]
+    price_id: CliPriceIdentifier,
+    /// Shared sample interval in nanoseconds
+    #[arg(long, alias = "nanos", alias = "nanoseconds")]
+    sample_interval_ns: u64,
+    /// Maximum number of persisted observations retained by the set
+    #[arg(long)]
+    history_len: u32,
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RemoveCircuitBreakerArgs {
+    /// Hex-encoded 32-byte price identifier
+    #[arg(long)]
+    price_id: CliPriceIdentifier,
+    /// Stable circuit breaker ID within the set.
+    #[arg(long)]
+    breaker_id: u32,
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CircuitBreakerStatusArgs {
+    /// Hex-encoded 32-byte price identifier
+    #[arg(long)]
+    price_id: CliPriceIdentifier,
+    /// Stable circuit breaker ID within the set.
+    #[arg(long)]
+    breaker_id: u32,
+    /// JSON-encoded CircuitBreakerStatusUpdate value.
+    #[arg(long)]
+    status: Option<String>,
+    /// Path to a JSON file containing CircuitBreakerStatusUpdate.
+    #[arg(long)]
+    status_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CircuitBreakerManualTripArgs {
+    /// Hex-encoded 32-byte price identifier
+    #[arg(long)]
+    price_id: CliPriceIdentifier,
+    /// Whether the circuit breaker set should always block this feed.
+    #[arg(long)]
+    is_manually_tripped: bool,
+}
+
 impl SetTtlArgs {
     pub fn from_ns(ns: u64) -> Self {
         Self {
@@ -184,6 +262,47 @@ impl CreateProposal {
             OperationCommand::SetTtl(args) => Operation::SetActionTtl {
                 new_ttl: args.ttl(),
             },
+            OperationCommand::AddCircuitBreaker(args) => {
+                let breaker: CircuitBreaker = serde_json::from_str(&load_text(
+                    args.breaker.as_deref(),
+                    args.breaker_file.as_deref(),
+                    "breaker",
+                )?)?;
+                Operation::AddCircuitBreaker {
+                    id: args.price_id.into(),
+                    order: args.order,
+                    breaker,
+                }
+            }
+            OperationCommand::CircuitBreakerConfig(args) => Operation::SetCircuitBreakerSetConfig {
+                id: args.price_id.into(),
+                config: CircuitBreakerSetConfig {
+                    sample_interval_ns: Nanoseconds::from_ns(args.sample_interval_ns),
+                    history_len: args.history_len,
+                },
+            },
+            OperationCommand::CircuitBreakerManualTrip(args) => {
+                Operation::SetCircuitBreakerSetManualTrip {
+                    id: args.price_id.into(),
+                    is_manually_tripped: args.is_manually_tripped,
+                }
+            }
+            OperationCommand::RemoveCircuitBreaker(args) => Operation::RemoveCircuitBreaker {
+                id: args.price_id.into(),
+                breaker_id: args.breaker_id,
+            },
+            OperationCommand::CircuitBreakerStatus(args) => {
+                let status: CircuitBreakerStatusUpdate = serde_json::from_str(&load_text(
+                    args.status.as_deref(),
+                    args.status_file.as_deref(),
+                    "status",
+                )?)?;
+                Operation::SetCircuitBreakerStatus {
+                    id: args.price_id.into(),
+                    breaker_id: args.breaker_id,
+                    status,
+                }
+            }
         };
 
         let signer = self.signer.signer();
