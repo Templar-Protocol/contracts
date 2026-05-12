@@ -111,7 +111,7 @@ impl ProxyOracleController {
         self.gov_create(
             executor,
             op_id,
-            Operation::SetCircuitBreakerSetConfig { id, config },
+            Operation::ConfigureCircuitBreakers { id, config },
         )
         .await;
         self.gov_execute(executor, op_id).await;
@@ -127,7 +127,7 @@ impl ProxyOracleController {
         self.gov_create(
             executor,
             op_id,
-            Operation::SetCircuitBreakerSetManualTrip {
+            Operation::SetCircuitBreakerManualTrip {
                 id,
                 is_manually_tripped,
             },

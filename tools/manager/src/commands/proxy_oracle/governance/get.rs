@@ -103,17 +103,17 @@ impl OutputStyle for Proposal<Operation> {
                 writeln!(out, "  SetActionTtl")?;
                 writeln!(out, "    new_ttl: {} ({}s)", new_ttl, new_ttl.as_secs())?;
             }
-            Operation::SetCircuitBreakerSetConfig { id, config } => {
-                writeln!(out, "  SetCircuitBreakerSetConfig")?;
+            Operation::ConfigureCircuitBreakers { id, config } => {
+                writeln!(out, "  ConfigureCircuitBreakers")?;
                 writeln!(out, "    price_id: {id}")?;
                 writeln!(out, "    sample_interval_ns: {}", config.sample_interval_ns)?;
                 writeln!(out, "    history_len: {}", config.history_len)?;
             }
-            Operation::SetCircuitBreakerSetManualTrip {
+            Operation::SetCircuitBreakerManualTrip {
                 id,
                 is_manually_tripped,
             } => {
-                writeln!(out, "  SetCircuitBreakerSetManualTrip")?;
+                writeln!(out, "  SetCircuitBreakerManualTrip")?;
                 writeln!(out, "    price_id: {id}")?;
                 writeln!(out, "    is_manually_tripped: {is_manually_tripped}")?;
             }

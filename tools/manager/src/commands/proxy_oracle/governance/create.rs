@@ -273,7 +273,7 @@ impl CreateProposal {
                     breaker,
                 }
             }
-            OperationCommand::CircuitBreakerConfig(args) => Operation::SetCircuitBreakerSetConfig {
+            OperationCommand::CircuitBreakerConfig(args) => Operation::ConfigureCircuitBreakers {
                 id: args.price_id.into(),
                 config: CircuitBreakerSetConfig {
                     sample_interval_ns: Nanoseconds::from_ns(args.sample_interval_ns),
@@ -281,7 +281,7 @@ impl CreateProposal {
                 },
             },
             OperationCommand::CircuitBreakerManualTrip(args) => {
-                Operation::SetCircuitBreakerSetManualTrip {
+                Operation::SetCircuitBreakerManualTrip {
                     id: args.price_id.into(),
                     is_manually_tripped: args.is_manually_tripped,
                 }

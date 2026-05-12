@@ -13,8 +13,18 @@ use super::{CircuitBreaker, CircuitBreakerStatus, Error, Observation, RingBuffer
 
 serialize! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Shared sampling configuration for a circuit breaker set.
     pub struct CircuitBreakerSetConfig {
+        /// Minimum elapsed time between persisted observations.
+        ///
+        /// A value of zero persists every resolved proxy price. Rules still evaluate every
+        /// observation against the proposed history regardless of whether the sample is persisted.
         pub sample_interval_ns: Nanoseconds,
+        /// Maximum number of observations retained by the set.
+        ///
+        /// A value of zero is a coherent no-op history configuration: observations are not
+        /// retained, so breakers that need prior samples cannot trip until history capacity is
+        /// raised and enough observations have accumulated.
         pub history_len: u32,
     }
 }
@@ -32,6 +42,10 @@ serialize! {
 
 impl CircuitBreakerSet {
     #[must_use]
+    /// Returns an empty, no-op set with zero retained history.
+    ///
+    /// Breakers can still be added later, but history-dependent breakers cannot trip until the
+    /// set is configured with enough history capacity and samples have accumulated.
     pub fn empty() -> Self {
         Self::new(CircuitBreakerSetConfig {
             sample_interval_ns: Nanoseconds::zero(),

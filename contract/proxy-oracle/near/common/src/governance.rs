@@ -28,16 +28,26 @@ pub enum Operation {
     SetActionTtl {
         new_ttl: Nanoseconds,
     },
-    SetCircuitBreakerSetConfig {
+    /// Update shared sampling/history configuration for a proxy's circuit breaker set.
+    ///
+    /// `history_len = 0` is allowed and means no observations are retained. This is useful for
+    /// coherent no-op configurations, but installed breakers that require prior observations will
+    /// not trip until history capacity is increased and enough samples have accumulated.
+    ConfigureCircuitBreakers {
         id: PriceIdentifier,
         config: CircuitBreakerSetConfig,
     },
-    SetCircuitBreakerSetManualTrip {
+    SetCircuitBreakerManualTrip {
         id: PriceIdentifier,
         is_manually_tripped: bool,
     },
     AddCircuitBreaker {
         id: PriceIdentifier,
+        /// Breaker rule to add to the set.
+        ///
+        /// Adding a breaker does not implicitly resize retained history. If the set keeps too few
+        /// observations for the rule, the breaker remains armed/enabled but cannot trip until
+        /// enough history can be retained and has accumulated.
         breaker: CircuitBreaker,
     },
     RemoveCircuitBreaker {

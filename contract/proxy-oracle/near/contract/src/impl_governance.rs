@@ -80,7 +80,7 @@ impl ProxyGovernanceInterface for Contract {
             Operation::SetActionTtl { new_ttl } => {
                 self.governance.ttl = new_ttl;
             }
-            Operation::SetCircuitBreakerSetConfig { id, config } => {
+            Operation::ConfigureCircuitBreakers { id, config } => {
                 require!(self.proxies.get(&id).is_some(), "Proxy not found");
                 let mut set = self.circuit_breakers.get(&id).unwrap_or_else(
                     templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet::empty,
@@ -88,7 +88,7 @@ impl ProxyGovernanceInterface for Contract {
                 set.set_config(config);
                 self.circuit_breakers.insert(&id, &set);
             }
-            Operation::SetCircuitBreakerSetManualTrip {
+            Operation::SetCircuitBreakerManualTrip {
                 id,
                 is_manually_tripped,
             } => {
