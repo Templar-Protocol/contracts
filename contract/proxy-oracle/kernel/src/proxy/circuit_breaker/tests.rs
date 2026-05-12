@@ -223,6 +223,30 @@ fn set_adds_breakers_with_explicit_monotonic_ids() {
 }
 
 #[test]
+fn set_accepts_custom_rule_type() {
+    struct AlwaysTrips;
+
+    impl CircuitBreakerRule for AlwaysTrips {
+        fn should_trip(&self, _: &RingBuffer<Observation>) -> bool {
+            true
+        }
+    }
+
+    let mut set = CircuitBreakerSet::<AlwaysTrips>::new(CircuitBreakerSetConfig {
+        sample_interval_ns: Nanoseconds::zero(),
+        history_len: 1,
+    });
+    set.add(0, AlwaysTrips).unwrap();
+
+    assert_eq!(
+        set.evaluate(price(100), Nanoseconds::from_secs(1)),
+        Err(CircuitBreakerError::Tripped {
+            breaker_ids: vec![0]
+        })
+    );
+}
+
+#[test]
 fn set_rejects_unexpected_breaker_id() {
     let mut set = CircuitBreakerSet::empty();
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
@@ -231,7 +255,7 @@ fn set_rejects_unexpected_breaker_id() {
 
     assert_eq!(
         set.add(1, breaker),
-        Err(Error::UnexpectedBreakerId {
+        Err(CircuitBreakerError::UnexpectedBreakerId {
             expected: 0,
             actual: 1
         })
@@ -246,11 +270,14 @@ fn set_rejects_add_when_next_id_is_exhausted() {
         max_relative_change: dec("0.10"),
     });
 
-    assert_eq!(set.add(u32::MAX, breaker), Err(Error::TooManyBreakers));
+    assert_eq!(
+        set.add(u32::MAX, breaker),
+        Err(CircuitBreakerError::TooManyBreakers)
+    );
 }
 
 #[test]
-fn muted_breaker_records_history_without_tripping() {
+fn future_armed_breaker_records_history_without_tripping() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
     set.add(
@@ -260,8 +287,8 @@ fn muted_breaker_records_history_without_tripping() {
         }),
     )
     .unwrap();
-    set.get_mut(id).unwrap().status = CircuitBreakerStatus::Muted {
-        until_ns: Nanoseconds::from_secs(10),
+    set.get_mut(id).unwrap().status = CircuitBreakerStatus::ArmedAfter {
+        timestamp_ns: Nanoseconds::from_secs(10),
     };
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
@@ -270,7 +297,7 @@ fn muted_breaker_records_history_without_tripping() {
     assert_eq!(set.history.len(), 2);
     assert!(matches!(
         set.breakers.get(&0).unwrap().status,
-        CircuitBreakerStatus::Muted { .. }
+        CircuitBreakerStatus::ArmedAfter { .. }
     ));
 }
 
@@ -289,13 +316,13 @@ fn set_returns_tripped_for_new_and_existing_trips() {
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     assert_eq!(
         set.evaluate(price(111), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
     );
     assert_eq!(
         set.evaluate(price(111), Nanoseconds::from_secs(3)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
     );
@@ -325,7 +352,7 @@ fn set_returns_all_blocking_breaker_ids() {
 
     assert_eq!(
         set.evaluate(price(150), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![first_id, second_id]
         })
     );
@@ -346,7 +373,7 @@ fn too_soon_sample_can_trip_without_being_persisted() {
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     assert_eq!(
         set.evaluate(price(200), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
     );
@@ -393,7 +420,7 @@ fn unenforced_and_tripped_breakers_still_record_history() {
 
     assert_eq!(
         set.evaluate(price(200), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![tripped_id],
         })
     );
@@ -436,14 +463,14 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
     assert!(set.is_blocking());
     assert_eq!(
         set.evaluate(price(130), Nanoseconds::from_secs(3)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
     );
 }
 
 #[test]
-fn arm_clears_tripped_status_without_enforcing_breaker() {
+fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
     set.add(
@@ -457,31 +484,38 @@ fn arm_clears_tripped_status_without_enforcing_breaker() {
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     assert_eq!(
         set.evaluate(price(120), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
     );
     {
         let breaker = set.get_mut(id).unwrap();
         breaker.is_enforced = false;
-        breaker.status = CircuitBreakerStatus::Armed;
+        breaker.status = CircuitBreakerStatus::ArmedAfter {
+            timestamp_ns: Nanoseconds::zero(),
+        };
     }
 
     let breaker = set.breakers.get(&0).unwrap();
     assert!(!breaker.is_enforced);
-    assert!(matches!(breaker.status, CircuitBreakerStatus::Armed));
+    assert!(matches!(
+        breaker.status,
+        CircuitBreakerStatus::ArmedAfter {
+            timestamp_ns
+        } if timestamp_ns == Nanoseconds::zero()
+    ));
     assert!(!set.is_blocking());
 }
 
 #[test]
 fn manual_trip_override_blocks_set_without_tripping_breaker() {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = CircuitBreakerSet::<CircuitBreaker>::empty();
     set.set_manual_trip(true);
 
     assert!(set.is_blocking());
     assert_eq!(
         set.evaluate(price(100), Nanoseconds::from_secs(5)),
-        Err(Error::ManuallyTripped)
+        Err(CircuitBreakerError::ManuallyTripped)
     );
 }
 
@@ -524,7 +558,7 @@ fn rule_trip_records_causal_price_update() {
     set.evaluate(price(100), Nanoseconds::from_secs(4)).unwrap();
     assert_eq!(
         set.evaluate(price(200), Nanoseconds::from_secs(5)),
-        Err(Error::Tripped {
+        Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
     );

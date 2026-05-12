@@ -665,15 +665,20 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     let set = c.circuit_breakers.get(&proxy_id).unwrap();
     let breaker = set.breakers.get(&0).unwrap();
     assert!(!breaker.is_enforced);
-    assert!(matches!(breaker.status, CircuitBreakerStatus::Armed));
+    assert!(matches!(
+        breaker.status,
+        CircuitBreakerStatus::ArmedAfter {
+            timestamp_ns
+        } if timestamp_ns == Nanoseconds::zero()
+    ));
 
     c.gov_create(
         3,
         Operation::UpdateCircuitBreaker {
             id: proxy_id,
             breaker_id: 0,
-            update: CircuitBreakerUpdate::Mute {
-                until_ns: Nanoseconds::from_secs(1),
+            update: CircuitBreakerUpdate::SetArmedAfter {
+                timestamp_ns: Nanoseconds::from_secs(1),
             },
         },
     );
@@ -681,7 +686,12 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     let set = c.circuit_breakers.get(&proxy_id).unwrap();
     let breaker = set.breakers.get(&0).unwrap();
     assert!(!breaker.is_enforced);
-    assert!(matches!(breaker.status, CircuitBreakerStatus::Muted { .. }));
+    assert!(matches!(
+        breaker.status,
+        CircuitBreakerStatus::ArmedAfter {
+            timestamp_ns
+        } if timestamp_ns == Nanoseconds::from_secs(1)
+    ));
 }
 
 #[allow(clippy::unwrap_used)]

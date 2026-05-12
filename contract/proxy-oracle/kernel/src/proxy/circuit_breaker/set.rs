@@ -4,12 +4,17 @@ use alloc::vec::Vec;
 #[cfg(feature = "schemars")]
 use alloc::borrow::ToOwned;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
+use alloc::format;
+#[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::string::ToString;
 use templar_primitives::Nanoseconds;
 
 use crate::Price;
 
-use super::{CircuitBreaker, CircuitBreakerStatus, Error, Observation, RingBuffer};
+use super::{
+    CircuitBreaker, CircuitBreakerError, CircuitBreakerRule, CircuitBreakerStatus, Observation,
+    RingBuffer,
+};
 
 serialize! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,16 +36,16 @@ serialize! {
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct CircuitBreakerSet {
+    pub struct CircuitBreakerSet<R = CircuitBreaker> {
         pub sample_interval_ns: Nanoseconds,
         pub history: RingBuffer<Observation>,
         pub next_id: u32,
         pub is_manually_tripped: bool,
-        pub breakers: BTreeMap<u32, CircuitBreakerState>,
+        pub breakers: BTreeMap<u32, CircuitBreakerState<R>>,
     }
 }
 
-impl CircuitBreakerSet {
+impl<R> CircuitBreakerSet<R> {
     #[must_use]
     /// Returns an empty, no-op set with zero retained history.
     ///
@@ -73,31 +78,37 @@ impl CircuitBreakerSet {
         self.is_manually_tripped = is_manually_tripped;
     }
 
-    pub fn add(&mut self, breaker_id: u32, breaker: CircuitBreaker) -> Result<(), Error> {
+    pub fn add(&mut self, breaker_id: u32, breaker: R) -> Result<(), CircuitBreakerError> {
         if breaker_id != self.next_id {
-            return Err(Error::UnexpectedBreakerId {
+            return Err(CircuitBreakerError::UnexpectedBreakerId {
                 expected: self.next_id,
                 actual: breaker_id,
             });
         }
 
-        self.next_id = self.next_id.checked_add(1).ok_or(Error::TooManyBreakers)?;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(CircuitBreakerError::TooManyBreakers)?;
         self.breakers
             .insert(breaker_id, CircuitBreakerState::new(breaker));
         Ok(())
     }
 
-    pub fn remove(&mut self, breaker_id: u32) -> Result<(), Error> {
+    pub fn remove(&mut self, breaker_id: u32) -> Result<(), CircuitBreakerError> {
         self.breakers
             .remove(&breaker_id)
-            .ok_or(Error::BreakerNotFound { breaker_id })?;
+            .ok_or(CircuitBreakerError::BreakerNotFound { breaker_id })?;
         Ok(())
     }
 
-    pub fn get_mut(&mut self, breaker_id: u32) -> Result<&mut CircuitBreakerState, Error> {
+    pub fn get_mut(
+        &mut self,
+        breaker_id: u32,
+    ) -> Result<&mut CircuitBreakerState<R>, CircuitBreakerError> {
         self.breakers
             .get_mut(&breaker_id)
-            .ok_or(Error::BreakerNotFound { breaker_id })
+            .ok_or(CircuitBreakerError::BreakerNotFound { breaker_id })
     }
 
     #[must_use]
@@ -105,7 +116,15 @@ impl CircuitBreakerSet {
         self.is_manually_tripped || self.breakers.values().any(CircuitBreakerState::is_blocking)
     }
 
-    pub fn evaluate(&mut self, price: Price, now: Nanoseconds) -> Result<(), Error> {
+    fn should_persist_sample(&self, now: Nanoseconds) -> bool {
+        self.history
+            .last()
+            .is_none_or(|last| now.saturating_sub(last.observed_at_ns) >= self.sample_interval_ns)
+    }
+}
+
+impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
+    pub fn evaluate(&mut self, price: Price, now: Nanoseconds) -> Result<(), CircuitBreakerError> {
         let mut proposed_history = self.history.clone();
         let price_update = Observation {
             price,
@@ -118,19 +137,15 @@ impl CircuitBreakerSet {
         }
 
         if self.is_manually_tripped {
-            return Err(Error::ManuallyTripped);
+            return Err(CircuitBreakerError::ManuallyTripped);
         }
 
         let mut breaker_ids = Vec::new();
 
         for (breaker_id, breaker) in &mut self.breakers {
             let can_trip = match breaker.status {
-                CircuitBreakerStatus::Armed => true,
-                CircuitBreakerStatus::Muted { until_ns } if now >= until_ns => {
-                    breaker.status = CircuitBreakerStatus::Armed;
-                    true
-                }
-                CircuitBreakerStatus::Muted { .. } | CircuitBreakerStatus::Tripped { .. } => false,
+                CircuitBreakerStatus::ArmedAfter { timestamp_ns } => now >= timestamp_ns,
+                CircuitBreakerStatus::Tripped { .. } => false,
             };
 
             if can_trip && breaker.breaker.should_trip(&proposed_history) {
@@ -148,33 +163,29 @@ impl CircuitBreakerSet {
         if breaker_ids.is_empty() {
             Ok(())
         } else {
-            Err(Error::Tripped { breaker_ids })
+            Err(CircuitBreakerError::Tripped { breaker_ids })
         }
-    }
-
-    fn should_persist_sample(&self, now: Nanoseconds) -> bool {
-        self.history
-            .last()
-            .is_none_or(|last| now.saturating_sub(last.observed_at_ns) >= self.sample_interval_ns)
     }
 }
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct CircuitBreakerState {
-        pub breaker: CircuitBreaker,
+    pub struct CircuitBreakerState<R = CircuitBreaker> {
+        pub breaker: R,
         pub is_enforced: bool,
         pub status: CircuitBreakerStatus,
     }
 }
 
-impl CircuitBreakerState {
+impl<R> CircuitBreakerState<R> {
     #[must_use]
-    pub fn new(breaker: CircuitBreaker) -> Self {
+    pub fn new(breaker: R) -> Self {
         Self {
             breaker,
             is_enforced: true,
-            status: CircuitBreakerStatus::Armed,
+            status: CircuitBreakerStatus::ArmedAfter {
+                timestamp_ns: Nanoseconds::zero(),
+            },
         }
     }
 

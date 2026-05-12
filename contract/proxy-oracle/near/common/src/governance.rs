@@ -20,14 +20,11 @@ pub enum CircuitBreakerUpdate {
     /// Non-enforced breakers still evaluate and can become tripped; they just do not make the
     /// containing set block price resolution.
     SetEnforced { is_enforced: bool },
-    /// Clear any tripped/muted lifecycle state and make the breaker evaluate normally.
+    /// Set the absolute timestamp after which the breaker can trip.
     ///
-    /// This does not change enforcement.
-    Arm,
-    /// Prevent the breaker from tripping until `until_ns` has elapsed.
-    ///
-    /// This does not change enforcement. A past timestamp arms on the next evaluation.
-    Mute { until_ns: Nanoseconds },
+    /// `timestamp_ns = 0` is the canonical immediately-armed value. This does not change
+    /// enforcement.
+    SetArmedAfter { timestamp_ns: Nanoseconds },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

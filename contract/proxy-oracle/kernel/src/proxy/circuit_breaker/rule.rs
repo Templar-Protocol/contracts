@@ -32,12 +32,19 @@ impl CircuitBreaker {
             Self::WindowedChangeDelta(inner) => inner,
         }
     }
+}
 
-    pub(super) fn should_trip(&self, history: &RingBuffer<Observation>) -> bool {
+impl CircuitBreakerRule for CircuitBreaker {
+    fn should_trip(&self, history: &RingBuffer<Observation>) -> bool {
         self.rule().should_trip(history)
     }
 }
 
+/// Runtime rule interface used by [`CircuitBreakerSet`](super::CircuitBreakerSet).
+///
+/// The kernel set is generic over this trait for off-chain/library consumers. The NEAR contract
+/// intentionally stores and governs only the closed [`CircuitBreaker`] enum so on-chain rule
+/// schemas remain explicit and auditable.
 pub trait CircuitBreakerRule {
     fn should_trip(&self, history: &RingBuffer<Observation>) -> bool;
 }

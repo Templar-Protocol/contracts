@@ -10,8 +10,7 @@ use templar_primitives::Nanoseconds;
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum CircuitBreakerStatus {
-        Armed,
-        Muted { until_ns: Nanoseconds },
+        ArmedAfter { timestamp_ns: Nanoseconds },
         Tripped { tripped_at_ns: Nanoseconds, price_update: Observation },
     }
 }

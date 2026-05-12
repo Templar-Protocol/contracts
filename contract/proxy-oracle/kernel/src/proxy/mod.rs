@@ -8,7 +8,7 @@ use alloc::{format, string::ToString};
 use crate::Price;
 use aggregator::method::Aggregate;
 pub use aggregator::Aggregator;
-use circuit_breaker::CircuitBreakerSet;
+use circuit_breaker::{CircuitBreakerRule, CircuitBreakerSet};
 pub use freshness_filter::FreshnessFilter;
 
 use templar_primitives::time::Nanoseconds;
@@ -24,7 +24,7 @@ serialize! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     Aggregation(aggregator::method::Error),
-    CircuitBreaker(circuit_breaker::Error),
+    CircuitBreaker(circuit_breaker::CircuitBreakerError),
 }
 
 impl From<aggregator::method::Error> for ResolveError {
@@ -33,8 +33,8 @@ impl From<aggregator::method::Error> for ResolveError {
     }
 }
 
-impl From<circuit_breaker::Error> for ResolveError {
-    fn from(error: circuit_breaker::Error) -> Self {
+impl From<circuit_breaker::CircuitBreakerError> for ResolveError {
+    fn from(error: circuit_breaker::CircuitBreakerError) -> Self {
         Self::CircuitBreaker(error)
     }
 }
@@ -104,15 +104,16 @@ impl<S> Proxy<S> {
         self.aggregator.sources()
     }
 
-    pub fn resolve<I>(
+    pub fn resolve<I, R>(
         &self,
-        circuit_breakers: &mut CircuitBreakerSet,
+        circuit_breakers: &mut CircuitBreakerSet<R>,
         prices: I,
         now: Nanoseconds,
     ) -> Result<Price, ResolveError>
     where
         I: IntoIterator<Item = Option<Price>>,
         I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
+        R: CircuitBreakerRule,
     {
         let price = self.aggregate(prices, now)?;
         circuit_breakers.evaluate(price, now)?;
@@ -143,8 +144,8 @@ mod tests {
         proxy::{
             aggregator::method::{median::MedianLow, Error},
             circuit_breaker::{
-                CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig,
-                Error as CircuitBreakerError, StepwiseChange,
+                CircuitBreaker, CircuitBreakerError, CircuitBreakerSet, CircuitBreakerSetConfig,
+                StepwiseChange,
             },
             Aggregator, FreshnessFilter, Proxy, ResolveError, WeightedSource,
         },
@@ -191,7 +192,7 @@ mod tests {
 
         let error = proxy
             .resolve(
-                &mut CircuitBreakerSet::empty(),
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
                 prices,
                 Nanoseconds::from_secs(1_000),
             )
@@ -230,7 +231,11 @@ mod tests {
         ];
 
         let result = proxy
-            .resolve(&mut CircuitBreakerSet::empty(), prices, now)
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                now,
+            )
             .unwrap();
 
         assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
@@ -256,7 +261,11 @@ mod tests {
         ];
 
         let result = proxy
-            .resolve(&mut CircuitBreakerSet::empty(), prices, now)
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                now,
+            )
             .unwrap();
 
         assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
@@ -284,7 +293,7 @@ mod tests {
         let proxy = priority_proxy(freshness_filter);
         let result = proxy
             .resolve(
-                &mut CircuitBreakerSet::empty(),
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
                 prices,
                 Nanoseconds::from_secs(1_000),
             )
@@ -319,7 +328,7 @@ mod tests {
 
         let result = proxy
             .resolve(
-                &mut CircuitBreakerSet::empty(),
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
                 prices,
                 Nanoseconds::from_ms(1_000),
             )

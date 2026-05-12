@@ -6,7 +6,7 @@ mod rule;
 mod set;
 mod status;
 
-pub use error::{Error, ErrorCode};
+pub use error::{CircuitBreakerError, ErrorCode};
 pub use observation::Observation;
 pub use ring_buffer::RingBuffer;
 pub use rule::{

@@ -140,11 +140,8 @@ impl ProxyGovernanceInterface for Contract {
                     CircuitBreakerUpdate::SetEnforced { is_enforced } => {
                         breaker.is_enforced = is_enforced;
                     }
-                    CircuitBreakerUpdate::Arm => {
-                        breaker.status = CircuitBreakerStatus::Armed;
-                    }
-                    CircuitBreakerUpdate::Mute { until_ns } => {
-                        breaker.status = CircuitBreakerStatus::Muted { until_ns };
+                    CircuitBreakerUpdate::SetArmedAfter { timestamp_ns } => {
+                        breaker.status = CircuitBreakerStatus::ArmedAfter { timestamp_ns };
                     }
                 }
                 self.circuit_breakers.insert(&id, &set);

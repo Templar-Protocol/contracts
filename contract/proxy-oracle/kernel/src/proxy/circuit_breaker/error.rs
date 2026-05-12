@@ -11,7 +11,7 @@ pub enum ErrorCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
+pub enum CircuitBreakerError {
     TooManyBreakers,
     BreakerNotFound { breaker_id: u32 },
     UnexpectedBreakerId { expected: u32, actual: u32 },
@@ -19,7 +19,7 @@ pub enum Error {
     Tripped { breaker_ids: Vec<u32> },
 }
 
-impl Error {
+impl CircuitBreakerError {
     #[must_use]
     pub const fn code(&self) -> ErrorCode {
         match self {
@@ -33,7 +33,7 @@ impl Error {
 }
 
 #[cfg(feature = "std")]
-impl core::fmt::Display for Error {
+impl core::fmt::Display for CircuitBreakerError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::TooManyBreakers => write!(f, "too many circuit breakers"),
@@ -53,4 +53,4 @@ impl core::fmt::Display for Error {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for Error {}
+impl std::error::Error for CircuitBreakerError {}
