@@ -25,12 +25,13 @@ use templar_common::{
 use templar_proxy_oracle_kernel::proxy::{
     aggregator::{method::median::MedianLow, Aggregator},
     circuit_breaker::{
-        CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, StepwiseChange,
+        CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, MonotonicRun,
+        StepwiseChange, WindowedChangeDelta,
     },
     FreshnessFilter, Proxy, WeightedSource,
 };
 use templar_proxy_oracle_near_common::{
-    governance::{Operation, ProxyGovernanceInterface},
+    governance::{Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY},
     input::{ProxyPriceTransformer, Source},
     price_transformer,
     request::OracleRequest,
@@ -40,7 +41,7 @@ use test_utils::{
     accounts,
     controller::proxy_oracle::ProxyOracleController,
     pyth_price_id::{self, stable::CRYPTO_BTC_USD},
-    worker, ContractController, MockOracleController,
+    worker, ContractController, GovernanceController, MockOracleController,
 };
 
 fn norm_price(price: &pyth::Price) -> u64 {
@@ -168,6 +169,243 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
     assert_eq!(set.history.len(), 2);
     assert_eq!(set.history.as_slice()[0].price.price, 120);
     assert_eq!(set.history.as_slice()[1].price.price, 130);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CalibrationBreakerKind {
+    StepwiseChange,
+    MonotonicRun,
+    WindowedChangeDelta,
+}
+
+impl CalibrationBreakerKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::StepwiseChange => "stepwise_change",
+            Self::MonotonicRun => "monotonic_run",
+            Self::WindowedChangeDelta => "windowed_change_delta",
+        }
+    }
+
+    fn breaker(self, history_len: u32) -> CircuitBreaker {
+        match self {
+            Self::StepwiseChange => CircuitBreaker::StepwiseChange(StepwiseChange {
+                max_relative_change: Decimal::from_str("10").unwrap(),
+            }),
+            Self::MonotonicRun => CircuitBreaker::MonotonicRun(MonotonicRun {
+                max_streak: history_len.saturating_add(2),
+                min_relative_step_change: Decimal::ZERO,
+            }),
+            Self::WindowedChangeDelta => CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
+                window_len: 2,
+                lookback_windows: 1,
+                max_relative_change_delta: Decimal::from_str("10").unwrap(),
+            }),
+        }
+    }
+}
+
+async fn set_calibration_price(
+    pyth_oracle: &MockOracleController,
+    actor: &near_workspaces::Account,
+    value: i64,
+) {
+    pyth_oracle
+        .set_pyth_price(
+            actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(value),
+                conf: U64(0),
+                expo: 0,
+                publish_time: PythTimestamp::from_secs(
+                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                ),
+            }),
+        )
+        .await;
+}
+
+async fn execute_governance_operation(
+    proxy_oracle: &ProxyOracleController,
+    operation: Operation,
+) -> near_workspaces::result::ExecutionSuccess {
+    let proposal_id = proxy_oracle.gov_next_id().await;
+    proxy_oracle
+        .account()
+        .call(proxy_oracle.id(), "gov_create")
+        .args_json(near_sdk::serde_json::json!({ "id": proposal_id, "operation": operation }))
+        .deposit(NearToken::from_yoctonear(1))
+        .max_gas()
+        .transact()
+        .await
+        .unwrap()
+        .unwrap();
+
+    proxy_oracle
+        .account()
+        .call(proxy_oracle.id(), "gov_execute")
+        .args_json(near_sdk::serde_json::json!({ "id": proposal_id }))
+        .deposit(NearToken::from_yoctonear(1))
+        .max_gas()
+        .transact()
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+fn max_receipt_gas_burnt(result: &near_workspaces::result::ExecutionSuccess) -> near_sdk::Gas {
+    result
+        .receipt_outcomes()
+        .iter()
+        .map(|outcome| outcome.gas_burnt)
+        .max()
+        .unwrap_or_default()
+}
+
+fn executor_receipt_gas_burnt(
+    result: &near_workspaces::result::ExecutionSuccess,
+    executor_id: &near_sdk::AccountId,
+) -> near_sdk::Gas {
+    result
+        .receipt_outcomes()
+        .iter()
+        .filter(|outcome| outcome.executor_id == *executor_id)
+        .map(|outcome| outcome.gas_burnt)
+        .max()
+        .unwrap_or_default()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[ignore = "prints gas for choosing circuit breaker history and breaker-count bounds"]
+async fn calibrate_circuit_breaker_resolution_gas(#[future(awt)] worker: Worker<Sandbox>) {
+    const CASES: &[(CalibrationBreakerKind, u32, u32)] = &[
+        (CalibrationBreakerKind::StepwiseChange, 0, 0),
+        (CalibrationBreakerKind::StepwiseChange, 8, 16),
+        (CalibrationBreakerKind::MonotonicRun, 8, 16),
+        (CalibrationBreakerKind::MonotonicRun, 32, 16),
+        (CalibrationBreakerKind::WindowedChangeDelta, 8, 16),
+        (CalibrationBreakerKind::WindowedChangeDelta, 32, 16),
+    ];
+
+    accounts!(worker, actor, proxy_oracle, pyth_oracle);
+    let pyth_oracle = MockOracleController::deploy(pyth_oracle).await;
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle).await;
+    let mut case_index = 0_u8;
+
+    eprintln!("rule,history_len,breaker_count,total_gas_burnt,max_receipt_gas_burnt,proxy_oracle_receipt_gas_burnt");
+    for &(kind, history_len, breaker_count) in CASES {
+        case_index = case_index.wrapping_add(1);
+        let proxy_id = PriceIdentifier([case_index; 32]);
+        let proxy = Proxy::median_low(
+            [OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()],
+            FreshnessFilter::empty(),
+        );
+        proxy_oracle
+            .set_proxy(proxy_oracle.account(), proxy_id, Some(proxy))
+            .await;
+        proxy_oracle
+            .set_circuit_breaker_set_config(
+                proxy_oracle.account(),
+                proxy_id,
+                CircuitBreakerSetConfig {
+                    sample_interval_ns: Nanoseconds::zero(),
+                    history_len,
+                },
+            )
+            .await;
+
+        for breaker_id in 0..breaker_count {
+            execute_governance_operation(
+                &proxy_oracle,
+                Operation::AddCircuitBreaker {
+                    id: proxy_id,
+                    breaker_id,
+                    breaker: kind.breaker(history_len),
+                },
+            )
+            .await;
+        }
+
+        for value in 0..history_len {
+            set_calibration_price(&pyth_oracle, &actor, i64::from(100 + value)).await;
+            proxy_oracle
+                .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+                .await;
+        }
+
+        set_calibration_price(&pyth_oracle, &actor, 1_000).await;
+        let result = actor
+            .call(proxy_oracle.id(), "list_ema_prices_no_older_than")
+            .args_json(near_sdk::serde_json::json!({
+                "price_ids": [proxy_id],
+                "age": 60_u32,
+            }))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+        eprintln!(
+            "{},{history_len},{breaker_count},{},{},{}",
+            kind.name(),
+            result.total_gas_burnt,
+            max_receipt_gas_burnt(&result),
+            executor_receipt_gas_burnt(&result, proxy_oracle.id())
+        );
+    }
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[ignore = "prints governance gas for configuring and adding circuit breakers"]
+async fn calibrate_circuit_breaker_governance_gas(#[future(awt)] worker: Worker<Sandbox>) {
+    accounts!(worker, proxy_oracle, pyth_oracle);
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle).await;
+    let proxy_id = PriceIdentifier([0x77; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+
+    execute_governance_operation(
+        &proxy_oracle,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy),
+        },
+    )
+    .await;
+
+    eprintln!("operation,history_len,breaker_id,total_gas_burnt");
+    for history_len in [0_u32, 2, 8, 32, 128, 256] {
+        let result = execute_governance_operation(
+            &proxy_oracle,
+            Operation::ConfigureCircuitBreakers {
+                id: proxy_id,
+                config: CircuitBreakerSetConfig {
+                    sample_interval_ns: Nanoseconds::zero(),
+                    history_len,
+                },
+            },
+        )
+        .await;
+        eprintln!("configure,{history_len},,{}", result.total_gas_burnt);
+    }
+
+    for breaker_id in 0_u32..32 {
+        let result = execute_governance_operation(
+            &proxy_oracle,
+            Operation::AddCircuitBreaker {
+                id: proxy_id,
+                breaker_id,
+                breaker: CalibrationBreakerKind::StepwiseChange.breaker(256),
+            },
+        )
+        .await;
+        eprintln!("add,,{breaker_id},{}", result.total_gas_burnt);
+    }
 }
 
 fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
@@ -322,6 +560,61 @@ fn governance_rejects_empty_proxy_definition_on_create() {
             proxy: Some(Proxy::median_low([], FreshnessFilter::empty())),
         },
     );
+}
+
+#[test]
+#[should_panic = "Too many circuit breakers"]
+fn governance_rejects_too_many_circuit_breakers_on_execute() {
+    let context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context);
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x44; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy),
+        },
+    );
+    c.gov_execute(0);
+
+    let breaker = || {
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: Decimal::from_str("0.10").unwrap(),
+        })
+    };
+
+    for breaker_id in 0..u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() {
+        let proposal_id = breaker_id + 1;
+        c.gov_create(
+            proposal_id,
+            Operation::AddCircuitBreaker {
+                id: proxy_id,
+                breaker_id,
+                breaker: breaker(),
+            },
+        );
+        c.gov_execute(proposal_id);
+    }
+
+    let proposal_id = u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() + 1;
+    c.gov_create(
+        proposal_id,
+        Operation::AddCircuitBreaker {
+            id: proxy_id,
+            breaker_id: u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap(),
+            breaker: breaker(),
+        },
+    );
+    c.gov_execute(proposal_id);
 }
 
 #[allow(clippy::unwrap_used)]

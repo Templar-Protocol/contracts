@@ -1,6 +1,8 @@
 use core::str::FromStr;
 
 use alloc::{vec, vec::Vec};
+#[cfg(all(feature = "borsh", feature = "serde"))]
+use std::eprintln;
 use templar_primitives::{Decimal, Nanoseconds};
 
 use crate::Price;
@@ -49,6 +51,58 @@ fn breaker_set(sample_interval_ns: Nanoseconds, history_len: u32) -> CircuitBrea
         sample_interval_ns,
         history_len,
     })
+}
+
+#[cfg(all(feature = "borsh", feature = "serde"))]
+fn calibration_breaker(index: u32) -> CircuitBreaker {
+    match index % 3 {
+        0 => CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("10"),
+        }),
+        1 => CircuitBreaker::MonotonicRun(MonotonicRun {
+            max_streak: u32::MAX,
+            min_relative_step_change: Decimal::ZERO,
+        }),
+        _ => CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
+            window_len: 2,
+            lookback_windows: 1,
+            max_relative_change_delta: dec("10"),
+        }),
+    }
+}
+
+#[cfg(all(feature = "borsh", feature = "serde"))]
+fn calibration_set(history_len: u32, breaker_count: u32) -> CircuitBreakerSet {
+    let mut set = breaker_set(Nanoseconds::zero(), history_len);
+    for i in 0..history_len {
+        set.history.push(Observation {
+            price: price(i64::from(100 + i)),
+            observed_at_ns: Nanoseconds::from_secs(u64::from(i)),
+        });
+    }
+    for breaker_id in 0..breaker_count {
+        set.add(breaker_id, calibration_breaker(breaker_id))
+            .unwrap();
+    }
+    set
+}
+
+#[cfg(all(feature = "borsh", feature = "serde"))]
+#[test]
+#[ignore = "prints Borsh and JSON sizes for choosing circuit breaker resource bounds"]
+fn calibrate_circuit_breaker_set_serialized_sizes() {
+    const HISTORY_LENGTHS: &[u32] = &[0, 1, 2, 4, 8, 16, 32, 64, 128, 256];
+    const BREAKER_COUNTS: &[u32] = &[0, 1, 2, 4, 8, 16, 32];
+
+    eprintln!("history_len,breaker_count,borsh_bytes,json_bytes");
+    for &history_len in HISTORY_LENGTHS {
+        for &breaker_count in BREAKER_COUNTS {
+            let set = calibration_set(history_len, breaker_count);
+            let borsh_bytes = borsh::to_vec(&set).unwrap().len();
+            let json_bytes = serde_json::to_vec(&set).unwrap().len();
+            eprintln!("{history_len},{breaker_count},{borsh_bytes},{json_bytes}");
+        }
+    }
 }
 
 #[test]

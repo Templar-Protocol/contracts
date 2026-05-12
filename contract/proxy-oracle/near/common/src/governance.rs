@@ -9,6 +9,9 @@ use templar_proxy_oracle_kernel::proxy::{
 
 use crate::input::Source;
 
+pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
+pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum CircuitBreakerStatusUpdate {
@@ -75,6 +78,14 @@ impl Validatable for Operation {
             Operation::SetProxy {
                 proxy: Some(proxy), ..
             } if proxy.sources().len() == 0 => Err(ValidationError::EmptyProxyDefinition),
+            Operation::ConfigureCircuitBreakers { config, .. }
+                if config.history_len > MAX_CIRCUIT_BREAKER_HISTORY_LEN =>
+            {
+                Err(ValidationError::CircuitBreakerHistoryTooLong {
+                    maximum: MAX_CIRCUIT_BREAKER_HISTORY_LEN,
+                    actual: config.history_len,
+                })
+            }
             _ => Ok(()),
         }
     }
@@ -88,6 +99,8 @@ impl Validatable for Operation {
 pub enum ValidationError {
     #[error("Empty proxy definition is not allowed")]
     EmptyProxyDefinition,
+    #[error("Circuit breaker history length is too long: maximum {maximum}, got {actual}")]
+    CircuitBreakerHistoryTooLong { maximum: u32, actual: u32 },
 }
 
 gen_ext_governance!(ext_proxy_governance, ProxyGovernanceInterface, Operation);
@@ -137,5 +150,25 @@ mod tests {
     #[case::invalid(invalid_operation())]
     fn on_execute(#[case] operation: Operation) {
         operation.on_execute().unwrap();
+    }
+
+    #[test]
+    fn configure_circuit_breakers_rejects_excessive_history_len() {
+        let operation = Operation::ConfigureCircuitBreakers {
+            id: PriceIdentifier([0xaa; 32]),
+            config: CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: MAX_CIRCUIT_BREAKER_HISTORY_LEN + 1,
+            },
+        };
+
+        assert_eq!(
+            operation.on_create(),
+            Err(ValidationError::CircuitBreakerHistoryTooLong {
+                maximum: MAX_CIRCUIT_BREAKER_HISTORY_LEN,
+                actual: MAX_CIRCUIT_BREAKER_HISTORY_LEN + 1,
+            })
+        );
+        assert_eq!(operation.on_execute(), operation.on_create());
     }
 }

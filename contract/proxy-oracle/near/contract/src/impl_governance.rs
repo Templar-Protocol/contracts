@@ -5,7 +5,7 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerSet, CircuitBreakerStatus,
 };
 use templar_proxy_oracle_near_common::governance::{
-    CircuitBreakerStatusUpdate, Operation, ProxyGovernanceInterface,
+    CircuitBreakerStatusUpdate, Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY,
 };
 
 use crate::{Contract, ContractExt};
@@ -111,6 +111,10 @@ impl ProxyGovernanceInterface for Contract {
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(CircuitBreakerSet::empty);
+                require!(
+                    set.breakers.len() < MAX_CIRCUIT_BREAKERS_PER_PROXY,
+                    "Too many circuit breakers"
+                );
                 set.add(breaker_id, breaker).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
             }
