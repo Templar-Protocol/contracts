@@ -132,15 +132,15 @@ impl OutputStyle for Proposal<Operation> {
                 writeln!(out, "    price_id: {id}")?;
                 writeln!(out, "    breaker_id: {breaker_id}")?;
             }
-            Operation::SetCircuitBreakerStatus {
+            Operation::UpdateCircuitBreaker {
                 id,
                 breaker_id,
-                status,
+                update,
             } => {
-                writeln!(out, "  SetCircuitBreakerStatus")?;
+                writeln!(out, "  UpdateCircuitBreaker")?;
                 writeln!(out, "    price_id: {id}")?;
                 writeln!(out, "    breaker_id: {breaker_id}")?;
-                writeln!(out, "    status: {status:?}")?;
+                writeln!(out, "    update: {update:?}")?;
             }
         }
 

@@ -10,7 +10,7 @@ use templar_proxy_oracle_kernel::proxy::{
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
-    governance::{CircuitBreakerStatusUpdate, Operation},
+    governance::{CircuitBreakerUpdate, Operation},
     input::Source,
 };
 use templar_tools_common::near::{self, Function};
@@ -50,8 +50,8 @@ pub enum OperationCommand {
     CircuitBreakerManualTrip(CircuitBreakerManualTripArgs),
     /// Remove a circuit breaker from a price identifier
     RemoveCircuitBreaker(RemoveCircuitBreakerArgs),
-    /// Update one circuit breaker's lifecycle status
-    CircuitBreakerStatus(CircuitBreakerStatusArgs),
+    /// Update one circuit breaker's enforcement or lifecycle state
+    CircuitBreaker(CircuitBreakerUpdateArgs),
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -178,19 +178,19 @@ pub struct RemoveCircuitBreakerArgs {
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CircuitBreakerStatusArgs {
+pub struct CircuitBreakerUpdateArgs {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
     price_id: CliPriceIdentifier,
     /// Stable circuit breaker ID within the set.
     #[arg(long)]
     breaker_id: u32,
-    /// JSON-encoded `CircuitBreakerStatusUpdate` value.
+    /// JSON-encoded `CircuitBreakerUpdate` value.
     #[arg(long)]
-    status: Option<String>,
-    /// Path to a JSON file containing `CircuitBreakerStatusUpdate`.
+    update: Option<String>,
+    /// Path to a JSON file containing `CircuitBreakerUpdate`.
     #[arg(long)]
-    status_file: Option<PathBuf>,
+    update_file: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -320,16 +320,16 @@ impl CreateProposal {
                 id: args.price_id.into(),
                 breaker_id: args.breaker_id,
             },
-            OperationCommand::CircuitBreakerStatus(args) => {
-                let status: CircuitBreakerStatusUpdate = serde_json::from_str(&load_text(
-                    args.status.as_deref(),
-                    args.status_file.as_deref(),
-                    "status",
+            OperationCommand::CircuitBreaker(args) => {
+                let update: CircuitBreakerUpdate = serde_json::from_str(&load_text(
+                    args.update.as_deref(),
+                    args.update_file.as_deref(),
+                    "update",
                 )?)?;
-                Operation::SetCircuitBreakerStatus {
+                Operation::UpdateCircuitBreaker {
                     id: args.price_id.into(),
                     breaker_id: args.breaker_id,
-                    status,
+                    update,
                 }
             }
         };

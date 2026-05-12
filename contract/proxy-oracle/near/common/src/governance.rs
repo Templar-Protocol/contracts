@@ -14,10 +14,19 @@ pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub enum CircuitBreakerStatusUpdate {
-    Enable,
-    Disable,
+pub enum CircuitBreakerUpdate {
+    /// Controls whether this breaker blocks the feed when tripped.
+    ///
+    /// Non-enforced breakers still evaluate and can become tripped; they just do not make the
+    /// containing set block price resolution.
+    SetEnforced { is_enforced: bool },
+    /// Clear any tripped/muted lifecycle state and make the breaker evaluate normally.
+    ///
+    /// This does not change enforcement.
     Arm,
+    /// Prevent the breaker from tripping until `until_ns` has elapsed.
+    ///
+    /// This does not change enforcement. A past timestamp arms on the next evaluation.
     Mute { until_ns: Nanoseconds },
 }
 
@@ -54,7 +63,7 @@ pub enum Operation {
         /// Breaker rule to add to the set.
         ///
         /// Adding a breaker does not implicitly resize retained history. If the set keeps too few
-        /// observations for the rule, the breaker remains armed/enabled but cannot trip until
+        /// observations for the rule, the breaker remains armed/enforced but cannot trip until
         /// enough history can be retained and has accumulated.
         breaker: CircuitBreaker,
     },
@@ -62,10 +71,10 @@ pub enum Operation {
         id: PriceIdentifier,
         breaker_id: u32,
     },
-    SetCircuitBreakerStatus {
+    UpdateCircuitBreaker {
         id: PriceIdentifier,
         breaker_id: u32,
-        status: CircuitBreakerStatusUpdate,
+        update: CircuitBreakerUpdate,
     },
 }
 

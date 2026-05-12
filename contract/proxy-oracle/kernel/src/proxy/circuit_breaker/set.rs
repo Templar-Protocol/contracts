@@ -163,7 +163,7 @@ serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct CircuitBreakerState {
         pub breaker: CircuitBreaker,
-        pub is_enabled: bool,
+        pub is_enforced: bool,
         pub status: CircuitBreakerStatus,
     }
 }
@@ -173,12 +173,12 @@ impl CircuitBreakerState {
     pub fn new(breaker: CircuitBreaker) -> Self {
         Self {
             breaker,
-            is_enabled: true,
+            is_enforced: true,
             status: CircuitBreakerStatus::Armed,
         }
     }
 
     pub fn is_blocking(&self) -> bool {
-        self.is_enabled && matches!(self.status, CircuitBreakerStatus::Tripped { .. })
+        self.is_enforced && matches!(self.status, CircuitBreakerStatus::Tripped { .. })
     }
 }

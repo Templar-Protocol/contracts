@@ -368,11 +368,11 @@ fn too_soon_sample_can_trip_without_being_persisted() {
 }
 
 #[test]
-fn disabled_and_tripped_breakers_still_record_history() {
+fn unenforced_and_tripped_breakers_still_record_history() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
-    let disabled_id = 0;
+    let unenforced_id = 0;
     set.add(
-        disabled_id,
+        unenforced_id,
         CircuitBreaker::StepwiseChange(StepwiseChange {
             max_relative_change: dec("0.01"),
         }),
@@ -387,7 +387,7 @@ fn disabled_and_tripped_breakers_still_record_history() {
     )
     .unwrap();
 
-    set.get_mut(disabled_id).unwrap().is_enabled = false;
+    set.get_mut(unenforced_id).unwrap().is_enforced = false;
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
 
@@ -399,7 +399,7 @@ fn disabled_and_tripped_breakers_still_record_history() {
     );
 
     assert_eq!(set.history.len(), 2);
-    assert!(!set.breakers.get(&0).unwrap().is_enabled);
+    assert!(!set.breakers.get(&0).unwrap().is_enforced);
     assert!(matches!(
         set.breakers.get(&1).unwrap().status,
         CircuitBreakerStatus::Tripped { .. }
@@ -407,7 +407,7 @@ fn disabled_and_tripped_breakers_still_record_history() {
 }
 
 #[test]
-fn disabled_breaker_can_trip_without_blocking_until_enabled() {
+fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
     set.add(
@@ -418,20 +418,20 @@ fn disabled_breaker_can_trip_without_blocking_until_enabled() {
     )
     .unwrap();
 
-    set.get_mut(id).unwrap().is_enabled = false;
+    set.get_mut(id).unwrap().is_enforced = false;
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     set.evaluate(price(120), Nanoseconds::from_secs(2)).unwrap();
 
     let breaker = set.breakers.get(&0).unwrap();
-    assert!(!breaker.is_enabled);
+    assert!(!breaker.is_enforced);
     assert!(matches!(
         breaker.status,
         CircuitBreakerStatus::Tripped { .. }
     ));
     assert!(!set.is_blocking());
 
-    set.get_mut(id).unwrap().is_enabled = true;
+    set.get_mut(id).unwrap().is_enforced = true;
 
     assert!(set.is_blocking());
     assert_eq!(
@@ -443,7 +443,7 @@ fn disabled_breaker_can_trip_without_blocking_until_enabled() {
 }
 
 #[test]
-fn arm_clears_tripped_status_without_enabling_breaker() {
+fn arm_clears_tripped_status_without_enforcing_breaker() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
     set.add(
@@ -463,12 +463,12 @@ fn arm_clears_tripped_status_without_enabling_breaker() {
     );
     {
         let breaker = set.get_mut(id).unwrap();
-        breaker.is_enabled = false;
+        breaker.is_enforced = false;
         breaker.status = CircuitBreakerStatus::Armed;
     }
 
     let breaker = set.breakers.get(&0).unwrap();
-    assert!(!breaker.is_enabled);
+    assert!(!breaker.is_enforced);
     assert!(matches!(breaker.status, CircuitBreakerStatus::Armed));
     assert!(!set.is_blocking());
 }

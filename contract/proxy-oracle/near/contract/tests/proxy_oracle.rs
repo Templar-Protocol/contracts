@@ -31,7 +31,9 @@ use templar_proxy_oracle_kernel::proxy::{
     FreshnessFilter, Proxy, WeightedSource,
 };
 use templar_proxy_oracle_near_common::{
-    governance::{Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY},
+    governance::{
+        CircuitBreakerUpdate, Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY,
+    },
     input::{ProxyPriceTransformer, Source},
     price_transformer,
     request::OracleRequest,
@@ -615,6 +617,71 @@ fn governance_rejects_too_many_circuit_breakers_on_execute() {
         },
     );
     c.gov_execute(proposal_id);
+}
+
+#[test]
+fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
+    let context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context);
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x45; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy),
+        },
+    );
+    c.gov_execute(0);
+    c.gov_create(
+        1,
+        Operation::AddCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            breaker: CircuitBreaker::StepwiseChange(StepwiseChange {
+                max_relative_change: Decimal::from_str("0.10").unwrap(),
+            }),
+        },
+    );
+    c.gov_execute(1);
+
+    c.gov_create(
+        2,
+        Operation::UpdateCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            update: CircuitBreakerUpdate::SetEnforced { is_enforced: false },
+        },
+    );
+    c.gov_execute(2);
+    let set = c.circuit_breakers.get(&proxy_id).unwrap();
+    let breaker = set.breakers.get(&0).unwrap();
+    assert!(!breaker.is_enforced);
+    assert!(matches!(breaker.status, CircuitBreakerStatus::Armed));
+
+    c.gov_create(
+        3,
+        Operation::UpdateCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            update: CircuitBreakerUpdate::Mute {
+                until_ns: Nanoseconds::from_secs(1),
+            },
+        },
+    );
+    c.gov_execute(3);
+    let set = c.circuit_breakers.get(&proxy_id).unwrap();
+    let breaker = set.breakers.get(&0).unwrap();
+    assert!(!breaker.is_enforced);
+    assert!(matches!(breaker.status, CircuitBreakerStatus::Muted { .. }));
 }
 
 #[allow(clippy::unwrap_used)]

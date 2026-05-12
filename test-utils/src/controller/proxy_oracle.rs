@@ -13,7 +13,7 @@ use templar_proxy_oracle_kernel::proxy::{
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
-    governance::{CircuitBreakerStatusUpdate, Operation},
+    governance::{CircuitBreakerUpdate, Operation},
     input::Source,
     state,
 };
@@ -157,21 +157,21 @@ impl ProxyOracleController {
         self.gov_execute(executor, op_id).await;
     }
 
-    pub async fn set_circuit_breaker_status(
+    pub async fn update_circuit_breaker(
         &self,
         executor: &Account,
         id: PriceIdentifier,
         breaker_id: u32,
-        status: CircuitBreakerStatusUpdate,
+        update: CircuitBreakerUpdate,
     ) {
         let op_id = self.gov_next_id().await;
         self.gov_create(
             executor,
             op_id,
-            Operation::SetCircuitBreakerStatus {
+            Operation::UpdateCircuitBreaker {
                 id,
                 breaker_id,
-                status,
+                update,
             },
         )
         .await;

@@ -5,7 +5,7 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerSet, CircuitBreakerStatus,
 };
 use templar_proxy_oracle_near_common::governance::{
-    CircuitBreakerStatusUpdate, Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY,
+    CircuitBreakerUpdate, Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY,
 };
 
 use crate::{Contract, ContractExt};
@@ -126,27 +126,24 @@ impl ProxyGovernanceInterface for Contract {
                 set.remove(breaker_id).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
             }
-            Operation::SetCircuitBreakerStatus {
+            Operation::UpdateCircuitBreaker {
                 id,
                 breaker_id,
-                status,
+                update,
             } => {
                 let mut set = self
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
                 let breaker = set.get_mut(breaker_id).unwrap_or_reject();
-                match status {
-                    CircuitBreakerStatusUpdate::Enable => {
-                        breaker.is_enabled = true;
+                match update {
+                    CircuitBreakerUpdate::SetEnforced { is_enforced } => {
+                        breaker.is_enforced = is_enforced;
                     }
-                    CircuitBreakerStatusUpdate::Disable => {
-                        breaker.is_enabled = false;
-                    }
-                    CircuitBreakerStatusUpdate::Arm => {
+                    CircuitBreakerUpdate::Arm => {
                         breaker.status = CircuitBreakerStatus::Armed;
                     }
-                    CircuitBreakerStatusUpdate::Mute { until_ns } => {
+                    CircuitBreakerUpdate::Mute { until_ns } => {
                         breaker.status = CircuitBreakerStatus::Muted { until_ns };
                     }
                 }

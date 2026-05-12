@@ -98,11 +98,11 @@ impl OutputStyle for ProposalListOutput {
             let operation_name = match &item.proposal.operation {
                 Operation::SetProxy { .. } => "SetProxy",
                 Operation::SetActionTtl { .. } => "SetActionTtl",
-                Operation::ConfigureCircuitBreakers { .. } => "ConfigBreakers",
-                Operation::SetCircuitBreakerManualTrip { .. } => "SetManualTrip",
-                Operation::AddCircuitBreaker { .. } => "AddBreaker",
-                Operation::RemoveCircuitBreaker { .. } => "RemoveBreaker",
-                Operation::SetCircuitBreakerStatus { .. } => "SetBreaker",
+                Operation::ConfigureCircuitBreakers { .. } => "ConfigureCircuitBreakers",
+                Operation::SetCircuitBreakerManualTrip { .. } => "SetCircuitBreakerManualTrip",
+                Operation::AddCircuitBreaker { .. } => "AddCircuitBreaker",
+                Operation::RemoveCircuitBreaker { .. } => "RemoveCircuitBreaker",
+                Operation::UpdateCircuitBreaker { .. } => "UpdateCircuitBreaker",
             };
 
             let status = if item.executable {
