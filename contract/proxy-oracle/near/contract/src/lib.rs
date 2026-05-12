@@ -15,11 +15,7 @@ use templar_common::{
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{
-    aggregator::method::Error,
-    circuit_breaker::{CircuitBreakerSet, Error as CircuitBreakerError},
-    Proxy, ResolveError,
-};
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::{
     convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::Source,
@@ -233,7 +229,11 @@ impl Contract {
             self.circuit_breakers.insert(&price_id, &set);
 
             if let Err(error) = &result {
-                Self::log_resolve_error(price_id, error);
+                near_sdk::log!(
+                    "Proxy resolve failed price_id={:?} error={}",
+                    price_id,
+                    error
+                );
             }
             let result = result.ok();
 
@@ -244,48 +244,6 @@ impl Contract {
         }
 
         results
-    }
-
-    fn log_resolve_error(price_id: PriceIdentifier, error: &ResolveError) {
-        match error {
-            ResolveError::Aggregation(error) => match error {
-                Error::LengthMismatch { expected, actual }
-                | Error::TooFewValidSources { expected, actual } => {
-                    near_sdk::log!(
-                        "Aggregation error code={:?} expected={} actual={}",
-                        error.code(),
-                        expected,
-                        actual,
-                    );
-                }
-            },
-            ResolveError::CircuitBreaker(error) => match error {
-                CircuitBreakerError::ManuallyTripped => {
-                    near_sdk::log!(
-                        "Circuit breaker manual override blocked price_id={:?} error_code={:?}",
-                        price_id,
-                        error.code(),
-                    );
-                }
-                CircuitBreakerError::Tripped { breaker_ids } => {
-                    near_sdk::log!(
-                        "Circuit breaker blocked price_id={:?} breaker_ids={:?} error_code={:?}",
-                        price_id,
-                        breaker_ids,
-                        error.code(),
-                    );
-                }
-                CircuitBreakerError::BreakerNotFound { .. }
-                | CircuitBreakerError::UnexpectedBreakerId { .. }
-                | CircuitBreakerError::TooManyBreakers => {
-                    near_sdk::log!(
-                        "Circuit breaker error price_id={:?} error_code={:?}",
-                        price_id,
-                        error.code(),
-                    );
-                }
-            },
-        }
     }
 }
 
