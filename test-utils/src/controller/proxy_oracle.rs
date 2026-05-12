@@ -89,13 +89,18 @@ impl ProxyOracleController {
         &self,
         executor: &Account,
         id: PriceIdentifier,
+        breaker_id: u32,
         breaker: CircuitBreaker,
     ) {
         let op_id = self.gov_next_id().await;
         self.gov_create(
             executor,
             op_id,
-            Operation::AddCircuitBreaker { id, breaker },
+            Operation::AddCircuitBreaker {
+                id,
+                breaker_id,
+                breaker,
+            },
         )
         .await;
         self.gov_execute(executor, op_id).await;

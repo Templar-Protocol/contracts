@@ -43,6 +43,11 @@ pub enum Operation {
     },
     AddCircuitBreaker {
         id: PriceIdentifier,
+        /// Expected next breaker ID within the set.
+        ///
+        /// The contract rejects the operation unless this matches the set's current `next_id`,
+        /// keeping breaker IDs explicit while preserving monotonic assignment.
+        breaker_id: u32,
         /// Breaker rule to add to the set.
         ///
         /// Adding a breaker does not implicitly resize retained history. If the set keeps too few

@@ -276,6 +276,7 @@ impl Contract {
                     );
                 }
                 CircuitBreakerError::BreakerNotFound { .. }
+                | CircuitBreakerError::UnexpectedBreakerId { .. }
                 | CircuitBreakerError::TooManyBreakers => {
                     near_sdk::log!(
                         "Circuit breaker error price_id={:?} error_code={:?}",

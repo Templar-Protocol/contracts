@@ -73,12 +73,18 @@ impl CircuitBreakerSet {
         self.is_manually_tripped = is_manually_tripped;
     }
 
-    pub fn add(&mut self, breaker: CircuitBreaker) -> Result<u32, Error> {
-        let breaker_id = self.next_id;
+    pub fn add(&mut self, breaker_id: u32, breaker: CircuitBreaker) -> Result<(), Error> {
+        if breaker_id != self.next_id {
+            return Err(Error::UnexpectedBreakerId {
+                expected: self.next_id,
+                actual: breaker_id,
+            });
+        }
+
         self.next_id = self.next_id.checked_add(1).ok_or(Error::TooManyBreakers)?;
         self.breakers
             .insert(breaker_id, CircuitBreakerState::new(breaker));
-        Ok(breaker_id)
+        Ok(())
     }
 
     pub fn remove(&mut self, breaker_id: u32) -> Result<(), Error> {

@@ -6,7 +6,7 @@ use near_sdk::NearToken;
 use templar_common::governance::Proposal;
 use templar_common::Nanoseconds;
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig},
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
@@ -143,10 +143,13 @@ pub struct AddCircuitBreakerArgs {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
     price_id: CliPriceIdentifier,
-    /// JSON-encoded CircuitBreaker value.
+    /// Expected next breaker ID within the set (auto-fetched if omitted).
+    #[arg(long)]
+    breaker_id: Option<u32>,
+    /// JSON-encoded `CircuitBreaker` value.
     #[arg(long)]
     breaker: Option<String>,
-    /// Path to a JSON file containing CircuitBreaker.
+    /// Path to a JSON file containing `CircuitBreaker`.
     #[arg(long)]
     breaker_file: Option<PathBuf>,
 }
@@ -182,10 +185,10 @@ pub struct CircuitBreakerStatusArgs {
     /// Stable circuit breaker ID within the set.
     #[arg(long)]
     breaker_id: u32,
-    /// JSON-encoded CircuitBreakerStatusUpdate value.
+    /// JSON-encoded `CircuitBreakerStatusUpdate` value.
     #[arg(long)]
     status: Option<String>,
-    /// Path to a JSON file containing CircuitBreakerStatusUpdate.
+    /// Path to a JSON file containing `CircuitBreakerStatusUpdate`.
     #[arg(long)]
     status_file: Option<PathBuf>,
 }
@@ -234,6 +237,41 @@ impl SetTtlArgs {
     }
 }
 
+impl AddCircuitBreakerArgs {
+    async fn operation(
+        &self,
+        ctx: &CliContext,
+        oracle_id: &AccountId,
+    ) -> anyhow::Result<Operation> {
+        let price_id = self.price_id.into();
+        let breaker_id = if let Some(breaker_id) = self.breaker_id {
+            breaker_id
+        } else {
+            let set: Option<CircuitBreakerSet> = near::view(
+                &ctx.near,
+                oracle_id,
+                "get_proxy_circuit_breaker_set",
+                json!({ "id": price_id }),
+            )
+            .await?;
+            let next_id = set.unwrap_or_else(CircuitBreakerSet::empty).next_id;
+            tracing::info!(breaker_id = next_id, "Auto-fetched next breaker ID");
+            next_id
+        };
+        let breaker: CircuitBreaker = serde_json::from_str(&load_text(
+            self.breaker.as_deref(),
+            self.breaker_file.as_deref(),
+            "breaker",
+        )?)?;
+
+        Ok(Operation::AddCircuitBreaker {
+            id: price_id,
+            breaker_id,
+            breaker,
+        })
+    }
+}
+
 impl CreateProposal {
     #[tracing::instrument(skip_all, name = "governance_create", fields(oracle_id = %self.oracle_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
@@ -263,15 +301,7 @@ impl CreateProposal {
                 new_ttl: args.ttl(),
             },
             OperationCommand::AddCircuitBreaker(args) => {
-                let breaker: CircuitBreaker = serde_json::from_str(&load_text(
-                    args.breaker.as_deref(),
-                    args.breaker_file.as_deref(),
-                    "breaker",
-                )?)?;
-                Operation::AddCircuitBreaker {
-                    id: args.price_id.into(),
-                    breaker,
-                }
+                args.operation(ctx, &self.oracle_id).await?
             }
             OperationCommand::CircuitBreakerConfig(args) => Operation::ConfigureCircuitBreakers {
                 id: args.price_id.into(),

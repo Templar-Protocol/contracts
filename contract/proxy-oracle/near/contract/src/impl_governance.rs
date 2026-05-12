@@ -1,7 +1,9 @@
 use near_sdk::{assert_one_yocto, env, near, require};
 use near_sdk_contract_tools::owner::Owner;
 use templar_common::{contract::list, governance::Proposal, Nanoseconds, UnwrapReject};
-use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerStatus;
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
+    CircuitBreakerSet, CircuitBreakerStatus,
+};
 use templar_proxy_oracle_near_common::governance::{
     CircuitBreakerStatusUpdate, Operation, ProxyGovernanceInterface,
 };
@@ -67,10 +69,8 @@ impl ProxyGovernanceInterface for Contract {
                 if let Some(proxy) = proxy {
                     self.proxies.insert(&id, &proxy);
                     if self.circuit_breakers.get(&id).is_none() {
-                        self.circuit_breakers.insert(
-                            &id,
-                            &templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet::empty(),
-                        );
+                        self.circuit_breakers
+                            .insert(&id, &CircuitBreakerSet::empty());
                     }
                 } else {
                     self.proxies.remove(&id);
@@ -82,9 +82,10 @@ impl ProxyGovernanceInterface for Contract {
             }
             Operation::ConfigureCircuitBreakers { id, config } => {
                 require!(self.proxies.get(&id).is_some(), "Proxy not found");
-                let mut set = self.circuit_breakers.get(&id).unwrap_or_else(
-                    templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet::empty,
-                );
+                let mut set = self
+                    .circuit_breakers
+                    .get(&id)
+                    .unwrap_or_else(CircuitBreakerSet::empty);
                 set.set_config(config);
                 self.circuit_breakers.insert(&id, &set);
             }
@@ -93,18 +94,24 @@ impl ProxyGovernanceInterface for Contract {
                 is_manually_tripped,
             } => {
                 require!(self.proxies.get(&id).is_some(), "Proxy not found");
-                let mut set = self.circuit_breakers.get(&id).unwrap_or_else(
-                    templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet::empty,
-                );
+                let mut set = self
+                    .circuit_breakers
+                    .get(&id)
+                    .unwrap_or_else(CircuitBreakerSet::empty);
                 set.set_manual_trip(is_manually_tripped);
                 self.circuit_breakers.insert(&id, &set);
             }
-            Operation::AddCircuitBreaker { id, breaker } => {
+            Operation::AddCircuitBreaker {
+                id,
+                breaker_id,
+                breaker,
+            } => {
                 require!(self.proxies.get(&id).is_some(), "Proxy not found");
-                let mut set = self.circuit_breakers.get(&id).unwrap_or_else(
-                    templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet::empty,
-                );
-                set.add(breaker).unwrap_or_reject();
+                let mut set = self
+                    .circuit_breakers
+                    .get(&id)
+                    .unwrap_or_else(CircuitBreakerSet::empty);
+                set.add(breaker_id, breaker).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
             }
             Operation::RemoveCircuitBreaker { id, breaker_id } => {

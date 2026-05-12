@@ -335,10 +335,14 @@ mod tests {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 2,
         });
-        let breaker_id = circuit_breakers
-            .add(CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: Decimal::from_u8(1) / 10_u8,
-            }))
+        let breaker_id = 0;
+        circuit_breakers
+            .add(
+                breaker_id,
+                CircuitBreaker::StepwiseChange(StepwiseChange {
+                    max_relative_change: Decimal::from_u8(1) / 10_u8,
+                }),
+            )
             .unwrap();
         let now = Nanoseconds::from_secs(1_000);
 
