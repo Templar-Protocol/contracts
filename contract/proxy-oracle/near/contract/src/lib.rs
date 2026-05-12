@@ -267,16 +267,16 @@ impl Contract {
                         error.code(),
                     );
                 }
-                CircuitBreakerError::Tripped { breaker_id } => {
+                CircuitBreakerError::Tripped { breaker_ids } => {
                     near_sdk::log!(
-                        "Circuit breaker blocked price_id={:?} breaker_id={} error_code={:?}",
+                        "Circuit breaker blocked price_id={:?} breaker_ids={:?} error_code={:?}",
                         price_id,
-                        breaker_id,
+                        breaker_ids,
                         error.code(),
                     );
                 }
                 CircuitBreakerError::BreakerNotFound { .. }
-                | CircuitBreakerError::OrderOccupied { .. } => {
+                | CircuitBreakerError::TooManyBreakers => {
                     near_sdk::log!(
                         "Circuit breaker error price_id={:?} error_code={:?}",
                         price_id,

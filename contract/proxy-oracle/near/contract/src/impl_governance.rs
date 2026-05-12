@@ -1,7 +1,10 @@
 use near_sdk::{assert_one_yocto, env, near, require};
 use near_sdk_contract_tools::owner::Owner;
 use templar_common::{contract::list, governance::Proposal, Nanoseconds, UnwrapReject};
-use templar_proxy_oracle_near_common::governance::{Operation, ProxyGovernanceInterface};
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerStatus;
+use templar_proxy_oracle_near_common::governance::{
+    CircuitBreakerStatusUpdate, Operation, ProxyGovernanceInterface,
+};
 
 use crate::{Contract, ContractExt};
 
@@ -96,12 +99,12 @@ impl ProxyGovernanceInterface for Contract {
                 set.set_manual_trip(is_manually_tripped);
                 self.circuit_breakers.insert(&id, &set);
             }
-            Operation::AddCircuitBreaker { id, order, breaker } => {
+            Operation::AddCircuitBreaker { id, breaker } => {
                 require!(self.proxies.get(&id).is_some(), "Proxy not found");
                 let mut set = self.circuit_breakers.get(&id).unwrap_or_else(
                     templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet::empty,
                 );
-                set.add(order, breaker).unwrap_or_reject();
+                set.add(breaker).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
             }
             Operation::RemoveCircuitBreaker { id, breaker_id } => {
@@ -121,7 +124,21 @@ impl ProxyGovernanceInterface for Contract {
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-                set.set_status(breaker_id, status).unwrap_or_reject();
+                let breaker = set.get_mut(breaker_id).unwrap_or_reject();
+                match status {
+                    CircuitBreakerStatusUpdate::Enable => {
+                        breaker.is_enabled = true;
+                    }
+                    CircuitBreakerStatusUpdate::Disable => {
+                        breaker.is_enabled = false;
+                    }
+                    CircuitBreakerStatusUpdate::Arm => {
+                        breaker.status = CircuitBreakerStatus::Armed;
+                    }
+                    CircuitBreakerStatusUpdate::Mute { until_ns } => {
+                        breaker.status = CircuitBreakerStatus::Muted { until_ns };
+                    }
+                }
                 self.circuit_breakers.insert(&id, &set);
             }
         }

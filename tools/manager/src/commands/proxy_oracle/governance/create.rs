@@ -6,10 +6,13 @@ use near_sdk::NearToken;
 use templar_common::governance::Proposal;
 use templar_common::Nanoseconds;
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatusUpdate},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
 };
-use templar_proxy_oracle_near_common::{governance::Operation, input::Source};
+use templar_proxy_oracle_near_common::{
+    governance::{CircuitBreakerStatusUpdate, Operation},
+    input::Source,
+};
 use templar_tools_common::near::{self, Function};
 
 use super::execute::execute_proposal;
@@ -140,9 +143,6 @@ pub struct AddCircuitBreakerArgs {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
     price_id: CliPriceIdentifier,
-    /// Evaluation order. Lower values run first.
-    #[arg(long)]
-    order: u32,
     /// JSON-encoded CircuitBreaker value.
     #[arg(long)]
     breaker: Option<String>,
@@ -270,7 +270,6 @@ impl CreateProposal {
                 )?)?;
                 Operation::AddCircuitBreaker {
                     id: args.price_id.into(),
-                    order: args.order,
                     breaker,
                 }
             }

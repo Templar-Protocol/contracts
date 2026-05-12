@@ -13,7 +13,7 @@ pub use rule::{
     CircuitBreaker, CircuitBreakerRule, MonotonicRun, StepwiseChange, WindowedChangeDelta,
 };
 pub use set::{CircuitBreakerSet, CircuitBreakerSetConfig, CircuitBreakerState};
-pub use status::{CircuitBreakerStatus, CircuitBreakerStatusUpdate};
+pub use status::CircuitBreakerStatus;
 
 #[cfg(test)]
 mod tests;

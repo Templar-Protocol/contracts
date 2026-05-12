@@ -9,12 +9,14 @@ use templar_common::{
     Nanoseconds,
 };
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{
-        CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig, CircuitBreakerStatusUpdate,
-    },
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig},
     Proxy,
 };
-use templar_proxy_oracle_near_common::{governance::Operation, input::Source, state};
+use templar_proxy_oracle_near_common::{
+    governance::{CircuitBreakerStatusUpdate, Operation},
+    input::Source,
+    state,
+};
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
@@ -87,14 +89,13 @@ impl ProxyOracleController {
         &self,
         executor: &Account,
         id: PriceIdentifier,
-        order: u32,
         breaker: CircuitBreaker,
     ) {
         let op_id = self.gov_next_id().await;
         self.gov_create(
             executor,
             op_id,
-            Operation::AddCircuitBreaker { id, order, breaker },
+            Operation::AddCircuitBreaker { id, breaker },
         )
         .await;
         self.gov_execute(executor, op_id).await;

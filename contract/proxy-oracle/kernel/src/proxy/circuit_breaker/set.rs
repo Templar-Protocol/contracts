@@ -1,4 +1,5 @@
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 #[cfg(feature = "schemars")]
 use alloc::borrow::ToOwned;
@@ -8,13 +9,10 @@ use templar_primitives::Nanoseconds;
 
 use crate::Price;
 
-use super::{
-    CircuitBreaker, CircuitBreakerStatus, CircuitBreakerStatusUpdate, Error, Observation,
-    RingBuffer,
-};
+use super::{CircuitBreaker, CircuitBreakerStatus, Error, Observation, RingBuffer};
 
 serialize! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CircuitBreakerSetConfig {
         pub sample_interval_ns: Nanoseconds,
         pub history_len: u32,
@@ -61,49 +59,25 @@ impl CircuitBreakerSet {
         self.is_manually_tripped = is_manually_tripped;
     }
 
-    pub fn add(&mut self, order: u32, breaker: CircuitBreaker) -> Result<u32, Error> {
-        if self.breakers.contains_key(&order) {
-            return Err(Error::OrderOccupied { order });
-        }
-
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+    pub fn add(&mut self, breaker: CircuitBreaker) -> Result<u32, Error> {
+        let breaker_id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).ok_or(Error::TooManyBreakers)?;
         self.breakers
-            .insert(order, CircuitBreakerState::new(id, breaker));
-        Ok(id)
+            .insert(breaker_id, CircuitBreakerState::new(breaker));
+        Ok(breaker_id)
     }
 
     pub fn remove(&mut self, breaker_id: u32) -> Result<(), Error> {
-        let order = self
-            .breakers
-            .iter()
-            .find_map(|(order, breaker)| (breaker.id == breaker_id).then_some(*order))
+        self.breakers
+            .remove(&breaker_id)
             .ok_or(Error::BreakerNotFound { breaker_id })?;
-        self.breakers.remove(&order);
         Ok(())
     }
 
-    pub fn set_status(
-        &mut self,
-        breaker_id: u32,
-        status: CircuitBreakerStatusUpdate,
-    ) -> Result<(), Error> {
-        let breaker = self
-            .breakers
-            .values_mut()
-            .find(|breaker| breaker.id == breaker_id)
-            .ok_or(Error::BreakerNotFound { breaker_id })?;
-
-        match status {
-            CircuitBreakerStatusUpdate::Enable => breaker.is_enabled = true,
-            CircuitBreakerStatusUpdate::Disable => breaker.is_enabled = false,
-            CircuitBreakerStatusUpdate::Arm => breaker.status = CircuitBreakerStatus::Armed,
-            CircuitBreakerStatusUpdate::Mute { until_ns } => {
-                breaker.status = CircuitBreakerStatus::Muted { until_ns };
-            }
-        }
-
-        Ok(())
+    pub fn get_mut(&mut self, breaker_id: u32) -> Result<&mut CircuitBreakerState, Error> {
+        self.breakers
+            .get_mut(&breaker_id)
+            .ok_or(Error::BreakerNotFound { breaker_id })
     }
 
     #[must_use]
@@ -127,9 +101,9 @@ impl CircuitBreakerSet {
             return Err(Error::ManuallyTripped);
         }
 
-        let mut tripped_by = None;
+        let mut breaker_ids = Vec::new();
 
-        for breaker in self.breakers.values_mut() {
+        for (breaker_id, breaker) in &mut self.breakers {
             let can_trip = match breaker.status {
                 CircuitBreakerStatus::Armed => true,
                 CircuitBreakerStatus::Muted { until_ns } if now >= until_ns => {
@@ -147,11 +121,15 @@ impl CircuitBreakerSet {
             }
 
             if breaker.is_blocking() {
-                tripped_by.get_or_insert(breaker.id);
+                breaker_ids.push(*breaker_id);
             }
         }
 
-        tripped_by.map_or(Ok(()), |breaker_id| Err(Error::Tripped { breaker_id }))
+        if breaker_ids.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Tripped { breaker_ids })
+        }
     }
 
     fn should_persist_sample(&self, now: Nanoseconds) -> bool {
@@ -164,7 +142,6 @@ impl CircuitBreakerSet {
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct CircuitBreakerState {
-        pub id: u32,
         pub breaker: CircuitBreaker,
         pub is_enabled: bool,
         pub status: CircuitBreakerStatus,
@@ -173,9 +150,8 @@ serialize! {
 
 impl CircuitBreakerState {
     #[must_use]
-    pub fn new(id: u32, breaker: CircuitBreaker) -> Self {
+    pub fn new(breaker: CircuitBreaker) -> Self {
         Self {
-            id,
             breaker,
             is_enabled: true,
             status: CircuitBreakerStatus::Armed,

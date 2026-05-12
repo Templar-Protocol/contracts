@@ -15,13 +15,3 @@ serialize! {
         Tripped { tripped_at_ns: Nanoseconds, price_update: Observation },
     }
 }
-
-serialize! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum CircuitBreakerStatusUpdate {
-        Enable,
-        Disable,
-        Arm,
-        Mute { until_ns: Nanoseconds },
-    }
-}

@@ -137,7 +137,7 @@ fn set_adds_and_removes_breakers_by_id() {
         max_relative_change: dec("0.10"),
     });
 
-    let id = set.add(0, breaker).unwrap();
+    let id = set.add(breaker).unwrap();
     set.set_config(CircuitBreakerSetConfig {
         sample_interval_ns: Nanoseconds::zero(),
         history_len: 2,
@@ -154,34 +154,41 @@ fn set_adds_and_removes_breakers_by_id() {
 }
 
 #[test]
-fn set_rejects_occupied_order() {
+fn set_adds_breakers_with_auto_incrementing_ids() {
     let mut set = CircuitBreakerSet::empty();
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: dec("0.10"),
     });
-    set.add(0, breaker.clone()).unwrap();
 
-    assert_eq!(set.add(0, breaker), Err(Error::OrderOccupied { order: 0 }));
+    assert_eq!(set.add(breaker.clone()), Ok(0));
+    assert_eq!(set.add(breaker), Ok(1));
+    assert_eq!(set.next_id, 2);
+    assert!(set.breakers.contains_key(&0));
+    assert!(set.breakers.contains_key(&1));
+}
+
+#[test]
+fn set_rejects_add_when_next_id_is_exhausted() {
+    let mut set = CircuitBreakerSet::empty();
+    set.next_id = u32::MAX;
+    let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: dec("0.10"),
+    });
+
+    assert_eq!(set.add(breaker), Err(Error::TooManyBreakers));
 }
 
 #[test]
 fn muted_breaker_records_history_without_tripping() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.01"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.01"),
+        }))
         .unwrap();
-    set.set_status(
-        id,
-        CircuitBreakerStatusUpdate::Mute {
-            until_ns: Nanoseconds::from_secs(10),
-        },
-    )
-    .unwrap();
+    set.get_mut(id).unwrap().status = CircuitBreakerStatus::Muted {
+        until_ns: Nanoseconds::from_secs(10),
+    };
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     set.evaluate(price(200), Nanoseconds::from_secs(2)).unwrap();
@@ -197,22 +204,47 @@ fn muted_breaker_records_history_without_tripping() {
 fn set_returns_tripped_for_new_and_existing_trips() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.10"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }))
         .unwrap();
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     assert_eq!(
         set.evaluate(price(111), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped { breaker_id: id })
+        Err(Error::Tripped {
+            breaker_ids: vec![id]
+        })
     );
     assert_eq!(
         set.evaluate(price(111), Nanoseconds::from_secs(3)),
-        Err(Error::Tripped { breaker_id: id })
+        Err(Error::Tripped {
+            breaker_ids: vec![id]
+        })
+    );
+}
+
+#[test]
+fn set_returns_all_blocking_breaker_ids() {
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    let first_id = set
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }))
+        .unwrap();
+    let second_id = set
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.20"),
+        }))
+        .unwrap();
+
+    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+
+    assert_eq!(
+        set.evaluate(price(150), Nanoseconds::from_secs(2)),
+        Err(Error::Tripped {
+            breaker_ids: vec![first_id, second_id]
+        })
     );
 }
 
@@ -220,18 +252,17 @@ fn set_returns_tripped_for_new_and_existing_trips() {
 fn too_soon_sample_can_trip_without_being_persisted() {
     let mut set = breaker_set(Nanoseconds::from_secs(10), 2);
     let id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.10"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }))
         .unwrap();
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     assert_eq!(
         set.evaluate(price(200), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped { breaker_id: id })
+        Err(Error::Tripped {
+            breaker_ids: vec![id]
+        })
     );
 
     assert_eq!(set.history.len(), 1);
@@ -254,31 +285,24 @@ fn too_soon_sample_can_trip_without_being_persisted() {
 fn disabled_and_tripped_breakers_still_record_history() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
     let disabled_id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.01"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.01"),
+        }))
         .unwrap();
     let tripped_id = set
-        .add(
-            1,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.01"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.01"),
+        }))
         .unwrap();
 
-    set.set_status(disabled_id, CircuitBreakerStatusUpdate::Disable)
-        .unwrap();
+    set.get_mut(disabled_id).unwrap().is_enabled = false;
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
 
     assert_eq!(
         set.evaluate(price(200), Nanoseconds::from_secs(2)),
         Err(Error::Tripped {
-            breaker_id: tripped_id,
+            breaker_ids: vec![tripped_id],
         })
     );
 
@@ -294,16 +318,12 @@ fn disabled_and_tripped_breakers_still_record_history() {
 fn disabled_breaker_can_trip_without_blocking_until_enabled() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.10"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }))
         .unwrap();
 
-    set.set_status(id, CircuitBreakerStatusUpdate::Disable)
-        .unwrap();
+    set.get_mut(id).unwrap().is_enabled = false;
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     set.evaluate(price(120), Nanoseconds::from_secs(2)).unwrap();
@@ -316,13 +336,14 @@ fn disabled_breaker_can_trip_without_blocking_until_enabled() {
     ));
     assert!(!set.is_blocking());
 
-    set.set_status(id, CircuitBreakerStatusUpdate::Enable)
-        .unwrap();
+    set.get_mut(id).unwrap().is_enabled = true;
 
     assert!(set.is_blocking());
     assert_eq!(
         set.evaluate(price(130), Nanoseconds::from_secs(3)),
-        Err(Error::Tripped { breaker_id: id })
+        Err(Error::Tripped {
+            breaker_ids: vec![id]
+        })
     );
 }
 
@@ -330,22 +351,23 @@ fn disabled_breaker_can_trip_without_blocking_until_enabled() {
 fn arm_clears_tripped_status_without_enabling_breaker() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.10"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }))
         .unwrap();
 
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     assert_eq!(
         set.evaluate(price(120), Nanoseconds::from_secs(2)),
-        Err(Error::Tripped { breaker_id: id })
+        Err(Error::Tripped {
+            breaker_ids: vec![id]
+        })
     );
-    set.set_status(id, CircuitBreakerStatusUpdate::Disable)
-        .unwrap();
-    set.set_status(id, CircuitBreakerStatusUpdate::Arm).unwrap();
+    {
+        let breaker = set.get_mut(id).unwrap();
+        breaker.is_enabled = false;
+        breaker.status = CircuitBreakerStatus::Armed;
+    }
 
     let breaker = set.breakers.get(&0).unwrap();
     assert!(!breaker.is_enabled);
@@ -393,18 +415,17 @@ fn set_config_resizes_history_in_place() {
 fn rule_trip_records_causal_price_update() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = set
-        .add(
-            0,
-            CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change: dec("0.01"),
-            }),
-        )
+        .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.01"),
+        }))
         .unwrap();
 
     set.evaluate(price(100), Nanoseconds::from_secs(4)).unwrap();
     assert_eq!(
         set.evaluate(price(200), Nanoseconds::from_secs(5)),
-        Err(Error::Tripped { breaker_id: id })
+        Err(Error::Tripped {
+            breaker_ids: vec![id]
+        })
     );
 
     assert!(matches!(

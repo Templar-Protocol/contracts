@@ -3,11 +3,20 @@ use templar_common::{
     gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, Nanoseconds,
 };
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatusUpdate},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
 };
 
 use crate::input::Source;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum CircuitBreakerStatusUpdate {
+    Enable,
+    Disable,
+    Arm,
+    Mute { until_ns: Nanoseconds },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
@@ -29,7 +38,6 @@ pub enum Operation {
     },
     AddCircuitBreaker {
         id: PriceIdentifier,
-        order: u32,
         breaker: CircuitBreaker,
     },
     RemoveCircuitBreaker {

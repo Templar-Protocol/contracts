@@ -82,7 +82,6 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
         .add_circuit_breaker(
             proxy_oracle.account(),
             proxy_id,
-            0,
             CircuitBreaker::StepwiseChange(StepwiseChange {
                 max_relative_change: Decimal::from_str("0.10").unwrap(),
             }),

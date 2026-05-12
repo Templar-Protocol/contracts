@@ -21,7 +21,7 @@ serialize! {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     Aggregation(aggregator::method::Error),
     CircuitBreaker(circuit_breaker::Error),
@@ -336,12 +336,9 @@ mod tests {
             history_len: 2,
         });
         let breaker_id = circuit_breakers
-            .add(
-                0,
-                CircuitBreaker::StepwiseChange(StepwiseChange {
-                    max_relative_change: Decimal::from_u8(1) / 10_u8,
-                }),
-            )
+            .add(CircuitBreaker::StepwiseChange(StepwiseChange {
+                max_relative_change: Decimal::from_u8(1) / 10_u8,
+            }))
             .unwrap();
         let now = Nanoseconds::from_secs(1_000);
 
@@ -359,8 +356,8 @@ mod tests {
                 now
             ),
             Err(ResolveError::CircuitBreaker(CircuitBreakerError::Tripped {
-                breaker_id: id
-            })) if id == breaker_id
+                breaker_ids
+            })) if breaker_ids == vec![breaker_id]
         ));
         assert!(matches!(
             proxy.resolve(
@@ -369,8 +366,8 @@ mod tests {
                 now
             ),
             Err(ResolveError::CircuitBreaker(CircuitBreakerError::Tripped {
-                breaker_id: id
-            })) if id == breaker_id
+                breaker_ids
+            })) if breaker_ids == vec![breaker_id]
         ));
 
         assert_eq!(circuit_breakers.history.len(), 2);

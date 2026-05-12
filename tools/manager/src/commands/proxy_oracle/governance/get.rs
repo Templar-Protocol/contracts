@@ -117,10 +117,9 @@ impl OutputStyle for Proposal<Operation> {
                 writeln!(out, "    price_id: {id}")?;
                 writeln!(out, "    is_manually_tripped: {is_manually_tripped}")?;
             }
-            Operation::AddCircuitBreaker { id, order, breaker } => {
+            Operation::AddCircuitBreaker { id, breaker } => {
                 writeln!(out, "  AddCircuitBreaker")?;
                 writeln!(out, "    price_id: {id}")?;
-                writeln!(out, "    order: {order}")?;
                 writeln!(out, "    breaker: {breaker:?}")?;
             }
             Operation::RemoveCircuitBreaker { id, breaker_id } => {
