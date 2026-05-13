@@ -8,6 +8,7 @@ pub enum ErrorCode {
     ManuallyTripped = 3,
     BreakerTripped = 4,
     UnexpectedBreakerId = 5,
+    InvalidPrice = 6,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub enum CircuitBreakerError {
     TooManyBreakers,
     BreakerNotFound { breaker_id: u32 },
     UnexpectedBreakerId { expected: u32, actual: u32 },
+    InvalidPrice,
     ManuallyTripped,
     Tripped { breaker_ids: Vec<u32> },
 }
@@ -26,6 +28,7 @@ impl CircuitBreakerError {
             Self::TooManyBreakers => ErrorCode::TooManyBreakers,
             Self::BreakerNotFound { .. } => ErrorCode::BreakerNotFound,
             Self::UnexpectedBreakerId { .. } => ErrorCode::UnexpectedBreakerId,
+            Self::InvalidPrice => ErrorCode::InvalidPrice,
             Self::ManuallyTripped => ErrorCode::ManuallyTripped,
             Self::Tripped { .. } => ErrorCode::BreakerTripped,
         }
@@ -45,6 +48,7 @@ impl core::fmt::Display for CircuitBreakerError {
                     "unexpected circuit breaker ID: expected {expected}, got {actual}"
                 )
             }
+            Self::InvalidPrice => write!(f, "invalid price"),
             Self::ManuallyTripped => write!(f, "circuit breaker manually tripped"),
             Self::Tripped { breaker_ids } => write!(f, "circuit breaker tripped: {breaker_ids:?}"),
         }

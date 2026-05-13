@@ -124,11 +124,11 @@ impl<S> Proxy<S> {
         I: IntoIterator<Item = Option<Price>>,
         I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
     {
-        self.aggregator.aggregate(
-            prices
-                .into_iter()
-                .map(|price| price.filter(|price| self.freshness_filter.accepts(price, now))),
-        )
+        self.aggregator.aggregate(prices.into_iter().map(|price| {
+            price
+                .filter(Price::has_strictly_positive_confidence_interval)
+                .filter(|price| self.freshness_filter.accepts(price, now))
+        }))
     }
 }
 
@@ -187,6 +187,31 @@ mod tests {
         let prices = vec![
             Some(price(1_000_000, 0, 1_000)),
             Some(price(2_000_000, 0, 100)),
+        ];
+
+        let error = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                Nanoseconds::from_secs(1_000),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ResolveError::Aggregation(Error::TooFewValidSources {
+                expected: 2,
+                actual: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn resolve_median_applies_min_sources_after_invalid_price_filtering() {
+        let proxy = median_proxy(FreshnessFilter::new(None, None), 2);
+        let prices = vec![
+            Some(price(1_000_000, 1_000_000, 1_000)),
+            Some(price(2_000_000, 0, 1_000)),
         ];
 
         let error = proxy
@@ -294,6 +319,23 @@ mod tests {
             .resolve(
                 &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
                 prices,
+                Nanoseconds::from_secs(1_000),
+            )
+            .unwrap();
+
+        assert_eq!(result.price, 2_000_000);
+    }
+
+    #[test]
+    fn resolve_priority_skips_invalid_first_source() {
+        let proxy = priority_proxy(FreshnessFilter::new(None, None));
+        let result = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                vec![
+                    Some(price(1_000_000, 1_000_000, 1_000)),
+                    Some(price(2_000_000, 0, 1_000)),
+                ],
                 Nanoseconds::from_secs(1_000),
             )
             .unwrap();

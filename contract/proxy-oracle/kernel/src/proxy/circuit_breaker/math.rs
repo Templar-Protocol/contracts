@@ -49,7 +49,11 @@ pub(super) fn relative_signed_change(first: &Price, last: &Price) -> Option<Sign
 fn relative_abs_change(first: &Price, last: &Price) -> Option<Decimal> {
     let first_abs = first.price.unsigned_abs();
     if first_abs == 0 {
-        return None;
+        return Some(if last.price == 0 {
+            Decimal::ZERO
+        } else {
+            Decimal::MAX
+        });
     }
 
     let last_abs = last.price.unsigned_abs();
@@ -199,7 +203,8 @@ mod tests {
     #[case(price(100, 0), price(110, 0), dec("0.1001"), false)]
     #[case(price(100, 0), price(89, 0), dec("0.10"), true)]
     #[case(price(100, 0), price(-20, 0), dec("1.0"), true)]
-    #[case(price(0, 0), price(100, 0), Decimal::ZERO, false)]
+    #[case(price(0, 0), price(0, 0), Decimal::ZERO, false)]
+    #[case(price(0, 0), price(100, 0), Decimal::ZERO, true)]
     #[case(price(1, -3), price(10, -4), Decimal::ZERO, false)]
     fn relative_abs_change_exceeds_compares_distance_from_one(
         #[case] previous: Price,
@@ -223,7 +228,8 @@ mod tests {
     #[case(price(1, -3), price(10, -4), Some(SignedDecimal::Positive(Decimal::ZERO)))]
     #[case(price(100, 0), price(-20, 0), Some(SignedDecimal::Negative(dec("1.2"))))]
     #[case(price(-100, 0), price(20, 0), Some(SignedDecimal::Positive(dec("1.2"))))]
-    #[case(price(0, 0), price(20, 0), None)]
+    #[case(price(0, 0), price(0, 0), Some(SignedDecimal::Positive(Decimal::ZERO)))]
+    #[case(price(0, 0), price(20, 0), Some(SignedDecimal::Positive(Decimal::MAX)))]
     fn relative_signed_change_keeps_direction(
         #[case] first: Price,
         #[case] last: Price,
@@ -236,7 +242,8 @@ mod tests {
     #[case(price(100, 0), price(120, 0), Some(dec("0.2")))]
     #[case(price(100, 0), price(80, 0), Some(dec("0.2")))]
     #[case(price(100, 0), price(-20, 0), Some(dec("1.2")))]
-    #[case(price(0, 0), price(20, 0), None)]
+    #[case(price(0, 0), price(0, 0), Some(Decimal::ZERO))]
+    #[case(price(0, 0), price(20, 0), Some(Decimal::MAX))]
     fn relative_abs_change_returns_magnitude_only(
         #[case] first: Price,
         #[case] last: Price,

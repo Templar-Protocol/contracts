@@ -19,6 +19,13 @@ serialize! {
     }
 }
 
+impl Price {
+    #[must_use]
+    pub fn has_strictly_positive_confidence_interval(&self) -> bool {
+        u64::try_from(self.price).is_ok_and(|price| price > self.conf)
+    }
+}
+
 // Compare signed decimal mantissas exactly without normalizing through a fixed-width scaled
 // integer. Once sign is handled, compare by decimal magnitude (`digits + exponent`) and only
 // rescale by the difference in mantissa digit counts, which is bounded for `i64` values.
@@ -54,5 +61,35 @@ pub(crate) fn compare_scaled(
         magnitude_order.reverse()
     } else {
         magnitude_order
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use templar_primitives::Nanoseconds;
+
+    use super::*;
+
+    fn price(price: i64, conf: u64) -> Price {
+        Price {
+            price,
+            conf,
+            expo: 0,
+            publish_time_ns: Nanoseconds::zero(),
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(price(1, 0), true)]
+    #[case(price(2, 1), true)]
+    #[case(price(1, 1), false)]
+    #[case(price(1, 2), false)]
+    #[case(price(0, 0), false)]
+    #[case(price(-1, 0), false)]
+    fn validates_strictly_positive_confidence_interval(
+        #[case] price: Price,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(price.has_strictly_positive_confidence_interval(), expected);
     }
 }

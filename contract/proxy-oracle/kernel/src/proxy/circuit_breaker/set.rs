@@ -242,6 +242,10 @@ impl<R: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for CircuitBreakerS
 
 impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
     pub fn evaluate(&mut self, price: Price, now: Nanoseconds) -> Result<(), CircuitBreakerError> {
+        if !price.has_strictly_positive_confidence_interval() {
+            return Err(CircuitBreakerError::InvalidPrice);
+        }
+
         let mut proposed_history = self.0.history.clone();
         let price_update = Observation {
             price,

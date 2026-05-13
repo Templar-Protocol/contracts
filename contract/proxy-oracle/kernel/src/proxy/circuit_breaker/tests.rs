@@ -17,6 +17,15 @@ fn price(value: i64) -> Price {
     price_with_expo(value, 0)
 }
 
+fn price_with_conf(value: i64, conf: u64) -> Price {
+    Price {
+        price: value,
+        conf,
+        expo: 0,
+        publish_time_ns: Nanoseconds::zero(),
+    }
+}
+
 fn price_with_expo(value: i64, expo: i32) -> Price {
     Price {
         price: value,
@@ -113,6 +122,7 @@ fn stepwise_change_trips_above_threshold() {
     };
 
     assert!(breaker.should_trip(&history([100, 111])));
+    assert!(breaker.should_trip(&history([0, 1])));
     assert!(!breaker.should_trip(&history([100, 109])));
 }
 
@@ -141,6 +151,7 @@ fn monotonic_run_trips_on_same_direction_streak() {
     };
 
     assert!(breaker.should_trip(&history([100, 101, 102, 103])));
+    assert!(breaker.should_trip(&history([0, 1, 2, 3])));
     assert!(!breaker.should_trip(&history([100, 101, 100, 101])));
 }
 
@@ -167,6 +178,7 @@ fn windowed_change_delta_compares_current_to_lookback_window() {
     };
 
     assert!(breaker.should_trip(&history([100, 101, 100, 110])));
+    assert!(breaker.should_trip(&history([0, 0, 0, 1])));
 }
 
 #[test]
@@ -261,6 +273,17 @@ fn set_rejects_unexpected_breaker_id() {
             actual: 1
         })
     );
+}
+
+#[test]
+fn set_rejects_invalid_price_without_recording_history() {
+    let mut set = breaker_set(Nanoseconds::zero(), 1);
+
+    assert_eq!(
+        set.evaluate(price_with_conf(1, 1), Nanoseconds::from_secs(1)),
+        Err(CircuitBreakerError::InvalidPrice)
+    );
+    assert!(set.history().is_empty());
 }
 
 fn unchecked_set_with_stale_next_id() -> UncheckedCircuitBreakerSet {
