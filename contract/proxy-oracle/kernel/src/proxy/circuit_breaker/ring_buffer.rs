@@ -96,6 +96,15 @@ impl<T> RingBuffer<T> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.0.entries.clear();
+    }
+
+    #[must_use]
+    pub fn capacity(&self) -> u32 {
+        self.0.capacity
+    }
+
     #[must_use]
     pub fn last(&self) -> Option<&T> {
         self.0.entries.last()

@@ -12,19 +12,31 @@ use crate::input::Source;
 pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
 pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum AcceptedHistoryReset {
+    Keep,
+    Clear,
+    SeedFromObserved,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum CircuitBreakerUpdate {
     /// Controls whether this breaker blocks the feed when tripped.
     ///
-    /// Non-enforced breakers still evaluate and can become tripped; they just do not make the
-    /// containing set block price resolution.
+    /// Non-enforced breakers still evaluate and can become tripped while the set has no existing
+    /// tripped breaker; they just do not make the containing set block price resolution.
     SetEnforced { is_enforced: bool },
     /// Set the absolute timestamp after which the breaker can trip.
     ///
     /// `timestamp_ns = 0` is the canonical immediately-armed value. This does not change
-    /// enforcement.
-    SetArmedAfter { timestamp_ns: Nanoseconds },
+    /// enforcement. The accepted-history reset choice is required so operators explicitly choose
+    /// whether to keep the current baseline, clear it, or seed it from observed history.
+    SetArmedAfter {
+        timestamp_ns: Nanoseconds,
+        accepted_history: AcceptedHistoryReset,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

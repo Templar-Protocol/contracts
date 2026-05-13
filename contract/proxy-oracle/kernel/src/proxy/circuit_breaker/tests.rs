@@ -214,7 +214,8 @@ fn set_adds_and_removes_breakers_by_id() {
 
     assert_eq!(id, 0);
     assert_eq!(set.next_id(), 1);
-    assert_eq!(set.history().as_slice(), &[observation(100)]);
+    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
 
     set.remove(id).unwrap();
 
@@ -283,7 +284,8 @@ fn set_rejects_invalid_price_without_recording_history() {
         set.evaluate(price_with_conf(1, 1), Nanoseconds::from_secs(1)),
         Err(CircuitBreakerError::InvalidPrice)
     );
-    assert!(set.history().is_empty());
+    assert!(set.accepted_history().is_empty());
+    assert!(set.observed_history().is_empty());
 }
 
 fn unchecked_set_with_stale_next_id() -> UncheckedCircuitBreakerSet {
@@ -324,6 +326,21 @@ fn serde_rejects_set_with_stale_next_id() {
     assert!(serde_json::from_slice::<CircuitBreakerSet>(&bytes).is_err());
 }
 
+#[test]
+fn set_rejects_parse_when_history_capacities_differ() {
+    assert_eq!(
+        CircuitBreakerSet::<CircuitBreaker>::try_from(UncheckedCircuitBreakerSet {
+            sample_interval_ns: Nanoseconds::zero(),
+            accepted_history: RingBuffer::new(1),
+            observed_history: RingBuffer::new(2),
+            next_id: 0,
+            is_manually_tripped: false,
+            breakers: BTreeMap::new(),
+        }),
+        Err(CircuitBreakerSetParseError::HistoryCapacityMismatch)
+    );
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn serde_serializes_set_like_unchecked_representation() {
@@ -347,7 +364,8 @@ fn serde_serializes_set_like_unchecked_representation() {
 fn set_rejects_add_when_next_id_is_exhausted() {
     let mut set = CircuitBreakerSet::try_from(UncheckedCircuitBreakerSet {
         sample_interval_ns: Nanoseconds::zero(),
-        history: RingBuffer::new(0),
+        accepted_history: RingBuffer::new(0),
+        observed_history: RingBuffer::new(0),
         next_id: u32::MAX,
         is_manually_tripped: false,
         breakers: BTreeMap::new(),
@@ -381,7 +399,8 @@ fn future_armed_breaker_records_history_without_tripping() {
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     set.evaluate(price(200), Nanoseconds::from_secs(2)).unwrap();
 
-    assert_eq!(set.history().len(), 2);
+    assert_eq!(set.accepted_history().len(), 2);
+    assert_eq!(set.observed_history().len(), 2);
     assert!(matches!(
         set.breakers().get(&0).unwrap().status,
         CircuitBreakerStatus::ArmedAfter { .. }
@@ -412,6 +431,15 @@ fn set_returns_tripped_for_new_and_existing_trips() {
         Err(CircuitBreakerError::Tripped {
             breaker_ids: vec![id]
         })
+    );
+    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(
+        set.observed_history()
+            .as_slice()
+            .iter()
+            .map(|observation| observation.price.price)
+            .collect::<Vec<_>>(),
+        vec![111, 111]
     );
 }
 
@@ -465,10 +493,12 @@ fn too_soon_sample_can_trip_without_being_persisted() {
         })
     );
 
-    assert_eq!(set.history().len(), 1);
-    assert_eq!(set.history().as_slice()[0].price, price(100));
+    assert_eq!(set.accepted_history().len(), 1);
+    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.observed_history().len(), 1);
+    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
     assert_eq!(
-        set.history().as_slice()[0].observed_at_ns,
+        set.accepted_history().as_slice()[0].observed_at_ns,
         Nanoseconds::from_secs(1)
     );
     let breaker = set.breakers().get(&0).unwrap();
@@ -512,7 +542,8 @@ fn unenforced_and_tripped_breakers_still_record_history() {
         })
     );
 
-    assert_eq!(set.history().len(), 2);
+    assert_eq!(set.accepted_history().len(), 1);
+    assert_eq!(set.observed_history().len(), 2);
     assert!(!set.breakers().get(&0).unwrap().is_enforced);
     assert!(matches!(
         set.breakers().get(&1).unwrap().status,
@@ -596,13 +627,50 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
 
 #[test]
 fn manual_trip_override_blocks_set_without_tripping_breaker() {
-    let mut set = CircuitBreakerSet::<CircuitBreaker>::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     set.set_manual_trip(true);
 
     assert!(set.is_blocking());
     assert_eq!(
         set.evaluate(price(100), Nanoseconds::from_secs(5)),
         Err(CircuitBreakerError::ManuallyTripped)
+    );
+    assert!(set.accepted_history().is_empty());
+    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
+}
+
+#[test]
+fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
+    let mut set = breaker_set(Nanoseconds::zero(), 3);
+
+    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.set_manual_trip(true);
+    assert_eq!(
+        set.evaluate(price(200), Nanoseconds::from_secs(2)),
+        Err(CircuitBreakerError::ManuallyTripped)
+    );
+
+    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(
+        set.observed_history()
+            .as_slice()
+            .iter()
+            .map(|observation| observation.price.price)
+            .collect::<Vec<_>>(),
+        vec![100, 200]
+    );
+
+    set.clear_accepted_history();
+    assert!(set.accepted_history().is_empty());
+
+    set.seed_accepted_history_from_observed();
+    assert_eq!(
+        set.accepted_history()
+            .as_slice()
+            .iter()
+            .map(|observation| observation.price.price)
+            .collect::<Vec<_>>(),
+        vec![100, 200]
     );
 }
 
@@ -621,7 +689,15 @@ fn set_config_resizes_history_in_place() {
 
     assert_eq!(set.sample_interval_ns(), Nanoseconds::from_secs(10));
     assert_eq!(
-        set.history()
+        set.accepted_history()
+            .as_slice()
+            .iter()
+            .map(|observation| observation.price.price)
+            .collect::<Vec<_>>(),
+        vec![200, 300]
+    );
+    assert_eq!(
+        set.observed_history()
             .as_slice()
             .iter()
             .map(|observation| observation.price.price)

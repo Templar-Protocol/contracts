@@ -32,7 +32,8 @@ use templar_proxy_oracle_kernel::proxy::{
 };
 use templar_proxy_oracle_near_common::{
     governance::{
-        CircuitBreakerUpdate, Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY,
+        AcceptedHistoryReset, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
+        MAX_CIRCUIT_BREAKERS_PER_PROXY,
     },
     input::{ProxyPriceTransformer, Source},
     price_transformer,
@@ -168,9 +169,11 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
         .get_proxy_circuit_breaker_set(proxy_id)
         .await
         .unwrap();
-    assert_eq!(set.history().len(), 2);
-    assert_eq!(set.history().as_slice()[0].price.price, 120);
-    assert_eq!(set.history().as_slice()[1].price.price, 130);
+    assert_eq!(set.accepted_history().len(), 1);
+    assert_eq!(set.accepted_history().as_slice()[0].price.price, 100);
+    assert_eq!(set.observed_history().len(), 2);
+    assert_eq!(set.observed_history().as_slice()[0].price.price, 120);
+    assert_eq!(set.observed_history().as_slice()[1].price.price, 130);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -679,6 +682,7 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
             breaker_id: 0,
             update: CircuitBreakerUpdate::SetArmedAfter {
                 timestamp_ns: Nanoseconds::from_secs(1),
+                accepted_history: AcceptedHistoryReset::Clear,
             },
         },
     );

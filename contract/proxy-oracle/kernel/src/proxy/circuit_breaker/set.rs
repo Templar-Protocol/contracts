@@ -1,12 +1,12 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-#[cfg(feature = "schemars")]
-use alloc::borrow::ToOwned;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::format;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::string::ToString;
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
 use templar_primitives::Nanoseconds;
 
 use crate::Price;
@@ -22,14 +22,14 @@ serialize! {
     pub struct CircuitBreakerSetConfig {
         /// Minimum elapsed time between persisted observations.
         ///
-        /// A value of zero persists every resolved proxy price. Rules still evaluate every
-        /// observation against the proposed history regardless of whether the sample is persisted.
+        /// A value of zero persists every resolved proxy price. Rules evaluate sampled candidates
+        /// against proposed accepted history unless the set is already manually or breaker-tripped.
         pub sample_interval_ns: Nanoseconds,
         /// Maximum number of observations retained by the set.
         ///
         /// A value of zero is a coherent no-op history configuration: observations are not
         /// retained, so breakers that need prior samples cannot trip until history capacity is
-        /// raised and enough observations have accumulated.
+        /// raised and enough accepted observations have accumulated.
         pub history_len: u32,
     }
 }
@@ -38,7 +38,8 @@ serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct UncheckedCircuitBreakerSet<R = CircuitBreaker> {
         pub sample_interval_ns: Nanoseconds,
-        pub history: RingBuffer<Observation>,
+        pub accepted_history: RingBuffer<Observation>,
+        pub observed_history: RingBuffer<Observation>,
         pub next_id: u32,
         pub is_manually_tripped: bool,
         pub breakers: BTreeMap<u32, CircuitBreakerState<R>>,
@@ -72,12 +73,16 @@ pub struct CircuitBreakerSet<R = CircuitBreaker>(UncheckedCircuitBreakerSet<R>);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitBreakerSetParseError {
     BreakerIdOutOfRange,
+    HistoryCapacityMismatch,
 }
 
 impl core::fmt::Display for CircuitBreakerSetParseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::BreakerIdOutOfRange => write!(f, "circuit breaker ID is out of range"),
+            Self::HistoryCapacityMismatch => {
+                write!(f, "circuit breaker histories have mismatched capacities")
+            }
         }
     }
 }
@@ -93,6 +98,9 @@ impl<R> TryFrom<UncheckedCircuitBreakerSet<R>> for CircuitBreakerSet<R> {
             .is_some_and(|breaker_id| *breaker_id >= value.next_id)
         {
             return Err(CircuitBreakerSetParseError::BreakerIdOutOfRange);
+        }
+        if value.accepted_history.capacity() != value.observed_history.capacity() {
+            return Err(CircuitBreakerSetParseError::HistoryCapacityMismatch);
         }
         Ok(Self(value))
     }
@@ -121,7 +129,8 @@ impl<R> CircuitBreakerSet<R> {
     pub fn new(config: CircuitBreakerSetConfig) -> Self {
         Self(UncheckedCircuitBreakerSet {
             sample_interval_ns: config.sample_interval_ns,
-            history: RingBuffer::new(config.history_len),
+            accepted_history: RingBuffer::new(config.history_len),
+            observed_history: RingBuffer::new(config.history_len),
             next_id: 0,
             is_manually_tripped: false,
             breakers: BTreeMap::new(),
@@ -130,7 +139,8 @@ impl<R> CircuitBreakerSet<R> {
 
     pub fn set_config(&mut self, config: CircuitBreakerSetConfig) {
         self.0.sample_interval_ns = config.sample_interval_ns;
-        self.0.history.set_capacity(config.history_len);
+        self.0.accepted_history.set_capacity(config.history_len);
+        self.0.observed_history.set_capacity(config.history_len);
     }
 
     pub fn set_manual_trip(&mut self, is_manually_tripped: bool) {
@@ -180,8 +190,21 @@ impl<R> CircuitBreakerSet<R> {
     }
 
     #[must_use]
-    pub fn history(&self) -> &RingBuffer<Observation> {
-        &self.0.history
+    pub fn accepted_history(&self) -> &RingBuffer<Observation> {
+        &self.0.accepted_history
+    }
+
+    #[must_use]
+    pub fn observed_history(&self) -> &RingBuffer<Observation> {
+        &self.0.observed_history
+    }
+
+    pub fn clear_accepted_history(&mut self) {
+        self.0.accepted_history.clear();
+    }
+
+    pub fn seed_accepted_history_from_observed(&mut self) {
+        self.0.accepted_history = self.0.observed_history.clone();
     }
 
     #[must_use]
@@ -216,7 +239,7 @@ impl<R> CircuitBreakerSet<R> {
 
     fn should_persist_sample(&self, now: Nanoseconds) -> bool {
         self.0
-            .history
+            .observed_history
             .last()
             .is_none_or(|last| now.saturating_sub(last.observed_at_ns) >= self.0.sample_interval_ns)
     }
@@ -246,15 +269,16 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             return Err(CircuitBreakerError::InvalidPrice);
         }
 
-        let mut proposed_history = self.0.history.clone();
+        let mut proposed_accepted_history = self.0.accepted_history.clone();
         let price_update = Observation {
             price,
             observed_at_ns: now,
         };
-        proposed_history.push(price_update);
+        proposed_accepted_history.push(price_update);
 
-        if self.should_persist_sample(now) {
-            self.0.history = proposed_history.clone();
+        let should_persist_sample = self.should_persist_sample(now);
+        if should_persist_sample {
+            self.0.observed_history.push(price_update);
         }
 
         if self.0.is_manually_tripped {
@@ -263,13 +287,31 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
 
         let mut breaker_ids = Vec::new();
 
+        let has_tripped_breaker = self
+            .0
+            .breakers
+            .values()
+            .any(|breaker| matches!(breaker.status, CircuitBreakerStatus::Tripped { .. }));
+        if has_tripped_breaker {
+            for (breaker_id, breaker) in &self.0.breakers {
+                if breaker.is_blocking() {
+                    breaker_ids.push(*breaker_id);
+                }
+            }
+            return if breaker_ids.is_empty() {
+                Ok(())
+            } else {
+                Err(CircuitBreakerError::Tripped { breaker_ids })
+            };
+        }
+
         for (breaker_id, breaker) in &mut self.0.breakers {
             let can_trip = match breaker.status {
                 CircuitBreakerStatus::ArmedAfter { timestamp_ns } => now >= timestamp_ns,
                 CircuitBreakerStatus::Tripped { .. } => false,
             };
 
-            if can_trip && breaker.breaker.should_trip(&proposed_history) {
+            if can_trip && breaker.breaker.should_trip(&proposed_accepted_history) {
                 breaker.status = CircuitBreakerStatus::Tripped {
                     tripped_at_ns: now,
                     price_update,
@@ -282,6 +324,9 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         }
 
         if breaker_ids.is_empty() {
+            if should_persist_sample {
+                self.0.accepted_history = proposed_accepted_history;
+            }
             Ok(())
         } else {
             Err(CircuitBreakerError::Tripped { breaker_ids })

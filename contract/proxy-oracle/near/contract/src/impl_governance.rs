@@ -5,7 +5,8 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerSet, CircuitBreakerStatus,
 };
 use templar_proxy_oracle_near_common::governance::{
-    CircuitBreakerUpdate, Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY,
+    AcceptedHistoryReset, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
+    MAX_CIRCUIT_BREAKERS_PER_PROXY,
 };
 
 use crate::{Contract, ContractExt};
@@ -135,13 +136,24 @@ impl ProxyGovernanceInterface for Contract {
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-                let breaker = set.get_mut(breaker_id).unwrap_or_reject();
                 match update {
                     CircuitBreakerUpdate::SetEnforced { is_enforced } => {
+                        let breaker = set.get_mut(breaker_id).unwrap_or_reject();
                         breaker.is_enforced = is_enforced;
                     }
-                    CircuitBreakerUpdate::SetArmedAfter { timestamp_ns } => {
+                    CircuitBreakerUpdate::SetArmedAfter {
+                        timestamp_ns,
+                        accepted_history,
+                    } => {
+                        let breaker = set.get_mut(breaker_id).unwrap_or_reject();
                         breaker.status = CircuitBreakerStatus::ArmedAfter { timestamp_ns };
+                        match accepted_history {
+                            AcceptedHistoryReset::Keep => {}
+                            AcceptedHistoryReset::Clear => set.clear_accepted_history(),
+                            AcceptedHistoryReset::SeedFromObserved => {
+                                set.seed_accepted_history_from_observed();
+                            }
+                        }
                     }
                 }
                 self.circuit_breakers.insert(&id, &set);
