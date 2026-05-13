@@ -162,17 +162,35 @@ impl OracleFetcher {
         self.proxy_oracle_cache.clone()
     }
 
-    /// Detects whether an oracle is a proxy oracle by checking if its account
-    /// name starts with `proxy-oracle-`. Proxy oracles are deployed via the
-    /// registry with this naming convention.
+    /// Detects whether an oracle is a proxy oracle by probing its view interface.
     pub async fn detect_and_register_proxy_oracle(&self, oracle: &AccountId) {
-        if oracle.as_str().starts_with("proxy-oracle-")
-            && self.proxy_oracle_cache.write().await.insert(oracle.clone())
+        if let Err(error) = self.is_proxy_oracle(oracle).await {
+            tracing::warn!(%oracle, %error, "Failed to detect proxy oracle interface");
+        }
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn is_proxy_oracle(&self, oracle: &AccountId) -> LiquidatorResult<bool> {
+        if self.proxy_oracle_cache.read().await.contains(oracle) {
+            return Ok(true);
+        }
+
+        match view::<Vec<PriceIdentifier>>(
+            &self.client,
+            oracle.clone(),
+            "list_proxies",
+            json!({ "count": 1 }),
+        )
+        .await
         {
-            tracing::info!(
-                oracle = %oracle,
-                "Registered proxy oracle"
-            );
+            Ok(_) => {
+                if self.proxy_oracle_cache.write().await.insert(oracle.clone()) {
+                    tracing::info!(%oracle, "Registered proxy oracle");
+                }
+                Ok(true)
+            }
+            Err(error) if error.is_method_not_found() => Ok(false),
+            Err(error) => Err(LiquidatorError::PriceFetchError(error)),
         }
     }
 
@@ -591,6 +609,12 @@ impl OracleFetcher {
         price_ids: &[PriceIdentifier],
         age: u32,
     ) -> LiquidatorResult<OracleResponse> {
+        // Check proxy interface first so protected proxy feeds cannot be bypassed by cache misses
+        // or nonstandard account naming.
+        if self.is_proxy_oracle(&oracle).await? {
+            return self.get_proxy_oracle_prices(oracle, price_ids, age).await;
+        }
+
         // Check if this is an LST oracle upfront
         if let Some(underlying_oracle) = self.is_lst_oracle(&oracle).await? {
             tracing::debug!(
@@ -601,11 +625,6 @@ impl OracleFetcher {
             return self
                 .get_oracle_prices_with_transformers(oracle, price_ids, age, underlying_oracle)
                 .await;
-        }
-
-        // Check if this is a cached proxy oracle
-        if self.proxy_oracle_cache.read().await.contains(&oracle) {
-            return self.get_proxy_oracle_prices(oracle, price_ids, age).await;
         }
 
         // Standard Pyth oracle — fetch from Hermes HTTP API
@@ -791,7 +810,7 @@ impl OracleFetcher {
                 continue;
             };
 
-            let mut set: CircuitBreakerSet = view::<Option<CircuitBreakerSet>>(
+            let Some(mut set) = view::<Option<CircuitBreakerSet>>(
                 &self.client,
                 proxy_oracle.clone(),
                 "get_proxy_circuit_breaker_set",
@@ -799,7 +818,15 @@ impl OracleFetcher {
             )
             .await
             .map_err(LiquidatorError::PriceFetchError)?
-            .unwrap_or_else(CircuitBreakerSet::empty);
+            else {
+                tracing::error!(
+                    oracle = %proxy_oracle,
+                    price_id = ?price_id,
+                    "Proxy configuration exists without circuit breaker set"
+                );
+                result.insert(price_id, None);
+                continue;
+            };
 
             if set.is_blocking() {
                 tracing::warn!(

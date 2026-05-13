@@ -14,10 +14,11 @@ pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub enum AcceptedHistoryReset {
-    Keep,
-    Clear,
-    SeedFromObserved,
+pub enum AcceptedHistorySource {
+    /// Re-arm with empty accepted history.
+    Empty,
+    /// Re-arm by copying observed history into accepted history.
+    Observed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,16 +27,16 @@ pub enum CircuitBreakerUpdate {
     /// Controls whether this breaker blocks the feed when tripped.
     ///
     /// Non-enforced breakers still evaluate and can become tripped while the set has no existing
-    /// tripped breaker; they just do not make the containing set block price resolution.
+    /// blocking trip; they just do not make the containing set block price resolution.
     SetEnforced { is_enforced: bool },
-    /// Set the absolute timestamp after which the breaker can trip.
+    /// Re-arm the breaker at an absolute timestamp.
     ///
-    /// `timestamp_ns = 0` is the canonical immediately-armed value. This does not change
-    /// enforcement. The accepted-history reset choice is required so operators explicitly choose
-    /// whether to keep the current baseline, clear it, or seed it from observed history.
-    SetArmedAfter {
-        timestamp_ns: Nanoseconds,
-        accepted_history: AcceptedHistoryReset,
+    /// `armed_after_ns = 0` is the canonical immediately-armed value. This does not change
+    /// enforcement. Operators must explicitly choose whether accepted history starts empty or from
+    /// observed history collected during the incident.
+    Rearm {
+        armed_after_ns: Nanoseconds,
+        accepted_history_source: AcceptedHistorySource,
     },
 }
 

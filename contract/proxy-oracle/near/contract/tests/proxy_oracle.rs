@@ -22,17 +22,20 @@ use templar_common::{
     },
     primitive_types, Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{
-    aggregator::{method::median::MedianLow, Aggregator},
-    circuit_breaker::{
-        CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, MonotonicRun,
-        StepwiseChange, WindowedChangeDelta,
+use templar_proxy_oracle_kernel::{
+    proxy::{
+        aggregator::{method::median::MedianLow, Aggregator},
+        circuit_breaker::{
+            CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, MonotonicRun,
+            StepwiseChange, WindowedChangeDelta,
+        },
+        FreshnessFilter, Proxy, WeightedSource,
     },
-    FreshnessFilter, Proxy, WeightedSource,
+    Price,
 };
 use templar_proxy_oracle_near_common::{
     governance::{
-        AcceptedHistoryReset, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
+        AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
         MAX_CIRCUIT_BREAKERS_PER_PROXY,
     },
     input::{ProxyPriceTransformer, Source},
@@ -54,6 +57,15 @@ fn norm_price(price: &pyth::Price) -> u64 {
         p / f
     } else {
         p * f
+    }
+}
+
+fn proxy_price(value: i64) -> Price {
+    Price {
+        price: value,
+        conf: 0,
+        expo: 0,
+        publish_time_ns: Nanoseconds::zero(),
     }
 }
 
@@ -656,6 +668,22 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     );
     c.gov_execute(1);
 
+    {
+        let mut set = c.circuit_breakers.get(&proxy_id).unwrap();
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
+        });
+        set.evaluate(proxy_price(100), Nanoseconds::from_secs(1))
+            .unwrap();
+        set.set_manual_trip(true);
+        assert!(set
+            .evaluate(proxy_price(200), Nanoseconds::from_secs(2))
+            .is_err());
+        set.set_manual_trip(false);
+        c.circuit_breakers.insert(&proxy_id, &set);
+    }
+
     c.gov_create(
         2,
         Operation::UpdateCircuitBreaker {
@@ -680,21 +708,47 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
         Operation::UpdateCircuitBreaker {
             id: proxy_id,
             breaker_id: 0,
-            update: CircuitBreakerUpdate::SetArmedAfter {
-                timestamp_ns: Nanoseconds::from_secs(1),
-                accepted_history: AcceptedHistoryReset::Clear,
+            update: CircuitBreakerUpdate::Rearm {
+                armed_after_ns: Nanoseconds::from_secs(1),
+                accepted_history_source: AcceptedHistorySource::Empty,
             },
         },
     );
     c.gov_execute(3);
     let set = c.circuit_breakers.get(&proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
+    assert_eq!(set.accepted_history().len(), 0);
     assert!(!breaker.is_enforced);
     assert!(matches!(
         breaker.status,
         CircuitBreakerStatus::ArmedAfter {
             timestamp_ns
         } if timestamp_ns == Nanoseconds::from_secs(1)
+    ));
+
+    c.gov_create(
+        4,
+        Operation::UpdateCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            update: CircuitBreakerUpdate::Rearm {
+                armed_after_ns: Nanoseconds::from_secs(2),
+                accepted_history_source: AcceptedHistorySource::Observed,
+            },
+        },
+    );
+    c.gov_execute(4);
+    let set = c.circuit_breakers.get(&proxy_id).unwrap();
+    let breaker = set.breakers().get(&0).unwrap();
+    assert_eq!(set.accepted_history().len(), 2);
+    assert_eq!(set.accepted_history().as_slice()[0].price.price, 100);
+    assert_eq!(set.accepted_history().as_slice()[1].price.price, 200);
+    assert!(!breaker.is_enforced);
+    assert!(matches!(
+        breaker.status,
+        CircuitBreakerStatus::ArmedAfter {
+            timestamp_ns
+        } if timestamp_ns == Nanoseconds::from_secs(2)
     ));
 }
 

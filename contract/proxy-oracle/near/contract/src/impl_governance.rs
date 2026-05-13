@@ -5,7 +5,7 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerSet, CircuitBreakerStatus,
 };
 use templar_proxy_oracle_near_common::governance::{
-    AcceptedHistoryReset, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
+    AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
     MAX_CIRCUIT_BREAKERS_PER_PROXY,
 };
 
@@ -141,16 +141,17 @@ impl ProxyGovernanceInterface for Contract {
                         let breaker = set.get_mut(breaker_id).unwrap_or_reject();
                         breaker.is_enforced = is_enforced;
                     }
-                    CircuitBreakerUpdate::SetArmedAfter {
-                        timestamp_ns,
-                        accepted_history,
+                    CircuitBreakerUpdate::Rearm {
+                        armed_after_ns,
+                        accepted_history_source,
                     } => {
                         let breaker = set.get_mut(breaker_id).unwrap_or_reject();
-                        breaker.status = CircuitBreakerStatus::ArmedAfter { timestamp_ns };
-                        match accepted_history {
-                            AcceptedHistoryReset::Keep => {}
-                            AcceptedHistoryReset::Clear => set.clear_accepted_history(),
-                            AcceptedHistoryReset::SeedFromObserved => {
+                        breaker.status = CircuitBreakerStatus::ArmedAfter {
+                            timestamp_ns: armed_after_ns,
+                        };
+                        match accepted_history_source {
+                            AcceptedHistorySource::Empty => set.clear_accepted_history(),
+                            AcceptedHistorySource::Observed => {
                                 set.seed_accepted_history_from_observed();
                             }
                         }

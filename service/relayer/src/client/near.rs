@@ -804,10 +804,17 @@ impl Near {
             return Ok(None);
         };
 
-        let mut circuit_breakers = self
+        let Some(mut circuit_breakers) = self
             .get_proxy_circuit_breaker_set(oracle_id.clone(), price_identifier)
             .await?
-            .unwrap_or_else(CircuitBreakerSet::empty);
+        else {
+            tracing::error!(
+                %oracle_id,
+                %price_identifier,
+                "proxy exists without circuit breaker set"
+            );
+            return Ok(None);
+        };
         if circuit_breakers.is_blocking() {
             tracing::debug!(%oracle_id, %price_identifier, "proxy circuit breaker is tripped");
             return Ok(None);

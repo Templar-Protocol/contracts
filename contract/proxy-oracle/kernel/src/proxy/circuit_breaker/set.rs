@@ -1,12 +1,13 @@
 use alloc::collections::BTreeMap;
+use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(feature = "schemars")]
+use alloc::borrow::ToOwned;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::format;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::string::ToString;
-#[cfg(feature = "schemars")]
-use alloc::borrow::ToOwned;
 use templar_primitives::Nanoseconds;
 
 use crate::Price;
@@ -285,33 +286,28 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             return Err(CircuitBreakerError::ManuallyTripped);
         }
 
-        let mut breaker_ids = Vec::new();
-
-        let has_tripped_breaker = self
+        let tripped_breaker_ids: Vec<_> = self
             .0
             .breakers
-            .values()
-            .any(|breaker| matches!(breaker.status, CircuitBreakerStatus::Tripped { .. }));
-        if has_tripped_breaker {
-            for (breaker_id, breaker) in &self.0.breakers {
-                if breaker.is_blocking() {
-                    breaker_ids.push(*breaker_id);
-                }
-            }
-            return if breaker_ids.is_empty() {
-                Ok(())
-            } else {
-                Err(CircuitBreakerError::Tripped { breaker_ids })
-            };
+            .iter()
+            .filter_map(|(id, breaker)| breaker.is_blocking().then_some(*id))
+            .collect();
+
+        // Short-circuit in the case of already-blocking breakers: do not update
+        // accepted_history or test untripped breakers against a stale accepted_history.
+        if !tripped_breaker_ids.is_empty() {
+            return Err(CircuitBreakerError::BreakerTripped {
+                tripped_breaker_ids,
+            });
         }
 
         for (breaker_id, breaker) in &mut self.0.breakers {
-            let can_trip = match breaker.status {
-                CircuitBreakerStatus::ArmedAfter { timestamp_ns } => now >= timestamp_ns,
-                CircuitBreakerStatus::Tripped { .. } => false,
-            };
+            match breaker.status {
+                CircuitBreakerStatus::ArmedAfter { timestamp_ns } if now >= timestamp_ns => {}
+                _ => continue,
+            }
 
-            if can_trip && breaker.breaker.should_trip(&proposed_accepted_history) {
+            if breaker.breaker.should_trip(&proposed_accepted_history) {
                 breaker.status = CircuitBreakerStatus::Tripped {
                     tripped_at_ns: now,
                     price_update,
@@ -319,18 +315,16 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             }
 
             if breaker.is_blocking() {
-                breaker_ids.push(*breaker_id);
+                return Err(CircuitBreakerError::BreakerTripped {
+                    tripped_breaker_ids: vec![*breaker_id],
+                });
             }
         }
 
-        if breaker_ids.is_empty() {
-            if should_persist_sample {
-                self.0.accepted_history = proposed_accepted_history;
-            }
-            Ok(())
-        } else {
-            Err(CircuitBreakerError::Tripped { breaker_ids })
+        if should_persist_sample {
+            self.0.accepted_history = proposed_accepted_history;
         }
+        Ok(())
     }
 }
 

@@ -409,9 +409,9 @@ mod tests {
                 [Some(price(120, 0, 1_000)), None],
                 now
             ),
-            Err(ResolveError::CircuitBreaker(CircuitBreakerError::Tripped {
-                breaker_ids
-            })) if breaker_ids == vec![breaker_id]
+            Err(ResolveError::CircuitBreaker(CircuitBreakerError::BreakerTripped {
+                tripped_breaker_ids
+            })) if tripped_breaker_ids == vec![breaker_id]
         ));
         assert!(matches!(
             proxy.resolve(
@@ -419,9 +419,9 @@ mod tests {
                 [Some(price(130, 0, 1_000)), None],
                 now
             ),
-            Err(ResolveError::CircuitBreaker(CircuitBreakerError::Tripped {
-                breaker_ids
-            })) if breaker_ids == vec![breaker_id]
+            Err(ResolveError::CircuitBreaker(CircuitBreakerError::BreakerTripped {
+                tripped_breaker_ids
+            })) if tripped_breaker_ids == vec![breaker_id]
         ));
 
         assert_eq!(circuit_breakers.accepted_history().len(), 1);
