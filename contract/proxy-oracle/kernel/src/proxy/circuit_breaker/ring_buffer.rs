@@ -5,66 +5,138 @@ use alloc::{format, string::ToString};
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct RingBuffer<T> {
-        capacity: u32,
-        entries: Vec<T>,
+    pub struct UncheckedRingBuffer<T> {
+        pub capacity: u32,
+        pub entries: Vec<T>,
+    }
+}
+
+#[cfg_attr(
+    feature = "serde",
+    derive(::serde::Deserialize, ::serde::Serialize),
+    serde(
+        try_from = "UncheckedRingBuffer<T>",
+        into = "UncheckedRingBuffer<T>",
+        bound(
+            serialize = "T: Clone + ::serde::Serialize",
+            deserialize = "T: ::serde::Deserialize<'de>"
+        )
+    )
+)]
+#[cfg_attr(
+    feature = "schemars",
+    derive(::schemars::JsonSchema),
+    schemars(transparent)
+)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(::borsh::BorshSerialize, ::borsh::BorshSchema)
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RingBuffer<T>(UncheckedRingBuffer<T>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingBufferParseError {
+    EntriesExceedCapacity,
+}
+
+impl core::fmt::Display for RingBufferParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EntriesExceedCapacity => write!(f, "entries exceed ring buffer capacity"),
+        }
+    }
+}
+
+impl<T> TryFrom<UncheckedRingBuffer<T>> for RingBuffer<T> {
+    type Error = RingBufferParseError;
+
+    fn try_from(value: UncheckedRingBuffer<T>) -> Result<Self, Self::Error> {
+        if value.entries.len() > value.capacity as usize {
+            return Err(RingBufferParseError::EntriesExceedCapacity);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl<T> From<RingBuffer<T>> for UncheckedRingBuffer<T> {
+    fn from(value: RingBuffer<T>) -> Self {
+        value.0
     }
 }
 
 impl<T> RingBuffer<T> {
     #[must_use]
     pub fn new(capacity: u32) -> Self {
-        Self {
+        Self(UncheckedRingBuffer {
             capacity,
             entries: Vec::new(),
-        }
+        })
     }
 
     pub fn push(&mut self, item: T) {
-        let capacity = self.capacity as usize;
+        let capacity = self.0.capacity as usize;
         if capacity == 0 {
             return;
         }
 
-        if self.entries.len() == capacity {
-            self.entries.remove(0);
+        if self.0.entries.len() == capacity {
+            self.0.entries.remove(0);
         }
 
-        self.entries.push(item);
+        self.0.entries.push(item);
     }
 
     pub fn set_capacity(&mut self, capacity: u32) {
-        self.capacity = capacity;
+        self.0.capacity = capacity;
         let capacity = capacity as usize;
-        let excess = self.entries.len().saturating_sub(capacity);
+        let excess = self.0.entries.len().saturating_sub(capacity);
         if excess > 0 {
-            self.entries.drain(0..excess);
+            self.0.entries.drain(0..excess);
         }
     }
 
     #[must_use]
     pub fn last(&self) -> Option<&T> {
-        self.entries.last()
+        self.0.entries.last()
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.0.entries.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.0.entries.is_empty()
     }
 
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
-        &self.entries
+        &self.0.entries
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl<T: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for RingBuffer<T> {
+    fn deserialize_reader<Reader: ::borsh::io::Read>(
+        reader: &mut Reader,
+    ) -> ::borsh::io::Result<Self> {
+        let unchecked =
+            <UncheckedRingBuffer<T> as ::borsh::BorshDeserialize>::deserialize_reader(reader)?;
+        unchecked.try_into().map_err(|_| {
+            ::borsh::io::Error::new(
+                ::borsh::io::ErrorKind::InvalidData,
+                "could not parse ring buffer",
+            )
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]
@@ -103,6 +175,55 @@ mod tests {
         assert_eq!(buffer.len(), 3);
         assert_eq!(buffer.as_slice(), &[3, 4, 5]);
         assert_eq!(buffer.last(), Some(&5));
+    }
+
+    #[test]
+    fn parse_rejects_entries_exceeding_capacity() {
+        assert_eq!(
+            RingBuffer::try_from(UncheckedRingBuffer {
+                capacity: 1,
+                entries: vec![1, 2],
+            }),
+            Err(RingBufferParseError::EntriesExceedCapacity)
+        );
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn borsh_rejects_entries_exceeding_capacity() {
+        let unchecked = UncheckedRingBuffer {
+            capacity: 1,
+            entries: vec![1_u32, 2],
+        };
+        let bytes = borsh::to_vec(&unchecked).unwrap();
+
+        assert!(borsh::from_slice::<RingBuffer<u32>>(&bytes).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_rejects_entries_exceeding_capacity() {
+        let unchecked = UncheckedRingBuffer {
+            capacity: 1,
+            entries: vec![1_u32, 2],
+        };
+        let bytes = serde_json::to_vec(&unchecked).unwrap();
+
+        assert!(serde_json::from_slice::<RingBuffer<u32>>(&bytes).is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_serializes_like_unchecked_representation() {
+        let mut buffer = RingBuffer::new(2);
+        buffer.push(1_u32);
+        buffer.push(2);
+        let unchecked = UncheckedRingBuffer::from(buffer.clone());
+
+        assert_eq!(
+            serde_json::to_value(&buffer).unwrap(),
+            serde_json::to_value(&unchecked).unwrap()
+        );
     }
 
     #[test]

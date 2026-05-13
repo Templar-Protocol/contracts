@@ -1,6 +1,6 @@
 use core::str::FromStr;
 
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 #[cfg(all(feature = "borsh", feature = "serde"))]
 use std::eprintln;
 use templar_primitives::{Decimal, Nanoseconds};
@@ -75,10 +75,11 @@ fn calibration_breaker(index: u32) -> CircuitBreaker {
 fn calibration_set(history_len: u32, breaker_count: u32) -> CircuitBreakerSet {
     let mut set = breaker_set(Nanoseconds::zero(), history_len);
     for i in 0..history_len {
-        set.history.push(Observation {
-            price: price(i64::from(100 + i)),
-            observed_at_ns: Nanoseconds::from_secs(u64::from(i)),
-        });
+        set.evaluate(
+            price(i64::from(100 + i)),
+            Nanoseconds::from_secs(u64::from(i)),
+        )
+        .unwrap();
     }
     for breaker_id in 0..breaker_count {
         set.add(breaker_id, calibration_breaker(breaker_id))
@@ -197,15 +198,15 @@ fn set_adds_and_removes_breakers_by_id() {
         sample_interval_ns: Nanoseconds::zero(),
         history_len: 2,
     });
-    set.history.push(observation(100));
+    set.evaluate(price(100), Nanoseconds::zero()).unwrap();
 
     assert_eq!(id, 0);
-    assert_eq!(set.next_id, 1);
-    assert_eq!(set.history.as_slice(), &[observation(100)]);
+    assert_eq!(set.next_id(), 1);
+    assert_eq!(set.history().as_slice(), &[observation(100)]);
 
     set.remove(id).unwrap();
 
-    assert!(set.breakers.is_empty());
+    assert!(set.breakers().is_empty());
 }
 
 #[test]
@@ -217,9 +218,9 @@ fn set_adds_breakers_with_explicit_monotonic_ids() {
 
     assert_eq!(set.add(0, breaker.clone()), Ok(()));
     assert_eq!(set.add(1, breaker), Ok(()));
-    assert_eq!(set.next_id, 2);
-    assert!(set.breakers.contains_key(&0));
-    assert!(set.breakers.contains_key(&1));
+    assert_eq!(set.next_id(), 2);
+    assert!(set.breakers().contains_key(&0));
+    assert!(set.breakers().contains_key(&1));
 }
 
 #[test]
@@ -262,10 +263,73 @@ fn set_rejects_unexpected_breaker_id() {
     );
 }
 
+fn unchecked_set_with_stale_next_id() -> UncheckedCircuitBreakerSet {
+    let mut set = CircuitBreakerSet::empty();
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+    let mut unchecked = UncheckedCircuitBreakerSet::from(set);
+    unchecked.next_id = 0;
+    unchecked
+}
+
+#[test]
+fn set_rejects_parse_when_state_has_stale_next_id() {
+    assert_eq!(
+        CircuitBreakerSet::try_from(unchecked_set_with_stale_next_id()),
+        Err(CircuitBreakerSetParseError::BreakerIdOutOfRange)
+    );
+}
+
+#[cfg(feature = "borsh")]
+#[test]
+fn borsh_rejects_set_with_stale_next_id() {
+    let bytes = borsh::to_vec(&unchecked_set_with_stale_next_id()).unwrap();
+
+    assert!(borsh::from_slice::<CircuitBreakerSet>(&bytes).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn serde_rejects_set_with_stale_next_id() {
+    let bytes = serde_json::to_vec(&unchecked_set_with_stale_next_id()).unwrap();
+
+    assert!(serde_json::from_slice::<CircuitBreakerSet>(&bytes).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn serde_serializes_set_like_unchecked_representation() {
+    let mut set = CircuitBreakerSet::empty();
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+    let unchecked = UncheckedCircuitBreakerSet::from(set.clone());
+
+    assert_eq!(
+        serde_json::to_value(&set).unwrap(),
+        serde_json::to_value(&unchecked).unwrap()
+    );
+}
+
 #[test]
 fn set_rejects_add_when_next_id_is_exhausted() {
-    let mut set = CircuitBreakerSet::empty();
-    set.next_id = u32::MAX;
+    let mut set = CircuitBreakerSet::try_from(UncheckedCircuitBreakerSet {
+        sample_interval_ns: Nanoseconds::zero(),
+        history: RingBuffer::new(0),
+        next_id: u32::MAX,
+        is_manually_tripped: false,
+        breakers: BTreeMap::new(),
+    })
+    .unwrap();
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: dec("0.10"),
     });
@@ -294,9 +358,9 @@ fn future_armed_breaker_records_history_without_tripping() {
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     set.evaluate(price(200), Nanoseconds::from_secs(2)).unwrap();
 
-    assert_eq!(set.history.len(), 2);
+    assert_eq!(set.history().len(), 2);
     assert!(matches!(
-        set.breakers.get(&0).unwrap().status,
+        set.breakers().get(&0).unwrap().status,
         CircuitBreakerStatus::ArmedAfter { .. }
     ));
 }
@@ -378,13 +442,13 @@ fn too_soon_sample_can_trip_without_being_persisted() {
         })
     );
 
-    assert_eq!(set.history.len(), 1);
-    assert_eq!(set.history.as_slice()[0].price, price(100));
+    assert_eq!(set.history().len(), 1);
+    assert_eq!(set.history().as_slice()[0].price, price(100));
     assert_eq!(
-        set.history.as_slice()[0].observed_at_ns,
+        set.history().as_slice()[0].observed_at_ns,
         Nanoseconds::from_secs(1)
     );
-    let breaker = set.breakers.get(&0).unwrap();
+    let breaker = set.breakers().get(&0).unwrap();
     assert!(matches!(
         breaker.status,
         CircuitBreakerStatus::Tripped {
@@ -425,10 +489,10 @@ fn unenforced_and_tripped_breakers_still_record_history() {
         })
     );
 
-    assert_eq!(set.history.len(), 2);
-    assert!(!set.breakers.get(&0).unwrap().is_enforced);
+    assert_eq!(set.history().len(), 2);
+    assert!(!set.breakers().get(&0).unwrap().is_enforced);
     assert!(matches!(
-        set.breakers.get(&1).unwrap().status,
+        set.breakers().get(&1).unwrap().status,
         CircuitBreakerStatus::Tripped { .. }
     ));
 }
@@ -450,7 +514,7 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
     set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
     set.evaluate(price(120), Nanoseconds::from_secs(2)).unwrap();
 
-    let breaker = set.breakers.get(&0).unwrap();
+    let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
     assert!(matches!(
         breaker.status,
@@ -496,7 +560,7 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
         };
     }
 
-    let breaker = set.breakers.get(&0).unwrap();
+    let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
     assert!(matches!(
         breaker.status,
@@ -532,9 +596,9 @@ fn set_config_resizes_history_in_place() {
         history_len: 2,
     });
 
-    assert_eq!(set.sample_interval_ns, Nanoseconds::from_secs(10));
+    assert_eq!(set.sample_interval_ns(), Nanoseconds::from_secs(10));
     assert_eq!(
-        set.history
+        set.history()
             .as_slice()
             .iter()
             .map(|observation| observation.price.price)
@@ -564,7 +628,7 @@ fn rule_trip_records_causal_price_update() {
     );
 
     assert!(matches!(
-        set.breakers.get(&0).unwrap().status,
+        set.breakers().get(&0).unwrap().status,
         CircuitBreakerStatus::Tripped {
             tripped_at_ns,
             price_update,

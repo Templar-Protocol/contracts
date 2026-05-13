@@ -32,7 +32,6 @@ impl CircuitBreakerError {
     }
 }
 
-#[cfg(feature = "std")]
 impl core::fmt::Display for CircuitBreakerError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {

@@ -36,12 +36,71 @@ serialize! {
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct CircuitBreakerSet<R = CircuitBreaker> {
+    pub struct UncheckedCircuitBreakerSet<R = CircuitBreaker> {
         pub sample_interval_ns: Nanoseconds,
         pub history: RingBuffer<Observation>,
         pub next_id: u32,
         pub is_manually_tripped: bool,
         pub breakers: BTreeMap<u32, CircuitBreakerState<R>>,
+    }
+}
+
+#[cfg_attr(
+    feature = "serde",
+    derive(::serde::Deserialize, ::serde::Serialize),
+    serde(
+        try_from = "UncheckedCircuitBreakerSet<R>",
+        into = "UncheckedCircuitBreakerSet<R>",
+        bound(
+            serialize = "R: Clone + ::serde::Serialize",
+            deserialize = "R: ::serde::Deserialize<'de>"
+        )
+    )
+)]
+#[cfg_attr(
+    feature = "schemars",
+    derive(::schemars::JsonSchema),
+    schemars(transparent)
+)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(::borsh::BorshSerialize, ::borsh::BorshSchema)
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CircuitBreakerSet<R = CircuitBreaker>(UncheckedCircuitBreakerSet<R>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitBreakerSetParseError {
+    BreakerIdOutOfRange,
+}
+
+impl core::fmt::Display for CircuitBreakerSetParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BreakerIdOutOfRange => write!(f, "circuit breaker ID is out of range"),
+        }
+    }
+}
+
+impl<R> TryFrom<UncheckedCircuitBreakerSet<R>> for CircuitBreakerSet<R> {
+    type Error = CircuitBreakerSetParseError;
+
+    fn try_from(value: UncheckedCircuitBreakerSet<R>) -> Result<Self, Self::Error> {
+        if value
+            .breakers
+            .keys()
+            .next_back()
+            .is_some_and(|breaker_id| *breaker_id >= value.next_id)
+        {
+            return Err(CircuitBreakerSetParseError::BreakerIdOutOfRange);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl<R> From<CircuitBreakerSet<R>> for UncheckedCircuitBreakerSet<R> {
+    fn from(value: CircuitBreakerSet<R>) -> Self {
+        value.0
     }
 }
 
@@ -60,43 +119,46 @@ impl<R> CircuitBreakerSet<R> {
 
     #[must_use]
     pub fn new(config: CircuitBreakerSetConfig) -> Self {
-        Self {
+        Self(UncheckedCircuitBreakerSet {
             sample_interval_ns: config.sample_interval_ns,
             history: RingBuffer::new(config.history_len),
             next_id: 0,
             is_manually_tripped: false,
             breakers: BTreeMap::new(),
-        }
+        })
     }
 
     pub fn set_config(&mut self, config: CircuitBreakerSetConfig) {
-        self.sample_interval_ns = config.sample_interval_ns;
-        self.history.set_capacity(config.history_len);
+        self.0.sample_interval_ns = config.sample_interval_ns;
+        self.0.history.set_capacity(config.history_len);
     }
 
     pub fn set_manual_trip(&mut self, is_manually_tripped: bool) {
-        self.is_manually_tripped = is_manually_tripped;
+        self.0.is_manually_tripped = is_manually_tripped;
     }
 
     pub fn add(&mut self, breaker_id: u32, breaker: R) -> Result<(), CircuitBreakerError> {
-        if breaker_id != self.next_id {
+        if breaker_id != self.0.next_id {
             return Err(CircuitBreakerError::UnexpectedBreakerId {
-                expected: self.next_id,
+                expected: self.0.next_id,
                 actual: breaker_id,
             });
         }
 
-        self.next_id = self
+        self.0.next_id = self
+            .0
             .next_id
             .checked_add(1)
             .ok_or(CircuitBreakerError::TooManyBreakers)?;
-        self.breakers
+        self.0
+            .breakers
             .insert(breaker_id, CircuitBreakerState::new(breaker));
         Ok(())
     }
 
     pub fn remove(&mut self, breaker_id: u32) -> Result<(), CircuitBreakerError> {
-        self.breakers
+        self.0
+            .breakers
             .remove(&breaker_id)
             .ok_or(CircuitBreakerError::BreakerNotFound { breaker_id })?;
         Ok(())
@@ -106,26 +168,81 @@ impl<R> CircuitBreakerSet<R> {
         &mut self,
         breaker_id: u32,
     ) -> Result<&mut CircuitBreakerState<R>, CircuitBreakerError> {
-        self.breakers
+        self.0
+            .breakers
             .get_mut(&breaker_id)
             .ok_or(CircuitBreakerError::BreakerNotFound { breaker_id })
     }
 
     #[must_use]
+    pub fn sample_interval_ns(&self) -> Nanoseconds {
+        self.0.sample_interval_ns
+    }
+
+    #[must_use]
+    pub fn history(&self) -> &RingBuffer<Observation> {
+        &self.0.history
+    }
+
+    #[must_use]
+    pub fn next_id(&self) -> u32 {
+        self.0.next_id
+    }
+
+    #[must_use]
+    pub fn is_manually_tripped(&self) -> bool {
+        self.0.is_manually_tripped
+    }
+
+    #[must_use]
+    pub fn breakers(&self) -> &BTreeMap<u32, CircuitBreakerState<R>> {
+        &self.0.breakers
+    }
+
+    #[must_use]
+    pub fn breaker_count(&self) -> usize {
+        self.0.breakers.len()
+    }
+
+    #[must_use]
     pub fn is_blocking(&self) -> bool {
-        self.is_manually_tripped || self.breakers.values().any(CircuitBreakerState::is_blocking)
+        self.0.is_manually_tripped
+            || self
+                .0
+                .breakers
+                .values()
+                .any(CircuitBreakerState::is_blocking)
     }
 
     fn should_persist_sample(&self, now: Nanoseconds) -> bool {
-        self.history
+        self.0
+            .history
             .last()
-            .is_none_or(|last| now.saturating_sub(last.observed_at_ns) >= self.sample_interval_ns)
+            .is_none_or(|last| now.saturating_sub(last.observed_at_ns) >= self.0.sample_interval_ns)
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl<R: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for CircuitBreakerSet<R> {
+    fn deserialize_reader<Reader: ::borsh::io::Read>(
+        reader: &mut Reader,
+    ) -> ::borsh::io::Result<Self> {
+        let unchecked =
+            <UncheckedCircuitBreakerSet<R> as ::borsh::BorshDeserialize>::deserialize_reader(
+                reader,
+            )?;
+        unchecked.try_into().map_err(|_| {
+            ::borsh::io::Error::new(
+                ::borsh::io::ErrorKind::InvalidData,
+                "could not parse circuit breaker set",
+            )
+        })
     }
 }
 
 impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
     pub fn evaluate(&mut self, price: Price, now: Nanoseconds) -> Result<(), CircuitBreakerError> {
-        let mut proposed_history = self.history.clone();
+        let mut proposed_history = self.0.history.clone();
         let price_update = Observation {
             price,
             observed_at_ns: now,
@@ -133,16 +250,16 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         proposed_history.push(price_update);
 
         if self.should_persist_sample(now) {
-            self.history = proposed_history.clone();
+            self.0.history = proposed_history.clone();
         }
 
-        if self.is_manually_tripped {
+        if self.0.is_manually_tripped {
             return Err(CircuitBreakerError::ManuallyTripped);
         }
 
         let mut breaker_ids = Vec::new();
 
-        for (breaker_id, breaker) in &mut self.breakers {
+        for (breaker_id, breaker) in &mut self.0.breakers {
             let can_trip = match breaker.status {
                 CircuitBreakerStatus::ArmedAfter { timestamp_ns } => now >= timestamp_ns,
                 CircuitBreakerStatus::Tripped { .. } => false,

@@ -254,7 +254,7 @@ impl AddCircuitBreakerArgs {
                 json!({ "id": price_id }),
             )
             .await?;
-            let next_id = set.unwrap_or_else(CircuitBreakerSet::empty).next_id;
+            let next_id = set.unwrap_or_else(CircuitBreakerSet::empty).next_id();
             tracing::info!(breaker_id = next_id, "Auto-fetched next breaker ID");
             next_id
         };

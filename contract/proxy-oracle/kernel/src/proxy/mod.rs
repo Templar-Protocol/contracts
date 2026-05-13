@@ -39,7 +39,6 @@ impl From<circuit_breaker::CircuitBreakerError> for ResolveError {
     }
 }
 
-#[cfg(feature = "std")]
 impl core::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -383,8 +382,8 @@ mod tests {
             })) if breaker_ids == vec![breaker_id]
         ));
 
-        assert_eq!(circuit_breakers.history.len(), 2);
-        assert_eq!(circuit_breakers.history.as_slice()[0].price.price, 120);
-        assert_eq!(circuit_breakers.history.as_slice()[1].price.price, 130);
+        assert_eq!(circuit_breakers.history().len(), 2);
+        assert_eq!(circuit_breakers.history().as_slice()[0].price.price, 120);
+        assert_eq!(circuit_breakers.history().as_slice()[1].price.price, 130);
     }
 }
