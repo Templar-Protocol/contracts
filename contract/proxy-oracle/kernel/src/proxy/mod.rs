@@ -115,7 +115,7 @@ impl<S> Proxy<S> {
         R: CircuitBreakerRule,
     {
         let price = self.aggregate(prices, now)?;
-        circuit_breakers.evaluate(price, now)?;
+        circuit_breakers.try_accept_price(price, now)?;
         Ok(price)
     }
 

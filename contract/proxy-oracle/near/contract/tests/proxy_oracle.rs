@@ -674,11 +674,11 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 3,
         });
-        set.evaluate(proxy_price(100), Nanoseconds::from_secs(1))
+        set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
             .unwrap();
         set.set_manual_trip(true);
         assert!(set
-            .evaluate(proxy_price(200), Nanoseconds::from_secs(2))
+            .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
             .is_err());
         set.set_manual_trip(false);
         c.circuit_breakers.insert(&proxy_id, &set);

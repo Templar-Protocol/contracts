@@ -244,6 +244,14 @@ impl<R> CircuitBreakerSet<R> {
             .last()
             .is_none_or(|last| now.saturating_sub(last.observed_at_ns) >= self.0.sample_interval_ns)
     }
+
+    fn blocking_breaker_ids(&self) -> Vec<u32> {
+        self.0
+            .breakers
+            .iter()
+            .filter_map(|(id, breaker)| breaker.is_blocking().then_some(*id))
+            .collect()
+    }
 }
 
 #[cfg(feature = "borsh")]
@@ -265,7 +273,11 @@ impl<R: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for CircuitBreakerS
 }
 
 impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
-    pub fn evaluate(&mut self, price: Price, now: Nanoseconds) -> Result<(), CircuitBreakerError> {
+    pub fn try_accept_price(
+        &mut self,
+        price: Price,
+        now: Nanoseconds,
+    ) -> Result<(), CircuitBreakerError> {
         if !price.has_strictly_positive_confidence_interval() {
             return Err(CircuitBreakerError::InvalidPrice);
         }
@@ -286,12 +298,7 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             return Err(CircuitBreakerError::ManuallyTripped);
         }
 
-        let blocking_breaker_ids: Vec<_> = self
-            .0
-            .breakers
-            .iter()
-            .filter_map(|(id, breaker)| breaker.is_blocking().then_some(*id))
-            .collect();
+        let blocking_breaker_ids = self.blocking_breaker_ids();
 
         // Short-circuit in the case of already-blocking breakers: do not update
         // accepted_history or test untripped breakers against a stale accepted_history.
@@ -301,6 +308,20 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             });
         }
 
+        self.reject_if_armed_breaker_trips(&proposed_accepted_history, price_update, now)?;
+
+        if should_persist_sample {
+            self.0.accepted_history = proposed_accepted_history;
+        }
+        Ok(())
+    }
+
+    fn reject_if_armed_breaker_trips(
+        &mut self,
+        proposed_accepted_history: &RingBuffer<Observation>,
+        price_update: Observation,
+        now: Nanoseconds,
+    ) -> Result<(), CircuitBreakerError> {
         for (breaker_id, breaker) in &mut self.0.breakers {
             match breaker.status {
                 CircuitBreakerStatus::ArmedAfter { timestamp_ns } if now >= timestamp_ns => {}
@@ -321,9 +342,6 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             }
         }
 
-        if should_persist_sample {
-            self.0.accepted_history = proposed_accepted_history;
-        }
         Ok(())
     }
 }

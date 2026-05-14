@@ -84,7 +84,7 @@ fn calibration_breaker(index: u32) -> CircuitBreaker {
 fn calibration_set(history_len: u32, breaker_count: u32) -> CircuitBreakerSet {
     let mut set = breaker_set(Nanoseconds::zero(), history_len);
     for i in 0..history_len {
-        set.evaluate(
+        set.try_accept_price(
             price(i64::from(100 + i)),
             Nanoseconds::from_secs(u64::from(i)),
         )
@@ -210,7 +210,8 @@ fn set_adds_and_removes_breakers_by_id() {
         sample_interval_ns: Nanoseconds::zero(),
         history_len: 2,
     });
-    set.evaluate(price(100), Nanoseconds::zero()).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::zero())
+        .unwrap();
 
     assert_eq!(id, 0);
     assert_eq!(set.next_id(), 1);
@@ -253,7 +254,7 @@ fn set_accepts_custom_rule_type() {
     set.add(0, AlwaysTrips).unwrap();
 
     assert_eq!(
-        set.evaluate(price(100), Nanoseconds::from_secs(1)),
+        set.try_accept_price(price(100), Nanoseconds::from_secs(1)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![0]
         })
@@ -281,7 +282,7 @@ fn set_rejects_invalid_price_without_recording_history() {
     let mut set = breaker_set(Nanoseconds::zero(), 1);
 
     assert_eq!(
-        set.evaluate(price_with_conf(1, 1), Nanoseconds::from_secs(1)),
+        set.try_accept_price(price_with_conf(1, 1), Nanoseconds::from_secs(1)),
         Err(CircuitBreakerError::InvalidPrice)
     );
     assert!(set.accepted_history().is_empty());
@@ -396,8 +397,10 @@ fn future_armed_breaker_records_history_without_tripping() {
         timestamp_ns: Nanoseconds::from_secs(10),
     };
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
-    set.evaluate(price(200), Nanoseconds::from_secs(2)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.try_accept_price(price(200), Nanoseconds::from_secs(2))
+        .unwrap();
 
     assert_eq!(set.accepted_history().len(), 2);
     assert_eq!(set.observed_history().len(), 2);
@@ -419,15 +422,16 @@ fn set_returns_tripped_for_new_and_existing_trips() {
     )
     .unwrap();
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
     assert_eq!(
-        set.evaluate(price(111), Nanoseconds::from_secs(2)),
+        set.try_accept_price(price(111), Nanoseconds::from_secs(2)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![id]
         })
     );
     assert_eq!(
-        set.evaluate(price(111), Nanoseconds::from_secs(3)),
+        set.try_accept_price(price(111), Nanoseconds::from_secs(3)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![id]
         })
@@ -463,10 +467,11 @@ fn set_returns_first_new_blocking_breaker_id() {
     )
     .unwrap();
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
 
     assert_eq!(
-        set.evaluate(price(150), Nanoseconds::from_secs(2)),
+        set.try_accept_price(price(150), Nanoseconds::from_secs(2)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![first_id]
         })
@@ -485,9 +490,10 @@ fn too_soon_sample_can_trip_without_being_persisted() {
     )
     .unwrap();
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
     assert_eq!(
-        set.evaluate(price(200), Nanoseconds::from_secs(2)),
+        set.try_accept_price(price(200), Nanoseconds::from_secs(2)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![id]
         })
@@ -533,10 +539,11 @@ fn unenforced_and_tripped_breakers_still_record_history() {
 
     set.get_mut(unenforced_id).unwrap().is_enforced = false;
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
 
     assert_eq!(
-        set.evaluate(price(200), Nanoseconds::from_secs(2)),
+        set.try_accept_price(price(200), Nanoseconds::from_secs(2)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![tripped_id],
         })
@@ -565,8 +572,10 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
 
     set.get_mut(id).unwrap().is_enforced = false;
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
-    set.evaluate(price(120), Nanoseconds::from_secs(2)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.try_accept_price(price(120), Nanoseconds::from_secs(2))
+        .unwrap();
 
     let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
@@ -580,7 +589,7 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
 
     assert!(set.is_blocking());
     assert_eq!(
-        set.evaluate(price(130), Nanoseconds::from_secs(3)),
+        set.try_accept_price(price(130), Nanoseconds::from_secs(3)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![id]
         })
@@ -599,9 +608,10 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
     )
     .unwrap();
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
     assert_eq!(
-        set.evaluate(price(120), Nanoseconds::from_secs(2)),
+        set.try_accept_price(price(120), Nanoseconds::from_secs(2)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![id]
         })
@@ -632,7 +642,7 @@ fn manual_trip_override_blocks_set_without_tripping_breaker() {
 
     assert!(set.is_blocking());
     assert_eq!(
-        set.evaluate(price(100), Nanoseconds::from_secs(5)),
+        set.try_accept_price(price(100), Nanoseconds::from_secs(5)),
         Err(CircuitBreakerError::ManuallyTripped)
     );
     assert!(set.accepted_history().is_empty());
@@ -643,10 +653,11 @@ fn manual_trip_override_blocks_set_without_tripping_breaker() {
 fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
     set.set_manual_trip(true);
     assert_eq!(
-        set.evaluate(price(200), Nanoseconds::from_secs(2)),
+        set.try_accept_price(price(200), Nanoseconds::from_secs(2)),
         Err(CircuitBreakerError::ManuallyTripped)
     );
 
@@ -678,9 +689,12 @@ fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
 fn set_config_resizes_history_in_place() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
 
-    set.evaluate(price(100), Nanoseconds::from_secs(1)).unwrap();
-    set.evaluate(price(200), Nanoseconds::from_secs(2)).unwrap();
-    set.evaluate(price(300), Nanoseconds::from_secs(3)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.try_accept_price(price(200), Nanoseconds::from_secs(2))
+        .unwrap();
+    set.try_accept_price(price(300), Nanoseconds::from_secs(3))
+        .unwrap();
 
     set.set_config(CircuitBreakerSetConfig {
         sample_interval_ns: Nanoseconds::from_secs(10),
@@ -718,9 +732,10 @@ fn rule_trip_records_causal_price_update() {
     )
     .unwrap();
 
-    set.evaluate(price(100), Nanoseconds::from_secs(4)).unwrap();
+    set.try_accept_price(price(100), Nanoseconds::from_secs(4))
+        .unwrap();
     assert_eq!(
-        set.evaluate(price(200), Nanoseconds::from_secs(5)),
+        set.try_accept_price(price(200), Nanoseconds::from_secs(5)),
         Err(CircuitBreakerError::BreakerTripped {
             blocking_breaker_ids: vec![id]
         })
