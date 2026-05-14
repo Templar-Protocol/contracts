@@ -410,8 +410,8 @@ mod tests {
                 now
             ),
             Err(ResolveError::CircuitBreaker(CircuitBreakerError::BreakerTripped {
-                tripped_breaker_ids
-            })) if tripped_breaker_ids == vec![breaker_id]
+                blocking_breaker_ids
+            })) if blocking_breaker_ids == vec![breaker_id]
         ));
         assert!(matches!(
             proxy.resolve(
@@ -420,8 +420,8 @@ mod tests {
                 now
             ),
             Err(ResolveError::CircuitBreaker(CircuitBreakerError::BreakerTripped {
-                tripped_breaker_ids
-            })) if tripped_breaker_ids == vec![breaker_id]
+                blocking_breaker_ids
+            })) if blocking_breaker_ids == vec![breaker_id]
         ));
 
         assert_eq!(circuit_breakers.accepted_history().len(), 1);

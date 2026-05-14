@@ -18,7 +18,7 @@ pub enum CircuitBreakerError {
     UnexpectedBreakerId { expected: u32, actual: u32 },
     InvalidPrice,
     ManuallyTripped,
-    BreakerTripped { tripped_breaker_ids: Vec<u32> },
+    BreakerTripped { blocking_breaker_ids: Vec<u32> },
 }
 
 impl CircuitBreakerError {
@@ -51,8 +51,8 @@ impl core::fmt::Display for CircuitBreakerError {
             Self::InvalidPrice => write!(f, "invalid price"),
             Self::ManuallyTripped => write!(f, "circuit breaker manually tripped"),
             Self::BreakerTripped {
-                tripped_breaker_ids,
-            } => write!(f, "circuit breaker tripped: {tripped_breaker_ids:?}"),
+                blocking_breaker_ids,
+            } => write!(f, "circuit breaker tripped: {blocking_breaker_ids:?}"),
         }
     }
 }

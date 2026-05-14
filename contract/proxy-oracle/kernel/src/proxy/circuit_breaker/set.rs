@@ -286,7 +286,7 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             return Err(CircuitBreakerError::ManuallyTripped);
         }
 
-        let tripped_breaker_ids: Vec<_> = self
+        let blocking_breaker_ids: Vec<_> = self
             .0
             .breakers
             .iter()
@@ -295,9 +295,9 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
 
         // Short-circuit in the case of already-blocking breakers: do not update
         // accepted_history or test untripped breakers against a stale accepted_history.
-        if !tripped_breaker_ids.is_empty() {
+        if !blocking_breaker_ids.is_empty() {
             return Err(CircuitBreakerError::BreakerTripped {
-                tripped_breaker_ids,
+                blocking_breaker_ids,
             });
         }
 
@@ -316,7 +316,7 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
 
             if breaker.is_blocking() {
                 return Err(CircuitBreakerError::BreakerTripped {
-                    tripped_breaker_ids: vec![*breaker_id],
+                    blocking_breaker_ids: vec![*breaker_id],
                 });
             }
         }
