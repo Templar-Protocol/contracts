@@ -1,0 +1,34 @@
+{
+  "aggregator": {
+    "method": "MedianLow",
+    "filter": {
+      "max_age": "60000000000",
+      "max_clock_drift": "10000000000",
+      "min_sources": 1
+    }
+  },
+  "entries": [
+    {
+      "source": {
+        "Request": {
+          "Pyth": {
+            "oracle_id": "pyth-oracle.near",
+            "price_id": "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d"
+          }
+        }
+      },
+      "weight": 8
+    },
+    {
+      "source": {
+        "Request": {
+          "RedStone": {
+            "oracle_id": "redstone-adapter.v1.tmplr.near",
+            "price_id": "ADA"
+          }
+        }
+      },
+      "weight": 2
+    }
+  ]
+}
