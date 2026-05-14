@@ -13,7 +13,7 @@
         "Request": {
           "Pyth": {
             "oracle_id": "pyth-oracle.near",
-            "price_id": "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d"
+            "price_id": "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
           }
         }
       },
@@ -24,7 +24,7 @@
         "Request": {
           "RedStone": {
             "oracle_id": "redstone-adapter.v1.tmplr.near",
-            "price_id": "ADA"
+            "price_id": "BTC"
           }
         }
       },
