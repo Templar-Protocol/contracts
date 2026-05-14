@@ -1,203 +1,349 @@
-//! Market locks for preventing concurrent operations on the same market.
+//! Fenced market leases for serialized policy and executor state transitions.
+//!
+//! These types do not provide synchronization by themselves. Safety comes from
+//! storing the registry in serialized executor state and enforcing issued
+//! fencing tokens on downstream mutations.
 
 use alloc::vec::Vec;
-use templar_vault_kernel::{TargetId, TimeGate, TimestampNs};
-use typed_builder::TypedBuilder;
+use templar_vault_kernel::{TargetId, TimestampNs};
 
-pub fn validate_lock_expiry(current_ns: u64, expiry_ns: u64, max_duration_ns: u64) -> bool {
-    let max_expiry_ns =
-        TimeGate::schedule_from(TimestampNs(current_ns), TimestampNs(max_duration_ns))
-            .ready_at_ns()
-            .unwrap_or(TimestampNs(current_ns));
-    expiry_ns > current_ns && expiry_ns <= u64::from(max_expiry_ns)
-}
+use super::state::OrderedMap;
 
-/// A lock on a specific market/target.
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
-#[derive(Clone, PartialEq, Eq, TypedBuilder)]
-#[builder(field_defaults(setter(into)))]
-pub struct MarketLock {
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LeaseOwner(pub u64);
+
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FencingToken(pub u64);
+
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LeaseDurationNs(pub u64);
+
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct MarketLease {
     pub target_id: TargetId,
-    #[builder(default, setter(strip_option))]
+    pub owner: LeaseOwner,
     pub op_id: Option<u64>,
-    pub locked_at_ns: u64,
-    /// Optional expiry timestamp (nanoseconds). `None` means no expiry.
-    #[builder(default, setter(strip_option))]
-    pub expires_at_ns: Option<u64>,
+    pub acquired_at: TimestampNs,
+    pub expires_at: TimestampNs,
+    pub fencing_token: FencingToken,
 }
 
-impl MarketLock {
-    fn expiry_gate(&self) -> Option<TimeGate> {
-        self.expires_at_ns
-            .map(|expiry_ns| TimeGate::from_ready_at(TimestampNs(expiry_ns)))
-    }
-
+impl MarketLease {
     #[must_use]
-    pub fn new(target_id: TargetId, locked_at_ns: u64) -> Self {
+    pub fn from_parts(
+        target_id: TargetId,
+        owner: LeaseOwner,
+        op_id: Option<u64>,
+        acquired_at: TimestampNs,
+        expires_at: TimestampNs,
+        fencing_token: FencingToken,
+    ) -> Self {
         Self {
             target_id,
-            op_id: None,
-            locked_at_ns,
-            expires_at_ns: None,
+            owner,
+            op_id,
+            acquired_at,
+            expires_at,
+            fencing_token,
         }
     }
 
-    /// Fluent method: set time-to-live from locked_at timestamp.
-    /// This computes `expires_at_ns = locked_at_ns + ttl_ns`.
     #[must_use]
-    pub fn with_ttl(mut self, ttl_ns: u64) -> Self {
-        self.expires_at_ns =
-            TimeGate::schedule_from(TimestampNs(self.locked_at_ns), TimestampNs(ttl_ns))
-                .ready_at_ns()
-                .map(Into::into);
-        self
+    pub fn is_expired(&self, now: TimestampNs) -> bool {
+        now >= self.expires_at
     }
 
     #[must_use]
-    pub fn is_expired(&self, current_ns: u64) -> bool {
-        self.expiry_gate()
-            .is_some_and(|gate| gate.is_ready(TimestampNs(current_ns)))
-    }
-
-    #[must_use]
-    pub fn remaining(&self, current_ns: u64) -> Option<u64> {
-        self.expiry_gate()
-            .map(|gate| u64::from(gate.remaining(TimestampNs(current_ns))))
+    pub fn remaining(&self, now: TimestampNs) -> LeaseDurationNs {
+        LeaseDurationNs(u64::from(self.expires_at).saturating_sub(u64::from(now)))
     }
 }
 
-/// A set of market locks.
-#[templar_vault_macros::vault_derive(borsh, postcard, schemars, serde, std_borsh_schema)]
-#[derive(Clone, Default)]
-pub struct MarketLockSet {
-    pub locks: Vec<MarketLock>,
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, PartialEq, Eq)]
+pub enum AcquireLeaseError {
+    ZeroTtl,
+    ExpiryOverflow,
+    AlreadyLeased { existing: MarketLease },
 }
 
-impl MarketLockSet {
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, PartialEq, Eq)]
+pub enum ReleaseLeaseError {
+    NotFound {
+        target_id: TargetId,
+    },
+    OwnerMismatch {
+        target_id: TargetId,
+        expected_owner: LeaseOwner,
+        actual_owner: LeaseOwner,
+    },
+    TokenMismatch {
+        target_id: TargetId,
+        expected_token: FencingToken,
+        actual_token: FencingToken,
+    },
+}
+
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, PartialEq, Eq)]
+pub enum FencingError {
+    NotCurrent {
+        target_id: TargetId,
+        presented: FencingToken,
+        current: FencingToken,
+    },
+    NotFound {
+        target_id: TargetId,
+    },
+}
+
+#[templar_vault_macros::vault_derive(borsh, schemars, serde, std_borsh_schema)]
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct MarketLeaseRegistry {
+    leases_by_target: OrderedMap<TargetId, MarketLease>,
+    next_fencing_token: u64,
+}
+
+impl MarketLeaseRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Iterator over active (non-expired) locks.
-    fn active_iter(&self, current_ns: u64) -> impl Iterator<Item = &MarketLock> + '_ {
-        self.locks.iter().filter(move |l| !l.is_expired(current_ns))
-    }
-
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.locks.is_empty()
+        self.leases_by_target.is_empty()
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.locks.len()
+    pub fn next_fencing_token(&self) -> u64 {
+        self.next_fencing_token
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&TargetId, &MarketLease)> {
+        self.leases_by_target.iter()
     }
 
     #[must_use]
-    pub fn active_count(&self, current_ns: u64) -> usize {
-        self.active_iter(current_ns).count()
-    }
-
-    #[must_use]
-    pub fn is_all_expired(&self, current_ns: u64) -> bool {
-        self.active_count(current_ns) == 0
-    }
-
-    #[must_use]
-    pub fn is_locked(&self, target_id: TargetId, current_ns: u64) -> bool {
-        self.active_iter(current_ns)
-            .any(|lock| lock.target_id == target_id)
-    }
-
-    #[must_use]
-    pub fn is_locked_by_op(&self, target_id: TargetId, op_id: u64, current_ns: u64) -> bool {
-        self.active_iter(current_ns)
-            .any(|lock| lock.target_id == target_id && lock.op_id == Some(op_id))
-    }
-
-    #[must_use]
-    pub fn get_lock(&self, target_id: TargetId, current_ns: u64) -> Option<&MarketLock> {
-        self.active_iter(current_ns)
-            .find(|l| l.target_id == target_id)
-    }
-
-    /// Acquire a lock, returning an updated lock set or the existing lock on conflict.
-    pub fn acquire(&self, lock: MarketLock, current_ns: u64) -> Result<Self, MarketLock> {
-        if let Some(existing) = self
-            .active_iter(current_ns)
-            .find(|l| l.target_id == lock.target_id)
-        {
-            return Err(existing.clone());
+    pub fn from_parts(
+        leases_by_target: OrderedMap<TargetId, MarketLease>,
+        next_fencing_token: u64,
+    ) -> Self {
+        Self {
+            leases_by_target,
+            next_fencing_token,
         }
-
-        let mut new_set = self.clone();
-        // Remove any expired locks for this target
-        new_set
-            .locks
-            .retain(|l| l.target_id != lock.target_id || !l.is_expired(current_ns));
-        new_set.locks.push(lock);
-        Ok(new_set)
     }
 
     #[must_use]
-    pub fn release(&self, target_id: TargetId) -> Self {
-        let mut new_set = self.clone();
-        new_set.locks.retain(|l| l.target_id != target_id);
-        new_set
+    pub fn stored_len(&self) -> usize {
+        self.leases_by_target.len()
     }
 
-    /// Release a lock held by a specific operation.
     #[must_use]
-    pub fn release_by_op(&self, target_id: TargetId, op_id: u64) -> Self {
-        let mut new_set = self.clone();
-        new_set
-            .locks
-            .retain(|l| l.target_id != target_id || l.op_id != Some(op_id));
-        new_set
+    pub fn active_len(&self, now: TimestampNs) -> usize {
+        self.leases_by_target
+            .values()
+            .filter(|lease| !lease.is_expired(now))
+            .count()
     }
 
-    /// Release all locks held by a specific operation.
     #[must_use]
-    pub fn release_all_by_op(&self, op_id: u64) -> Self {
-        let mut new_set = self.clone();
-        new_set.locks.retain(|l| l.op_id != Some(op_id));
-        new_set
+    pub fn get(&self, target_id: TargetId) -> Option<&MarketLease> {
+        self.leases_by_target.get(&target_id)
     }
 
-    /// Clear all locks (emergency reset).
     #[must_use]
-    pub fn clear(&self) -> Self {
-        Self::default()
+    pub fn get_active(&self, target_id: TargetId, now: TimestampNs) -> Option<&MarketLease> {
+        self.get(target_id).filter(|lease| !lease.is_expired(now))
     }
 
-    /// Clean up expired locks.
     #[must_use]
-    pub fn cleanup_expired(&self, current_ns: u64) -> Self {
-        let mut new_set = self.clone();
-        new_set.locks.retain(|l| !l.is_expired(current_ns));
-        new_set
+    pub fn is_leased(&self, target_id: TargetId, now: TimestampNs) -> bool {
+        self.get_active(target_id, now).is_some()
     }
 
-    /// Get all currently locked target IDs.
     #[must_use]
-    pub fn locked_targets(&self, current_ns: u64) -> Vec<TargetId> {
-        self.active_iter(current_ns).map(|l| l.target_id).collect()
+    pub fn is_leased_by_owner(
+        &self,
+        target_id: TargetId,
+        owner: &LeaseOwner,
+        now: TimestampNs,
+    ) -> bool {
+        self.get_active(target_id, now)
+            .is_some_and(|lease| &lease.owner == owner)
     }
 
-    /// Check if any of the targets in a list are locked.
     #[must_use]
-    pub fn find_locked_targets(&self, targets: &[TargetId], current_ns: u64) -> Vec<TargetId> {
+    pub fn leased_targets(&self, now: TimestampNs) -> Vec<TargetId> {
+        self.leases_by_target
+            .iter()
+            .filter_map(|(target_id, lease)| (!lease.is_expired(now)).then_some(*target_id))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn find_leased_targets(&self, targets: &[TargetId], now: TimestampNs) -> Vec<TargetId> {
         targets
             .iter()
             .copied()
-            .filter(|t| self.is_locked(*t, current_ns))
+            .filter(|target_id| self.is_leased(*target_id, now))
             .collect()
     }
-}
 
-impl From<Vec<MarketLock>> for MarketLockSet {
-    fn from(locks: Vec<MarketLock>) -> Self {
-        Self { locks }
+    #[must_use]
+    pub fn cleanup_expired(&self, now: TimestampNs) -> Self {
+        let mut next = self.clone();
+        next.leases_by_target
+            .retain(|_, lease| !lease.is_expired(now));
+        next
+    }
+
+    #[must_use]
+    pub fn clear(&self) -> Self {
+        let mut next = self.clone();
+        next.leases_by_target.clear();
+        next
+    }
+
+    pub fn try_acquire(
+        &self,
+        target_id: TargetId,
+        owner: LeaseOwner,
+        op_id: Option<u64>,
+        now: TimestampNs,
+        ttl: LeaseDurationNs,
+    ) -> Result<(Self, MarketLease), AcquireLeaseError> {
+        if ttl.0 == 0 {
+            return Err(AcquireLeaseError::ZeroTtl);
+        }
+
+        let expires_at = u64::from(now)
+            .checked_add(ttl.0)
+            .map(TimestampNs)
+            .ok_or(AcquireLeaseError::ExpiryOverflow)?;
+
+        let cleaned = self.cleanup_expired(now);
+
+        if let Some(existing) = cleaned.get_active(target_id, now) {
+            if existing.owner != owner {
+                return Err(AcquireLeaseError::AlreadyLeased {
+                    existing: existing.clone(),
+                });
+            }
+        }
+
+        let next_fencing_token = cleaned
+            .next_fencing_token
+            .checked_add(1)
+            .expect("fencing token overflow should be unreachable");
+
+        let lease = MarketLease {
+            target_id,
+            owner,
+            op_id,
+            acquired_at: now,
+            expires_at,
+            fencing_token: FencingToken(next_fencing_token),
+        };
+
+        let mut next = cleaned;
+        next.next_fencing_token = next_fencing_token;
+        next.leases_by_target.insert(target_id, lease.clone());
+        Ok((next, lease))
+    }
+
+    pub fn release_if_owned(
+        &self,
+        target_id: TargetId,
+        owner: &LeaseOwner,
+    ) -> Result<Self, ReleaseLeaseError> {
+        let Some(existing) = self.leases_by_target.get(&target_id) else {
+            return Err(ReleaseLeaseError::NotFound { target_id });
+        };
+
+        if &existing.owner != owner {
+            return Err(ReleaseLeaseError::OwnerMismatch {
+                target_id,
+                expected_owner: existing.owner.clone(),
+                actual_owner: owner.clone(),
+            });
+        }
+
+        let mut next = self.clone();
+        next.leases_by_target.remove(&target_id);
+        Ok(next)
+    }
+
+    pub fn release_if_owned_with_token(
+        &self,
+        target_id: TargetId,
+        owner: &LeaseOwner,
+        token: FencingToken,
+    ) -> Result<Self, ReleaseLeaseError> {
+        let Some(existing) = self.leases_by_target.get(&target_id) else {
+            return Err(ReleaseLeaseError::NotFound { target_id });
+        };
+
+        if &existing.owner != owner {
+            return Err(ReleaseLeaseError::OwnerMismatch {
+                target_id,
+                expected_owner: existing.owner.clone(),
+                actual_owner: owner.clone(),
+            });
+        }
+
+        if existing.fencing_token != token {
+            return Err(ReleaseLeaseError::TokenMismatch {
+                target_id,
+                expected_token: existing.fencing_token,
+                actual_token: token,
+            });
+        }
+
+        let mut next = self.clone();
+        next.leases_by_target.remove(&target_id);
+        Ok(next)
+    }
+
+    #[must_use]
+    pub fn force_release(&self, target_id: TargetId) -> Self {
+        let mut next = self.clone();
+        next.leases_by_target.remove(&target_id);
+        next
+    }
+
+    #[must_use]
+    pub fn force_release_by_op(&self, op_id: u64) -> Self {
+        let mut next = self.clone();
+        next.leases_by_target
+            .retain(|_, lease| lease.op_id != Some(op_id));
+        next
+    }
+
+    pub fn assert_token_current(
+        &self,
+        target_id: TargetId,
+        token: FencingToken,
+        now: TimestampNs,
+    ) -> Result<(), FencingError> {
+        let Some(current) = self.get_active(target_id, now) else {
+            return Err(FencingError::NotFound { target_id });
+        };
+
+        if current.fencing_token != token {
+            return Err(FencingError::NotCurrent {
+                target_id,
+                presented: token,
+                current: current.fencing_token,
+            });
+        }
+
+        Ok(())
     }
 }

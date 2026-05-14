@@ -87,7 +87,7 @@ impl<T> Fees<T> {
 ///
 /// The executor is responsible for mapping chain-native addresses to/from
 /// this canonical 32-byte format.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeSlot {
     /// The fee rate as a WAD value (1e18 = 100%).
@@ -140,7 +140,7 @@ impl Default for FeeSlot {
 ///
 /// This type matches the kernel spec exactly and uses fixed-size addresses
 /// for performance and predictable serialization.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeesSpec {
     /// Performance fee (charged on profits).
@@ -205,6 +205,130 @@ impl FeesSpec {
 impl Default for FeesSpec {
     fn default() -> Self {
         Self::zero()
+    }
+}
+
+#[cfg(all(feature = "serde", not(feature = "postcard")))]
+mod serde_impl {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize)]
+    struct FeeSlotSerde {
+        fee_wad: Wad,
+        recipient: Address,
+    }
+
+    impl Serialize for FeeSlot {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            FeeSlotSerde {
+                fee_wad: self.fee_wad,
+                recipient: self.recipient,
+            }
+            .serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for FeeSlot {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let value = FeeSlotSerde::deserialize(deserializer)?;
+            Ok(Self::new(value.fee_wad, value.recipient))
+        }
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct FeesSpecSerde {
+        performance: FeeSlot,
+        management: FeeSlot,
+        max_total_assets_growth_rate: Option<Wad>,
+    }
+
+    impl Serialize for FeesSpec {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            FeesSpecSerde {
+                performance: self.performance,
+                management: self.management,
+                max_total_assets_growth_rate: self.max_total_assets_growth_rate,
+            }
+            .serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for FeesSpec {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let value = FeesSpecSerde::deserialize(deserializer)?;
+            Ok(Self::new(
+                value.performance,
+                value.management,
+                value.max_total_assets_growth_rate,
+            ))
+        }
+    }
+}
+
+#[cfg(feature = "postcard")]
+mod postcard_serde_impl {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    impl Serialize for FeeSlot {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            (&self.fee_wad, &self.recipient).serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for FeeSlot {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            <(Wad, Address)>::deserialize(deserializer)
+                .map(|(fee_wad, recipient)| Self { fee_wad, recipient })
+        }
+    }
+
+    impl Serialize for FeesSpec {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            (
+                &self.performance,
+                &self.management,
+                &self.max_total_assets_growth_rate,
+            )
+                .serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for FeesSpec {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            <(FeeSlot, FeeSlot, Option<Wad>)>::deserialize(deserializer).map(
+                |(performance, management, max_total_assets_growth_rate)| Self {
+                    performance,
+                    management,
+                    max_total_assets_growth_rate,
+                },
+            )
+        }
     }
 }
 

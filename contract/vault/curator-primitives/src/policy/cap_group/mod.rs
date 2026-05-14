@@ -3,43 +3,129 @@
 use alloc::string::String;
 #[cfg(feature = "borsh-schema")]
 use alloc::string::ToString;
-use core::num::NonZeroU128;
+use alloc::vec::Vec;
+use core::str::FromStr;
 #[cfg(not(target_arch = "wasm32"))]
 use derive_more::Display;
-use derive_more::{From, Into};
 use templar_vault_kernel::Wad;
 use typed_builder::TypedBuilder;
 
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Display))]
 #[cfg_attr(not(target_arch = "wasm32"), display("{_0}"))]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, From, Into)]
-pub struct CapGroupId(pub String);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CapGroupId(String);
 
-impl From<&str> for CapGroupId {
-    fn from(value: &str) -> Self {
-        Self(String::from(value))
+impl CapGroupId {
+    const POLICY_STATE_SENTINEL: &'static str = "policy-state";
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
+
+    #[must_use]
+    pub(crate) fn policy_state_sentinel() -> Self {
+        Self(String::from(Self::POLICY_STATE_SENTINEL))
+    }
+
+    fn validate(value: &str) -> Result<(), CapGroupIdError> {
+        const MAX_LEN: usize = 64;
+
+        if value.is_empty() {
+            return Err(CapGroupIdError::Empty);
+        }
+
+        if value.len() > MAX_LEN {
+            return Err(CapGroupIdError::TooLong { max_len: MAX_LEN });
+        }
+
+        if !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        }) {
+            return Err(CapGroupIdError::InvalidCharacter);
+        }
+
+        Ok(())
+    }
+}
+
+impl TryFrom<String> for CapGroupId {
+    type Error = CapGroupIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::validate(&value)?;
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<&str> for CapGroupId {
+    type Error = CapGroupIdError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::validate(value)?;
+        Ok(Self(String::from(value)))
+    }
+}
+
+impl FromStr for CapGroupId {
+    type Err = CapGroupIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
+impl From<CapGroupId> for String {
+    fn from(value: CapGroupId) -> Self {
+        value.0
+    }
+}
+
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, PartialEq, Eq)]
+pub enum CapGroupIdError {
+    Empty,
+    TooLong { max_len: usize },
+    InvalidCharacter,
 }
 
 /// A cap group defines maximum allocation limits for a set of markets.
 ///
 /// Caps are optional - `None` means no limit for that cap type.
 /// When both caps are set, the effective cap is the minimum of the two.
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[derive(Clone, PartialEq, Eq, Default, TypedBuilder)]
 pub struct CapGroup {
     /// Absolute cap in underlying asset units.
     /// `None` means no absolute cap.
-    #[builder(default, setter(transform = |cap: u128| NonZeroU128::new(cap)))]
-    pub absolute_cap: Option<NonZeroU128>,
+    #[builder(default, setter(transform = |cap: u128| Some(cap)))]
+    absolute_cap: Option<u128>,
     /// Relative cap as a WAD fraction of total vault assets (1e18 = 100%).
     /// `None` means no relative cap.
-    #[builder(default, setter(transform = |cap: Wad| if cap.is_zero() { None } else { Some(cap) }))]
-    pub relative_cap: Option<Wad>,
+    #[builder(default, setter(transform = |cap: Wad| Some(cap)))]
+    relative_cap: Option<Wad>,
 }
 
 impl CapGroup {
+    #[must_use]
+    pub fn absolute_cap(&self) -> Option<u128> {
+        self.absolute_cap
+    }
+
+    #[must_use]
+    pub fn relative_cap(&self) -> Option<Wad> {
+        self.relative_cap
+    }
+
+    pub fn set_absolute_cap(&mut self, absolute_cap: Option<u128>) {
+        self.absolute_cap = absolute_cap;
+    }
+
+    pub fn set_relative_cap(&mut self, relative_cap: Option<Wad>) {
+        self.relative_cap = relative_cap;
+    }
+
     #[must_use]
     pub fn is_unlimited(&self) -> bool {
         self.absolute_cap.is_none() && self.relative_cap.is_none()
@@ -54,7 +140,7 @@ impl CapGroup {
             return u128::MAX;
         }
 
-        let absolute = self.absolute_cap.map(|c| c.get()).unwrap_or(u128::MAX);
+        let absolute = self.absolute_cap.unwrap_or(u128::MAX);
 
         let relative = self
             .relative_cap
@@ -70,10 +156,6 @@ impl CapGroup {
     /// Check if an allocation is allowed under cap group constraints.
     #[must_use]
     pub fn can_allocate(&self, current_principal: u128, amount: u128, total_assets: u128) -> bool {
-        if self.is_unlimited() {
-            return true;
-        }
-
         let Some(new_principal) = current_principal.checked_add(amount) else {
             return false;
         };
@@ -87,10 +169,6 @@ impl CapGroup {
         amount: u128,
         total_assets: u128,
     ) -> Result<(), CapGroupError> {
-        if self.is_unlimited() {
-            return Ok(());
-        }
-
         let Some(new_principal) = current_principal.checked_add(amount) else {
             return Err(CapGroupError::Overflow {
                 current_principal,
@@ -99,11 +177,12 @@ impl CapGroup {
         };
 
         if let Some(abs_cap) = self.absolute_cap {
-            if new_principal > abs_cap.get() {
+            if new_principal > abs_cap {
                 return Err(CapGroupError::ExceedsAbsoluteCap {
+                    cap_group_id: None,
                     requested: amount,
                     current_principal,
-                    absolute_cap: abs_cap.get(),
+                    absolute_cap: abs_cap,
                 });
             }
         }
@@ -115,6 +194,7 @@ impl CapGroup {
 
             if new_principal > effective_cap {
                 return Err(CapGroupError::ExceedsRelativeCap {
+                    cap_group_id: None,
                     requested: amount,
                     current_principal,
                     effective_cap,
@@ -129,17 +209,13 @@ impl CapGroup {
     /// Compute the maximum additional amount that can be allocated to a cap group.
     #[must_use]
     pub fn available_capacity(&self, current_principal: u128, total_assets: u128) -> u128 {
-        if self.is_unlimited() {
-            return u128::MAX;
-        }
-
-        let effective_cap = self.effective_cap(total_assets);
-        effective_cap.saturating_sub(current_principal)
+        self.effective_cap(total_assets)
+            .saturating_sub(current_principal)
     }
 }
 
 /// Record tracking the state of a cap group.
-#[templar_vault_macros::vault_derive(borsh, borsh_schema, postcard, schemars, serde)]
+#[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
 #[derive(Clone, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.
@@ -150,21 +226,35 @@ pub struct CapGroupRecord {
 
 impl CapGroupRecord {
     /// Apply an allocation to a cap group record.
-    #[must_use]
-    pub fn apply_allocation(&self, amount: u128) -> Self {
-        Self {
+    pub fn apply_allocation(&self, amount: u128) -> Result<Self, CapGroupError> {
+        let principal = self
+            .principal
+            .checked_add(amount)
+            .ok_or(CapGroupError::Overflow {
+                current_principal: self.principal,
+                requested: amount,
+            })?;
+
+        Ok(Self {
             cap: self.cap.clone(),
-            principal: self.principal.checked_add(amount).unwrap(),
-        }
+            principal,
+        })
     }
 
     /// Remove allocation from a cap group record.
-    #[must_use]
-    pub fn remove_allocation(&self, amount: u128) -> Self {
-        Self {
+    pub fn remove_allocation(&self, amount: u128) -> Result<Self, CapGroupError> {
+        let principal = self
+            .principal
+            .checked_sub(amount)
+            .ok_or(CapGroupError::Underflow {
+                current_principal: self.principal,
+                requested: amount,
+            })?;
+
+        Ok(Self {
             cap: self.cap.clone(),
-            principal: self.principal.checked_sub(amount).unwrap(),
-        }
+            principal,
+        })
     }
 
     /// Check if an allocation is allowed.
@@ -197,23 +287,34 @@ impl From<CapGroup> for CapGroupRecord {
 pub enum CapGroupError {
     /// Allocation would exceed the absolute cap.
     ExceedsAbsoluteCap {
+        cap_group_id: Option<CapGroupId>,
         requested: u128,
         current_principal: u128,
         absolute_cap: u128,
     },
     /// Allocation would exceed the relative cap.
     ExceedsRelativeCap {
+        cap_group_id: Option<CapGroupId>,
         requested: u128,
         current_principal: u128,
         effective_cap: u128,
         total_assets: u128,
     },
     /// Cap group not found.
-    NotFound { id: CapGroupId },
+    NotFound {
+        id: CapGroupId,
+    },
     /// Arithmetic overflow when computing new principal.
     Overflow {
         current_principal: u128,
         requested: u128,
+    },
+    Underflow {
+        current_principal: u128,
+        requested: u128,
+    },
+    InconsistentRecord {
+        id: CapGroupId,
     },
 }
 
@@ -223,11 +324,11 @@ pub enum CapGroupError {
 pub enum CapGroupUpdate {
     SetCap {
         cap_group_id: CapGroupId,
-        new_cap: u128,
+        new_cap: Option<u128>,
     },
     SetRelativeCap {
         cap_group_id: CapGroupId,
-        new_relative_cap_wad: u128,
+        new_relative_cap: Option<Wad>,
     },
     SetMembership {
         market_id: templar_vault_kernel::TargetId,
@@ -290,38 +391,73 @@ pub fn validate_allocations(
     allocations: &[(&CapGroupId, &CapGroupRecord, u128)],
     total_assets: u128,
 ) -> Result<(), CapGroupError> {
-    use alloc::collections::BTreeMap;
-
-    // Track cumulative allocations per cap group ID
-    let mut cumulative: BTreeMap<&CapGroupId, u128> = BTreeMap::new();
+    let mut cumulative: Vec<(&CapGroupId, CapGroupRecord, u128)> = Vec::new();
 
     for (group_id, record, amount) in allocations {
-        let prior_cumulative = cumulative.get(group_id).copied().unwrap_or(0);
+        let existing = cumulative
+            .iter_mut()
+            .find(|(existing_group_id, _, _)| *existing_group_id == *group_id);
 
-        // Compute effective principal including prior allocations in this batch
-        let effective_principal =
-            record
-                .principal
-                .checked_add(prior_cumulative)
-                .ok_or(CapGroupError::Overflow {
-                    current_principal: record.principal,
-                    requested: prior_cumulative,
-                })?;
+        let (_, canonical_record, prior_cumulative) = match existing {
+            Some(existing) => existing,
+            None => {
+                cumulative.push((group_id, (*record).clone(), 0));
+                cumulative.last_mut().unwrap()
+            }
+        };
 
-        // Enforce against the effective (cumulative) principal
-        record
+        if canonical_record.principal != record.principal || canonical_record.cap != record.cap {
+            return Err(CapGroupError::InconsistentRecord {
+                id: (*group_id).clone(),
+            });
+        }
+
+        let effective_principal = canonical_record
+            .principal
+            .checked_add(*prior_cumulative)
+            .ok_or(CapGroupError::Overflow {
+                current_principal: canonical_record.principal,
+                requested: *prior_cumulative,
+            })?;
+
+        canonical_record
             .cap
-            .enforce(effective_principal, *amount, total_assets)?;
+            .enforce(effective_principal, *amount, total_assets)
+            .map_err(|error| match error {
+                CapGroupError::ExceedsAbsoluteCap {
+                    requested,
+                    current_principal,
+                    absolute_cap,
+                    ..
+                } => CapGroupError::ExceedsAbsoluteCap {
+                    cap_group_id: Some((*group_id).clone()),
+                    requested,
+                    current_principal,
+                    absolute_cap,
+                },
+                CapGroupError::ExceedsRelativeCap {
+                    requested,
+                    current_principal,
+                    effective_cap,
+                    total_assets,
+                    ..
+                } => CapGroupError::ExceedsRelativeCap {
+                    cap_group_id: Some((*group_id).clone()),
+                    requested,
+                    current_principal,
+                    effective_cap,
+                    total_assets,
+                },
+                other => other,
+            })?;
 
-        // Update cumulative total for this group
-        let new_cumulative =
+        *prior_cumulative =
             prior_cumulative
                 .checked_add(*amount)
                 .ok_or(CapGroupError::Overflow {
-                    current_principal: prior_cumulative,
+                    current_principal: *prior_cumulative,
                     requested: *amount,
                 })?;
-        cumulative.insert(group_id, new_cumulative);
     }
     Ok(())
 }

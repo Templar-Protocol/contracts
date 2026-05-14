@@ -19,6 +19,7 @@ soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 templar-curator-primitives = { path = "../../curator-primitives" }
 templar-vault-kernel = { path = "../../kernel" }
 templar-soroban-shared-types = { path = "../shared-types" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }

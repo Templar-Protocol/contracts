@@ -36,6 +36,7 @@ fn test_allocating_state() {
 fn test_withdrawing_state() {
     let withdraw = WithdrawingState {
         op_id: 100,
+        request_id: 101,
         index: 1,
         remaining: 500,
         collected: 200,
@@ -49,6 +50,7 @@ fn test_withdrawing_state() {
     assert_eq!(state.op_id(), Some(100));
 
     let inner = state.as_withdrawing().unwrap();
+    assert_eq!(inner.request_id, 101);
     assert_eq!(inner.receiver, receiver_addr(1));
     assert_eq!(inner.owner, owner_addr(1));
 }
@@ -73,6 +75,7 @@ fn test_refreshing_state() {
 fn test_payout_state() {
     let payout = PayoutState {
         op_id: 300,
+        request_id: 301,
         receiver: receiver_addr(1),
         amount: 1000,
         owner: owner_addr(1),
@@ -85,6 +88,7 @@ fn test_payout_state() {
     assert_eq!(state.op_id(), Some(300));
 
     let inner = state.as_payout().unwrap();
+    assert_eq!(inner.request_id, 301);
     assert_eq!(inner.amount, 1000);
     assert_eq!(inner.burn_shares, 400);
 }
@@ -108,6 +112,7 @@ fn test_from_impls() {
     // Test From<WithdrawingState>
     let withdraw = WithdrawingState {
         op_id: 2,
+        request_id: 20,
         index: 0,
         remaining: 50,
         collected: 0,
@@ -117,6 +122,7 @@ fn test_from_impls() {
     };
     let state: OpState = withdraw.into();
     assert!(state.is_withdrawing());
+    assert_eq!(state.as_withdrawing().unwrap().request_id, 20);
 
     // Test From<RefreshingState>
     let refresh = RefreshingState {
@@ -130,6 +136,7 @@ fn test_from_impls() {
     // Test From<PayoutState>
     let payout = PayoutState {
         op_id: 4,
+        request_id: 40,
         receiver: receiver_addr(3),
         amount: 100,
         owner: owner_addr(3),
@@ -138,4 +145,5 @@ fn test_from_impls() {
     };
     let state: OpState = payout.into();
     assert!(state.is_payout());
+    assert_eq!(state.as_payout().unwrap().request_id, 40);
 }

@@ -4,7 +4,22 @@ mod auth_tests {
     use crate::auth::{ActionKind, AuthError, SorobanAuth};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Env};
+    use templar_curator_primitives::auth::{AuthPolicyClass, AuthResult};
     use templar_curator_primitives::rbac::Role;
+
+    fn assert_missing_role(
+        result: AuthResult<()>,
+        action: ActionKind,
+        policy_class: AuthPolicyClass,
+    ) {
+        assert!(matches!(
+            result,
+            Err(AuthError::MissingRole {
+                action: actual_action,
+                policy_class: actual_policy_class,
+            }) if actual_action == action && actual_policy_class == policy_class
+        ));
+    }
 
     #[test]
     fn test_soroban_auth_new() {
@@ -73,7 +88,11 @@ mod auth_tests {
         assert!(auth.check_role(ActionKind::RequestWithdraw, &user).is_ok());
 
         let result = auth.check_role(ActionKind::ExecuteWithdraw, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ExecuteWithdraw,
+            AuthPolicyClass::Allocator,
+        );
     }
 
     #[test]
@@ -91,7 +110,7 @@ mod auth_tests {
         assert!(auth.check_role(ActionKind::Pause, &curator).is_ok());
         // User cannot pause
         let result = auth.check_role(ActionKind::Pause, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::Pause, AuthPolicyClass::Sentinel);
 
         assert!(auth
             .check_role(ActionKind::SetRestrictions, &sentinel)
@@ -131,7 +150,11 @@ mod auth_tests {
 
         // User cannot
         let result = auth.check_role(ActionKind::BeginAllocating, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::BeginAllocating,
+            AuthPolicyClass::Allocator,
+        );
     }
 
     #[test]
@@ -160,7 +183,11 @@ mod auth_tests {
             .is_ok());
 
         let result = auth.check_role(ActionKind::AbortWithdrawing, &user);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::AbortWithdrawing,
+            AuthPolicyClass::AllocatorEmergency,
+        );
     }
 
     #[test]
@@ -178,15 +205,19 @@ mod auth_tests {
 
         // Allocator cannot
         let result = auth.check_role(ActionKind::ManualReconcile, &allocator);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(
+            result,
+            ActionKind::ManualReconcile,
+            AuthPolicyClass::Curator,
+        );
 
         assert!(auth.check_role(ActionKind::PolicyAdmin, &curator).is_ok());
         let result = auth.check_role(ActionKind::PolicyAdmin, &allocator);
-        assert!(matches!(result, Err(AuthError::MissingRole)));
+        assert_missing_role(result, ActionKind::PolicyAdmin, AuthPolicyClass::Curator);
     }
 
     #[test]
-    fn test_soroban_auth_paused_allows_privileged_actions() {
+    fn test_soroban_auth_paused_blocks_non_whitelisted_actions() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
         let allocator = SdkAddress::generate(&env);
@@ -195,10 +226,46 @@ mod auth_tests {
             SorobanAuth::with_roles(&env, curator.clone(), None, Some(allocator.clone()));
         auth.set_paused(true);
 
+        let result = auth.check_role(ActionKind::BeginAllocating, &allocator);
+        assert!(matches!(result, Err(AuthError::VaultPaused)));
+        let result = auth.check_role(ActionKind::PolicyAdmin, &curator);
+        assert!(matches!(result, Err(AuthError::VaultPaused)));
+    }
+
+    #[test]
+    fn test_soroban_auth_paused_allows_whitelisted_actions() {
+        let env = Env::default();
+        let curator = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
+        let allocator = SdkAddress::generate(&env);
+
+        let mut auth = SorobanAuth::with_roles(
+            &env,
+            curator.clone(),
+            Some(sentinel.clone()),
+            Some(allocator),
+        );
+        auth.set_paused(true);
+
+        assert!(auth.check_role(ActionKind::Pause, &sentinel).is_ok());
         assert!(auth
-            .check_role(ActionKind::BeginAllocating, &allocator)
+            .check_role(ActionKind::SetRestrictions, &sentinel)
             .is_ok());
-        assert!(auth.check_role(ActionKind::PolicyAdmin, &curator).is_ok());
+        assert!(auth
+            .check_role(ActionKind::AbortAllocating, &sentinel)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::AbortWithdrawing, &sentinel)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::AbortRefreshing, &sentinel)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::ManualReconcile, &curator)
+            .is_ok());
+        assert!(auth
+            .check_role(ActionKind::EmergencyReset, &curator)
+            .is_ok());
     }
 
     #[test]
@@ -222,13 +289,16 @@ mod contract_tests {
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
     use crate::error::RuntimeError;
-    use crate::storage::{SorobanStorage, Storage, VersionedState};
+    use crate::storage::{SorobanStorage, Storage};
     use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
     use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
+    use templar_soroban_shared_types::{
+        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
         FeeAccrualAnchor, FeesSpec, Restrictions, VaultState, MIN_WITHDRAWAL_ASSETS,
@@ -292,6 +362,20 @@ mod contract_tests {
         fn has_address(&self, _kernel_addr: &templar_vault_kernel::Address) -> bool {
             true
         }
+    }
+
+    fn sdk_text(address: &SdkAddress) -> alloc::string::String {
+        alloc::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+    }
+
+    fn execute_command(
+        env: &Env,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+        let payload = Bytes::from_slice(env, &command.encode());
+        let result = SorobanVaultContract::execute(env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| crate::error::ContractError::InvalidInput)
     }
 
     #[derive(Clone, Debug, Default)]
@@ -532,6 +616,23 @@ mod contract_tests {
 
         assert_eq!(result.markets_refreshed, expected);
         assert!(vault.state().unwrap().op_state.is_idle());
+    }
+
+    #[test]
+    fn test_complete_refresh_with_positions_rejects_targets_outside_active_plan() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+
+        let op_id = vault
+            .begin_refreshing(caller, vec![0, 1], 1_500)
+            .expect("should start refresh");
+
+        let error = vault
+            .complete_refresh_with_positions(caller, &[(0, 100), (2, 300)], op_id, 1_500)
+            .expect_err("extra targets must be rejected");
+
+        assert_eq!(error, RuntimeError::InvalidInput);
+        assert!(vault.state().unwrap().op_state.is_refreshing());
     }
 
     #[test]
@@ -799,10 +900,7 @@ mod contract_tests {
         );
 
         env.as_contract(&contract_id, || {
-            let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
-            env.storage()
-                .instance()
-                .set(&VaultDataKey::FeesSpec, &bytes);
+            crate::contract::store_fees_spec(&env, &fees).expect("store fees spec");
         });
 
         env.as_contract(&contract_id, || {
@@ -872,16 +970,19 @@ mod contract_tests {
             )
             .unwrap();
 
-            SorobanVaultContract::set_governance_config(
-                env.clone(),
-                governance,
-                templar_soroban_shared_types::GovernanceConfigKind::VirtualOffsets,
-                None,
-                None,
-                Some(101),
-                Some(202),
+            let result = execute_command(
+                &env,
+                &VaultCommand::SetGovernanceConfig {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                    primary: None,
+                    many: None,
+                    value_a: Some(101),
+                    value_b: Some(202),
+                },
             )
             .unwrap();
+            assert!(matches!(result, VaultCommandResult::Unit));
 
             assert_eq!(
                 env.storage().instance().get(&VaultDataKey::VirtualShares),
@@ -952,6 +1053,7 @@ mod contract_tests {
                 result = Some(vault.atomic_withdraw(
                     self.env,
                     assets,
+                    i128::MAX,
                     receiver.clone(),
                     owner.clone(),
                     operator.clone(),
@@ -965,7 +1067,6 @@ mod contract_tests {
     #[test]
     fn test_atomic_withdraw_refreshes_fees() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-        use soroban_sdk::token::StellarAssetClient;
         use templar_vault_kernel::fee::FeeSlot;
         use templar_vault_kernel::math::wad::Wad;
 
@@ -979,17 +1080,8 @@ mod contract_tests {
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
-
-        let asset_admin = soroban_sdk::Address::generate(&env);
-        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
-        let asset = asset_sac.address();
-        let asset_admin_client = StellarAssetClient::new(&env, &asset);
-
-        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
-        let share = share_sac.address();
-        let share_admin_client = StellarAssetClient::new(&env, &share);
-        let proxy = VaultProxy::new(&env);
-
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
         let owner = soroban_sdk::Address::generate(&env);
         let receiver = soroban_sdk::Address::generate(&env);
         let operator = owner.clone();
@@ -997,11 +1089,15 @@ mod contract_tests {
         let perf_recipient = soroban_sdk::Address::generate(&env);
 
         env.as_contract(&contract_id, || {
-            proxy
-                .initialize(curator.clone(), curator, asset.clone(), share.clone())
-                .unwrap();
-
-            let fees = FeesSpec::new(
+            let config = ContractConfig::new(
+                kernel_address_from_sdk(&env, &curator),
+                kernel_address_from_sdk(&env, &contract_id),
+                vec![],
+                vec![],
+                kernel_address_from_sdk(&env, &asset),
+                kernel_address_from_sdk(&env, &share),
+            )
+            .with_fees(FeesSpec::new(
                 FeeSlot::new(
                     Wad::one() / 10,
                     kernel_address_from_sdk(&env, &perf_recipient),
@@ -1011,53 +1107,72 @@ mod contract_tests {
                     kernel_address_from_sdk(&env, &mgmt_recipient),
                 ),
                 None,
-            );
-            let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
-            env.storage()
-                .instance()
-                .set(&VaultDataKey::FeesSpec, &bytes);
-
-            let mut storage = SorobanStorage::new(&env);
-            storage.save_address(
-                &kernel_address_from_sdk(&env, &mgmt_recipient),
-                &mgmt_recipient,
-            );
-            storage.save_address(
-                &kernel_address_from_sdk(&env, &perf_recipient),
-                &perf_recipient,
-            );
-
-            let state = VaultState {
+            ));
+            let mut storage = MemoryStorage::with_state(VaultState {
                 total_assets: 1_500,
                 total_shares: 1_000,
                 idle_assets: 1_500,
                 fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
                 ..Default::default()
-            };
+            });
             storage
-                .save_state(&VersionedState::new(state))
-                .expect("save state");
-        });
+                .save_address(
+                    &kernel_address_from_sdk(&env, &mgmt_recipient),
+                    &mgmt_recipient,
+                )
+                .expect("save management recipient address");
+            storage
+                .save_address(
+                    &kernel_address_from_sdk(&env, &perf_recipient),
+                    &perf_recipient,
+                )
+                .expect("save performance recipient address");
+            let mut vault =
+                CuratorVault::new(config, storage, TestPermissiveAuth, MockInterpreter::new());
+            vault.load_state().expect("load state");
 
-        asset_admin_client.mint(&contract_id, &1_500);
-        share_admin_client.mint(&owner, &1_000);
+            let burned = vault
+                .atomic_withdraw(
+                    &env,
+                    500,
+                    i128::MAX,
+                    receiver.clone(),
+                    owner.clone(),
+                    operator,
+                )
+                .expect("withdraw should succeed");
+            assert!(burned > 0);
 
-        let burned = env
-            .as_contract(&contract_id, || {
-                proxy.withdraw(&receiver, &owner, &operator, 500)
-            })
-            .expect("withdraw should succeed");
-        assert!(burned > 0);
+            let minted_effects: Vec<_> = vault
+                .interpreter
+                .effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    KernelEffect::MintShares { owner, shares } => Some((*owner, *shares)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(minted_effects.len(), 1);
+            assert!(minted_effects.iter().any(|(owner, shares)| {
+                *owner == kernel_address_from_sdk(&env, &perf_recipient) && *shares > 0
+            }));
+            assert!(!minted_effects
+                .iter()
+                .any(|(owner, _)| { *owner == kernel_address_from_sdk(&env, &mgmt_recipient) }));
 
-        let share_client = soroban_sdk::token::Client::new(&env, &share);
-        assert!(share_client.balance(&perf_recipient) > 0);
+            let burned_effect = vault.interpreter.effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    KernelEffect::BurnShares { owner: effect_owner, shares }
+                        if *effect_owner == kernel_address_from_sdk(&env, &owner) && *shares > 0
+                )
+            });
+            assert!(burned_effect);
 
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned = storage.load_state().unwrap().expect("state");
-            assert_eq!(versioned.state.fee_anchor.total_assets, 1_500);
+            let state = vault.state().expect("state loaded");
+            assert_eq!(state.fee_anchor.total_assets, 1_500);
             assert_eq!(
-                versioned.state.fee_anchor.timestamp_ns,
+                state.fee_anchor.timestamp_ns,
                 templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
             );
         });
@@ -1101,9 +1216,7 @@ mod contract_tests {
                 idle_assets: 1_500,
                 ..Default::default()
             };
-            storage
-                .save_state(&VersionedState::new(state))
-                .expect("save state");
+            storage.save_state(&state).expect("save state");
         });
 
         asset_admin_client.mint(&contract_id, &1_500);
@@ -1182,15 +1295,20 @@ mod contract_tests {
         env.cost_estimate().budget().reset_default();
         let minted = env
             .as_contract(&contract_id, || {
-                SorobanVaultContract::deposit_with_min(
-                    env.clone(),
-                    owner.clone(),
-                    receiver.clone(),
-                    deposit_assets,
-                    0,
+                execute_command(
+                    &env,
+                    &VaultCommand::DepositWithMin {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        assets: deposit_assets,
+                        min_shares_out: 0,
+                    },
                 )
             })
             .expect("deposit_with_min should succeed");
+        let VaultCommandResult::I128(minted) = minted else {
+            panic!("expected i128 result")
+        };
         let resources = env.cost_estimate().resources();
 
         std::println!(
@@ -1217,10 +1335,7 @@ mod contract_tests {
         let vault = create_test_vault();
 
         // Policy state should be initialized empty
-        assert!(vault.policy_state().locks.is_empty());
-        assert!(vault.policy_state().markets.is_empty());
-        assert!(vault.policy_state().principals.is_empty());
-        assert!(vault.policy_state().cap_groups.is_empty());
+        assert!(vault.policy_state().is_empty());
     }
 
     #[test]
@@ -1248,14 +1363,13 @@ mod contract_tests {
             .unwrap();
 
             let mut storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            storage.save_state(&versioned).unwrap();
+            storage.save_state(&VaultState::default()).unwrap();
             storage.save_paused(false).unwrap();
 
             Storage::save_policy_state(&mut storage, &PolicyState::default()).unwrap();
 
             let restrictions =
-                Restrictions::Blacklist(alloc::vec![templar_vault_kernel::Address([9u8; 32])]);
+                Restrictions::blacklist(alloc::vec![templar_vault_kernel::Address([9u8; 32])]);
             Storage::save_restrictions(&mut storage, &Some(restrictions.clone())).unwrap();
 
             let mut vault = CuratorVault::new(
@@ -1338,8 +1452,18 @@ mod effects_tests {
     use crate::effects::*;
     use crate::error::RuntimeError;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{contract, contractimpl};
     use soroban_sdk::{Address, Env};
     use templar_vault_kernel::effects::KernelEffect;
+
+    #[contract]
+    struct EventTestContract;
+
+    #[contractimpl]
+    impl EventTestContract {
+        pub fn noop(_env: Env) {}
+    }
 
     #[derive(Clone, Debug, Default)]
     struct TestSep41Token {
@@ -1544,13 +1668,13 @@ mod effects_tests {
     }
 
     #[test]
-    fn test_emit_event_serializes_without_address_mapping() {
+    fn test_emit_event_publishes_compact_payload_without_address_mapping() {
         use templar_vault_kernel::effects::KernelEvent;
 
         let env = test_env();
+        let contract_id = env.register(EventTestContract, ());
         let share = TestSep41Token::new();
         let asset = TestSep41Token::new();
-        let mut interpreter = SorobanEffectInterpreter::new(&env, &share, &asset);
         let ctx = test_context();
 
         let effect = KernelEffect::EmitEvent {
@@ -1562,7 +1686,13 @@ mod effects_tests {
             },
         };
 
-        assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
+        env.as_contract(&contract_id, || {
+            let mut interpreter = SorobanEffectInterpreter::new(&env, &share, &asset);
+            assert!(interpreter.execute_effect(&effect, &ctx).is_ok());
+        });
+
+        let events = env.events().all().filter_by_contract(&contract_id);
+        assert_eq!(events.events().len(), 1);
     }
 }
 
@@ -1771,32 +1901,36 @@ mod storage_tests {
     use crate::contract::helpers::set_config_address;
     use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
-    use crate::storage::{
-        SorobanStorage, SorobanStorageKey, Storage, StorageVersion, VersionedState,
-    };
-    use crate::test_utils::MemoryStorage;
+    use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
+    use crate::test_utils::{fuzz_api, MemoryStorage};
+    use alloc::string::{String, ToString};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Address as SdkAddress, Env, Symbol, Vec as SdkVec};
-    use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
-    use templar_vault_kernel::VaultState;
+    use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
+    use templar_curator_primitives::policy::cap_group::CapGroupId;
+    use templar_curator_primitives::policy::state::MarketConfig;
+    use templar_curator_primitives::PolicyState;
+    use templar_soroban_shared_types::{
+        VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+        GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    };
+    use templar_vault_kernel::{
+        Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
+        PendingWithdrawal, Restrictions, TimestampNs, VaultState, WithdrawQueue, WithdrawingState,
+    };
 
-    #[test]
-    fn test_storage_version() {
-        let v1 = StorageVersion::V1;
-        assert_eq!(v1.number(), 1);
-        assert!(v1.is_compatible());
-
-        let current = StorageVersion::CURRENT;
-        assert_eq!(current, StorageVersion::V1);
+    fn sdk_text(address: &SdkAddress) -> std::string::String {
+        std::string::String::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
     }
 
-    #[test]
-    fn test_versioned_state_new() {
-        let state = VaultState::default();
-        let versioned = VersionedState::new(state);
-
-        assert_eq!(versioned.version, StorageVersion::CURRENT);
+    fn execute_command(
+        env: &Env,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+        let payload = Bytes::from_slice(env, &command.encode());
+        let result = SorobanVaultContract::execute(env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| crate::error::ContractError::InvalidInput)
     }
 
     #[test]
@@ -1809,7 +1943,7 @@ mod storage_tests {
     #[test]
     fn test_memory_storage_save_load() {
         let mut storage = MemoryStorage::new();
-        let state = VersionedState::default();
+        let state = VaultState::default();
 
         storage.save_state(&state).unwrap();
         assert!(storage.is_initialized());
@@ -1821,7 +1955,7 @@ mod storage_tests {
 
     #[test]
     fn test_memory_storage_with_state() {
-        let state = VersionedState::default();
+        let state = VaultState::default();
         let storage = MemoryStorage::with_state(state.clone());
 
         assert!(storage.is_initialized());
@@ -1830,7 +1964,7 @@ mod storage_tests {
 
     #[test]
     fn test_memory_storage_clear() {
-        let state = VersionedState::default();
+        let state = VaultState::default();
         let mut storage = MemoryStorage::with_state(state);
 
         storage.clear();
@@ -1855,20 +1989,19 @@ mod storage_tests {
     #[test]
     fn test_storage_key_variants() {
         let key1 = SorobanStorageKey::StateBlob;
-        let key2 = SorobanStorageKey::Version;
-        let key3 = SorobanStorageKey::Paused;
-        let key4 = SorobanStorageKey::PausedState;
-        let key5 = SorobanStorageKey::Restrictions;
+        let key2 = SorobanStorageKey::Paused;
+        let key3 = SorobanStorageKey::PausedState;
+        let key4 = SorobanStorageKey::Restrictions;
 
         assert_ne!(key1, key2);
         assert_ne!(key3, key4);
-        assert_ne!(key4, key5);
+        assert_ne!(key2, key4);
     }
 
     #[test]
     fn test_soroban_storage_key_constants_are_distinct() {
         // All Symbol constants should be distinct from each other
-        let keys: [Symbol; 9] = [
+        let keys: [Symbol; 8] = [
             SorobanStorageKey::StateBlob,
             SorobanStorageKey::PolicyLocks,
             SorobanStorageKey::PolicySupplyQueue,
@@ -1876,7 +2009,6 @@ mod storage_tests {
             SorobanStorageKey::PolicyPrincipals,
             SorobanStorageKey::PolicyCapGroups,
             SorobanStorageKey::Restrictions,
-            SorobanStorageKey::Version,
             SorobanStorageKey::Paused,
         ];
         for i in 0..keys.len() {
@@ -1914,7 +2046,6 @@ mod storage_tests {
 
             // Fresh storage should not be initialized
             assert!(!storage.is_initialized());
-            assert!(storage.get_version().is_none());
             assert!(storage.load_state_blob().is_none());
 
             // Save state
@@ -1926,24 +2057,19 @@ mod storage_tests {
                 next_op_id: 1,
                 ..Default::default()
             };
-            let versioned = VersionedState::new(kernel);
             let mut storage_mut = SorobanStorage::new(&env);
-            Storage::save_state(&mut storage_mut, &versioned).unwrap();
+            Storage::save_state(&mut storage_mut, &kernel).unwrap();
 
             // Now storage should be initialized
             assert!(storage.is_initialized());
-            assert_eq!(
-                storage.get_version(),
-                Some(StorageVersion::CURRENT.number())
-            );
 
             // Load and verify
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.state.total_assets, 10000);
-            assert_eq!(loaded.state.total_shares, 5000);
-            assert_eq!(loaded.state.idle_assets, 2000);
-            assert_eq!(loaded.state.external_assets, 8000);
-            assert_eq!(loaded.state.next_op_id, 1);
+            assert_eq!(loaded.total_assets, 10000);
+            assert_eq!(loaded.total_shares, 5000);
+            assert_eq!(loaded.idle_assets, 2000);
+            assert_eq!(loaded.external_assets, 8000);
+            assert_eq!(loaded.next_op_id, 1);
         });
     }
 
@@ -1983,6 +2109,7 @@ mod storage_tests {
             let receiver = templar_vault_kernel::Address([2u8; 32]);
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id: 7,
+                request_id: 7,
                 index: 1,
                 remaining: 500,
                 collected: 200,
@@ -2009,11 +2136,10 @@ mod storage_tests {
             state.external_assets = 900;
             state.next_op_id = 8;
 
-            let versioned = VersionedState::new(state.clone());
-            storage.save_state(&versioned).unwrap();
+            storage.save_state(&state).unwrap();
 
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.state, state);
+            assert_eq!(loaded, state);
         });
     }
 
@@ -2028,25 +2154,13 @@ mod storage_tests {
             assert!(storage.load_state().unwrap().is_none());
 
             // Save state via trait
-            let versioned = VersionedState::default();
-            storage.save_state(&versioned).unwrap();
+            let state = VaultState::default();
+            storage.save_state(&state).unwrap();
 
             // Verify via trait
             assert!(Storage::is_initialized(&storage));
             let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::CURRENT);
-        });
-    }
-
-    #[rstest]
-    fn test_storage_trait_get_version_fails_when_uninitialized(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let err = Storage::get_version(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::storage_error("version not initialized"));
+            assert_eq!(loaded, state);
         });
     }
 
@@ -2060,11 +2174,281 @@ mod storage_tests {
             storage.save_state_blob(&alloc::vec![1, 2, 3, 4, 5]);
 
             let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(
-                err,
-                RuntimeError::storage_error("state blob deserialize failed")
-            );
+            assert_eq!(err, RuntimeError::StorageError);
         });
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_state_blob_manual() {
+        let mut state = VaultState {
+            total_assets: 5_000,
+            total_shares: 4_000,
+            idle_assets: 1_000,
+            external_assets: 4_000,
+            fee_anchor: FeeAccrualAnchor::new(4_500, TimestampNs(123_000)),
+            op_state: OpState::Withdrawing(WithdrawingState {
+                op_id: 7,
+                request_id: 11,
+                index: 1,
+                remaining: 200,
+                collected: 100,
+                receiver: KernelAddress([2u8; 32]),
+                owner: KernelAddress([1u8; 32]),
+                escrow_shares: 300,
+            }),
+            next_op_id: 8,
+            ..Default::default()
+        };
+        state.withdraw_queue = WithdrawQueue::with_state(
+            alloc::vec![(
+                3,
+                PendingWithdrawal::new(
+                    KernelAddress([1u8; 32]),
+                    KernelAddress([2u8; 32]),
+                    300,
+                    350,
+                    TimestampNs(456_000),
+                ),
+            ),],
+            3,
+            4,
+        );
+
+        let encoded = fuzz_api::encode_state_blob_bytes(&state);
+        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state roundtrip");
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_restrictions() {
+        let restrictions = Restrictions::blacklist(alloc::vec![
+            KernelAddress([9u8; 32]),
+            KernelAddress([8u8; 32]),
+        ]);
+        let encoded = fuzz_api::encode_restrictions_bytes(&restrictions);
+        let decoded =
+            fuzz_api::decode_restrictions_bytes(&encoded).expect("restrictions roundtrip");
+        assert_eq!(decoded, restrictions);
+    }
+
+    #[rstest]
+    #[case::empty(alloc::vec![])]
+    #[case::tag_only(alloc::vec![0])]
+    #[case::invalid_tag(alloc::vec![2, 0, 0, 0, 0])]
+    #[case::truncated_payload(alloc::vec![1, 2, 0, 0, 0, 1, 2, 3])]
+    fn storage_codec_restrictions_bad_inputs_do_not_panic(#[case] bad: alloc::vec::Vec<u8>) {
+        let _ = fuzz_api::decode_restrictions_bytes(&bad);
+    }
+
+    #[test]
+    fn storage_codec_decode_state_blob_never_panics_on_small_inputs() {
+        for len in 0..128usize {
+            let bytes = alloc::vec![0xA5; len];
+            let _ = fuzz_api::decode_state_blob_bytes(&bytes);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_supply_queue_and_truncated_bytes_fail_cleanly() {
+        let queue =
+            templar_curator_primitives::policy::supply_queue::SupplyQueue::try_from_entries(
+                alloc::vec![
+                    AllocationPlanEntry::new(0, 100),
+                    AllocationPlanEntry::new(1, 200),
+                ]
+                .into_iter()
+                .map(|entry: AllocationPlanEntry| {
+                    templar_curator_primitives::policy::supply_queue::SupplyQueueEntry::new(
+                        entry.target_id,
+                        entry.amount,
+                    )
+                    .expect("valid queue entry")
+                })
+                .collect(),
+                None,
+            )
+            .expect("queue build");
+
+        let encoded = fuzz_api::encode_supply_queue_bytes(&queue);
+        let decoded = fuzz_api::decode_supply_queue_bytes(&encoded).expect("queue roundtrip");
+        assert_eq!(decoded, queue);
+
+        for len in 0..encoded.len() {
+            let _ = fuzz_api::decode_supply_queue_bytes(&encoded[..len]);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_policy_locks_and_truncated_bytes_fail_cleanly() {
+        use templar_curator_primitives::policy::market_lock::{
+            FencingToken, LeaseOwner, MarketLease, MarketLeaseRegistry,
+        };
+        use templar_curator_primitives::policy::state::OrderedMap;
+
+        let mut leases = OrderedMap::new();
+        let _ = leases.insert(
+            7,
+            MarketLease::from_parts(
+                7,
+                LeaseOwner(11),
+                Some(22),
+                TimestampNs(100),
+                TimestampNs(200),
+                FencingToken(1),
+            ),
+        );
+        let _ = leases.insert(
+            8,
+            MarketLease::from_parts(
+                8,
+                LeaseOwner(12),
+                None,
+                TimestampNs(300),
+                TimestampNs(500),
+                FencingToken(2),
+            ),
+        );
+        let registry = MarketLeaseRegistry::from_parts(leases, 9);
+
+        let encoded = fuzz_api::encode_policy_locks_bytes(&registry);
+        let decoded =
+            fuzz_api::decode_policy_locks_bytes(&encoded).expect("policy locks roundtrip");
+        assert_eq!(decoded, registry);
+
+        for len in 0..encoded.len() {
+            let _ = fuzz_api::decode_policy_locks_bytes(&encoded[..len]);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_markets_and_invalid_tags_fail_cleanly() {
+        use alloc::string::String;
+        use templar_curator_primitives::policy::cap_group::CapGroupId;
+        use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
+
+        let mut markets = OrderedMap::new();
+        let _ = markets.insert(1, MarketConfig::new(true, 100, None));
+        let _ = markets.insert(
+            2,
+            MarketConfig::new(
+                false,
+                200,
+                Some(CapGroupId::try_from(String::from("grp-a")).expect("cap group id")),
+            ),
+        );
+
+        let encoded = fuzz_api::encode_markets_bytes(&markets);
+        let decoded = fuzz_api::decode_markets_bytes(&encoded).expect("markets roundtrip");
+        assert_eq!(decoded, markets);
+
+        let mut bad_enabled = encoded.clone();
+        if bad_enabled.len() > 9 {
+            bad_enabled[8] = 2;
+            let _ = fuzz_api::decode_markets_bytes(&bad_enabled);
+        }
+
+        let mut bad_cap_group_tag = encoded.clone();
+        if let Some(last) = bad_cap_group_tag.last_mut() {
+            *last = 2;
+            let _ = fuzz_api::decode_markets_bytes(&bad_cap_group_tag);
+        }
+    }
+
+    #[test]
+    fn storage_codec_roundtrip_principals_and_truncated_bytes_fail_cleanly() {
+        use templar_curator_primitives::policy::state::OrderedMap;
+
+        let mut principals = OrderedMap::new();
+        let _ = principals.insert(1, 111);
+        let _ = principals.insert(2, u128::MAX - 5);
+
+        let encoded = fuzz_api::encode_principals_bytes(&principals);
+        let decoded = fuzz_api::decode_principals_bytes(&encoded).expect("principals roundtrip");
+        assert_eq!(decoded, principals);
+
+        for len in 0..encoded.len() {
+            let _ = fuzz_api::decode_principals_bytes(&encoded[..len]);
+        }
+    }
+
+    fn storage_codec_roundtrip_state_blob_for_op_state(op_state: OpState) {
+        let withdraw_queue = WithdrawQueue::with_state(
+            alloc::vec![
+                (
+                    1,
+                    PendingWithdrawal::new(
+                        KernelAddress([1u8; 32]),
+                        KernelAddress([2u8; 32]),
+                        10,
+                        15,
+                        TimestampNs(50),
+                    ),
+                ),
+                (
+                    2,
+                    PendingWithdrawal::new(
+                        KernelAddress([3u8; 32]),
+                        KernelAddress([4u8; 32]),
+                        20,
+                        25,
+                        TimestampNs(60),
+                    ),
+                ),
+            ],
+            1,
+            3,
+        );
+
+        let state = VaultState {
+            total_assets: 1_000,
+            total_shares: 2_000,
+            idle_assets: 300,
+            external_assets: 700,
+            fee_anchor: FeeAccrualAnchor::new(900, TimestampNs(1_000)),
+            op_state,
+            withdraw_queue,
+            next_op_id: 10,
+        };
+
+        let encoded = fuzz_api::encode_state_blob_bytes(&state);
+        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state matrix roundtrip");
+        assert_eq!(decoded, state);
+    }
+
+    #[rstest]
+    #[case::idle(OpState::Idle)]
+    #[case::allocating(OpState::Allocating(templar_vault_kernel::AllocatingState {
+        op_id: 1,
+        index: 0,
+        remaining: 30,
+        plan: alloc::vec![AllocationPlanEntry::new(9, 30)],
+    }))]
+    #[case::withdrawing(OpState::Withdrawing(WithdrawingState {
+        op_id: 2,
+        request_id: 3,
+        index: 1,
+        remaining: 40,
+        collected: 10,
+        receiver: KernelAddress([5u8; 32]),
+        owner: KernelAddress([6u8; 32]),
+        escrow_shares: 50,
+    }))]
+    #[case::refreshing(OpState::Refreshing(templar_vault_kernel::RefreshingState {
+        op_id: 4,
+        index: 1,
+        plan: alloc::vec![3, 4, 5],
+    }))]
+    #[case::payout(OpState::Payout(templar_vault_kernel::PayoutState {
+        op_id: 5,
+        request_id: 6,
+        receiver: KernelAddress([7u8; 32]),
+        amount: 70,
+        owner: KernelAddress([8u8; 32]),
+        escrow_shares: 80,
+        burn_shares: 60,
+    }))]
+    fn storage_codec_roundtrip_state_blob_op_state_matrix(#[case] op_state: OpState) {
+        storage_codec_roundtrip_state_blob_for_op_state(op_state);
     }
 
     #[rstest]
@@ -2074,159 +2458,13 @@ mod storage_tests {
         let (env, contract_id) = contract_env;
         env.as_contract(&contract_id, || {
             let storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            let mut bytes = postcard::to_allocvec(&versioned).unwrap();
+            let mut bytes = fuzz_api::encode_state_blob_bytes(&VaultState::default());
             bytes.push(0xff);
             storage.save_state_blob(&bytes);
 
             let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(
-                err,
-                RuntimeError::storage_error("state blob deserialize failed")
-            );
+            assert_eq!(err, RuntimeError::StorageError);
         });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_missing_version_key(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            let bytes = postcard::to_allocvec(&versioned).unwrap();
-            storage.save_state_blob(&bytes);
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::storage_error("state version missing"));
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_mismatched_version(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned = VersionedState::new(VaultState::default());
-            let bytes = postcard::to_allocvec(&versioned).unwrap();
-            storage.save_state_blob(&bytes);
-            storage.set_version(StorageVersion::new(2).number());
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::storage_error("state version mismatch"));
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_incompatible_version(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let versioned =
-                VersionedState::with_version(StorageVersion::new(2), VaultState::default());
-            let bytes = postcard::to_allocvec(&versioned).unwrap();
-            storage.save_state_blob(&bytes);
-            storage.set_version(StorageVersion::new(2).number());
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(
-                err,
-                RuntimeError::storage_error("unsupported state version")
-            );
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_loads_legacy_version_state(contract_env: (Env, soroban_sdk::Address)) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let mut storage = SorobanStorage::new(&env);
-            let state = VaultState {
-                total_assets: 42,
-                ..Default::default()
-            };
-            let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
-            storage.save_state(&legacy).unwrap();
-
-            let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::new(0));
-            assert_eq!(loaded.state.total_assets, 42);
-        });
-    }
-
-    #[rstest]
-    fn test_soroban_storage_migrates_legacy_state_with_active_op(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        use alloc::collections::BTreeMap;
-        use templar_vault_kernel::state::queue::{PendingWithdrawal, WithdrawQueue};
-        use templar_vault_kernel::{OpState, WithdrawingState};
-
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let mut storage = SorobanStorage::new(&env);
-            let mut state = VaultState::default();
-
-            let owner = templar_vault_kernel::Address([1u8; 32]);
-            let receiver = templar_vault_kernel::Address([2u8; 32]);
-            state.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id: 11,
-                index: 1,
-                remaining: 500,
-                collected: 200,
-                receiver,
-                owner,
-                escrow_shares: 700,
-            });
-
-            let mut pending = BTreeMap::new();
-            pending.insert(
-                3,
-                PendingWithdrawal::new(
-                    owner,
-                    receiver,
-                    700,
-                    800,
-                    templar_vault_kernel::TimestampNs(123),
-                ),
-            );
-            state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
-            state.total_assets = 1000;
-            state.total_shares = 900;
-            state.idle_assets = 100;
-            state.external_assets = 900;
-            state.next_op_id = 12;
-
-            let legacy = VersionedState::with_version(StorageVersion::new(0), state.clone());
-            storage.save_state(&legacy).unwrap();
-
-            let loaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(loaded.version, StorageVersion::new(0));
-            assert_eq!(loaded.state, state);
-
-            let migrated = VersionedState::new(loaded.state.clone());
-            storage.save_state(&migrated).unwrap();
-            let reloaded = storage.load_state().unwrap().unwrap();
-            assert_eq!(reloaded.version, StorageVersion::CURRENT);
-            assert_eq!(reloaded.state, state);
-        });
-    }
-
-    #[rstest]
-    #[case(StorageVersion::new(0), true)]
-    #[case(StorageVersion::V1, true)]
-    #[case(StorageVersion::new(2), false)]
-    #[case(StorageVersion::new(u32::MAX), false)]
-    fn test_storage_version_compatibility_cases(
-        #[case] version: StorageVersion,
-        #[case] expected: bool,
-    ) {
-        assert_eq!(version.is_compatible(), expected);
     }
 
     #[rstest]
@@ -2252,16 +2490,23 @@ mod storage_tests {
                 ),
             );
 
-            SorobanVaultContract::set_governance_config(
-                env.clone(),
-                governance.clone(),
-                GovernanceConfigKind::AllowedAdapters,
-                None,
-                Some(updated_adapters.clone()),
-                None,
-                None,
+            let updated = updated_adapters
+                .iter()
+                .map(|address| sdk_text(&address))
+                .collect();
+            let result = execute_command(
+                &env,
+                &VaultCommand::SetGovernanceConfig {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                    primary: None,
+                    many: Some(updated),
+                    value_a: None,
+                    value_b: None,
+                },
             )
             .unwrap();
+            assert!(matches!(result, VaultCommandResult::Unit));
 
             assert_eq!(
                 env.storage()
@@ -2285,22 +2530,234 @@ mod storage_tests {
                 &governance,
             );
 
-            let err = SorobanVaultContract::set_governance_policy(
-                env.clone(),
-                governance.clone(),
-                GovernancePolicyKind::Fees,
-                None,
-                None,
-                Some(SdkVec::from_array(&env, [SdkAddress::generate(&env)])),
-                None,
-                None,
-                Some(1),
-                Some(2),
-                None,
-            )
-            .unwrap_err();
+            let err = match execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_FEES,
+                    target_ids: None,
+                    mode: None,
+                    accounts: Some(alloc::vec![sdk_text(&SdkAddress::generate(&env))]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: Some(1),
+                    value_b: Some(2),
+                    value_c: None,
+                },
+            ) {
+                Ok(_) => panic!("expected invalid input error"),
+                Err(err) => err,
+            };
 
             assert_eq!(err, crate::error::ContractError::InvalidInput);
+        });
+    }
+
+    #[test]
+    fn test_governance_policy_group_cap_clear_via_none_reaches_policy_layer() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = PolicyState::default();
+            let cap_group_id = CapGroupId::try_from("group-a".to_string()).unwrap();
+            policy_state.set_cap_group_absolute_cap(cap_group_id.clone(), Some(77));
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let err = match execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_GROUP,
+                    target_ids: None,
+                    mode: Some(0),
+                    accounts: None,
+                    market_id: Some(0),
+                    cap_group_id: Some("group-a".to_string()),
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            ) {
+                Ok(_) => panic!("clearing an active cap should remain timelocked"),
+                Err(err) => err,
+            };
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.absolute_cap()),
+                Some(77)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_policy_group_relative_cap_clear_via_none_reaches_policy_layer() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = PolicyState::default();
+            let cap_group_id = CapGroupId::try_from("group-b".to_string()).unwrap();
+            policy_state.set_cap_group_relative_cap(
+                cap_group_id.clone(),
+                Some(templar_vault_kernel::Wad::from(25u128)),
+            );
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let err = match execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_GROUP,
+                    target_ids: None,
+                    mode: Some(1),
+                    accounts: None,
+                    market_id: Some(0),
+                    cap_group_id: Some("group-b".to_string()),
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            ) {
+                Ok(_) => panic!("clearing an active relative cap should remain timelocked"),
+                Err(err) => err,
+            };
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.relative_cap()),
+                Some(templar_vault_kernel::Wad::from(25u128))
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_policy_group_membership_empty_string_clears_membership() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::Governance,
+                &governance,
+            );
+
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&VaultState::default()).unwrap();
+            storage.save_paused(false).unwrap();
+            let mut policy_state = PolicyState::default();
+            let cap_group_id = CapGroupId::try_from("group-c".to_string()).unwrap();
+            policy_state.set_cap_group_absolute_cap(cap_group_id.clone(), Some(100));
+            policy_state
+                .set_market_config(7, MarketConfig::new(true, 100, Some(cap_group_id.clone())))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+
+            let result = execute_command(
+                &env,
+                &VaultCommand::SetGovernancePolicy {
+                    caller: sdk_text(&governance),
+                    kind: GOVERNANCE_POLICY_KIND_GROUP,
+                    target_ids: None,
+                    mode: Some(2),
+                    accounts: None,
+                    market_id: Some(7),
+                    cap_group_id: Some(String::new()),
+                    value: Some(0),
+                    value_b: None,
+                    value_c: None,
+                },
+            )
+            .unwrap();
+
+            assert!(matches!(result, VaultCommandResult::Unit));
+
+            let reloaded = Storage::load_policy_state(&storage)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                reloaded
+                    .market_config(7)
+                    .and_then(|config| config.cap_group_id.clone()),
+                None
+            );
         });
     }
 }

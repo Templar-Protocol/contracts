@@ -1,7 +1,8 @@
 use soroban_sdk::{contract, contractimpl, Env};
+use templar_curator_primitives::MarketConfig;
 use templar_soroban_runtime::{
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
-    storage::{SorobanStorage, VersionedState},
+    storage::SorobanStorage,
     Storage,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
@@ -42,6 +43,15 @@ fn fresh_loaded_vault(env: &Env) -> SorobanTestVault<'_> {
     vault
 }
 
+fn configure_market_zero(vault: &mut SorobanTestVault<'_>) {
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    let policy_state = vault.policy_state().clone();
+    vault.storage.save_policy_state(&policy_state).unwrap();
+}
+
 fn assert_accounting_invariant(vault: &SorobanTestVault<'_>) {
     let state = vault.state().unwrap();
     assert_eq!(
@@ -51,14 +61,14 @@ fn assert_accounting_invariant(vault: &SorobanTestVault<'_>) {
 }
 
 fn assert_state_roundtrip(vault: &SorobanTestVault<'_>) {
-    let persisted: VersionedState = vault
+    let persisted = vault
         .storage
         .load_state()
         .unwrap()
         .expect("state must be persisted");
     assert_eq!(
-        persisted.state.total_assets,
-        persisted.state.idle_assets + persisted.state.external_assets
+        persisted.total_assets,
+        persisted.idle_assets + persisted.external_assets
     );
 }
 
@@ -84,6 +94,7 @@ fn e2e_soroban_storage_postcard_roundtrip_lifecycle() {
         let allocator = allocator_addr();
 
         let mut vault = fresh_loaded_vault(&env);
+        configure_market_zero(&mut vault);
         assert_accounting_invariant(&vault);
 
         vault.deposit(user, user, 10_000, 0, 100).unwrap();

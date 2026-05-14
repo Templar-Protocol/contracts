@@ -5,11 +5,33 @@ use blend_contract_sdk::{
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _},
     token::StellarAssetClient,
-    Address, BytesN, Env, String,
+    Address, Bytes, BytesN, Env, String,
 };
+use std::string::String as StdString;
+use templar_curator_primitives::MarketConfig;
 use templar_soroban_blend_adapter::BlendAdapterContract;
-use templar_soroban_runtime::contract::SorobanVaultContract;
-use templar_soroban_shared_types::{GovernanceConfigKind, GovernancePolicyKind};
+use templar_soroban_runtime::{
+    contract::SorobanVaultContract,
+    storage::{SorobanStorage, Storage},
+};
+use templar_soroban_shared_types::{
+    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+};
+
+fn address_text(address: &Address) -> StdString {
+    StdString::from_utf8(address.to_string().to_bytes().to_alloc_vec()).unwrap()
+}
+
+fn execute_command(
+    env: &Env,
+    command: &VaultCommand,
+) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+    let payload = Bytes::from_slice(env, &command.encode());
+    let result = SorobanVaultContract::execute(env.clone(), payload)?;
+    VaultCommandResult::decode(&result.to_alloc_vec())
+        .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+}
 
 struct VaultProxy<'a> {
     env: &'a Env,
@@ -125,44 +147,61 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         proxy.initialize(&governance, &asset, &share);
     });
     env.as_contract(&vault, || {
-        SorobanVaultContract::set_governance_config(
-            env.clone(),
-            governance.clone(),
-            GovernanceConfigKind::Allocators,
-            None,
-            Some(soroban_sdk::Vec::from_array(&env, [allocator.clone()])),
-            None,
-            None,
+        let result = execute_command(
+            &env,
+            &VaultCommand::SetGovernanceConfig {
+                caller: address_text(&governance),
+                kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+                primary: None,
+                many: Some(vec![address_text(&allocator)]),
+                value_a: None,
+                value_b: None,
+            },
         )
         .unwrap();
+        assert!(matches!(result, VaultCommandResult::Unit));
     });
     env.as_contract(&vault, || {
-        SorobanVaultContract::set_governance_policy(
-            env.clone(),
-            governance.clone(),
-            GovernancePolicyKind::SupplyQueue,
-            Some(soroban_sdk::Vec::from_array(&env, [0u32])),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let mut storage = SorobanStorage::new(&env);
+        let mut policy_state = storage.load_policy_state().unwrap().unwrap_or_default();
+        policy_state
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+        storage.save_policy_state(&policy_state).unwrap();
     });
     env.as_contract(&vault, || {
-        SorobanVaultContract::set_governance_config(
-            env.clone(),
-            governance.clone(),
-            GovernanceConfigKind::AllowedAdapters,
-            None,
-            Some(soroban_sdk::Vec::from_array(&env, [adapter.clone()])),
-            None,
-            None,
+        let result = execute_command(
+            &env,
+            &VaultCommand::SetGovernancePolicy {
+                caller: address_text(&governance),
+                kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                target_ids: Some(vec![0u32]),
+                mode: None,
+                accounts: None,
+                market_id: None,
+                cap_group_id: None,
+                value: None,
+                value_b: None,
+                value_c: None,
+            },
         )
         .unwrap();
+        assert!(matches!(result, VaultCommandResult::Unit));
+    });
+    env.as_contract(&vault, || {
+        let result = execute_command(
+            &env,
+            &VaultCommand::SetGovernanceConfig {
+                caller: address_text(&governance),
+                kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                primary: None,
+                many: Some(vec![address_text(&adapter)]),
+                value_a: None,
+                value_b: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(result, VaultCommandResult::Unit));
     });
 
     let deposit_amount = 10_000_000_000;
@@ -173,15 +212,20 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
 
     let minted = env
         .as_contract(&vault, || {
-            SorobanVaultContract::deposit_with_min(
-                env.clone(),
-                user.clone(),
-                user.clone(),
-                deposit_amount,
-                0,
+            execute_command(
+                &env,
+                &VaultCommand::DepositWithMin {
+                    owner: address_text(&user),
+                    receiver: address_text(&user),
+                    assets: deposit_amount,
+                    min_shares_out: 0,
+                },
             )
         })
         .unwrap();
+    let VaultCommandResult::I128(minted) = minted else {
+        panic!("expected i128 result")
+    };
     assert_eq!(minted, deposit_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),
@@ -190,9 +234,20 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
 
     let new_external = env
         .as_contract(&vault, || {
-            SorobanVaultContract::allocate(env.clone(), allocator.clone(), 0, supply_amount, true)
+            execute_command(
+                &env,
+                &VaultCommand::Allocate {
+                    caller: address_text(&allocator),
+                    market: 0,
+                    amount: supply_amount,
+                    supply: true,
+                },
+            )
         })
         .unwrap();
+    let VaultCommandResult::I128(new_external) = new_external else {
+        panic!("expected i128 result")
+    };
     assert_eq!(new_external, supply_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),
@@ -210,13 +265,18 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
 
     let refreshed_external = env
         .as_contract(&vault, || {
-            SorobanVaultContract::refresh_markets(
-                env.clone(),
-                allocator.clone(),
-                soroban_sdk::Vec::from_array(&env, [0u32]),
+            execute_command(
+                &env,
+                &VaultCommand::RefreshMarkets {
+                    caller: address_text(&allocator),
+                    markets: vec![0u32],
+                },
             )
         })
         .unwrap();
+    let VaultCommandResult::I128(refreshed_external) = refreshed_external else {
+        panic!("expected i128 result")
+    };
     assert_eq!(refreshed_external, supply_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),
@@ -229,15 +289,20 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
 
     let remaining_external = env
         .as_contract(&vault, || {
-            SorobanVaultContract::allocate(
-                env.clone(),
-                allocator.clone(),
-                0,
-                withdraw_amount,
-                false,
+            execute_command(
+                &env,
+                &VaultCommand::Allocate {
+                    caller: address_text(&allocator),
+                    market: 0,
+                    amount: withdraw_amount,
+                    supply: false,
+                },
             )
         })
         .unwrap();
+    let VaultCommandResult::I128(remaining_external) = remaining_external else {
+        panic!("expected i128 result")
+    };
     assert_eq!(remaining_external, supply_amount - withdraw_amount);
     assert_eq!(
         vault_snapshot(&env, &vault),

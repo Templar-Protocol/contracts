@@ -65,14 +65,8 @@ impl KernelResult {
 #[templar_vault_macros::vault_derive(borsh, serde, postcard)]
 #[derive(Clone, PartialEq, Eq)]
 pub enum PayoutOutcome {
-    Success {
-        burn_shares: u128,
-        refund_shares: u128,
-    },
-    Failure {
-        restore_idle: u128,
-        refund_shares: u128,
-    },
+    Success,
+    Failure,
 }
 
 /// Planned payout details for satisfying a queued withdrawal from idle assets.
@@ -80,9 +74,10 @@ pub enum PayoutOutcome {
 #[derive(Clone, PartialEq, Eq)]
 pub struct IdlePayoutPlan {
     pub op_id: u64,
+    pub request_id: u64,
     pub receiver: Address,
     pub assets_out: u128,
-    pub outcome: PayoutOutcome,
+    pub burn_shares: u128,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -96,6 +91,7 @@ enum WithdrawalQueueOutcome {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct PendingWithdrawalHead {
+    id: u64,
     owner: Address,
     receiver: Address,
     escrow_shares: u128,
@@ -118,7 +114,6 @@ struct PayoutSettlement {
     refund_shares: u128,
     completed_amount: u128,
     success: bool,
-    restore_idle: u128,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -174,8 +169,17 @@ pub enum KernelAction {
         owner: Address,
         receiver: Address,
         operator: Address,
-        amount: u128,
-        kind: AtomicPayoutKind,
+        assets_out: u128,
+        max_shares_burned: u128,
+        now_ns: TimestampNs,
+    },
+
+    AtomicRedeem {
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        shares: u128,
+        min_assets_out: u128,
         now_ns: TimestampNs,
     },
 
@@ -238,12 +242,12 @@ pub enum KernelAction {
     /// Abort an allocation operation (e.g., on external call failure).
     ///
     /// Transition: Allocating -> Idle
-    AbortAllocating { op_id: u64, restore_idle: u128 },
+    AbortAllocating { op_id: u64 },
 
     /// Abort a withdrawal operation (e.g., on external call failure).
     ///
     /// Transition: Withdrawing -> Idle
-    AbortWithdrawing { op_id: u64, refund_shares: u128 },
+    AbortWithdrawing { op_id: u64 },
 
     /// Refresh fee calculations and mint fee shares.
     RefreshFees { now_ns: TimestampNs },
@@ -298,14 +302,15 @@ impl KernelAction {
         receiver: Address,
         operator: Address,
         assets_out: u128,
+        max_shares_burned: u128,
         now_ns: TimestampNs,
     ) -> Self {
         Self::AtomicWithdraw {
             owner,
             receiver,
             operator,
-            amount: assets_out,
-            kind: AtomicPayoutKind::Withdraw,
+            assets_out,
+            max_shares_burned,
             now_ns,
         }
     }
@@ -316,14 +321,15 @@ impl KernelAction {
         receiver: Address,
         operator: Address,
         shares: u128,
+        min_assets_out: u128,
         now_ns: TimestampNs,
     ) -> Self {
-        Self::AtomicWithdraw {
+        Self::AtomicRedeem {
             owner,
             receiver,
             operator,
-            amount: shares,
-            kind: AtomicPayoutKind::Redeem,
+            shares,
+            min_assets_out,
             now_ns,
         }
     }
@@ -402,19 +408,13 @@ impl KernelAction {
     }
 
     #[must_use]
-    pub fn abort_allocating(op_id: u64, restore_idle: u128) -> Self {
-        Self::AbortAllocating {
-            op_id,
-            restore_idle,
-        }
+    pub fn abort_allocating(op_id: u64) -> Self {
+        Self::AbortAllocating { op_id }
     }
 
     #[must_use]
-    pub fn abort_withdrawing(op_id: u64, refund_shares: u128) -> Self {
-        Self::AbortWithdrawing {
-            op_id,
-            refund_shares,
-        }
+    pub fn abort_withdrawing(op_id: u64) -> Self {
+        Self::AbortWithdrawing { op_id }
     }
 
     #[must_use]
@@ -447,6 +447,7 @@ impl KernelAction {
             | Self::AbortWithdrawing { op_id, .. } => Some(*op_id),
             Self::Deposit { .. }
             | Self::AtomicWithdraw { .. }
+            | Self::AtomicRedeem { .. }
             | Self::RequestWithdraw { .. }
             | Self::ExecuteWithdraw { .. }
             | Self::RefreshFees { .. }
@@ -461,6 +462,7 @@ impl KernelAction {
             Self::BeginAllocating { now_ns, .. }
             | Self::Deposit { now_ns, .. }
             | Self::AtomicWithdraw { now_ns, .. }
+            | Self::AtomicRedeem { now_ns, .. }
             | Self::RequestWithdraw { now_ns, .. }
             | Self::ExecuteWithdraw { now_ns }
             | Self::BeginRefreshing { now_ns, .. }
@@ -477,13 +479,6 @@ impl KernelAction {
             | Self::EmergencyReset => None,
         }
     }
-}
-
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum AtomicPayoutKind {
-    Withdraw,
-    Redeem,
 }
 
 /// Effective totals after applying virtual share/asset offsets.
@@ -573,14 +568,16 @@ fn check_op_id(expected: u64, actual: u64) -> Result<(), KernelError> {
 /// between the op-state and the queue.
 fn validate_queue_head(
     queue: &WithdrawQueue,
+    request_id: u64,
     owner: &Address,
     receiver: &Address,
     escrow_shares: u128,
 ) -> Result<(), KernelError> {
-    let Some((_, pending)) = queue.head() else {
+    let Some((head_id, pending)) = queue.head() else {
         return Err(KernelError::NoPendingWithdrawals);
     };
-    if pending.owner != *owner
+    if head_id != request_id
+        || pending.owner != *owner
         || pending.receiver != *receiver
         || pending.escrow_shares != escrow_shares
     {
@@ -781,8 +778,8 @@ fn restricted_withdraw_actor(
     receiver: &Address,
 ) -> Option<RestrictionKind> {
     restrictions
-        .and_then(|r| r.is_restricted(owner, self_id))
-        .or_else(|| restrictions.and_then(|r| r.is_restricted(receiver, self_id)))
+        .and_then(|r| r.is_restricted(owner))
+        .or_else(|| restrictions.and_then(|r| r.is_restricted_allowing_self(receiver, self_id)))
 }
 
 #[inline]
@@ -836,7 +833,8 @@ fn pending_withdrawal_head(state: &VaultState) -> Option<PendingWithdrawalHead> 
     state
         .withdraw_queue
         .head()
-        .map(|(_, pending)| PendingWithdrawalHead {
+        .map(|(id, pending)| PendingWithdrawalHead {
+            id,
             owner: pending.owner,
             receiver: pending.receiver,
             escrow_shares: pending.escrow_shares,
@@ -877,6 +875,7 @@ fn withdrawal_request_from_head(
 ) -> WithdrawalRequest {
     WithdrawalRequest {
         op_id: state.allocate_op_id(),
+        request_id: head.id,
         amount: head.expected_assets,
         receiver: head.receiver,
         owner: head.owner,
@@ -996,37 +995,93 @@ fn handle_atomic_withdraw(
     owner: Address,
     receiver: Address,
     operator: Address,
-    amount: u128,
-    kind: AtomicPayoutKind,
+    assets_out: u128,
+    max_shares_burned: u128,
 ) -> Result<KernelResult, KernelError> {
     enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
-    require_idle_with_nonzero_amount(&state, InvalidStateCode::AtomicWithdrawRequiresIdle, amount)?;
+    require_idle_with_nonzero_amount(
+        &state,
+        InvalidStateCode::AtomicWithdrawRequiresIdle,
+        assets_out,
+    )?;
 
-    let (shares, assets_out) = match kind {
-        AtomicPayoutKind::Withdraw => {
-            if amount > state.idle_assets {
-                return Err(KernelError::from(
-                    InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
-                ));
-            }
-            (convert_to_shares_ceil(&state, config, amount), amount)
-        }
-        AtomicPayoutKind::Redeem => {
-            let assets_out = convert_to_assets(&state, config, amount);
-            if assets_out > state.idle_assets {
-                return Err(KernelError::from(
-                    InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
-                ));
-            }
-            (amount, assets_out)
-        }
-    };
+    let shares = convert_to_shares_ceil(&state, config, assets_out);
+    if shares == 0 {
+        return Err(KernelError::ZeroAmount);
+    }
+    if shares > max_shares_burned {
+        return Err(KernelError::Slippage {
+            min: max_shares_burned,
+            actual: shares,
+        });
+    }
 
     if assets_out > state.idle_assets {
         return Err(KernelError::from(
             InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
         ));
     }
+    state.total_shares = state
+        .total_shares
+        .checked_sub(shares)
+        .ok_or_else(|| KernelError::from(InvalidStateCode::AtomicWithdrawBurnExceedsTotalShares))?;
+    state.idle_assets = state
+        .idle_assets
+        .checked_sub(assets_out)
+        .ok_or_else(|| KernelError::from(InvalidStateCode::AtomicWithdrawExceedsIdleAssets))?;
+    state.total_assets = state
+        .total_assets
+        .checked_sub(assets_out)
+        .ok_or_else(|| KernelError::from(InvalidStateCode::AtomicWithdrawTotalAssetsUnderflow))?;
+
+    let mut effects = Vec::new();
+    push_atomic_burn_shares(&mut effects, owner, operator, shares);
+    effects.push(KernelEffect::TransferAssets {
+        to: receiver,
+        amount: assets_out,
+    });
+    effects.push(KernelEffect::EmitEvent {
+        event: KernelEvent::AtomicWithdrawProcessed {
+            owner,
+            receiver,
+            shares_burned: shares,
+            assets_out,
+        },
+    });
+    Ok(KernelResult::new(state, effects))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_atomic_redeem(
+    mut state: VaultState,
+    config: &VaultConfig,
+    restrictions: Option<&Restrictions>,
+    self_id: &Address,
+    owner: Address,
+    receiver: Address,
+    operator: Address,
+    shares: u128,
+    min_assets_out: u128,
+) -> Result<KernelResult, KernelError> {
+    enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
+    require_idle_with_nonzero_amount(&state, InvalidStateCode::AtomicWithdrawRequiresIdle, shares)?;
+
+    let assets_out = convert_to_assets(&state, config, shares);
+    if assets_out == 0 {
+        return Err(KernelError::ZeroAmount);
+    }
+    if assets_out < min_assets_out {
+        return Err(KernelError::Slippage {
+            min: min_assets_out,
+            actual: assets_out,
+        });
+    }
+    if assets_out > state.idle_assets {
+        return Err(KernelError::from(
+            InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
+        ));
+    }
+
     state.total_shares = state
         .total_shares
         .checked_sub(shares)
@@ -1070,6 +1125,12 @@ fn handle_request_withdraw(
     min_assets_out: u128,
     now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
+    if !config.is_max_pending_valid() {
+        return Err(KernelError::from(
+            InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit,
+        ));
+    }
+
     enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
     require_idle_with_nonzero_amount(
         &state,
@@ -1129,10 +1190,7 @@ fn handle_execute_withdraw(
         return Err(KernelError::from(error_code));
     }
 
-    if config.paused {
-        return Err(KernelError::Restricted(RestrictionKind::Paused));
-    }
-    if matches!(restrictions, Some(Restrictions::Paused)) {
+    if is_globally_paused(config, restrictions) {
         return Err(KernelError::Restricted(RestrictionKind::Paused));
     }
 
@@ -1220,7 +1278,7 @@ fn handle_finish_allocating(
 ) -> Result<KernelResult, KernelError> {
     let mut skipped_effects = Vec::new();
 
-    let pending_req = if config.paused {
+    let pending_req = if is_globally_paused(config, restrictions) {
         None
     } else {
         match next_withdrawal_queue_outcome(
@@ -1342,11 +1400,7 @@ fn handle_abort_refreshing(mut state: VaultState, op_id: u64) -> Result<KernelRe
 }
 
 #[cfg(any(feature = "action-recovery", test))]
-fn handle_abort_allocating(
-    mut state: VaultState,
-    op_id: u64,
-    restore_idle: u128,
-) -> Result<KernelResult, KernelError> {
+fn handle_abort_allocating(mut state: VaultState, op_id: u64) -> Result<KernelResult, KernelError> {
     let alloc = match &state.op_state {
         OpState::Allocating(s) => s,
         _ => {
@@ -1357,13 +1411,7 @@ fn handle_abort_allocating(
     };
 
     check_op_id(alloc.op_id, op_id)?;
-    if restore_idle != alloc.remaining {
-        return Err(KernelError::from(
-            InvalidStateCode::AbortAllocatingRestoreIdleMismatch,
-        ));
-    }
-
-    state.restore_to_idle(restore_idle);
+    state.restore_to_idle(alloc.remaining);
     state.op_state = OpState::Idle;
     Ok(KernelResult::new(state, vec![]))
 }
@@ -1373,7 +1421,6 @@ fn handle_abort_withdrawing(
     mut state: VaultState,
     self_id: &Address,
     op_id: u64,
-    refund_shares: u128,
 ) -> Result<KernelResult, KernelError> {
     let withdraw = match &state.op_state {
         OpState::Withdrawing(s) => s,
@@ -1385,18 +1432,15 @@ fn handle_abort_withdrawing(
     };
 
     check_op_id(withdraw.op_id, op_id)?;
-    if refund_shares != withdraw.escrow_shares {
-        return Err(KernelError::from(
-            InvalidStateCode::AbortWithdrawingRefundMismatch,
-        ));
-    }
-
     validate_queue_head(
         &state.withdraw_queue,
+        withdraw.request_id,
         &withdraw.owner,
         &withdraw.receiver,
         withdraw.escrow_shares,
     )?;
+
+    state.restore_to_idle(withdraw.collected);
 
     let result = map_transition_result(stop_withdrawal(
         mem::take(&mut state.op_state),
@@ -1414,51 +1458,27 @@ fn plan_payout_settlement(
     outcome: PayoutOutcome,
 ) -> Result<PayoutSettlement, KernelError> {
     match outcome {
-        PayoutOutcome::Success {
-            burn_shares,
-            refund_shares,
-        } => {
-            let settled_shares = burn_shares.checked_add(refund_shares).ok_or_else(|| {
-                KernelError::from(InvalidStateCode::PayoutSuccessSettlementMismatch)
-            })?;
-
-            if settled_shares != payout.escrow_shares {
-                return Err(KernelError::from(
-                    InvalidStateCode::PayoutSuccessSettlementMismatch,
-                ));
-            }
-
+        PayoutOutcome::Success => {
+            let burn_shares = payout.burn_shares;
+            let refund_shares = payout
+                .escrow_shares
+                .checked_sub(payout.burn_shares)
+                .ok_or_else(|| {
+                    KernelError::from(InvalidStateCode::PayoutSuccessSettlementMismatch)
+                })?;
             Ok(PayoutSettlement {
                 burn_shares,
                 refund_shares,
                 completed_amount: payout.amount,
                 success: true,
-                restore_idle: 0,
             })
         }
-        PayoutOutcome::Failure {
-            restore_idle,
-            refund_shares,
-        } => {
-            if refund_shares != payout.escrow_shares {
-                return Err(KernelError::from(
-                    InvalidStateCode::PayoutFailureSettlementMismatch,
-                ));
-            }
-            if restore_idle != payout.amount {
-                return Err(KernelError::from(
-                    InvalidStateCode::PayoutFailureRestoreIdleMismatch,
-                ));
-            }
-
-            Ok(PayoutSettlement {
-                burn_shares: 0,
-                refund_shares,
-                completed_amount: 0,
-                success: false,
-                restore_idle,
-            })
-        }
+        PayoutOutcome::Failure => Ok(PayoutSettlement {
+            burn_shares: 0,
+            refund_shares: payout.escrow_shares,
+            completed_amount: 0,
+            success: false,
+        }),
     }
 }
 
@@ -1493,8 +1513,6 @@ fn apply_payout_settlement(
             .checked_sub(payout.amount)
             .ok_or_else(|| KernelError::from(InvalidStateCode::PayoutFailureRestoreIdleMismatch))?;
         state.sync_total_assets();
-    } else {
-        state.restore_to_idle(settlement.restore_idle);
     }
 
     state.op_state = OpState::Idle;
@@ -1521,6 +1539,7 @@ fn handle_settle_payout(
 
     validate_queue_head(
         &state.withdraw_queue,
+        payout.request_id,
         &payout.owner,
         &payout.receiver,
         payout.escrow_shares,
@@ -1709,6 +1728,12 @@ fn enforce_restrictions(
     access::enforce_restrictions(config, restrictions, self_id, actor)
 }
 
+#[inline]
+fn is_globally_paused(config: &VaultConfig, restrictions: Option<&Restrictions>) -> bool {
+    let _ = restrictions;
+    config.paused
+}
+
 mod planning {
     use super::*;
 
@@ -1765,12 +1790,10 @@ mod planning {
 
         Ok(Some(IdlePayoutPlan {
             op_id: withdrawing.op_id,
+            request_id: withdrawing.request_id,
             receiver: withdrawing.receiver,
             assets_out: settlement.assets_out,
-            outcome: PayoutOutcome::Success {
-                burn_shares: settlement.settlement.to_burn,
-                refund_shares: settlement.settlement.refund,
-            },
+            burn_shares: settlement.settlement.to_burn,
         }))
     }
 }
@@ -1848,14 +1871,14 @@ mod access {
     pub(super) fn enforce_restrictions(
         config: &VaultConfig,
         restrictions: Option<&Restrictions>,
-        self_id: &Address,
+        _self_id: &Address,
         actor: &Address,
     ) -> Result<(), KernelError> {
         if config.paused {
             return Err(KernelError::Restricted(RestrictionKind::Paused));
         }
         if let Some(restrictions) = restrictions {
-            if let Some(kind) = restrictions.is_restricted(actor, self_id) {
+            if let Some(kind) = restrictions.is_restricted(actor) {
                 return Err(KernelError::Restricted(kind));
             }
         }
@@ -1875,12 +1898,6 @@ mod dispatch {
         self_id: &Address,
         action: KernelAction,
     ) -> Result<KernelResult, KernelError> {
-        if !config.is_max_pending_valid() {
-            return Err(KernelError::from(
-                InvalidConfigCode::MaxPendingWithdrawalsExceedsLimit,
-            ));
-        }
-
         match action {
             KernelAction::Deposit {
                 owner,
@@ -1903,8 +1920,8 @@ mod dispatch {
                 owner,
                 receiver,
                 operator,
-                amount,
-                kind,
+                assets_out,
+                max_shares_burned,
                 now_ns: _,
             } => handle_atomic_withdraw(
                 state,
@@ -1914,8 +1931,27 @@ mod dispatch {
                 owner,
                 receiver,
                 operator,
-                amount,
-                kind,
+                assets_out,
+                max_shares_burned,
+            ),
+
+            KernelAction::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+                now_ns: _,
+            } => handle_atomic_redeem(
+                state,
+                config,
+                restrictions,
+                self_id,
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
             ),
 
             KernelAction::RequestWithdraw {
@@ -1992,18 +2028,14 @@ mod dispatch {
             KernelAction::AbortRefreshing { .. } => Err(KernelError::NotImplemented),
 
             #[cfg(any(feature = "action-recovery", test))]
-            KernelAction::AbortAllocating {
-                op_id,
-                restore_idle,
-            } => handle_abort_allocating(state, op_id, restore_idle),
+            KernelAction::AbortAllocating { op_id } => handle_abort_allocating(state, op_id),
             #[cfg(not(any(feature = "action-recovery", test)))]
             KernelAction::AbortAllocating { .. } => Err(KernelError::NotImplemented),
 
             #[cfg(any(feature = "action-recovery", test))]
-            KernelAction::AbortWithdrawing {
-                op_id,
-                refund_shares,
-            } => handle_abort_withdrawing(state, self_id, op_id, refund_shares),
+            KernelAction::AbortWithdrawing { op_id } => {
+                handle_abort_withdrawing(state, self_id, op_id)
+            }
             #[cfg(not(any(feature = "action-recovery", test)))]
             KernelAction::AbortWithdrawing { .. } => Err(KernelError::NotImplemented),
 

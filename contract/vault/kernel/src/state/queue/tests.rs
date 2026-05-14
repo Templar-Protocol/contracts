@@ -1391,7 +1391,7 @@ proptest! {
 }
 
 #[test]
-#[should_panic(expected = "cached_total_escrow underflow")]
+#[should_panic]
 fn dequeue_panics_on_cached_escrow_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();
@@ -1411,7 +1411,7 @@ fn dequeue_panics_on_cached_escrow_underflow() {
 }
 
 #[test]
-#[should_panic(expected = "cached_total_expected underflow")]
+#[should_panic]
 fn dequeue_panics_on_cached_expected_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();

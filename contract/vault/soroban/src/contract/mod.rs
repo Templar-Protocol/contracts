@@ -28,14 +28,11 @@ use crate::effects::{
 use crate::error::{ContractError, RuntimeError};
 use crate::fungible_vault::{load_state_and_config, share_balance};
 use crate::market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets};
-use crate::storage::{
-    SorobanStorage, Storage, VersionedState, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
-};
+use crate::storage::{SorobanStorage, Storage, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 use alloc::string::String as AllocString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
-use core::num::NonZeroU128;
 pub(crate) use helpers::*;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
@@ -45,7 +42,7 @@ use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, 
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 use templar_curator_primitives::PolicyState;
-use templar_vault_kernel::actions::AtomicPayoutKind;
+use templar_soroban_shared_types::{VaultCommand, VaultCommandResult};
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -58,6 +55,18 @@ use templar_vault_kernel::{
 
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
+
+pub(crate) fn decode_command(payload: &Bytes) -> Result<VaultCommand, ContractError> {
+    VaultCommand::decode(&payload.to_alloc_vec()).map_err(|_| ContractError::InvalidInput)
+}
+
+pub(crate) fn encode_command_result(
+    env: &Env,
+    result: &VaultCommandResult,
+) -> Result<Bytes, ContractError> {
+    let bytes = result.encode();
+    Ok(Bytes::from_slice(env, &bytes))
+}
 
 pub(crate) type ContractVault<'a> = CuratorVault<
     SorobanStorage<'a>,

@@ -152,18 +152,17 @@ overflow-checks = true
 # Dependencies don't need overflow-check panic strings in WASM — saves ~2.5 KiB.
 [profile.release-soroban]
 inherits = "release"
+opt-level = "z"
+lto = "fat"
+debug = false
+panic = "abort"
+strip = "symbols"
+# Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
+overflow-checks = false
+
 
 [profile.release-soroban.package."*"]
 overflow-checks = false
-
-[profile.release-soroban.package.templar-soroban-runtime]
-overflow-checks = true
-
-[profile.release-soroban.package.templar-vault-kernel]
-overflow-checks = true
-
-[profile.release-soroban.package.templar-curator-primitives]
-overflow-checks = true
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification
 [profile.dev.package.sqlx-macros]

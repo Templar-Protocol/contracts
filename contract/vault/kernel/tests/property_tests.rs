@@ -88,17 +88,21 @@ fn arb_refresh_plan(max_len: usize) -> impl Strategy<Value = Vec<u32>> {
 /// Generate a withdrawal request
 fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
     (
-        1u64..u64::MAX,            // op_id
+        1u64..u64::MAX, // op_id
+        1u64..u64::MAX,
         1u128..=1_000_000_000u128, // amount
         1u128..=1_000_000_000u128, // escrow_shares
     )
-        .prop_map(|(op_id, amount, escrow_shares)| WithdrawalRequest {
-            op_id,
-            amount,
-            receiver: receiver_addr(op_id),
-            owner: owner_addr(op_id),
-            escrow_shares,
-        })
+        .prop_map(
+            |(op_id, request_id, amount, escrow_shares)| WithdrawalRequest {
+                op_id,
+                request_id,
+                amount,
+                receiver: receiver_addr(op_id),
+                owner: owner_addr(op_id),
+                escrow_shares,
+            },
+        )
 }
 
 /// Generate a pending withdrawal
@@ -1109,6 +1113,7 @@ proptest! {
     ) {
         let request = WithdrawalRequest {
             op_id,
+            request_id: op_id,
             amount: 0,
             receiver: receiver_addr(1),
             owner: owner_addr(1),
@@ -1129,6 +1134,7 @@ proptest! {
     ) {
         let request = WithdrawalRequest {
             op_id,
+            request_id: op_id,
             amount,
             receiver: receiver_addr(1),
             owner: owner_addr(1),
@@ -1235,6 +1241,7 @@ proptest! {
         // Build a fully-collected state (remaining=0) so the burn check fires.
         let state = OpState::Withdrawing(WithdrawingState {
             op_id: request.op_id,
+            request_id: request.request_id,
             index: 1,
             remaining: 0,
             collected: request.amount,
@@ -1285,6 +1292,7 @@ proptest! {
         let burn_shares = escrow_shares * burn_pct as u128 / 100;
         let payout = PayoutState {
             op_id,
+            request_id: op_id,
             receiver: receiver_addr(1),
             amount,
             owner: owner_addr(1),
@@ -2796,10 +2804,7 @@ fn abort_allocating_restores_state() {
         &config,
         None,
         &self_addr(),
-        KernelAction::AbortAllocating {
-            op_id,
-            restore_idle: 1500,
-        },
+        KernelAction::AbortAllocating { op_id },
     )
     .unwrap();
 
@@ -2905,6 +2910,7 @@ fn allocation_full_completion() {
 fn regression_withdrawal_amount_one_single_step() {
     let request = WithdrawalRequest {
         op_id: 1,
+        request_id: 1,
         amount: 1,
         receiver: Address([34; 32]),
         owner: Address([17; 32]),
@@ -2932,6 +2938,7 @@ fn regression_withdrawal_amount_one_single_step() {
 fn regression_minimal_withdrawal_full_flow() {
     let request = WithdrawalRequest {
         op_id: 1,
+        request_id: 1,
         amount: 1,
         receiver: Address([34; 32]),
         owner: Address([17; 32]),
@@ -3073,8 +3080,6 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
     state.total_assets = 10_000;
 
     let plan = vec![alloc_step(0, 3_000), alloc_step(1, 2_000)];
-    let alloc_total: u128 = plan.iter().map(|step| step.amount).sum();
-
     // --- Kernel: BeginAllocating decrements idle_assets ---
     let result = apply_action(
         state,
@@ -3102,10 +3107,7 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
         &config,
         None,
         &self_addr(),
-        KernelAction::AbortAllocating {
-            op_id,
-            restore_idle: alloc_total,
-        },
+        KernelAction::AbortAllocating { op_id },
     )
     .unwrap();
 
@@ -3269,10 +3271,7 @@ fn parity_deposit_withdraw_settle_roundtrip() {
         &vault,
         KernelAction::SettlePayout {
             op_id,
-            outcome: PayoutOutcome::Success {
-                burn_shares: 10_000,
-                refund_shares: 0,
-            },
+            outcome: PayoutOutcome::Success,
         },
     )
     .unwrap();
@@ -3538,10 +3537,7 @@ fn parity_abort_withdrawing_refund() {
         &config,
         None,
         &vault,
-        KernelAction::AbortWithdrawing {
-            op_id,
-            refund_shares: 5_000,
-        },
+        KernelAction::AbortWithdrawing { op_id },
     )
     .unwrap();
 
@@ -3691,10 +3687,7 @@ proptest! {
             &config,
             None,
             &self_addr(),
-            KernelAction::AbortAllocating {
-                op_id: 1,
-                restore_idle: alloc_amount,
-            },
+            KernelAction::AbortAllocating { op_id: 1 },
         );
         prop_assert!(result.is_ok());
         let final_state = result.unwrap().state;

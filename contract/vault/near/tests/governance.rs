@@ -46,9 +46,8 @@ async fn pause_blocks_deposits(#[future(awt)] worker: Worker<Sandbox>) {
 
     // Verify restrictions are set
     let restrictions = vault.get_restrictions().await;
-    assert_eq!(
-        restrictions,
-        Some(Restrictions::Paused),
+    assert!(
+        matches!(restrictions, Some(Restrictions::Paused)),
         "Vault should be paused after sentinel sets Paused restriction",
     );
 
@@ -88,16 +87,18 @@ async fn unpause_restores_deposits(#[future(awt)] worker: Worker<Sandbox>) {
     vault
         .set_restrictions(&vault_sentinel, Some(Restrictions::Paused))
         .await;
-    assert_eq!(vault.get_restrictions().await, Some(Restrictions::Paused));
+    assert!(matches!(
+        vault.get_restrictions().await,
+        Some(Restrictions::Paused)
+    ));
 
     // Unpause: relaxing restrictions is timelocked. Since MIN_TIMELOCK_NS=0,
     // we can accept immediately.
     vault.set_restrictions(&vault_owner, None).await;
     vault.accept_restrictions(&vault_owner).await;
 
-    assert_eq!(
-        vault.get_restrictions().await,
-        None,
+    assert!(
+        vault.get_restrictions().await.is_none(),
         "Restrictions should be cleared after accept",
     );
 
@@ -197,9 +198,8 @@ async fn sentinel_lifecycle(#[future(awt)] worker: Worker<Sandbox>) {
     vault
         .set_restrictions(&supply_user, Some(Restrictions::Paused))
         .await;
-    assert_eq!(
-        vault.get_restrictions().await,
-        Some(Restrictions::Paused),
+    assert!(
+        matches!(vault.get_restrictions().await, Some(Restrictions::Paused)),
         "New sentinel should be able to pause the vault",
     );
 
@@ -235,9 +235,8 @@ async fn sentinel_can_pause(#[future(awt)] worker: Worker<Sandbox>) {
         .set_restrictions(&vault_sentinel, Some(Restrictions::Paused))
         .await;
 
-    assert_eq!(
-        vault.get_restrictions().await,
-        Some(Restrictions::Paused),
+    assert!(
+        matches!(vault.get_restrictions().await, Some(Restrictions::Paused)),
         "Sentinel should be able to pause the vault",
     );
 }
