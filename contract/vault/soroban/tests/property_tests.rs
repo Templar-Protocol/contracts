@@ -47,7 +47,6 @@ fn prop_test_config() -> ContractConfig {
     ContractConfig::new(
         Address([1u8; 32]),       // curator
         Address([9u8; 32]),       // vault_address
-        vec![Address([2u8; 32])], // guardians
         vec![Address([3u8; 32])], // allocators
         Address([4u8; 32]),       // asset_address
         Address([5u8; 32]),       // share_address

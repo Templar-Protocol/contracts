@@ -433,7 +433,6 @@ mod contract_tests {
         ContractConfig::new(
             templar_vault_kernel::Address([1u8; 32]),
             templar_vault_kernel::Address([9u8; 32]),
-            vec![templar_vault_kernel::Address([2u8; 32])],
             vec![templar_vault_kernel::Address([3u8; 32])],
             templar_vault_kernel::Address([4u8; 32]),
             templar_vault_kernel::Address([5u8; 32]),
@@ -810,7 +809,6 @@ mod contract_tests {
                 curator_kernel,
                 vault_kernel,
                 Vec::new(),
-                Vec::new(),
                 asset_kernel,
                 share_kernel,
             );
@@ -843,7 +841,6 @@ mod contract_tests {
                 ContractConfig::new(
                     curator_kernel,
                     vault_kernel,
-                    Vec::new(),
                     Vec::new(),
                     asset_kernel,
                     share_kernel,
@@ -878,15 +875,11 @@ mod contract_tests {
         assert!(config.is_curator(&templar_vault_kernel::Address([1u8; 32])));
         assert!(!config.is_curator(&templar_vault_kernel::Address([2u8; 32])));
 
-        assert!(config.is_guardian(&templar_vault_kernel::Address([2u8; 32])));
-        assert!(!config.is_guardian(&templar_vault_kernel::Address([1u8; 32])));
-
         assert!(config.is_allocator(&templar_vault_kernel::Address([3u8; 32])));
         assert!(!config.is_allocator(&templar_vault_kernel::Address([1u8; 32])));
 
         assert!(config.is_privileged(&templar_vault_kernel::Address([1u8; 32]))); // curator
         assert!(config.is_privileged(&templar_vault_kernel::Address([3u8; 32]))); // allocator
-        assert!(!config.is_privileged(&templar_vault_kernel::Address([2u8; 32]))); // guardian only
         assert_eq!(config.virtual_shares, 0);
         assert_eq!(config.virtual_assets, 0);
     }
@@ -1139,7 +1132,6 @@ mod contract_tests {
             let config = ContractConfig::new(
                 kernel_address_from_sdk(&env, &curator),
                 kernel_address_from_sdk(&env, &contract_id),
-                vec![],
                 vec![],
                 kernel_address_from_sdk(&env, &asset),
                 kernel_address_from_sdk(&env, &share),
@@ -1961,7 +1953,7 @@ mod market_tests {
 }
 
 mod storage_tests {
-    use crate::contract::helpers::set_config_address;
+    use crate::contract::helpers::{set_config_address, set_migration_in_progress};
     use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
     use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
@@ -1975,9 +1967,9 @@ mod storage_tests {
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
         GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
-        GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-        GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP,
-        GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+        GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
+        GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
+        GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
@@ -2061,13 +2053,11 @@ mod storage_tests {
     #[test]
     fn test_storage_key_variants() {
         let key1 = SorobanStorageKey::StateBlob;
-        let key2 = SorobanStorageKey::Paused;
-        let key3 = SorobanStorageKey::PausedState;
-        let key4 = SorobanStorageKey::Restrictions;
+        let key2 = SorobanStorageKey::PausedState;
+        let key3 = SorobanStorageKey::Restrictions;
 
         assert_ne!(key1, key2);
-        assert_ne!(key3, key4);
-        assert_ne!(key2, key4);
+        assert_ne!(key2, key3);
     }
 
     #[test]
@@ -2081,7 +2071,7 @@ mod storage_tests {
             SorobanStorageKey::PolicyPrincipals,
             SorobanStorageKey::PolicyCapGroups,
             SorobanStorageKey::Restrictions,
-            SorobanStorageKey::Paused,
+            SorobanStorageKey::PausedState,
         ];
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
@@ -2969,7 +2959,6 @@ mod storage_tests {
         let new_curator = SdkAddress::generate(&env);
         let new_governance = SdkAddress::generate(&env);
         let sentinel = SdkAddress::generate(&env);
-        let guardian = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -3046,28 +3035,111 @@ mod storage_tests {
                 Some(sentinel.clone())
             );
         });
+    }
 
-        execute_governance_command(
+    #[test]
+    fn test_execute_governance_config_rejected_while_migration_in_progress() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let new_curator = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_migration_in_progress(&env, true);
+        });
+
+        let payload = Bytes::from_slice(
             &env,
-            &contract_id,
-            &new_governance,
             &GovernanceCommand::SetGovernanceConfig {
-                kind: GOVERNANCE_CONFIG_KIND_GUARDIANS,
-                primary: None,
-                many: Some(alloc::vec![sdk_text(&guardian)]),
+                kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+                primary: Some(sdk_text(&new_curator)),
+                many: None,
                 value_a: None,
                 value_b: None,
-            },
+            }
+            .encode(),
         );
+
+        let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (&governance, &payload).into_val(&env),
+        );
+        assert_eq!(
+            err,
+            Err(Ok(crate::error::ContractError::MigrationNotAllowed))
+        );
+
         env.as_contract(&contract_id, || {
-            let stored_guardians: Option<SdkVec<SdkAddress>> = env
-                .storage()
-                .instance()
-                .get(&crate::contract::VaultDataKey::Guardians);
-            let stored_guardians = stored_guardians.expect("guardians should be set");
-            assert_eq!(stored_guardians.len(), 1);
-            assert_eq!(stored_guardians.get_unchecked(0), guardian);
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&crate::contract::VaultDataKey::Curator),
+                Some(curator)
+            );
         });
+    }
+
+    #[test]
+    fn test_execute_governance_skim_rejected_while_migration_in_progress() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let foreign_token = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_migration_in_progress(&env, true);
+        });
+
+        let payload = Bytes::from_slice(
+            &env,
+            &GovernanceCommand::Skim {
+                token: sdk_text(&foreign_token),
+            }
+            .encode(),
+        );
+
+        let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (&governance, &payload).into_val(&env),
+        );
+        assert_eq!(
+            err,
+            Err(Ok(crate::error::ContractError::MigrationNotAllowed))
+        );
     }
 
     #[test]

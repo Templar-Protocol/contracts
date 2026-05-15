@@ -43,7 +43,6 @@ impl SorobanStorageKey {
     pub const PolicyPrincipals: Symbol = symbol_short!("pprncpls");
     pub const PolicyCapGroups: Symbol = symbol_short!("pcapgrps");
     pub const Restrictions: Symbol = symbol_short!("restrict");
-    pub const Paused: Symbol = symbol_short!("paused_l"); // legacy pause key (migration)
     pub const PausedState: Symbol = symbol_short!("paused_s");
 }
 
@@ -741,33 +740,6 @@ impl<'a> SorobanStorage<'a> {
             .storage()
             .instance()
             .set(&SorobanStorageKey::PausedState, &paused);
-    }
-
-    /// Check if the contract has the legacy pause key (for migration).
-    pub fn has_legacy_paused(&self) -> bool {
-        self.env
-            .storage()
-            .instance()
-            .has(&SorobanStorageKey::Paused)
-    }
-
-    /// Get the legacy pause value and remove it (for migration).
-    pub fn take_legacy_paused(&self) -> Option<bool> {
-        if self.has_legacy_paused() {
-            let paused: bool = self
-                .env
-                .storage()
-                .instance()
-                .get(&SorobanStorageKey::Paused)
-                .unwrap_or(false);
-            self.env
-                .storage()
-                .instance()
-                .remove(&SorobanStorageKey::Paused);
-            Some(paused)
-        } else {
-            None
-        }
     }
 
     /// Check if storage has been initialized.

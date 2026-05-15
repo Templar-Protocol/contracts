@@ -7,21 +7,19 @@ use super::helpers::{
     adapter_for_market, address_from_alloc_string, addresses_from_alloc_strings, apply_fee_change,
     current_supply_queue_len, emit_admin_event, emit_alloc_event, emit_pause_state_event,
     extend_storage_ttl, get_config_address, governance_caller, kernel_address_from_sdk,
-    load_virtual_offsets, migrate_legacy_paused, migration_in_progress, require_contract_address,
-    require_governance, require_signed, sdk_string_to_alloc, set_config_address,
-    set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    with_contract_vault_contract_error,
+    load_virtual_offsets, migration_in_progress, require_contract_address, require_governance,
+    require_signed, sdk_string_to_alloc, set_config_address, set_migration_in_progress,
+    store_fees_spec, store_virtual_offsets, with_contract_vault_contract_error,
 };
 use super::*;
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
@@ -61,13 +59,6 @@ fn apply_sentinel_config(env: &Env, sentinel: soroban_sdk::Address) {
         .instance()
         .set(&VaultDataKey::Sentinel, &sentinel);
     emit_admin_event(env, symbol_short!("s_sntnl"));
-}
-
-fn apply_guardians_config(env: &Env, guardians: soroban_sdk::Vec<soroban_sdk::Address>) {
-    env.storage()
-        .instance()
-        .set(&VaultDataKey::Guardians, &guardians);
-    emit_admin_event(env, symbol_short!("s_guards"));
 }
 
 fn apply_allocators_config(env: &Env, allocators: soroban_sdk::Vec<soroban_sdk::Address>) {
@@ -493,7 +484,6 @@ fn set_governance_config_impl(
             apply_governance_config(env, required_address(primary)?)?
         }
         GOVERNANCE_CONFIG_KIND_SENTINEL => apply_sentinel_config(env, required_address(primary)?),
-        GOVERNANCE_CONFIG_KIND_GUARDIANS => apply_guardians_config(env, required_addresses(many)?),
         GOVERNANCE_CONFIG_KIND_ALLOCATORS => {
             apply_allocators_config(env, required_addresses(many)?)
         }
@@ -713,11 +703,21 @@ fn execute_public_command(
     }
 }
 
+#[inline]
+fn require_no_migration(env: &Env) -> Result<(), ContractError> {
+    if migration_in_progress(env) {
+        return Err(ContractError::MigrationNotAllowed);
+    }
+    Ok(())
+}
+
 fn execute_governance_command(
     env: &Env,
     caller: soroban_sdk::Address,
     command: GovernanceCommand,
 ) -> Result<(), ContractError> {
+    require_no_migration(env)?;
+
     match command {
         GovernanceCommand::SetGovernanceConfig {
             kind,
@@ -988,7 +988,6 @@ impl SorobanVaultContract {
             return Err(ContractError::InvalidState);
         }
 
-        migrate_legacy_paused(&env);
         extend_storage_ttl(&env);
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));
