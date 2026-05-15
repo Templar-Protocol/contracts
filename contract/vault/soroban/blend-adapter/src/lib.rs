@@ -247,96 +247,6 @@ impl BlendAdapterContract {
         get_pool(&env)
     }
 
-    /// Supply tokens already on the adapter into the Blend pool (admin-only).
-    ///
-    /// Use this after transferring tokens to the adapter address.
-    /// Flow: admin transfers tokens to adapter → admin calls supply_balance → adapter supplies to pool.
-    #[allow(deprecated)]
-    pub fn supply_balance(
-        env: Env,
-        caller: Address,
-        asset: Address,
-        amount: i128,
-    ) -> Result<(), AdapterError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        if amount <= 0 {
-            return Err(AdapterError::InvalidInput);
-        }
-
-        let pool = get_pool(&env)?;
-        let client = PoolClient::new(&env, &pool);
-        let adapter = env.current_contract_address();
-        let request = Request {
-            request_type: REQUEST_SUPPLY,
-            address: asset.clone(),
-            amount,
-        };
-        let mut requests = Vec::new(&env);
-        requests.push_back(request);
-
-        env.authorize_as_current_contract(Vec::from_array(
-            &env,
-            [InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: asset.clone(),
-                    fn_name: Symbol::new(&env, "transfer"),
-                    args: (adapter.clone(), pool.clone(), amount).into_val(&env),
-                },
-                sub_invocations: Vec::new(&env),
-            })],
-        ));
-
-        client.submit(&adapter, &adapter, &adapter, &requests);
-        env.events()
-            .publish((symbol_short!("supply"), asset), amount);
-        Ok(())
-    }
-
-    /// Withdraw tokens from the Blend pool and send to the vault (admin-only).
-    ///
-    /// Use this when the vault's allocate_withdraw has already updated accounting.
-    #[allow(deprecated)]
-    pub fn withdraw_to_vault(
-        env: Env,
-        caller: Address,
-        asset: Address,
-        amount: i128,
-    ) -> Result<i128, AdapterError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        if amount <= 0 {
-            return Err(AdapterError::InvalidInput);
-        }
-        let vault = get_vault(&env)?;
-
-        let pool = get_pool(&env)?;
-        let client = PoolClient::new(&env, &pool);
-        let adapter = env.current_contract_address();
-        let request = Request {
-            request_type: REQUEST_WITHDRAW,
-            address: asset.clone(),
-            amount,
-        };
-        let mut requests = Vec::new(&env);
-        requests.push_back(request);
-        let token = soroban_sdk::token::Client::new(&env, &asset);
-        let balance_before = token.balance(&adapter);
-        client.submit(&adapter, &adapter, &adapter, &requests);
-
-        let balance_after = token.balance(&adapter);
-        let actual_withdrawn = balance_after
-            .checked_sub(balance_before)
-            .ok_or(AdapterError::ArithmeticUnderflow)?;
-        if actual_withdrawn <= 0 {
-            return Err(AdapterError::ZeroWithdrawal);
-        }
-        token.transfer(&adapter, &vault, &actual_withdrawn);
-        env.events()
-            .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
-        Ok(actual_withdrawn)
-    }
-
     /// Extend instance storage TTL (admin-only).
     pub fn extend_ttl(env: Env, caller: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
@@ -408,12 +318,20 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Events as _};
 
+    const BLEND_ADAPTER_SOURCE: &str = include_str!("lib.rs");
+
     fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
         env.events()
             .all()
             .filter_by_contract(adapter)
             .events()
             .len()
+    }
+
+    #[test]
+    fn admin_accounting_shortcuts_are_not_public_entrypoints() {
+        assert!(!BLEND_ADAPTER_SOURCE.contains(concat!("\n    pub fn ", "supply_balance(")));
+        assert!(!BLEND_ADAPTER_SOURCE.contains(concat!("\n    pub fn ", "withdraw_to_vault(")));
     }
 
     #[test]
