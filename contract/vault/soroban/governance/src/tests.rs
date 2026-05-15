@@ -767,6 +767,44 @@ fn timelock_config_increase_immediate_decrease_timelocked() {
 }
 
 #[test]
+fn timelock_config_rejects_u64_max_without_mutating_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::TimelockConfig,
+            u64::MAX,
+        )
+    });
+    assert_eq!(result, Err(GovernanceError::TimelockOutOfBounds));
+
+    let current = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::timelock_ns(env.clone(), TimelockKind::TimelockConfig)
+    });
+    assert_eq!(current, 5_000_000_000);
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 0);
+}
+
+#[test]
 fn other_action_approval_and_consume() {
     let env = Env::default();
     env.mock_all_auths();

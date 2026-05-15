@@ -30,7 +30,8 @@ use templar_vault_kernel::{DurationNs, TimestampNs};
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const MIN_TIMELOCK_NS: u64 = 0;
-const MAX_TIMELOCK_NS: u64 = u64::MAX;
+const DAY_NS: u64 = 86_400_000_000_000;
+const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum ProposalKey {
