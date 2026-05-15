@@ -749,6 +749,52 @@ where
             .unwrap_or_else(|_| abort!("market principal failed"));
     }
 
+    fn set_policy_principal(
+        policy: &mut PolicyState,
+        market: TargetId,
+        principal: u128,
+        message: &'static str,
+    ) -> Result<(), RuntimeError> {
+        policy
+            .set_principal(market, principal)
+            .map_err(|_| invalid_state_error(message))
+    }
+
+    fn validate_supply_observation(
+        policy: &PolicyState,
+        market: TargetId,
+        observed_total_assets: u128,
+        supply_amount: u128,
+    ) -> Result<(), RuntimeError> {
+        let previous_principal = policy
+            .principal_for(market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?;
+        let max_principal = previous_principal
+            .checked_add(supply_amount)
+            .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+        if observed_total_assets < previous_principal || observed_total_assets > max_principal {
+            return Err(invalid_state_error("supply observation out of bounds"));
+        }
+        Ok(())
+    }
+
+    fn validate_refresh_observation(
+        policy: &PolicyState,
+        market: TargetId,
+        observed_total_assets: u128,
+    ) -> Result<(), RuntimeError> {
+        let cap = policy
+            .market_config(market)
+            .ok_or_else(|| invalid_state_error("unknown refreshed market"))?
+            .cap;
+        if observed_total_assets > cap {
+            return Err(invalid_state_error(
+                "refresh observation exceeds market cap",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn complete_supply_allocation(
         &mut self,
         caller: Address,
@@ -757,14 +803,35 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<u128, RuntimeError> {
-        self.update_market_principal(market, observed_total_assets);
-        let new_external = self.sync_external_assets(
-            caller,
-            op_id,
-            self.policy_state().external_assets()?,
-            now_ns,
+        let allocation = self
+            .state()?
+            .op_state
+            .as_allocating()
+            .ok_or_else(|| invalid_state_error(""))?;
+        let current_step = allocation
+            .plan
+            .get(allocation.index as usize)
+            .ok_or_else(|| invalid_state_error("allocation step missing"))?;
+        if current_step.target_id != market {
+            return Err(RuntimeError::invalid_input(""));
+        }
+        Self::validate_supply_observation(
+            self.policy_state(),
+            market,
+            observed_total_assets,
+            current_step.amount,
         )?;
+        let mut staged_policy = self.policy_state.clone();
+        Self::set_policy_principal(
+            &mut staged_policy,
+            market,
+            observed_total_assets,
+            "market principal failed",
+        )?;
+        let new_external_assets = staged_policy.external_assets()?;
+        let new_external = self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         self.finish_allocation_internal(caller, op_id, now_ns)?;
+        self.policy_state = staged_policy;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
     }
@@ -816,13 +883,21 @@ where
         Ok(())
     }
 
-    fn apply_refreshed_positions(&mut self, refreshed_positions: &[(TargetId, u128)]) {
-        let policy = self.policy_state_mut();
+    fn stage_refreshed_positions(
+        &self,
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Result<PolicyState, RuntimeError> {
+        let mut policy = self.policy_state.clone();
         for &(market, total_assets) in refreshed_positions {
-            policy
-                .set_principal(market, total_assets)
-                .unwrap_or_else(|_| abort!("refresh principal failed"));
+            Self::validate_refresh_observation(&policy, market, total_assets)?;
+            Self::set_policy_principal(
+                &mut policy,
+                market,
+                total_assets,
+                "refresh principal failed",
+            )?;
         }
+        Ok(policy)
     }
 
     pub(crate) fn complete_refresh_with_positions(
@@ -834,10 +909,11 @@ where
     ) -> Result<RefreshResult, RuntimeError> {
         let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
         self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
-        self.apply_refreshed_positions(&refreshed_positions);
-        let new_external_assets = self.policy_state().external_assets()?;
+        let staged_policy = self.stage_refreshed_positions(&refreshed_positions)?;
+        let new_external_assets = staged_policy.external_assets()?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
+        self.policy_state = staged_policy;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(result)
     }

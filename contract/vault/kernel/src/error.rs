@@ -27,7 +27,6 @@ pub enum InvalidStateCode {
     SyncExternalRequiresActiveOp = 16,
     SyncExternalRequiresAllowedStates = 17,
     SyncExternalOverflowIdlePlusExternal = 18,
-    SyncExternalWouldMoreThanDoubleTotalAssets = 19,
     AbortRefreshingRequiresActiveOp = 20,
     AbortRefreshingRequiresRefreshing = 21,
     AbortAllocatingRequiresAllocating = 22,
@@ -86,9 +85,6 @@ impl InvalidStateCode {
             }
             Self::SyncExternalOverflowIdlePlusExternal => {
                 "sync_external_assets overflow: idle + external exceeds u128"
-            }
-            Self::SyncExternalWouldMoreThanDoubleTotalAssets => {
-                "sync_external_assets would more than double total_assets"
             }
             Self::AbortRefreshingRequiresActiveOp => "abort_refreshing requires active op",
             Self::AbortRefreshingRequiresRefreshing => "abort_refreshing requires Refreshing",

@@ -296,6 +296,7 @@ mod contract_tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
+    use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
         GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
@@ -587,6 +588,36 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_complete_supply_allocation_rejects_observed_assets_above_supplied_step() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+
+        {
+            let policy = vault.policy_state_mut();
+            policy
+                .set_market_config(0, MarketConfig::new(true, 10_000, None))
+                .unwrap();
+            policy.set_principal(0, 1_000).unwrap();
+        }
+        {
+            let state = vault.state_mut().unwrap();
+            state.idle_assets = 1_000;
+            state.external_assets = 1_000;
+            state.total_assets = 2_000;
+        }
+        let op_id = begin_allocating(&mut vault, caller, vec![(0, 500)], 1_000).unwrap();
+
+        let error = vault
+            .complete_supply_allocation(caller, 0, 1_501, op_id, 1_000)
+            .expect_err("supply callback must not over-report the active step");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert!(vault.state().unwrap().op_state.is_allocating());
+        assert_eq!(vault.state().unwrap().external_assets, 1_000);
+        assert_eq!(vault.policy_state().principal_for(0), Some(1_000));
+    }
+
+    #[test]
     fn test_sync_external_assets_requires_active_allocation_op_id() {
         let mut vault = create_test_vault();
         let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
@@ -666,6 +697,67 @@ mod contract_tests {
 
         assert_eq!(error, RuntimeError::InvalidInput);
         assert!(vault.state().unwrap().op_state.is_refreshing());
+    }
+
+    #[test]
+    fn test_complete_refresh_rejects_cumulative_adapter_inflation() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+
+        {
+            let policy = vault.policy_state_mut();
+            policy
+                .set_market_config(0, MarketConfig::new(true, 1_998, None))
+                .unwrap();
+            policy.set_principal(0, 999).unwrap();
+        }
+        {
+            let state = vault.state_mut().unwrap();
+            state.idle_assets = 1_000;
+            state.external_assets = 999;
+            state.total_assets = 1_999;
+        }
+        let op_id = vault.begin_refreshing(caller, vec![0], 1_500).unwrap();
+
+        let error = vault
+            .complete_refresh_with_positions(caller, &[(0, 2_997)], op_id, 1_500)
+            .expect_err("refresh must not accept cumulative adapter inflation");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert!(vault.state().unwrap().op_state.is_refreshing());
+        assert_eq!(vault.state().unwrap().external_assets, 999);
+        assert_eq!(vault.policy_state().principal_for(0), Some(999));
+    }
+
+    #[test]
+    fn test_complete_refresh_allows_adapter_reported_decrease_within_cap() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+
+        {
+            let policy = vault.policy_state_mut();
+            policy
+                .set_market_config(0, MarketConfig::new(true, 10_000, None))
+                .unwrap();
+            policy.set_principal(0, 10_000).unwrap();
+        }
+        {
+            let state = vault.state_mut().unwrap();
+            state.idle_assets = 1_000;
+            state.external_assets = 10_000;
+            state.total_assets = 11_000;
+        }
+        let op_id = vault.begin_refreshing(caller, vec![0], 1_500).unwrap();
+
+        let result = vault
+            .complete_refresh_with_positions(caller, &[(0, 0)], op_id, 1_500)
+            .expect("refresh may report a legitimate market decrease");
+
+        assert_eq!(result.markets_refreshed, 1);
+        assert!(vault.state().unwrap().op_state.is_idle());
+        assert_eq!(vault.state().unwrap().external_assets, 0);
+        assert_eq!(vault.state().unwrap().total_assets, 1_000);
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
     }
 
     #[test]
