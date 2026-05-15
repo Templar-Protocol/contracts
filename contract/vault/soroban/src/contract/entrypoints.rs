@@ -7,12 +7,13 @@ use super::helpers::{
     adapter_for_market, address_from_alloc_string, addresses_from_alloc_strings, apply_fee_change,
     current_supply_queue_len, emit_admin_event, emit_alloc_event, emit_pause_state_event,
     extend_storage_ttl, get_config_address, governance_caller, kernel_address_from_sdk,
-    load_virtual_offsets, migrate_legacy_paused, migration_in_progress, require_contract_address,
-    require_governance, require_signed, sdk_string_to_alloc, set_config_address,
-    set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    with_contract_vault_contract_error,
+    load_virtual_offsets, lock_virtual_offsets, migrate_legacy_paused, migration_in_progress,
+    require_contract_address, require_governance, require_signed, sdk_string_to_alloc,
+    set_config_address, set_migration_in_progress, store_fees_spec, store_virtual_offsets,
+    virtual_offsets_locked, with_contract_vault_contract_error,
 };
 use super::*;
+use crate::storage::{SorobanStorage, Storage};
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
@@ -108,6 +109,15 @@ fn apply_virtual_offsets_config(
     virtual_shares: i128,
     virtual_assets: i128,
 ) -> Result<(), ContractError> {
+    if virtual_offsets_locked(env) {
+        return Err(ContractError::InvalidState);
+    }
+    if let Some(state) = SorobanStorage::new(env).load_state()? {
+        if state.total_assets != 0 || state.total_shares != 0 {
+            return Err(ContractError::InvalidState);
+        }
+    }
+
     let virtual_shares = to_u128(virtual_shares)?;
     let virtual_assets = to_u128(virtual_assets)?;
     store_virtual_offsets(env, virtual_shares, virtual_assets);
@@ -313,13 +323,18 @@ fn deposit_with_min_impl(
     let now_ns = ledger_timestamp_ns(env)?;
 
     let mut shares_minted = 0u128;
+    let mut is_capitalized = false;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result = vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
         shares_minted = result.shares_minted;
+        is_capitalized = result.total_assets != 0 && result.total_shares != 0;
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
+    if shares_minted != 0 && is_capitalized {
+        lock_virtual_offsets(env);
+    }
     to_i128(shares_minted)
 }
 

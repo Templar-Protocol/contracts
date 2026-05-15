@@ -165,6 +165,7 @@ impl VaultDataKey {
     pub const SkimRecipient: Symbol = soroban_sdk::symbol_short!("skimrcp");
     pub const VirtualShares: Symbol = soroban_sdk::symbol_short!("vshares");
     pub const VirtualAssets: Symbol = soroban_sdk::symbol_short!("vassets");
+    pub const VirtualOffsetsLocked: Symbol = soroban_sdk::symbol_short!("vofflock");
     pub const IdleResyncLastNs: Symbol = soroban_sdk::symbol_short!("idlrsync");
 }
 
