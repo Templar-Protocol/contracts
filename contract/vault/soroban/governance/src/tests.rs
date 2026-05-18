@@ -1270,6 +1270,29 @@ fn cap_group_membership_clear_uses_mirrored_current_membership() {
 }
 
 #[test]
+fn set_governance_rejects_obvious_invalid_contract_targets() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(SorobanVaultGovernanceContract, (&admin, &vault, &(0u64)));
+    let asset_contract = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    for target in [vault.clone(), governance.clone(), asset_contract] {
+        let result = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_governance(
+                env.clone(),
+                admin.clone(),
+                target.clone(),
+            )
+        });
+        assert_eq!(result, Err(GovernanceError::InvalidInput));
+    }
+}
+
+#[test]
 fn governance_change_is_timelocked_and_routes_to_vault() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1286,7 +1309,7 @@ fn governance_change_is_timelocked_and_routes_to_vault() {
         (&admin, &vault, &(5_000_000_000u64)),
     );
 
-    let new_governance = Address::generate(&env);
+    let new_governance = env.register(SorobanVaultGovernanceContract, (&admin, &vault, &(0u64)));
 
     let proposal_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_governance(
