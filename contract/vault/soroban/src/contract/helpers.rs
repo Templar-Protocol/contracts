@@ -542,9 +542,3 @@ pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), C
     }
     Ok(())
 }
-
-#[inline(never)]
-pub(crate) fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
-    require_governance(env, caller)?;
-    Ok(kernel_address_from_sdk(env, caller))
-}

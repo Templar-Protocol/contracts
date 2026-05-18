@@ -2902,6 +2902,29 @@ mod storage_tests {
     }
 
     #[test]
+    fn test_execute_governance_unauthorized_caller_rejected_before_body_decode() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let attacker = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(env.clone(), curator, governance, asset, share, 0, 0)
+                .unwrap();
+        });
+
+        let malformed_skim_payload = Bytes::from_slice(&env, &[2, 0xff, 0xff, 0xff, 0xff]);
+        let result = env.as_contract(&contract_id, || {
+            SorobanVaultContract::execute_governance(env.clone(), attacker, malformed_skim_payload)
+        });
+        assert_eq!(result, Err(crate::error::ContractError::Unauthorized));
+    }
+
+    #[test]
     fn test_execute_governance_group_membership_requires_market_id() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
