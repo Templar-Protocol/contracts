@@ -1,6 +1,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod types;
 pub use types::*;
@@ -120,6 +122,7 @@ impl SorobanVaultGovernanceContract {
     ) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         require_contract_address(&vault)?;
+        require_constructor_topology(&env, &admin, &vault)?;
         validate_timelock_ns(timelock_ns)?;
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -1679,6 +1682,18 @@ fn require_governance_target(env: &Env, governance: &Address) -> Result<(), Gove
     require_wasm_contract_address(governance)?;
     let vault = get_address(env, DataKey::Vault)?;
     if governance == &vault || governance == &env.current_contract_address() {
+        return Err(GovernanceError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn require_constructor_topology(
+    env: &Env,
+    admin: &Address,
+    vault: &Address,
+) -> Result<(), GovernanceError> {
+    let current = env.current_contract_address();
+    if admin == vault || admin == &current || vault == &current {
         return Err(GovernanceError::InvalidInput);
     }
     Ok(())

@@ -1270,6 +1270,45 @@ fn cap_group_membership_clear_uses_mirrored_current_membership() {
 }
 
 #[test]
+fn governance_constructor_rejects_self_referential_or_colliding_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+
+    let admin_is_vault = Address::generate(&env);
+    let self_as_admin = Address::generate(&env);
+    let self_as_vault = Address::generate(&env);
+
+    let admin_is_vault_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &admin_is_vault,
+            SorobanVaultGovernanceContract,
+            (&vault, &vault, &(0u64)),
+        );
+    }));
+    assert!(admin_is_vault_result.is_err());
+
+    let self_admin_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &self_as_admin,
+            SorobanVaultGovernanceContract,
+            (&self_as_admin, &vault, &(0u64)),
+        );
+    }));
+    assert!(self_admin_result.is_err());
+
+    let self_vault_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &self_as_vault,
+            SorobanVaultGovernanceContract,
+            (&admin, &self_as_vault, &(0u64)),
+        );
+    }));
+    assert!(self_vault_result.is_err());
+}
+
+#[test]
 fn set_governance_rejects_obvious_invalid_contract_targets() {
     let env = Env::default();
     env.mock_all_auths();
