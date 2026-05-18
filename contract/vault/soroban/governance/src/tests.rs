@@ -1050,6 +1050,52 @@ fn direct_sentinel_restrictions_respect_abdication() {
 }
 
 #[test]
+fn submit_set_supply_queue_rejects_duplicate_targets() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let err = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_supply_queue(
+            env.clone(),
+            admin.clone(),
+            sdk_u32_vec(&env, &[7u32, 7u32]),
+        )
+    });
+
+    assert_eq!(err, Err(GovernanceError::InvalidInput));
+}
+
+#[test]
+fn submit_set_supply_queue_allows_empty_clear_policy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_supply_queue(
+            env.clone(),
+            admin.clone(),
+            sdk_u32_vec(&env, &[]),
+        )
+    });
+
+    assert_eq!(proposal_id, Ok(1));
+}
+
+#[test]
 fn cap_action_is_timelocked_and_accepts_after_maturity() {
     let env = Env::default();
     env.mock_all_auths();
