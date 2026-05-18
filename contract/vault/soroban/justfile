@@ -928,15 +928,6 @@ set-supply-queue target_ids_json:
 	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
 	echo "✓ Supply queue updated"
 
-# Set share token metadata (SEP-41).
-set-metadata name="Templar Vault Share" symbol="tvSHARE" decimals="7":
-	@echo "Setting share token metadata..."
-	@just invoke set_metadata \
-		--name "{{name}}" \
-		--symbol "{{symbol}}" \
-		--decimals "{{decimals}}"
-	@echo "✓ Metadata set"
-
 # =============================================================================
 # VIEW FUNCTIONS (Read-only)
 # =============================================================================
@@ -1125,7 +1116,6 @@ help:
 	@echo "ADMIN:"
 	@echo "  just pause / unpause"
 	@echo "  just set-curator <new_curator_address>"
-	@echo "  just set-metadata [name] [symbol] [decimals]"
 	@echo ""
 	@echo "VIEW:"
 	@echo "  just vault-state              Show vault summary"
