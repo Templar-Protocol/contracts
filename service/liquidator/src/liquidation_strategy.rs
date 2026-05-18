@@ -45,6 +45,15 @@ pub(crate) fn apply_liquidatable_cap_buffer(liquidatable_collateral: u128) -> u1
     (liquidatable_collateral * (10_000 - LIQUIDATABLE_CAP_BUFFER_BPS)) / 10_000
 }
 
+/// Clamps the strategy's desired collateral request to the buffered eligibility cap.
+///
+/// Returns `min(desired, liquidatable * (1 - LIQUIDATABLE_CAP_BUFFER_BPS/10_000))`.
+/// Used by both liquidation strategies so the cap-buffer behavior is uniform
+/// and exercised by a single unit test.
+pub(crate) fn min_with_cap_buffer(desired: u128, liquidatable: u128) -> u128 {
+    std::cmp::min(desired, apply_liquidatable_cap_buffer(liquidatable))
+}
+
 /// Convert a borrow asset amount to collateral asset amount.
 ///
 /// Formula: `collateral = (borrow / price) / (1 - spread)`
@@ -271,8 +280,7 @@ impl LiquidationStrategy for PercentageLiquidationStrategy {
         let target_collateral = if market_version == Some((1, 0, 0)) {
             position.collateral_asset_deposit.into()
         } else {
-            let buffered_cap = apply_liquidatable_cap_buffer(liquidatable_collateral.into());
-            std::cmp::min(collateral_amount, buffered_cap)
+            min_with_cap_buffer(collateral_amount, liquidatable_collateral.into())
         };
 
         let Some(theoretical_amount) = collateral_to_borrow(
@@ -440,8 +448,7 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             position.collateral_asset_deposit.into()
         } else {
             let safe_collateral = (max_collateral * (10_000 - SAFETY_BUFFER_BPS)) / 10_000;
-            let buffered_cap = apply_liquidatable_cap_buffer(liquidatable_u128);
-            std::cmp::min(safe_collateral, buffered_cap)
+            min_with_cap_buffer(safe_collateral, liquidatable_u128)
         };
 
         let expected_minimum = collateral_to_borrow(
@@ -581,6 +588,37 @@ mod tests {
             request <= chain_cap_at_drift_3pct,
             "request {request} must fit under {chain_cap_at_drift_3pct} for ≤3% drift",
         );
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_returns_desired_when_below_cap() {
+        // Desired is well below the buffered cap → no clipping.
+        let liquidatable = 1_000_000u128;
+        let desired = 500_000u128;
+        assert_eq!(min_with_cap_buffer(desired, liquidatable), desired);
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_clips_to_buffered_cap_when_desired_exceeds() {
+        // Desired exceeds the buffered cap → must clip to buffered cap, never to raw cap.
+        let liquidatable = 1_000_000u128;
+        let desired = 2_000_000u128;
+        let result = min_with_cap_buffer(desired, liquidatable);
+        assert_eq!(result, apply_liquidatable_cap_buffer(liquidatable));
+        assert!(
+            result < liquidatable,
+            "result {result} must be strictly less than raw cap {liquidatable}",
+        );
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_clips_when_desired_just_above_buffered() {
+        // Edge case: desired just above the buffered cap, still under raw cap.
+        // Without this helper a regression could pass `desired` through unclipped.
+        let liquidatable = 1_000_000u128;
+        let buffered = apply_liquidatable_cap_buffer(liquidatable);
+        let desired = buffered + 1;
+        assert_eq!(min_with_cap_buffer(desired, liquidatable), buffered);
     }
 
     #[test]

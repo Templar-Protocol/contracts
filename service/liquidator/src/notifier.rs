@@ -61,7 +61,7 @@ pub const DEFAULT_FAILURE_NOTIFY_COOLDOWN: Duration = Duration::from_secs(24 * 6
 
 /// Dedup key for failure notifications. Stable across rounds for the same
 /// (market, borrower, error class).
-type DedupKey = (String, String, String);
+type DedupKey = (String, String, crate::NotificationKind);
 
 /// Liquidator event notifier.
 ///
@@ -255,9 +255,7 @@ impl Notifier {
     /// Notify about a failed liquidation attempt.
     ///
     /// Repeated alerts for the same `(market, borrower, error_kind)` are
-    /// suppressed within the configured cooldown window. Pass a stable
-    /// `error_kind` string (e.g. `"excessive_liquidation"`, `"timeout"`)
-    /// so different root causes still fire fresh alerts.
+    /// suppressed within the configured cooldown window.
     ///
     /// The dedup entry is recorded only when the send is actually accepted
     /// by the in-flight semaphore; if the message is dropped due to overload,
@@ -266,14 +264,14 @@ impl Notifier {
         self: &Arc<Self>,
         market: &str,
         borrower: &str,
-        error_kind: &str,
+        error_kind: crate::NotificationKind,
         error: &str,
     ) {
         if !self.should_send_failure(market, borrower, error_kind) {
             tracing::debug!(
                 market,
                 borrower,
-                error_kind,
+                error_kind = %error_kind,
                 "Liquidation failure notification suppressed by dedup"
             );
             return;
@@ -286,13 +284,14 @@ impl Notifier {
 
     /// Removes a specific dedup entry. Used to roll back when `spawn_send`
     /// could not queue the message.
-    fn rollback_failure_dedup(&self, market: &str, borrower: &str, error_kind: &str) {
+    fn rollback_failure_dedup(
+        &self,
+        market: &str,
+        borrower: &str,
+        error_kind: crate::NotificationKind,
+    ) {
         if let Ok(mut dedup) = self.failure_dedup.lock() {
-            dedup.remove(&(
-                market.to_string(),
-                borrower.to_string(),
-                error_kind.to_string(),
-            ));
+            dedup.remove(&(market.to_string(), borrower.to_string(), error_kind));
         }
     }
 
@@ -308,14 +307,19 @@ impl Notifier {
     /// Returns `true` if the (market, borrower, kind) tuple is outside the
     /// cooldown window, and records the send time. Garbage-collects stale
     /// entries opportunistically.
-    fn should_send_failure(&self, market: &str, borrower: &str, kind: &str) -> bool {
+    fn should_send_failure(
+        &self,
+        market: &str,
+        borrower: &str,
+        kind: crate::NotificationKind,
+    ) -> bool {
         let Ok(mut dedup) = self.failure_dedup.lock() else {
             // Poisoned mutex — fall through and send rather than block alerts.
             return true;
         };
         let now = Instant::now();
         dedup.retain(|_, last| now.duration_since(*last) < self.failure_cooldown);
-        let key = (market.to_string(), borrower.to_string(), kind.to_string());
+        let key = (market.to_string(), borrower.to_string(), kind);
         match dedup.get(&key) {
             Some(last) if now.duration_since(*last) < self.failure_cooldown => false,
             _ => {
@@ -625,64 +629,69 @@ mod tests {
         assert!(msg.contains("After 5 consecutive failures"));
     }
 
+    use crate::NotificationKind;
+
+    const K1: NotificationKind = NotificationKind::ExcessiveLiquidation;
+    const K2: NotificationKind = NotificationKind::OfferTooLow;
+
     #[test]
     fn test_failure_dedup_suppresses_repeats_same_kind() {
         let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
-        assert!(notifier.should_send_failure("m", "b", "k1"));
-        assert!(!notifier.should_send_failure("m", "b", "k1"));
-        assert!(!notifier.should_send_failure("m", "b", "k1"));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(!notifier.should_send_failure("m", "b", K1));
+        assert!(!notifier.should_send_failure("m", "b", K1));
     }
 
     #[test]
     fn test_failure_dedup_allows_different_kinds() {
         let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
-        assert!(notifier.should_send_failure("m", "b", "k1"));
-        assert!(notifier.should_send_failure("m", "b", "k2"));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(notifier.should_send_failure("m", "b", K2));
     }
 
     #[test]
     fn test_failure_dedup_separates_borrowers() {
         let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
-        assert!(notifier.should_send_failure("m", "b1", "k1"));
-        assert!(notifier.should_send_failure("m", "b2", "k1"));
+        assert!(notifier.should_send_failure("m", "b1", K1));
+        assert!(notifier.should_send_failure("m", "b2", K1));
     }
 
     #[test]
     fn test_failure_dedup_separates_markets() {
         let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
-        assert!(notifier.should_send_failure("m1", "b", "k1"));
-        assert!(notifier.should_send_failure("m2", "b", "k1"));
+        assert!(notifier.should_send_failure("m1", "b", K1));
+        assert!(notifier.should_send_failure("m2", "b", K1));
     }
 
     #[test]
     fn test_failure_dedup_resets_after_cooldown() {
         let notifier = Notifier::with_cooldown(None, Duration::from_millis(10));
-        assert!(notifier.should_send_failure("m", "b", "k1"));
+        assert!(notifier.should_send_failure("m", "b", K1));
         std::thread::sleep(Duration::from_millis(20));
-        assert!(notifier.should_send_failure("m", "b", "k1"));
+        assert!(notifier.should_send_failure("m", "b", K1));
     }
 
     #[test]
     fn test_clear_failure_dedup_for_releases_borrower() {
         let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
-        assert!(notifier.should_send_failure("m", "b", "k1"));
-        assert!(notifier.should_send_failure("m", "b", "k2"));
-        assert!(notifier.should_send_failure("m", "b2", "k1"));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(notifier.should_send_failure("m", "b", K2));
+        assert!(notifier.should_send_failure("m", "b2", K1));
         notifier.clear_failure_dedup_for("m", "b");
         // b can fire again for k1 and k2
-        assert!(notifier.should_send_failure("m", "b", "k1"));
-        assert!(notifier.should_send_failure("m", "b", "k2"));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(notifier.should_send_failure("m", "b", K2));
         // b2 is unaffected
-        assert!(!notifier.should_send_failure("m", "b2", "k1"));
+        assert!(!notifier.should_send_failure("m", "b2", K1));
     }
 
     #[test]
     fn test_rollback_failure_dedup_removes_entry() {
         let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
         // Record an entry, then roll it back; the next call should send again.
-        assert!(notifier.should_send_failure("m", "b", "k1"));
-        notifier.rollback_failure_dedup("m", "b", "k1");
-        assert!(notifier.should_send_failure("m", "b", "k1"));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        notifier.rollback_failure_dedup("m", "b", K1);
+        assert!(notifier.should_send_failure("m", "b", K1));
     }
 
     #[test]
@@ -690,7 +699,7 @@ mod tests {
         let notifier = Arc::new(Notifier::new(None));
         // Should not panic or spawn anything
         notifier.notify_liquidation("m", "b", "1", "2", "3", None, false);
-        notifier.notify_liquidation_failed("m", "b", "kind", "err");
+        notifier.notify_liquidation_failed("m", "b", K1, "err");
         notifier.notify_swap_failed("m", "a", "b", "1", "err");
         notifier.notify_swap_unsupported("m", "a", "b", "1");
         notifier.notify_scan_failures("m", 2, "err");

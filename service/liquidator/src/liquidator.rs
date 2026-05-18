@@ -151,6 +151,69 @@ impl std::fmt::Display for ErrorPhase {
     }
 }
 
+/// Stable, low-cardinality classification of failure kinds. Used as a dedup
+/// bucket for repeat-failure notifications.
+///
+/// A typed enum (rather than a free-form string) prevents accidental
+/// fragmentation of dedup state if a caller mistypes a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotificationKind {
+    ExcessiveLiquidation,
+    OfferTooLow,
+    NotEligible,
+    ValueCalcFailure,
+    TxTimeout,
+    TxFailedOther,
+    TxSubmissionError,
+    SwapError,
+    FetchBorrowStatus,
+    PricePair,
+    PriceFetch,
+    ListPositions,
+    ListDeployments,
+    GetConfiguration,
+    FetchBalance,
+    AccessKey,
+    Serialize,
+    Strategy,
+    InsufficientBalance,
+    OracleUpdate,
+}
+
+impl NotificationKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExcessiveLiquidation => "excessive_liquidation",
+            Self::OfferTooLow => "offer_too_low",
+            Self::NotEligible => "not_eligible",
+            Self::ValueCalcFailure => "value_calc_failure",
+            Self::TxTimeout => "tx_timeout",
+            Self::TxFailedOther => "tx_failed_other",
+            Self::TxSubmissionError => "tx_submission_error",
+            Self::SwapError => "swap_error",
+            Self::FetchBorrowStatus => "fetch_borrow_status",
+            Self::PricePair => "price_pair",
+            Self::PriceFetch => "price_fetch",
+            Self::ListPositions => "list_positions",
+            Self::ListDeployments => "list_deployments",
+            Self::GetConfiguration => "get_configuration",
+            Self::FetchBalance => "fetch_balance",
+            Self::AccessKey => "access_key",
+            Self::Serialize => "serialize",
+            Self::Strategy => "strategy",
+            Self::InsufficientBalance => "insufficient_balance",
+            Self::OracleUpdate => "oracle_update",
+        }
+    }
+}
+
+impl std::fmt::Display for NotificationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl LiquidatorError {
     /// Classifies the error by pipeline phase.
     ///
@@ -182,31 +245,32 @@ impl LiquidatorError {
         }
     }
 
-    /// Returns a stable, low-cardinality kind string used to dedupe
-    /// repeat failure notifications for the same `(market, borrower)`.
+    /// Classifies the error into a stable dedup bucket for failure notifications.
     ///
     /// `TransactionFailed` is further classified by the contract panic
     /// substring so a "wrong amount" failure and an "offer too low" failure
     /// each fire their own notification once.
     #[must_use]
-    pub fn notification_kind(&self) -> &'static str {
+    pub fn notification_kind(&self) -> NotificationKind {
         match self {
             Self::TransactionFailed(msg) => classify_transaction_failure(msg),
-            Self::LiquidationTransactionError(rpc::RpcError::TimeoutError(_, _)) => "tx_timeout",
-            Self::LiquidationTransactionError(_) => "tx_submission_error",
-            Self::SwapProviderError(_) => "swap_error",
-            Self::FetchBorrowStatus(_) => "fetch_borrow_status",
-            Self::PricePairError(_) => "price_pair",
-            Self::PriceFetchError(_) => "price_fetch",
-            Self::ListBorrowPositionsError(_) => "list_positions",
-            Self::ListDeploymentsError(_) => "list_deployments",
-            Self::GetConfigurationError(_) => "get_configuration",
-            Self::FetchBalanceError(_) => "fetch_balance",
-            Self::AccessKeyDataError(_) => "access_key",
-            Self::SerializeError(_) => "serialize",
-            Self::StrategyError(_) => "strategy",
-            Self::InsufficientBalance => "insufficient_balance",
-            Self::OracleUpdateError(_) => "oracle_update",
+            Self::LiquidationTransactionError(rpc::RpcError::TimeoutError(_, _)) => {
+                NotificationKind::TxTimeout
+            }
+            Self::LiquidationTransactionError(_) => NotificationKind::TxSubmissionError,
+            Self::SwapProviderError(_) => NotificationKind::SwapError,
+            Self::FetchBorrowStatus(_) => NotificationKind::FetchBorrowStatus,
+            Self::PricePairError(_) => NotificationKind::PricePair,
+            Self::PriceFetchError(_) => NotificationKind::PriceFetch,
+            Self::ListBorrowPositionsError(_) => NotificationKind::ListPositions,
+            Self::ListDeploymentsError(_) => NotificationKind::ListDeployments,
+            Self::GetConfigurationError(_) => NotificationKind::GetConfiguration,
+            Self::FetchBalanceError(_) => NotificationKind::FetchBalance,
+            Self::AccessKeyDataError(_) => NotificationKind::AccessKey,
+            Self::SerializeError(_) => NotificationKind::Serialize,
+            Self::StrategyError(_) => NotificationKind::Strategy,
+            Self::InsufficientBalance => NotificationKind::InsufficientBalance,
+            Self::OracleUpdateError(_) => NotificationKind::OracleUpdate,
         }
     }
 }
@@ -215,19 +279,19 @@ impl LiquidatorError {
 ///
 /// The match is on substrings of the contract panic so the categorization
 /// survives small wording changes and surrounding receipt-id boilerplate.
-fn classify_transaction_failure(msg: &str) -> &'static str {
+fn classify_transaction_failure(msg: &str) -> NotificationKind {
     if msg.contains("Attempt to liquidate more collateral") {
-        "excessive_liquidation"
+        NotificationKind::ExcessiveLiquidation
     } else if msg.contains("Liquidation offer too low") {
-        "offer_too_low"
+        NotificationKind::OfferTooLow
     } else if msg.contains("not eligible for liquidation") {
-        "not_eligible"
+        NotificationKind::NotEligible
     } else if msg.contains("Failed to calculate value of collateral") {
-        "value_calc_failure"
+        NotificationKind::ValueCalcFailure
     } else if msg.contains("Timeout") || msg.contains("timeout") {
-        "tx_timeout"
+        NotificationKind::TxTimeout
     } else {
-        "tx_failed_other"
+        NotificationKind::TxFailedOther
     }
 }
 
@@ -1025,7 +1089,10 @@ mod tests {
     fn test_notification_kind_excessive_liquidation() {
         let msg = r#"Receipt 6wy7eW4sLeVAApXmmsyaseK48yfGpJRVrt5etZrsRByp failed: ExecutionError("Smart contract panicked: Attempt to liquidate more collateral than is currently eligible: 37818981 requested > 34516659 available")"#;
         let err = LiquidatorError::TransactionFailed(msg.to_string());
-        assert_eq!(err.notification_kind(), "excessive_liquidation");
+        assert_eq!(
+            err.notification_kind(),
+            NotificationKind::ExcessiveLiquidation
+        );
     }
 
     #[test]
@@ -1033,7 +1100,7 @@ mod tests {
         let err = LiquidatorError::TransactionFailed(
             "Smart contract panicked: Liquidation offer too low: 99 offered < 100".to_string(),
         );
-        assert_eq!(err.notification_kind(), "offer_too_low");
+        assert_eq!(err.notification_kind(), NotificationKind::OfferTooLow);
     }
 
     #[test]
@@ -1041,19 +1108,27 @@ mod tests {
         let err = LiquidatorError::TransactionFailed(
             "Borrow position is not eligible for liquidation".to_string(),
         );
-        assert_eq!(err.notification_kind(), "not_eligible");
+        assert_eq!(err.notification_kind(), NotificationKind::NotEligible);
+    }
+
+    #[test]
+    fn test_notification_kind_value_calc_failure() {
+        let err = LiquidatorError::TransactionFailed(
+            "Smart contract panicked: Failed to calculate value of collateral".to_string(),
+        );
+        assert_eq!(err.notification_kind(), NotificationKind::ValueCalcFailure);
     }
 
     #[test]
     fn test_notification_kind_tx_failed_other() {
         let err = LiquidatorError::TransactionFailed("some new failure mode".to_string());
-        assert_eq!(err.notification_kind(), "tx_failed_other");
+        assert_eq!(err.notification_kind(), NotificationKind::TxFailedOther);
     }
 
     #[test]
     fn test_notification_kind_tx_submission_timeout() {
         let err = LiquidatorError::LiquidationTransactionError(rpc::RpcError::TimeoutError(30, 30));
-        assert_eq!(err.notification_kind(), "tx_timeout");
+        assert_eq!(err.notification_kind(), NotificationKind::TxTimeout);
     }
 
     #[test]
@@ -1061,19 +1136,34 @@ mod tests {
         let err = LiquidatorError::LiquidationTransactionError(rpc::RpcError::WrongResponseKind(
             "boom".to_string(),
         ));
-        assert_eq!(err.notification_kind(), "tx_submission_error");
+        assert_eq!(err.notification_kind(), NotificationKind::TxSubmissionError);
     }
 
     #[test]
     fn test_notification_kind_non_tx_variants_stable() {
         assert_eq!(
             LiquidatorError::InsufficientBalance.notification_kind(),
-            "insufficient_balance"
+            NotificationKind::InsufficientBalance,
         );
         assert_eq!(
             LiquidatorError::FetchBorrowStatus(rpc::RpcError::TimeoutError(30, 30))
                 .notification_kind(),
-            "fetch_borrow_status"
+            NotificationKind::FetchBorrowStatus,
+        );
+    }
+
+    #[test]
+    fn test_notification_kind_as_str_stable() {
+        // Lock the string representation so dedup state from previous deployments
+        // remains valid across rolling restarts.
+        assert_eq!(
+            NotificationKind::ExcessiveLiquidation.as_str(),
+            "excessive_liquidation"
+        );
+        assert_eq!(NotificationKind::TxTimeout.as_str(), "tx_timeout");
+        assert_eq!(
+            NotificationKind::InsufficientBalance.as_str(),
+            "insufficient_balance"
         );
     }
 }
