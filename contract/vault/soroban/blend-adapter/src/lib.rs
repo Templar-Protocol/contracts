@@ -1,6 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
+    address_payload::AddressPayload,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
     Symbol, Vec,
@@ -277,8 +278,10 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
 }
 
 fn is_contract_address(addr: &Address) -> bool {
-    let bytes = addr.to_string().to_bytes();
-    matches!(bytes.get(0), Some(b'C'))
+    matches!(
+        AddressPayload::from_address(addr),
+        Some(AddressPayload::ContractIdHash(_))
+    )
 }
 
 fn require_contract_address(addr: &Address, err: AdapterError) -> Result<(), AdapterError> {

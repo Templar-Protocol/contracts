@@ -3819,7 +3819,6 @@ proptest! {
         in_flight in 0u64..1_000_000,
         delta in 0u64..1_000_000,
     ) {
-        let delta = delta.min(in_flight);
         let external = existing_external + delta;
         let mut state = VaultState::new();
         state.idle_assets = idle as u128;
