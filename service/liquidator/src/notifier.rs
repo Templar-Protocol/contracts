@@ -258,6 +258,10 @@ impl Notifier {
     /// suppressed within the configured cooldown window. Pass a stable
     /// `error_kind` string (e.g. `"excessive_liquidation"`, `"timeout"`)
     /// so different root causes still fire fresh alerts.
+    ///
+    /// The dedup entry is recorded only when the send is actually accepted
+    /// by the in-flight semaphore; if the message is dropped due to overload,
+    /// the entry is rolled back so the next call can retry.
     pub fn notify_liquidation_failed(
         self: &Arc<Self>,
         market: &str,
@@ -274,7 +278,22 @@ impl Notifier {
             );
             return;
         }
-        self.spawn_send(format_liquidation_failed_message(market, borrower, error));
+        let queued = self.spawn_send(format_liquidation_failed_message(market, borrower, error));
+        if !queued {
+            self.rollback_failure_dedup(market, borrower, error_kind);
+        }
+    }
+
+    /// Removes a specific dedup entry. Used to roll back when `spawn_send`
+    /// could not queue the message.
+    fn rollback_failure_dedup(&self, market: &str, borrower: &str, error_kind: &str) {
+        if let Ok(mut dedup) = self.failure_dedup.lock() {
+            dedup.remove(&(
+                market.to_string(),
+                borrower.to_string(),
+                error_kind.to_string(),
+            ));
+        }
     }
 
     /// Clears suppression state for a borrower so the next failure (of any
@@ -346,21 +365,25 @@ impl Notifier {
     // ── Internal ────────────────────────────────────────────────────────────
 
     /// Spawns the send on a background task so callers never block.
-    /// Uses a semaphore to bound in-flight notifications; drops the
-    /// message if all permits are taken.
-    fn spawn_send(self: &Arc<Self>, message: String) {
+    ///
+    /// Returns `true` if the message was queued (or notifications are
+    /// disabled, which is a configured no-op), and `false` only when the
+    /// semaphore was full and the message was dropped due to overload.
+    /// Callers that own dedup state can use the `false` return to roll back.
+    fn spawn_send(self: &Arc<Self>, message: String) -> bool {
         if self.telegram.is_none() {
-            return;
+            return true;
         }
         let Ok(permit) = Arc::clone(&self.semaphore).try_acquire_owned() else {
             tracing::warn!("Notification dropped — too many in-flight messages");
-            return;
+            return false;
         };
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.send(&message).await;
             drop(permit);
         });
+        true
     }
 
     /// Sends an HTML message to the configured Telegram chat.
@@ -651,6 +674,15 @@ mod tests {
         assert!(notifier.should_send_failure("m", "b", "k2"));
         // b2 is unaffected
         assert!(!notifier.should_send_failure("m", "b2", "k1"));
+    }
+
+    #[test]
+    fn test_rollback_failure_dedup_removes_entry() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        // Record an entry, then roll it back; the next call should send again.
+        assert!(notifier.should_send_failure("m", "b", "k1"));
+        notifier.rollback_failure_dedup("m", "b", "k1");
+        assert!(notifier.should_send_failure("m", "b", "k1"));
     }
 
     #[test]

@@ -77,8 +77,14 @@ impl From<inventory::InventoryError> for LiquidatorError {
 pub enum LiquidationOutcome {
     /// Position was successfully liquidated
     Liquidated,
-    /// Position is healthy and not liquidatable
-    NotLiquidatable,
+    /// Position is no longer in a liquidatable state on-chain (became healthy
+    /// or was liquidated by someone else). Distinct from `Skipped` —
+    /// `Healthy` means the chain confirmed the position is OK.
+    Healthy,
+    /// We chose not to liquidate this round (insufficient inventory, below
+    /// contract minimum, strategy returned no target, etc.). The position
+    /// may still be liquidatable.
+    Skipped,
     /// Position is liquidatable but unprofitable
     Unprofitable,
 }
@@ -186,6 +192,7 @@ impl LiquidatorError {
     pub fn notification_kind(&self) -> &'static str {
         match self {
             Self::TransactionFailed(msg) => classify_transaction_failure(msg),
+            Self::LiquidationTransactionError(rpc::RpcError::TimeoutError(_, _)) => "tx_timeout",
             Self::LiquidationTransactionError(_) => "tx_submission_error",
             Self::SwapProviderError(_) => "swap_error",
             Self::FetchBorrowStatus(_) => "fetch_borrow_status",
@@ -465,7 +472,7 @@ impl Liquidator {
                 return Ok(if loop_iteration > 1 {
                     LiquidationOutcome::Liquidated
                 } else {
-                    LiquidationOutcome::NotLiquidatable
+                    LiquidationOutcome::Healthy
                 });
             };
 
@@ -546,7 +553,7 @@ impl Liquidator {
                     contract_minimum = %format::format_amount(contract_minimum, borrow_dec, &borrow_asset),
                     "Insufficient inventory: below contract minimum borrow amount, skipping"
                 );
-                return Ok(LiquidationOutcome::NotLiquidatable);
+                return Ok(LiquidationOutcome::Skipped);
             }
 
             // v1.0.0 markets: use full position (no partial support)
@@ -589,7 +596,7 @@ impl Liquidator {
                     return Ok(LiquidationOutcome::Liquidated);
                 }
                 // Strategy already logged the specific reason (insufficient inventory, below minimum, etc.)
-                return Ok(LiquidationOutcome::NotLiquidatable);
+                return Ok(LiquidationOutcome::Skipped);
             };
 
             // Calculate expected value for profitability
@@ -944,11 +951,12 @@ impl Liquidator {
                         .clear_failure_dedup_for(self.market.as_ref(), account.as_ref());
                     liquidated += 1;
                 }
-                Ok(LiquidationOutcome::NotLiquidatable) => {
+                Ok(LiquidationOutcome::Healthy) => {
                     self.notifier
                         .clear_failure_dedup_for(self.market.as_ref(), account.as_ref());
                     not_liquidatable += 1;
                 }
+                Ok(LiquidationOutcome::Skipped) => not_liquidatable += 1,
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
                     let phase = e.phase();
@@ -1040,6 +1048,20 @@ mod tests {
     fn test_notification_kind_tx_failed_other() {
         let err = LiquidatorError::TransactionFailed("some new failure mode".to_string());
         assert_eq!(err.notification_kind(), "tx_failed_other");
+    }
+
+    #[test]
+    fn test_notification_kind_tx_submission_timeout() {
+        let err = LiquidatorError::LiquidationTransactionError(rpc::RpcError::TimeoutError(30, 30));
+        assert_eq!(err.notification_kind(), "tx_timeout");
+    }
+
+    #[test]
+    fn test_notification_kind_tx_submission_non_timeout() {
+        let err = LiquidatorError::LiquidationTransactionError(rpc::RpcError::WrongResponseKind(
+            "boom".to_string(),
+        ));
+        assert_eq!(err.notification_kind(), "tx_submission_error");
     }
 
     #[test]

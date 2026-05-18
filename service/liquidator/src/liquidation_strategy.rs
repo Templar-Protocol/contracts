@@ -32,6 +32,12 @@ pub(crate) const SAFETY_BUFFER_BPS: u128 = 50;
 
 /// Headroom subtracted from the on-chain `liquidatable_collateral` cap so
 /// price drift between scan and tx execution doesn't trip `ExcessiveLiquidation`.
+///
+/// This protects against drift up to ~`LIQUIDATABLE_CAP_BUFFER_BPS` between
+/// what the liquidator sees at scan time and what the contract recomputes at
+/// execution time. Larger drifts (e.g. stale oracle prices feeding the bot
+/// while the chain runs `update_price_feeds` with fresh ones) still revert;
+/// notification dedup absorbs those.
 pub(crate) const LIQUIDATABLE_CAP_BUFFER_BPS: u128 = 300;
 
 /// Applies `LIQUIDATABLE_CAP_BUFFER_BPS` to the on-chain eligibility cap.
@@ -562,16 +568,34 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_liquidatable_cap_buffer_handles_observed_drift() {
-        // Observed mismatch: 37_818_981 requested > 34_516_659 available (≈9.6% drift).
-        // With the buffer applied to the (then) liquidatable_collateral, our request
-        // would be 33_481_159, comfortably under the chain's recomputed eligibility
-        // even if drift exceeds the buffer's 3%.
-        let observed_chain_available = 34_516_659u128;
-        let buffered = apply_liquidatable_cap_buffer(observed_chain_available);
-        assert!(buffered < observed_chain_available);
-        let drift_bps = ((observed_chain_available - buffered) * 10_000) / observed_chain_available;
-        assert_eq!(drift_bps, LIQUIDATABLE_CAP_BUFFER_BPS);
+    fn test_apply_liquidatable_cap_buffer_covers_drift_up_to_buffer_size() {
+        // The buffer is applied to the bot's scan-time view of the cap. If the
+        // chain later recomputes the cap and it drops by ≤ LIQUIDATABLE_CAP_BUFFER_BPS,
+        // our request still fits.
+        let scan_time_cap = 1_000_000u128;
+        let request = apply_liquidatable_cap_buffer(scan_time_cap);
+
+        // Drift exactly equal to the buffer: request must not exceed chain cap.
+        let chain_cap_at_drift_3pct = (scan_time_cap * 9_700) / 10_000;
+        assert!(
+            request <= chain_cap_at_drift_3pct,
+            "request {request} must fit under {chain_cap_at_drift_3pct} for ≤3% drift",
+        );
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_insufficient_for_large_drift() {
+        // Honesty check: the buffer does NOT cover drifts larger than itself.
+        // The observed incident (request 37.8M vs available 34.5M, ≈9% drift)
+        // would still revert even with this buffer applied at scan time.
+        // Notification dedup is the safety net for that case.
+        let scan_time_cap = 37_818_981u128;
+        let request = apply_liquidatable_cap_buffer(scan_time_cap);
+        let chain_cap_after_drift = 34_516_659u128; // observed
+        assert!(
+            request > chain_cap_after_drift,
+            "9% drift exceeds 3% buffer — request {request} still > chain {chain_cap_after_drift}",
+        );
     }
 
     // Note: Gas cost check removed - gas costs are negligible on NEAR
