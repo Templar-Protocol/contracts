@@ -926,10 +926,10 @@ impl SorobanVaultContract {
             None => 0,
         };
         let fee_info = (
-            state.fee_anchor.total_assets as i128,
+            to_i128(state.fee_anchor.total_assets)?,
             state.fee_anchor.timestamp_ns.as_u64(),
-            u128::from(config.fees.management.fee_wad) as i128,
-            u128::from(config.fees.performance.fee_wad) as i128,
+            to_i128(u128::from(config.fees.management.fee_wad))?,
+            to_i128(u128::from(config.fees.performance.fee_wad))?,
             fee_growth_rate,
         );
         let policy_state = runtime_to_contract(storage.load_policy_state())?.unwrap_or_default();

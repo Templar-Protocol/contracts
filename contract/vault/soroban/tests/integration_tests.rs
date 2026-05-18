@@ -588,6 +588,38 @@ fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
 }
 
 #[rstest]
+fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 0,
+                external_assets: 1_000,
+                fee_anchor: FeeAccrualAnchor::new(
+                    i128::MAX as u128 + 1,
+                    templar_vault_kernel::TimestampNs(123),
+                ),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(
+            proxy.view(owner, 0, 0),
+            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
+        );
+    });
+}
+
+#[rstest]
 fn soroban_contract_proxy_view_reports_fee_growth_cap(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
