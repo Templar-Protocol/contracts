@@ -611,6 +611,9 @@ fn pause_immediate_unpause_timelocked() {
         SorobanVaultGovernanceContract::pending_ids(env.clone())
     });
     assert_eq!(pending.len(), 0);
+    env.as_contract(&governance, || {
+        assert!(!env.storage().persistent().has(&DataKey::PendingPageIndex));
+    });
 
     let unpause_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), false)

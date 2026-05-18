@@ -531,6 +531,25 @@ impl SorobanVaultGovernanceContract {
         }
 
         let id = next_proposal_id(&env)?;
+
+        if matches!(decision, TimelockDecision::Immediate) {
+            let replaced = queue.revoke_by_key(&pending_key, QueuedProposal::action_key);
+            if !replaced.is_empty() {
+                save_queue(&env, &queue);
+            }
+            for proposal in replaced.iter() {
+                ProposalRevoked { id: proposal.id }.publish(&env);
+            }
+            execute_action(&env, &action)?;
+            ProposalSubmitted {
+                id,
+                valid_after_ns: 0,
+            }
+            .publish(&env);
+            ProposalAccepted { id }.publish(&env);
+            return Ok(id);
+        }
+
         let scheduled = queue.schedule_replacing(
             &pending_key,
             QueuedProposal::action_key,
@@ -545,20 +564,6 @@ impl SorobanVaultGovernanceContract {
 
         for replaced in scheduled.replaced.iter() {
             ProposalRevoked { id: replaced.id }.publish(&env);
-        }
-
-        if matches!(decision, TimelockDecision::Immediate) {
-            let _removed =
-                queue.revoke_by_key(&ProposalKey::ProposalId(id), queued_proposal_key_by_id);
-            save_queue(&env, &queue);
-            execute_action(&env, &action)?;
-            ProposalSubmitted {
-                id,
-                valid_after_ns: 0,
-            }
-            .publish(&env);
-            ProposalAccepted { id }.publish(&env);
-            return Ok(id);
         }
 
         let valid_after_ns = scheduled.ready_at_ns;
