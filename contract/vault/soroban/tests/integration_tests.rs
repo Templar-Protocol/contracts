@@ -174,6 +174,20 @@ impl<'a> VaultProxy<'a> {
              .7)
     }
 
+    fn max_deposit(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self
+            .view(soroban_sdk::Address::generate(self.env), 0, 0)?
+            .2
+             .2)
+    }
+
+    fn max_mint(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self
+            .view(soroban_sdk::Address::generate(self.env), 0, 0)?
+            .2
+             .3)
+    }
+
     fn execute(
         &self,
         command: &VaultCommand,
@@ -654,6 +668,43 @@ fn soroban_contract_proxy_view_reports_fee_growth_cap(
 
         let fee_info = proxy.view(owner, 0, 0).unwrap().0 .3;
         assert_eq!(fee_info.4, (Wad::one() / 20).as_u128_trunc() as i128);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_max_deposit_and_mint_respect_opposite_headroom(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 2,
+                total_shares: 1,
+                idle_assets: 2,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(proxy.max_deposit().unwrap(), i128::MAX);
+        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+
+        storage
+            .save_state(&VaultState {
+                total_assets: 1,
+                total_shares: 2,
+                idle_assets: 1,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        let expected_max_deposit = (((i128::MAX as u128) * 2) / 3) as i128;
+        assert_eq!(proxy.max_deposit().unwrap(), expected_max_deposit);
+        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
     });
 }
 

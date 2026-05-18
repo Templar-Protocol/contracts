@@ -974,13 +974,55 @@ impl SorobanVaultContract {
         };
 
         let (max_deposit_value, max_mint_value) = if state.op_state.is_idle() && !config.paused {
-            let max_assets = u128::MAX
+            let asset_headroom = u128::MAX
                 .saturating_sub(state.total_assets)
-                .min(i128::MAX as u128) as i128;
-            let max_shares = u128::MAX
-                .saturating_sub(state.total_shares)
-                .min(i128::MAX as u128) as i128;
-            (max_assets, max_shares)
+                .min(u128::MAX.saturating_sub(state.idle_assets));
+            let share_headroom = u128::MAX.saturating_sub(state.total_shares);
+
+            let max_assets = asset_headroom.min(i128::MAX as u128);
+            let shares_for_max_assets = convert_to_shares_bounded(
+                &state,
+                &config,
+                max_assets,
+                u128::MAX,
+                InvalidStateCode::MintOverflowTotalShares,
+            );
+            let max_deposit = if matches!(shares_for_max_assets, Ok(shares) if shares <= share_headroom)
+            {
+                max_assets
+            } else {
+                convert_to_assets_bounded(
+                    &state,
+                    &config,
+                    share_headroom,
+                    i128::MAX as u128,
+                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?
+            };
+
+            let max_shares = share_headroom.min(i128::MAX as u128);
+            let assets_for_max_shares = convert_to_assets_bounded(
+                &state,
+                &config,
+                max_shares,
+                u128::MAX,
+                InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+            );
+            let max_mint = if matches!(assets_for_max_shares, Ok(assets) if assets <= asset_headroom)
+            {
+                max_shares
+            } else {
+                convert_to_shares_bounded(
+                    &state,
+                    &config,
+                    asset_headroom,
+                    i128::MAX as u128,
+                    InvalidStateCode::MintOverflowTotalShares,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?
+            };
+            (to_i128(max_deposit)?, to_i128(max_mint)?)
         } else {
             (0, 0)
         };
