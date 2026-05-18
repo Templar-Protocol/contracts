@@ -354,6 +354,7 @@ mod contract_tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
+    use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
         GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
@@ -673,6 +674,77 @@ mod contract_tests {
 
         assert_eq!(op_id, 0);
         assert!(vault.state().unwrap().op_state.is_allocating());
+    }
+
+    #[test]
+    fn test_begin_allocating_helper_matches_production_begin_state() {
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        let deposit_amount = 2_000u128;
+        let supply_amount = 500u128;
+        let plan = [templar_vault_kernel::AllocationPlanEntry::new(
+            0,
+            supply_amount,
+        )];
+
+        let mut helper_vault = create_test_vault();
+        helper_vault
+            .deposit(owner, receiver, deposit_amount, 0, 100)
+            .unwrap();
+        let helper_op_id =
+            begin_allocating(&mut helper_vault, caller, vec![(0, supply_amount)], 1_000).unwrap();
+
+        let mut production_vault = create_test_vault();
+        production_vault
+            .deposit(owner, receiver, deposit_amount, 0, 100)
+            .unwrap();
+        let production_op_id = production_vault
+            .begin_allocation_internal(caller, &plan, 1_000)
+            .unwrap();
+
+        let helper_state = helper_vault.state().unwrap();
+        let production_state = production_vault.state().unwrap();
+        assert_eq!(helper_op_id, production_op_id);
+        assert_eq!(helper_state.idle_assets, production_state.idle_assets);
+        assert_eq!(
+            helper_state.external_assets,
+            production_state.external_assets
+        );
+        assert_eq!(helper_state.total_assets, production_state.total_assets);
+        assert_eq!(helper_state.op_state, production_state.op_state);
+    }
+
+    #[test]
+    fn test_direct_supply_allocation_covers_production_completion_flow() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+
+        vault.deposit(owner, receiver, 2_000, 0, 100).unwrap();
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 0).unwrap();
+
+        let result = vault
+            .allocate(
+                caller,
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: 500,
+                }),
+            )
+            .unwrap();
+        let state = vault.state().unwrap();
+
+        assert_eq!(result.new_external_assets, 500);
+        assert_eq!(state.idle_assets, 1_500);
+        assert_eq!(state.external_assets, 500);
+        assert_eq!(state.total_assets, 2_000);
+        assert!(state.op_state.is_idle());
     }
 
     #[test]
