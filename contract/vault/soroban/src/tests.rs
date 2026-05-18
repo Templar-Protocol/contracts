@@ -1495,6 +1495,7 @@ mod contract_tests {
             );
             store_fees_spec(&env, &fees).unwrap();
             let state = VaultState {
+                // High-value balances keep this parity test on the Soroban-specific large-number path.
                 total_assets: 9_000_000_000_000_000_000,
                 total_shares: 6_000_000_000_000_000_000,
                 idle_assets: 7_000_000_000_000_000_000,
