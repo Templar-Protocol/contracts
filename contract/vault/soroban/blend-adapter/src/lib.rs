@@ -52,11 +52,21 @@ pub struct BlendAdapterContract;
 impl BlendAdapterContract {
     /// Runs atomically during contract deployment — no separate `initialize`
     /// transaction that could be front-run.
-    pub fn __constructor(env: Env, admin: Address, vault: Address, pool: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        vault: Address,
+        pool: Address,
+    ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_contract_address(&admin, AdapterError::InvalidInput)?;
+        require_contract_address(&vault, AdapterError::InvalidInput)?;
+        require_contract_address(&pool, AdapterError::InvalidInput)?;
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage().instance().set(&DataKey::Pool, &pool);
+        Ok(())
     }
 
     /// Supply assets from the adapter into the Blend pool (vault-only).
@@ -300,12 +310,29 @@ mod tests {
         assert!(!BLEND_ADAPTER_SOURCE.contains(concat!("\n    pub fn ", "withdraw_to_vault(")));
     }
 
+    #[contract]
+    struct DummyContract;
+
+    #[contractimpl]
+    impl DummyContract {}
+
+    fn register_dummy_contract(env: &Env) -> Address {
+        env.register(DummyContract, ())
+    }
+
+    fn account_address(env: &Env) -> Address {
+        Address::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        )
+    }
+
     #[test]
     fn constructor_sets_config() {
         let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = Address::generate(&env);
+        let admin = register_dummy_contract(&env);
+        let vault = register_dummy_contract(&env);
+        let pool = register_dummy_contract(&env);
 
         let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
         env.as_contract(&contract_id, || {
@@ -315,11 +342,44 @@ mod tests {
         });
     }
 
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn constructor_rejects_non_contract_admin() {
+        let env = Env::default();
+        let admin = account_address(&env);
+        let vault = register_dummy_contract(&env);
+        let pool = register_dummy_contract(&env);
+
+        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn constructor_rejects_non_contract_vault() {
+        let env = Env::default();
+        let admin = register_dummy_contract(&env);
+        let vault = account_address(&env);
+        let pool = register_dummy_contract(&env);
+
+        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn constructor_rejects_non_contract_pool() {
+        let env = Env::default();
+        let admin = register_dummy_contract(&env);
+        let vault = register_dummy_contract(&env);
+        let pool = account_address(&env);
+
+        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+    }
+
     /// Helper: deploy a contract via constructor and return (contract_id, admin, vault, pool).
     fn setup_adapter(env: &Env) -> (Address, Address, Address, Address) {
-        let admin = Address::generate(env);
-        let vault = Address::generate(env);
-        let pool = Address::generate(env);
+        let admin = register_dummy_contract(env);
+        let vault = register_dummy_contract(env);
+        let pool = register_dummy_contract(env);
         let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
         (contract_id, admin, vault, pool)
     }
