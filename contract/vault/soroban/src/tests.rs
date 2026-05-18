@@ -269,6 +269,27 @@ mod auth_tests {
     }
 
     #[test]
+    fn verify_and_authorize_requires_native_auth_even_for_public_actions() {
+        let env = Env::default();
+        let curator = SdkAddress::generate(&env);
+        let user = SdkAddress::generate(&env);
+        let auth = SorobanAuth::new(&env, curator);
+        let contract_id = env.register(crate::contract::SorobanVaultContract, ());
+
+        assert!(auth.check_role(ActionKind::Deposit, &user).is_ok());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            env.as_contract(&contract_id, || {
+                auth.verify_and_authorize(ActionKind::Deposit, &user)
+            })
+        }));
+        assert!(
+            result.is_err(),
+            "require_auth must not be bypassed by public policy"
+        );
+    }
+
+    #[test]
     fn test_soroban_auth_set_paused() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
