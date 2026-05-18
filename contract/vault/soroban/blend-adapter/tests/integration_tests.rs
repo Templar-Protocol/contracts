@@ -8,6 +8,7 @@ use blend_contract_sdk::{
     testutils::{default_reserve_config, BlendFixture},
 };
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, BytesN as _},
     token::StellarAssetClient,
     Address, BytesN, Env, String,
@@ -15,6 +16,16 @@ use soroban_sdk::{
 use templar_soroban_blend_adapter::{
     AdapterError, BlendAdapterContract, BlendAdapterContractClient,
 };
+
+#[contract]
+struct DummyContract;
+
+#[contractimpl]
+impl DummyContract {}
+
+fn register_dummy_contract(env: &Env) -> Address {
+    env.register(DummyContract, ())
+}
 
 /// Deploy the full Blend protocol, create a pool with one reserve, and activate it.
 fn setup_blend_pool(
@@ -71,7 +82,7 @@ fn setup_adapter<'a>(
     pool: &Address,
     vault: &Address,
 ) -> (Address, Address, BlendAdapterContractClient<'a>) {
-    let admin = Address::generate(env);
+    let admin = register_dummy_contract(env);
     let adapter = env.register(BlendAdapterContract, (&admin, vault, pool));
     let client = BlendAdapterContractClient::new(env, &adapter);
     (adapter, admin, client)
@@ -83,7 +94,7 @@ fn supply_success_deposits_to_pool() {
     env.mock_all_auths();
     let (pool, pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
 
-    let vault = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
     let supply_amount: i128 = 10_000_000_000;
@@ -106,7 +117,7 @@ fn withdraw_success_returns_assets() {
     env.mock_all_auths();
     let (pool, pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
 
-    let vault = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
     let supply_amount: i128 = 10_000_000_000;
@@ -137,7 +148,7 @@ fn total_assets_returns_correct_value_after_supply() {
     env.mock_all_auths();
     let (pool, _pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
 
-    let vault = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
     let supply_amount: i128 = 10_000_000_000;
@@ -160,7 +171,7 @@ fn total_assets_missing_position_returns_error() {
     env.mock_all_auths();
     let (pool, _pool_client, asset, _asset_admin, _deployer) = setup_blend_pool(&env);
 
-    let vault = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
     let (adapter, _admin, _client) = setup_adapter(&env, &pool, &vault);
 
     // Query without supplying — call via env.as_contract since the client
@@ -181,7 +192,7 @@ fn total_assets_decreases_after_withdraw() {
     env.mock_all_auths();
     let (pool, _pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
 
-    let vault = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
     let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
     let supply_amount: i128 = 10_000_000_000;
@@ -210,12 +221,12 @@ fn rescue_transfers_assets_to_receiver() {
     let asset = asset_sac.address();
     let asset_admin = StellarAssetClient::new(&env, &asset);
 
-    let vault = Address::generate(&env);
-    let pool = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
+    let pool = register_dummy_contract(&env);
     let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
     let rescue_amount: i128 = 5_000_000_000;
-    let receiver = Address::generate(&env);
+    let receiver = register_dummy_contract(&env);
     asset_admin.mint(&adapter, &rescue_amount);
 
     client.rescue(&vault, &asset, &rescue_amount, &receiver);
@@ -243,7 +254,7 @@ fn full_supply_withdraw_cycle() {
     env.mock_all_auths();
     let (pool, _pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
 
-    let vault = Address::generate(&env);
+    let vault = register_dummy_contract(&env);
     let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
 
     let amount: i128 = 20_000_000_000;
