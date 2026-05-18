@@ -164,6 +164,24 @@ fn metadata_returns_constructor_values() {
 }
 
 #[test]
+#[should_panic]
+fn admin_cannot_change_metadata_after_deployment() {
+    let (env, admin, _vault, token) = setup();
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "set_metadata"),
+        (
+            &admin,
+            &String::from_str(&env, "Mutable Share"),
+            &String::from_str(&env, "MUT"),
+            &18u32,
+        )
+            .into_val(&env),
+    );
+}
+
+#[test]
 fn total_supply_tracks_mint_and_burn() {
     let (env, _admin, vault, token) = setup();
     let user = Address::generate(&env);
