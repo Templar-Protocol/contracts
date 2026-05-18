@@ -534,8 +534,10 @@ pub(crate) fn emit_pause_state_event(env: &Env, paused: bool) {
     env.events().publish((event,), ());
 }
 
-pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
-    require_signed(caller);
+pub(crate) fn ensure_governance_identity(
+    env: &Env,
+    caller: &SdkAddress,
+) -> Result<(), ContractError> {
     let governance: SdkAddress = get_config_address(env, &VaultDataKey::Governance)?;
     if caller != &governance {
         return Err(ContractError::Unauthorized);
@@ -543,8 +545,15 @@ pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), C
     Ok(())
 }
 
-pub(crate) fn require_sentinel(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
     require_signed(caller);
+    ensure_governance_identity(env, caller)
+}
+
+pub(crate) fn ensure_sentinel_identity(
+    env: &Env,
+    caller: &SdkAddress,
+) -> Result<(), ContractError> {
     let sentinel: SdkAddress = get_config_address(env, &VaultDataKey::Sentinel)?;
     if caller != &sentinel {
         return Err(ContractError::Unauthorized);
@@ -552,13 +561,17 @@ pub(crate) fn require_sentinel(env: &Env, caller: &SdkAddress) -> Result<(), Con
     Ok(())
 }
 
+pub(crate) fn require_sentinel(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+    require_signed(caller);
+    ensure_sentinel_identity(env, caller)
+}
+
 pub(crate) fn require_governance_control_plane(
     env: &Env,
     caller: &SdkAddress,
 ) -> Result<(), ContractError> {
     require_signed(caller);
-    let governance: SdkAddress = get_config_address(env, &VaultDataKey::Governance)?;
-    if caller == &governance {
+    if ensure_governance_identity(env, caller).is_ok() {
         return Ok(());
     }
     if let Some(sentinel) = env
