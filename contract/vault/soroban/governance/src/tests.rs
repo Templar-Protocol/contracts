@@ -920,6 +920,61 @@ fn revoke_kind_rejects_ambiguous_broad_kind() {
 }
 
 #[test]
+fn in_flight_proposal_keeps_submit_time_timelock_after_timelock_raise() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let next_curator = Address::generate(&env);
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_curator(
+            env.clone(),
+            admin.clone(),
+            next_curator.clone(),
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 101,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::Curator,
+            10_000_000_000,
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let curator = env.as_contract(&vault, || MockVault::curator(env.clone()));
+    assert_eq!(curator, Some(next_curator));
+}
+
+#[test]
 fn timelock_config_increase_immediate_decrease_timelocked() {
     let env = Env::default();
     env.mock_all_auths();
