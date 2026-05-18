@@ -847,6 +847,53 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_complete_refresh_with_positions_accounts_for_external_growth() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+
+        let deposit_amount = 1_000_000u128;
+        let supply_amount = 400_000u128;
+        let growth = 25_000u128;
+        vault
+            .deposit(owner, receiver, deposit_amount, 0, 100)
+            .unwrap();
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 0).unwrap();
+        vault
+            .allocate(
+                caller,
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: supply_amount,
+                }),
+            )
+            .unwrap();
+
+        let total_before = vault.state().unwrap().total_assets;
+        let grown_external = supply_amount + growth;
+        let op_id = vault.begin_refreshing(caller, vec![0], 1_500).unwrap();
+        let result = vault
+            .complete_refresh_with_positions(caller, &[(0, grown_external)], op_id, 1_600)
+            .unwrap();
+        let state = vault.state().unwrap();
+
+        assert_eq!(result.new_external_assets, grown_external);
+        assert_eq!(state.external_assets, grown_external);
+        assert_eq!(state.total_assets, total_before + growth);
+        assert_eq!(
+            state.total_assets,
+            state.idle_assets + state.external_assets
+        );
+        assert_eq!(state.total_shares, deposit_amount);
+        assert!(state.op_state.is_idle());
+    }
+
+    #[test]
     fn test_execute_withdraw_respects_min_withdrawal_assets() {
         let mut vault = create_test_vault();
         let allocator = templar_vault_kernel::Address([3u8; 32]);
