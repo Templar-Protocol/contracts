@@ -54,10 +54,15 @@ pub type SharedNotifier = Arc<Notifier>;
 /// Maximum number of in-flight Telegram notifications.
 const MAX_INFLIGHT_NOTIFICATIONS: usize = 10;
 
+/// Default cooldown (in hours) for repeated identical failure notifications.
+/// Shared source of truth used by both the runtime default and the CLI/env default.
+pub const DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS: u64 = 24;
+
 /// Default cooldown for repeated identical failure notifications.
 ///
 /// Same (market, borrower, `error_kind`) within this window is suppressed.
-pub const DEFAULT_FAILURE_NOTIFY_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+pub const DEFAULT_FAILURE_NOTIFY_COOLDOWN: Duration =
+    Duration::from_secs(DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS * 60 * 60);
 
 /// Dedup key for failure notifications. Stable across rounds for the same
 /// (market, borrower, error class).

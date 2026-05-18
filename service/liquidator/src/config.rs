@@ -184,7 +184,7 @@ pub struct Args {
     #[arg(
         long,
         env = "FAILURE_NOTIFICATION_COOLDOWN_HOURS",
-        default_value_t = 24
+        default_value_t = crate::notifier::DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS
     )]
     pub failure_notification_cooldown_hours: u64,
 
@@ -460,7 +460,7 @@ mod tests {
             swap_retry_attempts: 3,
             swap_retry_base_delay_ms: 2000,
             scan_failure_notify_threshold: 2,
-            failure_notification_cooldown_hours: 24,
+            failure_notification_cooldown_hours: crate::notifier::DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS,
             telegram_bot_token: String::new(),
             telegram_chat_id: String::new(),
             telegram_thread_id: String::new(),

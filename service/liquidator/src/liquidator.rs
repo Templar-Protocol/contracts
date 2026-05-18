@@ -521,23 +521,36 @@ impl Liquidator {
                 .await
                 .map_err(LiquidatorError::FetchBorrowStatus)?;
 
-            let Some(BorrowStatus::Liquidation(reason)) = status else {
-                if loop_iteration > 1 {
-                    let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
+            let reason = match status {
+                Some(BorrowStatus::Liquidation(r)) => r,
+                Some(BorrowStatus::MaintenanceRequired) => {
+                    // Position is no longer liquidatable but is still unhealthy
+                    // — don't treat as Healthy (it would clear dedup state).
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
-                        iterations = loop_iteration - 1,
-                        total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, &borrow_asset),
-                        total_received = %format::format_amount(total_collateral_received, coll_dec, &coll_asset),
-                        "Loop liquidation completed successfully - position now healthy"
+                        "Position no longer liquidatable but still requires maintenance, skipping"
                     );
+                    return Ok(LiquidationOutcome::Skipped);
                 }
-                return Ok(if loop_iteration > 1 {
-                    LiquidationOutcome::Liquidated
-                } else {
-                    LiquidationOutcome::Healthy
-                });
+                Some(BorrowStatus::Healthy) | None => {
+                    if loop_iteration > 1 {
+                        let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
+                        tracing::info!(
+                            market = %self.market,
+                            borrower = %borrow_account,
+                            iterations = loop_iteration - 1,
+                            total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, &borrow_asset),
+                            total_received = %format::format_amount(total_collateral_received, coll_dec, &coll_asset),
+                            "Loop liquidation completed successfully - position now healthy"
+                        );
+                    }
+                    return Ok(if loop_iteration > 1 {
+                        LiquidationOutcome::Liquidated
+                    } else {
+                        LiquidationOutcome::Healthy
+                    });
+                }
             };
 
             // Log position is liquidatable with details

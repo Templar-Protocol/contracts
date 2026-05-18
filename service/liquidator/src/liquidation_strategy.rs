@@ -283,6 +283,14 @@ impl LiquidationStrategy for PercentageLiquidationStrategy {
             min_with_cap_buffer(collateral_amount, liquidatable_collateral.into())
         };
 
+        if target_collateral == 0 {
+            tracing::warn!(
+                liquidatable_collateral = %u128::from(liquidatable_collateral),
+                "Buffered liquidatable cap rounded to zero — position too small to liquidate safely"
+            );
+            return Ok(None);
+        }
+
         let Some(theoretical_amount) = collateral_to_borrow(
             target_collateral,
             &price_pair,
@@ -451,6 +459,14 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             min_with_cap_buffer(safe_collateral, liquidatable_u128)
         };
 
+        if target_collateral == 0 {
+            tracing::warn!(
+                liquidatable_collateral = %liquidatable_u128,
+                "Buffered liquidatable cap rounded to zero — position too small to liquidate safely"
+            );
+            return Ok(None);
+        }
+
         let expected_minimum = collateral_to_borrow(
             target_collateral,
             &price_pair,
@@ -609,6 +625,18 @@ mod tests {
             result < liquidatable,
             "result {result} must be strictly less than raw cap {liquidatable}",
         );
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_returns_zero_for_dust_cap() {
+        // 33 * 9700 / 10000 = 32_010 / 10_000 = 32 (integer divide) wait no:
+        // 33 * 9700 = 320_100 / 10_000 = 32. Hmm; let me pick a value < 34.
+        // For 33: (33 * 9_700) / 10_000 = 320_100 / 10_000 = 32. Still > 0.
+        // For 1: (1 * 9_700) / 10_000 = 9_700 / 10_000 = 0.
+        assert_eq!(apply_liquidatable_cap_buffer(1), 0);
+        // Strategies must guard against this case (returns Ok(None) instead of
+        // sending borrow with zero collateral request).
+        assert_eq!(min_with_cap_buffer(100, 1), 0);
     }
 
     #[test]
