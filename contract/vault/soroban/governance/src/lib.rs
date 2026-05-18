@@ -611,6 +611,18 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
     }
 }
 
+fn require_unique_target_ids(target_ids: &Vec<u32>) -> Result<(), GovernanceError> {
+    for i in 0..target_ids.len() {
+        let target_id = target_ids.get_unchecked(i);
+        for j in (i + 1)..target_ids.len() {
+            if target_id == target_ids.get_unchecked(j) {
+                return Err(GovernanceError::InvalidInput);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
     match action {
         GovernanceAction::SetGovernance(governance) => require_contract_address(governance),
@@ -633,6 +645,7 @@ fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
             }
             Ok(())
         }
+        GovernanceAction::SetSupplyQueue(target_ids) => require_unique_target_ids(target_ids),
         GovernanceAction::SetTimelock(_, new_timelock_ns) => validate_timelock_ns(*new_timelock_ns),
         GovernanceAction::Other(_, _) => Ok(()),
         _ => Ok(()),

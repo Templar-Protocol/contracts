@@ -40,6 +40,20 @@ fn required_i128(value: Option<i128>) -> Result<i128, ContractError> {
     value.ok_or(ContractError::InvalidInput)
 }
 
+fn require_unique_addresses(
+    addresses: &soroban_sdk::Vec<soroban_sdk::Address>,
+) -> Result<(), ContractError> {
+    for i in 0..addresses.len() {
+        let address = addresses.get_unchecked(i);
+        for j in (i + 1)..addresses.len() {
+            if address == addresses.get_unchecked(j) {
+                return Err(ContractError::InvalidInput);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) {
     set_config_address(env, &VaultDataKey::Curator, &new_curator);
     emit_admin_event(env, symbol_short!("s_curatr"));
@@ -62,24 +76,35 @@ fn apply_sentinel_config(env: &Env, sentinel: soroban_sdk::Address) {
     emit_admin_event(env, symbol_short!("s_sntnl"));
 }
 
-fn apply_guardians_config(env: &Env, guardians: soroban_sdk::Vec<soroban_sdk::Address>) {
+fn apply_guardians_config(
+    env: &Env,
+    guardians: soroban_sdk::Vec<soroban_sdk::Address>,
+) -> Result<(), ContractError> {
+    require_unique_addresses(&guardians)?;
     env.storage()
         .instance()
         .set(&VaultDataKey::Guardians, &guardians);
     emit_admin_event(env, symbol_short!("s_guards"));
+    Ok(())
 }
 
-fn apply_allocators_config(env: &Env, allocators: soroban_sdk::Vec<soroban_sdk::Address>) {
+fn apply_allocators_config(
+    env: &Env,
+    allocators: soroban_sdk::Vec<soroban_sdk::Address>,
+) -> Result<(), ContractError> {
+    require_unique_addresses(&allocators)?;
     env.storage()
         .instance()
         .set(&VaultDataKey::Allocators, &allocators);
     emit_admin_event(env, symbol_short!("s_allctr"));
+    Ok(())
 }
 
 fn apply_allowed_adapters_config(
     env: &Env,
     adapters: soroban_sdk::Vec<soroban_sdk::Address>,
 ) -> Result<(), ContractError> {
+    require_unique_addresses(&adapters)?;
     let queue_len = current_supply_queue_len(env)?;
     if queue_len > 0 && adapters.len() != queue_len {
         return Err(ContractError::InvalidInput);
@@ -491,9 +516,9 @@ fn set_governance_config_impl(
             apply_governance_config(env, required_address(primary)?)?
         }
         GOVERNANCE_CONFIG_KIND_SENTINEL => apply_sentinel_config(env, required_address(primary)?),
-        GOVERNANCE_CONFIG_KIND_GUARDIANS => apply_guardians_config(env, required_addresses(many)?),
+        GOVERNANCE_CONFIG_KIND_GUARDIANS => apply_guardians_config(env, required_addresses(many)?)?,
         GOVERNANCE_CONFIG_KIND_ALLOCATORS => {
-            apply_allocators_config(env, required_addresses(many)?)
+            apply_allocators_config(env, required_addresses(many)?)?
         }
         GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS => {
             apply_allowed_adapters_config(env, required_addresses(many)?)?

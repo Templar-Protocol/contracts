@@ -1974,7 +1974,8 @@ mod storage_tests {
     use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
-        GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
+        GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+        GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
         GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
         GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP,
         GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
@@ -3156,6 +3157,124 @@ mod storage_tests {
             let stored_guardians = stored_guardians.expect("guardians should be set");
             assert_eq!(stored_guardians.len(), 1);
             assert_eq!(stored_guardians.get_unchecked(0), guardian);
+        });
+    }
+
+    #[test]
+    fn test_governance_config_rejects_duplicate_address_lists() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        for kind in [
+            GOVERNANCE_CONFIG_KIND_GUARDIANS,
+            GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+            GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+        ] {
+            let duplicated = SdkAddress::generate(&env);
+            let command = GovernanceCommand::SetGovernanceConfig {
+                kind,
+                primary: None,
+                many: Some(alloc::vec![sdk_text(&duplicated), sdk_text(&duplicated)]),
+                value_a: None,
+                value_b: None,
+            };
+            let err = env.try_invoke_contract::<(), crate::error::ContractError>(
+                &contract_id,
+                &Symbol::new(&env, "execute_governance"),
+                (&governance, &Bytes::from_slice(&env, &command.encode())).into_val(&env),
+            );
+            assert_eq!(err, Err(Ok(crate::error::ContractError::InvalidInput)));
+        }
+    }
+
+    #[test]
+    fn test_governance_config_empty_lists_keep_clear_semantics() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let adapter = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            env.storage().instance().set(
+                &crate::contract::VaultDataKey::AllowedAdapters,
+                &SdkVec::from_array(&env, [adapter]),
+            );
+        });
+
+        for kind in [
+            GOVERNANCE_CONFIG_KIND_GUARDIANS,
+            GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+            GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+        ] {
+            execute_governance_command(
+                &env,
+                &contract_id,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind,
+                    primary: None,
+                    many: Some(alloc::vec![]),
+                    value_a: None,
+                    value_b: None,
+                },
+            );
+        }
+
+        env.as_contract(&contract_id, || {
+            let guardians: Option<SdkVec<SdkAddress>> = env
+                .storage()
+                .instance()
+                .get(&crate::contract::VaultDataKey::Guardians);
+            assert_eq!(guardians.expect("guardians list should be stored").len(), 0);
+
+            let allocators: Option<SdkVec<SdkAddress>> = env
+                .storage()
+                .instance()
+                .get(&crate::contract::VaultDataKey::Allocators);
+            assert_eq!(
+                allocators.expect("allocators list should be stored").len(),
+                0
+            );
+
+            let adapters: Option<SdkVec<SdkAddress>> = env
+                .storage()
+                .instance()
+                .get(&crate::contract::VaultDataKey::AllowedAdapters);
+            assert_eq!(adapters, None);
         });
     }
 
