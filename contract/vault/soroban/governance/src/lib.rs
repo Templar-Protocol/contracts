@@ -562,11 +562,29 @@ impl SorobanVaultGovernanceContract {
     ) -> Result<u32, GovernanceError> {
         extend_instance_ttl(&env);
         require_revoker(&env, &caller)?;
-        let removed = revoke_where(&env, |action| action_kind(action) == kind);
-        if removed == 0 {
+        let mut queue = load_queue(&env);
+        let mut matching = 0u32;
+        for entry in queue.iter() {
+            if action_kind(&entry.value.action) == kind {
+                matching = matching
+                    .checked_add(1)
+                    .ok_or(GovernanceError::ArithmeticOverflow)?;
+            }
+        }
+        if matching == 0 {
             return Err(GovernanceError::ProposalNotFound);
         }
-        Ok(removed)
+        if matching > 1 {
+            return Err(GovernanceError::DuplicatePending);
+        }
+
+        let removed = queue.revoke_by_key(&kind, queued_proposal_kind);
+        save_queue(&env, &queue);
+        let Some(proposal) = removed.first() else {
+            return Err(GovernanceError::ProposalNotFound);
+        };
+        ProposalRevoked { id: proposal.id }.publish(&env);
+        Ok(1)
     }
 
     pub fn pending(env: Env, proposal_id: u64) -> Result<PendingProposal, GovernanceError> {
@@ -1091,38 +1109,6 @@ fn revoke_by_action_key(env: &Env, key: &GovernanceActionKey) -> u32 {
 
     if revoked_ids.is_empty() {
         return 0;
-    }
-
-    save_queue(env, &queue);
-
-    for id in revoked_ids.iter() {
-        ProposalRevoked { id }.publish(env);
-    }
-
-    revoked_ids.len()
-}
-
-fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
-    let mut queue = load_queue(env);
-    let mut revoked_ids = Vec::new(env);
-    let mut keys = alloc::vec::Vec::new();
-
-    for entry in queue.iter() {
-        if pred(&entry.value.action) {
-            revoked_ids.push_back(entry.value.id);
-            let key = entry.value.action_key();
-            if !keys.iter().any(|existing| existing == &key) {
-                keys.push(key);
-            }
-        }
-    }
-
-    if revoked_ids.is_empty() {
-        return 0;
-    }
-
-    for key in keys.iter() {
-        let _removed = queue.revoke_by_key(key, QueuedProposal::action_key);
     }
 
     save_queue(env, &queue);
