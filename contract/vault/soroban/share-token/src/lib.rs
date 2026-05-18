@@ -3,7 +3,10 @@
 mod types;
 pub use types::*;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, MuxedAddress, String};
+use soroban_sdk::{
+    address_payload::AddressPayload, contract, contractimpl, panic_with_error, symbol_short,
+    Address, Env, MuxedAddress, String,
+};
 use stellar_tokens::fungible::{
     burnable::{emit_burn, FungibleBurnable},
     Base, FungibleToken,
@@ -78,6 +81,9 @@ impl FungibleBurnable for SorobanShareTokenContract {
         Base::spend_allowance(e, &from, &spender, amount);
         Base::update(e, Some(&from), None, amount);
         emit_burn(e, &from, amount);
+        #[allow(deprecated)]
+        e.events()
+            .publish((symbol_short!("burn_from"), spender, from), amount);
     }
 }
 
@@ -171,8 +177,10 @@ fn require_vault_invoker(env: &Env) {
 }
 
 fn is_contract_address(addr: &Address) -> bool {
-    let bytes = addr.to_string().to_bytes();
-    matches!(bytes.get(0), Some(b'C'))
+    matches!(
+        AddressPayload::from_address(addr),
+        Some(AddressPayload::ContractIdHash(_))
+    )
 }
 
 fn require_contract_address(env: &Env, addr: &Address) {
