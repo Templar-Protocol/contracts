@@ -513,6 +513,18 @@ impl SorobanVaultGovernanceContract {
         let now_ns = ledger_timestamp_ns(&env)?;
 
         let mut queue = load_queue(&env);
+        let mut matching = 0u32;
+        for entry in queue.iter() {
+            if action_kind(&entry.value.action) == kind {
+                matching = matching
+                    .checked_add(1)
+                    .ok_or(GovernanceError::ArithmeticOverflow)?;
+            }
+        }
+        if matching > 1 {
+            return Err(GovernanceError::DuplicatePending);
+        }
+
         let proposal = match queue.take_by_key(now_ns, &kind, queued_proposal_kind) {
             TakePending::Ready(proposal) => proposal,
             TakePending::Missing => return Err(GovernanceError::ProposalNotFound),

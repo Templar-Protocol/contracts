@@ -812,6 +812,63 @@ fn revoke_kind_removes_all_matching() {
 }
 
 #[test]
+fn accept_kind_rejects_ambiguous_broad_kind() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            1,
+            SdkString::from_str(&env, "group-a"),
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            2,
+            SdkString::from_str(&env, "group-b"),
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let accepted = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::CapGroup,
+        )
+    });
+    assert_eq!(accepted, Err(GovernanceError::DuplicatePending));
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 2);
+}
+
+#[test]
 fn timelock_config_increase_immediate_decrease_timelocked() {
     let env = Env::default();
     env.mock_all_auths();
