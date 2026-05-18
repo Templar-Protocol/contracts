@@ -1,12 +1,15 @@
 use near_sdk::{assert_one_yocto, env, near, require};
-use near_sdk_contract_tools::owner::Owner;
+use near_sdk_contract_tools::{owner::Owner, rbac::Rbac};
 use templar_common::{contract::list, governance::Proposal, Nanoseconds, UnwrapReject};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerSet, CircuitBreakerStatus,
 };
-use templar_proxy_oracle_near_common::governance::{
-    AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
-    MAX_CIRCUIT_BREAKERS_PER_PROXY,
+use templar_proxy_oracle_near_common::{
+    event::Event,
+    governance::{
+        AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
+        MAX_CIRCUIT_BREAKERS_PER_PROXY,
+    },
 };
 
 use crate::{Contract, ContractExt};
@@ -80,6 +83,23 @@ impl ProxyGovernanceInterface for Contract {
             }
             Operation::SetActionTtl { new_ttl } => {
                 self.governance.ttl = new_ttl;
+            }
+            Operation::SetCircuitBreakerRole {
+                account_id,
+                role,
+                is_granted,
+            } => {
+                if is_granted {
+                    <Self as Rbac>::add_role(self, &account_id, &role);
+                } else {
+                    <Self as Rbac>::remove_role(self, &account_id, &role);
+                }
+                Event::CircuitBreakerRoleSet {
+                    account_id,
+                    role,
+                    is_granted,
+                }
+                .emit();
             }
             Operation::ConfigureCircuitBreakers { id, config } => {
                 require!(self.proxies.get(&id).is_some(), "Proxy not found");

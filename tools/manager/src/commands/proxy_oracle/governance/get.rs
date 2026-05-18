@@ -103,6 +103,16 @@ impl OutputStyle for Proposal<Operation> {
                 writeln!(out, "  SetActionTtl")?;
                 writeln!(out, "    new_ttl: {} ({}s)", new_ttl, new_ttl.as_secs())?;
             }
+            Operation::SetCircuitBreakerRole {
+                account_id,
+                role,
+                is_granted,
+            } => {
+                writeln!(out, "  SetCircuitBreakerRole")?;
+                writeln!(out, "    account_id: {account_id}")?;
+                writeln!(out, "    role: {role:?}")?;
+                writeln!(out, "    is_granted: {is_granted}")?;
+            }
             Operation::ConfigureCircuitBreakers { id, config } => {
                 writeln!(out, "  ConfigureCircuitBreakers")?;
                 writeln!(out, "    price_id: {id}")?;

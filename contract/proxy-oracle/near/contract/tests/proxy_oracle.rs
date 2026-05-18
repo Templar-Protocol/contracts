@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use near_sdk::{
-    json_types::{I64, U64},
+    json_types::{Base64VecU8, I64, U64},
     test_utils::VMContextBuilder,
     testing_env, AccountIdRef, Gas, NearToken,
 };
@@ -41,6 +41,7 @@ use templar_proxy_oracle_near_common::{
     input::{ProxyPriceTransformer, Source},
     price_transformer,
     request::OracleRequest,
+    role::Role,
 };
 use templar_proxy_oracle_near_contract::Contract;
 use test_utils::{
@@ -67,6 +68,10 @@ fn proxy_price(value: i64) -> Price {
         expo: 0,
         publish_time_ns: Nanoseconds::zero(),
     }
+}
+
+fn joined_logs() -> String {
+    near_sdk::test_utils::get_logs().join("\n")
 }
 
 #[rstest::rstest]
@@ -577,6 +582,224 @@ fn governance_rejects_empty_proxy_definition_on_create() {
             proxy: Some(Proxy::median_low([], FreshnessFilter::empty())),
         },
     );
+}
+
+#[test]
+fn governance_sets_circuit_breaker_roles() {
+    let context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context);
+
+    let mut c = Contract::new();
+    let account_id: near_sdk::AccountId = "offline-breaker.near".parse().unwrap();
+
+    assert!(!c.has_role(account_id.clone(), Role::OfflineManualTrip));
+    assert!(c.list_role(Role::OfflineManualTrip, None, None).is_empty());
+
+    c.gov_create(
+        0,
+        Operation::SetCircuitBreakerRole {
+            account_id: account_id.clone(),
+            role: Role::OfflineManualTrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(0);
+
+    assert!(c.has_role(account_id.clone(), Role::OfflineManualTrip));
+    assert!(!c.has_role(account_id.clone(), Role::OfflineManualUntrip));
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_role_set\""));
+    assert!(logs.contains("\"account_id\":\"offline-breaker.near\""));
+    assert!(logs.contains("\"role\":\"OfflineManualTrip\""));
+    assert!(logs.contains("\"is_granted\":true"));
+    assert_eq!(
+        c.list_role(Role::OfflineManualTrip, None, None),
+        vec![account_id.clone()]
+    );
+
+    c.gov_create(
+        1,
+        Operation::SetCircuitBreakerRole {
+            account_id: account_id.clone(),
+            role: Role::OfflineManualUntrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(1);
+
+    assert!(c.has_role(account_id.clone(), Role::OfflineManualTrip));
+    assert!(c.has_role(account_id.clone(), Role::OfflineManualUntrip));
+    let logs = joined_logs();
+    assert!(logs.contains("\"role\":\"OfflineManualUntrip\""));
+    assert!(logs.contains("\"is_granted\":true"));
+
+    c.gov_create(
+        2,
+        Operation::SetCircuitBreakerRole {
+            account_id: account_id.clone(),
+            role: Role::OfflineManualTrip,
+            is_granted: false,
+        },
+    );
+    c.gov_execute(2);
+
+    assert!(!c.has_role(account_id.clone(), Role::OfflineManualTrip));
+    assert!(c.has_role(account_id, Role::OfflineManualUntrip));
+    let logs = joined_logs();
+    assert!(logs.contains("\"role\":\"OfflineManualTrip\""));
+    assert!(logs.contains("\"is_granted\":false"));
+    assert!(c.list_role(Role::OfflineManualTrip, None, None).is_empty());
+}
+
+#[test]
+fn offline_manual_trip_roles_gate_trip_and_untrip() {
+    let mut context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context.clone());
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x46; 32]);
+    let tripper: near_sdk::AccountId = "tripper.near".parse().unwrap();
+    let untripper: near_sdk::AccountId = "untripper.near".parse().unwrap();
+    let unauthorized: near_sdk::AccountId = "unauthorized.near".parse().unwrap();
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy),
+        },
+    );
+    c.gov_execute(0);
+    c.gov_create(
+        1,
+        Operation::SetCircuitBreakerRole {
+            account_id: tripper.clone(),
+            role: Role::OfflineManualTrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(1);
+    c.gov_create(
+        2,
+        Operation::SetCircuitBreakerRole {
+            account_id: untripper.clone(),
+            role: Role::OfflineManualUntrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(2);
+
+    context.predecessor_account_id = unauthorized;
+    testing_env!(context.clone());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.set_circuit_breaker_manual_trip(proxy_id, true, None);
+    }))
+    .is_err());
+
+    context.predecessor_account_id = tripper;
+    testing_env!(context.clone());
+    c.set_circuit_breaker_manual_trip(proxy_id, true, Some(Base64VecU8(vec![1, 2, 3])));
+    assert!(c
+        .get_proxy_circuit_breaker_set(proxy_id)
+        .unwrap()
+        .is_manually_tripped());
+    let logs = near_sdk::test_utils::get_logs();
+    let joined = logs.join("\n");
+    assert!(joined.contains("\"event\":\"circuit_breaker_manual_trip_set\""));
+    assert!(joined.contains(
+        "\"price_id\":\"4646464646464646464646464646464646464646464646464646464646464646\""
+    ));
+    assert!(joined.contains("\"is_manually_tripped\":true"));
+    assert!(joined.contains("\"actor\":\"tripper.near\""));
+    assert!(joined.contains("\"metadata\":\"AQID\""));
+
+    let log_count = logs.len();
+    let manual_trip_event_count = joined
+        .matches("\"event\":\"circuit_breaker_manual_trip_set\"")
+        .count();
+    c.set_circuit_breaker_manual_trip(proxy_id, true, Some(Base64VecU8(vec![9])));
+    assert_eq!(near_sdk::test_utils::get_logs().len(), log_count);
+    assert_eq!(
+        joined_logs()
+            .matches("\"event\":\"circuit_breaker_manual_trip_set\"")
+            .count(),
+        manual_trip_event_count
+    );
+
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.set_circuit_breaker_manual_trip(proxy_id, false, None);
+    }))
+    .is_err());
+
+    context.predecessor_account_id = untripper;
+    testing_env!(context);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.set_circuit_breaker_manual_trip(proxy_id, true, None);
+    }))
+    .is_err());
+    c.set_circuit_breaker_manual_trip(proxy_id, false, None);
+    assert!(!c
+        .get_proxy_circuit_breaker_set(proxy_id)
+        .unwrap()
+        .is_manually_tripped());
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_manual_trip_set\""));
+    assert!(logs.contains(
+        "\"price_id\":\"4646464646464646464646464646464646464646464646464646464646464646\""
+    ));
+    assert!(logs.contains("\"is_manually_tripped\":false"));
+    assert!(logs.contains("\"actor\":\"untripper.near\""));
+    assert!(logs.contains("\"metadata\":null"));
+}
+
+#[test]
+#[should_panic = "Manual trip metadata is too long"]
+fn offline_manual_trip_rejects_oversized_metadata() {
+    let mut context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context.clone());
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x47; 32]);
+    let tripper: near_sdk::AccountId = "tripper.near".parse().unwrap();
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy),
+        },
+    );
+    c.gov_execute(0);
+    c.gov_create(
+        1,
+        Operation::SetCircuitBreakerRole {
+            account_id: tripper.clone(),
+            role: Role::OfflineManualTrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(1);
+
+    context.predecessor_account_id = tripper;
+    testing_env!(context);
+    c.set_circuit_breaker_manual_trip(proxy_id, true, Some(Base64VecU8(vec![0; 1025])));
 }
 
 #[test]

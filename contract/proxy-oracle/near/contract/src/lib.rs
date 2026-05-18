@@ -3,8 +3,10 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, near, AccountId, Gas, PanicOnDefault, PromiseOrValue};
-use near_sdk_contract_tools::{owner::Owner, Owner};
+use near_sdk::{
+    env, json_types::Base64VecU8, near, require, AccountId, Gas, PanicOnDefault, PromiseOrValue,
+};
+use near_sdk_contract_tools::{owner::Owner, rbac::Rbac, Owner, Rbac};
 use templar_common::{
     contract::list,
     oracle::{
@@ -18,8 +20,10 @@ use templar_common::{
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::{
     convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
+    event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
     input::Source,
     request::OracleRequest,
+    role::Role,
     state,
 };
 
@@ -29,7 +33,8 @@ mod impl_governance;
 
 type State = state::v2::State;
 
-#[derive(Debug, Owner, PanicOnDefault)]
+#[derive(Debug, Owner, Rbac, PanicOnDefault)]
+#[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct Contract {
     pub state: VersionedState<State>,
@@ -78,6 +83,55 @@ impl Contract {
 
     pub fn get_proxy_circuit_breaker_set(&self, id: PriceIdentifier) -> Option<CircuitBreakerSet> {
         self.circuit_breakers.get(&id)
+    }
+
+    pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
+        <Self as Rbac>::has_role(&account_id, &role)
+    }
+
+    pub fn list_role(&self, role: Role, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
+        list(<Self as Rbac>::iter_members_of(&role), offset, count)
+    }
+
+    pub fn set_circuit_breaker_manual_trip(
+        &mut self,
+        id: PriceIdentifier,
+        is_manually_tripped: bool,
+        metadata: Option<Base64VecU8>,
+    ) {
+        if is_manually_tripped {
+            <Self as Rbac>::require_role(&Role::OfflineManualTrip);
+        } else {
+            <Self as Rbac>::require_role(&Role::OfflineManualUntrip);
+        }
+
+        require!(
+            metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.0.len() <= MAX_MANUAL_TRIP_METADATA_LEN),
+            "Manual trip metadata is too long"
+        );
+        require!(self.proxies.get(&id).is_some(), "Proxy not found");
+
+        let mut set = self
+            .circuit_breakers
+            .get(&id)
+            .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
+
+        if set.is_manually_tripped() == is_manually_tripped {
+            return;
+        }
+
+        set.set_manual_trip(is_manually_tripped);
+        self.circuit_breakers.insert(&id, &set);
+
+        Event::CircuitBreakerManualTripSet {
+            price_id: id,
+            is_manually_tripped,
+            actor: env::predecessor_account_id(),
+            metadata,
+        }
+        .emit();
     }
 
     // impl Pyth:

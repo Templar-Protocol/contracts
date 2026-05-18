@@ -1,4 +1,4 @@
-use near_sdk::near;
+use near_sdk::{near, AccountId};
 use templar_common::{
     gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, Nanoseconds,
 };
@@ -7,7 +7,7 @@ use templar_proxy_oracle_kernel::proxy::{
     Proxy,
 };
 
-use crate::input::Source;
+use crate::{input::Source, role::Role};
 
 pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
 pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
@@ -49,6 +49,11 @@ pub enum Operation {
     },
     SetActionTtl {
         new_ttl: Nanoseconds,
+    },
+    SetCircuitBreakerRole {
+        account_id: AccountId,
+        role: Role,
+        is_granted: bool,
     },
     /// Update shared sampling/history configuration for a proxy's circuit breaker set.
     ///

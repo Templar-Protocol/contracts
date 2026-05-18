@@ -98,6 +98,7 @@ impl OutputStyle for ProposalListOutput {
             let operation_name = match &item.proposal.operation {
                 Operation::SetProxy { .. } => "SetProxy",
                 Operation::SetActionTtl { .. } => "SetActionTtl",
+                Operation::SetCircuitBreakerRole { .. } => "SetCircuitBreakerRole",
                 Operation::ConfigureCircuitBreakers { .. } => "ConfigureCircuitBreakers",
                 Operation::SetCircuitBreakerManualTrip { .. } => "SetCircuitBreakerManualTrip",
                 Operation::AddCircuitBreaker { .. } => "AddCircuitBreaker",
