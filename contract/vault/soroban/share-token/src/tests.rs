@@ -107,16 +107,20 @@ fn constructor_rejects_account_vault_address() {
 }
 
 #[test]
-#[should_panic]
 fn set_vault_rejects_account_address() {
-    let (env, admin, _vault, token) = setup();
+    let (env, admin, vault, token) = setup();
     let account_vault = account_address(&env);
 
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
-        &soroban_sdk::Symbol::new(&env, "set_vault"),
+        &Symbol::new(&env, "set_vault"),
         (&admin, &account_vault).into_val(&env),
     );
+    assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
+
+    let configured_vault: Address =
+        env.invoke_contract(&token, &Symbol::new(&env, "vault"), ().into_val(&env));
+    assert_eq!(configured_vault, vault);
 }
 
 #[test]
@@ -450,13 +454,12 @@ fn metadata_returns_constructor_values() {
 }
 
 #[test]
-#[should_panic]
 fn admin_cannot_change_metadata_after_deployment() {
     let (env, admin, _vault, token) = setup();
 
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
-        &soroban_sdk::Symbol::new(&env, "set_metadata"),
+        &Symbol::new(&env, "set_metadata"),
         (
             &admin,
             &String::from_str(&env, "Mutable Share"),
@@ -465,6 +468,17 @@ fn admin_cannot_change_metadata_after_deployment() {
         )
             .into_val(&env),
     );
+    assert_eq!(err, Err(Ok(ShareTokenError::MetadataImmutable)));
+
+    let name: String = env.invoke_contract(&token, &Symbol::new(&env, "name"), ().into_val(&env));
+    let symbol: String =
+        env.invoke_contract(&token, &Symbol::new(&env, "symbol"), ().into_val(&env));
+    let decimals: u32 =
+        env.invoke_contract(&token, &Symbol::new(&env, "decimals"), ().into_val(&env));
+
+    assert_eq!(name, String::from_str(&env, "Templar Share"));
+    assert_eq!(symbol, String::from_str(&env, "tvSHARE"));
+    assert_eq!(decimals, 7);
 }
 
 #[test]
