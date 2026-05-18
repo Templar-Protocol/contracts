@@ -1860,8 +1860,8 @@ fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
     };
 
     assert!(
-        minted_shares <= 62,
-        "deposit minted {minted_shares} shares against stale total_assets instead of actual donated NAV"
+        (1..=62).contains(&minted_shares),
+        "deposit minted {minted_shares} shares outside expected post-donation bounds"
     );
 }
 

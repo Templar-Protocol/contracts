@@ -344,6 +344,28 @@ fn deposit_zero_assets_fails_slippage() {
 }
 
 #[test]
+fn deposit_that_would_mint_zero_shares_fails_before_mutation() {
+    let state = idle_state(u128::MAX, 1);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::Deposit {
+            owner: addr(1),
+            receiver: addr(2),
+            assets_in: 1,
+            min_shares_out: 0,
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert!(matches!(result, Err(KernelError::ZeroAmount)));
+}
+
+#[test]
 fn deposit_slippage_check_fails() {
     let state = idle_state(1_000, 1_000);
     let config = test_config();

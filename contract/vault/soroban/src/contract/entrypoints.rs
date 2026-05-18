@@ -407,7 +407,14 @@ fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
 
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        let anchor_before = vault.get_fee_anchor()?;
         reconcile_current_idle_assets(env, vault, now_ns)?;
+        let anchor_after = vault.get_fee_anchor()?;
+        if anchor_before.timestamp_ns != anchor_after.timestamp_ns
+            && anchor_after.timestamp_ns.as_u64() == now_ns
+        {
+            return Ok(());
+        }
         vault.refresh_fees(now_ns)
     };
     with_contract_vault_contract_error(env, &mut call)

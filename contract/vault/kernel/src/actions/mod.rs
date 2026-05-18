@@ -736,6 +736,9 @@ fn handle_deposit(
         u128::MAX.saturating_sub(state.total_shares),
         InvalidStateCode::MintOverflowTotalShares,
     )?;
+    if shares_out == 0 {
+        return Err(KernelError::ZeroAmount);
+    }
     if shares_out < min_shares_out {
         return Err(KernelError::Slippage {
             min: min_shares_out,
