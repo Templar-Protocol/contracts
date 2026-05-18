@@ -209,7 +209,6 @@ fn apply_group_policy(
         CapGroupId::try_from(raw).map_err(|_| ContractError::InvalidInput)
     }
 
-    let market_id = market_id.unwrap_or(0);
     let cap_group_raw = sdk_string_to_alloc(
         cap_group_id.unwrap_or_else(|| soroban_sdk::String::from_str(env, "")),
     )?;
@@ -229,6 +228,7 @@ fn apply_group_policy(
             },
         },
         2 => {
+            let market_id = market_id.ok_or(ContractError::InvalidInput)?;
             let group = if cap_group_raw.is_empty() {
                 None
             } else {
