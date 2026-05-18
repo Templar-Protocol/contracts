@@ -59,32 +59,6 @@ impl BlendAdapterContract {
         env.storage().instance().set(&DataKey::Pool, &pool);
     }
 
-    /// Update the Blend pool contract address (admin-only).
-    #[allow(deprecated)]
-    pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        require_contract_address(&pool, AdapterError::InvalidInput)?;
-        let old_pool = get_pool(&env)?;
-        env.storage().instance().set(&DataKey::Pool, &pool);
-        env.events()
-            .publish((symbol_short!("pool_upd"), old_pool), pool);
-        Ok(())
-    }
-
-    /// Update the vault contract address (admin-only).
-    #[allow(deprecated)]
-    pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        require_contract_address(&vault, AdapterError::InvalidInput)?;
-        let old_vault = get_vault(&env)?;
-        env.storage().instance().set(&DataKey::Vault, &vault);
-        env.events()
-            .publish((symbol_short!("vlt_upd"), old_vault), vault);
-        Ok(())
-    }
-
     /// Supply assets from the adapter into the Blend pool (vault-only).
     #[allow(deprecated)]
     pub fn supply(
@@ -406,15 +380,7 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Events as _};
-
-    fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
-        env.events()
-            .all()
-            .filter_by_contract(adapter)
-            .events()
-            .len()
-    }
+    use soroban_sdk::testutils::Address as _;
 
     #[test]
     fn constructor_sets_config() {
@@ -599,109 +565,12 @@ mod tests {
     }
 
     #[test]
-    fn set_pool_updates_pool() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let new_pool = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_pool(env.clone(), admin.clone(), new_pool.clone()).unwrap();
-            assert_eq!(BlendAdapterContract::pool(env.clone()).unwrap(), new_pool);
-        });
-    }
-
-    #[test]
-    fn set_vault_updates_vault() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let new_vault = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_vault(env.clone(), admin.clone(), new_vault.clone()).unwrap();
-            assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), new_vault);
-        });
-    }
-
-    #[test]
-    fn set_pool_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _old_pool) = setup_adapter(&env);
-        let new_pool = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_pool(env.clone(), admin, new_pool.clone()).unwrap();
-        });
-        assert_eq!(adapter_event_count(&env, &contract_id), 1);
-    }
-
-    #[test]
-    fn set_vault_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _old_vault, _pool) = setup_adapter(&env);
-        let new_vault = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_vault(env.clone(), admin, new_vault.clone()).unwrap();
-        });
-        assert_eq!(adapter_event_count(&env, &contract_id), 1);
-    }
-
-    #[test]
-    fn set_pool_unauthorized_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
-        let impostor = Address::generate(&env);
-        let new_pool = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            let result =
-                BlendAdapterContract::set_pool(env.clone(), impostor.clone(), new_pool.clone());
-            assert_eq!(result, Err(AdapterError::Unauthorized));
-        });
-    }
-
-    #[test]
-    fn set_pool_rejects_non_contract_address() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        env.as_contract(&contract_id, || {
-            let result = BlendAdapterContract::set_pool(env.clone(), admin, account);
-            assert_eq!(result, Err(AdapterError::InvalidInput));
-        });
-    }
-
-    #[test]
-    fn set_vault_unauthorized_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
-        let impostor = Address::generate(&env);
-        let new_vault = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            let result =
-                BlendAdapterContract::set_vault(env.clone(), impostor.clone(), new_vault.clone());
-            assert_eq!(result, Err(AdapterError::Unauthorized));
-        });
-    }
-
-    #[test]
-    fn set_vault_rejects_non_contract_address() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        env.as_contract(&contract_id, || {
-            let result = BlendAdapterContract::set_vault(env.clone(), admin, account);
-            assert_eq!(result, Err(AdapterError::InvalidInput));
-        });
+    fn blend_adapter_does_not_expose_admin_retarget_entrypoints() {
+        let source = include_str!("lib.rs");
+        assert!(!source.contains(concat!("pub fn ", "set_pool")));
+        assert!(!source.contains(concat!("pub fn ", "set_vault")));
+        assert!(!source.contains(concat!("pool", "_upd")));
+        assert!(!source.contains(concat!("vlt", "_upd")));
     }
 
     // Note: "query before initialize" test not applicable — __constructor
