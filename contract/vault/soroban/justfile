@@ -554,21 +554,6 @@ blend-adapter-pool:
 blend-adapter-total-assets asset_address:
 	@just blend-invoke total_assets --asset "{{asset_address}}"
 
-# Update the Blend pool address (admin only).
-blend-adapter-set-pool new_pool:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Updating Blend adapter pool to {{new_pool}}..."; \
-	just blend-invoke set_pool --caller "$admin" --pool "{{new_pool}}"; \
-	echo "{{new_pool}}" > "{{state_dir}}/blend_pool_id"; \
-	echo "✓ Pool updated"
-
-# Update the Blend adapter's vault reference (admin only).
-blend-adapter-set-vault new_vault:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Updating Blend adapter vault to {{new_vault}}..."; \
-	just blend-invoke set_vault --caller "$admin" --vault "{{new_vault}}"; \
-	echo "✓ Vault updated"
-
 # Rescue stuck assets from the adapter (vault only - for emergencies).
 blend-adapter-rescue asset amount receiver:
 	@vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
