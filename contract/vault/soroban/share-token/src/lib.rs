@@ -1,9 +1,14 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 mod types;
 pub use types::*;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, MuxedAddress, String};
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, Address, Env, Executable, MuxedAddress, String,
+};
 use stellar_tokens::fungible::{
     burnable::{emit_burn, FungibleBurnable},
     Base, FungibleToken,
@@ -95,6 +100,7 @@ impl SorobanShareTokenContract {
     ) {
         extend_instance_ttl(&env);
         require_contract_address(&env, &vault);
+        require_vault_admin(&env, &admin, &vault);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         Base::set_metadata(&env, decimals, name, symbol);
@@ -109,6 +115,8 @@ impl SorobanShareTokenContract {
     pub fn set_admin(env: Env, caller: Address, admin: Address) {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
+        let vault = Self::vault(env.clone());
+        require_vault_admin(&env, &admin, &vault);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
@@ -171,12 +179,20 @@ fn require_vault_invoker(env: &Env) {
 }
 
 fn is_contract_address(addr: &Address) -> bool {
-    let bytes = addr.to_string().to_bytes();
-    matches!(bytes.get(0), Some(b'C'))
+    matches!(
+        addr.executable(),
+        Some(Executable::Wasm(_)) | Some(Executable::StellarAsset)
+    )
 }
 
 fn require_contract_address(env: &Env, addr: &Address) {
     if !is_contract_address(addr) {
+        panic_with_error!(env, ShareTokenError::InvalidInput);
+    }
+}
+
+fn require_vault_admin(env: &Env, admin: &Address, vault: &Address) {
+    if admin != vault {
         panic_with_error!(env, ShareTokenError::InvalidInput);
     }
 }
