@@ -119,10 +119,10 @@ impl SorobanShareTokenContract {
         panic_with_error!(&env, ShareTokenError::VaultImmutable);
     }
 
-    pub fn set_metadata(env: Env, caller: Address, name: String, symbol: String, decimals: u32) {
+    pub fn set_metadata(env: Env, caller: Address, _name: String, _symbol: String, _decimals: u32) {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
-        Base::set_metadata(&env, decimals, name, symbol);
+        panic_with_error!(&env, ShareTokenError::MetadataImmutable);
     }
 
     pub fn admin(env: Env) -> Address {
