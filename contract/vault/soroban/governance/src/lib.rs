@@ -896,11 +896,7 @@ fn load_timelocks(env: &Env) -> Timelocks {
         .instance()
         .get(&DataKey::TimelockNs)
         .unwrap_or(0);
-    let timelocks = Timelocks::from_default(default_ns);
-    env.storage()
-        .instance()
-        .set(&DataKey::Timelocks, &timelocks);
-    timelocks
+    Timelocks::from_default(default_ns)
 }
 
 fn next_proposal_id(env: &Env) -> Result<u64, GovernanceError> {

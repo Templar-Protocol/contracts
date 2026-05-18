@@ -719,6 +719,51 @@ fn revoke_kind_removes_all_matching() {
 }
 
 #[test]
+fn timelock_getters_do_not_materialize_missing_timelocks_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let default_ns = 5_000_000_000u64;
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &default_ns),
+    );
+
+    env.as_contract(&governance, || {
+        // Simulate a legacy/pre-migration state that has the scalar default
+        // timelock but not the per-kind map. Getter-style APIs must read the
+        // fallback value without materializing storage.
+        env.storage().instance().remove(&DataKey::Timelocks);
+
+        let before: Option<Timelocks> = env.storage().instance().get(&DataKey::Timelocks);
+        assert!(before.is_none());
+
+        assert_eq!(
+            SorobanVaultGovernanceContract::timelock_ns(env.clone(), TimelockKind::Cap),
+            default_ns
+        );
+
+        let after_timelock_ns: Option<Timelocks> =
+            env.storage().instance().get(&DataKey::Timelocks);
+        assert!(
+            after_timelock_ns.is_none(),
+            "timelock_ns getter must not write Timelocks storage"
+        );
+
+        let observed = SorobanVaultGovernanceContract::timelocks(env.clone());
+        assert!(observed == Timelocks::from_default(default_ns));
+
+        let after_timelocks: Option<Timelocks> = env.storage().instance().get(&DataKey::Timelocks);
+        assert!(
+            after_timelocks.is_none(),
+            "timelocks getter must not write Timelocks storage"
+        );
+    });
+}
+
+#[test]
 fn timelock_config_increase_immediate_decrease_timelocked() {
     let env = Env::default();
     env.mock_all_auths();
