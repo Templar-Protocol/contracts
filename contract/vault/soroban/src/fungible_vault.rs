@@ -62,8 +62,12 @@ fn preview_state_with_fee_accrual(
         anchor.timestamp_ns.as_u64(),
         now_ns,
     );
+    let max_supply = Number::from(u128::MAX);
     let supply_after_management =
         Number::from(state.total_shares).saturating_add(management_shares);
+    if supply_after_management > max_supply {
+        return Err(ContractError::ConversionOverflow);
+    }
 
     let profit = fee_assets_base.saturating_sub(anchor.total_assets);
     let performance_fee_assets = config
@@ -77,9 +81,11 @@ fn preview_state_with_fee_accrual(
         supply_after_management,
     );
 
-    state.total_shares = supply_after_management
-        .saturating_add(performance_shares)
-        .as_u128_saturating();
+    let total_supply = supply_after_management.saturating_add(performance_shares);
+    if total_supply > max_supply {
+        return Err(ContractError::ConversionOverflow);
+    }
+    state.total_shares = total_supply.as_u128_trunc();
     state.fee_anchor = FeeAccrualAnchor::new(current_assets, TimestampNs(now_ns));
 
     Ok(state)
