@@ -30,6 +30,15 @@ use crate::LiquidatorResult;
 /// Excess is refunded by the contract.
 pub(crate) const SAFETY_BUFFER_BPS: u128 = 50;
 
+/// Headroom subtracted from the on-chain `liquidatable_collateral` cap so
+/// price drift between scan and tx execution doesn't trip `ExcessiveLiquidation`.
+pub(crate) const LIQUIDATABLE_CAP_BUFFER_BPS: u128 = 300;
+
+/// Applies `LIQUIDATABLE_CAP_BUFFER_BPS` to the on-chain eligibility cap.
+pub(crate) fn apply_liquidatable_cap_buffer(liquidatable_collateral: u128) -> u128 {
+    (liquidatable_collateral * (10_000 - LIQUIDATABLE_CAP_BUFFER_BPS)) / 10_000
+}
+
 /// Convert a borrow asset amount to collateral asset amount.
 ///
 /// Formula: `collateral = (borrow / price) / (1 - spread)`
@@ -256,7 +265,8 @@ impl LiquidationStrategy for PercentageLiquidationStrategy {
         let target_collateral = if market_version == Some((1, 0, 0)) {
             position.collateral_asset_deposit.into()
         } else {
-            std::cmp::min(collateral_amount, liquidatable_collateral.into())
+            let buffered_cap = apply_liquidatable_cap_buffer(liquidatable_collateral.into());
+            std::cmp::min(collateral_amount, buffered_cap)
         };
 
         let Some(theoretical_amount) = collateral_to_borrow(
@@ -424,7 +434,8 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             position.collateral_asset_deposit.into()
         } else {
             let safe_collateral = (max_collateral * (10_000 - SAFETY_BUFFER_BPS)) / 10_000;
-            std::cmp::min(safe_collateral, liquidatable_u128)
+            let buffered_cap = apply_liquidatable_cap_buffer(liquidatable_u128);
+            std::cmp::min(safe_collateral, buffered_cap)
         };
 
         let expected_minimum = collateral_to_borrow(
@@ -537,6 +548,30 @@ mod tests {
             )
             .unwrap();
         assert!(!is_not_profitable, "Should not be profitable");
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_subtracts_300bps() {
+        assert_eq!(apply_liquidatable_cap_buffer(10_000), 9_700);
+        assert_eq!(apply_liquidatable_cap_buffer(34_516_659), 33_481_159);
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_zero() {
+        assert_eq!(apply_liquidatable_cap_buffer(0), 0);
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_handles_observed_drift() {
+        // Observed mismatch: 37_818_981 requested > 34_516_659 available (≈9.6% drift).
+        // With the buffer applied to the (then) liquidatable_collateral, our request
+        // would be 33_481_159, comfortably under the chain's recomputed eligibility
+        // even if drift exceeds the buffer's 3%.
+        let observed_chain_available = 34_516_659u128;
+        let buffered = apply_liquidatable_cap_buffer(observed_chain_available);
+        assert!(buffered < observed_chain_available);
+        let drift_bps = ((observed_chain_available - buffered) * 10_000) / observed_chain_available;
+        assert_eq!(drift_bps, LIQUIDATABLE_CAP_BUFFER_BPS);
     }
 
     // Note: Gas cost check removed - gas costs are negligible on NEAR

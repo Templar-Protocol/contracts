@@ -175,6 +175,53 @@ impl LiquidatorError {
             | Self::SwapProviderError(_) => ErrorPhase::Execution,
         }
     }
+
+    /// Returns a stable, low-cardinality kind string used to dedupe
+    /// repeat failure notifications for the same `(market, borrower)`.
+    ///
+    /// `TransactionFailed` is further classified by the contract panic
+    /// substring so a "wrong amount" failure and an "offer too low" failure
+    /// each fire their own notification once.
+    #[must_use]
+    pub fn notification_kind(&self) -> &'static str {
+        match self {
+            Self::TransactionFailed(msg) => classify_transaction_failure(msg),
+            Self::LiquidationTransactionError(_) => "tx_submission_error",
+            Self::SwapProviderError(_) => "swap_error",
+            Self::FetchBorrowStatus(_) => "fetch_borrow_status",
+            Self::PricePairError(_) => "price_pair",
+            Self::PriceFetchError(_) => "price_fetch",
+            Self::ListBorrowPositionsError(_) => "list_positions",
+            Self::ListDeploymentsError(_) => "list_deployments",
+            Self::GetConfigurationError(_) => "get_configuration",
+            Self::FetchBalanceError(_) => "fetch_balance",
+            Self::AccessKeyDataError(_) => "access_key",
+            Self::SerializeError(_) => "serialize",
+            Self::StrategyError(_) => "strategy",
+            Self::InsufficientBalance => "insufficient_balance",
+            Self::OracleUpdateError(_) => "oracle_update",
+        }
+    }
+}
+
+/// Maps a contract-level `TransactionFailed` message to a stable kind.
+///
+/// The match is on substrings of the contract panic so the categorization
+/// survives small wording changes and surrounding receipt-id boilerplate.
+fn classify_transaction_failure(msg: &str) -> &'static str {
+    if msg.contains("Attempt to liquidate more collateral") {
+        "excessive_liquidation"
+    } else if msg.contains("Liquidation offer too low") {
+        "offer_too_low"
+    } else if msg.contains("not eligible for liquidation") {
+        "not_eligible"
+    } else if msg.contains("Failed to calculate value of collateral") {
+        "value_calc_failure"
+    } else if msg.contains("Timeout") || msg.contains("timeout") {
+        "tx_timeout"
+    } else {
+        "tx_failed_other"
+    }
 }
 
 pub type LiquidatorResult<T = ()> = Result<T, LiquidatorError>;
@@ -892,8 +939,16 @@ impl Liquidator {
                 .liquidate(account.clone(), position, oracle_response.clone())
                 .await
             {
-                Ok(LiquidationOutcome::Liquidated) => liquidated += 1,
-                Ok(LiquidationOutcome::NotLiquidatable) => not_liquidatable += 1,
+                Ok(LiquidationOutcome::Liquidated) => {
+                    self.notifier
+                        .clear_failure_dedup_for(self.market.as_ref(), account.as_ref());
+                    liquidated += 1;
+                }
+                Ok(LiquidationOutcome::NotLiquidatable) => {
+                    self.notifier
+                        .clear_failure_dedup_for(self.market.as_ref(), account.as_ref());
+                    not_liquidatable += 1;
+                }
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
                     let phase = e.phase();
@@ -902,6 +957,7 @@ impl Liquidator {
                         self.notifier.notify_liquidation_failed(
                             self.market.as_ref(),
                             account.as_ref(),
+                            e.notification_kind(),
                             &e.to_string(),
                         );
                     } else {
@@ -955,5 +1011,47 @@ mod tests {
         assert_eq!(ErrorPhase::Scan.to_string(), "scan");
         assert_eq!(ErrorPhase::Preparation.to_string(), "preparation");
         assert_eq!(ErrorPhase::Execution.to_string(), "execution");
+    }
+
+    #[test]
+    fn test_notification_kind_excessive_liquidation() {
+        let msg = r#"Receipt 6wy7eW4sLeVAApXmmsyaseK48yfGpJRVrt5etZrsRByp failed: ExecutionError("Smart contract panicked: Attempt to liquidate more collateral than is currently eligible: 37818981 requested > 34516659 available")"#;
+        let err = LiquidatorError::TransactionFailed(msg.to_string());
+        assert_eq!(err.notification_kind(), "excessive_liquidation");
+    }
+
+    #[test]
+    fn test_notification_kind_offer_too_low() {
+        let err = LiquidatorError::TransactionFailed(
+            "Smart contract panicked: Liquidation offer too low: 99 offered < 100".to_string(),
+        );
+        assert_eq!(err.notification_kind(), "offer_too_low");
+    }
+
+    #[test]
+    fn test_notification_kind_not_eligible() {
+        let err = LiquidatorError::TransactionFailed(
+            "Borrow position is not eligible for liquidation".to_string(),
+        );
+        assert_eq!(err.notification_kind(), "not_eligible");
+    }
+
+    #[test]
+    fn test_notification_kind_tx_failed_other() {
+        let err = LiquidatorError::TransactionFailed("some new failure mode".to_string());
+        assert_eq!(err.notification_kind(), "tx_failed_other");
+    }
+
+    #[test]
+    fn test_notification_kind_non_tx_variants_stable() {
+        assert_eq!(
+            LiquidatorError::InsufficientBalance.notification_kind(),
+            "insufficient_balance"
+        );
+        assert_eq!(
+            LiquidatorError::FetchBorrowStatus(rpc::RpcError::TimeoutError(30, 30))
+                .notification_kind(),
+            "fetch_borrow_status"
+        );
     }
 }
