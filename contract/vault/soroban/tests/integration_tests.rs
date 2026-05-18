@@ -709,6 +709,55 @@ fn soroban_contract_proxy_view_max_deposit_and_mint_respect_opposite_headroom(
 }
 
 #[rstest]
+fn soroban_contract_fee_aware_preview_fails_on_supply_overflow(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::zero(), Address([1u8; 32])),
+            FeeSlot::new(Wad::one(), Address([2u8; 32])),
+            None,
+        );
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: u128::MAX,
+                total_shares: u128::MAX,
+                idle_assets: u128::MAX,
+                fee_anchor: FeeAccrualAnchor::new(1, templar_vault_kernel::TimestampNs(1)),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(
+            proxy.preview_deposit(1),
+            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
+        );
+    });
+}
+
+#[rstest]
 fn soroban_contract_refresh_fees_command_updates_anchor() {
     let env = Env::default();
     env.mock_all_auths();
