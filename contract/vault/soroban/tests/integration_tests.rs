@@ -55,7 +55,7 @@ type ProxyCoreView = (
     ),
     (i128, i128, bool),
     (i128, i128, i128, i128),
-    (i128, u64, i128, i128),
+    (i128, u64, i128, i128, i128),
 );
 type ProxyPolicyView = (
     soroban_sdk::Vec<u32>,
@@ -584,6 +584,44 @@ fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
 
         let total_shares = proxy.view(owner, 0, 0).unwrap().0 .2 .0;
         assert_eq!(total_shares, 1_000);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_reports_fee_growth_cap(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 5, Address([1u8; 32])),
+            FeeSlot::new(Wad::one() / 10, Address([2u8; 32])),
+            Some(Wad::one() / 20),
+        );
+        let mut bytes = Vec::with_capacity(113);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(
+            &fees
+                .max_total_assets_growth_rate
+                .expect("growth cap configured")
+                .as_u128_trunc()
+                .to_le_bytes(),
+        );
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let fee_info = proxy.view(owner, 0, 0).unwrap().0 .3;
+        assert_eq!(fee_info.4, (Wad::one() / 20).as_u128_trunc() as i128);
     });
 }
 

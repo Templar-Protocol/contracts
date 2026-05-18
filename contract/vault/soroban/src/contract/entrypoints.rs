@@ -902,7 +902,7 @@ impl SorobanVaultContract {
                 ),
                 (i128, i128, bool),
                 (i128, i128, i128, i128),
-                (i128, u64, i128, i128),
+                (i128, u64, i128, i128, i128),
             ),
             (
                 soroban_sdk::Vec<u32>,
@@ -921,11 +921,16 @@ impl SorobanVaultContract {
         let idle_assets = to_i128(state.idle_assets)?;
         let external_assets = to_i128(state.external_assets)?;
         let total_assets = to_i128(state.total_assets)?;
+        let fee_growth_rate = match config.fees.max_total_assets_growth_rate {
+            Some(rate) => to_i128(u128::from(rate))?,
+            None => 0,
+        };
         let fee_info = (
             state.fee_anchor.total_assets as i128,
             state.fee_anchor.timestamp_ns.as_u64(),
             u128::from(config.fees.management.fee_wad) as i128,
             u128::from(config.fees.performance.fee_wad) as i128,
+            fee_growth_rate,
         );
         let policy_state = runtime_to_contract(storage.load_policy_state())?.unwrap_or_default();
         for entry in policy_state.supply_queue().entries() {
