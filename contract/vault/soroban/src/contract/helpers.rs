@@ -552,6 +552,27 @@ pub(crate) fn require_sentinel(env: &Env, caller: &SdkAddress) -> Result<(), Con
     Ok(())
 }
 
+pub(crate) fn require_governance_control_plane(
+    env: &Env,
+    caller: &SdkAddress,
+) -> Result<(), ContractError> {
+    require_signed(caller);
+    let governance: SdkAddress = get_config_address(env, &VaultDataKey::Governance)?;
+    if caller == &governance {
+        return Ok(());
+    }
+    if let Some(sentinel) = env
+        .storage()
+        .instance()
+        .get::<soroban_sdk::Symbol, SdkAddress>(&VaultDataKey::Sentinel)
+    {
+        if caller == &sentinel {
+            return Ok(());
+        }
+    }
+    Err(ContractError::Unauthorized)
+}
+
 #[inline(never)]
 pub(crate) fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
     require_governance(env, caller)?;

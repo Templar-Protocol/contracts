@@ -8,9 +8,9 @@ use super::helpers::{
     current_supply_queue_len, emit_admin_event, emit_alloc_event, emit_pause_state_event,
     extend_storage_ttl, get_config_address, governance_caller, kernel_address_from_sdk,
     load_virtual_offsets, migrate_legacy_paused, migration_in_progress, require_contract_address,
-    require_governance, require_sentinel, require_signed, sdk_string_to_alloc, set_config_address,
-    set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    with_contract_vault_contract_error,
+    require_governance, require_governance_control_plane, require_sentinel, require_signed,
+    sdk_string_to_alloc, set_config_address, set_migration_in_progress, store_fees_spec,
+    store_virtual_offsets, with_contract_vault_contract_error,
 };
 use super::*;
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
@@ -529,14 +529,13 @@ fn refresh_markets_impl(
 
 fn set_governance_config_impl(
     env: &Env,
-    caller: soroban_sdk::Address,
+    _caller: soroban_sdk::Address,
     kind: u32,
     primary: Option<soroban_sdk::Address>,
     many: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
     value_a: Option<i128>,
     value_b: Option<i128>,
 ) -> Result<(), ContractError> {
-    require_governance(env, &caller)?;
     match kind {
         GOVERNANCE_CONFIG_KIND_CURATOR => apply_curator_config(env, required_address(primary)?),
         GOVERNANCE_CONFIG_KIND_GOVERNANCE => {
@@ -632,10 +631,9 @@ fn set_governance_policy_impl(
 
 fn skim_impl(
     env: &Env,
-    caller: soroban_sdk::Address,
+    _caller: soroban_sdk::Address,
     token: soroban_sdk::Address,
 ) -> Result<(), ContractError> {
-    require_governance(env, &caller)?;
     let asset = get_config_address(env, &VaultDataKey::AssetToken)?;
     let share = get_config_address(env, &VaultDataKey::ShareToken)?;
     if token == asset || token == share {
@@ -887,6 +885,7 @@ impl SorobanVaultContract {
         caller: soroban_sdk::Address,
         payload: Bytes,
     ) -> Result<(), ContractError> {
+        require_governance(&env, &caller)?;
         let command = GovernanceCommand::decode(&payload.to_alloc_vec())
             .map_err(|_| ContractError::InvalidInput)?;
         execute_governance_command(&env, caller, command)
