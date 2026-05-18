@@ -35,7 +35,7 @@ use alloc::vec::Vec;
 use core::mem;
 pub(crate) use helpers::*;
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env,
+    contract, contractimpl, symbol_short, Address as SdkAddress, Bytes, BytesN, Env, Executable,
 };
 use templar_curator_primitives::governance::TimelockDecision;
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord, CapGroupUpdate};

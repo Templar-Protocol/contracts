@@ -103,12 +103,20 @@ pub(crate) fn addresses_from_alloc_strings(
 }
 
 fn is_contract_address(addr: &SdkAddress) -> bool {
-    let bytes = addr.to_string().to_bytes();
-    matches!(bytes.get(0), Some(b'C'))
+    matches!(
+        addr.executable(),
+        Some(Executable::Wasm(_)) | Some(Executable::StellarAsset)
+    )
 }
 
 pub(crate) fn require_contract_address(addr: &SdkAddress) -> Result<(), ContractError> {
     is_contract_address(addr)
+        .then_some(())
+        .ok_or(ContractError::InvalidInput)
+}
+
+pub(crate) fn require_wasm_or_account_address(addr: &SdkAddress) -> Result<(), ContractError> {
+    (!matches!(addr.executable(), Some(Executable::StellarAsset)))
         .then_some(())
         .ok_or(ContractError::InvalidInput)
 }
