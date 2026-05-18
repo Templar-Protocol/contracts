@@ -343,6 +343,7 @@ mod auth_tests {
 
 mod contract_tests {
     use crate::auth::{ActionKind, AuthAdapter, AuthResult};
+    use crate::contract::helpers::set_config_address;
     use crate::contract::*;
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
@@ -1446,6 +1447,134 @@ mod contract_tests {
             assert_eq!(
                 state.fee_anchor.timestamp_ns,
                 templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
+            );
+        });
+    }
+
+    #[test]
+    fn test_proxy_view_uses_fee_aware_kernel_conversions_for_high_values() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+        use soroban_sdk::token::StellarAssetClient;
+        use templar_vault_kernel::fee::FeeSlot;
+        use templar_vault_kernel::math::wad::Wad;
+        use templar_vault_kernel::{
+            convert_to_assets_ceil, convert_to_shares_ceil, Number, VaultConfig,
+        };
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_000,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset_admin = SdkAddress::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let owner = SdkAddress::generate(&env);
+        let proxy = VaultProxy::new(&env);
+
+        env.as_contract(&contract_id, || {
+            proxy
+                .initialize(curator, governance, asset.clone(), share.clone())
+                .unwrap();
+            set_config_address(&env, &VaultDataKey::AssetToken, &asset);
+            set_config_address(&env, &VaultDataKey::ShareToken, &share);
+
+            let fees = FeesSpec::new(
+                FeeSlot::new(Wad::one() / 8, templar_vault_kernel::Address([8u8; 32])),
+                FeeSlot::new(Wad::one() / 16, templar_vault_kernel::Address([9u8; 32])),
+                None,
+            );
+            store_fees_spec(&env, &fees).unwrap();
+            let state = VaultState {
+                total_assets: 9_000_000_000_000_000_000,
+                total_shares: 6_000_000_000_000_000_000,
+                idle_assets: 7_000_000_000_000_000_000,
+                external_assets: 2_000_000_000_000_000_000,
+                fee_anchor: FeeAccrualAnchor::new(
+                    8_000_000_000_000_000_000,
+                    templar_vault_kernel::TimestampNs(0),
+                ),
+                ..Default::default()
+            };
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&state).unwrap();
+            asset_admin_client.mint(&contract_id, &(state.idle_assets as i128));
+
+            let config = VaultConfig {
+                fees,
+                min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+                withdrawal_cooldown_ns: templar_vault_kernel::DEFAULT_COOLDOWN_NS,
+                max_pending_withdrawals: templar_vault_kernel::MAX_PENDING as u32,
+                paused: false,
+                virtual_shares: 0,
+                virtual_assets: 0,
+            };
+            let expected_state = {
+                let mut expected = state;
+                let now_ns = env.ledger().timestamp() * 1_000_000_000;
+                let current_assets = expected.total_assets;
+                let fee_assets_base = templar_vault_kernel::total_assets_for_fee_accrual(
+                    current_assets,
+                    expected.fee_anchor.total_assets,
+                    expected.fee_anchor.timestamp_ns.as_u64(),
+                    now_ns,
+                    config.fees.max_total_assets_growth_rate,
+                );
+                let management_shares = templar_vault_kernel::compute_management_fee_shares(
+                    fee_assets_base,
+                    current_assets,
+                    expected.total_shares,
+                    config.fees.management.fee_wad,
+                    expected.fee_anchor.timestamp_ns.as_u64(),
+                    now_ns,
+                );
+                let supply_after_management =
+                    Number::from(expected.total_shares).saturating_add(management_shares);
+                let profit = fee_assets_base.saturating_sub(expected.fee_anchor.total_assets);
+                let performance_fee_assets = config
+                    .fees
+                    .performance
+                    .fee_wad
+                    .apply_floored(Number::from(profit));
+                let performance_shares = templar_vault_kernel::compute_fee_shares_from_assets(
+                    performance_fee_assets,
+                    Number::from(current_assets),
+                    supply_after_management,
+                );
+                expected.total_shares = supply_after_management
+                    .saturating_add(performance_shares)
+                    .as_u128_saturating();
+                expected.fee_anchor = FeeAccrualAnchor::new(
+                    current_assets,
+                    templar_vault_kernel::TimestampNs(now_ns),
+                );
+                expected
+            };
+
+            let view = SorobanVaultContract::proxy_view(
+                env.clone(),
+                owner,
+                3_333_333_333_333_333_333,
+                2_222_222_222_222_222_222,
+            )
+            .unwrap();
+            let conversions = view.2;
+            assert_eq!(
+                conversions.6 as u128,
+                convert_to_assets_ceil(&expected_state, &config, 2_222_222_222_222_222_222)
+            );
+            assert_eq!(
+                conversions.7 as u128,
+                convert_to_shares_ceil(&expected_state, &config, 3_333_333_333_333_333_333)
             );
         });
     }
