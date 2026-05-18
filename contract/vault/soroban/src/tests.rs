@@ -510,6 +510,54 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_initialize_onboards_default_storage_and_config() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset_token = SdkAddress::generate(&env);
+        let share_token = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset_token.clone(),
+                share_token.clone(),
+                123,
+                456,
+            )
+            .unwrap();
+
+            let storage = SorobanStorage::new(&env);
+            assert!(storage.is_initialized());
+            assert_eq!(storage.load_state().unwrap(), Some(VaultState::default()));
+            assert!(!storage.is_paused());
+            assert_eq!(load_virtual_offsets(&env), (123, 456));
+            assert_eq!(load_fees_spec(&env).unwrap(), FeesSpec::zero());
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::Curator).unwrap(),
+                curator
+            );
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::Governance).unwrap(),
+                governance
+            );
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::AssetToken).unwrap(),
+                asset_token
+            );
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::ShareToken).unwrap(),
+                share_token
+            );
+        });
+    }
+
+    #[test]
     fn test_kernel_address_from_sdk_is_domain_separated() {
         use soroban_sdk::testutils::Address as _;
 
