@@ -290,6 +290,43 @@ mod auth_tests {
     }
 
     #[test]
+    fn verify_and_authorize_records_native_auth_and_preserves_role_errors() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let curator = SdkAddress::generate(&env);
+        let allocator = SdkAddress::generate(&env);
+        let user = SdkAddress::generate(&env);
+        let auth = SorobanAuth::with_roles(&env, curator, None, Some(allocator.clone()));
+        let contract_id = env.register(crate::contract::SorobanVaultContract, ());
+
+        env.as_contract(&contract_id, || {
+            assert!(auth
+                .verify_and_authorize(ActionKind::BeginAllocating, &allocator)
+                .is_ok());
+        });
+        assert_eq!(
+            env.auths().len(),
+            1,
+            "successful verify path must call require_auth"
+        );
+        assert_eq!(env.auths()[0].0, allocator);
+
+        let result = env.as_contract(&contract_id, || {
+            auth.verify_and_authorize(ActionKind::BeginAllocating, &user)
+        });
+        assert_missing_role(
+            result,
+            ActionKind::BeginAllocating,
+            AuthPolicyClass::Allocator,
+        );
+        assert_eq!(
+            env.auths().len(),
+            1,
+            "role failure happens after require_auth succeeds"
+        );
+    }
+
+    #[test]
     fn test_soroban_auth_set_paused() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
