@@ -146,10 +146,18 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
             }),
         )
         .await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+    let outcome = proxy_oracle
+        .list_ema_prices_no_older_than_exec(&actor, vec![proxy_id], 60_u32)
         .await;
+    let result = outcome.json::<pyth::OracleResponse>().unwrap();
     assert_eq!(result.get(&proxy_id), Some(&None));
+    let logs = outcome.logs().join("\n");
+    assert!(logs.contains("\"event\":\"circuit_breaker_tripped\""));
+    assert!(logs.contains(
+        "\"price_id\":\"4444444444444444444444444444444444444444444444444444444444444444\""
+    ));
+    assert!(logs.contains("\"breaker_id\":0"));
+    assert!(logs.contains("\"is_enforced\":true"));
 
     let set = proxy_oracle
         .get_proxy_circuit_breaker_set(proxy_id)
@@ -177,10 +185,15 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
             }),
         )
         .await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+    let outcome = proxy_oracle
+        .list_ema_prices_no_older_than_exec(&actor, vec![proxy_id], 60_u32)
         .await;
+    let result = outcome.json::<pyth::OracleResponse>().unwrap();
     assert_eq!(result.get(&proxy_id), Some(&None));
+    assert!(!outcome
+        .logs()
+        .join("\n")
+        .contains("\"event\":\"circuit_breaker_tripped\""));
 
     let set = proxy_oracle
         .get_proxy_circuit_breaker_set(proxy_id)
@@ -900,9 +913,10 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
         set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
             .unwrap();
         set.set_manual_trip(true);
-        assert!(set
+        assert!(!set
             .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
-            .is_err());
+            .unwrap()
+            .is_accepted());
         set.set_manual_trip(false);
         c.circuit_breakers.insert(&proxy_id, &set);
     }

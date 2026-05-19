@@ -839,7 +839,7 @@ impl Near {
         tracing::debug!(?prices, "Prices to aggregate");
 
         let price = match proxy.resolve(&mut circuit_breakers, prices, Self::system_time()) {
-            Ok(price) => Some(price),
+            Ok(resolution) => resolution.accepted_price(),
             Err(error) => {
                 tracing::debug!(%oracle_id, %price_identifier, ?error, "proxy.resolve failed");
                 None

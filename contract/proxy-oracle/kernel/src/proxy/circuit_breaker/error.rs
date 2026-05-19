@@ -1,12 +1,8 @@
-use alloc::vec::Vec;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ErrorCode {
     TooManyBreakers = 1,
     BreakerNotFound = 2,
-    ManuallyTripped = 3,
-    BreakerTripped = 4,
     UnexpectedBreakerId = 5,
     InvalidPrice = 6,
 }
@@ -17,8 +13,6 @@ pub enum CircuitBreakerError {
     BreakerNotFound { breaker_id: u32 },
     UnexpectedBreakerId { expected: u32, actual: u32 },
     InvalidPrice,
-    ManuallyTripped,
-    BreakerTripped { blocking_breaker_ids: Vec<u32> },
 }
 
 impl CircuitBreakerError {
@@ -29,8 +23,6 @@ impl CircuitBreakerError {
             Self::BreakerNotFound { .. } => ErrorCode::BreakerNotFound,
             Self::UnexpectedBreakerId { .. } => ErrorCode::UnexpectedBreakerId,
             Self::InvalidPrice => ErrorCode::InvalidPrice,
-            Self::ManuallyTripped => ErrorCode::ManuallyTripped,
-            Self::BreakerTripped { .. } => ErrorCode::BreakerTripped,
         }
     }
 }
@@ -49,10 +41,6 @@ impl core::fmt::Display for CircuitBreakerError {
                 )
             }
             Self::InvalidPrice => write!(f, "invalid price"),
-            Self::ManuallyTripped => write!(f, "circuit breaker manually tripped"),
-            Self::BreakerTripped {
-                blocking_breaker_ids,
-            } => write!(f, "circuit breaker tripped: {blocking_breaker_ids:?}"),
         }
     }
 }

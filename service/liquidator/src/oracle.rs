@@ -855,7 +855,10 @@ impl OracleFetcher {
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
             let source_count = prices.iter().filter(|price| price.is_some()).count();
-            let aggregated = proxy.resolve(&mut set, prices, now).ok();
+            let aggregated = proxy
+                .resolve(&mut set, prices, now)
+                .ok()
+                .and_then(|resolution| resolution.accepted_price());
             result.insert(
                 price_id,
                 aggregated.as_ref().and_then(pyth_price_try_from_kernel),

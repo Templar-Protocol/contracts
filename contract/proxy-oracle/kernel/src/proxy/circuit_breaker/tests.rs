@@ -62,6 +62,31 @@ fn breaker_set(sample_interval_ns: Nanoseconds, history_len: u32) -> CircuitBrea
     })
 }
 
+fn assert_blocked_by(
+    result: Result<PriceAcceptance, CircuitBreakerError>,
+    expected_blocking_breaker_ids: Vec<u32>,
+) -> PriceAcceptance {
+    let acceptance = result.unwrap();
+    assert_eq!(
+        acceptance.status,
+        PriceAcceptanceStatus::Blocked(PriceBlockedReason::BreakerTripped {
+            blocking_breaker_ids: expected_blocking_breaker_ids,
+        })
+    );
+    acceptance
+}
+
+fn assert_manually_blocked(
+    result: Result<PriceAcceptance, CircuitBreakerError>,
+) -> PriceAcceptance {
+    let acceptance = result.unwrap();
+    assert_eq!(
+        acceptance.status,
+        PriceAcceptanceStatus::Blocked(PriceBlockedReason::ManuallyTripped)
+    );
+    acceptance
+}
+
 #[cfg(all(feature = "borsh", feature = "serde"))]
 fn calibration_breaker(index: u32) -> CircuitBreaker {
     match index % 3 {
@@ -253,11 +278,9 @@ fn set_accepts_custom_rule_type() {
     });
     set.add(0, AlwaysTrips).unwrap();
 
-    assert_eq!(
+    assert_blocked_by(
         set.try_accept_price(price(100), Nanoseconds::from_secs(1)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![0]
-        })
+        vec![0],
     );
 }
 
@@ -424,18 +447,24 @@ fn set_returns_tripped_for_new_and_existing_trips() {
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
-    assert_eq!(
+    let acceptance = assert_blocked_by(
         set.try_accept_price(price(111), Nanoseconds::from_secs(2)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![id]
-        })
+        vec![id],
     );
-    assert_eq!(
+    assert_eq!(acceptance.events.len(), 1);
+    assert!(matches!(
+        acceptance.events[0],
+        CircuitBreakerEvent::CircuitBreakerTripped {
+            breaker_id,
+            is_enforced: true,
+            ..
+        } if breaker_id == id
+    ));
+    let acceptance = assert_blocked_by(
         set.try_accept_price(price(111), Nanoseconds::from_secs(3)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![id]
-        })
+        vec![id],
     );
+    assert!(acceptance.events.is_empty());
     assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
     assert_eq!(
         set.observed_history()
@@ -470,11 +499,9 @@ fn set_returns_first_new_blocking_breaker_id() {
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
 
-    assert_eq!(
+    assert_blocked_by(
         set.try_accept_price(price(150), Nanoseconds::from_secs(2)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![first_id]
-        })
+        vec![first_id],
     );
 }
 
@@ -492,11 +519,9 @@ fn too_soon_sample_can_trip_without_being_persisted() {
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
-    assert_eq!(
+    assert_blocked_by(
         set.try_accept_price(price(200), Nanoseconds::from_secs(2)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![id]
-        })
+        vec![id],
     );
 
     assert_eq!(set.accepted_history().len(), 1);
@@ -542,12 +567,27 @@ fn unenforced_and_tripped_breakers_still_record_history() {
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
 
-    assert_eq!(
+    let acceptance = assert_blocked_by(
         set.try_accept_price(price(200), Nanoseconds::from_secs(2)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![tripped_id],
-        })
+        vec![tripped_id],
     );
+    assert_eq!(acceptance.events.len(), 2);
+    assert!(matches!(
+        acceptance.events[0],
+        CircuitBreakerEvent::CircuitBreakerTripped {
+            breaker_id,
+            is_enforced: false,
+            ..
+        } if breaker_id == unenforced_id
+    ));
+    assert!(matches!(
+        acceptance.events[1],
+        CircuitBreakerEvent::CircuitBreakerTripped {
+            breaker_id,
+            is_enforced: true,
+            ..
+        } if breaker_id == tripped_id
+    ));
 
     assert_eq!(set.accepted_history().len(), 1);
     assert_eq!(set.observed_history().len(), 2);
@@ -574,8 +614,19 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
-    set.try_accept_price(price(120), Nanoseconds::from_secs(2))
+    let acceptance = set
+        .try_accept_price(price(120), Nanoseconds::from_secs(2))
         .unwrap();
+    assert!(acceptance.is_accepted());
+    assert_eq!(acceptance.events.len(), 1);
+    assert!(matches!(
+        acceptance.events[0],
+        CircuitBreakerEvent::CircuitBreakerTripped {
+            breaker_id,
+            is_enforced: false,
+            ..
+        } if breaker_id == id
+    ));
 
     let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
@@ -588,11 +639,9 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
     set.get_mut(id).unwrap().is_enforced = true;
 
     assert!(set.is_blocking());
-    assert_eq!(
+    assert_blocked_by(
         set.try_accept_price(price(130), Nanoseconds::from_secs(3)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![id]
-        })
+        vec![id],
     );
 }
 
@@ -610,11 +659,9 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
-    assert_eq!(
+    assert_blocked_by(
         set.try_accept_price(price(120), Nanoseconds::from_secs(2)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![id]
-        })
+        vec![id],
     );
     {
         let breaker = set.get_mut(id).unwrap();
@@ -641,10 +688,7 @@ fn manual_trip_override_blocks_set_without_tripping_breaker() {
     set.set_manual_trip(true);
 
     assert!(set.is_blocking());
-    assert_eq!(
-        set.try_accept_price(price(100), Nanoseconds::from_secs(5)),
-        Err(CircuitBreakerError::ManuallyTripped)
-    );
+    assert_manually_blocked(set.try_accept_price(price(100), Nanoseconds::from_secs(5)));
     assert!(set.accepted_history().is_empty());
     assert_eq!(set.observed_history().as_slice()[0].price, price(100));
 }
@@ -656,10 +700,7 @@ fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
     set.set_manual_trip(true);
-    assert_eq!(
-        set.try_accept_price(price(200), Nanoseconds::from_secs(2)),
-        Err(CircuitBreakerError::ManuallyTripped)
-    );
+    assert_manually_blocked(set.try_accept_price(price(200), Nanoseconds::from_secs(2)));
 
     assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
     assert_eq!(
@@ -734,12 +775,11 @@ fn rule_trip_records_causal_price_update() {
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(4))
         .unwrap();
-    assert_eq!(
+    let acceptance = assert_blocked_by(
         set.try_accept_price(price(200), Nanoseconds::from_secs(5)),
-        Err(CircuitBreakerError::BreakerTripped {
-            blocking_breaker_ids: vec![id]
-        })
+        vec![id],
     );
+    assert_eq!(acceptance.events.len(), 1);
 
     assert!(matches!(
         set.breakers().get(&0).unwrap().status,

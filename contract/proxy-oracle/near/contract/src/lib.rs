@@ -17,7 +17,10 @@ use templar_common::{
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_kernel::proxy::{
+    circuit_breaker::{CircuitBreakerEvent, CircuitBreakerSet},
+    Proxy,
+};
 use templar_proxy_oracle_near_common::{
     convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
@@ -32,6 +35,24 @@ use callback_handler::{callback_result, CallbackHandler, OracleType};
 mod impl_governance;
 
 type State = state::v2::State;
+
+fn emit_circuit_breaker_event(price_id: PriceIdentifier, event: CircuitBreakerEvent) {
+    match event {
+        CircuitBreakerEvent::CircuitBreakerTripped {
+            breaker_id,
+            tripped_at_ns,
+            price_update,
+            is_enforced,
+        } => Event::CircuitBreakerTripped {
+            price_id,
+            breaker_id,
+            tripped_at_ns,
+            price_update,
+            is_enforced,
+        }
+        .emit(),
+    }
+}
 
 #[derive(Debug, Owner, Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
@@ -281,6 +302,11 @@ impl Contract {
                 .unwrap_or_else(CircuitBreakerSet::empty);
             let result = proxy.resolve(&mut set, prices, now);
             self.circuit_breakers.insert(&price_id, &set);
+            if let Ok(resolution) = &result {
+                for event in resolution.acceptance.events.clone() {
+                    emit_circuit_breaker_event(price_id, event);
+                }
+            }
 
             if let Err(error) = &result {
                 near_sdk::log!(
@@ -289,7 +315,9 @@ impl Contract {
                     error
                 );
             }
-            let result = result.ok();
+            let result = result
+                .ok()
+                .and_then(|resolution| resolution.accepted_price());
 
             results.insert(
                 price_id,

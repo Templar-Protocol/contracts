@@ -13,7 +13,8 @@ pub use rule::{
     CircuitBreaker, CircuitBreakerRule, MonotonicRun, StepwiseChange, WindowedChangeDelta,
 };
 pub use set::{
-    CircuitBreakerSet, CircuitBreakerSetConfig, CircuitBreakerSetParseError, CircuitBreakerState,
+    CircuitBreakerEvent, CircuitBreakerSet, CircuitBreakerSetConfig, CircuitBreakerSetParseError,
+    CircuitBreakerState, PriceAcceptance, PriceAcceptanceStatus, PriceBlockedReason,
     UncheckedCircuitBreakerSet,
 };
 pub use status::CircuitBreakerStatus;
