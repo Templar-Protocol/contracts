@@ -24,6 +24,7 @@ enum DataKey {
     Admin,
     Vault,
     Pool,
+    Paused,
 }
 
 #[contracterror]
@@ -43,6 +44,8 @@ pub enum AdapterError {
     ZeroWithdrawal = 7,
     /// Reserve data is stale.
     StaleReserve = 8,
+    /// Emergency pause is active.
+    Paused = 9,
 }
 
 #[contract]
@@ -85,6 +88,22 @@ impl BlendAdapterContract {
         Ok(())
     }
 
+    /// Pause or unpause adapter state-changing operations (admin or vault).
+    #[allow(deprecated)]
+    pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin_or_vault(&env, &caller)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        env.events()
+            .publish((symbol_short!("paused"), caller), paused);
+        Ok(())
+    }
+
+    pub fn paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        is_paused(&env)
+    }
+
     /// Supply assets from the adapter into the Blend pool (vault-only).
     #[allow(deprecated)]
     pub fn supply(
@@ -94,6 +113,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -149,6 +169,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -192,6 +213,7 @@ impl BlendAdapterContract {
         receiver: Address,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -259,6 +281,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_admin(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -304,6 +327,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_admin(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -378,6 +402,30 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     let vault = get_vault(env)?;
     if caller != &vault {
         return Err(AdapterError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
+    caller.require_auth();
+    let admin = get_admin(env)?;
+    let vault = get_vault(env)?;
+    if caller != &admin && caller != &vault {
+        return Err(AdapterError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(env: &Env) -> Result<(), AdapterError> {
+    if is_paused(env) {
+        return Err(AdapterError::Paused);
     }
     Ok(())
 }
@@ -475,6 +523,48 @@ mod tests {
         env.as_contract(&contract_id, || {
             let result =
                 BlendAdapterContract::supply(env.clone(), impostor.clone(), asset.clone(), 100);
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn admin_can_pause_adapter_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert_eq!(BlendAdapterContract::paused(env.clone()), false);
+            BlendAdapterContract::set_paused(env.clone(), admin, true).unwrap();
+            assert_eq!(BlendAdapterContract::paused(env.clone()), true);
+
+            let result = BlendAdapterContract::supply(env.clone(), vault, asset, 100);
+            assert_eq!(result, Err(AdapterError::Paused));
+        });
+    }
+
+    #[test]
+    fn vault_can_pause_adapter_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_paused(env.clone(), vault.clone(), true).unwrap();
+
+            let result = BlendAdapterContract::withdraw(env.clone(), vault, asset, 100);
+            assert_eq!(result, Err(AdapterError::Paused));
+        });
+    }
+
+    #[test]
+    fn non_admin_or_vault_cannot_pause_adapter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let impostor = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_paused(env.clone(), impostor, true);
             assert_eq!(result, Err(AdapterError::Unauthorized));
         });
     }
