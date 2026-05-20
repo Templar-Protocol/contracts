@@ -179,7 +179,7 @@ fn burn_from_emits_supplemental_spender_event() {
             300,
         );
     });
-    env.events().all();
+    let event_count_before_burn_from = env.events().all().filter_by_contract(&token).events().len();
 
     env.as_contract(&vault, || {
         VaultCaller::burn_from(
@@ -192,8 +192,15 @@ fn burn_from_emits_supplemental_spender_event() {
     });
 
     let events = env.events().all().filter_by_contract(&token);
-    assert_eq!(events.events().len(), 2);
-    let burn_from_event = &events.events()[1];
+    let new_events = &events.events()[event_count_before_burn_from..];
+    let burn_from_event = new_events
+        .iter()
+        .find(|event| {
+            let ContractEventBody::V0(body) = &event.body;
+            body.topics.first()
+                == Some(&ScVal::try_from_val(&env, &symbol_short!("burn_from")).unwrap())
+        })
+        .expect("burn_from event must be emitted");
     let ContractEventBody::V0(body) = &burn_from_event.body;
     assert_eq!(body.topics.len(), 3);
     assert_eq!(
@@ -247,21 +254,20 @@ fn set_admin_rotates_admin() {
 }
 
 #[test]
-#[should_panic]
 fn non_admin_cannot_set_admin() {
     let (env, _admin, _vault, token) = setup();
     let non_admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
         &soroban_sdk::Symbol::new(&env, "set_admin"),
         (&non_admin, &new_admin).into_val(&env),
     );
+    assert_eq!(err, Err(Ok(ShareTokenError::Unauthorized)));
 }
 
 #[test]
-#[should_panic]
 fn old_admin_loses_privilege_after_rotation() {
     let (env, admin, _vault, token) = setup();
     let new_admin = Address::generate(&env);
@@ -272,29 +278,33 @@ fn old_admin_loses_privilege_after_rotation() {
         (&admin, &new_admin).into_val(&env),
     );
 
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
         &soroban_sdk::Symbol::new(&env, "set_admin"),
         (&admin, &Address::generate(&env)).into_val(&env),
     );
+    assert_eq!(err, Err(Ok(ShareTokenError::Unauthorized)));
 }
 
 #[test]
-#[should_panic]
-fn burn_from_without_allowance_panics() {
+fn burn_from_without_allowance_fails() {
     let (env, _admin, vault, token) = setup();
     let from = Address::generate(&env);
     let spender = Address::generate(&env);
 
     env.as_contract(&vault, || {
         VaultCaller::mint(env.clone(), token.clone(), from.clone(), 1000);
-        VaultCaller::burn_from(env.clone(), token.clone(), spender.clone(), from.clone(), 1);
+        let err = env.try_invoke_contract::<(), ShareTokenError>(
+            &token,
+            &soroban_sdk::Symbol::new(&env, "burn_from"),
+            (&spender, &from, &1i128).into_val(&env),
+        );
+        assert!(err.is_err());
     });
 }
 
 #[test]
-#[should_panic]
-fn burn_from_over_allowance_panics() {
+fn burn_from_over_allowance_fails() {
     let (env, _admin, vault, token) = setup();
     let from = Address::generate(&env);
     let spender = Address::generate(&env);
@@ -309,19 +319,17 @@ fn burn_from_over_allowance_panics() {
             100,
             300,
         );
-        VaultCaller::burn_from(
-            env.clone(),
-            token.clone(),
-            spender.clone(),
-            from.clone(),
-            101,
+        let err = env.try_invoke_contract::<(), ShareTokenError>(
+            &token,
+            &soroban_sdk::Symbol::new(&env, "burn_from"),
+            (&spender, &from, &101i128).into_val(&env),
         );
+        assert!(err.is_err());
     });
 }
 
 #[test]
-#[should_panic]
-fn burn_from_after_allowance_expiry_panics() {
+fn burn_from_after_allowance_expiry_fails() {
     let (env, _admin, vault, token) = setup();
     let from = Address::generate(&env);
     let spender = Address::generate(&env);
@@ -346,12 +354,16 @@ fn burn_from_after_allowance_expiry_panics() {
     });
 
     env.as_contract(&vault, || {
-        VaultCaller::burn_from(env.clone(), token.clone(), spender.clone(), from.clone(), 1);
+        let err = env.try_invoke_contract::<(), ShareTokenError>(
+            &token,
+            &soroban_sdk::Symbol::new(&env, "burn_from"),
+            (&spender, &from, &1i128).into_val(&env),
+        );
+        assert!(err.is_err());
     });
 }
 
 #[test]
-#[should_panic]
 fn direct_caller_cannot_burn_from_even_with_allowance() {
     let (env, _admin, vault, token) = setup();
     let from = Address::generate(&env);
@@ -370,11 +382,12 @@ fn direct_caller_cannot_burn_from_even_with_allowance() {
     });
 
     env.mock_auths(&[]);
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
         &soroban_sdk::Symbol::new(&env, "burn_from"),
         (&spender, &from, &1i128).into_val(&env),
     );
+    assert!(err.is_err());
 }
 
 #[test]
@@ -408,8 +421,7 @@ fn user_can_transfer_with_auth() {
 }
 
 #[test]
-#[should_panic]
-fn transfer_without_from_auth_panics() {
+fn transfer_without_from_auth_fails() {
     let (env, _admin, vault, token) = setup();
     let from = Address::generate(&env);
     let to = Address::generate(&env);
@@ -419,13 +431,14 @@ fn transfer_without_from_auth_panics() {
         VaultCaller::mint(env.clone(), token.clone(), from.clone(), 1000);
     });
 
-    // Don't mock auths — this should panic on from.require_auth()
+    // Don't mock auths — this should fail on from.require_auth()
     env.mock_auths(&[]);
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
         &soroban_sdk::Symbol::new(&env, "transfer"),
         (&from, MuxedAddress::from(to), &1i128).into_val(&env),
     );
+    assert!(err.is_err());
 }
 
 #[test]
