@@ -995,7 +995,13 @@ where
         target_ids: Vec<TargetId>,
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.set_supply_queue_authorized(target_ids)
+    }
 
+    pub fn set_supply_queue_authorized(
+        &mut self,
+        target_ids: Vec<TargetId>,
+    ) -> Result<(), RuntimeError> {
         let mut entries = Vec::with_capacity(target_ids.len());
         for target_id in target_ids {
             let config = self
@@ -1064,7 +1070,14 @@ where
         new_cap: u128,
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.apply_governance_cap_authorized(market_id, new_cap)
+    }
 
+    pub fn apply_governance_cap_authorized(
+        &mut self,
+        market_id: TargetId,
+        new_cap: u128,
+    ) -> Result<(), RuntimeError> {
         if self.policy_state.market_config(market_id).is_some() {
             self.policy_state
                 .set_market_cap(market_id, new_cap)
@@ -1118,7 +1131,13 @@ where
         market_id: TargetId,
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.apply_governance_remove_market_authorized(market_id)
+    }
 
+    pub fn apply_governance_remove_market_authorized(
+        &mut self,
+        market_id: TargetId,
+    ) -> Result<(), RuntimeError> {
         let Some(config) = self.policy_state.market_config(market_id) else {
             return Err(RuntimeError::invalid_input(""));
         };
@@ -1225,7 +1244,13 @@ where
         update: CapGroupUpdate,
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.apply_governance_cap_group_update_authorized(update)
+    }
 
+    pub fn apply_governance_cap_group_update_authorized(
+        &mut self,
+        update: CapGroupUpdate,
+    ) -> Result<(), RuntimeError> {
         match update {
             CapGroupUpdate::SetCap {
                 cap_group_id,
