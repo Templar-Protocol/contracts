@@ -10,7 +10,7 @@ use alloc::string::ToString;
 use alloc::{borrow::ToOwned, boxed::Box};
 use templar_primitives::Nanoseconds;
 
-use crate::Price;
+use crate::{primitive::AccountId, Price};
 
 use super::{
     CircuitBreaker, CircuitBreakerError, CircuitBreakerRule, CircuitBreakerStatus, Observation,
@@ -36,14 +36,106 @@ serialize! {
 }
 
 serialize! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AcceptedHistorySource {
+        Empty,
+        Observed,
+    }
+}
+
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum CircuitBreakerUpdate {
+        SetEnforced { is_enforced: bool },
+        Rearm {
+            armed_after_ns: Nanoseconds,
+            accepted_history_source: AcceptedHistorySource,
+        },
+    }
+}
+
+serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum CircuitBreakerEvent {
-        CircuitBreakerTripped {
+        ManualTripSet {
+            is_manually_tripped: bool,
+            actor: AccountId,
+            metadata: Option<Vec<u8>>,
+        },
+        ConfigSet {
+            config: CircuitBreakerSetConfig,
+        },
+        Added {
+            breaker_id: u32,
+            breaker: CircuitBreaker,
+        },
+        Removed {
+            breaker_id: u32,
+        },
+        EnforcementSet {
+            breaker_id: u32,
+            is_enforced: bool,
+        },
+        Rearmed {
+            breaker_id: u32,
+            armed_after_ns: Nanoseconds,
+            accepted_history_source: AcceptedHistorySource,
+        },
+        Tripped {
             breaker_id: u32,
             tripped_at_ns: Nanoseconds,
             price_update: Observation,
             is_enforced: bool,
         },
+    }
+}
+
+serialize! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CircuitBreakerOutcome<T = ()> {
+        pub value: T,
+        pub events: Vec<CircuitBreakerEvent>,
+    }
+}
+
+impl<T> CircuitBreakerOutcome<T> {
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Self {
+            value,
+            events: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> CircuitBreakerOutcome<U> {
+        CircuitBreakerOutcome {
+            value: f(self.value),
+            events: self.events,
+        }
+    }
+
+    #[must_use]
+    pub fn with_events(self, events: Vec<CircuitBreakerEvent>) -> Self {
+        Self { events, ..self }
+    }
+}
+
+impl CircuitBreakerOutcome<()> {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            value: (),
+            events: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_value<T>(self, value: T) -> CircuitBreakerOutcome<T> {
+        CircuitBreakerOutcome {
+            value,
+            events: self.events,
+        }
     }
 }
 
@@ -55,44 +147,7 @@ serialize! {
     }
 }
 
-serialize! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum PriceAcceptanceStatus {
-        Accepted,
-        Blocked(PriceBlockedReason),
-    }
-}
-
-serialize! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct PriceAcceptance {
-        pub status: PriceAcceptanceStatus,
-        pub events: Vec<CircuitBreakerEvent>,
-    }
-}
-
-impl PriceAcceptance {
-    #[must_use]
-    pub fn accepted(events: Vec<CircuitBreakerEvent>) -> Self {
-        Self {
-            status: PriceAcceptanceStatus::Accepted,
-            events,
-        }
-    }
-
-    #[must_use]
-    pub fn blocked(reason: PriceBlockedReason, events: Vec<CircuitBreakerEvent>) -> Self {
-        Self {
-            status: PriceAcceptanceStatus::Blocked(reason),
-            events,
-        }
-    }
-
-    #[must_use]
-    pub fn is_accepted(&self) -> bool {
-        matches!(self.status, PriceAcceptanceStatus::Accepted)
-    }
-}
+pub type PriceAcceptance = Result<Price, PriceBlockedReason>;
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,17 +252,40 @@ impl<R> CircuitBreakerSet<R> {
         })
     }
 
-    pub fn set_config(&mut self, config: CircuitBreakerSetConfig) {
+    pub fn set_config(&mut self, config: CircuitBreakerSetConfig) -> CircuitBreakerOutcome {
+        self.set_config_state(config);
+        CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::ConfigSet { config }])
+    }
+
+    fn set_config_state(&mut self, config: CircuitBreakerSetConfig) {
         self.0.sample_interval_ns = config.sample_interval_ns;
         self.0.accepted_history.set_capacity(config.history_len);
         self.0.observed_history.set_capacity(config.history_len);
     }
 
-    pub fn set_manual_trip(&mut self, is_manually_tripped: bool) {
+    pub fn set_manual_trip(
+        &mut self,
+        is_manually_tripped: bool,
+        actor: AccountId,
+        metadata: Option<Vec<u8>>,
+    ) -> CircuitBreakerOutcome {
+        if self.0.is_manually_tripped == is_manually_tripped {
+            return CircuitBreakerOutcome::empty();
+        }
+
+        self.set_manual_trip_state(is_manually_tripped);
+        CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::ManualTripSet {
+            is_manually_tripped,
+            actor,
+            metadata,
+        }])
+    }
+
+    fn set_manual_trip_state(&mut self, is_manually_tripped: bool) {
         self.0.is_manually_tripped = is_manually_tripped;
     }
 
-    pub fn add(&mut self, breaker_id: u32, breaker: R) -> Result<(), CircuitBreakerError> {
+    fn add_state(&mut self, breaker_id: u32, breaker: R) -> Result<(), CircuitBreakerError> {
         if breaker_id != self.0.next_id {
             return Err(CircuitBreakerError::UnexpectedBreakerId {
                 expected: self.0.next_id,
@@ -226,7 +304,16 @@ impl<R> CircuitBreakerSet<R> {
         Ok(())
     }
 
-    pub fn remove(&mut self, breaker_id: u32) -> Result<(), CircuitBreakerError> {
+    pub fn remove(
+        &mut self,
+        breaker_id: u32,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        self.remove_state(breaker_id)?;
+        Ok(CircuitBreakerOutcome::empty()
+            .with_events(vec![CircuitBreakerEvent::Removed { breaker_id }]))
+    }
+
+    fn remove_state(&mut self, breaker_id: u32) -> Result<(), CircuitBreakerError> {
         self.0
             .breakers
             .remove(&breaker_id)
@@ -234,7 +321,7 @@ impl<R> CircuitBreakerSet<R> {
         Ok(())
     }
 
-    pub fn get_mut(
+    fn get_mut(
         &mut self,
         breaker_id: u32,
     ) -> Result<&mut CircuitBreakerState<R>, CircuitBreakerError> {
@@ -259,11 +346,11 @@ impl<R> CircuitBreakerSet<R> {
         &self.0.observed_history
     }
 
-    pub fn clear_accepted_history(&mut self) {
+    fn clear_accepted_history(&mut self) {
         self.0.accepted_history.clear();
     }
 
-    pub fn seed_accepted_history_from_observed(&mut self) {
+    fn seed_accepted_history_from_observed(&mut self) {
         self.0.accepted_history = self.0.observed_history.clone();
     }
 
@@ -313,6 +400,63 @@ impl<R> CircuitBreakerSet<R> {
     }
 }
 
+impl CircuitBreakerSet<CircuitBreaker> {
+    pub fn add(
+        &mut self,
+        breaker_id: u32,
+        breaker: CircuitBreaker,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        self.add_state(breaker_id, breaker.clone())?;
+        Ok(
+            CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::Added {
+                breaker_id,
+                breaker,
+            }]),
+        )
+    }
+
+    pub fn update(
+        &mut self,
+        breaker_id: u32,
+        update: CircuitBreakerUpdate,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        match update {
+            CircuitBreakerUpdate::SetEnforced { is_enforced } => {
+                let breaker = self.get_mut(breaker_id)?;
+                breaker.is_enforced = is_enforced;
+                Ok(CircuitBreakerOutcome::empty().with_events(vec![
+                    CircuitBreakerEvent::EnforcementSet {
+                        breaker_id,
+                        is_enforced,
+                    },
+                ]))
+            }
+            CircuitBreakerUpdate::Rearm {
+                armed_after_ns,
+                accepted_history_source,
+            } => {
+                let breaker = self.get_mut(breaker_id)?;
+                breaker.status = CircuitBreakerStatus::ArmedAfter {
+                    timestamp_ns: armed_after_ns,
+                };
+                match accepted_history_source {
+                    AcceptedHistorySource::Empty => self.clear_accepted_history(),
+                    AcceptedHistorySource::Observed => self.seed_accepted_history_from_observed(),
+                }
+                Ok(
+                    CircuitBreakerOutcome::empty().with_events(vec![
+                        CircuitBreakerEvent::Rearmed {
+                            breaker_id,
+                            armed_after_ns,
+                            accepted_history_source,
+                        },
+                    ]),
+                )
+            }
+        }
+    }
+}
+
 #[cfg(feature = "borsh")]
 impl<R: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for CircuitBreakerSet<R> {
     fn deserialize_reader<Reader: ::borsh::io::Read>(
@@ -336,7 +480,7 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         &mut self,
         price: Price,
         now: Nanoseconds,
-    ) -> Result<PriceAcceptance, CircuitBreakerError> {
+    ) -> Result<CircuitBreakerOutcome<PriceAcceptance>, CircuitBreakerError> {
         if !price.has_strictly_positive_confidence_interval() {
             return Err(CircuitBreakerError::InvalidPrice);
         }
@@ -354,10 +498,9 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         }
 
         if self.0.is_manually_tripped {
-            return Ok(PriceAcceptance::blocked(
+            return Ok(CircuitBreakerOutcome::new(Err(
                 PriceBlockedReason::ManuallyTripped,
-                vec![],
-            ));
+            )));
         }
 
         let blocking_breaker_ids = self.blocking_breaker_ids();
@@ -365,18 +508,17 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         // Short-circuit in the case of already-blocking breakers: do not update
         // accepted_history or test untripped breakers against a stale accepted_history.
         if !blocking_breaker_ids.is_empty() {
-            return Ok(PriceAcceptance::blocked(
+            return Ok(CircuitBreakerOutcome::new(Err(
                 PriceBlockedReason::BreakerTripped {
                     blocking_breaker_ids,
                 },
-                vec![],
-            ));
+            )));
         }
 
         let acceptance =
             self.apply_armed_breaker_transitions(&proposed_accepted_history, price_update, now);
 
-        if acceptance.is_accepted() && should_persist_sample {
+        if acceptance.value.is_ok() && should_persist_sample {
             self.0.accepted_history = proposed_accepted_history;
         }
         Ok(acceptance)
@@ -387,7 +529,7 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         proposed_accepted_history: &RingBuffer<Observation>,
         price_update: Observation,
         now: Nanoseconds,
-    ) -> PriceAcceptance {
+    ) -> CircuitBreakerOutcome<PriceAcceptance> {
         let mut events = vec![];
 
         for (breaker_id, breaker) in &mut self.0.breakers {
@@ -396,16 +538,14 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             }
 
             if breaker.is_blocking() {
-                return PriceAcceptance::blocked(
-                    PriceBlockedReason::BreakerTripped {
-                        blocking_breaker_ids: vec![*breaker_id],
-                    },
-                    events,
-                );
+                return CircuitBreakerOutcome::new(Err(PriceBlockedReason::BreakerTripped {
+                    blocking_breaker_ids: vec![*breaker_id],
+                }))
+                .with_events(events);
             }
         }
 
-        PriceAcceptance::accepted(events)
+        CircuitBreakerOutcome::new(Ok(price_update.price)).with_events(events)
     }
 }
 
@@ -453,7 +593,7 @@ impl<R: CircuitBreakerRule> CircuitBreakerState<R> {
             tripped_at_ns: now,
             price_update,
         };
-        CircuitBreakerEvent::CircuitBreakerTripped {
+        CircuitBreakerEvent::Tripped {
             breaker_id,
             tripped_at_ns: now,
             price_update,

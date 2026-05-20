@@ -12,6 +12,7 @@ use templar_proxy_oracle_kernel::proxy::{
 use templar_proxy_oracle_near_common::{
     governance::{CircuitBreakerUpdate, Operation},
     input::Source,
+    role::Role,
 };
 use templar_tools_common::near::{self, Function};
 
@@ -48,10 +49,27 @@ pub enum OperationCommand {
     CircuitBreakerConfig(CircuitBreakerConfigArgs),
     /// Set or clear the manual trip override for a price identifier
     CircuitBreakerManualTrip(CircuitBreakerManualTripArgs),
+    /// Grant or revoke an offline circuit breaker role
+    CircuitBreakerRole(CircuitBreakerRoleArgs),
     /// Remove a circuit breaker from a price identifier
     RemoveCircuitBreaker(RemoveCircuitBreakerArgs),
     /// Update one circuit breaker's enforcement or lifecycle state
     CircuitBreaker(CircuitBreakerUpdateArgs),
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CircuitBreakerRoleArg {
+    OfflineManualTrip,
+    OfflineManualUntrip,
+}
+
+impl From<CircuitBreakerRoleArg> for Role {
+    fn from(value: CircuitBreakerRoleArg) -> Self {
+        match value {
+            CircuitBreakerRoleArg::OfflineManualTrip => Self::OfflineManualTrip,
+            CircuitBreakerRoleArg::OfflineManualUntrip => Self::OfflineManualUntrip,
+        }
+    }
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -203,6 +221,22 @@ pub struct CircuitBreakerManualTripArgs {
     is_manually_tripped: bool,
 }
 
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CircuitBreakerRoleArgs {
+    /// Account to grant or revoke the role for
+    #[arg(long)]
+    account_id: AccountId,
+    /// Role to grant or revoke
+    #[arg(long)]
+    role: CircuitBreakerRoleArg,
+    /// Grant the role
+    #[arg(long, conflicts_with = "revoke", required_unless_present = "revoke")]
+    grant: bool,
+    /// Revoke the role
+    #[arg(long, conflicts_with = "grant", required_unless_present = "grant")]
+    revoke: bool,
+}
+
 impl SetTtlArgs {
     pub fn from_ns(ns: u64) -> Self {
         Self {
@@ -316,6 +350,11 @@ impl CreateProposal {
                     is_manually_tripped: args.is_manually_tripped,
                 }
             }
+            OperationCommand::CircuitBreakerRole(args) => Operation::SetCircuitBreakerRole {
+                account_id: args.account_id.clone(),
+                role: args.role.clone().into(),
+                is_granted: args.grant && !args.revoke,
+            },
             OperationCommand::RemoveCircuitBreaker(args) => Operation::RemoveCircuitBreaker {
                 id: args.price_id.into(),
                 breaker_id: args.breaker_id,

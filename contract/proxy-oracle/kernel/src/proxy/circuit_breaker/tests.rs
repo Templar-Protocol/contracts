@@ -5,7 +5,7 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 use std::eprintln;
 use templar_primitives::{Decimal, Nanoseconds};
 
-use crate::Price;
+use crate::{primitive::AccountId, Price};
 
 use super::*;
 
@@ -62,14 +62,21 @@ fn breaker_set(sample_interval_ns: Nanoseconds, history_len: u32) -> CircuitBrea
     })
 }
 
+fn actor_id() -> AccountId {
+    let mut bytes = [0; 64];
+    let account_id = b"breaker.near";
+    bytes[..account_id.len()].copy_from_slice(account_id);
+    AccountId::from_bytes(bytes)
+}
+
 fn assert_blocked_by(
-    result: Result<PriceAcceptance, CircuitBreakerError>,
+    result: Result<CircuitBreakerOutcome<PriceAcceptance>, CircuitBreakerError>,
     expected_blocking_breaker_ids: Vec<u32>,
-) -> PriceAcceptance {
+) -> CircuitBreakerOutcome<PriceAcceptance> {
     let acceptance = result.unwrap();
     assert_eq!(
-        acceptance.status,
-        PriceAcceptanceStatus::Blocked(PriceBlockedReason::BreakerTripped {
+        acceptance.value,
+        Err(PriceBlockedReason::BreakerTripped {
             blocking_breaker_ids: expected_blocking_breaker_ids,
         })
     );
@@ -77,13 +84,10 @@ fn assert_blocked_by(
 }
 
 fn assert_manually_blocked(
-    result: Result<PriceAcceptance, CircuitBreakerError>,
-) -> PriceAcceptance {
+    result: Result<CircuitBreakerOutcome<PriceAcceptance>, CircuitBreakerError>,
+) -> CircuitBreakerOutcome<PriceAcceptance> {
     let acceptance = result.unwrap();
-    assert_eq!(
-        acceptance.status,
-        PriceAcceptanceStatus::Blocked(PriceBlockedReason::ManuallyTripped)
-    );
+    assert_eq!(acceptance.value, Err(PriceBlockedReason::ManuallyTripped));
     acceptance
 }
 
@@ -255,8 +259,16 @@ fn set_adds_breakers_with_explicit_monotonic_ids() {
         max_relative_change: dec("0.10"),
     });
 
-    assert_eq!(set.add(0, breaker.clone()), Ok(()));
-    assert_eq!(set.add(1, breaker), Ok(()));
+    let result = set.add(0, breaker.clone()).unwrap();
+    assert!(matches!(
+        result.events.as_slice(),
+        [CircuitBreakerEvent::Added { breaker_id: 0, .. }]
+    ));
+    let result = set.add(1, breaker).unwrap();
+    assert!(matches!(
+        result.events.as_slice(),
+        [CircuitBreakerEvent::Added { breaker_id: 1, .. }]
+    ));
     assert_eq!(set.next_id(), 2);
     assert!(set.breakers().contains_key(&0));
     assert!(set.breakers().contains_key(&1));
@@ -272,11 +284,17 @@ fn set_accepts_custom_rule_type() {
         }
     }
 
-    let mut set = CircuitBreakerSet::<AlwaysTrips>::new(CircuitBreakerSetConfig {
+    let mut breakers = BTreeMap::new();
+    breakers.insert(0, CircuitBreakerState::new(AlwaysTrips));
+    let mut set = CircuitBreakerSet::try_from(UncheckedCircuitBreakerSet {
         sample_interval_ns: Nanoseconds::zero(),
-        history_len: 1,
-    });
-    set.add(0, AlwaysTrips).unwrap();
+        accepted_history: RingBuffer::new(1),
+        observed_history: RingBuffer::new(1),
+        next_id: 1,
+        is_manually_tripped: false,
+        breakers,
+    })
+    .unwrap();
 
     assert_blocked_by(
         set.try_accept_price(price(100), Nanoseconds::from_secs(1)),
@@ -416,9 +434,14 @@ fn future_armed_breaker_records_history_without_tripping() {
         }),
     )
     .unwrap();
-    set.get_mut(id).unwrap().status = CircuitBreakerStatus::ArmedAfter {
-        timestamp_ns: Nanoseconds::from_secs(10),
-    };
+    set.update(
+        id,
+        CircuitBreakerUpdate::Rearm {
+            armed_after_ns: Nanoseconds::from_secs(10),
+            accepted_history_source: AcceptedHistorySource::Empty,
+        },
+    )
+    .unwrap();
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
@@ -454,7 +477,7 @@ fn set_returns_tripped_for_new_and_existing_trips() {
     assert_eq!(acceptance.events.len(), 1);
     assert!(matches!(
         acceptance.events[0],
-        CircuitBreakerEvent::CircuitBreakerTripped {
+        CircuitBreakerEvent::Tripped {
             breaker_id,
             is_enforced: true,
             ..
@@ -562,7 +585,11 @@ fn unenforced_and_tripped_breakers_still_record_history() {
     )
     .unwrap();
 
-    set.get_mut(unenforced_id).unwrap().is_enforced = false;
+    set.update(
+        unenforced_id,
+        CircuitBreakerUpdate::SetEnforced { is_enforced: false },
+    )
+    .unwrap();
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
@@ -574,7 +601,7 @@ fn unenforced_and_tripped_breakers_still_record_history() {
     assert_eq!(acceptance.events.len(), 2);
     assert!(matches!(
         acceptance.events[0],
-        CircuitBreakerEvent::CircuitBreakerTripped {
+        CircuitBreakerEvent::Tripped {
             breaker_id,
             is_enforced: false,
             ..
@@ -582,7 +609,7 @@ fn unenforced_and_tripped_breakers_still_record_history() {
     ));
     assert!(matches!(
         acceptance.events[1],
-        CircuitBreakerEvent::CircuitBreakerTripped {
+        CircuitBreakerEvent::Tripped {
             breaker_id,
             is_enforced: true,
             ..
@@ -610,18 +637,19 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
     )
     .unwrap();
 
-    set.get_mut(id).unwrap().is_enforced = false;
+    set.update(id, CircuitBreakerUpdate::SetEnforced { is_enforced: false })
+        .unwrap();
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
     let acceptance = set
         .try_accept_price(price(120), Nanoseconds::from_secs(2))
         .unwrap();
-    assert!(acceptance.is_accepted());
+    assert!(acceptance.value.is_ok());
     assert_eq!(acceptance.events.len(), 1);
     assert!(matches!(
         acceptance.events[0],
-        CircuitBreakerEvent::CircuitBreakerTripped {
+        CircuitBreakerEvent::Tripped {
             breaker_id,
             is_enforced: false,
             ..
@@ -636,7 +664,8 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
     ));
     assert!(!set.is_blocking());
 
-    set.get_mut(id).unwrap().is_enforced = true;
+    set.update(id, CircuitBreakerUpdate::SetEnforced { is_enforced: true })
+        .unwrap();
 
     assert!(set.is_blocking());
     assert_blocked_by(
@@ -663,13 +692,16 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
         set.try_accept_price(price(120), Nanoseconds::from_secs(2)),
         vec![id],
     );
-    {
-        let breaker = set.get_mut(id).unwrap();
-        breaker.is_enforced = false;
-        breaker.status = CircuitBreakerStatus::ArmedAfter {
-            timestamp_ns: Nanoseconds::zero(),
-        };
-    }
+    set.update(id, CircuitBreakerUpdate::SetEnforced { is_enforced: false })
+        .unwrap();
+    set.update(
+        id,
+        CircuitBreakerUpdate::Rearm {
+            armed_after_ns: Nanoseconds::zero(),
+            accepted_history_source: AcceptedHistorySource::Empty,
+        },
+    )
+    .unwrap();
 
     let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
@@ -685,7 +717,7 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
 #[test]
 fn manual_trip_override_blocks_set_without_tripping_breaker() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
-    set.set_manual_trip(true);
+    set.set_manual_trip(true, actor_id(), None);
 
     assert!(set.is_blocking());
     assert_manually_blocked(set.try_accept_price(price(100), Nanoseconds::from_secs(5)));
@@ -696,10 +728,17 @@ fn manual_trip_override_blocks_set_without_tripping_breaker() {
 #[test]
 fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("10"),
+        }),
+    )
+    .unwrap();
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
-    set.set_manual_trip(true);
+    set.set_manual_trip(true, actor_id(), None);
     assert_manually_blocked(set.try_accept_price(price(200), Nanoseconds::from_secs(2)));
 
     assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
@@ -712,10 +751,24 @@ fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
         vec![100, 200]
     );
 
-    set.clear_accepted_history();
+    set.update(
+        0,
+        CircuitBreakerUpdate::Rearm {
+            armed_after_ns: Nanoseconds::zero(),
+            accepted_history_source: AcceptedHistorySource::Empty,
+        },
+    )
+    .unwrap();
     assert!(set.accepted_history().is_empty());
 
-    set.seed_accepted_history_from_observed();
+    set.update(
+        0,
+        CircuitBreakerUpdate::Rearm {
+            armed_after_ns: Nanoseconds::zero(),
+            accepted_history_source: AcceptedHistorySource::Observed,
+        },
+    )
+    .unwrap();
     assert_eq!(
         set.accepted_history()
             .as_slice()

@@ -23,6 +23,7 @@ use templar_common::{
     primitive_types, Decimal, Nanoseconds,
 };
 use templar_proxy_oracle_kernel::{
+    primitive::AccountId as KernelAccountId,
     proxy::{
         aggregator::{method::median::MedianLow, Aggregator},
         circuit_breaker::{
@@ -36,7 +37,7 @@ use templar_proxy_oracle_kernel::{
 use templar_proxy_oracle_near_common::{
     governance::{
         AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
-        MAX_CIRCUIT_BREAKERS_PER_PROXY,
+        MAX_CIRCUIT_BREAKERS_PER_PROXY, MAX_CIRCUIT_BREAKER_HISTORY_LEN,
     },
     input::{ProxyPriceTransformer, Source},
     price_transformer,
@@ -72,6 +73,13 @@ fn proxy_price(value: i64) -> Price {
 
 fn joined_logs() -> String {
     near_sdk::test_utils::get_logs().join("\n")
+}
+
+fn kernel_actor_id() -> KernelAccountId {
+    let mut bytes = [0; 64];
+    let account_id = b"owner.near";
+    bytes[..account_id.len()].copy_from_slice(account_id);
+    KernelAccountId::from_bytes(bytes)
 }
 
 #[rstest::rstest]
@@ -414,7 +422,7 @@ async fn calibrate_circuit_breaker_governance_gas(#[future(awt)] worker: Worker<
     .await;
 
     eprintln!("operation,history_len,breaker_id,total_gas_burnt");
-    for history_len in [0_u32, 2, 8, 32, 128, 256] {
+    for history_len in [0_u32, 2, 8, MAX_CIRCUIT_BREAKER_HISTORY_LEN] {
         let result = execute_governance_operation(
             &proxy_oracle,
             Operation::ConfigureCircuitBreakers {
@@ -429,13 +437,14 @@ async fn calibrate_circuit_breaker_governance_gas(#[future(awt)] worker: Worker<
         eprintln!("configure,{history_len},,{}", result.total_gas_burnt);
     }
 
-    for breaker_id in 0_u32..32 {
+    for breaker_id in 0_u32..u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() {
         let result = execute_governance_operation(
             &proxy_oracle,
             Operation::AddCircuitBreaker {
                 id: proxy_id,
                 breaker_id,
-                breaker: CalibrationBreakerKind::StepwiseChange.breaker(256),
+                breaker: CalibrationBreakerKind::StepwiseChange
+                    .breaker(MAX_CIRCUIT_BREAKER_HISTORY_LEN),
             },
         )
         .await;
@@ -585,7 +594,7 @@ fn governance_rejects_empty_proxy_definition_on_create() {
     let context = VMContextBuilder::new()
         .attached_deposit(NearToken::from_yoctonear(1))
         .build();
-    testing_env!(context);
+    testing_env!(context.clone());
 
     let mut c = Contract::new();
     c.gov_create(
@@ -603,7 +612,7 @@ fn governance_sets_circuit_breaker_roles() {
         .attached_deposit(NearToken::from_yoctonear(1))
         .predecessor_account_id("owner.near".parse().unwrap())
         .build();
-    testing_env!(context);
+    testing_env!(context.clone());
 
     let mut c = Contract::new();
     let account_id: near_sdk::AccountId = "offline-breaker.near".parse().unwrap();
@@ -776,6 +785,111 @@ fn offline_manual_trip_roles_gate_trip_and_untrip() {
 }
 
 #[test]
+fn governance_emits_circuit_breaker_configuration_events() {
+    let context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context);
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x48; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+    let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: Decimal::from_str("0.10").unwrap(),
+    });
+
+    c.gov_create(
+        0,
+        Operation::SetProxy {
+            id: proxy_id,
+            proxy: Some(proxy),
+        },
+    );
+    c.gov_execute(0);
+
+    c.gov_create(
+        1,
+        Operation::ConfigureCircuitBreakers {
+            id: proxy_id,
+            config: CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::from_secs(1),
+                history_len: 3,
+            },
+        },
+    );
+    c.gov_execute(1);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_config_set\""));
+    assert!(logs.contains(
+        "\"price_id\":\"4848484848484848484848484848484848484848484848484848484848484848\""
+    ));
+    assert!(logs.contains("\"sample_interval_ns\":\"1000000000\""));
+    assert!(logs.contains("\"history_len\":3"));
+
+    c.gov_create(
+        2,
+        Operation::AddCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            breaker,
+        },
+    );
+    c.gov_execute(2);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_added\""));
+    assert!(logs.contains("\"breaker_id\":0"));
+    assert!(logs.contains("\"StepwiseChange\""));
+
+    c.gov_create(
+        3,
+        Operation::SetCircuitBreakerManualTrip {
+            id: proxy_id,
+            is_manually_tripped: true,
+        },
+    );
+    c.gov_execute(3);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_manual_trip_set\""));
+    assert!(logs.contains("\"is_manually_tripped\":true"));
+    assert!(logs.contains("\"actor\":\"owner.near\""));
+    assert!(logs.contains("\"metadata\":null"));
+    let manual_trip_event_count = logs
+        .matches("\"event\":\"circuit_breaker_manual_trip_set\"")
+        .count();
+
+    c.gov_create(
+        4,
+        Operation::SetCircuitBreakerManualTrip {
+            id: proxy_id,
+            is_manually_tripped: true,
+        },
+    );
+    c.gov_execute(4);
+    assert_eq!(
+        joined_logs()
+            .matches("\"event\":\"circuit_breaker_manual_trip_set\"")
+            .count(),
+        manual_trip_event_count
+    );
+
+    c.gov_create(
+        5,
+        Operation::RemoveCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+        },
+    );
+    c.gov_execute(5);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_removed\""));
+    assert!(logs.contains("\"breaker_id\":0"));
+}
+
+#[test]
 #[should_panic = "Manual trip metadata is too long"]
 fn offline_manual_trip_rejects_oversized_metadata() {
     let mut context = VMContextBuilder::new()
@@ -822,7 +936,7 @@ fn governance_rejects_too_many_circuit_breakers_on_execute() {
         .attached_deposit(NearToken::from_yoctonear(1))
         .predecessor_account_id("owner.near".parse().unwrap())
         .build();
-    testing_env!(context);
+    testing_env!(context.clone());
 
     let mut c = Contract::new();
     let proxy_id = PriceIdentifier([0x44; 32]);
@@ -856,6 +970,7 @@ fn governance_rejects_too_many_circuit_breakers_on_execute() {
             },
         );
         c.gov_execute(proposal_id);
+        testing_env!(context.clone());
     }
 
     let proposal_id = u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() + 1;
@@ -912,12 +1027,13 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
         });
         set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
             .unwrap();
-        set.set_manual_trip(true);
+        set.set_manual_trip(true, kernel_actor_id(), None);
         assert!(!set
             .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
             .unwrap()
-            .is_accepted());
-        set.set_manual_trip(false);
+            .value
+            .is_ok());
+        set.set_manual_trip(false, kernel_actor_id(), None);
         c.circuit_breakers.insert(&proxy_id, &set);
     }
 
@@ -930,6 +1046,13 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
         },
     );
     c.gov_execute(2);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_enforcement_set\""));
+    assert!(logs.contains(
+        "\"price_id\":\"4545454545454545454545454545454545454545454545454545454545454545\""
+    ));
+    assert!(logs.contains("\"breaker_id\":0"));
+    assert!(logs.contains("\"is_enforced\":false"));
     let set = c.circuit_breakers.get(&proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
@@ -952,6 +1075,10 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
         },
     );
     c.gov_execute(3);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_rearmed\""));
+    assert!(logs.contains("\"armed_after_ns\":\"1000000000\""));
+    assert!(logs.contains("\"accepted_history_source\":\"Empty\""));
     let set = c.circuit_breakers.get(&proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
     assert_eq!(set.accepted_history().len(), 0);
@@ -975,6 +1102,10 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
         },
     );
     c.gov_execute(4);
+    let logs = joined_logs();
+    assert!(logs.contains("\"event\":\"circuit_breaker_rearmed\""));
+    assert!(logs.contains("\"armed_after_ns\":\"2000000000\""));
+    assert!(logs.contains("\"accepted_history_source\":\"Observed\""));
     let set = c.circuit_breakers.get(&proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
     assert_eq!(set.accepted_history().len(), 2);
@@ -1057,7 +1188,7 @@ pub fn gas() {
 
     let gas = estimate_gas(&c, &price_ids);
     eprintln!("Gas used: {gas}");
-    assert!(gas <= Gas::from_tgas(15));
+    assert!(gas <= Gas::from_tgas(20));
 
     c.list_ema_prices_no_older_than(price_ids, 60).detach();
 

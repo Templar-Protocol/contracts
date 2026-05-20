@@ -18,11 +18,11 @@ use templar_common::{
     Decimal, Nanoseconds,
 };
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{CircuitBreakerEvent, CircuitBreakerSet},
+    circuit_breaker::{CircuitBreakerOutcome, CircuitBreakerSet},
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
-    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
+    convert::{account_id_to_kernel, pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
     input::Source,
     request::OracleRequest,
@@ -36,22 +36,11 @@ mod impl_governance;
 
 type State = state::v2::State;
 
-fn emit_circuit_breaker_event(price_id: PriceIdentifier, event: CircuitBreakerEvent) {
-    match event {
-        CircuitBreakerEvent::CircuitBreakerTripped {
-            breaker_id,
-            tripped_at_ns,
-            price_update,
-            is_enforced,
-        } => Event::CircuitBreakerTripped {
-            price_id,
-            breaker_id,
-            tripped_at_ns,
-            price_update,
-            is_enforced,
-        }
-        .emit(),
+pub(crate) fn emit_outcome<T>(price_id: PriceIdentifier, outcome: CircuitBreakerOutcome<T>) -> T {
+    for event in outcome.events {
+        Event::from_kernel(price_id, event).emit();
     }
+    outcome.value
 }
 
 #[derive(Debug, Owner, Rbac, PanicOnDefault)]
@@ -139,20 +128,17 @@ impl Contract {
             .get(&id)
             .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
 
-        if set.is_manually_tripped() == is_manually_tripped {
+        let result = set.set_manual_trip(
+            is_manually_tripped,
+            account_id_to_kernel(env::predecessor_account_id().as_ref()),
+            metadata.map(|metadata| metadata.0),
+        );
+        if result.events.is_empty() {
             return;
         }
 
-        set.set_manual_trip(is_manually_tripped);
         self.circuit_breakers.insert(&id, &set);
-
-        Event::CircuitBreakerManualTripSet {
-            price_id: id,
-            is_manually_tripped,
-            actor: env::predecessor_account_id(),
-            metadata,
-        }
-        .emit();
+        emit_outcome(id, result);
     }
 
     // impl Pyth:
@@ -258,7 +244,7 @@ impl Contract {
         )
     }
 
-    pub const GAS_FOR_LIST_01_CALLBACK: Gas = Gas::from_tgas(19).saturating_div(10);
+    pub const GAS_FOR_LIST_01_CALLBACK: Gas = Gas::from_tgas(10);
     #[private]
     #[allow(
         unused_mut,
@@ -302,22 +288,17 @@ impl Contract {
                 .unwrap_or_else(CircuitBreakerSet::empty);
             let result = proxy.resolve(&mut set, prices, now);
             self.circuit_breakers.insert(&price_id, &set);
-            if let Ok(resolution) = &result {
-                for event in resolution.acceptance.events.clone() {
-                    emit_circuit_breaker_event(price_id, event);
+            let result = match result {
+                Ok(resolution) => emit_outcome(price_id, resolution).ok(),
+                Err(error) => {
+                    near_sdk::log!(
+                        "Proxy resolve failed price_id={:?} error={}",
+                        price_id,
+                        error
+                    );
+                    None
                 }
-            }
-
-            if let Err(error) = &result {
-                near_sdk::log!(
-                    "Proxy resolve failed price_id={:?} error={}",
-                    price_id,
-                    error
-                );
-            }
-            let result = result
-                .ok()
-                .and_then(|resolution| resolution.accepted_price());
+            };
 
             results.insert(
                 price_id,

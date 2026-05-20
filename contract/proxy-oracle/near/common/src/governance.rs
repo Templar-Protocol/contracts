@@ -2,6 +2,9 @@ use near_sdk::{near, AccountId};
 use templar_common::{
     gen_ext_governance, governance::Validatable, oracle::pyth::PriceIdentifier, Nanoseconds,
 };
+pub use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
+    AcceptedHistorySource, CircuitBreakerUpdate,
+};
 use templar_proxy_oracle_kernel::proxy::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
@@ -11,34 +14,6 @@ use crate::{input::Source, role::Role};
 
 pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
 pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub enum AcceptedHistorySource {
-    /// Re-arm with empty accepted history.
-    Empty,
-    /// Re-arm by copying observed history into accepted history.
-    Observed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
-pub enum CircuitBreakerUpdate {
-    /// Controls whether this breaker blocks the feed when tripped.
-    ///
-    /// Non-enforced breakers still evaluate and can become tripped while the set has no existing
-    /// blocking trip; they just do not make the containing set block price resolution.
-    SetEnforced { is_enforced: bool },
-    /// Re-arm the breaker at an absolute timestamp.
-    ///
-    /// `armed_after_ns = 0` is the canonical immediately-armed value. This does not change
-    /// enforcement. Operators must explicitly choose whether accepted history starts empty or from
-    /// observed history collected during the incident.
-    Rearm {
-        armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]

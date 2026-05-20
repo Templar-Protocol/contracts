@@ -1,18 +1,14 @@
 use near_sdk::{assert_one_yocto, env, near, require};
 use near_sdk_contract_tools::{owner::Owner, rbac::Rbac};
 use templar_common::{contract::list, governance::Proposal, Nanoseconds, UnwrapReject};
-use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
-    CircuitBreakerSet, CircuitBreakerStatus,
-};
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
 use templar_proxy_oracle_near_common::{
+    convert::account_id_to_kernel,
     event::Event,
-    governance::{
-        AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
-        MAX_CIRCUIT_BREAKERS_PER_PROXY,
-    },
+    governance::{Operation, ProxyGovernanceInterface, MAX_CIRCUIT_BREAKERS_PER_PROXY},
 };
 
-use crate::{Contract, ContractExt};
+use crate::{emit_outcome, Contract, ContractExt};
 
 #[near]
 impl ProxyGovernanceInterface for Contract {
@@ -107,8 +103,9 @@ impl ProxyGovernanceInterface for Contract {
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(CircuitBreakerSet::empty);
-                set.set_config(config);
+                let result = set.set_config(config);
                 self.circuit_breakers.insert(&id, &set);
+                emit_outcome(id, result);
             }
             Operation::SetCircuitBreakerManualTrip {
                 id,
@@ -119,8 +116,13 @@ impl ProxyGovernanceInterface for Contract {
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(CircuitBreakerSet::empty);
-                set.set_manual_trip(is_manually_tripped);
+                let result = set.set_manual_trip(
+                    is_manually_tripped,
+                    account_id_to_kernel(env::predecessor_account_id().as_ref()),
+                    None,
+                );
                 self.circuit_breakers.insert(&id, &set);
+                emit_outcome(id, result);
             }
             Operation::AddCircuitBreaker {
                 id,
@@ -136,16 +138,18 @@ impl ProxyGovernanceInterface for Contract {
                     set.breaker_count() < MAX_CIRCUIT_BREAKERS_PER_PROXY,
                     "Too many circuit breakers"
                 );
-                set.add(breaker_id, breaker).unwrap_or_reject();
+                let result = set.add(breaker_id, breaker).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
+                emit_outcome(id, result);
             }
             Operation::RemoveCircuitBreaker { id, breaker_id } => {
                 let mut set = self
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-                set.remove(breaker_id).unwrap_or_reject();
+                let result = set.remove(breaker_id).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
+                emit_outcome(id, result);
             }
             Operation::UpdateCircuitBreaker {
                 id,
@@ -156,28 +160,9 @@ impl ProxyGovernanceInterface for Contract {
                     .circuit_breakers
                     .get(&id)
                     .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-                match update {
-                    CircuitBreakerUpdate::SetEnforced { is_enforced } => {
-                        let breaker = set.get_mut(breaker_id).unwrap_or_reject();
-                        breaker.is_enforced = is_enforced;
-                    }
-                    CircuitBreakerUpdate::Rearm {
-                        armed_after_ns,
-                        accepted_history_source,
-                    } => {
-                        let breaker = set.get_mut(breaker_id).unwrap_or_reject();
-                        breaker.status = CircuitBreakerStatus::ArmedAfter {
-                            timestamp_ns: armed_after_ns,
-                        };
-                        match accepted_history_source {
-                            AcceptedHistorySource::Empty => set.clear_accepted_history(),
-                            AcceptedHistorySource::Observed => {
-                                set.seed_accepted_history_from_observed();
-                            }
-                        }
-                    }
-                }
+                let result = set.update(breaker_id, update).unwrap_or_reject();
                 self.circuit_breakers.insert(&id, &set);
+                emit_outcome(id, result);
             }
         }
     }

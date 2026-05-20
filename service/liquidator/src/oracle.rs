@@ -858,7 +858,7 @@ impl OracleFetcher {
             let aggregated = proxy
                 .resolve(&mut set, prices, now)
                 .ok()
-                .and_then(|resolution| resolution.accepted_price());
+                .and_then(|resolution| resolution.value.ok());
             result.insert(
                 price_id,
                 aggregated.as_ref().and_then(pyth_price_try_from_kernel),

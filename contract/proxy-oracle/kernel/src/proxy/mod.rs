@@ -2,15 +2,15 @@ pub mod aggregator;
 pub mod circuit_breaker;
 pub mod freshness_filter;
 
-#[cfg(feature = "schemars")]
-use alloc::borrow::ToOwned;
 #[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::{format, string::ToString};
 
 use crate::Price;
 use aggregator::method::Aggregate;
 pub use aggregator::Aggregator;
-use circuit_breaker::{CircuitBreakerRule, CircuitBreakerSet, PriceAcceptance};
+use circuit_breaker::{
+    CircuitBreakerOutcome, CircuitBreakerRule, CircuitBreakerSet, PriceAcceptance,
+};
 pub use freshness_filter::FreshnessFilter;
 
 use templar_primitives::time::Nanoseconds;
@@ -52,21 +52,6 @@ impl core::fmt::Display for ResolveError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for ResolveError {}
-
-serialize! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct ProxyResolution {
-        pub price: Price,
-        pub acceptance: PriceAcceptance,
-    }
-}
-
-impl ProxyResolution {
-    #[must_use]
-    pub fn accepted_price(&self) -> Option<Price> {
-        self.acceptance.is_accepted().then_some(self.price)
-    }
-}
 
 impl<S> WeightedSource<S> {
     pub fn new(source: impl Into<S>, weight: u32) -> Self {
@@ -125,7 +110,7 @@ impl<S> Proxy<S> {
         circuit_breakers: &mut CircuitBreakerSet<R>,
         prices: I,
         now: Nanoseconds,
-    ) -> Result<ProxyResolution, ResolveError>
+    ) -> Result<CircuitBreakerOutcome<PriceAcceptance>, ResolveError>
     where
         I: IntoIterator<Item = Option<Price>>,
         I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
@@ -133,7 +118,7 @@ impl<S> Proxy<S> {
     {
         let price = self.aggregate(prices, now)?;
         let acceptance = circuit_breakers.try_accept_price(price, now)?;
-        Ok(ProxyResolution { price, acceptance })
+        Ok(acceptance)
     }
 
     fn aggregate<I>(&self, prices: I, now: Nanoseconds) -> Result<Price, aggregator::method::Error>
@@ -160,8 +145,8 @@ mod tests {
         proxy::{
             aggregator::method::{median::MedianLow, Error},
             circuit_breaker::{
-                CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig, PriceAcceptanceStatus,
-                PriceBlockedReason, StepwiseChange,
+                CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig, PriceBlockedReason,
+                StepwiseChange,
             },
             Aggregator, FreshnessFilter, Proxy, ResolveError, WeightedSource,
         },
@@ -280,7 +265,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            result.accepted_price().unwrap().price,
+            result.value.unwrap().price,
             if included { 1_000_000 } else { 9_999_999 }
         );
     }
@@ -313,7 +298,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            result.accepted_price().unwrap().price,
+            result.value.unwrap().price,
             if included { 1_000_000 } else { 9_999_999 }
         );
     }
@@ -346,7 +331,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result.accepted_price().unwrap().price, 2_000_000);
+        assert_eq!(result.value.unwrap().price, 2_000_000);
     }
 
     #[test]
@@ -363,7 +348,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result.accepted_price().unwrap().price, 2_000_000);
+        assert_eq!(result.value.unwrap().price, 2_000_000);
     }
 
     #[test]
@@ -398,7 +383,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result.accepted_price().unwrap().price, 9_999_999);
+        assert_eq!(result.value.unwrap().price, 9_999_999);
     }
 
     #[test]
@@ -433,15 +418,13 @@ mod tests {
                 now,
             )
             .unwrap();
-        assert_eq!(resolution.price.price, 120);
-        assert_eq!(resolution.accepted_price(), None);
         assert_eq!(
-            resolution.acceptance.status,
-            PriceAcceptanceStatus::Blocked(PriceBlockedReason::BreakerTripped {
+            resolution.value,
+            Err(PriceBlockedReason::BreakerTripped {
                 blocking_breaker_ids: vec![breaker_id]
             })
         );
-        assert_eq!(resolution.acceptance.events.len(), 1);
+        assert_eq!(resolution.events.len(), 1);
 
         let resolution = proxy
             .resolve(
@@ -450,15 +433,13 @@ mod tests {
                 now,
             )
             .unwrap();
-        assert_eq!(resolution.price.price, 130);
-        assert_eq!(resolution.accepted_price(), None);
         assert_eq!(
-            resolution.acceptance.status,
-            PriceAcceptanceStatus::Blocked(PriceBlockedReason::BreakerTripped {
+            resolution.value,
+            Err(PriceBlockedReason::BreakerTripped {
                 blocking_breaker_ids: vec![breaker_id]
             })
         );
-        assert!(resolution.acceptance.events.is_empty());
+        assert!(resolution.events.is_empty());
 
         assert_eq!(circuit_breakers.accepted_history().len(), 1);
         assert_eq!(
