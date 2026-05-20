@@ -572,13 +572,20 @@ fn refresh_markets_impl(
 
 fn set_governance_config_impl(
     env: &Env,
-    _caller: soroban_sdk::Address,
+    caller: soroban_sdk::Address,
     kind: u32,
     primary: Option<soroban_sdk::Address>,
     many: Option<soroban_sdk::Vec<soroban_sdk::Address>>,
     value_a: Option<i128>,
     value_b: Option<i128>,
+    caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
+    if caller_preauthorized {
+        ensure_governance_identity(env, &caller)?;
+    } else {
+        require_governance(env, &caller)?;
+    }
+
     match kind {
         GOVERNANCE_CONFIG_KIND_CURATOR => apply_curator_config(env, required_address(primary)?),
         GOVERNANCE_CONFIG_KIND_GOVERNANCE => {
@@ -691,9 +698,16 @@ fn set_governance_policy_impl(
 
 fn skim_impl(
     env: &Env,
-    _caller: soroban_sdk::Address,
+    caller: soroban_sdk::Address,
     token: soroban_sdk::Address,
+    caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
+    if caller_preauthorized {
+        ensure_governance_identity(env, &caller)?;
+    } else {
+        require_governance(env, &caller)?;
+    }
+
     let asset = get_config_address(env, &VaultDataKey::AssetToken)?;
     let share = get_config_address(env, &VaultDataKey::ShareToken)?;
     if token == asset || token == share {
@@ -851,7 +865,16 @@ fn execute_governance_command(
                 .as_ref()
                 .map(|values| addresses_from_alloc_strings(env, values))
                 .transpose()?;
-            set_governance_config_impl(env, caller, kind, primary, many, value_a, value_b)
+            set_governance_config_impl(
+                env,
+                caller,
+                kind,
+                primary,
+                many,
+                value_a,
+                value_b,
+                caller_preauthorized,
+            )
         }
         GovernanceCommand::SetGovernancePolicy {
             kind,
@@ -893,9 +916,12 @@ fn execute_governance_command(
                 caller_preauthorized,
             )
         }
-        GovernanceCommand::Skim { token } => {
-            skim_impl(env, caller, address_from_alloc_string(env, &token)?)
-        }
+        GovernanceCommand::Skim { token } => skim_impl(
+            env,
+            caller,
+            address_from_alloc_string(env, &token)?,
+            caller_preauthorized,
+        ),
     }
 }
 #[contract]

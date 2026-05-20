@@ -1961,7 +1961,7 @@ mod market_tests {
 }
 
 mod storage_tests {
-    use crate::contract::helpers::set_config_address;
+    use crate::contract::helpers::{get_config_address, set_config_address};
     use crate::contract::SorobanVaultContract;
     use crate::error::RuntimeError;
     use crate::storage::{SorobanStorage, SorobanStorageKey, Storage};
@@ -2705,6 +2705,116 @@ mod storage_tests {
                     .market_config(7)
                     .and_then(|config| config.cap_group_id.clone()),
                 None
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_governance_rejects_sentinel_for_governance_only_commands() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let sentinel = SdkAddress::generate(&env);
+        let asset = SdkAddress::generate(&env);
+        let share = SdkAddress::generate(&env);
+        let replacement_governance = SdkAddress::generate(&env);
+        let skim_token = env
+            .register_stellar_asset_contract_v2(curator.clone())
+            .address();
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(&env, &crate::contract::VaultDataKey::Sentinel, &sentinel);
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::SkimRecipient,
+                &governance,
+            );
+        });
+
+        let sentinel_config = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &sentinel,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::SetGovernanceConfig {
+                        kind: GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+                        primary: Some(sdk_text(&replacement_governance)),
+                        many: None,
+                        value_a: None,
+                        value_b: None,
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            sentinel_config,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                get_config_address(&env, &crate::contract::VaultDataKey::Governance).unwrap(),
+                governance
+            );
+        });
+
+        let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &skim_token);
+        token_admin.mint(&contract_id, &10);
+        let sentinel_skim = env.try_invoke_contract::<(), crate::error::ContractError>(
+            &contract_id,
+            &Symbol::new(&env, "execute_governance"),
+            (
+                &sentinel,
+                &Bytes::from_slice(
+                    &env,
+                    &GovernanceCommand::Skim {
+                        token: sdk_text(&skim_token),
+                    }
+                    .encode(),
+                ),
+            )
+                .into_val(&env),
+        );
+        assert_eq!(
+            sentinel_skim,
+            Err(Ok(crate::error::ContractError::Unauthorized))
+        );
+        let token_client = soroban_sdk::token::Client::new(&env, &skim_token);
+        assert_eq!(token_client.balance(&contract_id), 10);
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+                primary: Some(sdk_text(&replacement_governance)),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                get_config_address(&env, &crate::contract::VaultDataKey::Governance).unwrap(),
+                replacement_governance
             );
         });
     }
