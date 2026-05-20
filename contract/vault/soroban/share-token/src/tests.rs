@@ -1,4 +1,5 @@
 use super::*;
+use soroban_sdk::testutils::storage::Instance;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::{Events, Ledger, LedgerInfo};
 use soroban_sdk::xdr::{ContractEventBody, ScVal};
@@ -522,6 +523,24 @@ fn read_only_entrypoints_cover_share_token_ttl_maintenance_surface() {
     assert_eq!(name, String::from_str(&env, "Templar Share"));
     assert_eq!(symbol, String::from_str(&env, "tvSHARE"));
     assert_eq!(decimals, 7);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        sequence_number: 2_592_100,
+        max_entry_ttl: 3_110_400,
+        ..Default::default()
+    });
+    let ttl_before_read = env.as_contract(&token, || env.storage().instance().get_ttl());
+    let refreshed_supply: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "total_supply"),
+        ().into_val(&env),
+    );
+    let ttl_after_read = env.as_contract(&token, || env.storage().instance().get_ttl());
+
+    assert_eq!(refreshed_supply, 1000);
+    assert!(ttl_after_read > ttl_before_read);
 }
 
 #[test]
