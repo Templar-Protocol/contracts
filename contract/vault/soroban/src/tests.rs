@@ -3000,6 +3000,83 @@ mod storage_tests {
     }
 
     #[test]
+    fn test_governance_rejects_supply_queue_reuse_of_non_contract_binding() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let non_contract_adapter = account_address(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let policy_state = policy_state_with_supply_queue(&[1]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_test_adapter_bindings(&env, &[(1, non_contract_adapter)]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1]),
+                    mode: None,
+                    accounts: None,
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_governance_rejects_supply_queue_reuse_of_disallowed_binding() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let allowed_adapter = adapter_contract(&env);
+        let stale_adapter = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let policy_state = policy_state_with_supply_queue(&[1]);
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(&env, &[allowed_adapter]);
+            store_test_adapter_bindings(&env, &[(1, stale_adapter.clone())]);
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1]),
+                    mode: None,
+                    accounts: None,
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+
+            assert_eq!(
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload),
+                Err(ContractError::InvalidInput)
+            );
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), stale_adapter);
+        });
+    }
+
+    #[test]
     fn test_governance_supply_queue_reorder_does_not_require_adapters() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
@@ -3013,6 +3090,13 @@ mod storage_tests {
             let mut storage = SorobanStorage::new(&env);
             let policy_state = policy_state_with_supply_queue(&[1, 2]);
             Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(
+                &env,
+                &[
+                    adapter_for_market_one.clone(),
+                    adapter_for_market_two.clone(),
+                ],
+            );
             store_test_adapter_bindings(
                 &env,
                 &[
@@ -3057,6 +3141,13 @@ mod storage_tests {
             let mut storage = SorobanStorage::new(&env);
             let policy_state = policy_state_with_supply_queue(&[1, 2]);
             Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(
+                &env,
+                &[
+                    adapter_for_market_one.clone(),
+                    adapter_for_market_two.clone(),
+                ],
+            );
             store_test_adapter_bindings(
                 &env,
                 &[

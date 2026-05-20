@@ -149,6 +149,18 @@ fn apply_supply_queue_policy(
                     return Err(ContractError::InvalidInput);
                 }
             }
+            require_contract_address(&existing_adapter)?;
+            let allowed = allowed_adapters
+                .as_ref()
+                .map(|allowed| {
+                    allowed
+                        .iter()
+                        .any(|candidate| candidate == existing_adapter)
+                })
+                .unwrap_or(false);
+            if !allowed {
+                return Err(ContractError::InvalidInput);
+            }
         } else {
             let adapter = proposed_adapter.ok_or(ContractError::InvalidInput)?;
             require_contract_address(&adapter)?;
