@@ -44,6 +44,7 @@ enum ProposalKey {
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum GovernanceActionKey {
+    Admin,
     Pause,
     Curator,
     Governance,
@@ -71,6 +72,7 @@ enum GovernanceActionKey {
 impl GovernanceAction {
     fn pending_key(&self) -> GovernanceActionKey {
         match self {
+            Self::SetAdmin(_) => GovernanceActionKey::Admin,
             Self::SetPaused(_) => GovernanceActionKey::Pause,
             Self::SetCurator(_) => GovernanceActionKey::Curator,
             Self::SetGovernance(_) => GovernanceActionKey::Governance,
@@ -168,6 +170,14 @@ impl SorobanVaultGovernanceContract {
         paused: bool,
     ) -> Result<u64, GovernanceError> {
         Self::submit(env, caller, GovernanceAction::SetPaused(paused))
+    }
+
+    pub fn submit_set_admin(
+        env: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetAdmin(new_admin))
     }
 
     pub fn submit_set_curator(
@@ -687,6 +697,7 @@ impl SorobanVaultGovernanceContract {
 
 fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
     match action {
+        GovernanceAction::SetAdmin(_) => GovernanceActionKind::Admin,
         GovernanceAction::SetPaused(_) => GovernanceActionKind::Pause,
         GovernanceAction::SetCurator(_) => GovernanceActionKind::Curator,
         GovernanceAction::SetGovernance(_) => GovernanceActionKind::Governance,
@@ -715,6 +726,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
 
 fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
     match action {
+        GovernanceAction::SetAdmin(_) => TimelockKind::Admin,
         GovernanceAction::SetPaused(_) => TimelockKind::Pause,
         GovernanceAction::SetCurator(_) => TimelockKind::Curator,
         GovernanceAction::SetGovernance(_) => TimelockKind::Governance,
@@ -789,6 +801,13 @@ fn decide_submission(
     action: &GovernanceAction,
 ) -> Result<TimelockDecision, GovernanceError> {
     match action {
+        GovernanceAction::SetAdmin(new_admin) => {
+            let current = get_address(env, DataKey::Admin)?;
+            if &current == new_admin {
+                return Err(GovernanceError::NoChange);
+            }
+            Ok(TimelockDecision::Timelocked)
+        }
         GovernanceAction::SetPaused(paused) => {
             if *paused {
                 return Err(GovernanceError::InvalidInput);
@@ -900,6 +919,13 @@ fn decide_submission(
         }
         GovernanceAction::RemoveMarket(_) => Ok(TimelockDecision::from_requires_timelock(true)),
         GovernanceAction::SetGroupCap(cap_group_id, new_cap) => {
+            let known: Option<bool> = env
+                .storage()
+                .instance()
+                .get(&DataKey::KnownCapGroupCap(cap_group_id.clone()));
+            if known != Some(true) {
+                return Ok(TimelockDecision::Timelocked);
+            }
             let current: Option<i128> = env
                 .storage()
                 .instance()
@@ -914,6 +940,13 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupRelCap(cap_group_id, new_relative_cap_wad) => {
+            let known: Option<bool> = env
+                .storage()
+                .instance()
+                .get(&DataKey::KnownCapGroupRelCap(cap_group_id.clone()));
+            if known != Some(true) {
+                return Ok(TimelockDecision::Timelocked);
+            }
             let current: Option<i128> = env
                 .storage()
                 .instance()
@@ -931,6 +964,13 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            let known: Option<bool> = env
+                .storage()
+                .instance()
+                .get(&DataKey::KnownCapGroupMembership(*market_id));
+            if known != Some(true) {
+                return Ok(TimelockDecision::Timelocked);
+            }
             let current: Option<String> = env
                 .storage()
                 .instance()
@@ -1125,6 +1165,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
     let vault = get_address(env, DataKey::Vault)?;
 
     match action {
+        GovernanceAction::SetAdmin(new_admin) => {
+            env.storage().instance().set(&DataKey::Admin, new_admin);
+        }
         GovernanceAction::SetPaused(paused) => {
             execute_vault_governance_action(env, &vault, action)?;
             env.storage()
@@ -1179,6 +1222,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             env.storage()
                 .instance()
                 .set(&DataKey::CurrentCapGroupCap(cap_group_id.clone()), cap);
+            env.storage()
+                .instance()
+                .set(&DataKey::KnownCapGroupCap(cap_group_id.clone()), &true);
         }
         GovernanceAction::SetGroupRelCap(cap_group_id, relative_cap) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1186,6 +1232,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 &DataKey::CurrentCapGroupRelCap(cap_group_id.clone()),
                 relative_cap,
             );
+            env.storage()
+                .instance()
+                .set(&DataKey::KnownCapGroupRelCap(cap_group_id.clone()), &true);
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1195,6 +1244,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             } else {
                 env.storage().instance().set(&key, cap_group_id);
             }
+            env.storage()
+                .instance()
+                .set(&DataKey::KnownCapGroupMembership(*market_id), &true);
         }
         GovernanceAction::SetSkimRecipient(recipient) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1474,6 +1526,7 @@ fn governance_payload_for_action(
         GovernanceAction::Upgrade(_)
         | GovernanceAction::Migrate
         | GovernanceAction::CancelMigration
+        | GovernanceAction::SetAdmin(_)
         | GovernanceAction::SetTimelock(_, _)
         | GovernanceAction::Other(_, _) => None,
     };
