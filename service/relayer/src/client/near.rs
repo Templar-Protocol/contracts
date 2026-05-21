@@ -47,7 +47,7 @@ use templar_proxy_oracle_near_common::{
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
-use crate::{cache::Cache, AssetResolution, MarketData, ViewMarketPrices};
+use crate::{cache::Cache, AssetResolution, MarketData, MarketOracleKind, ViewMarketPrices};
 
 pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
 pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
@@ -602,10 +602,8 @@ impl Near {
             .await?;
 
         let oracle_id = config.price_oracle_configuration.account_id.clone();
-        let updates_proxy_oracle = matches!(
-            self.query_oracle_type(oracle_id.clone()).await?,
-            OracleType::Proxy
-        );
+        let oracle_type = self.query_oracle_type(oracle_id.clone()).await?;
+        let oracle_kind = oracle_type.kind();
 
         let borrow_request = self
             .resolve_price_identifier(
@@ -623,7 +621,7 @@ impl Near {
         Ok(MarketData {
             account_id: market_id.clone(),
             oracle_id,
-            updates_proxy_oracle,
+            oracle_kind,
             price_oracle_configuration: config.price_oracle_configuration.clone(),
             collateral: AssetResolution {
                 asset: config.collateral_asset.clone(),
@@ -975,4 +973,14 @@ pub enum OracleType {
     PythDirect,
     PythLst { pyth_id: AccountId },
     Proxy,
+}
+
+impl OracleType {
+    const fn kind(&self) -> MarketOracleKind {
+        match self {
+            Self::PythDirect => MarketOracleKind::PythDirect,
+            Self::PythLst { .. } => MarketOracleKind::PythLst,
+            Self::Proxy => MarketOracleKind::Proxy,
+        }
+    }
 }

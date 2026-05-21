@@ -346,7 +346,7 @@ impl App {
                             }
                         }
                     }
-                    if market_data.updates_proxy_oracle {
+                    if market_data.oracle_kind.requires_proxy_update() {
                         proxy
                             .entry(market_data.oracle_id.clone())
                             .or_default()
@@ -874,7 +874,7 @@ mod tests {
     use tokio::{sync::Notify, time::timeout};
 
     use super::*;
-    use crate::{AccountData, AssetResolution, MarketData};
+    use crate::{AccountData, AssetResolution, MarketData, MarketOracleKind};
 
     fn account_id(value: &str) -> AccountId {
         value.parse().unwrap()
@@ -893,7 +893,7 @@ mod tests {
             MarketData {
                 account_id: market_id.clone(),
                 oracle_id: account_id("oracle.test.near"),
-                updates_proxy_oracle: false,
+                oracle_kind: MarketOracleKind::PythDirect,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: account_id("oracle.test.near"),
                     collateral_asset_price_id: price_id(1),
@@ -946,7 +946,7 @@ mod tests {
             MarketData {
                 account_id: market_a.clone(),
                 oracle_id: pyth_oracle.clone(),
-                updates_proxy_oracle: false,
+                oracle_kind: MarketOracleKind::PythDirect,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: pyth_oracle.clone(),
                     collateral_asset_price_id: price_id(1),
@@ -978,7 +978,7 @@ mod tests {
             MarketData {
                 account_id: market_b.clone(),
                 oracle_id: redstone_oracle.clone(),
-                updates_proxy_oracle: false,
+                oracle_kind: MarketOracleKind::PythDirect,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: redstone_oracle.clone(),
                     collateral_asset_price_id: price_id(3),
@@ -1034,7 +1034,7 @@ mod tests {
             MarketData {
                 account_id: market_id.clone(),
                 oracle_id: proxy_oracle.clone(),
-                updates_proxy_oracle: true,
+                oracle_kind: MarketOracleKind::Proxy,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: proxy_oracle.clone(),
                     collateral_asset_price_id: price_id(1),
@@ -1088,7 +1088,7 @@ mod tests {
             MarketData {
                 account_id: market_id.clone(),
                 oracle_id: oracle_id.clone(),
-                updates_proxy_oracle: false,
+                oracle_kind: MarketOracleKind::PythDirect,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: oracle_id,
                     collateral_asset_price_id: price_id(1),
@@ -1202,5 +1202,38 @@ mod tests {
             !proxy_started_while_redstone_blocked,
             "proxy update started before blocked redstone update completed"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_grouped_price_updates_returns_proxy_update_failures() {
+        let failed_price_id = price_id(2);
+        let result = App::dispatch_grouped_price_updates(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::from([(
+                account_id("proxy.test.near"),
+                HashSet::from([failed_price_id]),
+            )]),
+            |_, _| async { Ok(None) },
+            |_, _| async { Ok(None) },
+            move |_, _| async move {
+                Err(Arc::new(
+                    oracle::UpdateError::ProxyOracleUpdateMissingStatus {
+                        price_id: failed_price_id,
+                    },
+                ))
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(PriceUpdateError::Oracle(error))
+                if matches!(
+                    &*error,
+                    oracle::UpdateError::ProxyOracleUpdateMissingStatus { price_id }
+                        if *price_id == failed_price_id
+                )
+        ));
     }
 }

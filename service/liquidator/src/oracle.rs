@@ -403,10 +403,10 @@ impl OracleFetcher {
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
     ) -> LiquidatorResult<bool> {
-        let updates_proxy_oracle = self.is_proxy_oracle(oracle).await?;
+        let is_proxy_oracle = self.is_proxy_oracle(oracle).await?;
         let targets = self.resolve_pyth_update_targets(oracle, price_ids).await;
 
-        if targets.is_empty() && !updates_proxy_oracle {
+        if targets.is_empty() && !is_proxy_oracle {
             tracing::debug!("No Pyth targets to update on-chain");
             return Ok(false);
         }
@@ -420,13 +420,13 @@ impl OracleFetcher {
                     tracing::warn!(
                         oracle = %pyth_oracle,
                         error = %e,
-                        "Failed to update on-chain Pyth prices"
+                        "Failed to update on-chain Pyth prices; proceeding with existing on-chain state"
                     );
                 }
             }
         }
 
-        if updates_proxy_oracle {
+        if is_proxy_oracle {
             any_updated |= self.update_proxy_prices(oracle, price_ids).await?;
         }
 
