@@ -28,14 +28,14 @@ use templar_proxy_oracle_kernel::{
         aggregator::{method::median::MedianLow, Aggregator},
         circuit_breaker::{
             CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, MonotonicRun,
-            StepwiseChange, WindowedChangeDelta,
+            PriceBlockedReason, StepwiseChange, WindowedChangeDelta,
         },
         FreshnessFilter, Proxy, WeightedSource,
     },
     Price,
 };
 use templar_proxy_oracle_near_common::{
-    cache::{CachedProxyPrice, CachedProxyPriceStatus},
+    cache::CachedProxyPriceStatus,
     governance::{
         AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
         MAX_CIRCUIT_BREAKERS_PER_PROXY, MAX_CIRCUIT_BREAKER_HISTORY_LEN,
@@ -515,6 +515,177 @@ fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
     Contract::GAS_FOR_LIST_00_ENTRY
 }
 
+fn test_proxy(oracle_id: &str) -> Proxy<templar_proxy_oracle_near_common::input::Source> {
+    Proxy::median_low(
+        [OracleRequest::pyth(oracle_id.parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    )
+}
+
+fn cache_test_price(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
+    let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
+        CachedProxyPriceStatus::Accepted { price }
+    })
+    .unwrap();
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn governance_manual_trip_invalidates_cached_price() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x56; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    assert!(c.get_cached_proxy_price(proxy_id).is_some());
+
+    c.gov_create(
+        0,
+        Operation::SetCircuitBreakerManualTrip {
+            id: proxy_id,
+            is_manually_tripped: true,
+        },
+    );
+    c.gov_execute(0);
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+    assert_eq!(
+        c.list_ema_prices_no_older_than(vec![proxy_id], 60)
+            .get(&proxy_id),
+        Some(&None)
+    );
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn governance_breaker_update_invalidates_cached_price() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x57; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.gov_create(
+        0,
+        Operation::ConfigureCircuitBreakers {
+            id: proxy_id,
+            config: CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 3,
+            },
+        },
+    );
+    c.gov_execute(0);
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x58; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-1.near")));
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-2.near")));
+    let breaker_set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
+
+    let result = c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, set| {
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
+        });
+        CachedProxyPriceStatus::Accepted {
+            price: proxy_price(100),
+        }
+    });
+
+    assert_eq!(result, None);
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert_eq!(c.get_proxy_circuit_breaker_set(proxy_id), Some(breaker_set));
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn proxy_replacement_clears_cache_and_bumps_epoch() {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x59; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-1.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-2.near")));
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x5a; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.set_proxy(proxy_id, None);
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+    assert_eq!(
+        c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
+            CachedProxyPriceStatus::Accepted {
+                price: proxy_price(200),
+            }
+        }),
+        None
+    );
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+}
+
+#[allow(clippy::unwrap_used)]
+#[rstest::rstest]
+#[case::blocked(CachedProxyPriceStatus::Blocked {
+    reason: PriceBlockedReason::ManuallyTripped,
+})]
+#[case::resolve_failed(CachedProxyPriceStatus::ResolveFailed {
+    message: "failed".to_string(),
+})]
+pub fn cached_non_accepted_status_reads_as_none(#[case] status: CachedProxyPriceStatus) {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x5b; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| status)
+        .unwrap();
+
+    assert_eq!(
+        c.list_ema_prices_no_older_than(vec![proxy_id], 60)
+            .get(&proxy_id),
+        Some(&None)
+    );
+}
+
 #[derive(Clone, Copy)]
 enum TestMethod {
     MedianLow,
@@ -751,9 +922,14 @@ fn offline_manual_trip_roles_gate_trip_and_untrip() {
     }))
     .is_err());
 
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+    let initial_epoch = c.cache_epoch(proxy_id);
+
     context.predecessor_account_id = tripper;
     testing_env!(context.clone());
     c.set_circuit_breaker_manual_trip(proxy_id, true, Some(Base64VecU8(vec![1, 2, 3])));
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
     assert!(c
         .get_proxy_circuit_breaker_set(proxy_id)
         .unwrap()
@@ -1042,23 +1218,23 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     );
     c.gov_execute(1);
 
-    {
-        let mut set = c.circuit_breakers.get(&proxy_id).unwrap();
-        set.set_config(CircuitBreakerSetConfig {
-            sample_interval_ns: Nanoseconds::zero(),
-            history_len: 3,
+    c.proxy_entry_mut(proxy_id)
+        .unwrap()
+        .edit_circuit_breaker_set(|set| {
+            set.set_config(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 3,
+            });
+            set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
+                .unwrap();
+            set.set_manual_trip(true, kernel_actor_id(), None);
+            assert!(!set
+                .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
+                .unwrap()
+                .value
+                .is_ok());
+            set.set_manual_trip(false, kernel_actor_id(), None);
         });
-        set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
-            .unwrap();
-        set.set_manual_trip(true, kernel_actor_id(), None);
-        assert!(!set
-            .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
-            .unwrap()
-            .value
-            .is_ok());
-        set.set_manual_trip(false, kernel_actor_id(), None);
-        c.circuit_breakers.insert(&proxy_id, &set);
-    }
 
     c.gov_create(
         2,
@@ -1076,7 +1252,7 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     ));
     assert!(logs.contains("\"breaker_id\":0"));
     assert!(logs.contains("\"is_enforced\":false"));
-    let set = c.circuit_breakers.get(&proxy_id).unwrap();
+    let set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
     assert!(matches!(
@@ -1102,7 +1278,7 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     assert!(logs.contains("\"event\":\"circuit_breaker_rearmed\""));
     assert!(logs.contains("\"armed_after_ns\":\"1000000000\""));
     assert!(logs.contains("\"accepted_history_source\":\"Empty\""));
-    let set = c.circuit_breakers.get(&proxy_id).unwrap();
+    let set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
     assert_eq!(set.accepted_history().len(), 0);
     assert!(!breaker.is_enforced);
@@ -1129,7 +1305,7 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     assert!(logs.contains("\"event\":\"circuit_breaker_rearmed\""));
     assert!(logs.contains("\"armed_after_ns\":\"2000000000\""));
     assert!(logs.contains("\"accepted_history_source\":\"Observed\""));
-    let set = c.circuit_breakers.get(&proxy_id).unwrap();
+    let set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
     let breaker = set.breakers().get(&0).unwrap();
     assert_eq!(set.accepted_history().len(), 2);
     assert_eq!(set.accepted_history().as_slice()[0].price.price, 100);
@@ -1210,15 +1386,13 @@ pub fn gas() {
     set_proxy(2, proxy_wnear_id, proxy_wnear.clone());
 
     for (index, price_id) in price_ids.iter().copied().enumerate() {
-        c.cached_prices.insert(
-            &price_id,
-            &CachedProxyPrice {
-                updated_at_ns: Nanoseconds::zero(),
-                status: CachedProxyPriceStatus::Accepted {
-                    price: proxy_price(i64::try_from(index + 1).unwrap()),
-                },
-            },
-        );
+        let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
+        c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
+            CachedProxyPriceStatus::Accepted {
+                price: proxy_price(i64::try_from(index + 1).unwrap()),
+            }
+        })
+        .unwrap();
     }
 
     let gas = estimate_gas(&c, &price_ids);

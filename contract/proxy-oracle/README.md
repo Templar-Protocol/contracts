@@ -1,6 +1,6 @@
 # Proxy Oracle
 
-The proxy oracle stores per-price proxy definitions on NEAR, resolves underlying Pyth/RedStone sources asynchronously, applies freshness filters, aggregates the surviving prices, and gates the result through per-proxy circuit breakers.
+The proxy oracle stores per-price proxy definitions on NEAR, resolves underlying Pyth/RedStone sources asynchronously, applies freshness filters, aggregates the surviving prices, gates the result through per-proxy circuit breakers, and caches the latest per-price update result.
 
 ## Directory Structure
 
@@ -25,6 +25,10 @@ History length can be configured up to 32 entries, and at most 16 breakers may b
 
 Proxy and circuit-breaker configuration changes are owner-governed. Configure the proxy and breaker history before installing breakers, then add breakers with explicit monotonic IDs.
 
+`update_prices(price_ids)` performs oracle IO, aggregation, circuit-breaker evaluation, event emission, breaker-state persistence, and cache writes. `list_ema_prices_no_older_than(price_ids, age)` is a cached read only: it returns `None` when a cached result is missing, blocked, resolve-failed, or stale under the caller-provided `age`.
+
+`update_prices` does not accept a caller freshness age. Governed proxy `FreshnessFilter` settings control source freshness during updates; caller freshness is applied only when reading accepted cached prices.
+
 Enforcement and lifecycle are separate. Unenforced breakers still evaluate and can trip while the set has no existing blocking trip. Re-arming requires an explicit accepted-history source: empty history or observed history collected during the incident.
 
 `get_proxy_circuit_breaker_set` exposes both `accepted_history` and `observed_history`. Accepted history is the rule baseline and only records non-blocking evaluations. Observed history records valid sampled prices even while the set is tripped or manually blocked, and should be treated as recovery/audit data until governance explicitly seeds from it.
@@ -33,6 +37,8 @@ Manual trip/untrip is available through `set_circuit_breaker_manual_trip(id, is_
 
 Manual-trip metadata is event-only, encoded as `Base64VecU8`, capped at 1024 bytes, and not stored in contract state. Offline manual-trip events are emitted only when the manual-trip state changes. Governance-derived circuit-breaker configuration events are emitted for successful executions, except no-op manual-trip executions do not emit a manual-trip event.
 
+Proxy and circuit-breaker changes clear the cached price and bump an internal per-price update epoch. In-flight update callbacks whose epoch no longer matches are ignored, so stale callbacks cannot repopulate cache or mutate breaker state after configuration changes.
+
 Circuit-breaker events use the `templar-proxy-oracle` standard and names prefixed with `circuit_breaker_*`, including configuration, add/remove, enforcement, rearm, role, manual-trip, and automatic trip events. Automatic trip events include `is_enforced` so consumers can distinguish tripped-but-non-blocking breakers from blocking trips.
 
-Off-chain services should use the proxy oracle path for protected feeds. Falling back to direct Pyth/Hermes reads bypasses proxy aggregation and circuit-breaker semantics.
+Off-chain services should use the proxy oracle path for protected feeds. Falling back to direct Pyth/Hermes reads bypasses proxy aggregation and circuit-breaker semantics. Operators must run `update_prices` on a cadence or before dependent actions that require fresh proxy prices; cached reads fail closed until an accepted update is available.

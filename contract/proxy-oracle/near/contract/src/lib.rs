@@ -85,31 +85,26 @@ impl Contract {
     }
 
     pub fn list_proxies(&self, offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier> {
-        list(self.proxies.keys(), offset, count)
+        self.state.list_proxies(offset, count)
     }
 
     pub fn get_proxy(&self, id: PriceIdentifier) -> Option<Proxy<Source>> {
-        self.proxies.get(&id)
+        self.state.get_proxy(id)
     }
 
     pub fn get_proxy_circuit_breaker_set(&self, id: PriceIdentifier) -> Option<CircuitBreakerSet> {
-        self.circuit_breakers.get(&id)
+        self.state.get_proxy_circuit_breaker_set(id)
     }
 
     pub fn get_cached_proxy_price(&self, id: PriceIdentifier) -> Option<CachedProxyPrice> {
-        self.cached_prices.get(&id)
+        self.state.get_cached_proxy_price(id)
     }
 
     pub fn list_cached_proxy_prices(
         &self,
         price_ids: Vec<PriceIdentifier>,
     ) -> HashMap<PriceIdentifier, Option<CachedProxyPrice>> {
-        HashMap::from_iter(
-            HashSet::<PriceIdentifier>::from_iter(price_ids)
-                .into_iter()
-                .filter(|price_id| self.proxies.get(price_id).is_some())
-                .map(|price_id| (price_id, self.cached_prices.get(&price_id))),
-        )
+        self.state.list_cached_proxy_prices(price_ids)
     }
 
     pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
@@ -138,30 +133,28 @@ impl Contract {
                 .is_none_or(|metadata| metadata.0.len() <= MAX_MANUAL_TRIP_METADATA_LEN),
             "Manual trip metadata is too long"
         );
-        require!(self.proxies.get(&id).is_some(), "Proxy not found");
-
-        let mut set = self
-            .circuit_breakers
-            .get(&id)
-            .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-
-        let result = set.set_manual_trip(
-            is_manually_tripped,
-            account_id_to_kernel(env::predecessor_account_id().as_ref()),
-            metadata.map(|metadata| metadata.0),
-        );
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .edit_circuit_breaker_set(|set| {
+                set.set_manual_trip(
+                    is_manually_tripped,
+                    account_id_to_kernel(env::predecessor_account_id().as_ref()),
+                    metadata.map(|metadata| metadata.0),
+                )
+            });
         if result.events.is_empty() {
             return;
         }
 
-        self.circuit_breakers.insert(&id, &set);
         emit_outcome(id, result);
     }
 
     // impl Pyth:
 
     pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
-        self.proxies.get(&price_identifier).is_some()
+        self.state.proxy_exists(&price_identifier)
     }
 
     pub const GAS_FOR_LIST_00_ENTRY: Gas = Gas::from_tgas(35).saturating_div(10);
@@ -179,15 +172,18 @@ impl Contract {
         let mut results = OracleResponse::new();
 
         for price_id in HashSet::<PriceIdentifier>::from_iter(price_ids) {
-            if self.proxies.get(&price_id).is_none() {
+            if !self.state.proxy_exists(&price_id) {
                 continue;
             }
 
-            let price = self.cached_prices.get(&price_id).and_then(|cached| {
-                cached
-                    .accepted_price_no_older_than(now, max_age)
-                    .and_then(pyth_price_try_from_kernel)
-            });
+            let price = self
+                .state
+                .get_cached_proxy_price(price_id)
+                .and_then(|cached| {
+                    cached
+                        .accepted_price_no_older_than(now, max_age)
+                        .and_then(pyth_price_try_from_kernel)
+                });
             results.insert(price_id, price);
         }
 
@@ -211,14 +207,15 @@ impl Contract {
         let mut transformer_promises = Vec::with_capacity(price_ids.len());
 
         for price_id in &price_ids {
-            let Some(proxy) = self.proxies.get(price_id) else {
+            let Some(proxy) = self.state.proxy_entry(*price_id) else {
                 // Skip unknown.
                 continue;
             };
+            let pending = proxy.prepare_price_update();
 
-            invoked.push((*price_id, proxy.clone()));
+            invoked.push(pending.clone());
 
-            for source in proxy.sources() {
+            for source in pending.proxy.sources() {
                 let request = match source {
                     Source::Request(request) => request,
                     Source::Transformer(transformer) => {
@@ -275,13 +272,13 @@ impl Contract {
 
         PromiseOrValue::Promise(
             promise.then(
-                self_ext!(Self::GAS_FOR_LIST_01_CALLBACK)
+                self_ext!(Self::GAS_FOR_UPDATE_01_CALLBACK)
                     .update_prices_01_consume_results(oracle_order, invoked),
             ),
         )
     }
 
-    pub const GAS_FOR_LIST_01_CALLBACK: Gas = Gas::from_tgas(10);
+    pub const GAS_FOR_UPDATE_01_CALLBACK: Gas = Gas::from_tgas(10);
     #[private]
     #[allow(
         unused_mut,
@@ -290,7 +287,7 @@ impl Contract {
     pub fn update_prices_01_consume_results(
         &mut self,
         oracle_order: Vec<OracleType>,
-        invoked: Vec<(PriceIdentifier, Proxy<Source>)>,
+        invoked: Vec<state::v2::PendingProxyPriceUpdate>,
     ) -> HashMap<PriceIdentifier, CachedProxyPriceStatus> {
         let callback = CallbackHandler::new(&oracle_order);
 
@@ -298,10 +295,11 @@ impl Contract {
         let mut results = HashMap::new();
 
         let mut i = oracle_order.len() as u64;
-        for (price_id, proxy) in invoked {
+        for pending in invoked {
+            let price_id = pending.price_id;
             let mut prices = vec![];
 
-            for source in proxy.sources() {
+            for source in pending.proxy.sources() {
                 let source_result = match source {
                     Source::Transformer(transformer) => {
                         let price = callback.get(&transformer.request);
@@ -318,36 +316,28 @@ impl Contract {
                 prices.push(source_result.as_ref().and_then(pyth_price_try_to_kernel));
             }
 
-            let mut set = self
-                .circuit_breakers
-                .get(&price_id)
-                .unwrap_or_else(CircuitBreakerSet::empty);
-            let result = proxy.resolve(&mut set, prices, now);
-            self.circuit_breakers.insert(&price_id, &set);
-            let status = match result {
-                Ok(resolution) => match emit_outcome(price_id, resolution) {
-                    Ok(price) => CachedProxyPriceStatus::Accepted { price },
-                    Err(reason) => CachedProxyPriceStatus::Blocked { reason },
-                },
-                Err(error) => {
-                    let message = bounded_resolve_error_message(error.to_string());
-                    near_sdk::log!(
-                        "Proxy resolve failed price_id={:?} error={}",
-                        price_id,
-                        message
-                    );
-                    CachedProxyPriceStatus::ResolveFailed { message }
-                }
-            };
-
-            self.cached_prices.insert(
-                &price_id,
-                &CachedProxyPrice {
-                    updated_at_ns: now,
-                    status: status.clone(),
-                },
-            );
-            results.insert(price_id, status);
+            if let Some(status) =
+                self.state
+                    .finish_price_update_if_current(pending, now, |proxy, set| {
+                        match proxy.resolve(set, prices, now) {
+                            Ok(resolution) => match emit_outcome(price_id, resolution) {
+                                Ok(price) => CachedProxyPriceStatus::Accepted { price },
+                                Err(reason) => CachedProxyPriceStatus::Blocked { reason },
+                            },
+                            Err(error) => {
+                                let message = bounded_resolve_error_message(error.to_string());
+                                near_sdk::log!(
+                                    "Proxy resolve failed price_id={:?} error={}",
+                                    price_id,
+                                    message
+                                );
+                                CachedProxyPriceStatus::ResolveFailed { message }
+                            }
+                        }
+                    })
+            {
+                results.insert(price_id, status);
+            }
         }
 
         results

@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicUsize, Arc},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use near_crypto::{PublicKey, Signer};
@@ -40,9 +39,8 @@ use templar_common::{
     },
     Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
-    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::Source,
     price_transformer::{Call, PriceTransformer},
     request::OracleRequest,
@@ -642,14 +640,6 @@ impl Near {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    fn system_time() -> Nanoseconds {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        Nanoseconds::from_ns(u64::try_from(now).unwrap_or(u64::MAX))
-    }
-
     async fn get_transformer(
         &self,
         oracle_id: AccountId,
@@ -670,19 +660,6 @@ impl Near {
     ) -> Result<Option<Proxy<Source>>, ViewError> {
         self.view(oracle_id, "get_proxy", json!({ "id": price_identifier }))
             .await
-    }
-
-    async fn get_proxy_circuit_breaker_set(
-        &self,
-        oracle_id: AccountId,
-        price_identifier: PriceIdentifier,
-    ) -> Result<Option<CircuitBreakerSet>, ViewError> {
-        self.view(
-            oracle_id,
-            "get_proxy_circuit_breaker_set",
-            json!({ "id": price_identifier }),
-        )
-        .await
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -799,78 +776,18 @@ impl Near {
         price_identifier: PriceIdentifier,
         max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
-        let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? else {
-            tracing::debug!("No proxy found");
-            return Ok(None);
-        };
-
-        let Some(mut circuit_breakers) = self
-            .get_proxy_circuit_breaker_set(oracle_id.clone(), price_identifier)
+        Ok(self
+            .view::<pyth::OracleResponse>(
+                oracle_id,
+                "list_ema_prices_no_older_than",
+                json!({
+                    "price_ids": [price_identifier],
+                    "age": max_age.as_secs(),
+                }),
+            )
             .await?
-        else {
-            tracing::error!(
-                %oracle_id,
-                %price_identifier,
-                "proxy exists without circuit breaker set"
-            );
-            return Ok(None);
-        };
-        if circuit_breakers.is_blocking() {
-            tracing::debug!(%oracle_id, %price_identifier, "proxy circuit breaker is tripped");
-            return Ok(None);
-        }
-
-        let prices = futures::future::join_all(
-            proxy
-                .sources()
-                .map(|source| self.resolve_proxy_source_price(source, max_age)),
-        )
-        .await
-        .into_iter()
-        .map(|result| match result {
-            Ok(price) => price.as_ref().and_then(pyth_price_try_to_kernel),
-            Err(error) => {
-                tracing::debug!(%error, "Failed to resolve proxy source price");
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-        tracing::debug!(?prices, "Prices to aggregate");
-
-        let price = match proxy.resolve(&mut circuit_breakers, prices, Self::system_time()) {
-            Ok(resolution) => resolution.value.ok(),
-            Err(error) => {
-                tracing::debug!(%oracle_id, %price_identifier, ?error, "proxy.resolve failed");
-                None
-            }
-        };
-
-        tracing::debug!(?price, "Aggregated price");
-
-        Ok(price.as_ref().and_then(pyth_price_try_from_kernel))
-    }
-
-    #[tracing::instrument(skip(self), level = "debug")]
-    async fn resolve_proxy_source_price(
-        &self,
-        source: &Source,
-        max_age: Nanoseconds,
-    ) -> Result<Option<pyth::Price>, ViewError> {
-        match source {
-            Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
-            Source::Transformer(t) => {
-                let Some(price) = self
-                    .fetch_oracle_request(t.request.clone(), max_age)
-                    .await?
-                else {
-                    return Ok(None);
-                };
-
-                let input = self.fetch_transformer_input(t.call.clone()).await?;
-                Ok(t.action.apply(price, input))
-            }
-        }
+            .remove(&price_identifier)
+            .flatten())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

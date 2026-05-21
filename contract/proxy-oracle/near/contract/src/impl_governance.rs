@@ -1,7 +1,6 @@
 use near_sdk::{assert_one_yocto, env, near, require};
 use near_sdk_contract_tools::{owner::Owner, rbac::Rbac};
 use templar_common::{contract::list, governance::Proposal, Nanoseconds, UnwrapReject};
-use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
 use templar_proxy_oracle_near_common::{
     convert::account_id_to_kernel,
     event::Event,
@@ -66,18 +65,7 @@ impl ProxyGovernanceInterface for Contract {
             .unwrap_or_reject()
         {
             Operation::SetProxy { id, proxy } => {
-                if let Some(proxy) = proxy {
-                    self.proxies.insert(&id, &proxy);
-                    self.cached_prices.remove(&id);
-                    if self.circuit_breakers.get(&id).is_none() {
-                        self.circuit_breakers
-                            .insert(&id, &CircuitBreakerSet::empty());
-                    }
-                } else {
-                    self.proxies.remove(&id);
-                    self.circuit_breakers.remove(&id);
-                    self.cached_prices.remove(&id);
-                }
+                self.state.set_proxy(id, proxy);
             }
             Operation::SetActionTtl { new_ttl } => {
                 self.governance.ttl = new_ttl;
@@ -100,30 +88,28 @@ impl ProxyGovernanceInterface for Contract {
                 .emit();
             }
             Operation::ConfigureCircuitBreakers { id, config } => {
-                require!(self.proxies.get(&id).is_some(), "Proxy not found");
-                let mut set = self
-                    .circuit_breakers
-                    .get(&id)
-                    .unwrap_or_else(CircuitBreakerSet::empty);
-                let result = set.set_config(config);
-                self.circuit_breakers.insert(&id, &set);
+                let result = self
+                    .state
+                    .proxy_entry_mut(id)
+                    .unwrap_or_else(|| env::panic_str("Proxy not found"))
+                    .edit_circuit_breaker_set(|set| set.set_config(config));
                 emit_outcome(id, result);
             }
             Operation::SetCircuitBreakerManualTrip {
                 id,
                 is_manually_tripped,
             } => {
-                require!(self.proxies.get(&id).is_some(), "Proxy not found");
-                let mut set = self
-                    .circuit_breakers
-                    .get(&id)
-                    .unwrap_or_else(CircuitBreakerSet::empty);
-                let result = set.set_manual_trip(
-                    is_manually_tripped,
-                    account_id_to_kernel(env::predecessor_account_id().as_ref()),
-                    None,
-                );
-                self.circuit_breakers.insert(&id, &set);
+                let result = self
+                    .state
+                    .proxy_entry_mut(id)
+                    .unwrap_or_else(|| env::panic_str("Proxy not found"))
+                    .edit_circuit_breaker_set(|set| {
+                        set.set_manual_trip(
+                            is_manually_tripped,
+                            account_id_to_kernel(env::predecessor_account_id().as_ref()),
+                            None,
+                        )
+                    });
                 emit_outcome(id, result);
             }
             Operation::AddCircuitBreaker {
@@ -131,26 +117,27 @@ impl ProxyGovernanceInterface for Contract {
                 breaker_id,
                 breaker,
             } => {
-                require!(self.proxies.get(&id).is_some(), "Proxy not found");
-                let mut set = self
-                    .circuit_breakers
-                    .get(&id)
-                    .unwrap_or_else(CircuitBreakerSet::empty);
-                require!(
-                    set.breaker_count() < MAX_CIRCUIT_BREAKERS_PER_PROXY,
-                    "Too many circuit breakers"
-                );
-                let result = set.add(breaker_id, breaker).unwrap_or_reject();
-                self.circuit_breakers.insert(&id, &set);
+                let result = self
+                    .state
+                    .proxy_entry_mut(id)
+                    .unwrap_or_else(|| env::panic_str("Proxy not found"))
+                    .edit_circuit_breaker_set(|set| {
+                        require!(
+                            set.breaker_count() < MAX_CIRCUIT_BREAKERS_PER_PROXY,
+                            "Too many circuit breakers"
+                        );
+                        set.add(breaker_id, breaker)
+                    })
+                    .unwrap_or_reject();
                 emit_outcome(id, result);
             }
             Operation::RemoveCircuitBreaker { id, breaker_id } => {
-                let mut set = self
-                    .circuit_breakers
-                    .get(&id)
-                    .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-                let result = set.remove(breaker_id).unwrap_or_reject();
-                self.circuit_breakers.insert(&id, &set);
+                let result = self
+                    .state
+                    .proxy_entry_mut(id)
+                    .unwrap_or_else(|| env::panic_str("Proxy not found"))
+                    .edit_circuit_breaker_set(|set| set.remove(breaker_id))
+                    .unwrap_or_reject();
                 emit_outcome(id, result);
             }
             Operation::UpdateCircuitBreaker {
@@ -158,12 +145,12 @@ impl ProxyGovernanceInterface for Contract {
                 breaker_id,
                 update,
             } => {
-                let mut set = self
-                    .circuit_breakers
-                    .get(&id)
-                    .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
-                let result = set.update(breaker_id, update).unwrap_or_reject();
-                self.circuit_breakers.insert(&id, &set);
+                let result = self
+                    .state
+                    .proxy_entry_mut(id)
+                    .unwrap_or_else(|| env::panic_str("Proxy not found"))
+                    .edit_circuit_breaker_set(|set| set.update(breaker_id, update))
+                    .unwrap_or_reject();
                 emit_outcome(id, result);
             }
         }

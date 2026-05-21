@@ -2,9 +2,9 @@
 //!
 //! Handles fetching prices from various oracle types including:
 //! - Pyth oracles (via Hermes HTTP API)
-//! - RedStone oracles (via gateway HTTP API)
+//! - RedStone-backed feeds through proxy oracle cache reads
 //! - LST oracles with price transformers
-//! - Proxy oracles with off-chain aggregation
+//! - Proxy oracles with cached on-chain aggregation
 
 use near_jsonrpc_client::{
     methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest, JsonRpcClient,
@@ -16,16 +16,12 @@ use near_primitives::{
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use std::collections::{HashMap, HashSet};
 use templar_common::{
-    oracle::{
-        pyth::{self, OracleResponse, PriceIdentifier},
-        redstone,
-    },
-    Decimal, Nanoseconds,
+    oracle::pyth::{self, OracleResponse, PriceIdentifier},
+    Decimal,
 };
-use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
-    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
-    input::{ProxyPriceTransformer, Source},
+    input::Source,
     price_transformer::{Call, PriceTransformer},
     request::OracleRequest,
 };
@@ -68,29 +64,6 @@ struct HermesBinaryData {
     data: Vec<String>,
 }
 
-// ── RedStone gateway types ───────────────────────────────────────────────────
-
-/// Default RedStone gateway URL.
-const DEFAULT_REDSTONE_GATEWAY_URL: &str = "https://oracle-gateway-1.a.redstone.vip";
-
-/// Default RedStone data service ID.
-const REDSTONE_DATA_SERVICE_ID: &str = "redstone-primary-prod";
-
-/// A single data point inside a RedStone gateway data package.
-#[derive(serde::Deserialize)]
-struct RedStoneGatewayDataPoint {
-    value: f64,
-}
-
-/// A signed data package from the RedStone gateway.
-#[derive(serde::Deserialize)]
-struct RedStoneGatewayPackage {
-    #[serde(rename = "dataPoints")]
-    data_points: Vec<RedStoneGatewayDataPoint>,
-    #[serde(rename = "timestampMilliseconds")]
-    timestamp_milliseconds: u64,
-}
-
 // ── Shared types ─────────────────────────────────────────────────────────────
 
 /// Shared cache of detected proxy oracle accounts.
@@ -99,8 +72,8 @@ pub type ProxyOracleCache =
 
 /// Oracle price fetcher.
 ///
-/// Fetches prices directly from HTTP APIs (Pyth Hermes, RedStone gateway).
-/// Supports LST oracles with transformers and proxy oracles with off-chain
+/// Fetches prices directly from Pyth Hermes.
+/// Supports LST oracles with transformers and proxy oracles with cached on-chain
 /// aggregation.
 pub struct OracleFetcher {
     client: JsonRpcClient,
@@ -114,8 +87,6 @@ pub struct OracleFetcher {
     http_client: reqwest::Client,
     /// Pyth Hermes API URL (e.g., <https://hermes.pyth.network>)
     hermes_url: String,
-    /// RedStone gateway URL for fetching fresh prices directly
-    redstone_gateway_url: String,
     /// Signer account for on-chain oracle price updates
     signer_id: Option<AccountId>,
     /// Signer key for on-chain oracle price updates
@@ -132,7 +103,7 @@ impl OracleFetcher {
     pub fn new(
         client: JsonRpcClient,
         hermes_url: Option<String>,
-        redstone_gateway_url: Option<String>,
+        _redstone_gateway_url: Option<String>,
         proxy_oracle_cache: Option<ProxyOracleCache>,
         signer_for_oracle: Option<(AccountId, near_crypto::SecretKey)>,
         nonce_tracker: NonceTracker,
@@ -149,8 +120,6 @@ impl OracleFetcher {
             }),
             http_client: reqwest::Client::new(),
             hermes_url: hermes_url.unwrap_or_else(|| "https://hermes.pyth.network".to_string()),
-            redstone_gateway_url: redstone_gateway_url
-                .unwrap_or_else(|| DEFAULT_REDSTONE_GATEWAY_URL.to_string()),
             signer_id,
             signer_key,
             nonce_tracker,
@@ -600,7 +569,7 @@ impl OracleFetcher {
     ///
     /// Detects oracle type and uses the appropriate method:
     /// - LST oracles: Fetch from underlying oracle and apply transformers
-    /// - Proxy oracles: Fetch from underlying oracles via proxy configuration
+    /// - Proxy oracles: Read cached on-chain proxy oracle prices
     /// - Pyth oracles: Hermes HTTP API
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn get_oracle_prices(
@@ -771,16 +740,11 @@ impl OracleFetcher {
 
     // ── Proxy oracle ─────────────────────────────────────────────────────────
 
-    /// Fetches prices from a proxy oracle by reading its configuration and querying
-    /// underlying oracles (Pyth/RedStone) directly, then applying aggregation off-chain.
+    /// Fetches prices from a proxy oracle cache.
     ///
-    /// Proxy oracles aggregate prices from multiple sources (Pyth + RedStone) using
-    /// cross-contract calls on-chain, which fails in view mode. This method replicates
-    /// the aggregation off-chain by:
-    /// 1. Reading proxy config (`get_proxy`) for each price ID
-    /// 2. Fetching prices from underlying oracles directly
-    /// 3. Applying transformers (e.g., LST redemption rates)
-    /// 4. Running the aggregation algorithm locally
+    /// Proxy oracle aggregation, circuit-breaker evaluation, and cache writes happen in
+    /// the proxy contract's `update_prices` flow. This read path intentionally does not
+    /// re-run proxy logic off-chain because that would bypass on-chain breaker state.
     #[tracing::instrument(skip(self), level = "debug")]
     async fn get_proxy_oracle_prices(
         &self,
@@ -788,263 +752,20 @@ impl OracleFetcher {
         price_ids: &[PriceIdentifier],
         age: u32,
     ) -> LiquidatorResult<OracleResponse> {
-        let mut result = OracleResponse::new();
-
-        for &price_id in price_ids {
-            let proxy: Option<Proxy<Source>> = view(
-                &self.client,
-                proxy_oracle.clone(),
-                "get_proxy",
-                json!({ "id": price_id }),
-            )
-            .await
-            .map_err(LiquidatorError::PriceFetchError)?;
-
-            let Some(proxy) = proxy else {
-                tracing::warn!(
-                    oracle = %proxy_oracle,
-                    price_id = ?price_id,
-                    "No proxy configuration found for price ID"
-                );
-                result.insert(price_id, None);
-                continue;
-            };
-
-            let Some(mut set) = view::<Option<CircuitBreakerSet>>(
-                &self.client,
-                proxy_oracle.clone(),
-                "get_proxy_circuit_breaker_set",
-                json!({ "id": price_id }),
-            )
-            .await
-            .map_err(LiquidatorError::PriceFetchError)?
-            else {
-                tracing::error!(
-                    oracle = %proxy_oracle,
-                    price_id = ?price_id,
-                    "Proxy configuration exists without circuit breaker set"
-                );
-                result.insert(price_id, None);
-                continue;
-            };
-
-            if set.is_blocking() {
-                tracing::warn!(
-                    oracle = %proxy_oracle,
-                    price_id = ?price_id,
-                    "Proxy oracle: circuit breaker is tripped"
-                );
-                result.insert(price_id, None);
-                continue;
-            }
-
-            // Collect prices from underlying oracles for each entry
-            let mut prices = Vec::new();
-
-            for source in proxy.sources() {
-                let price = match source {
-                    Source::Request(request) => self.fetch_oracle_request_price(request, age).await,
-                    Source::Transformer(transformer) => {
-                        self.fetch_proxy_transformed_price(transformer, age).await
-                    }
-                };
-
-                prices.push(price.as_ref().and_then(pyth_price_try_to_kernel));
-            }
-
-            // Apply aggregation using the same logic as the on-chain proxy
-            let now = system_nanoseconds();
-            let source_count = prices.iter().filter(|price| price.is_some()).count();
-            let aggregated = proxy
-                .resolve(&mut set, prices, now)
-                .ok()
-                .and_then(|resolution| resolution.value.ok());
-            result.insert(
-                price_id,
-                aggregated.as_ref().and_then(pyth_price_try_from_kernel),
-            );
-
-            if result.get(&price_id).and_then(|p| p.as_ref()).is_some() {
-                tracing::debug!(
-                    oracle = %proxy_oracle,
-                    price_id = ?price_id,
-                    source_count,
-                    "Proxy oracle: aggregated price from underlying sources"
-                );
-            } else {
-                tracing::warn!(
-                    oracle = %proxy_oracle,
-                    price_id = ?price_id,
-                    source_count,
-                    "Proxy oracle: aggregation returned no price"
-                );
-            }
-        }
-
-        Ok(result)
-    }
-
-    // ── Individual source fetchers ───────────────────────────────────────────
-
-    /// Fetches a price from a single oracle request (Pyth or RedStone).
-    ///
-    /// For Pyth requests, calls `get_oracle_prices` directly on the underlying
-    /// Pyth oracle (not the proxy), which avoids infinite recursion since a
-    /// real Pyth oracle won't trigger the proxy path.
-    async fn fetch_oracle_request_price(
-        &self,
-        request: &OracleRequest,
-        age: u32,
-    ) -> Option<pyth::Price> {
-        match request {
-            OracleRequest::Pyth(pyth_req) => {
-                // Use Box::pin to break the recursive async type cycle:
-                // get_oracle_prices → get_proxy_oracle_prices → fetch_oracle_request_price → get_oracle_prices
-                let response = Box::pin(self.get_oracle_prices(
-                    pyth_req.oracle_id.clone(),
-                    &[pyth_req.price_id],
-                    age,
-                ))
-                .await
-                .ok()?;
-                response.get(&pyth_req.price_id)?.clone()
-            }
-            OracleRequest::RedStone(rs_req) => {
-                self.fetch_redstone_price_from_gateway(&rs_req.price_id)
-                    .await
-            }
-        }
-    }
-
-    /// Fetches a fresh price directly from the RedStone gateway HTTP API.
-    ///
-    /// The gateway returns signed data packages from multiple signers.
-    /// We take the median price across packages for robustness, and use
-    /// the package timestamp to construct a fresh `pyth::Price`.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        clippy::cast_possible_wrap
-    )]
-    async fn fetch_redstone_price_from_gateway(
-        &self,
-        feed_id: &redstone::FeedId,
-    ) -> Option<pyth::Price> {
-        let url = format!(
-            "{}/v2/data-packages/latest/{}",
-            self.redstone_gateway_url, REDSTONE_DATA_SERVICE_ID,
-        );
-
-        let response = self
-            .http_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    feed_id = %feed_id,
-                    error = %e,
-                    "RedStone gateway HTTP request failed"
-                );
-            })
-            .ok()?;
-
-        if !response.status().is_success() {
-            tracing::warn!(
-                feed_id = %feed_id,
-                status = %response.status(),
-                "RedStone gateway returned error status"
-            );
-            return None;
-        }
-
-        let body: HashMap<String, Vec<RedStoneGatewayPackage>> = response
-            .json()
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    feed_id = %feed_id,
-                    error = %e,
-                    "Failed to parse RedStone gateway response"
-                );
-            })
-            .ok()?;
-
-        let feed_id_str: &str = feed_id;
-        let packages = body.get(feed_id_str)?;
-
-        if packages.is_empty() {
-            tracing::warn!(feed_id = %feed_id, "No data packages from RedStone gateway");
-            return None;
-        }
-
-        // Extract prices and timestamp from all packages
-        let mut values: Vec<f64> = packages
-            .iter()
-            .filter_map(|pkg| pkg.data_points.first().map(|dp| dp.value))
-            .collect();
-
-        if values.is_empty() {
-            return None;
-        }
-
-        // Use median price for robustness
-        values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = values[values.len() / 2];
-
-        // Use the timestamp from the first package (all packages share the same timestamp)
-        let timestamp_ms = packages[0].timestamp_milliseconds;
-
-        // Convert price to i64 mantissa with 8-decimal exponent.
-        // RedStone prices use 8 decimals, so multiply by 10^8.
-        let raw_value = (median * 1e8) as i64;
-
-        let price = pyth::Price {
-            price: near_sdk::json_types::I64(raw_value),
-            conf: near_sdk::json_types::U64(0),
-            expo: -8,
-            publish_time: pyth::PythTimestamp::from_ms(timestamp_ms as i64),
-        };
-
-        tracing::debug!(
-            feed_id = %feed_id,
-            price = raw_value,
-            timestamp_ms = timestamp_ms,
-            signer_count = packages.len(),
-            "Fetched fresh RedStone price from gateway"
-        );
-
-        Some(price)
+        view(
+            &self.client,
+            proxy_oracle,
+            "list_ema_prices_no_older_than",
+            json!({
+                "price_ids": price_ids,
+                "age": age,
+            }),
+        )
+        .await
+        .map_err(LiquidatorError::PriceFetchError)
     }
 
     // ── Transformers ─────────────────────────────────────────────────────────
-
-    /// Fetches a transformed price from a proxy entry (underlying oracle + transformer input).
-    async fn fetch_proxy_transformed_price(
-        &self,
-        transformer: &ProxyPriceTransformer,
-        age: u32,
-    ) -> Option<pyth::Price> {
-        // Fetch the underlying price
-        let underlying = self
-            .fetch_oracle_request_price(&transformer.request, age)
-            .await?;
-
-        // Fetch the transformer input (e.g., LST redemption rate).
-        let input = self
-            .fetch_transformer_input(&transformer.call)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    error = ?e,
-                    "Failed to fetch proxy transformer input"
-                );
-            })
-            .ok()?;
-
-        transformer.action.apply(underlying, input)
-    }
 
     /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
     async fn fetch_transformer_input(&self, call: &Call) -> Result<Decimal, RpcError> {
@@ -1076,13 +797,4 @@ impl OracleFetcher {
             ))
         }
     }
-}
-
-/// Returns the current system time as `Nanoseconds` (off-chain equivalent of `Nanoseconds::now()`).
-#[allow(clippy::cast_possible_truncation)]
-fn system_nanoseconds() -> Nanoseconds {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    Nanoseconds::from_ns(dur.as_nanos() as u64)
 }
