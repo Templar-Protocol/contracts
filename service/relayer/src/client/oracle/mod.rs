@@ -11,6 +11,7 @@ use near_primitives::{
     views::{FinalExecutionStatus, TxExecutionStatus},
 };
 use near_sdk::AccountId;
+use templar_common::oracle::pyth::PriceIdentifier;
 use tokio::{
     select,
     sync::{mpsc, oneshot, watch, Mutex},
@@ -98,6 +99,15 @@ pub enum UpdateError {
     UnknownRpcError,
     #[error("Transaction execution error: {0}")]
     TransactionExecution(#[from] TxExecutionError),
+    #[error("Proxy oracle update failed for {oracle_id}: {message}")]
+    ProxyOracleUpdateFailed {
+        oracle_id: AccountId,
+        message: String,
+    },
+    #[error("Failed to decode proxy oracle update result: {0}")]
+    ProxyOracleUpdateResult(#[from] near_sdk::serde_json::Error),
+    #[error("Proxy oracle update returned no status for {price_id}")]
+    ProxyOracleUpdateMissingStatus { price_id: PriceIdentifier },
 }
 
 #[derive(Debug)]

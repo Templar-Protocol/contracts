@@ -12,7 +12,7 @@ use near_primitives::{
     action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
     hash::CryptoHash,
     transaction::SignedTransaction,
-    views::{FinalExecutionOutcomeView, TxExecutionStatus},
+    views::{FinalExecutionOutcomeView, FinalExecutionStatus, TxExecutionStatus},
 };
 use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
 use templar_common::{
@@ -20,6 +20,7 @@ use templar_common::{
     market::DepositMsg,
     oracle::{pyth, redstone},
 };
+use templar_proxy_oracle_near_common::cache::CachedProxyPriceStatus;
 use templar_proxy_oracle_near_common::request::OracleRequest;
 use tokio::{
     sync::{watch, RwLock},
@@ -317,13 +318,14 @@ impl App {
     ) -> (
         HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
         HashMap<AccountId, HashSet<redstone::FeedId>>,
+        HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
     ) {
         market_ids
             .iter()
             .filter_map(|market_id| accounts.market_data.get(market_id))
             .fold(
-                (HashMap::new(), HashMap::new()),
-                |(mut pyth, mut redstone), market_data| {
+                (HashMap::new(), HashMap::new(), HashMap::new()),
+                |(mut pyth, mut redstone, mut proxy), market_data| {
                     for request in market_data
                         .collateral
                         .update_oracle
@@ -344,7 +346,14 @@ impl App {
                             }
                         }
                     }
-                    (pyth, redstone)
+                    if market_data.updates_proxy_oracle {
+                        proxy
+                            .entry(market_data.oracle_id.clone())
+                            .or_default()
+                            .extend([market_data.collateral.price_id, market_data.borrow.price_id]);
+                    }
+
+                    (pyth, redstone, proxy)
                 },
             )
     }
@@ -354,17 +363,23 @@ impl App {
         PythFuture,
         RedstoneUpdate,
         RedstoneFuture,
+        ProxyUpdate,
+        ProxyFuture,
     >(
         pyth_updates: HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
         redstone_updates: HashMap<AccountId, HashSet<redstone::FeedId>>,
+        proxy_updates: HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
         mut pyth_update: PythUpdate,
         mut redstone_update: RedstoneUpdate,
+        mut proxy_update: ProxyUpdate,
     ) -> Result<(), PriceUpdateError>
     where
         PythUpdate: FnMut(AccountId, Box<[pyth::PriceIdentifier]>) -> PythFuture,
         PythFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
         RedstoneUpdate: FnMut(AccountId, Box<[redstone::FeedId]>) -> RedstoneFuture,
         RedstoneFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
+        ProxyUpdate: FnMut(AccountId, Box<[pyth::PriceIdentifier]>) -> ProxyFuture,
+        ProxyFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
     {
         for (oracle_id, feed_ids) in pyth_updates {
             match pyth_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await {
@@ -397,14 +412,93 @@ impl App {
             }
         }
 
+        for (oracle_id, price_ids) in proxy_updates {
+            match proxy_update(oracle_id, price_ids.into_iter().collect::<Vec<_>>().into()).await {
+                Ok(Some(hash)) => {
+                    tracing::debug!(%hash, "Proxy oracle update transaction succeeded");
+                }
+                Ok(None) => {
+                    tracing::debug!("No proxy price updates needed");
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Proxy oracle update failed");
+                    return Err(PriceUpdateError::Oracle(error));
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    async fn update_proxy_prices(
+        &self,
+        oracle_id: AccountId,
+        price_ids: Box<[pyth::PriceIdentifier]>,
+    ) -> Result<Option<CryptoHash>, Arc<oracle::UpdateError>> {
+        if price_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let action = FunctionCallAction {
+            method_name: "update_prices".to_string(),
+            args: serde_json::to_vec(&serde_json::json!({ "price_ids": &price_ids }))
+                .map_err(oracle::UpdateError::ProxyOracleUpdateResult)
+                .map_err(Arc::new)?,
+            gas: near_primitives::gas::Gas::from_teragas(100),
+            deposit: NearToken::ZERO,
+        };
+
+        let signed_transaction = self
+            .relay_near
+            .sign_transaction(&self.cache, oracle_id.clone(), vec![action.into()])
+            .await;
+        let transaction_hash = signed_transaction.get_hash();
+        let transaction_result = self
+            .relay_near
+            .send_transaction(signed_transaction, TxExecutionStatus::Final)
+            .await
+            .map_err(oracle::UpdateError::JsonRpc)
+            .map_err(Arc::new)?;
+
+        let Some(outcome) = transaction_result.final_execution_outcome else {
+            return Err(Arc::new(oracle::UpdateError::UnknownRpcError));
+        };
+
+        match outcome.into_outcome().status {
+            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
+                Err(Arc::new(oracle::UpdateError::UnknownRpcError))
+            }
+            FinalExecutionStatus::Failure(error) => Err(Arc::new(error.into())),
+            FinalExecutionStatus::SuccessValue(value) => {
+                let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
+                    serde_json::from_slice(&value)
+                        .map_err(oracle::UpdateError::ProxyOracleUpdateResult)
+                        .map_err(Arc::new)?;
+
+                for price_id in price_ids.iter().copied() {
+                    let Some(status) = statuses.get(&price_id) else {
+                        return Err(Arc::new(
+                            oracle::UpdateError::ProxyOracleUpdateMissingStatus { price_id },
+                        ));
+                    };
+                    if !matches!(status, CachedProxyPriceStatus::Accepted { .. }) {
+                        return Err(Arc::new(oracle::UpdateError::ProxyOracleUpdateFailed {
+                            oracle_id,
+                            message: format!("price {price_id} returned {status:?}"),
+                        }));
+                    }
+                }
+
+                Ok(Some(transaction_hash))
+            }
+        }
     }
 
     pub async fn update_market_prices(
         &self,
         market_ids: &HashSet<AccountId>,
     ) -> Result<(), PriceUpdateError> {
-        let (pyth_updates, redstone_updates) = {
+        let (pyth_updates, redstone_updates, proxy_updates) = {
             let accounts = self.accounts.read().await;
             Self::grouped_price_updates(&accounts, market_ids)
         };
@@ -415,6 +509,7 @@ impl App {
         Self::dispatch_grouped_price_updates(
             pyth_updates,
             redstone_updates,
+            proxy_updates,
             move |oracle_id, feed_ids| {
                 let pyth = pyth.clone();
                 async move { pyth.update(oracle_id, feed_ids).await }
@@ -423,6 +518,7 @@ impl App {
                 let redstone = redstone.clone();
                 async move { redstone.update(oracle_id, feed_ids).await }
             },
+            |oracle_id, price_ids| async move { self.update_proxy_prices(oracle_id, price_ids).await },
         )
         .await
     }
@@ -797,6 +893,7 @@ mod tests {
             MarketData {
                 account_id: market_id.clone(),
                 oracle_id: account_id("oracle.test.near"),
+                updates_proxy_oracle: false,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: account_id("oracle.test.near"),
                     collateral_asset_price_id: price_id(1),
@@ -849,6 +946,7 @@ mod tests {
             MarketData {
                 account_id: market_a.clone(),
                 oracle_id: pyth_oracle.clone(),
+                updates_proxy_oracle: false,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: pyth_oracle.clone(),
                     collateral_asset_price_id: price_id(1),
@@ -880,6 +978,7 @@ mod tests {
             MarketData {
                 account_id: market_b.clone(),
                 oracle_id: redstone_oracle.clone(),
+                updates_proxy_oracle: false,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: redstone_oracle.clone(),
                     collateral_asset_price_id: price_id(3),
@@ -907,7 +1006,7 @@ mod tests {
             },
         );
 
-        let (pyth_updates, redstone_updates) =
+        let (pyth_updates, redstone_updates, proxy_updates) =
             App::grouped_price_updates(&accounts, &HashSet::from([market_a, market_b]));
 
         assert_eq!(pyth_updates.len(), 1);
@@ -919,6 +1018,61 @@ mod tests {
         assert_eq!(
             redstone_updates[&redstone_oracle],
             HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
+        );
+        assert!(proxy_updates.is_empty());
+    }
+
+    #[test]
+    fn grouped_price_updates_includes_proxy_cache_targets() {
+        let market_id = account_id("market.test.near");
+        let proxy_oracle = account_id("proxy.test.near");
+        let pyth_oracle = account_id("pyth.test.near");
+
+        let mut accounts = AccountData::default();
+        accounts.market_data.insert(
+            market_id.clone(),
+            MarketData {
+                account_id: market_id.clone(),
+                oracle_id: proxy_oracle.clone(),
+                updates_proxy_oracle: true,
+                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
+                    account_id: proxy_oracle.clone(),
+                    collateral_asset_price_id: price_id(1),
+                    collateral_asset_decimals: 24,
+                    borrow_asset_price_id: price_id(2),
+                    borrow_asset_decimals: 24,
+                    price_maximum_age_s: 60,
+                },
+                collateral: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("collateral.test.near")),
+                    price_id: price_id(1),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        pyth_oracle.clone(),
+                        price_id(11),
+                    )]),
+                },
+                borrow: AssetResolution {
+                    asset: FungibleAsset::nep141(account_id("borrow.test.near")),
+                    price_id: price_id(2),
+                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
+                        pyth_oracle.clone(),
+                        price_id(12),
+                    )]),
+                },
+            },
+        );
+
+        let (pyth_updates, redstone_updates, proxy_updates) =
+            App::grouped_price_updates(&accounts, &HashSet::from([market_id]));
+
+        assert_eq!(
+            pyth_updates[&pyth_oracle],
+            HashSet::from([price_id(11), price_id(12)])
+        );
+        assert!(redstone_updates.is_empty());
+        assert_eq!(
+            proxy_updates[&proxy_oracle],
+            HashSet::from([price_id(1), price_id(2)])
         );
     }
 
@@ -934,6 +1088,7 @@ mod tests {
             MarketData {
                 account_id: market_id.clone(),
                 oracle_id: oracle_id.clone(),
+                updates_proxy_oracle: false,
                 price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
                     account_id: oracle_id,
                     collateral_asset_price_id: price_id(1),
@@ -963,26 +1118,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_grouped_price_updates_waits_for_pyth_before_redstone() {
+    async fn dispatch_grouped_price_updates_waits_for_underlying_before_proxy() {
         let pyth_updates =
             HashMap::from([(account_id("pyth.test.near"), HashSet::from([price_id(1)]))]);
         let redstone_updates = HashMap::from([(
             account_id("redstone.test.near"),
             HashSet::from([FeedId::from("BTC")]),
         )]);
+        let proxy_updates =
+            HashMap::from([(account_id("proxy.test.near"), HashSet::from([price_id(2)]))]);
 
         let pyth_started = Arc::new(Notify::new());
         let pyth_release = Arc::new(Notify::new());
         let redstone_started = Arc::new(Notify::new());
+        let redstone_release = Arc::new(Notify::new());
+        let proxy_started = Arc::new(Notify::new());
 
         let task = tokio::spawn({
             let pyth_started = pyth_started.clone();
             let pyth_release = pyth_release.clone();
             let redstone_started = redstone_started.clone();
+            let redstone_release = redstone_release.clone();
+            let proxy_started = proxy_started.clone();
 
             App::dispatch_grouped_price_updates(
                 pyth_updates,
                 redstone_updates,
+                proxy_updates,
                 move |_, _| {
                     let pyth_started = pyth_started.clone();
                     let pyth_release = pyth_release.clone();
@@ -994,8 +1156,17 @@ mod tests {
                 },
                 move |_, _| {
                     let redstone_started = redstone_started.clone();
+                    let redstone_release = redstone_release.clone();
                     async move {
                         redstone_started.notify_one();
+                        redstone_release.notified().await;
+                        Ok(None)
+                    }
+                },
+                move |_, _| {
+                    let proxy_started = proxy_started.clone();
+                    async move {
+                        proxy_started.notify_one();
                         Ok(None)
                     }
                 },
@@ -1011,12 +1182,25 @@ mod tests {
                 .is_ok();
 
         pyth_release.notify_one();
+        timeout(Duration::from_secs(1), redstone_started.notified())
+            .await
+            .unwrap();
+        let proxy_started_while_redstone_blocked =
+            timeout(Duration::from_millis(100), proxy_started.notified())
+                .await
+                .is_ok();
+
+        redstone_release.notify_one();
 
         task.await.unwrap().unwrap();
 
         assert!(
             !redstone_started_while_pyth_blocked,
             "redstone update started before blocked pyth update completed"
+        );
+        assert!(
+            !proxy_started_while_redstone_blocked,
+            "proxy update started before blocked redstone update completed"
         );
     }
 }

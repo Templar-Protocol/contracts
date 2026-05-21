@@ -602,6 +602,10 @@ impl Near {
             .await?;
 
         let oracle_id = config.price_oracle_configuration.account_id.clone();
+        let updates_proxy_oracle = matches!(
+            self.query_oracle_type(oracle_id.clone()).await?,
+            OracleType::Proxy
+        );
 
         let borrow_request = self
             .resolve_price_identifier(
@@ -619,6 +623,7 @@ impl Near {
         Ok(MarketData {
             account_id: market_id.clone(),
             oracle_id,
+            updates_proxy_oracle,
             price_oracle_configuration: config.price_oracle_configuration.clone(),
             collateral: AssetResolution {
                 asset: config.collateral_asset.clone(),

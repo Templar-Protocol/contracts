@@ -60,6 +60,7 @@ pub struct ContractData {
 pub struct MarketData {
     pub account_id: AccountId,
     pub oracle_id: AccountId,
+    pub updates_proxy_oracle: bool,
     pub price_oracle_configuration: PriceOracleConfiguration,
     pub collateral: AssetResolution<CollateralAsset>,
     pub borrow: AssetResolution<BorrowAsset>,

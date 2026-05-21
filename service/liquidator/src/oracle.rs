@@ -12,6 +12,7 @@ use near_jsonrpc_client::{
 use near_primitives::{
     gas::Gas,
     transaction::{Transaction, TransactionV0},
+    views::FinalExecutionStatus,
 };
 use near_sdk::{serde_json::json, AccountId, NearToken};
 use std::collections::{HashMap, HashSet};
@@ -21,13 +22,14 @@ use templar_common::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
+    cache::CachedProxyPriceStatus,
     input::Source,
     price_transformer::{Call, PriceTransformer},
     request::OracleRequest,
 };
 
 use crate::{
-    rpc::{view, NonceTracker, RpcError},
+    rpc::{check_transaction_success, view, NonceTracker, RpcError},
     LiquidatorError, LiquidatorResult,
 };
 
@@ -401,9 +403,10 @@ impl OracleFetcher {
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
     ) -> LiquidatorResult<bool> {
+        let updates_proxy_oracle = self.is_proxy_oracle(oracle).await?;
         let targets = self.resolve_pyth_update_targets(oracle, price_ids).await;
 
-        if targets.is_empty() {
+        if targets.is_empty() && !updates_proxy_oracle {
             tracing::debug!("No Pyth targets to update on-chain");
             return Ok(false);
         }
@@ -423,7 +426,105 @@ impl OracleFetcher {
             }
         }
 
+        if updates_proxy_oracle {
+            any_updated |= self.update_proxy_prices(oracle, price_ids).await?;
+        }
+
         Ok(any_updated)
+    }
+
+    /// Refreshes a proxy oracle cache by invoking its on-chain `update_prices` flow.
+    #[tracing::instrument(skip(self), level = "info")]
+    async fn update_proxy_prices(
+        &self,
+        oracle: &AccountId,
+        price_ids: &[PriceIdentifier],
+    ) -> LiquidatorResult<bool> {
+        let (Some(signer_id), Some(signer_key)) = (&self.signer_id, &self.signer_key) else {
+            tracing::warn!(oracle = %oracle, "No signer configured, cannot update proxy oracle prices");
+            return Ok(false);
+        };
+
+        let access_key_query_response = self
+            .client
+            .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
+                block_reference: near_primitives::types::BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::ViewAccessKey {
+                    account_id: signer_id.clone(),
+                    public_key: signer_key.public_key(),
+                },
+            })
+            .await
+            .map_err(|e| {
+                LiquidatorError::OracleUpdateError(format!("Failed to query access key: {e}"))
+            })?;
+
+        let rpc_nonce = match access_key_query_response.kind {
+            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
+                access_key.nonce
+            }
+            _ => {
+                return Err(LiquidatorError::OracleUpdateError(
+                    "Unexpected query response kind".to_string(),
+                ))
+            }
+        };
+
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: signer_id.clone(),
+            public_key: signer_key.public_key(),
+            nonce: self.nonce_tracker.next_nonce(rpc_nonce),
+            receiver_id: oracle.clone(),
+            block_hash: access_key_query_response.block_hash,
+            actions: vec![near_primitives::action::FunctionCallAction {
+                method_name: "update_prices".to_string(),
+                args: json!({ "price_ids": price_ids }).to_string().into_bytes(),
+                gas: Gas::from_teragas(100),
+                deposit: NearToken::ZERO,
+            }
+            .into()],
+        });
+
+        let signer =
+            near_crypto::InMemorySigner::from_secret_key(signer_id.clone(), signer_key.clone());
+        let signed_transaction = transaction.sign(&signer);
+
+        let response = self
+            .client
+            .call(RpcBroadcastTxCommitRequest { signed_transaction })
+            .await
+            .map_err(|e| LiquidatorError::OracleUpdateError(format!("Transaction failed: {e}")))?;
+
+        check_transaction_success(&response).map_err(LiquidatorError::OracleUpdateError)?;
+
+        let FinalExecutionStatus::SuccessValue(value) = &response.status else {
+            return Err(LiquidatorError::OracleUpdateError(
+                "Proxy oracle update did not return a success value".to_string(),
+            ));
+        };
+
+        let statuses: HashMap<PriceIdentifier, CachedProxyPriceStatus> =
+            near_sdk::serde_json::from_slice(value).map_err(|e| {
+                LiquidatorError::OracleUpdateError(format!(
+                    "Failed to decode proxy oracle update result: {e}"
+                ))
+            })?;
+
+        for price_id in price_ids {
+            let Some(status) = statuses.get(price_id) else {
+                return Err(LiquidatorError::OracleUpdateError(format!(
+                    "Proxy oracle update returned no status for {price_id}"
+                )));
+            };
+            if !matches!(status, CachedProxyPriceStatus::Accepted { .. }) {
+                return Err(LiquidatorError::OracleUpdateError(format!(
+                    "Proxy oracle update for {price_id} returned {status:?}"
+                )));
+            }
+        }
+
+        tracing::info!(oracle = %oracle, price_ids = ?price_ids, "Successfully updated proxy oracle prices");
+        Ok(true)
     }
 
     /// Pushes fresh Pyth prices on-chain by fetching a VAA from Hermes and
