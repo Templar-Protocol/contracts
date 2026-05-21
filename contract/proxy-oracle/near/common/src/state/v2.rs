@@ -7,7 +7,7 @@ use templar_common::{
 
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 
-use crate::{governance::Operation, input::Source};
+use crate::{cache::CachedProxyPrice, governance::Operation, input::Source};
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -15,6 +15,7 @@ pub enum StorageKey {
     Governance,
     Proxies,
     CircuitBreakers,
+    CachedPrices,
 }
 
 #[derive(Debug)]
@@ -23,6 +24,7 @@ pub struct State {
     pub governance: Governance<Operation>,
     pub proxies: UnorderedMap<PriceIdentifier, Proxy<Source>>,
     pub circuit_breakers: UnorderedMap<PriceIdentifier, CircuitBreakerSet>,
+    pub cached_prices: UnorderedMap<PriceIdentifier, CachedProxyPrice>,
 }
 
 impl StateVersion for State {
@@ -35,6 +37,7 @@ impl StateVersion for State {
             governance: Governance::new(StorageKey::Governance),
             proxies: UnorderedMap::new(StorageKey::Proxies),
             circuit_breakers: UnorderedMap::new(StorageKey::CircuitBreakers),
+            cached_prices: UnorderedMap::new(StorageKey::CachedPrices),
         })
     }
 }

@@ -6,7 +6,7 @@ use templar_common::{
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
     },
-    Nanoseconds, UnwrapReject,
+    UnwrapReject,
 };
 use templar_proxy_oracle_near_common::request::{OracleRequest, PythRequest, RedStoneRequest};
 
@@ -23,12 +23,10 @@ pub struct CallbackHandler<'a> {
     oracle_order: &'a [OracleType],
     pyth_results: HashMap<AccountId, OnceLock<Option<OracleResponse>>>,
     redstone_results: HashMap<AccountId, OnceLock<Option<HashMap<redstone::FeedId, FeedData>>>>,
-    now: Nanoseconds,
-    max_age: Nanoseconds,
 }
 
 impl<'a> CallbackHandler<'a> {
-    pub fn new(oracle_order: &'a [OracleType], max_age: Nanoseconds) -> Self {
+    pub fn new(oracle_order: &'a [OracleType]) -> Self {
         let (pyth_results, redstone_results) = oracle_order.iter().fold(
             (HashMap::new(), HashMap::new()),
             |(mut pyth_results, mut redstone_results), oracle| {
@@ -47,8 +45,6 @@ impl<'a> CallbackHandler<'a> {
             oracle_order,
             pyth_results,
             redstone_results,
-            now: Nanoseconds::near_timestamp(),
-            max_age,
         }
     }
 
@@ -87,28 +83,10 @@ impl<'a> CallbackHandler<'a> {
     }
 
     pub fn get(&self, request: &OracleRequest) -> Option<pyth::Price> {
-        let price = match request {
+        match request {
             OracleRequest::Pyth(p) => self.pyth(p),
             OracleRequest::RedStone(p) => self.redstone(p),
-        }?;
-
-        // Filter for staleness
-        let Some(publish_time) = price.publish_time.try_into_time() else {
-            near_sdk::log!("Failed to convert publish_time");
-            return None;
-        };
-
-        if self.now >= publish_time {
-            let age = self.now.saturating_sub(publish_time);
-            if age > self.max_age {
-                near_sdk::log!("Price is stale: age={}, max_age={}", age, self.max_age);
-                return None;
-            }
-        } else {
-            // Future price/clock drift is handled by the Aggregator
         }
-
-        Some(price)
     }
 }
 

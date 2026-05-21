@@ -56,6 +56,7 @@ impl StateTransformer for V1ToV2 {
         let mut proxies = near_sdk::collections::UnorderedMap::new(v2::StorageKey::Proxies);
         let mut circuit_breakers =
             near_sdk::collections::UnorderedMap::new(v2::StorageKey::CircuitBreakers);
+        let cached_prices = near_sdk::collections::UnorderedMap::new(v2::StorageKey::CachedPrices);
         for (price_id, proxy) in proxies_snapshot {
             proxies.insert(&price_id, &proxy);
             circuit_breakers.insert(&price_id, &CircuitBreakerSet::empty());
@@ -65,6 +66,7 @@ impl StateTransformer for V1ToV2 {
             governance,
             proxies,
             circuit_breakers,
+            cached_prices,
         })
     }
 }
@@ -108,5 +110,6 @@ mod tests {
             output.circuit_breakers.get(&price_id),
             Some(CircuitBreakerSet::empty())
         );
+        assert!(output.cached_prices.is_empty());
     }
 }

@@ -53,17 +53,24 @@ impl Pyth for Contract {
         self.pyth_prices.contains_key(&price_identifier)
     }
 
+    fn list_ema_prices_unsafe(
+        &self,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> HashMap<PriceIdentifier, Option<Price>> {
+        let mut r = HashMap::new();
+        for price_id in price_ids {
+            r.insert(price_id, self.pyth_prices.get(&price_id).cloned());
+        }
+        r
+    }
+
     fn list_ema_prices_no_older_than(
         &self,
         price_ids: Vec<PriceIdentifier>,
         age: u64,
     ) -> HashMap<PriceIdentifier, Option<Price>> {
         let _ = age;
-        let mut r = HashMap::new();
-        for price_id in price_ids {
-            r.insert(price_id, self.pyth_prices.get(&price_id).cloned());
-        }
-        r
+        self.list_ema_prices_unsafe(price_ids)
     }
 }
 

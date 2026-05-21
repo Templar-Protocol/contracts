@@ -4,7 +4,7 @@
     clippy::unwrap_used
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use near_sdk::{
@@ -12,7 +12,7 @@ use near_sdk::{
     test_utils::VMContextBuilder,
     testing_env, AccountIdRef, Gas, NearToken,
 };
-use near_workspaces::{network::Sandbox, Worker};
+use near_workspaces::{network::Sandbox, Account, Worker};
 
 use templar_common::{
     governance::Proposal,
@@ -35,11 +35,12 @@ use templar_proxy_oracle_kernel::{
     Price,
 };
 use templar_proxy_oracle_near_common::{
+    cache::{CachedProxyPrice, CachedProxyPriceStatus},
     governance::{
         AcceptedHistorySource, CircuitBreakerUpdate, Operation, ProxyGovernanceInterface,
         MAX_CIRCUIT_BREAKERS_PER_PROXY, MAX_CIRCUIT_BREAKER_HISTORY_LEN,
     },
-    input::{ProxyPriceTransformer, Source},
+    input::ProxyPriceTransformer,
     price_transformer,
     request::OracleRequest,
     role::Role,
@@ -60,6 +61,18 @@ fn norm_price(price: &pyth::Price) -> u64 {
     } else {
         p * f
     }
+}
+
+async fn update_and_list(
+    proxy_oracle: &ProxyOracleController,
+    actor: &Account,
+    price_ids: Vec<PriceIdentifier>,
+    age: u32,
+) -> pyth::OracleResponse {
+    proxy_oracle.update_prices(actor, price_ids.clone()).await;
+    proxy_oracle
+        .list_ema_prices_no_older_than(actor, price_ids, age)
+        .await
 }
 
 fn proxy_price(value: i64) -> Price {
@@ -132,9 +145,7 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
             }),
         )
         .await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
-        .await;
+    let result = update_and_list(&proxy_oracle, &actor, vec![proxy_id], 60_u32).await;
     assert_eq!(
         result.get(&proxy_id).unwrap().as_ref().map(norm_price),
         Some(100)
@@ -155,9 +166,11 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
         )
         .await;
     let outcome = proxy_oracle
-        .list_ema_prices_no_older_than_exec(&actor, vec![proxy_id], 60_u32)
+        .update_prices_exec(&actor, vec![proxy_id])
         .await;
-    let result = outcome.json::<pyth::OracleResponse>().unwrap();
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+        .await;
     assert_eq!(result.get(&proxy_id), Some(&None));
     let logs = outcome.logs().join("\n");
     assert!(logs.contains("\"event\":\"circuit_breaker_tripped\""));
@@ -194,9 +207,11 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
         )
         .await;
     let outcome = proxy_oracle
-        .list_ema_prices_no_older_than_exec(&actor, vec![proxy_id], 60_u32)
+        .update_prices_exec(&actor, vec![proxy_id])
         .await;
-    let result = outcome.json::<pyth::OracleResponse>().unwrap();
+    let result = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+        .await;
     assert_eq!(result.get(&proxy_id), Some(&None));
     assert!(!outcome
         .logs()
@@ -212,6 +227,52 @@ async fn proxy_oracle_circuit_breaker_trips_price_feed(#[future(awt)] worker: Wo
     assert_eq!(set.observed_history().len(), 2);
     assert_eq!(set.observed_history().as_slice()[0].price.price, 120);
     assert_eq!(set.observed_history().as_slice()[1].price.price, 130);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn update_prices_does_not_use_read_age(#[future(awt)] worker: Worker<Sandbox>) {
+    accounts!(worker, actor, proxy_oracle, pyth_oracle);
+    let pyth_oracle = MockOracleController::deploy(pyth_oracle).await;
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle).await;
+
+    let proxy_id = PriceIdentifier([0x55; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    );
+    proxy_oracle
+        .set_proxy(proxy_oracle.account(), proxy_id, Some(proxy))
+        .await;
+
+    let publish_time = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64 - 120;
+    pyth_oracle
+        .set_pyth_price(
+            &actor,
+            CRYPTO_BTC_USD,
+            Some(pyth::Price {
+                price: I64(100),
+                conf: U64(0),
+                expo: 0,
+                publish_time: PythTimestamp::from_secs(publish_time),
+            }),
+        )
+        .await;
+
+    proxy_oracle.update_prices(&actor, vec![proxy_id]).await;
+
+    let strict_read = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
+        .await;
+    assert_eq!(strict_read.get(&proxy_id), Some(&None));
+
+    let loose_read = proxy_oracle
+        .list_ema_prices_no_older_than(&actor, vec![proxy_id], 180_u32)
+        .await;
+    assert_eq!(
+        loose_read.get(&proxy_id).unwrap().as_ref().map(norm_price),
+        Some(100)
+    );
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -373,17 +434,14 @@ async fn calibrate_circuit_breaker_resolution_gas(#[future(awt)] worker: Worker<
 
         for value in 0..history_len {
             set_calibration_price(&pyth_oracle, &actor, i64::from(100 + value)).await;
-            proxy_oracle
-                .list_ema_prices_no_older_than(&actor, vec![proxy_id], 60_u32)
-                .await;
+            proxy_oracle.update_prices(&actor, vec![proxy_id]).await;
         }
 
         set_calibration_price(&pyth_oracle, &actor, 1_000).await;
         let result = actor
-            .call(proxy_oracle.id(), "list_ema_prices_no_older_than")
+            .call(proxy_oracle.id(), "update_prices")
             .args_json(near_sdk::serde_json::json!({
                 "price_ids": [proxy_id],
-                "age": 60_u32,
             }))
             .max_gas()
             .transact()
@@ -453,43 +511,8 @@ async fn calibrate_circuit_breaker_governance_gas(#[future(awt)] worker: Worker<
 }
 
 fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
-    let mut total = Contract::GAS_FOR_LIST_00_ENTRY;
-
-    let mut pyth = HashSet::new();
-    let mut redstone = HashSet::new();
-
-    for price_id in price_ids {
-        let Some(proxy) = c.proxies.get(price_id) else {
-            // Skip unknown.
-            continue;
-        };
-
-        for entry in proxy.sources() {
-            let request = match entry {
-                Source::Request(request) => request,
-                Source::Transformer(transformer) => {
-                    total = total.saturating_add(Gas::from_gas(transformer.call.gas.0));
-                    &transformer.request
-                }
-            };
-
-            match request {
-                OracleRequest::Pyth(p) => {
-                    pyth.insert(p.oracle_id.clone());
-                }
-                OracleRequest::RedStone(p) => {
-                    redstone.insert(p.oracle_id.clone());
-                }
-            }
-        }
-    }
-
-    total = total.saturating_add(Contract::GAS_FOR_PYTH_REQUEST.saturating_mul(pyth.len() as u64));
-    total = total
-        .saturating_add(Contract::GAS_FOR_REDSONE_REQUEST.saturating_mul(redstone.len() as u64));
-    total = total.saturating_add(Contract::GAS_FOR_LIST_01_CALLBACK);
-
-    total
+    let _ = (c, price_ids);
+    Contract::GAS_FOR_LIST_00_ENTRY
 }
 
 #[derive(Clone, Copy)]
@@ -1186,47 +1209,25 @@ pub fn gas() {
     set_proxy(1, proxy_usdc_id, proxy_usdc.clone());
     set_proxy(2, proxy_wnear_id, proxy_wnear.clone());
 
+    for (index, price_id) in price_ids.iter().copied().enumerate() {
+        c.cached_prices.insert(
+            &price_id,
+            &CachedProxyPrice {
+                updated_at_ns: Nanoseconds::zero(),
+                status: CachedProxyPriceStatus::Accepted {
+                    price: proxy_price(i64::try_from(index + 1).unwrap()),
+                },
+            },
+        );
+    }
+
     let gas = estimate_gas(&c, &price_ids);
     eprintln!("Gas used: {gas}");
-    assert!(gas <= Gas::from_tgas(20));
+    assert!(gas <= Gas::from_tgas(15));
 
-    c.list_ema_prices_no_older_than(price_ids, 60).detach();
-
-    for receipt in near_sdk::test_utils::get_created_receipts() {
-        println!("Receipt to {}", receipt.receiver_id);
-        for action in &receipt.actions {
-            use near_sdk::mock::MockAction;
-
-            match action {
-                MockAction::CreateReceipt {
-                    receipt_indices,
-                    receiver_id,
-                } => {
-                    println!("  CreateReceipt to {receiver_id}");
-                    for receipt_index in receipt_indices {
-                        println!("    Receipt index: {receipt_index}");
-                    }
-                }
-                MockAction::FunctionCallWeight {
-                    method_name,
-                    args,
-                    attached_deposit,
-                    prepaid_gas,
-                    gas_weight,
-                    ..
-                } => {
-                    println!("  FunctionCall to '{}' with args '{}', attached_deposit {}, prepaid_gas {}, gas_weight {:?}",
-                        String::from_utf8_lossy(method_name), String::from_utf8_lossy(args), attached_deposit, prepaid_gas, gas_weight);
-                }
-                MockAction::Transfer { deposit, .. } => {
-                    println!("  Transfer of {deposit} yoctoNEAR");
-                }
-                _ => {
-                    println!("  Other action: {action:?}");
-                }
-            }
-        }
-    }
+    let result = c.list_ema_prices_no_older_than(price_ids, 60);
+    assert_eq!(result.len(), 3);
+    assert!(near_sdk::test_utils::get_created_receipts().is_empty());
 }
 
 #[rstest::rstest]
@@ -1385,9 +1386,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
 
     // Step 1: Only redstone has a price. Single source → same for both methods.
     set!(redstone.BTC = 100_000).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![btc_proxy_id, CRYPTO_BTC_USD],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -1399,21 +1404,21 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     //   Priority: redstone (weight 5) > pyth1 (weight 1) → 100k
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
     set!(redstone.ETH = 1_800).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(
-            &actor,
-            vec![
-                btc_proxy_id,
-                CRYPTO_BTC_USD,
-                btc_proxy_id,
-                CRYPTO_BTC_USD,
-                CRYPTO_BTC_USD,
-                just_pyth_btc_id,
-                just_redstone_eth_id,
-            ],
-            60_u32,
-        )
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![
+            btc_proxy_id,
+            CRYPTO_BTC_USD,
+            btc_proxy_id,
+            CRYPTO_BTC_USD,
+            CRYPTO_BTC_USD,
+            just_pyth_btc_id,
+            just_redstone_eth_id,
+        ],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 3);
     let expected_btc_2source = match method {
         TestMethod::MedianLow => 90_000,
@@ -1444,9 +1449,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     //   MedianLow: median of [80k, 90k, 100k] → 90k
     //   Priority: pyth2 (weight 10) wins → 80k
     set!(pyth2.CRYPTO_BTC_USD = 80_000).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![btc_proxy_id, CRYPTO_BTC_USD],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 1);
     let expected_btc_3source = match method {
         TestMethod::MedianLow => 90_000,
@@ -1460,9 +1469,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     // Step 4: Clear pyth1 and redstone, only pyth2=80k remains. Single source → same for both.
     set!(pyth.CRYPTO_BTC_USD = None).await;
     set!(redstone.BTC = None).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![btc_proxy_id, CRYPTO_BTC_USD],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -1575,9 +1588,7 @@ async fn proxy_oracle_enforces_freshness_filter(
         )
         .await;
 
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id], 60_u32)
-        .await;
+    let result = update_and_list(&proxy_oracle, &actor, vec![btc_proxy_id], 60_u32).await;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),

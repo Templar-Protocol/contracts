@@ -22,6 +22,7 @@ use templar_proxy_oracle_kernel::proxy::{
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
+    cache::{bounded_resolve_error_message, CachedProxyPrice, CachedProxyPriceStatus},
     convert::{account_id_to_kernel, pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
     input::Source,
@@ -95,6 +96,22 @@ impl Contract {
         self.circuit_breakers.get(&id)
     }
 
+    pub fn get_cached_proxy_price(&self, id: PriceIdentifier) -> Option<CachedProxyPrice> {
+        self.cached_prices.get(&id)
+    }
+
+    pub fn list_cached_proxy_prices(
+        &self,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> HashMap<PriceIdentifier, Option<CachedProxyPrice>> {
+        HashMap::from_iter(
+            HashSet::<PriceIdentifier>::from_iter(price_ids)
+                .into_iter()
+                .filter(|price_id| self.proxies.get(price_id).is_some())
+                .map(|price_id| (price_id, self.cached_prices.get(&price_id))),
+        )
+    }
+
     pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
         <Self as Rbac>::has_role(&account_id, &role)
     }
@@ -152,13 +169,39 @@ impl Contract {
         &self,
         price_ids: Vec<PriceIdentifier>,
         age: u64,
-    ) -> PromiseOrValue<OracleResponse> {
+    ) -> OracleResponse {
         if price_ids.is_empty() {
-            return PromiseOrValue::Value(OracleResponse::new());
+            return OracleResponse::new();
         }
-        let price_ids = HashSet::<PriceIdentifier>::from_iter(price_ids);
 
         let max_age = Nanoseconds::from_secs(age);
+        let now = Nanoseconds::near_timestamp();
+        let mut results = OracleResponse::new();
+
+        for price_id in HashSet::<PriceIdentifier>::from_iter(price_ids) {
+            if self.proxies.get(&price_id).is_none() {
+                continue;
+            }
+
+            let price = self.cached_prices.get(&price_id).and_then(|cached| {
+                cached
+                    .accepted_price_no_older_than(now, max_age)
+                    .and_then(pyth_price_try_from_kernel)
+            });
+            results.insert(price_id, price);
+        }
+
+        results
+    }
+
+    pub fn update_prices(
+        &self,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> PromiseOrValue<HashMap<PriceIdentifier, CachedProxyPriceStatus>> {
+        if price_ids.is_empty() {
+            return PromiseOrValue::Value(HashMap::new());
+        }
+        let price_ids = HashSet::<PriceIdentifier>::from_iter(price_ids);
 
         let mut invoked = Vec::with_capacity(price_ids.len());
         let mut pyth_requests =
@@ -166,7 +209,6 @@ impl Contract {
         let mut redstone_requests =
             HashMap::<AccountId, HashSet<redstone::FeedId>>::with_capacity(price_ids.len());
         let mut transformer_promises = Vec::with_capacity(price_ids.len());
-        let skipped = OracleResponse::new();
 
         for price_id in &price_ids {
             let Some(proxy) = self.proxies.get(price_id) else {
@@ -210,7 +252,7 @@ impl Contract {
             oracle_promises.push(
                 ext_pyth::ext(oracle_id)
                     .with_static_gas(Self::GAS_FOR_PYTH_REQUEST)
-                    .list_ema_prices_no_older_than(Vec::from_iter(price_ids), age),
+                    .list_ema_prices_unsafe(Vec::from_iter(price_ids)),
             );
         }
 
@@ -228,18 +270,13 @@ impl Contract {
             .chain(transformer_promises)
             .reduce(near_sdk::Promise::and)
         else {
-            return PromiseOrValue::Value(skipped);
+            return PromiseOrValue::Value(HashMap::new());
         };
 
         PromiseOrValue::Promise(
             promise.then(
                 self_ext!(Self::GAS_FOR_LIST_01_CALLBACK)
-                    .list_ema_prices_no_older_than_01_consume_results(
-                        oracle_order,
-                        invoked,
-                        max_age,
-                        skipped,
-                    ),
+                    .update_prices_01_consume_results(oracle_order, invoked),
             ),
         )
     }
@@ -250,16 +287,15 @@ impl Contract {
         unused_mut,
         reason = "near macro expansion checks the original binding"
     )]
-    pub fn list_ema_prices_no_older_than_01_consume_results(
+    pub fn update_prices_01_consume_results(
         &mut self,
         oracle_order: Vec<OracleType>,
         invoked: Vec<(PriceIdentifier, Proxy<Source>)>,
-        max_age: Nanoseconds,
-        mut results: OracleResponse,
-    ) -> OracleResponse {
-        let callback = CallbackHandler::new(&oracle_order, max_age);
+    ) -> HashMap<PriceIdentifier, CachedProxyPriceStatus> {
+        let callback = CallbackHandler::new(&oracle_order);
 
         let now = Nanoseconds::near_timestamp();
+        let mut results = HashMap::new();
 
         let mut i = oracle_order.len() as u64;
         for (price_id, proxy) in invoked {
@@ -288,22 +324,30 @@ impl Contract {
                 .unwrap_or_else(CircuitBreakerSet::empty);
             let result = proxy.resolve(&mut set, prices, now);
             self.circuit_breakers.insert(&price_id, &set);
-            let result = match result {
-                Ok(resolution) => emit_outcome(price_id, resolution).ok(),
+            let status = match result {
+                Ok(resolution) => match emit_outcome(price_id, resolution) {
+                    Ok(price) => CachedProxyPriceStatus::Accepted { price },
+                    Err(reason) => CachedProxyPriceStatus::Blocked { reason },
+                },
                 Err(error) => {
+                    let message = bounded_resolve_error_message(error.to_string());
                     near_sdk::log!(
                         "Proxy resolve failed price_id={:?} error={}",
                         price_id,
-                        error
+                        message
                     );
-                    None
+                    CachedProxyPriceStatus::ResolveFailed { message }
                 }
             };
 
-            results.insert(
-                price_id,
-                result.as_ref().and_then(pyth_price_try_from_kernel),
+            self.cached_prices.insert(
+                &price_id,
+                &CachedProxyPrice {
+                    updated_at_ns: now,
+                    status: status.clone(),
+                },
             );
+            results.insert(price_id, status);
         }
 
         results

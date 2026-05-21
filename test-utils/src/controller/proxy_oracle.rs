@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use near_sdk::{
     json_types::Base64VecU8,
     serde::{de::DeserializeOwned, Serialize},
@@ -15,6 +17,7 @@ use templar_proxy_oracle_kernel::proxy::{
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
+    cache::{CachedProxyPrice, CachedProxyPriceStatus},
     governance::{CircuitBreakerUpdate, Operation},
     input::Source,
     role::Role,
@@ -206,6 +209,8 @@ impl ProxyOracleController {
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy<Source>>;
         #[view] pub fn get_proxy_circuit_breaker_set(id: PriceIdentifier) -> Option<CircuitBreakerSet>;
+        #[view] pub fn get_cached_proxy_price(id: PriceIdentifier) -> Option<CachedProxyPrice>;
+        #[view] pub fn list_cached_proxy_prices(price_ids: Vec<PriceIdentifier>) -> HashMap<PriceIdentifier, Option<CachedProxyPrice>>;
         #[view] pub fn has_role(account_id: AccountId, role: Role) -> bool;
         #[view] pub fn list_role(role: Role, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
 
@@ -217,10 +222,14 @@ impl ProxyOracleController {
         pub fn set_circuit_breaker_manual_trip_exec["set_circuit_breaker_manual_trip"](id: PriceIdentifier, is_manually_tripped: bool, metadata: Option<Base64VecU8>);
         #[call(exec)]
         pub fn price_feed_exists_exec["price_feed_exists"](price_identifier: PriceIdentifier) -> bool;
-        #[call(tgas(25))]
+        #[call(tgas(15))]
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
-        #[call(exec, tgas(25))]
+        #[call(exec, tgas(15))]
         pub fn list_ema_prices_no_older_than_exec["list_ema_prices_no_older_than"](price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
+        #[call(tgas(25))]
+        pub fn update_prices(price_ids: Vec<PriceIdentifier>) -> HashMap<PriceIdentifier, CachedProxyPriceStatus>;
+        #[call(exec, tgas(25))]
+        pub fn update_prices_exec["update_prices"](price_ids: Vec<PriceIdentifier>) -> HashMap<PriceIdentifier, CachedProxyPriceStatus>;
     }
 }
 

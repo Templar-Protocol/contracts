@@ -68,6 +68,7 @@ impl ProxyGovernanceInterface for Contract {
             Operation::SetProxy { id, proxy } => {
                 if let Some(proxy) = proxy {
                     self.proxies.insert(&id, &proxy);
+                    self.cached_prices.remove(&id);
                     if self.circuit_breakers.get(&id).is_none() {
                         self.circuit_breakers
                             .insert(&id, &CircuitBreakerSet::empty());
@@ -75,6 +76,7 @@ impl ProxyGovernanceInterface for Contract {
                 } else {
                     self.proxies.remove(&id);
                     self.circuit_breakers.remove(&id);
+                    self.cached_prices.remove(&id);
                 }
             }
             Operation::SetActionTtl { new_ttl } => {
