@@ -9,7 +9,16 @@ use templar_common::{
     Nanoseconds,
 };
 
-use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_kernel::{
+    primitive::AccountId as KernelAccountId,
+    proxy::{
+        circuit_breaker::{
+            CircuitBreaker, CircuitBreakerError, CircuitBreakerOutcome, CircuitBreakerSet,
+            CircuitBreakerSetConfig, CircuitBreakerUpdate,
+        },
+        Proxy,
+    },
+};
 
 use crate::{
     cache::{CachedProxyPrice, CachedProxyPriceStatus},
@@ -57,10 +66,7 @@ impl ProxyEntry<'_> {
 }
 
 impl ProxyEntryMut<'_> {
-    pub fn edit_circuit_breaker_set<T>(
-        &mut self,
-        f: impl FnOnce(&mut CircuitBreakerSet) -> T,
-    ) -> T {
+    fn edit_circuit_breaker_set<T>(&mut self, f: impl FnOnce(&mut CircuitBreakerSet) -> T) -> T {
         let original = self
             .state
             .circuit_breakers
@@ -73,6 +79,52 @@ impl ProxyEntryMut<'_> {
             self.state.circuit_breakers.insert(&self.id, &set);
         }
         value
+    }
+
+    pub fn configure_circuit_breakers(
+        &mut self,
+        config: CircuitBreakerSetConfig,
+    ) -> CircuitBreakerOutcome {
+        self.edit_circuit_breaker_set(|set| set.set_config(config))
+    }
+
+    pub fn set_circuit_breaker_manual_trip(
+        &mut self,
+        is_manually_tripped: bool,
+        actor: KernelAccountId,
+        metadata: Option<Vec<u8>>,
+    ) -> CircuitBreakerOutcome {
+        self.edit_circuit_breaker_set(|set| {
+            set.set_manual_trip(is_manually_tripped, actor, metadata)
+        })
+    }
+
+    pub fn add_circuit_breaker(
+        &mut self,
+        breaker_id: u32,
+        breaker: CircuitBreaker,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        self.edit_circuit_breaker_set(|set| {
+            if set.breaker_count() >= crate::governance::MAX_CIRCUIT_BREAKERS_PER_PROXY {
+                return Err(CircuitBreakerError::TooManyBreakers);
+            }
+            set.add(breaker_id, breaker)
+        })
+    }
+
+    pub fn remove_circuit_breaker(
+        &mut self,
+        breaker_id: u32,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        self.edit_circuit_breaker_set(|set| set.remove(breaker_id))
+    }
+
+    pub fn update_circuit_breaker(
+        &mut self,
+        breaker_id: u32,
+        update: CircuitBreakerUpdate,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        self.edit_circuit_breaker_set(|set| set.update(breaker_id, update))
     }
 }
 
@@ -226,5 +278,74 @@ impl StateVersion for State {
             cached_prices: UnorderedMap::new(StorageKey::CachedPrices),
             cache_epochs: UnorderedMap::new(StorageKey::CacheEpochs),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::str::FromStr;
+
+    use near_sdk::{test_utils::VMContextBuilder, testing_env};
+    use templar_common::{governance::Governance, Decimal};
+    use templar_proxy_oracle_kernel::proxy::{
+        aggregator::Aggregator, circuit_breaker::StepwiseChange, FreshnessFilter,
+    };
+
+    use crate::{governance::MAX_CIRCUIT_BREAKERS_PER_PROXY, request::OracleRequest};
+
+    fn state() -> State {
+        State {
+            governance: Governance::new(StorageKey::Governance),
+            proxies: UnorderedMap::new(StorageKey::Proxies),
+            circuit_breakers: UnorderedMap::new(StorageKey::CircuitBreakers),
+            cached_prices: UnorderedMap::new(StorageKey::CachedPrices),
+            cache_epochs: UnorderedMap::new(StorageKey::CacheEpochs),
+        }
+    }
+
+    fn proxy(price_id: PriceIdentifier) -> Proxy<Source> {
+        Proxy::new(
+            Aggregator::median_low([OracleRequest::pyth(
+                "pyth-oracle.near".parse().unwrap(),
+                price_id,
+            )
+            .into()]),
+            FreshnessFilter::empty(),
+        )
+    }
+
+    fn breaker() -> CircuitBreaker {
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: Decimal::from_str("0.10").unwrap(),
+        })
+    }
+
+    #[test]
+    fn proxy_entry_add_circuit_breaker_enforces_maximum_count() {
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x11; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+
+        for breaker_id in 0..u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() {
+            state
+                .proxy_entry_mut(price_id)
+                .unwrap()
+                .add_circuit_breaker(breaker_id, breaker())
+                .unwrap();
+        }
+
+        assert_eq!(
+            state
+                .proxy_entry_mut(price_id)
+                .unwrap()
+                .add_circuit_breaker(
+                    u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap(),
+                    breaker(),
+                ),
+            Err(CircuitBreakerError::TooManyBreakers)
+        );
     }
 }

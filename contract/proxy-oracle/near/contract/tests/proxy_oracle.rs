@@ -1129,7 +1129,7 @@ fn offline_manual_trip_rejects_oversized_metadata() {
 }
 
 #[test]
-#[should_panic = "Too many circuit breakers"]
+#[should_panic = "too many circuit breakers"]
 fn governance_rejects_too_many_circuit_breakers_on_execute() {
     let context = VMContextBuilder::new()
         .attached_deposit(NearToken::from_yoctonear(1))
@@ -1218,23 +1218,26 @@ fn governance_updates_circuit_breaker_enforcement_and_lifecycle_separately() {
     );
     c.gov_execute(1);
 
-    c.proxy_entry_mut(proxy_id)
-        .unwrap()
-        .edit_circuit_breaker_set(|set| {
-            set.set_config(CircuitBreakerSetConfig {
-                sample_interval_ns: Nanoseconds::zero(),
-                history_len: 3,
-            });
-            set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
-                .unwrap();
-            set.set_manual_trip(true, kernel_actor_id(), None);
-            assert!(!set
-                .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
-                .unwrap()
-                .value
-                .is_ok());
-            set.set_manual_trip(false, kernel_actor_id(), None);
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::from_secs(2), |_, set| {
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
         });
+        set.try_accept_price(proxy_price(100), Nanoseconds::from_secs(1))
+            .unwrap();
+        set.set_manual_trip(true, kernel_actor_id(), None);
+        assert!(!set
+            .try_accept_price(proxy_price(200), Nanoseconds::from_secs(2))
+            .unwrap()
+            .value
+            .is_ok());
+        set.set_manual_trip(false, kernel_actor_id(), None);
+        CachedProxyPriceStatus::Accepted {
+            price: proxy_price(200),
+        }
+    })
+    .unwrap();
 
     c.gov_create(
         2,

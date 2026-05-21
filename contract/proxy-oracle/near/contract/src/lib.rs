@@ -137,13 +137,11 @@ impl Contract {
             .state
             .proxy_entry_mut(id)
             .unwrap_or_else(|| env::panic_str("Proxy not found"))
-            .edit_circuit_breaker_set(|set| {
-                set.set_manual_trip(
-                    is_manually_tripped,
-                    account_id_to_kernel(env::predecessor_account_id().as_ref()),
-                    metadata.map(|metadata| metadata.0),
-                )
-            });
+            .set_circuit_breaker_manual_trip(
+                is_manually_tripped,
+                account_id_to_kernel(env::predecessor_account_id().as_ref()),
+                metadata.map(|metadata| metadata.0),
+            );
         if result.events.is_empty() {
             return;
         }
