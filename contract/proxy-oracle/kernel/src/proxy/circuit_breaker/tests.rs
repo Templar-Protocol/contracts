@@ -566,6 +566,64 @@ fn too_soon_sample_can_trip_without_being_persisted() {
 }
 
 #[test]
+fn cumulative_too_soon_drift_trips_against_persisted_baseline() {
+    let mut set = breaker_set(Nanoseconds::from_secs(10), 2);
+    let id = 0;
+    set.add(
+        id,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.try_accept_price(price(105), Nanoseconds::from_secs(2))
+        .unwrap();
+    set.try_accept_price(price(109), Nanoseconds::from_secs(3))
+        .unwrap();
+    assert_blocked_by(
+        set.try_accept_price(price(111), Nanoseconds::from_secs(4)),
+        vec![id],
+    );
+
+    assert_eq!(set.accepted_history().len(), 1);
+    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.observed_history().len(), 1);
+    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
+}
+
+#[test]
+fn blocked_observed_history_respects_sample_interval() {
+    let mut set = breaker_set(Nanoseconds::from_secs(10), 3);
+    let id = 0;
+    set.add(
+        id,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.set_manual_trip(true, actor_id(), None);
+    assert_manually_blocked(set.try_accept_price(price(101), Nanoseconds::from_secs(2)));
+    assert_eq!(set.observed_history().len(), 1);
+    assert_manually_blocked(set.try_accept_price(price(102), Nanoseconds::from_secs(11)));
+
+    assert_eq!(
+        set.observed_history()
+            .as_slice()
+            .iter()
+            .map(|observation| observation.price.price)
+            .collect::<Vec<_>>(),
+        vec![100, 102]
+    );
+}
+
+#[test]
 fn unenforced_and_tripped_breakers_still_record_history() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
     let unenforced_id = 0;

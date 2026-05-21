@@ -530,6 +530,42 @@ fn cache_test_price(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
     .unwrap();
 }
 
+fn cache_test_price_and_seed_history(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
+    let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, set| {
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
+        });
+        set.try_accept_price(price.clone(), Nanoseconds::zero())
+            .unwrap();
+        CachedProxyPriceStatus::Accepted { price }
+    })
+    .unwrap();
+}
+
+fn stepwise_breaker() -> CircuitBreaker {
+    CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: Decimal::from_str("0.10").unwrap(),
+    })
+}
+
+fn assert_cache_invalidated_by_operation(
+    c: &mut Contract,
+    proxy_id: PriceIdentifier,
+    proposal_id: u32,
+    operation: Operation,
+) {
+    cache_test_price(c, proxy_id, proxy_price(100));
+    let initial_epoch = c.cache_epoch(proxy_id);
+
+    c.gov_create(proposal_id, operation);
+    c.gov_execute(proposal_id);
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
 #[allow(clippy::unwrap_used)]
 #[test]
 pub fn governance_manual_trip_invalidates_cached_price() {
@@ -590,6 +626,66 @@ pub fn governance_breaker_update_invalidates_cached_price() {
 
     assert!(c.get_cached_proxy_price(proxy_id).is_none());
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn breaker_mutations_invalidate_cached_price() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x5e; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+
+    assert_cache_invalidated_by_operation(
+        &mut c,
+        proxy_id,
+        0,
+        Operation::AddCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            breaker: stepwise_breaker(),
+        },
+    );
+    assert_cache_invalidated_by_operation(
+        &mut c,
+        proxy_id,
+        1,
+        Operation::UpdateCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            update: CircuitBreakerUpdate::SetEnforced { is_enforced: false },
+        },
+    );
+
+    cache_test_price_and_seed_history(&mut c, proxy_id, proxy_price(100));
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.gov_create(
+        2,
+        Operation::UpdateCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+            update: CircuitBreakerUpdate::Rearm {
+                armed_after_ns: Nanoseconds::from_secs(1),
+                accepted_history_source: AcceptedHistorySource::Empty,
+            },
+        },
+    );
+    c.gov_execute(2);
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+
+    assert_cache_invalidated_by_operation(
+        &mut c,
+        proxy_id,
+        3,
+        Operation::RemoveCircuitBreaker {
+            id: proxy_id,
+            breaker_id: 0,
+        },
+    );
 }
 
 #[allow(clippy::unwrap_used)]
@@ -981,6 +1077,72 @@ fn offline_manual_trip_roles_gate_trip_and_untrip() {
     assert!(logs.contains("\"is_manually_tripped\":false"));
     assert!(logs.contains("\"actor\":\"untripper.near\""));
     assert!(logs.contains("\"metadata\":null"));
+}
+
+#[test]
+fn no_op_manual_trip_still_validates_metadata_len() {
+    let mut context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context.clone());
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x4a; 32]);
+    let tripper: near_sdk::AccountId = "tripper.near".parse().unwrap();
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    c.gov_create(
+        0,
+        Operation::SetCircuitBreakerRole {
+            account_id: tripper.clone(),
+            role: Role::OfflineManualTrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(0);
+
+    context.predecessor_account_id = tripper;
+    testing_env!(context);
+    c.set_circuit_breaker_manual_trip(proxy_id, true, Some(Base64VecU8(vec![0])));
+
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.set_circuit_breaker_manual_trip(proxy_id, true, Some(Base64VecU8(vec![0; 1025])));
+    }))
+    .is_err());
+}
+
+#[test]
+fn no_op_manual_trip_does_not_invalidate_cached_price() {
+    let mut context = VMContextBuilder::new()
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build();
+    testing_env!(context.clone());
+
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x4b; 32]);
+    let untripper: near_sdk::AccountId = "untripper.near".parse().unwrap();
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    c.gov_create(
+        0,
+        Operation::SetCircuitBreakerRole {
+            account_id: untripper.clone(),
+            role: Role::OfflineManualUntrip,
+            is_granted: true,
+        },
+    );
+    c.gov_execute(0);
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    let cached = c.get_cached_proxy_price(proxy_id);
+
+    context.predecessor_account_id = untripper;
+    testing_env!(context);
+    c.set_circuit_breaker_manual_trip(proxy_id, false, None);
+
+    assert_eq!(c.cache_epoch(proxy_id), initial_epoch);
+    assert_eq!(c.get_cached_proxy_price(proxy_id), cached);
 }
 
 #[test]
