@@ -125,9 +125,9 @@ mod tests {
         fee::{Fee, TimeBasedFee},
         interest_rate_strategy::InterestRateStrategy,
         market::{PriceOracleConfiguration, YieldWeights},
-        number::Decimal,
         oracle::pyth::PriceIdentifier,
         time_chunk::TimeChunkConfiguration,
+        Decimal,
     };
 
     fn create_test_config() -> MarketConfiguration {

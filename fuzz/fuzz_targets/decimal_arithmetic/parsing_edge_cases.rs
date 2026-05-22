@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::str::FromStr;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: &[u8]| {
     // Generate edge case strings using fuzz data
@@ -51,4 +51,3 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 });
-

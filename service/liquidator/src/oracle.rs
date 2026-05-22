@@ -14,16 +14,20 @@ use near_primitives::{
     transaction::{Transaction, TransactionV0},
 };
 use near_sdk::{serde_json::json, AccountId, NearToken};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use templar_common::{
-    number::Decimal,
     oracle::{
-        price_transformer::PriceTransformer,
-        proxy::{Proxy, Source},
         pyth::{self, OracleResponse, PriceIdentifier},
-        redstone, OracleRequest,
+        redstone,
     },
-    time::Nanoseconds,
+    Decimal, Nanoseconds,
+};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{
+    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
+    input::{ProxyPriceTransformer, Source},
+    price_transformer::{Call, PriceTransformer},
+    request::OracleRequest,
 };
 
 use crate::{
@@ -311,7 +315,7 @@ impl OracleFetcher {
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
     ) -> HashMap<AccountId, Vec<PriceIdentifier>> {
-        let mut targets: HashMap<AccountId, Vec<PriceIdentifier>> = HashMap::new();
+        let mut targets: HashMap<AccountId, HashSet<PriceIdentifier>> = HashMap::new();
 
         // LST oracle: resolve underlying oracle + transform price IDs
         if let Ok(Some(underlying_oracle)) = self.is_lst_oracle(oracle).await {
@@ -333,29 +337,38 @@ impl OracleFetcher {
                 .entry(underlying_oracle)
                 .or_default()
                 .extend(underlying_ids);
-            return targets;
+            return targets
+                .into_iter()
+                .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
+                .collect();
         }
 
         // Proxy oracle: collect Pyth entries from proxy config
         if self.proxy_oracle_cache.read().await.contains(oracle) {
             for &pid in price_ids {
-                let proxy: Option<Proxy> = view(
+                match view::<Option<Proxy<Source>>>(
                     &self.client,
                     oracle.clone(),
                     "get_proxy",
                     json!({ "id": pid }),
                 )
                 .await
-                .ok()
-                .flatten();
-
-                let Some(proxy) = proxy else { continue };
-
-                for entry in &proxy.entries {
-                    Self::collect_pyth_targets_from_source(&entry.source, &mut targets);
+                {
+                    Ok(Some(proxy)) => {
+                        for source in proxy.sources() {
+                            Self::collect_pyth_targets_from_source(source, &mut targets);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(oracle = %oracle, price_id = ?pid, error = %error, "Failed to read proxy configuration while resolving Pyth targets");
+                    }
                 }
             }
-            return targets;
+            return targets
+                .into_iter()
+                .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
+                .collect();
         }
 
         // Direct Pyth oracle
@@ -364,19 +377,22 @@ impl OracleFetcher {
             .or_default()
             .extend(price_ids.iter().copied());
         targets
+            .into_iter()
+            .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
+            .collect()
     }
 
     /// Collects Pyth oracle targets from a proxy source entry.
     fn collect_pyth_targets_from_source(
         source: &Source,
-        targets: &mut HashMap<AccountId, Vec<PriceIdentifier>>,
+        targets: &mut HashMap<AccountId, HashSet<PriceIdentifier>>,
     ) {
         match source {
             Source::Request(OracleRequest::Pyth(pyth_req)) => {
                 targets
                     .entry(pyth_req.oracle_id.clone())
                     .or_default()
-                    .push(pyth_req.price_id);
+                    .insert(pyth_req.price_id);
             }
             Source::Request(OracleRequest::RedStone(_)) => {
                 // RedStone prices are pushed by the relayer, not by us
@@ -756,7 +772,7 @@ impl OracleFetcher {
         let mut result = OracleResponse::new();
 
         for &price_id in price_ids {
-            let proxy: Option<Proxy> = view(
+            let proxy: Option<Proxy<Source>> = view(
                 &self.client,
                 proxy_oracle.clone(),
                 "get_proxy",
@@ -776,38 +792,40 @@ impl OracleFetcher {
             };
 
             // Collect prices from underlying oracles for each entry
-            let mut prices: Vec<(pyth::Price, u32)> = Vec::new();
+            let mut prices = Vec::new();
 
-            for entry in &proxy.entries {
-                let price = match &entry.source {
+            for source in proxy.sources() {
+                let price = match source {
                     Source::Request(request) => self.fetch_oracle_request_price(request, age).await,
                     Source::Transformer(transformer) => {
                         self.fetch_proxy_transformed_price(transformer, age).await
                     }
                 };
 
-                if let Some(price) = price {
-                    prices.push((price, entry.weight));
-                }
+                prices.push(price.as_ref().and_then(pyth_price_try_to_kernel));
             }
 
             // Apply aggregation using the same logic as the on-chain proxy
             let now = system_nanoseconds();
-            let aggregated = proxy.aggregator.aggregate(&prices, now);
-            result.insert(price_id, aggregated.map(Into::into));
+            let source_count = prices.iter().filter(|price| price.is_some()).count();
+            let aggregated = proxy.resolve(prices, now).ok();
+            result.insert(
+                price_id,
+                aggregated.as_ref().and_then(pyth_price_try_from_kernel),
+            );
 
             if result.get(&price_id).and_then(|p| p.as_ref()).is_some() {
                 tracing::debug!(
                     oracle = %proxy_oracle,
                     price_id = ?price_id,
-                    source_count = prices.len(),
+                    source_count,
                     "Proxy oracle: aggregated price from underlying sources"
                 );
             } else {
                 tracing::warn!(
                     oracle = %proxy_oracle,
                     price_id = ?price_id,
-                    source_count = prices.len(),
+                    source_count,
                     "Proxy oracle: aggregation returned no price"
                 );
             }
@@ -955,7 +973,7 @@ impl OracleFetcher {
     /// Fetches a transformed price from a proxy entry (underlying oracle + transformer input).
     async fn fetch_proxy_transformed_price(
         &self,
-        transformer: &templar_common::oracle::price_transformer::ProxyPriceTransformer,
+        transformer: &ProxyPriceTransformer,
         age: u32,
     ) -> Option<pyth::Price> {
         // Fetch the underlying price
@@ -979,17 +997,18 @@ impl OracleFetcher {
     }
 
     /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
-    async fn fetch_transformer_input(
-        &self,
-        call: &templar_common::oracle::price_transformer::Call,
-    ) -> Result<Decimal, RpcError> {
-        // Use the rpc_call() method to create a view query
-        let query = call.rpc_call();
-
-        // Execute the query using the RPC client
+    async fn fetch_transformer_input(&self, call: &Call) -> Result<Decimal, RpcError> {
         let request = near_jsonrpc_client::methods::query::RpcQueryRequest {
             block_reference: near_primitives::types::BlockReference::latest(),
-            request: query,
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: call.account_id.as_str().parse().map_err(|err| {
+                    RpcError::WrongResponseKind(format!(
+                        "Invalid account ID in transformer call: {err}"
+                    ))
+                })?,
+                method_name: call.method_name.clone(),
+                args: call.args.0.clone().into(),
+            },
         };
 
         let response = self.client.call(request).await.map_err(RpcError::from)?;

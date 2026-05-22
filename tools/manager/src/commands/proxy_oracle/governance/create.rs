@@ -4,9 +4,9 @@ use near_sdk::serde_json::json;
 use near_sdk::AccountId;
 use near_sdk::NearToken;
 use templar_common::governance::Proposal;
-use templar_common::oracle::proxy::governance::Operation;
-use templar_common::oracle::proxy::Proxy;
-use templar_common::time::Nanoseconds;
+use templar_common::Nanoseconds;
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{governance::Operation, input::Source};
 use templar_tools_common::near::{self, Function};
 
 use super::execute::execute_proposal;
@@ -170,7 +170,7 @@ impl CreateProposal {
 
         let operation = match &self.operation {
             OperationCommand::Proxy(args) => {
-                let proxy: Option<Proxy> = args
+                let proxy: Option<Proxy<Source>> = args
                     .action
                     .resolve()?
                     .as_deref()

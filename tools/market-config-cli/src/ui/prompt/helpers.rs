@@ -2,7 +2,7 @@ use crate::{ui::prompt::error::map_dialoguer_err, CliError, CliResult};
 use dialoguer::{theme::ColorfulTheme, Input};
 use near_sdk::json_types::U128;
 use std::str::FromStr;
-use templar_common::{asset::AssetClass, fee::Fee, number::Decimal};
+use templar_common::{asset::AssetClass, fee::Fee, Decimal};
 
 /// # Errors
 pub fn prompt_decimal(

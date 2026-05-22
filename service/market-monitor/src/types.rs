@@ -2,7 +2,7 @@
 
 use near_sdk::AccountId;
 use serde::{Deserialize, Serialize};
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlertZone {

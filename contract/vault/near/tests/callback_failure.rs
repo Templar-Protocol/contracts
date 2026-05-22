@@ -11,8 +11,8 @@ use near_workspaces::{network::Sandbox, types::Gas, Worker};
 use rstest::rstest;
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
-    number::Decimal,
     vault::{AllocationDelta, Delta},
+    Decimal,
 };
 use test_utils::{
     controller::vault::UnifiedVaultController, setup_test, worker, ContractController,

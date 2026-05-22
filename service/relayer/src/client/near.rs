@@ -34,14 +34,18 @@ use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBo
 
 use templar_common::{
     market::MarketConfiguration,
-    number::Decimal,
     oracle::{
-        price_transformer::{Call, PriceTransformer},
-        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier},
-        redstone, OracleRequest,
+        redstone,
     },
-    time::Nanoseconds,
+    Decimal, Nanoseconds,
+};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{
+    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
+    input::Source,
+    price_transformer::{Call, PriceTransformer},
+    request::OracleRequest,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
@@ -663,7 +667,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-    ) -> Result<Option<Proxy>, ViewError> {
+    ) -> Result<Option<Proxy<Source>>, ViewError> {
         self.view(oracle_id, "get_proxy", json!({ "id": price_identifier }))
             .await
     }
@@ -787,29 +791,44 @@ impl Near {
             return Ok(None);
         };
 
-        let mut prices = vec![];
-        for entry in &proxy.entries {
-            if let Some(price) = self.resolve_proxy_entry_price(entry, max_age).await? {
-                prices.push((price, entry.weight));
+        let prices = futures::future::join_all(
+            proxy
+                .sources()
+                .map(|source| self.resolve_proxy_source_price(source, max_age)),
+        )
+        .await
+        .into_iter()
+        .map(|result| match result {
+            Ok(price) => price.as_ref().and_then(pyth_price_try_to_kernel),
+            Err(error) => {
+                tracing::debug!(%error, "Failed to resolve proxy source price");
+                None
             }
-        }
+        })
+        .collect::<Vec<_>>();
 
         tracing::debug!(?prices, "Prices to aggregate");
 
-        let price = proxy.aggregator.aggregate(&prices, Self::system_time());
+        let price = match proxy.resolve(prices, Self::system_time()) {
+            Ok(price) => Some(price),
+            Err(error) => {
+                tracing::debug!(%oracle_id, %price_identifier, ?error, "proxy.resolve failed");
+                None
+            }
+        };
 
         tracing::debug!(?price, "Aggregated price");
 
-        Ok(price.map(Into::into))
+        Ok(price.as_ref().and_then(pyth_price_try_from_kernel))
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn resolve_proxy_entry_price(
+    async fn resolve_proxy_source_price(
         &self,
-        entry: &templar_common::oracle::proxy::Entry,
+        source: &Source,
         max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
-        match &entry.source {
+        match source {
             Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
             Source::Transformer(t) => {
                 let Some(price) = self
@@ -938,20 +957,12 @@ impl Near {
             OracleType::Proxy => {
                 tracing::debug!("Price ID resolved: Proxy oracle contract");
 
-                if let Some(proxy) = self
-                    .view::<Option<Proxy>>(
-                        oracle_id.clone(),
-                        "get_proxy",
-                        json!({ "id": price_identifier }),
-                    )
-                    .await?
-                {
+                if let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? {
                     let requests = proxy
-                        .entries
-                        .into_iter()
-                        .map(|entry| match entry.source {
-                            Source::Transformer(transformer) => transformer.request,
-                            Source::Request(request) => request,
+                        .sources()
+                        .map(|source| match source {
+                            Source::Transformer(transformer) => transformer.request.clone(),
+                            Source::Request(request) => request.clone(),
                         })
                         .collect::<HashSet<_>>();
                     if requests.is_empty() {

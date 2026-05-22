@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: u128| {
     let dec_a = Decimal::from(data);

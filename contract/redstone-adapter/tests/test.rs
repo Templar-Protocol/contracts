@@ -6,10 +6,8 @@ use near_sdk::{
     testing_env,
 };
 use primitive_types::U256;
-use templar_common::{
-    oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface},
-    time::Nanoseconds,
-};
+use templar_common::oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface};
+use templar_primitives::time::Nanoseconds;
 
 use templar_redstone_adapter_contract::*;
 

@@ -8,7 +8,7 @@
 
 use crate::types::{DailyReport, MarketReport, PositionAlert};
 use std::fmt::Write;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 pub struct Reporter;
 

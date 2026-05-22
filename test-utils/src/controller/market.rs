@@ -13,7 +13,6 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
     market::{DepositMsg, HarvestYieldMode, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
-    number::Decimal,
     oracle::pyth::{self, OracleResponse},
     price::Convert,
     snapshot::Snapshot,
@@ -21,6 +20,7 @@ use templar_common::{
     withdrawal_queue::{
         WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
     },
+    Decimal,
 };
 use tokio::sync::OnceCell;
 

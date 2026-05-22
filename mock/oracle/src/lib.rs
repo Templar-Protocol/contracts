@@ -7,13 +7,11 @@ use near_sdk::{
     store::LookupMap,
     PanicOnDefault,
 };
-use templar_common::{
-    oracle::{
-        pyth::{Price, PriceIdentifier, Pyth},
-        redstone::{FeedData, FeedId, GetPrices, RedStoneContractInterface, SerializableU256},
-    },
-    time::Nanoseconds,
+use templar_common::oracle::{
+    pyth::{Price, PriceIdentifier, Pyth},
+    redstone::{FeedData, FeedId, GetPrices, RedStoneContractInterface},
 };
+use templar_primitives::{time::Nanoseconds, SU256};
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
@@ -80,7 +78,7 @@ impl RedStoneContractInterface for Contract {
         env::abort()
     }
 
-    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
+    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SU256> {
         feed_ids
             .into_iter()
             .flat_map(|feed_id| {

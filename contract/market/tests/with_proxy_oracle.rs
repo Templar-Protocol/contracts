@@ -4,16 +4,17 @@ use rstest::rstest;
 use tokio::join;
 
 use templar_common::{
+    asset::CollateralAssetAmount,
     market::YieldWeights,
     oracle::{
-        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
-        OracleRequest,
     },
     primitive_types::U256,
-    time::Nanoseconds,
+    Nanoseconds,
 };
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use test_utils::*;
 
 #[allow(clippy::cast_possible_truncation)]
@@ -52,8 +53,6 @@ async fn proxy_oracle(
     #[values(true, false)] proxy_borrow_pyth_first: bool,
     #[values(true, false)] proxy_collateral_pyth_first: bool,
 ) {
-    use templar_common::asset::CollateralAssetAmount;
-
     const PYTH_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier([0xb7_u8; 32]);
     const PYTH_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier([0xc7_u8; 32]);
     const REDSTONE_BORROW_FEED_ID: &str = "BORROW/USD";
@@ -114,7 +113,10 @@ async fn proxy_oracle(
         .set_proxy(
             proxy_oracle.account(),
             DEFAULT_COLLATERAL_PRICE_ID,
-            Some(Proxy::median_low(oracle_requests_collateral)),
+            Some(Proxy::median_low(
+                oracle_requests_collateral,
+                FreshnessFilter::empty(),
+            )),
         )
         .await;
 
@@ -129,7 +131,10 @@ async fn proxy_oracle(
         .set_proxy(
             proxy_oracle.account(),
             DEFAULT_BORROW_PRICE_ID,
-            Some(Proxy::median_low(oracle_requests_borrow)),
+            Some(Proxy::median_low(
+                oracle_requests_borrow,
+                FreshnessFilter::empty(),
+            )),
         )
         .await;
 

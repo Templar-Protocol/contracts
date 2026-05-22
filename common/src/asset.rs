@@ -13,8 +13,9 @@ use near_sdk::{
     serde_json::{self, json},
     AccountId, AccountIdRef, Gas, NearToken, Promise,
 };
+use templar_primitives::number::Decimal;
 
-use crate::{number::Decimal, panic_with_message};
+use crate::panic_with_message;
 
 /// Assets may be configuread as one of the supported asset types.
 ///

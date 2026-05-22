@@ -5781,6 +5781,7 @@ dependencies = [
  "near-contract-standards",
  "near-sdk",
  "templar-common",
+ "templar-primitives",
 ]
 
 [[package]]
@@ -12767,6 +12768,7 @@ dependencies = [
  "schemars 0.8.22",
  "sha2 0.10.9",
  "templar-curator-primitives",
+ "templar-primitives",
  "templar-vault-kernel",
  "thiserror 2.0.18",
 ]
@@ -12869,6 +12871,8 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "templar-common",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -12881,12 +12885,12 @@ version = "1.2.1"
 dependencies = [
  "getrandom 0.2.17",
  "hex-literal",
- "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
  "near-workspaces",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-near-common",
  "test-utils",
  "tokio",
 ]
@@ -12914,6 +12918,9 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
  "templar-redstone-bridge",
  "templar-tools-common",
  "test-utils",
@@ -12935,6 +12942,9 @@ dependencies = [
  "near-workspaces",
  "rstest",
  "templar-common",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
  "templar-relayer",
  "test-utils",
  "tokio",
@@ -12965,17 +12975,63 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-proxy-oracle-contract"
+name = "templar-primitives"
 version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+ "near-sdk",
+ "primitive-types 0.14.0",
+ "rand 0.8.5",
+ "redstone",
+ "rstest",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "templar-proxy-oracle-kernel"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+ "getrandom 0.2.17",
+ "hex",
+ "hex-literal",
+ "rstest",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "templar-primitives",
+ "test-utils",
+ "tokio",
+]
+
+[[package]]
+name = "templar-proxy-oracle-near-common"
+version = "0.1.0"
+dependencies = [
+ "near-primitives",
+ "near-sdk",
+ "rstest",
+ "templar-common",
+ "templar-proxy-oracle-kernel",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "templar-proxy-oracle-near-contract"
+version = "1.2.1"
 dependencies = [
  "getrandom 0.2.17",
  "hex-literal",
- "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
  "near-workspaces",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
  "test-utils",
  "tokio",
 ]
@@ -12991,6 +13047,7 @@ dependencies = [
  "primitive-types 0.14.0",
  "rstest",
  "templar-common",
+ "templar-primitives",
 ]
 
 [[package]]
@@ -13027,6 +13084,7 @@ dependencies = [
  "axum",
  "clap",
  "dotenvy",
+ "futures",
  "hex",
  "near-contract-standards",
  "near-crypto",
@@ -13043,6 +13101,8 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "templar-common",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
  "templar-redstone-bridge",
  "templar-universal-account",
  "test-utils",
@@ -13265,7 +13325,11 @@ dependencies = [
  "near-workspaces",
  "p256",
  "rstest",
+ "serde",
  "templar-common",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
  "templar-universal-account",
  "tokio",
 ]

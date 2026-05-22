@@ -3,7 +3,7 @@ use near_sdk::AccountId;
 use rstest::rstest;
 use std::str::FromStr;
 use templar_common::{
-    fee::Fee, interest_rate_strategy::InterestRateStrategy, market::YieldWeights, number::Decimal,
+    fee::Fee, interest_rate_strategy::InterestRateStrategy, market::YieldWeights, Decimal,
 };
 
 #[allow(clippy::unwrap_used)]

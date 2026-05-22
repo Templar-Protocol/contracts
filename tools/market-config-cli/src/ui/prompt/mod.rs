@@ -33,7 +33,7 @@ impl<'a> PromptContext<'a> {
         prompt: &str,
         default: &str,
         field: &str,
-    ) -> CliResult<templar_common::number::Decimal> {
+    ) -> CliResult<templar_common::Decimal> {
         prompt_decimal(self.theme, prompt, default, field)
     }
 

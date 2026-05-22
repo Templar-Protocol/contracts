@@ -18,8 +18,9 @@ use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
 use templar_common::{
     asset::{BorrowAsset, CollateralAsset},
     market::DepositMsg,
-    oracle::{pyth, redstone, OracleRequest},
+    oracle::{pyth, redstone},
 };
+use templar_proxy_oracle_near_common::request::OracleRequest;
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
@@ -772,7 +773,7 @@ mod tests {
     use near_sdk::AccountId;
     use templar_common::{
         asset::FungibleAsset,
-        oracle::{pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
+        oracle::{pyth::PriceIdentifier, redstone::FeedId},
     };
     use tokio::{sync::Notify, time::timeout};
 

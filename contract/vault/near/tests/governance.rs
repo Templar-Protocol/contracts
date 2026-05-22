@@ -13,8 +13,8 @@ use near_workspaces::{network::Sandbox, types::Gas, Worker};
 use rstest::rstest;
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
-    number::Decimal,
     vault::{AllocationDelta, Delta, Restrictions},
+    Decimal,
 };
 use test_utils::{setup_test, worker, ContractController};
 const ADDRESS_DOMAIN: &[u8] = b"templar:near:account-id";

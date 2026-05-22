@@ -10,7 +10,7 @@ use crate::{
 };
 use dialoguer::{theme::ColorfulTheme, Select};
 use templar_common::{
-    interest_rate_strategy::InterestRateStrategy, market::MarketConfiguration, number::Decimal,
+    interest_rate_strategy::InterestRateStrategy, market::MarketConfiguration, Decimal,
 };
 
 /// Returns the default interest rate strategies for selection.

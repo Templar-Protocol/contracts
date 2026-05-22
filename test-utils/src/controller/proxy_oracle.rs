@@ -5,17 +5,16 @@ use near_sdk::{
 use near_workspaces::{Account, Contract};
 use templar_common::{
     governance,
-    oracle::{
-        proxy::{self, governance::Operation, Proxy},
-        pyth::{OracleResponse, PriceIdentifier},
-    },
-    time::Nanoseconds,
+    oracle::pyth::{OracleResponse, PriceIdentifier},
+    Nanoseconds,
 };
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{governance::Operation, input::Source, state};
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
 
-use super::ContractController;
+use super::{migration::MigrationController, ContractController};
 
 pub struct ProxyOracleController {
     pub contract: Contract,
@@ -27,27 +26,52 @@ impl ContractController for ProxyOracleController {
     }
 }
 
+impl MigrationController for ProxyOracleController {
+    type Migration = state::migration::Migration;
+}
+
 impl ProxyOracleController {
-    pub async fn deploy(account: Account) -> Self {
+    pub const fn wasm_v0() -> &'static [u8] {
+        include_bytes!("wasm/proxy_oracle_v0.wasm")
+    }
+
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| get_contract("templar_proxy_oracle_contract", "contract/proxy-oracle"))
-            .await;
+        WASM.get_or_init(|| {
+            get_contract(
+                "templar_proxy_oracle_near_contract",
+                "contract/proxy-oracle/near/contract",
+            )
+        })
+        .await
+    }
 
-        let contract = account.deploy(wasm).await.unwrap().unwrap();
+    pub async fn deploy(account: Account) -> Self {
+        let contract = account
+            .deploy(Self::wasm().await)
+            .await
+            .expect("proxy oracle deploy RPC failed")
+            .into_result()
+            .expect("proxy oracle deploy transaction failed");
         contract
             .call("new")
             .args_json(json!({}))
             .transact()
             .await
-            .unwrap()
-            .unwrap();
+            .expect("proxy oracle init RPC failed")
+            .into_result()
+            .expect("proxy oracle init transaction failed");
 
         Self { contract }
     }
 
-    pub async fn set_proxy(&self, executor: &Account, id: PriceIdentifier, proxy: Option<Proxy>) {
+    pub async fn set_proxy(
+        &self,
+        executor: &Account,
+        id: PriceIdentifier,
+        proxy: Option<Proxy<Source>>,
+    ) {
         let op_id = self.gov_next_id().await;
         self.gov_create(executor, op_id, Operation::SetProxy { id, proxy })
             .await;
@@ -56,7 +80,7 @@ impl ProxyOracleController {
 
     define! {
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
-        #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy>;
+        #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy<Source>>;
 
         #[call]
         pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;
@@ -69,7 +93,7 @@ impl ProxyOracleController {
     }
 }
 
-impl GovernanceController<proxy::governance::Operation> for ProxyOracleController {}
+impl GovernanceController<Operation> for ProxyOracleController {}
 
 pub trait GovernanceController<T: DeserializeOwned + Serialize>: ContractController {
     define! {

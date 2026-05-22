@@ -1,3 +1,4 @@
+use crate::Nanoseconds;
 use borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::{
     near,
@@ -5,8 +6,6 @@ use near_sdk::{
     store::{iterable_map, key, IterableMap},
     AccountId, IntoStorageKey,
 };
-
-use crate::time::Nanoseconds;
 
 #[near(event_json(standard = "templar-governance"))]
 pub enum Event<T: Serialize> {
@@ -58,7 +57,7 @@ pub struct Governance<T: BorshSerialize> {
 }
 
 pub mod error {
-    use crate::time::Nanoseconds;
+    use crate::Nanoseconds;
 
     use super::Validatable;
 
@@ -207,7 +206,7 @@ impl<T: Clone + Serialize + BorshSerialize + BorshDeserialize + Validatable> Gov
     ///
     /// ```rust
     /// # use near_sdk::{env, near};
-    /// # use templar_common::oracle::proxy::governance::Governance;
+    /// # use templar_common::governance::Governance;
     /// # #[derive(Debug, Clone)]
     /// # #[near(serializers = [borsh, json])]
     /// enum Op {
@@ -300,7 +299,7 @@ macro_rules! gen_ext_governance {
         #[::near_sdk::ext_contract($ext_name)]
         pub trait $trait_name {
             fn gov_next_id(&self) -> u32;
-            fn gov_ttl_ns(&self) -> $crate::time::Nanoseconds;
+            fn gov_ttl_ns(&self) -> $crate::Nanoseconds;
             fn gov_count(&self) -> u32;
             fn gov_list(&self, offset: Option<u32>, count: Option<u32>) -> Vec<u32>;
             fn gov_get(&self, id: u32) -> Option<$crate::governance::Proposal<$operation_ty>>;

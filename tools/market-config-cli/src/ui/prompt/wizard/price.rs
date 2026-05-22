@@ -1,6 +1,6 @@
 use crate::{logger, oracle::price_validator::fetch_oracle_price};
 use std::cell::RefCell;
-use templar_common::{number::Decimal, oracle::pyth::Price};
+use templar_common::{oracle::pyth::Price, Decimal};
 
 use super::types::PriceHintContext;
 

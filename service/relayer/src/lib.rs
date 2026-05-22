@@ -12,11 +12,9 @@ use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use templar_common::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
     market::PriceOracleConfiguration,
-    oracle::{
-        pyth::{Price, PriceIdentifier},
-        OracleRequest,
-    },
+    oracle::pyth::{Price, PriceIdentifier},
 };
+use templar_proxy_oracle_near_common::request::OracleRequest;
 
 pub mod app;
 pub mod broom;

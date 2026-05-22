@@ -1,11 +1,11 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: (u128, i32)| {
     let (a, exp1) = data;
-    
+
     let dec_a = Decimal::from(a);
 
     // mul_pow10 with safe exponents

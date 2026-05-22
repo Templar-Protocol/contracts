@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use near_sdk::{near, AccountId, Promise, PromiseOrValue};
+use templar_primitives::number::Decimal;
 
 use crate::{
     accumulator::Accumulator,
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
-    number::Decimal,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
     supply::SupplyPosition,

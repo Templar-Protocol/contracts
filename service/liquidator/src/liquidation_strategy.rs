@@ -18,9 +18,9 @@ use templar_common::{
     asset::{CollateralAsset, FungibleAssetAmount},
     borrow::BorrowPosition,
     market::MarketConfiguration,
-    number::Decimal,
     oracle::pyth::OracleResponse,
     price::{Convert, PricePair},
+    Decimal,
 };
 
 use crate::LiquidatorResult;

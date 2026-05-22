@@ -3,7 +3,7 @@ use near_sdk::AccountId;
 use rstest::rstest;
 use std::str::FromStr;
 use templar_common::{
-    asset::BorrowAsset, fee::Fee, interest_rate_strategy::InterestRateStrategy, number::Decimal,
+    asset::BorrowAsset, fee::Fee, interest_rate_strategy::InterestRateStrategy, Decimal,
 };
 
 #[rstest]

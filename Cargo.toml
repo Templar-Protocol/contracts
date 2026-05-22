@@ -2,9 +2,11 @@
 resolver = "3"
 members = [
     "common",
-    "contract/lst-oracle",
     "contract/market",
-    "contract/proxy-oracle",
+    "contract/proxy-oracle/kernel",
+    "contract/proxy-oracle/near/common",
+    "contract/proxy-oracle/near/contract",
+    "contract/proxy-oracle/near/lst-contract",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -23,7 +25,7 @@ members = [
     "mock/*",
     "service/*",
     "test-utils",
-    "universal-account",
+    "universal-account", "primitives",
 ]
 
 [workspace.package]
@@ -84,6 +86,10 @@ sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
+templar-primitives = { path = "./primitives" }
+templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel" }
+templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common" }
+templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }

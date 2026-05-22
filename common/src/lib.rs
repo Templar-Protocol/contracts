@@ -9,13 +9,11 @@ pub mod guard;
 pub mod incoming_deposit;
 pub mod interest_rate_strategy;
 pub mod market;
-pub mod number;
 pub mod oracle;
 pub mod price;
 pub mod registry;
 pub mod snapshot;
 pub mod supply;
-pub mod time;
 pub mod time_chunk;
 #[cfg(feature = "rpc")]
 pub mod utils;
@@ -25,6 +23,8 @@ pub mod withdrawal_queue;
 
 pub use primitive_types;
 pub use schemars;
+pub use templar_primitives::dec;
+pub use templar_primitives::{Decimal, Nanoseconds, SI128, SI64, SU128, SU256, SU64};
 
 /// Panic helper that works in both WASM and native contexts.
 ///
@@ -86,8 +86,8 @@ impl<T, E: std::fmt::Display> UnwrapReject<T> for Result<T, E> {
 /// this  = 0.00000000003168873850681143096456210346
 ///
 /// error =~ 9.375e-27 %
-pub static YEAR_PER_MS: number::Decimal =
-    number::Decimal::from_repr([0x40FC_AB61_4AE4_B2B5, 0x22D7_9641, 0, 0, 0, 0, 0, 0]);
+pub static YEAR_PER_MS: Decimal =
+    Decimal::from_repr([0x40FC_AB61_4AE4_B2B5, 0x22D7_9641, 0, 0, 0, 0, 0, 0]);
 
 pub mod contract {
     pub fn list<T, U: FromIterator<T>>(

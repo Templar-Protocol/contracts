@@ -1,8 +1,6 @@
 use crate::{CliError, CliResult};
 use std::str::FromStr;
-use templar_common::{
-    interest_rate_strategy::InterestRateStrategy, market::APY_LIMIT, number::Decimal,
-};
+use templar_common::{interest_rate_strategy::InterestRateStrategy, market::APY_LIMIT, Decimal};
 
 pub struct InterestRateCalculator;
 

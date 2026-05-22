@@ -4,7 +4,7 @@ use tokio::join;
 
 use templar_common::{
     asset::FungibleAsset, borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy,
-    market::HarvestYieldMode, number::Decimal,
+    market::HarvestYieldMode, Decimal,
 };
 use test_utils::*;
 

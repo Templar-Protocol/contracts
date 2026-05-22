@@ -1,9 +1,7 @@
 use near_sdk::{json_types::U64, near};
+use templar_primitives::number::Decimal;
 
-use crate::{
-    asset::{AssetClass, FungibleAssetAmount},
-    number::Decimal,
-};
+use crate::asset::{AssetClass, FungibleAssetAmount};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]

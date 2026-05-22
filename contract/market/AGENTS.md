@@ -95,6 +95,9 @@ For `near-workspaces` tests:
 - Prefer prebuilt test contracts.
 - `./script/test.sh` already runs `./script/prebuild-test-contracts.sh` and sets `TEST_CONTRACTS_PREBUILT=1`.
 - If running market integration tests directly, prefer prebuilding first and setting `TEST_CONTRACTS_PREBUILT=1`.
+- Narrow proxy-oracle verification command:
+  - `TEST_CONTRACTS_PREBUILT=1 cargo test proxy_oracle -p templar-market-contract -- --nocapture`
+  - Status: passed locally on 2026-05-05 after `./script/prebuild-test-contracts.sh`
 
 ## Documentation Maintenance
 

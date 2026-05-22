@@ -6,11 +6,11 @@ use near_primitives::views::TxExecutionStatus;
 use near_sdk::NearToken;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
-    proxy::Proxy,
     pyth::PriceIdentifier,
     redstone::{self, FeedId},
-    OracleRequest,
 };
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::request::OracleRequest;
 use templar_relayer::{
     app::args,
     cache::Cache,
@@ -69,22 +69,26 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
         .set_proxy(
             proxy_oracle.account(),
             ETH_PRICE_ID,
-            Some(Proxy::median_low([OracleRequest::redstone(
-                redstone_oracle.id().clone(),
-                redstone_eth_id.clone(),
-            )
-            .into()])),
+            Some(Proxy::median_low(
+                [
+                    OracleRequest::redstone(redstone_oracle.id().clone(), redstone_eth_id.clone())
+                        .into(),
+                ],
+                FreshnessFilter::empty(),
+            )),
         )
         .await;
     proxy_oracle
         .set_proxy(
             proxy_oracle.account(),
             BTC_PRICE_ID,
-            Some(Proxy::median_low([OracleRequest::redstone(
-                redstone_oracle.id().clone(),
-                redstone_btc_id.clone(),
-            )
-            .into()])),
+            Some(Proxy::median_low(
+                [
+                    OracleRequest::redstone(redstone_oracle.id().clone(), redstone_btc_id.clone())
+                        .into(),
+                ],
+                FreshnessFilter::empty(),
+            )),
         )
         .await;
 

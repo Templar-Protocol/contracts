@@ -2,11 +2,9 @@ use std::collections::HashMap;
 use std::num::NonZeroU16;
 
 use near_sdk::{near, AccountId};
+use templar_primitives::number::Decimal;
 
-use crate::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
-    number::Decimal,
-};
+use crate::asset::{BorrowAssetAmount, CollateralAssetAmount};
 mod configuration;
 pub use configuration::{MarketConfiguration, ValidAmountRange, APY_LIMIT};
 mod external;

@@ -6,9 +6,9 @@ use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{
-    oracle::{proxy::Proxy, pyth::PriceIdentifier, redstone::FeedId, OracleRequest},
+    oracle::{pyth::PriceIdentifier, redstone::FeedId},
     registry::DeployMode,
-    time::Nanoseconds,
+    Nanoseconds,
 };
 use templar_manager::commands::{
     deployment::{Deploy, FromRegistry},
@@ -30,6 +30,8 @@ use templar_manager::commands::{
     },
 };
 use templar_manager::util::{EmptyArgsLoader, OutputArgs};
+use templar_proxy_oracle_kernel::proxy::{Aggregator, FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use test_utils::{accounts, worker};
 
 fn sample_price_id() -> CliPriceIdentifier {
@@ -38,8 +40,11 @@ fn sample_price_id() -> CliPriceIdentifier {
         .unwrap()
 }
 
-fn sample_proxy(oracle_id: AccountId) -> Proxy {
-    Proxy::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()])
+fn sample_proxy(oracle_id: AccountId) -> Proxy<Source> {
+    Proxy::new(
+        Aggregator::median_low([OracleRequest::redstone(oracle_id, FeedId::from("ETH")).into()]),
+        FreshnessFilter::empty(),
+    )
 }
 
 /// Helper: deploy a proxy oracle on the given account.
@@ -397,7 +402,7 @@ async fn proxy_oracle_governance_proxy_action_flags(#[future(awt)] worker: Worke
     .await
     .unwrap();
 
-    let get_proxy = view_json::<Option<Proxy>>(
+    let get_proxy = view_json::<Option<Proxy<Source>>>(
         &ctx,
         &oracle_id,
         "get_proxy",
@@ -419,7 +424,7 @@ async fn proxy_oracle_governance_proxy_action_flags(#[future(awt)] worker: Worke
     .await
     .unwrap();
 
-    let get_proxy: Option<Proxy> = view_json(
+    let get_proxy: Option<Proxy<Source>> = view_json(
         &ctx,
         &oracle_id,
         "get_proxy",
