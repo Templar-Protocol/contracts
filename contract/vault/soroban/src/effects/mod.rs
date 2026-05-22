@@ -584,7 +584,7 @@ impl AddressMap {
     /// Create a new address map.
     #[inline]
     #[must_use]
-    pub fn new(_env: &Env) -> Self {
+    pub fn new() -> Self {
         Self {
             addresses: AddressBook::new(),
         }
@@ -642,7 +642,7 @@ where
             env,
             share_token,
             asset_token,
-            address_map: AddressMap::new(env),
+            address_map: AddressMap::new(),
         }
     }
 

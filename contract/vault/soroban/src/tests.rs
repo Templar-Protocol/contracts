@@ -1698,7 +1698,7 @@ mod effects_tests {
     #[test]
     fn test_address_map() {
         let env = test_env();
-        let mut map = AddressMap::new(&env);
+        let mut map = AddressMap::new();
 
         let kernel_addr = templar_vault_kernel::Address([1u8; 32]);
         let soroban_addr = Address::generate(&env);
@@ -2522,6 +2522,57 @@ mod storage_tests {
             let bytes = alloc::vec![0xA5; len];
             let _ = fuzz_api::decode_state_blob_bytes(&bytes);
         }
+    }
+
+    fn versioned_storage_bytes(kind: u8, payload: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut bytes = alloc::vec::Vec::with_capacity(5 + payload.len());
+        bytes.extend_from_slice(b"TVS");
+        bytes.push(kind);
+        bytes.push(1);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[rstest]
+    #[case::supply_queue_entries(u32::MAX.to_le_bytes().to_vec())]
+    #[case::supply_queue_max_plus_entries({
+        let mut payload = alloc::vec::Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        payload
+    })]
+    fn storage_codec_rejects_malformed_supply_queue_lengths(#[case] payload: alloc::vec::Vec<u8>) {
+        let encoded = versioned_storage_bytes(3, &payload);
+        assert!(fuzz_api::decode_supply_queue_bytes(&encoded).is_err());
+    }
+
+    #[rstest]
+    #[case::allocating_plan(1u8, 20usize, "allocating")]
+    #[case::refreshing_plan(3u8, 4usize, "refreshing")]
+    fn storage_codec_rejects_malformed_op_state_plan_lengths(
+        #[case] tag: u8,
+        #[case] item_size: usize,
+        #[case] name: &str,
+    ) {
+        let mut payload = alloc::vec::Vec::new();
+        for _ in 0..5 {
+            payload.extend_from_slice(&0u128.to_le_bytes());
+        }
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.push(tag);
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        if tag == 1 {
+            payload.extend_from_slice(&0u128.to_le_bytes());
+        }
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        payload.extend_from_slice(&alloc::vec![0u8; item_size - 1]);
+
+        let encoded = versioned_storage_bytes(1, &payload);
+        assert!(
+            fuzz_api::decode_state_blob_bytes(&encoded).is_err(),
+            "{name} oversized plan length must fail before preallocating"
+        );
     }
 
     #[test]

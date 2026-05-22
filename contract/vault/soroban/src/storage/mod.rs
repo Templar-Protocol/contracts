@@ -287,6 +287,23 @@ fn read_bytes<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], Runti
     read_exact(bytes, cursor, len)
 }
 
+fn bounded_count_for_fixed_items(
+    bytes: &[u8],
+    cursor: usize,
+    count: usize,
+    item_size: usize,
+    error: &'static str,
+) -> Result<usize, RuntimeError> {
+    let remaining = bytes
+        .len()
+        .checked_sub(cursor)
+        .ok_or_else(|| RuntimeError::storage_error(error))?;
+    if count > remaining / item_size {
+        return Err(RuntimeError::storage_error(error));
+    }
+    Ok(count)
+}
+
 fn finish_decode(bytes: &[u8], cursor: usize) -> Result<(), RuntimeError> {
     if cursor == bytes.len() {
         Ok(())
@@ -382,6 +399,7 @@ fn decode_supply_queue_v1(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
     let mut cursor = 0usize;
     let max_length = read_u32(bytes, &mut cursor)?;
     let count = read_u32(bytes, &mut cursor)? as usize;
+    let count = bounded_count_for_fixed_items(bytes, cursor, count, 21, "supply queue too large")?;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
         let target_id = read_u32(bytes, &mut cursor)?;
@@ -645,6 +663,8 @@ fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQue
     if count > SOROBAN_MAX_PENDING_WITHDRAWALS as usize {
         return Err(RuntimeError::storage_error("withdraw queue too large"));
     }
+    let count =
+        bounded_count_for_fixed_items(bytes, *cursor, count, 112, "withdraw queue too large")?;
     if next_withdraw_to_execute > next_pending_withdrawal_id {
         return Err(RuntimeError::storage_error("withdraw queue invalid ids"));
     }
@@ -800,6 +820,8 @@ fn decode_withdraw_queue_page(bytes: &[u8]) -> Result<Vec<(u64, PendingWithdrawa
     if count > WITHDRAW_QUEUE_PAGE_SIZE as usize {
         return Err(RuntimeError::storage_error("withdraw queue page too large"));
     }
+    let count =
+        bounded_count_for_fixed_items(bytes, cursor, count, 112, "withdraw queue page too large")?;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
         let id = read_u64(bytes, &mut cursor)?;
@@ -871,6 +893,13 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
             let index = read_u32(bytes, cursor)?;
             let remaining = read_u128(bytes, cursor)?;
             let count = read_u32(bytes, cursor)? as usize;
+            let count = bounded_count_for_fixed_items(
+                bytes,
+                *cursor,
+                count,
+                20,
+                "allocation plan too large",
+            )?;
             let mut plan = Vec::with_capacity(count);
             for _ in 0..count {
                 plan.push(AllocationPlanEntry::new(
@@ -899,6 +928,8 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
             let op_id = read_u64(bytes, cursor)?;
             let index = read_u32(bytes, cursor)?;
             let count = read_u32(bytes, cursor)? as usize;
+            let count =
+                bounded_count_for_fixed_items(bytes, *cursor, count, 4, "refresh plan too large")?;
             let mut plan = Vec::with_capacity(count);
             for _ in 0..count {
                 plan.push(read_u32(bytes, cursor)?);
@@ -1121,7 +1152,7 @@ impl<'a> SorobanStorage<'a> {
                 Ok(Some(stored[cursor..cursor + len].to_vec()))
             }
             Some(BlobManifest::Paged { len, page_count }) => {
-                let mut out = Vec::with_capacity(len);
+                let mut out = Vec::with_capacity(len.min(BLOB_PAGE_BYTES));
                 let p = self.env.storage().persistent();
                 for page in 0..page_count {
                     let page_key = self.blob_page_key(key, page);
