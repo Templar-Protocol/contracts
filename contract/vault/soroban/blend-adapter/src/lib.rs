@@ -2,9 +2,10 @@
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    BytesN, Env, IntoVal, Symbol, Vec,
 };
+use stellar_contract_utils::upgradeable::{self, Upgradeable};
 
 use blend_contract_sdk::pool::{Client as PoolClient, Request};
 
@@ -22,6 +23,7 @@ const RESERVE_STALE_WINDOW_SECS: u64 = 300;
 #[derive(Clone, Debug)]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Vault,
     Pool,
     Paused,
@@ -269,6 +271,39 @@ impl BlendAdapterContract {
         get_pool(&env)
     }
 
+    /// Propose a new admin. The pending admin must accept in a separate call.
+    #[allow(deprecated)]
+    pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        env.storage().instance().set(&DataKey::PendingAdmin, &admin);
+        env.events()
+            .publish((symbol_short!("admin_set"), caller), admin);
+        Ok(())
+    }
+
+    /// Accept admin role previously proposed with `set_admin`.
+    #[allow(deprecated)]
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        caller.require_auth();
+        let pending_admin = get_pending_admin(&env)?;
+        if caller != pending_admin {
+            return Err(AdapterError::Unauthorized);
+        }
+        let old_admin = get_admin(&env)?;
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("admin_acc"), old_admin), caller);
+        Ok(())
+    }
+
+    pub fn pending_admin(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
+        get_pending_admin(&env)
+    }
+
     /// Supply tokens already on the adapter into the Blend pool (admin-only).
     ///
     /// Use this after transferring tokens to the adapter address.
@@ -369,6 +404,18 @@ impl BlendAdapterContract {
     }
 }
 
+#[contractimpl]
+impl Upgradeable for BlendAdapterContract {
+    #[allow(deprecated)]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        extend_instance_ttl(e);
+        require_admin(e, &operator).unwrap_or_else(|err| panic_with_error!(e, err));
+        upgradeable::upgrade(e, &new_wasm_hash);
+        e.events()
+            .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
+    }
+}
+
 fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
     env.storage()
         .instance()
@@ -378,6 +425,10 @@ fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
 
 fn get_admin(env: &Env) -> Result<Address, AdapterError> {
     get_address(env, DataKey::Admin)
+}
+
+fn get_pending_admin(env: &Env) -> Result<Address, AdapterError> {
+    get_address(env, DataKey::PendingAdmin)
 }
 
 fn get_vault(env: &Env) -> Result<Address, AdapterError> {
@@ -456,12 +507,23 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Events as _};
 
-    fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
+    fn adapter_event_count(env: &Env, contract_id: &Address) -> usize {
         env.events()
             .all()
-            .filter_by_contract(adapter)
+            .filter_by_contract(contract_id)
             .events()
             .len()
+    }
+
+    fn empty_wasm_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(
+            env,
+            &[
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
+            ],
+        )
     }
 
     #[test]
@@ -792,6 +854,53 @@ mod tests {
             let result = BlendAdapterContract::set_vault(env.clone(), admin, account);
             assert_eq!(result, Err(AdapterError::InvalidInput));
         });
+    }
+
+    #[test]
+    fn set_admin_requires_pending_admin_acceptance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_admin(env.clone(), admin.clone(), new_admin.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()).unwrap(),
+                new_admin
+            );
+            BlendAdapterContract::accept_admin(env.clone(), new_admin.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), new_admin);
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()),
+                Err(AdapterError::MissingConfig)
+            );
+        });
+    }
+
+    #[test]
+    fn set_admin_emits_propose_and_accept_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_admin = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_admin(env.clone(), admin, new_admin.clone()).unwrap();
+            BlendAdapterContract::accept_admin(env.clone(), new_admin).unwrap();
+        });
+        assert_eq!(adapter_event_count(&env, &contract_id), 2);
+    }
+
+    #[test]
+    fn upgrade_requires_admin_and_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_hash = empty_wasm_hash(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::upgrade(&env, new_hash.clone(), admin);
+        });
+        assert_eq!(adapter_event_count(&env, &contract_id), 1);
     }
 
     // Note: "query before initialize" test not applicable — __constructor

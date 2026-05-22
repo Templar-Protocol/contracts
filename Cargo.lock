@@ -12786,6 +12786,7 @@ version = "0.1.0"
 dependencies = [
  "blend-contract-sdk",
  "soroban-sdk",
+ "stellar-contract-utils",
 ]
 
 [[package]]
@@ -12822,6 +12823,7 @@ name = "templar-soroban-share-token"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "stellar-contract-utils",
  "stellar-tokens",
 ]
 

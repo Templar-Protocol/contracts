@@ -3,7 +3,7 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::{Events, Ledger, LedgerInfo};
 use soroban_sdk::xdr::{ContractEventBody, ScVal};
 use soroban_sdk::{
-    address_payload::AddressPayload, contract, contractimpl, symbol_short, BytesN, IntoVal,
+    address_payload::AddressPayload, contract, contractimpl, symbol_short, BytesN, Env, IntoVal,
     MuxedAddress, Symbol, TryFromVal, Val,
 };
 
@@ -119,6 +119,30 @@ fn constructor_rejects_account_vault_address() {
             &String::from_str(&env, "tvSHARE"),
             &7u32,
         ),
+    );
+}
+
+#[test]
+fn constructor_emits_config_event() {
+    let (env, admin, vault, token) = setup();
+    let filtered_events = env.events().all().filter_by_contract(&token);
+    let events = filtered_events.events();
+    let event = events.last().expect("constructor config event");
+    let ContractEventBody::V0(body) = &event.body;
+    assert_eq!(body.topics.len(), 3);
+    assert_eq!(
+        body.topics[0],
+        ScVal::try_from_val(&env, &symbol_short!("config")).unwrap()
+    );
+    let admin_val: Val = admin.into_val(&env);
+    let vault_val: Val = vault.into_val(&env);
+    assert_eq!(
+        body.topics[1],
+        ScVal::try_from_val(&env, &admin_val).unwrap()
+    );
+    assert_eq!(
+        body.topics[2],
+        ScVal::try_from_val(&env, &vault_val).unwrap()
     );
 }
 
@@ -438,7 +462,64 @@ fn set_admin_rotates_admin() {
         &soroban_sdk::Symbol::new(&env, "admin"),
         ().into_val(&env),
     );
+    assert_eq!(stored_admin, admin);
+    let pending_admin: Option<Address> = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "pending_admin"),
+        ().into_val(&env),
+    );
+    assert_eq!(pending_admin, Some(new_admin.clone()));
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "accept_admin"),
+        (&new_admin,).into_val(&env),
+    );
+
+    let stored_admin: Address = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "admin"),
+        ().into_val(&env),
+    );
     assert_eq!(stored_admin, new_admin);
+    let pending_admin: Option<Address> = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "pending_admin"),
+        ().into_val(&env),
+    );
+    assert_eq!(pending_admin, None);
+}
+
+#[test]
+fn set_admin_emits_propose_and_accept_events() {
+    let (env, admin, _vault, token) = setup();
+    let new_admin = Address::generate(&env);
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "set_admin"),
+        (&admin, &new_admin).into_val(&env),
+    );
+    let filtered_events = env.events().all().filter_by_contract(&token);
+    let events = filtered_events.events();
+    let admin_set = ScVal::try_from_val(&env, &symbol_short!("admin_set")).unwrap();
+    assert!(events.iter().any(|event| {
+        let ContractEventBody::V0(body) = &event.body;
+        body.topics.first() == Some(&admin_set)
+    }));
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "accept_admin"),
+        (&new_admin,).into_val(&env),
+    );
+    let filtered_events = env.events().all().filter_by_contract(&token);
+    let events = filtered_events.events();
+    let admin_acc = ScVal::try_from_val(&env, &symbol_short!("admin_acc")).unwrap();
+    assert!(events.iter().any(|event| {
+        let ContractEventBody::V0(body) = &event.body;
+        body.topics.first() == Some(&admin_acc)
+    }));
 }
 
 #[test]
@@ -465,6 +546,11 @@ fn old_admin_loses_privilege_after_rotation() {
         &soroban_sdk::Symbol::new(&env, "set_admin"),
         (&admin, &new_admin).into_val(&env),
     );
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "accept_admin"),
+        (&new_admin,).into_val(&env),
+    );
 
     let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
@@ -472,6 +558,23 @@ fn old_admin_loses_privilege_after_rotation() {
         (&admin, &Address::generate(&env)).into_val(&env),
     );
     assert_eq!(err, Err(Ok(ShareTokenError::Unauthorized)));
+}
+
+#[test]
+fn share_token_upgrade_requires_admin_and_emits_event() {
+    let (env, admin, _vault, token) = setup();
+    env.cost_estimate().budget().reset_unlimited();
+    let new_hash = empty_wasm_hash(&env);
+    env.as_contract(&token, || {
+        SorobanShareTokenContract::upgrade(&env, new_hash.clone(), admin.clone());
+    });
+    let filtered_events = env.events().all().filter_by_contract(&token);
+    let events = filtered_events.events();
+    let upgrade = ScVal::try_from_val(&env, &symbol_short!("upgrade")).unwrap();
+    assert!(events.iter().any(|event| {
+        let ContractEventBody::V0(body) = &event.body;
+        body.topics.first() == Some(&upgrade)
+    }));
 }
 
 #[test]
@@ -627,6 +730,17 @@ fn transfer_without_from_auth_fails() {
         (&from, MuxedAddress::from(to), &1i128).into_val(&env),
     );
     assert!(err.is_err());
+}
+
+fn empty_wasm_hash(env: &Env) -> BytesN<32> {
+    BytesN::from_array(
+        env,
+        &[
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
+        ],
+    )
 }
 
 #[test]

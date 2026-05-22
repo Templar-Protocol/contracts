@@ -5,8 +5,9 @@ pub use types::*;
 
 use soroban_sdk::{
     address_payload::AddressPayload, contract, contractimpl, panic_with_error, symbol_short,
-    Address, Env, MuxedAddress, String, Vec,
+    Address, BytesN, Env, MuxedAddress, String, Vec,
 };
+use stellar_contract_utils::upgradeable::{self, Upgradeable};
 use stellar_tokens::fungible::{
     burnable::{emit_burn, FungibleBurnable},
     Base, FungibleToken,
@@ -111,7 +112,11 @@ impl SorobanShareTokenContract {
         require_contract_address(&env, &vault);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
-        Base::set_metadata(&env, decimals, name, symbol);
+        Base::set_metadata(&env, decimals, name.clone(), symbol.clone());
+        env.events().publish(
+            (symbol_short!("config"), admin, vault),
+            (name, symbol, decimals),
+        );
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) {
@@ -161,10 +166,36 @@ impl SorobanShareTokenContract {
             .publish((symbol_short!("rstrct"), caller), mode);
     }
 
+    #[allow(deprecated)]
     pub fn set_admin(env: Env, caller: Address, admin: Address) {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::PendingAdmin, &admin);
+        env.events()
+            .publish((symbol_short!("admin_set"), caller), admin);
+    }
+
+    #[allow(deprecated)]
+    pub fn accept_admin(env: Env, caller: Address) {
+        extend_instance_ttl(&env);
+        caller.require_auth();
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig));
+        if caller != pending_admin {
+            panic_with_error!(&env, ShareTokenError::Unauthorized);
+        }
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig));
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("admin_acc"), old_admin), caller);
     }
 
     pub fn set_vault(env: Env, caller: Address, vault: Address) {
@@ -188,6 +219,11 @@ impl SorobanShareTokenContract {
             .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig))
     }
 
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        extend_instance_ttl(&env);
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
     pub fn vault(env: Env) -> Address {
         extend_instance_ttl(&env);
         env.storage()
@@ -199,6 +235,18 @@ impl SorobanShareTokenContract {
     pub fn extend_ttl(env: Env, caller: Address) {
         require_admin(&env, &caller);
         extend_instance_ttl(&env);
+    }
+}
+
+#[contractimpl]
+impl Upgradeable for SorobanShareTokenContract {
+    #[allow(deprecated)]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        extend_instance_ttl(e);
+        require_admin(e, &operator);
+        upgradeable::upgrade(e, &new_wasm_hash);
+        e.events()
+            .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
     }
 }
 

@@ -4,6 +4,7 @@ use soroban_sdk::{contracterror, contracttype};
 #[derive(Clone)]
 pub(super) enum DataKey {
     Admin,
+    PendingAdmin,
     Vault,
     Paused,
     Restrictions,
