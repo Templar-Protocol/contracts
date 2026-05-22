@@ -388,7 +388,7 @@ where
         receiver: &SdkAddress,
         owner: &SdkAddress,
         operator: &SdkAddress,
-    ) -> Result<(Address, Address, Address, u64), RuntimeError> {
+    ) -> Result<(Address, Address, Address, u64, EffectSummary), RuntimeError> {
         require_signed(operator);
         self.ensure_vault_mapped(env)?;
         let owner_kernel = self.register_sdk_address(env, owner)?;
@@ -396,18 +396,25 @@ where
         let operator_kernel = self.register_sdk_address(env, operator)?;
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
 
+        let mut summary = EffectSummary::new();
         let fees_active = !self.config.fees.management.fee_wad.is_zero()
             || !self.config.fees.performance.fee_wad.is_zero();
         if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns.as_u64() {
-            let _ = self.apply_kernel_action(
+            summary.merge(self.apply_kernel_action(
                 KernelAction::RefreshFees {
                     now_ns: TimestampNs(now_ns),
                 },
                 now_ns,
-            )?;
+            )?);
         }
 
-        Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
+        Ok((
+            owner_kernel,
+            receiver_kernel,
+            operator_kernel,
+            now_ns,
+            summary,
+        ))
     }
 
     fn atomic_withdraw_effects(
@@ -468,18 +475,18 @@ where
             return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let burned = self.atomic_withdraw_effects(
+        summary.merge(self.atomic_withdraw_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(assets).map_err(|_| RuntimeError::invalid_input(""))?,
             to_u128(max_shares_burned).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?;
-        to_i128(burned.shares_burned).map_err(|_| RuntimeError::invalid_input(""))
+        )?);
+        to_i128(summary.shares_burned).map_err(|_| RuntimeError::invalid_input(""))
     }
 
     #[inline(never)]
@@ -496,17 +503,17 @@ where
             return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let summary = self.atomic_redeem_effects(
+        summary.merge(self.atomic_redeem_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(shares).map_err(|_| RuntimeError::invalid_input(""))?,
             to_u128(min_assets_out).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?;
+        )?);
         to_i128(summary.assets_transferred).map_err(|_| RuntimeError::invalid_input(""))
     }
 
