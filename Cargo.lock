@@ -13062,6 +13062,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-soroban-common"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-contract"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "soroban-sdk 25.3.0",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-soroban-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-governance-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
+ "templar-primitives",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-governance-contract",
+]
+
+[[package]]
 name = "templar-redstone-adapter-contract"
 version = "0.1.0"
 dependencies = [
