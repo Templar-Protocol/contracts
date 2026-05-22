@@ -1027,30 +1027,10 @@ impl SorobanVaultContract {
             (0, 0)
         };
 
-        let owner_shares = share_balance(&env, &owner).max(0) as u128;
-        let (max_withdraw_value, max_redeem_value) = if state.op_state.is_idle() {
-            let max_redeem_u128 = owner_shares.min(
-                convert_to_shares_bounded(
-                    &state,
-                    &config,
-                    state.idle_assets,
-                    i128::MAX as u128,
-                    InvalidStateCode::MintOverflowTotalShares,
-                )
-                .map_err(|_| ContractError::ConversionOverflow)?,
-            );
-            let max_withdraw_u128 = convert_to_assets_bounded(
-                &state,
-                &config,
-                owner_shares,
-                state.idle_assets.min(i128::MAX as u128),
-                InvalidStateCode::AtomicWithdrawExceedsIdleAssets,
-            )
-            .map_err(|_| ContractError::ConversionOverflow)?;
-            (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
-        } else {
-            (0, 0)
-        };
+        // The deployed public command ABI does not expose atomic withdraw/redeem. Keep
+        // ERC-4626-style max-withdraw/max-redeem truthful until those commands exist.
+        let max_withdraw_value = 0;
+        let max_redeem_value = 0;
 
         let preview_mint_value = if shares <= 0 {
             0
