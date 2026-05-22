@@ -37,7 +37,7 @@ fn preview_state_with_fee_accrual(
     }
 
     let anchor = state.fee_anchor;
-    if anchor.is_uninitialized() {
+    if anchor.is_uninitialized() && state.total_assets == 0 {
         state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
         return Ok(state);
     }

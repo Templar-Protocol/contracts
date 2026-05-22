@@ -2607,6 +2607,42 @@ fn refresh_fees_no_profit_skips_performance() {
 }
 
 #[test]
+fn refresh_fees_zero_anchor_excludes_uncapped_donation_growth() {
+    use crate::math::wad::YEAR_NS;
+    let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient),
+        FeeSlot::zero(),
+        Some(Wad::one() / 5),
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    )
+    .unwrap();
+
+    let minted: Vec<_> = result
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
+        .collect();
+    assert!(minted.is_empty());
+    assert_eq!(result.state.total_shares, 1_000);
+    assert_eq!(result.state.fee_anchor.total_assets, 2_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+}
+
+#[test]
 fn refresh_fees_max_rate_caps_fee_accrual() {
     use crate::math::wad::YEAR_NS;
     // 1000 -> 2000 (100% profit), but max_rate = 20% per year

@@ -1669,7 +1669,7 @@ fn handle_refresh_fees(
     let anchor = state.fee_anchor;
     let mut effects = Vec::new();
 
-    if total_supply > 0 && anchor.is_uninitialized() {
+    if total_supply > 0 && anchor.is_uninitialized() && cur_total_assets == 0 {
         state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
         effects.push(KernelEffect::EmitEvent {
             event: crate::effects::KernelEvent::FeesRefreshed {
@@ -1784,6 +1784,7 @@ fn handle_emergency_reset(
     }
 
     state.op_state = OpState::Idle;
+    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, state.fee_anchor.timestamp_ns);
     effects.push(KernelEffect::EmitEvent {
         event: KernelEvent::EmergencyResetCompleted {
             op_id,

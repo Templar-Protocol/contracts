@@ -25,6 +25,7 @@ use templar_soroban_shared_types::{
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
+use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
 
 fn required_address(
     value: Option<soroban_sdk::Address>,
@@ -321,8 +322,8 @@ fn apply_fees_policy(
     if accounts.len() != 2 {
         return Err(ContractError::InvalidInput);
     }
-    let performance_recipient = accounts.get_unchecked(0);
-    let management_recipient = accounts.get_unchecked(1);
+    let performance_recipient = accounts.get(0).ok_or(ContractError::InvalidInput)?;
+    let management_recipient = accounts.get(1).ok_or(ContractError::InvalidInput)?;
     apply_fee_change(
         env,
         performance_fee_wad,
@@ -332,6 +333,17 @@ fn apply_fees_policy(
         max_growth_rate_wad,
     )?;
     emit_admin_event(env, symbol_short!("s_fees"));
+    Ok(())
+}
+
+fn normalize_fee_anchor(env: &Env) -> Result<(), ContractError> {
+    let mut storage = SorobanStorage::new(env);
+    let Some(mut state) = storage.load_state()? else {
+        return Ok(());
+    };
+    state.fee_anchor =
+        FeeAccrualAnchor::new(state.total_assets, TimestampNs(ledger_timestamp_ns(env)?));
+    storage.save_state(&state)?;
     Ok(())
 }
 
@@ -1093,6 +1105,7 @@ impl SorobanVaultContract {
         }
 
         migrate_legacy_paused(&env);
+        normalize_fee_anchor(&env)?;
         extend_storage_ttl(&env);
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));
