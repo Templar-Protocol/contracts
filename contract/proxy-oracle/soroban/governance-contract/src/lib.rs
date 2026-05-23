@@ -1,15 +1,20 @@
 #![no_std]
+// Soroban contract entry points require `env: Env` and `Address` by value.
+// Taking them by reference is not valid for the Soroban ABI and would not
+// compile. The lint is suppressed at the file level because every public
+// method in the #[contractimpl] block is an ABI entry point.
+#![allow(clippy::needless_pass_by_value)]
 
 extern crate alloc;
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, IntoVal,
-    Symbol, Val, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env,
+    IntoVal, Symbol, Val, Vec,
 };
 use templar_proxy_oracle_soroban_common::{
     extend_instance_ttl, Asset, CircuitBreakerConfig, CircuitBreakerUpdateConfig, ContractError,
-    ProxyConfig,
+    ProxyConfig, Role,
 };
 
 #[contract]
@@ -34,7 +39,8 @@ pub enum GovernanceAction {
     AddBreaker(Asset, CircuitBreakerConfig),
     RemoveBreaker(Asset, u32),
     UpdateBreaker(Asset, u32, CircuitBreakerUpdateConfig),
-    SetManualTrip(Asset, bool),
+    SetManualTrip(Address, Asset, bool, Option<Bytes>),
+    SetCircuitBreakerRole(Address, Role, bool),
     SetGovernance(Address),
     SetActionTtl(u64),
 }
@@ -61,6 +67,7 @@ pub struct ProposalSubmitted {
     #[topic]
     pub id: u64,
     pub valid_after_ns: u64,
+    pub action_code: u32,
 }
 
 #[contractevent]
@@ -76,6 +83,25 @@ pub struct ProposalRevoked {
     #[topic]
     pub id: u64,
 }
+
+#[contractevent]
+#[derive(Clone)]
+pub struct GovernanceHandoffSubmitted {
+    #[topic]
+    pub id: u64,
+    #[topic]
+    pub new_governance: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct ActionTtlSet {
+    pub new_ttl_ns: u64,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct TtlExtended {}
 
 #[contracterror]
 #[repr(u32)]
@@ -141,6 +167,7 @@ fn save_queue(env: &Env, queue: &Vec<StoredPending>) {
     env.storage().instance().set(&DataKey::PendingQueue, queue);
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
     let proxy = load_address(env, DataKey::ProxyOracle)?;
     match action {
@@ -211,15 +238,32 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 ],
             ),
         ),
-        GovernanceAction::SetManualTrip(asset, is_manually_tripped) => invoke_runtime_call(
+        GovernanceAction::SetManualTrip(actor, asset, is_manually_tripped, metadata) => {
+            invoke_runtime_call(
+                env,
+                &proxy,
+                "set_manual_trip",
+                Vec::from_array(
+                    env,
+                    [
+                        actor.clone().into_val(env),
+                        asset.clone().into_val(env),
+                        is_manually_tripped.into_val(env),
+                        metadata.clone().into_val(env),
+                    ],
+                ),
+            )
+        }
+        GovernanceAction::SetCircuitBreakerRole(account, role, is_granted) => invoke_runtime_call(
             env,
             &proxy,
-            "set_manual_trip",
+            "set_circuit_breaker_role",
             Vec::from_array(
                 env,
                 [
-                    asset.clone().into_val(env),
-                    is_manually_tripped.into_val(env),
+                    account.clone().into_val(env),
+                    role.clone().into_val(env),
+                    is_granted.into_val(env),
                 ],
             ),
         ),
@@ -233,8 +277,27 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             env.storage()
                 .instance()
                 .set(&DataKey::ActionTtlNs, new_ttl_ns);
+            ActionTtlSet {
+                new_ttl_ns: *new_ttl_ns,
+            }
+            .publish(env);
             Ok(())
         }
+    }
+}
+
+fn action_code(action: &GovernanceAction) -> u32 {
+    match action {
+        GovernanceAction::SetProxy(_, _) => 1,
+        GovernanceAction::RemoveProxy(_) => 2,
+        GovernanceAction::ConfigureBreakers(_, _, _) => 3,
+        GovernanceAction::AddBreaker(_, _) => 4,
+        GovernanceAction::RemoveBreaker(_, _) => 5,
+        GovernanceAction::UpdateBreaker(_, _, _) => 6,
+        GovernanceAction::SetManualTrip(_, _, _, _) => 7,
+        GovernanceAction::SetCircuitBreakerRole(_, _, _) => 8,
+        GovernanceAction::SetGovernance(_) => 9,
+        GovernanceAction::SetActionTtl(_) => 10,
     }
 }
 
@@ -304,22 +367,30 @@ impl ProxyOracleGovernance {
         require_admin(&env, &caller)?;
         let id = next_proposal_id(&env)?;
         let now = now_ns(&env)?;
-        let ttl = env
+        let ttl: u64 = env
             .storage()
             .instance()
             .get(&DataKey::ActionTtlNs)
-            .unwrap_or(0_u64);
+            .ok_or(GovernanceError::MissingConfig)?;
         let valid_after_ns = now
             .checked_add(ttl)
             .ok_or(GovernanceError::ArithmeticOverflow)?;
         let mut queue = load_queue(&env);
         queue.push_back(StoredPending {
             id,
-            action,
+            action: action.clone(),
             valid_after_ns,
         });
         save_queue(&env, &queue);
-        ProposalSubmitted { id, valid_after_ns }.publish(&env);
+        ProposalSubmitted {
+            id,
+            valid_after_ns,
+            action_code: action_code(&action),
+        }
+        .publish(&env);
+        if let GovernanceAction::SetGovernance(new_governance) = action {
+            GovernanceHandoffSubmitted { id, new_governance }.publish(&env);
+        }
         Ok(id)
     }
 
@@ -337,7 +408,7 @@ impl ProxyOracleGovernance {
         let index = queue
             .iter()
             .position(|proposal| proposal.id == proposal_id)
-            .map(|index| index as u32)
+            .and_then(|i| u32::try_from(i).ok())
             .ok_or(GovernanceError::ProposalNotFound)?;
         let proposal = queue.get(index).ok_or(GovernanceError::ProposalNotFound)?;
         if proposal.valid_after_ns > now_ns {
@@ -358,7 +429,7 @@ impl ProxyOracleGovernance {
         let index = queue
             .iter()
             .position(|proposal| proposal.id == proposal_id)
-            .map(|index| index as u32)
+            .and_then(|i| u32::try_from(i).ok())
             .ok_or(GovernanceError::ProposalNotFound)?;
         let removed = queue.get(index).ok_or(GovernanceError::ProposalNotFound)?;
         queue.remove(index);
@@ -390,12 +461,12 @@ impl ProxyOracleGovernance {
         ids
     }
 
-    pub fn action_ttl_ns(env: Env) -> u64 {
+    pub fn action_ttl_ns(env: Env) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
         env.storage()
             .instance()
             .get(&DataKey::ActionTtlNs)
-            .unwrap_or(0)
+            .ok_or(GovernanceError::MissingConfig)
     }
 
     pub fn admin(env: Env) -> Result<Address, GovernanceError> {
@@ -411,6 +482,7 @@ impl ProxyOracleGovernance {
     pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
         require_admin(&env, &caller)?;
         extend_instance_ttl(&env);
+        TtlExtended {}.publish(&env);
         Ok(())
     }
 }

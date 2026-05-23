@@ -16,6 +16,9 @@
 .env.local
 .env.smoketest
 
+# Oh My OpenAgent working state
+.omo/
+
 # documentation site
 _site/
 

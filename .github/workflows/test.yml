@@ -89,6 +89,48 @@ jobs:
       - name: Test curator-primitives (boundary)
         run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
 
+  soroban-proxy-oracle:
+    name: Soroban Proxy Oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust
+
+      - name: Install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,nextest
+
+      - name: Run proxy-oracle Soroban runtime tests
+        run: cargo nextest run -p templar-proxy-oracle-soroban-contract
+
+      - name: Run proxy-oracle Soroban governance tests
+        run: cargo nextest run -p templar-proxy-oracle-soroban-governance-contract
+
+      - name: Install packages
+        run: sudo apt install libdbus-1-dev pkg-config
+
+      - name: Install stellar CLI
+        run: curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
+
+      - name: Build and optimize proxy-oracle Soroban WASMs
+        run: just -f contract/proxy-oracle/soroban/justfile optimize
+
+      - name: Enforce proxy-oracle Soroban size budget (runtime)
+        run: |
+          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
+            --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.optimized.wasm \
+            --max-bytes 131072
+
+      - name: Enforce proxy-oracle Soroban size budget (governance)
+        run: |
+          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
+            --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_governance_contract.optimized.wasm \
+            --max-bytes 131072
+
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-latest

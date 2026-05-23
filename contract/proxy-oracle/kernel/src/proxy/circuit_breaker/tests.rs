@@ -424,6 +424,22 @@ fn set_rejects_add_when_next_id_is_exhausted() {
 }
 
 #[test]
+fn set_prioritizes_unexpected_breaker_id_over_exhaustion() {
+    let mut set = CircuitBreakerSet::empty();
+    let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: dec("0.10"),
+    });
+
+    assert_eq!(
+        set.add(u32::MAX, breaker),
+        Err(CircuitBreakerError::UnexpectedBreakerId {
+            expected: 0,
+            actual: u32::MAX
+        })
+    );
+}
+
+#[test]
 fn future_armed_breaker_records_history_without_tripping() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;

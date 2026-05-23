@@ -4,6 +4,7 @@ use soroban_sdk::{contracterror, contracttype, Address, Env, Symbol, Vec};
 
 pub const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 pub const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
+pub const MAX_MANUAL_TRIP_METADATA_LEN: usize = 1024;
 
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
@@ -23,6 +24,13 @@ pub struct PriceData {
 pub enum Asset {
     Stellar(Address),
     Other(Symbol),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub enum Role {
+    OfflineManualTrip,
+    OfflineManualUntrip,
 }
 
 #[contracterror]
