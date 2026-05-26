@@ -130,6 +130,10 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
     assert_ne!(price_data_after.get(&redstone_eth_id), None);
     assert_ne!(price_data_after.get(&redstone_btc_id), None);
 
+    proxy_oracle
+        .update_prices(proxy_oracle.account(), vec![ETH_PRICE_ID, BTC_PRICE_ID])
+        .await;
+
     let r = proxy_oracle
         .list_ema_prices_no_older_than_exec(
             proxy_oracle.account(),

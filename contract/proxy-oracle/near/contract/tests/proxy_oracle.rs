@@ -178,6 +178,7 @@ pub fn admin_upgrade_requires_owner() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
     }));
+
     assert!(result.is_err());
 }
 

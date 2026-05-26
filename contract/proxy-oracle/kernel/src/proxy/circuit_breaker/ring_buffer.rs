@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::collections::VecDeque;
 
 #[cfg(any(feature = "borsh", feature = "schemars"))]
 use alloc::{format, string::ToString};
@@ -7,7 +7,7 @@ serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct UncheckedRingBuffer<T> {
         pub capacity: u32,
-        pub entries: Vec<T>,
+        pub entries: VecDeque<T>,
     }
 }
 
@@ -70,7 +70,7 @@ impl<T> RingBuffer<T> {
     pub fn new(capacity: u32) -> Self {
         Self(UncheckedRingBuffer {
             capacity,
-            entries: Vec::new(),
+            entries: VecDeque::new(),
         })
     }
 
@@ -81,18 +81,18 @@ impl<T> RingBuffer<T> {
         }
 
         if self.0.entries.len() == capacity {
-            self.0.entries.remove(0);
+            self.0.entries.pop_front();
         }
 
-        self.0.entries.push(item);
+        self.0.entries.push_back(item);
     }
 
     pub fn set_capacity(&mut self, capacity: u32) {
         self.0.capacity = capacity;
         let capacity = capacity as usize;
         let excess = self.0.entries.len().saturating_sub(capacity);
-        if excess > 0 {
-            self.0.entries.drain(0..excess);
+        for _ in 0..excess {
+            self.0.entries.pop_front();
         }
     }
 
@@ -107,7 +107,7 @@ impl<T> RingBuffer<T> {
 
     #[must_use]
     pub fn last(&self) -> Option<&T> {
-        self.0.entries.last()
+        self.0.entries.back()
     }
 
     #[must_use]
@@ -121,8 +121,12 @@ impl<T> RingBuffer<T> {
     }
 
     #[must_use]
-    pub fn as_slice(&self) -> &[T] {
-        &self.0.entries
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.0.entries.get(index)
+    }
+
+    pub fn iter(&self) -> alloc::collections::vec_deque::Iter<'_, T> {
+        self.0.entries.iter()
     }
 }
 
@@ -144,7 +148,7 @@ impl<T: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for RingBuffer<T> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     use super::*;
 
@@ -167,7 +171,7 @@ mod tests {
         buffer.push(2);
 
         assert_eq!(buffer.len(), 2);
-        assert_eq!(buffer.as_slice(), &[1, 2]);
+        assert_eq!(buffer.iter().collect::<Vec<_>>(), vec![&1, &2]);
         assert_eq!(buffer.last(), Some(&2));
     }
 
@@ -182,7 +186,7 @@ mod tests {
         buffer.push(5);
 
         assert_eq!(buffer.len(), 3);
-        assert_eq!(buffer.as_slice(), &[3, 4, 5]);
+        assert_eq!(buffer.iter().collect::<Vec<_>>(), vec![&3, &4, &5]);
         assert_eq!(buffer.last(), Some(&5));
     }
 
@@ -191,7 +195,7 @@ mod tests {
         assert_eq!(
             RingBuffer::try_from(UncheckedRingBuffer {
                 capacity: 1,
-                entries: vec![1, 2],
+                entries: vec![1, 2].into(),
             }),
             Err(RingBufferParseError::EntriesExceedCapacity)
         );
@@ -202,7 +206,7 @@ mod tests {
     fn borsh_rejects_entries_exceeding_capacity() {
         let unchecked = UncheckedRingBuffer {
             capacity: 1,
-            entries: vec![1_u32, 2],
+            entries: vec![1_u32, 2].into(),
         };
         let bytes = borsh::to_vec(&unchecked).unwrap();
 
@@ -214,7 +218,7 @@ mod tests {
     fn serde_rejects_entries_exceeding_capacity() {
         let unchecked = UncheckedRingBuffer {
             capacity: 1,
-            entries: vec![1_u32, 2],
+            entries: vec![1_u32, 2].into(),
         };
         let bytes = serde_json::to_vec(&unchecked).unwrap();
 
@@ -245,7 +249,7 @@ mod tests {
         buffer.push(3);
         buffer.push(4);
 
-        assert_eq!(buffer.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(buffer.iter().collect::<Vec<_>>(), vec![&1, &2, &3, &4]);
     }
 
     #[test]
@@ -258,7 +262,7 @@ mod tests {
         buffer.set_capacity(2);
 
         assert_eq!(buffer.len(), 2);
-        assert_eq!(buffer.as_slice(), &[3, 4]);
+        assert_eq!(buffer.iter().collect::<Vec<_>>(), vec![&3, &4]);
         assert_eq!(buffer.last(), Some(&4));
     }
 
@@ -283,7 +287,7 @@ mod tests {
         buffer.push(2);
         buffer.push(3);
 
-        assert_eq!(buffer.as_slice(), &[2, 3]);
+        assert_eq!(buffer.iter().collect::<Vec<_>>(), vec![&2, &3]);
     }
 
     #[test]
@@ -294,6 +298,6 @@ mod tests {
         }
         buffer.set_capacity(3);
 
-        assert_eq!(buffer.as_slice(), &[1, 2, 3]);
+        assert_eq!(buffer.iter().collect::<Vec<_>>(), vec![&1, &2, &3]);
     }
 }

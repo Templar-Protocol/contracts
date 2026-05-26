@@ -453,12 +453,16 @@ impl App {
             .sign_transaction(&self.cache, oracle_id.clone(), vec![action.into()])
             .await;
         let transaction_hash = signed_transaction.get_hash();
-        let transaction_result = self
-            .relay_near
-            .send_transaction(signed_transaction, TxExecutionStatus::Final)
-            .await
-            .map_err(oracle::UpdateError::JsonRpc)
-            .map_err(Arc::new)?;
+        let transaction_result = tokio::time::timeout(
+            self.args.rpc_timeout,
+            self.relay_near
+                .send_transaction(signed_transaction, TxExecutionStatus::Final),
+        )
+        .await
+        .map_err(|_| oracle::UpdateError::RpcTimeout(self.args.rpc_timeout))
+        .map_err(Arc::new)?
+        .map_err(oracle::UpdateError::JsonRpc)
+        .map_err(Arc::new)?;
 
         let Some(outcome) = transaction_result.final_execution_outcome else {
             return Err(Arc::new(oracle::UpdateError::UnknownRpcError));

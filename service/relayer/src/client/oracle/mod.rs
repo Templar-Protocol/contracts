@@ -95,6 +95,8 @@ pub enum UpdateError {
     UpdateActions(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     JsonRpc(#[from] JsonRpcError<near_jsonrpc_client::methods::tx::RpcTransactionError>),
+    #[error("RPC transaction timed out after {0:?}")]
+    RpcTimeout(Duration),
     #[error("Unknown RPC error")]
     UnknownRpcError,
     #[error("Transaction execution error: {0}")]

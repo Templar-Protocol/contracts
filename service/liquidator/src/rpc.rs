@@ -70,11 +70,22 @@ pub enum RpcError {
 
 impl RpcError {
     pub fn is_method_not_found(&self) -> bool {
+        fn has_error_token(vm_error: &str, token: &str) -> bool {
+            vm_error
+                .trim()
+                .to_lowercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|part| part == token)
+        }
+
+        // NEAR currently exposes this as an unstructured VM error string; switch
+        // to a structured field if the RPC API starts returning one.
         matches!(
             self,
             Self::ViewMethodError(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
                 RpcQueryError::ContractExecutionError { vm_error, .. }
-            ))) if vm_error.contains("MethodNotFound") || vm_error.contains("MethodResolveError")
+            ))) if has_error_token(vm_error, "methodnotfound")
+                || has_error_token(vm_error, "methodresolveerror")
         )
     }
 }

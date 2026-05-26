@@ -24,10 +24,14 @@ pub fn account_id_try_from_kernel(
     account_id: templar_proxy_oracle_kernel::primitive::AccountId,
 ) -> Option<AccountId> {
     let bytes = account_id.as_bytes();
-    let len = bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len());
+    let len = if let Some(len) = bytes.iter().position(|byte| *byte == 0) {
+        if bytes[len..].iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        len
+    } else {
+        bytes.len()
+    };
     let account_id = core::str::from_utf8(&bytes[..len]).ok()?;
     account_id.parse().ok()
 }
@@ -74,5 +78,15 @@ mod tests {
         let converted = account_id_to_kernel(account_id.as_ref());
 
         assert_eq!(account_id_try_from_kernel(converted), Some(account_id));
+    }
+
+    #[test]
+    fn rejects_kernel_account_id_with_non_zero_bytes_after_padding() {
+        let account_id: AccountId = "oracle.near".parse().unwrap();
+        let mut bytes = *account_id_to_kernel(account_id.as_ref()).as_bytes();
+        bytes[account_id.len() + 1] = b'x';
+        let converted = templar_proxy_oracle_kernel::primitive::AccountId::from_bytes(bytes);
+
+        assert_eq!(account_id_try_from_kernel(converted), None);
     }
 }

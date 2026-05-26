@@ -77,12 +77,12 @@ impl ProxyOracleController {
 
     pub async fn admin_set_proxy(
         &self,
-        _executor: &Account,
+        executor: &Account,
         id: PriceIdentifier,
         proxy: Option<Proxy<Source>>,
     ) {
-        self.contract
-            .call("admin_set_proxy")
+        executor
+            .call(self.contract.id(), "admin_set_proxy")
             .args_json(json!({ "id": id, "proxy": proxy }))
             .transact()
             .await
@@ -93,13 +93,13 @@ impl ProxyOracleController {
 
     pub async fn admin_add_circuit_breaker(
         &self,
-        _executor: &Account,
+        executor: &Account,
         id: PriceIdentifier,
         breaker_id: u32,
         breaker: CircuitBreaker,
     ) {
-        self.contract
-            .call("admin_add_circuit_breaker")
+        executor
+            .call(self.contract.id(), "admin_add_circuit_breaker")
             .args_json(json!({ "id": id, "breaker_id": breaker_id, "breaker": breaker }))
             .transact()
             .await
@@ -110,12 +110,12 @@ impl ProxyOracleController {
 
     pub async fn admin_configure_circuit_breakers(
         &self,
-        _executor: &Account,
+        executor: &Account,
         id: PriceIdentifier,
         config: CircuitBreakerSetConfig,
     ) {
-        self.contract
-            .call("admin_configure_circuit_breakers")
+        executor
+            .call(self.contract.id(), "admin_configure_circuit_breakers")
             .args_json(json!({ "id": id, "config": config }))
             .transact()
             .await
@@ -126,12 +126,12 @@ impl ProxyOracleController {
 
     pub async fn admin_remove_circuit_breaker(
         &self,
-        _executor: &Account,
+        executor: &Account,
         id: PriceIdentifier,
         breaker_id: u32,
     ) {
-        self.contract
-            .call("admin_remove_circuit_breaker")
+        executor
+            .call(self.contract.id(), "admin_remove_circuit_breaker")
             .args_json(json!({ "id": id, "breaker_id": breaker_id }))
             .transact()
             .await

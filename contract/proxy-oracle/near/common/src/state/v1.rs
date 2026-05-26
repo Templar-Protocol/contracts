@@ -230,11 +230,12 @@ impl State {
                 }
             }
             None => {
-                let changed = self.proxies.remove(&id).is_some()
-                    || self.circuit_breakers.remove(&id).is_some()
-                    || self.cached_prices.get(&id).is_some();
+                let proxy_removed = self.proxies.remove(&id).is_some();
+                let breaker_set_removed = self.circuit_breakers.remove(&id).is_some();
+                let cached_price_removed = self.cached_prices.remove(&id).is_some();
+                let changed = proxy_removed || breaker_set_removed || cached_price_removed;
                 if changed {
-                    self.invalidate_price_cache(id);
+                    self.bump_cache_epoch(id);
                 }
             }
         }
@@ -255,10 +256,12 @@ impl State {
             return None;
         }
 
-        let mut set = self
-            .circuit_breakers
-            .get(&pending.price_id)
-            .unwrap_or_else(CircuitBreakerSet::empty);
+        let Some(mut set) = self.circuit_breakers.get(&pending.price_id) else {
+            env::panic_str(&format!(
+                "Circuit breaker set not found for price {}",
+                pending.price_id
+            ));
+        };
         let status = f(&pending.proxy, &mut set);
         self.circuit_breakers.insert(&pending.price_id, &set);
         self.cached_prices.insert(

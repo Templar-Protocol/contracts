@@ -20,7 +20,13 @@ serialize! {
 
 impl CircuitBreakerRule for StepwiseChange {
     fn should_trip(&self, history: &RingBuffer<Observation>) -> bool {
-        let [.., previous, current] = history.as_slice() else {
+        if history.len() < 2 {
+            return false;
+        };
+        let Some(previous) = history.get(history.len() - 2) else {
+            return false;
+        };
+        let Some(current) = history.get(history.len() - 1) else {
             return false;
         };
 

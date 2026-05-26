@@ -135,7 +135,7 @@ impl Validatable for Operation {
         match self {
             Operation::SetProxy {
                 proxy: Some(proxy), ..
-            } if proxy.sources().len() == 0 => Err(ValidationError::EmptyProxyDefinition),
+            } if proxy.sources().is_empty() => Err(ValidationError::EmptyProxyDefinition),
             Operation::ConfigureCircuitBreakers { config, .. }
                 if config.history_len > MAX_CIRCUIT_BREAKER_HISTORY_LEN =>
             {

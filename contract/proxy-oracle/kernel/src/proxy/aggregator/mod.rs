@@ -28,6 +28,16 @@ pub enum SourceIter<'a, S> {
     Plain(core::slice::Iter<'a, S>),
 }
 
+impl<S> SourceIter<'_, S> {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Weighted(iter) => iter.as_slice().is_empty(),
+            Self::Plain(iter) => iter.as_slice().is_empty(),
+        }
+    }
+}
+
 impl<'a, S> Iterator for SourceIter<'a, S> {
     type Item = &'a S;
 

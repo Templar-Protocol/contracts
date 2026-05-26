@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn v0_to_v2_migrates_proxies_and_initializes_breaker_sets() {
+    fn v0_to_v1_migrates_proxies_and_initializes_breaker_sets() {
         context();
 
         let btc = PriceIdentifier([0x11; 32]);
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn v0_to_v2_ignores_priority_min_sources_over_one() {
+    fn v0_to_v1_ignores_priority_min_sources_over_one() {
         context();
 
         let proxy = Proxy::from(v0::Proxy {
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn v0_to_v2_clamps_median_low_min_sources_to_available_entries() {
+    fn v0_to_v1_clamps_median_low_min_sources_to_available_entries() {
         context();
 
         let proxy = Proxy::from(v0::Proxy {
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn v0_to_v2_handles_empty_median_low_entries_without_panicking() {
+    fn v0_to_v1_handles_empty_median_low_entries_without_panicking() {
         context();
 
         let proxy = Proxy::from(v0::Proxy {

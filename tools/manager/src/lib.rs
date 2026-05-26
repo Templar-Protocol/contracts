@@ -332,6 +332,79 @@ mod tests {
     }
 
     #[test]
+    fn parses_proxy_governance_add_circuit_breaker_json() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "add-circuit-breaker",
+            "--price-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--breaker",
+            r#"{"StepwiseChange":{"max_relative_change":"0.1"}}"#,
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_proxy_governance_add_circuit_breaker_file_with_id() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "add-circuit-breaker",
+            "--price-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--breaker-id",
+            "7",
+            "--breaker-file",
+            "breaker.json",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn rejects_proxy_governance_add_circuit_breaker_ambiguous_source() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "add-circuit-breaker",
+            "--price-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--breaker",
+            r#"{"StepwiseChange":{"max_relative_change":"0.1"}}"#,
+            "--breaker-file",
+            "breaker.json",
+        ]);
+
+        assert!(cli.is_err());
+    }
+
+    #[test]
     fn parses_proxy_governance_admin_function_call() {
         let cli = Cli::try_parse_from([
             "tmplrmgr",

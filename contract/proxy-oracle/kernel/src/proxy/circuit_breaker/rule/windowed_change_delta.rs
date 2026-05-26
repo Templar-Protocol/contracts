@@ -35,16 +35,15 @@ impl WindowedChangeDelta {
             return None;
         }
 
-        let observations = history.as_slice();
-        let current_start = observations.len().checked_sub(window_len)?;
+        let current_start = history.len().checked_sub(window_len)?;
         let lookback_offset = lookback_windows.checked_mul(window_len)?;
         let previous_start = current_start.checked_sub(lookback_offset)?;
         let previous_last = previous_start.checked_add(window_len - 1)?;
 
-        let current_first = observations.get(current_start)?;
-        let current_last = observations.last()?;
-        let previous_first = observations.get(previous_start)?;
-        let previous_last = observations.get(previous_last)?;
+        let current_first = history.get(current_start)?;
+        let current_last = history.last()?;
+        let previous_first = history.get(previous_start)?;
+        let previous_last = history.get(previous_last)?;
 
         let current = relative_signed_change(&current_first.price, &current_last.price)?;
         let previous = relative_signed_change(&previous_first.price, &previous_last.price)?;

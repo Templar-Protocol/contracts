@@ -93,7 +93,7 @@ impl OutputStyle for ProposalListOutput {
 
         writeln!(
             out,
-            "  {:>4}  {:<14}  {:<44}  {:>10}",
+            "  {:>4}  {:<28}  {:<44}  {:>10}",
             style("ID").bold(),
             style("Operation").bold(),
             style("Created By").bold(),
@@ -123,7 +123,7 @@ impl OutputStyle for ProposalListOutput {
 
             writeln!(
                 out,
-                "  {:>4}  {:<14}  {:<44}  {:>10}",
+                "  {:>4}  {:<28}  {:<44}  {:>10}",
                 style(item.id).bold(),
                 operation_name,
                 item.proposal.created_by,

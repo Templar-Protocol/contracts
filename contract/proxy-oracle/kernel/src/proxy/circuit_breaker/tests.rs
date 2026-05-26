@@ -244,8 +244,8 @@ fn set_adds_and_removes_breakers_by_id() {
 
     assert_eq!(id, 0);
     assert_eq!(set.next_id(), 1);
-    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
-    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
 
     set.remove(id).unwrap();
 
@@ -482,10 +482,9 @@ fn set_returns_tripped_for_new_and_existing_trips() {
         vec![id],
     );
     assert!(acceptance.events.is_empty());
-    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
     assert_eq!(
         set.observed_history()
-            .as_slice()
             .iter()
             .map(|observation| observation.price.price)
             .collect::<Vec<_>>(),
@@ -542,11 +541,11 @@ fn too_soon_sample_can_trip_without_being_persisted() {
     );
 
     assert_eq!(set.accepted_history().len(), 1);
-    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
     assert_eq!(set.observed_history().len(), 1);
-    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
     assert_eq!(
-        set.accepted_history().as_slice()[0].observed_at_ns,
+        set.accepted_history().get(0).unwrap().observed_at_ns,
         Nanoseconds::from_secs(1)
     );
     let breaker = set.breakers().get(&0).unwrap();
@@ -583,9 +582,9 @@ fn cumulative_too_soon_drift_trips_against_persisted_baseline() {
     );
 
     assert_eq!(set.accepted_history().len(), 1);
-    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
     assert_eq!(set.observed_history().len(), 1);
-    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
 }
 
 #[test]
@@ -609,7 +608,6 @@ fn blocked_observed_history_respects_sample_interval() {
 
     assert_eq!(
         set.observed_history()
-            .as_slice()
             .iter()
             .map(|observation| observation.price.price)
             .collect::<Vec<_>>(),
@@ -721,6 +719,35 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
 }
 
 #[test]
+fn set_enforced_returns_empty_outcome_when_value_is_unchanged() {
+    let mut set = breaker_set(Nanoseconds::zero(), 1);
+    let id = 0;
+    set.add(
+        id,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+
+    let unchanged = set.set_enforced(id, true).unwrap();
+
+    assert!(unchanged.events.is_empty());
+    assert!(set.breakers().get(&id).unwrap().is_enforced);
+
+    let changed = set.set_enforced(id, false).unwrap();
+
+    assert_eq!(changed.events.len(), 1);
+    assert!(matches!(
+        changed.events[0],
+        CircuitBreakerEvent::EnforcementSet {
+            breaker_id,
+            is_enforced: false,
+        } if breaker_id == id
+    ));
+}
+
+#[test]
 fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
@@ -761,7 +788,7 @@ fn manual_trip_override_blocks_set_without_tripping_breaker() {
     assert!(set.is_blocking());
     assert_manually_blocked(set.try_accept_price(price(100), Nanoseconds::from_secs(5)));
     assert!(set.accepted_history().is_empty());
-    assert_eq!(set.observed_history().as_slice()[0].price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
 }
 
 #[test]
@@ -780,10 +807,9 @@ fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
     set.set_manual_trip(true, actor_id(), None);
     assert_manually_blocked(set.try_accept_price(price(200), Nanoseconds::from_secs(2)));
 
-    assert_eq!(set.accepted_history().as_slice()[0].price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
     assert_eq!(
         set.observed_history()
-            .as_slice()
             .iter()
             .map(|observation| observation.price.price)
             .collect::<Vec<_>>(),
@@ -798,7 +824,6 @@ fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
         .unwrap();
     assert_eq!(
         set.accepted_history()
-            .as_slice()
             .iter()
             .map(|observation| observation.price.price)
             .collect::<Vec<_>>(),
@@ -825,7 +850,6 @@ fn set_config_resizes_history_in_place() {
     assert_eq!(set.sample_interval_ns(), Nanoseconds::from_secs(10));
     assert_eq!(
         set.accepted_history()
-            .as_slice()
             .iter()
             .map(|observation| observation.price.price)
             .collect::<Vec<_>>(),
@@ -833,7 +857,6 @@ fn set_config_resizes_history_in_place() {
     );
     assert_eq!(
         set.observed_history()
-            .as_slice()
             .iter()
             .map(|observation| observation.price.price)
             .collect::<Vec<_>>(),

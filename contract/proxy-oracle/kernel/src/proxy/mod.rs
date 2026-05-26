@@ -443,20 +443,29 @@ mod tests {
 
         assert_eq!(circuit_breakers.accepted_history().len(), 1);
         assert_eq!(
-            circuit_breakers.accepted_history().as_slice()[0]
+            circuit_breakers
+                .accepted_history()
+                .get(0)
+                .unwrap()
                 .price
                 .price,
             100
         );
         assert_eq!(circuit_breakers.observed_history().len(), 2);
         assert_eq!(
-            circuit_breakers.observed_history().as_slice()[0]
+            circuit_breakers
+                .observed_history()
+                .get(0)
+                .unwrap()
                 .price
                 .price,
             120
         );
         assert_eq!(
-            circuit_breakers.observed_history().as_slice()[1]
+            circuit_breakers
+                .observed_history()
+                .get(1)
+                .unwrap()
                 .price
                 .price,
             130

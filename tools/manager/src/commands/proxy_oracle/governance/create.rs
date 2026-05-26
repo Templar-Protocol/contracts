@@ -293,10 +293,14 @@ pub struct AddCircuitBreakerArgs {
     #[arg(long)]
     breaker_id: Option<u32>,
     /// JSON-encoded `CircuitBreaker` value.
-    #[arg(long)]
+    #[arg(
+        long,
+        conflicts_with = "breaker_file",
+        required_unless_present = "breaker_file"
+    )]
     breaker: Option<String>,
     /// Path to a JSON file containing `CircuitBreaker`.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "breaker", required_unless_present = "breaker")]
     breaker_file: Option<PathBuf>,
 }
 

@@ -29,10 +29,15 @@ impl CircuitBreakerRule for MonotonicRun {
         let mut direction = None;
         let mut streak = 0_u32;
 
-        for pair in history.as_slice().windows(2).rev() {
+        for current_index in (1..history.len()).rev() {
+            let (Some(previous), Some(current)) =
+                (history.get(current_index - 1), history.get(current_index))
+            else {
+                break;
+            };
             let step_change = classify_step_change(
-                &pair[0].price,
-                &pair[1].price,
+                &previous.price,
+                &current.price,
                 self.min_relative_step_change,
             );
 

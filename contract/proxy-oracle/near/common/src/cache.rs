@@ -20,7 +20,10 @@ impl CachedProxyPrice {
         let CachedProxyPriceStatus::Accepted { price } = &self.status else {
             return None;
         };
-        if now >= price.publish_time_ns && now.saturating_sub(price.publish_time_ns) > max_age {
+        if price.publish_time_ns > now {
+            return None;
+        }
+        if now.saturating_sub(price.publish_time_ns) > max_age {
             return None;
         }
 
@@ -91,6 +94,11 @@ mod tests {
                 Nanoseconds::from_secs(16),
                 Nanoseconds::from_secs(5)
             ),
+            None
+        );
+        assert_eq!(
+            cached
+                .accepted_price_no_older_than(Nanoseconds::from_secs(9), Nanoseconds::from_secs(5)),
             None
         );
 

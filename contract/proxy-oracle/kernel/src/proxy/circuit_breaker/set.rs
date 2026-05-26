@@ -406,6 +406,9 @@ impl CircuitBreakerSet<CircuitBreaker> {
         is_enforced: bool,
     ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
         let breaker = self.get_mut(breaker_id)?;
+        if breaker.is_enforced == is_enforced {
+            return Ok(CircuitBreakerOutcome::empty());
+        }
         breaker.is_enforced = is_enforced;
         Ok(
             CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::EnforcementSet {
