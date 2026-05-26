@@ -24,7 +24,7 @@ impl CancelProposal {
 
         ctx.batch(&signer, &self.oracle_id)
             .call(
-                Function::new("gov_cancel")
+                Function::new("cancel_proposal")
                     .args_json(json!({ "id": self.id }))?
                     .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),

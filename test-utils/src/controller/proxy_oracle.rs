@@ -4,11 +4,9 @@ use near_sdk::{
     json_types::Base64VecU8,
     serde::{de::DeserializeOwned, Serialize},
     serde_json::json,
-    AccountId,
 };
 use near_workspaces::{Account, Contract};
 use templar_common::{
-    governance,
     oracle::pyth::{OracleResponse, PriceIdentifier},
     Nanoseconds,
 };
@@ -18,9 +16,7 @@ use templar_proxy_oracle_kernel::proxy::{
 };
 use templar_proxy_oracle_near_common::{
     cache::{CachedProxyPrice, CachedProxyPriceStatus},
-    governance::{CircuitBreakerUpdate, Operation},
     input::Source,
-    role::Role,
     state,
 };
 use tokio::sync::OnceCell;
@@ -79,130 +75,84 @@ impl ProxyOracleController {
         Self { contract }
     }
 
-    pub async fn set_proxy(
+    pub async fn admin_set_proxy(
         &self,
-        executor: &Account,
+        _executor: &Account,
         id: PriceIdentifier,
         proxy: Option<Proxy<Source>>,
     ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(executor, op_id, Operation::SetProxy { id, proxy })
-            .await;
-        self.gov_execute(executor, op_id).await;
+        self.contract
+            .call("admin_set_proxy")
+            .args_json(json!({ "id": id, "proxy": proxy }))
+            .transact()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
     }
 
-    pub async fn add_circuit_breaker(
+    pub async fn admin_add_circuit_breaker(
         &self,
-        executor: &Account,
+        _executor: &Account,
         id: PriceIdentifier,
         breaker_id: u32,
         breaker: CircuitBreaker,
     ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(
-            executor,
-            op_id,
-            Operation::AddCircuitBreaker {
-                id,
-                breaker_id,
-                breaker,
-            },
-        )
-        .await;
-        self.gov_execute(executor, op_id).await;
+        self.contract
+            .call("admin_add_circuit_breaker")
+            .args_json(json!({ "id": id, "breaker_id": breaker_id, "breaker": breaker }))
+            .transact()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
     }
 
-    pub async fn set_circuit_breaker_set_config(
+    pub async fn admin_configure_circuit_breakers(
         &self,
-        executor: &Account,
+        _executor: &Account,
         id: PriceIdentifier,
         config: CircuitBreakerSetConfig,
     ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(
-            executor,
-            op_id,
-            Operation::ConfigureCircuitBreakers { id, config },
-        )
-        .await;
-        self.gov_execute(executor, op_id).await;
+        self.contract
+            .call("admin_configure_circuit_breakers")
+            .args_json(json!({ "id": id, "config": config }))
+            .transact()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
     }
 
-    pub async fn set_circuit_breaker_set_manual_trip(
+    pub async fn admin_remove_circuit_breaker(
         &self,
-        executor: &Account,
-        id: PriceIdentifier,
-        is_manually_tripped: bool,
-    ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(
-            executor,
-            op_id,
-            Operation::SetCircuitBreakerManualTrip {
-                id,
-                is_manually_tripped,
-            },
-        )
-        .await;
-        self.gov_execute(executor, op_id).await;
-    }
-
-    pub async fn set_circuit_breaker_role(
-        &self,
-        executor: &Account,
-        account_id: AccountId,
-        role: Role,
-        is_granted: bool,
-    ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(
-            executor,
-            op_id,
-            Operation::SetCircuitBreakerRole {
-                account_id,
-                role,
-                is_granted,
-            },
-        )
-        .await;
-        self.gov_execute(executor, op_id).await;
-    }
-
-    pub async fn remove_circuit_breaker(
-        &self,
-        executor: &Account,
+        _executor: &Account,
         id: PriceIdentifier,
         breaker_id: u32,
     ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(
-            executor,
-            op_id,
-            Operation::RemoveCircuitBreaker { id, breaker_id },
-        )
-        .await;
-        self.gov_execute(executor, op_id).await;
+        self.contract
+            .call("admin_remove_circuit_breaker")
+            .args_json(json!({ "id": id, "breaker_id": breaker_id }))
+            .transact()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
     }
 
-    pub async fn update_circuit_breaker(
-        &self,
-        executor: &Account,
-        id: PriceIdentifier,
-        breaker_id: u32,
-        update: CircuitBreakerUpdate,
-    ) {
-        let op_id = self.gov_next_id().await;
-        self.gov_create(
-            executor,
-            op_id,
-            Operation::UpdateCircuitBreaker {
-                id,
-                breaker_id,
-                update,
-            },
-        )
-        .await;
-        self.gov_execute(executor, op_id).await;
+    pub async fn admin_upgrade(&self, executor: &Account, code: Vec<u8>, migrate_args: Vec<u8>) {
+        executor
+            .call(self.contract.id(), "admin_upgrade")
+            .args_json(json!({
+                "code": Base64VecU8(code),
+                "migrate_args": Base64VecU8(migrate_args),
+            }))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
     }
 
     define! {
@@ -211,15 +161,17 @@ impl ProxyOracleController {
         #[view] pub fn get_proxy_circuit_breaker_set(id: PriceIdentifier) -> Option<CircuitBreakerSet>;
         #[view] pub fn get_cached_proxy_price(id: PriceIdentifier) -> Option<CachedProxyPrice>;
         #[view] pub fn list_cached_proxy_prices(price_ids: Vec<PriceIdentifier>) -> HashMap<PriceIdentifier, Option<CachedProxyPrice>>;
-        #[view] pub fn has_role(account_id: AccountId, role: Role) -> bool;
-        #[view] pub fn list_role(role: Role, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
 
         #[call]
         pub fn price_feed_exists(price_identifier: PriceIdentifier) -> bool;
         #[call]
-        pub fn set_circuit_breaker_manual_trip(id: PriceIdentifier, is_manually_tripped: bool, metadata: Option<Base64VecU8>);
+        pub fn admin_set_manual_trip(id: PriceIdentifier, is_manually_tripped: bool, metadata: Option<Base64VecU8>);
         #[call(exec)]
-        pub fn set_circuit_breaker_manual_trip_exec["set_circuit_breaker_manual_trip"](id: PriceIdentifier, is_manually_tripped: bool, metadata: Option<Base64VecU8>);
+        pub fn admin_set_manual_trip_exec["admin_set_manual_trip"](id: PriceIdentifier, is_manually_tripped: bool, metadata: Option<Base64VecU8>);
+        #[call(exec)]
+        pub fn admin_rearm_exec["admin_rearm"](id: PriceIdentifier, breaker_id: u32, armed_after_ns: Nanoseconds, accepted_history_source: templar_proxy_oracle_kernel::proxy::circuit_breaker::AcceptedHistorySource);
+        #[call(exec)]
+        pub fn admin_set_enforced_exec["admin_set_enforced"](id: PriceIdentifier, breaker_id: u32, is_enforced: bool);
         #[call(exec)]
         pub fn price_feed_exists_exec["price_feed_exists"](price_identifier: PriceIdentifier) -> bool;
         #[call(tgas(15))]
@@ -233,21 +185,20 @@ impl ProxyOracleController {
     }
 }
 
-impl GovernanceController<Operation> for ProxyOracleController {}
-
 pub trait GovernanceController<T: DeserializeOwned + Serialize>: ContractController {
     define! {
-        #[view] fn gov_next_id() -> u32;
-        #[view] fn gov_ttl_ns() -> Nanoseconds;
-        #[view] fn gov_count() -> u32;
-        #[view] fn gov_list(offset: Option<u32>, count: Option<u32>) -> Vec<u32>;
-        #[view] fn gov_get(id: u32) -> Option<governance::Proposal<T>>;
+        #[view] fn next_proposal_id() -> u32;
+        #[view] fn proposal_count() -> u32;
+        #[view] fn list_proposals(offset: Option<u32>, count: Option<u32>) -> Vec<u32>;
+        #[view] fn get_proposal(id: u32) -> Option<templar_proxy_oracle_near_governance_common::Proposal<T>>;
+        #[view] fn get_effective_proposal_ttl(operation: T, requested_ttl: Nanoseconds) -> Nanoseconds;
+        #[view] fn get_operation_ttl(kind: templar_proxy_oracle_near_governance_common::OperationKind) -> Nanoseconds;
 
         #[call(yocto(1))]
-        fn gov_create(id: u32, operation: T) -> governance::Proposal<T>;
+        fn create_proposal(id: u32, operation: T, requested_ttl: Nanoseconds) -> templar_proxy_oracle_near_governance_common::Proposal<T>;
         #[call(exec, yocto(1))]
-        fn gov_cancel(id: u32);
+        fn cancel_proposal(id: u32);
         #[call(exec, yocto(1))]
-        fn gov_execute(id: u32);
+        fn execute_proposal(id: u32);
     }
 }

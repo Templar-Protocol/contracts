@@ -307,4 +307,219 @@ mod tests {
 
         assert!(cli.is_ok());
     }
+
+    #[test]
+    fn parses_proxy_governance_admin_upgrade() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "admin-upgrade",
+            "--code-file",
+            "proxy_oracle.wasm",
+            "--migrate-args",
+            r#"{"from_version":"v0"}"#,
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_proxy_governance_admin_function_call() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "admin-function-call",
+            "--method-name",
+            "own_accept_owner",
+            "--args",
+            "{}",
+            "--gas",
+            "20000000000000",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_proxy_governance_admin_function_call_tgas() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "admin-function-call",
+            "--method-name",
+            "own_accept_owner",
+            "--args",
+            "{}",
+            "--tgas",
+            "20",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_proxy_governance_set_action_ttl() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "set-action-ttl",
+            "--kind",
+            "set-role",
+            "--secs",
+            "60",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn rejects_proxy_governance_admin_function_call_ambiguous_gas() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "admin-function-call",
+            "--method-name",
+            "own_accept_owner",
+            "--args",
+            "{}",
+            "--gas",
+            "20000000000000",
+            "--tgas",
+            "20",
+        ]);
+
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn parses_proxy_governance_set_role_grant() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "set-role",
+            "--account-id",
+            "operator.test.near",
+            "--role",
+            "manual-tripper",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn parses_proxy_governance_set_role_revoke() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "set-role",
+            "--account-id",
+            "operator.test.near",
+            "--role",
+            "manual-tripper",
+            "--revoke",
+        ]);
+
+        assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn rejects_proxy_governance_set_role_without_role() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "set-role",
+            "--account-id",
+            "operator.test.near",
+        ]);
+
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn parses_proxy_governance_set_role_revoke_modifier() {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            "governance",
+            "create",
+            "--signer-id",
+            "oracle.test.near",
+            "--secret-key",
+            &secret_key(),
+            "--oracle-id",
+            "governance.test.near",
+            "set-role",
+            "--account-id",
+            "operator.test.near",
+            "--role",
+            "manual-tripper",
+            "--revoke",
+        ]);
+
+        assert!(cli.is_ok());
+    }
 }

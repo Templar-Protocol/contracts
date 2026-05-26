@@ -1,19 +1,19 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
+use near_sdk::json_types::Base64VecU8;
+use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
+use near_sdk::Gas;
 use near_sdk::NearToken;
-use templar_common::governance::Proposal;
 use templar_common::Nanoseconds;
 use templar_proxy_oracle_kernel::proxy::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig},
     Proxy,
 };
-use templar_proxy_oracle_near_common::{
-    governance::{CircuitBreakerUpdate, Operation},
-    input::Source,
-    role::Role,
-};
+use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Proposal, Role};
 use templar_tools_common::near::{self, Function};
 
 use super::execute::execute_proposal;
@@ -32,6 +32,9 @@ pub struct CreateProposal {
     pub id: Option<u32>,
     #[command(subcommand)]
     pub operation: OperationCommand,
+    /// Requested TTL in seconds for this proposal (will be clamped to the configured minimum).
+    #[arg(long)]
+    pub requested_ttl_secs: Option<u64>,
     /// Execute the proposal immediately after creation. Requires the created proposal TTL to be zero.
     #[arg(long)]
     pub execute_immediately: bool,
@@ -41,35 +44,174 @@ pub struct CreateProposal {
 pub enum OperationCommand {
     /// Set or remove a proxy for a price identifier
     Proxy(ProxyArgs),
-    /// Set the governance action TTL
-    SetTtl(SetTtlArgs),
     /// Add a circuit breaker to a price identifier
     AddCircuitBreaker(AddCircuitBreakerArgs),
     /// Set shared circuit breaker sampling configuration for a price identifier
     CircuitBreakerConfig(CircuitBreakerConfigArgs),
     /// Set or clear the manual trip override for a price identifier
     CircuitBreakerManualTrip(CircuitBreakerManualTripArgs),
-    /// Grant or revoke an offline circuit breaker role
-    CircuitBreakerRole(CircuitBreakerRoleArgs),
+    /// Rearm a circuit breaker (clear manual trips and set lifecycle)
+    Rearm(RearmArgs),
+    /// Set or clear the enforced block for a price identifier
+    SetEnforced(SetEnforcedArgs),
     /// Remove a circuit breaker from a price identifier
     RemoveCircuitBreaker(RemoveCircuitBreakerArgs),
-    /// Update one circuit breaker's enforcement or lifecycle state
-    CircuitBreaker(CircuitBreakerUpdateArgs),
+    /// Set the minimum TTL for one operation kind
+    SetActionTtl(SetActionTtlArgs),
+    SetRole(SetRoleArgs),
+    /// Propose a contract upgrade for the proxy oracle
+    AdminUpgrade(AdminUpgradeArgs),
+    /// Propose an Admin-only function call on the configured proxy oracle
+    AdminFunctionCall(AdminFunctionCallArgs),
 }
 
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CircuitBreakerRoleArg {
-    OfflineManualTrip,
-    OfflineManualUntrip,
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OperationKindArg {
+    SetProxy,
+    ConfigureCircuitBreakers,
+    AddCircuitBreaker,
+    RemoveCircuitBreaker,
+    SetManualTrip,
+    Rearm,
+    SetEnforced,
+    SetActionTtl,
+    SetRole,
+    AdminUpgrade,
+    AdminFunctionCall,
 }
 
-impl From<CircuitBreakerRoleArg> for Role {
-    fn from(value: CircuitBreakerRoleArg) -> Self {
+impl From<OperationKindArg> for OperationKind {
+    fn from(value: OperationKindArg) -> Self {
         match value {
-            CircuitBreakerRoleArg::OfflineManualTrip => Self::OfflineManualTrip,
-            CircuitBreakerRoleArg::OfflineManualUntrip => Self::OfflineManualUntrip,
+            OperationKindArg::SetProxy => Self::SetProxy,
+            OperationKindArg::ConfigureCircuitBreakers => Self::ConfigureCircuitBreakers,
+            OperationKindArg::AddCircuitBreaker => Self::AddCircuitBreaker,
+            OperationKindArg::RemoveCircuitBreaker => Self::RemoveCircuitBreaker,
+            OperationKindArg::SetManualTrip => Self::SetManualTrip,
+            OperationKindArg::Rearm => Self::Rearm,
+            OperationKindArg::SetEnforced => Self::SetEnforced,
+            OperationKindArg::SetActionTtl => Self::SetActionTtl,
+            OperationKindArg::SetRole => Self::SetRole,
+            OperationKindArg::AdminUpgrade => Self::AdminUpgrade,
+            OperationKindArg::AdminFunctionCall => Self::AdminFunctionCall,
         }
     }
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RoleArg {
+    ManualTripper,
+    CircuitBreakerOperator,
+    ProxyConfigurationManager,
+    Admin,
+}
+
+impl From<RoleArg> for Role {
+    fn from(value: RoleArg) -> Self {
+        match value {
+            RoleArg::ManualTripper => Self::ManualTripper,
+            RoleArg::CircuitBreakerOperator => Self::CircuitBreakerOperator,
+            RoleArg::ProxyConfigurationManager => Self::ProxyConfigurationManager,
+            RoleArg::Admin => Self::Admin,
+        }
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SetRoleArgs {
+    #[arg(long)]
+    account_id: AccountId,
+    #[arg(long)]
+    role: RoleArg,
+    #[arg(long)]
+    revoke: bool,
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SetActionTtlArgs {
+    /// Operation kind whose minimum proposal TTL should change.
+    #[arg(long)]
+    kind: OperationKindArg,
+    /// New minimum TTL in seconds.
+    #[arg(long)]
+    secs: u64,
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AdminUpgradeArgs {
+    /// Path to the WASM contract file.
+    #[arg(long)]
+    code_file: PathBuf,
+    /// JSON string for migration arguments.
+    #[arg(long, conflicts_with = "migrate_args_file")]
+    migrate_args: Option<String>,
+    /// Path to a file containing JSON migration arguments.
+    #[arg(long, conflicts_with = "migrate_args")]
+    migrate_args_file: Option<PathBuf>,
+}
+
+impl AdminUpgradeArgs {
+    fn resolve(&self) -> anyhow::Result<(Base64VecU8, Base64VecU8)> {
+        let code = std::fs::read(&self.code_file)
+            .with_context(|| format!("read code file `{}`", self.code_file.display()))?;
+        let args_text = load_text(
+            self.migrate_args.as_deref(),
+            self.migrate_args_file.as_deref(),
+            "migrate-args",
+        )?;
+        Ok((Base64VecU8(code), Base64VecU8(args_text.into_bytes())))
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AdminFunctionCallArgs {
+    /// Method to call on the configured proxy oracle account.
+    #[arg(long)]
+    method_name: String,
+    /// JSON string for method arguments.
+    #[arg(long, conflicts_with = "args_file")]
+    args: Option<String>,
+    /// Path to a file containing JSON method arguments.
+    #[arg(long, conflicts_with = "args")]
+    args_file: Option<PathBuf>,
+    /// Attached deposit in yoctoNEAR.
+    #[arg(long, default_value_t = 0)]
+    attached_deposit_yocto: u128,
+    /// Gas to attach to the call, in raw NEAR gas units.
+    #[arg(long, required_unless_present = "tgas", conflicts_with = "tgas")]
+    gas: Option<u64>,
+    /// Gas to attach to the call, in TGas.
+    #[arg(long, required_unless_present = "gas", conflicts_with = "gas")]
+    tgas: Option<u64>,
+}
+
+impl AdminFunctionCallArgs {
+    fn resolve(&self) -> anyhow::Result<(Base64VecU8, U128, Gas)> {
+        let args_text = load_text(self.args.as_deref(), self.args_file.as_deref(), "args")?;
+        let gas = match (self.gas, self.tgas) {
+            (Some(gas), None) => Gas::from_gas(gas),
+            (None, Some(tgas)) => Gas::from_tgas(tgas),
+            _ => anyhow::bail!("specify exactly one of --gas or --tgas"),
+        };
+        Ok((
+            Base64VecU8(args_text.into_bytes()),
+            U128(self.attached_deposit_yocto),
+            gas,
+        ))
+    }
+}
+
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SetEnforcedArgs {
+    /// Hex-encoded 32-byte price identifier
+    #[arg(long)]
+    price_id: CliPriceIdentifier,
+    /// Stable circuit breaker ID within the set.
+    #[arg(long)]
+    breaker_id: u32,
+    /// Whether the circuit breaker set should always block this feed.
+    #[arg(long)]
+    is_enforced: bool,
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,20 +285,6 @@ impl ProxyActionArgs {
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[group(required = true, multiple = false)]
-pub struct SetTtlArgs {
-    /// New TTL in nanoseconds
-    #[arg(long, alias = "nanos", alias = "nanoseconds")]
-    pub ns: Option<u64>,
-    /// New TTL in milliseconds
-    #[arg(long, alias = "millis", alias = "milliseconds")]
-    pub ms: Option<u64>,
-    /// New TTL in seconds
-    #[arg(long, alias = "seconds")]
-    pub secs: Option<u64>,
-}
-
-#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AddCircuitBreakerArgs {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
@@ -196,22 +324,6 @@ pub struct RemoveCircuitBreakerArgs {
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CircuitBreakerUpdateArgs {
-    /// Hex-encoded 32-byte price identifier
-    #[arg(long)]
-    price_id: CliPriceIdentifier,
-    /// Stable circuit breaker ID within the set.
-    #[arg(long)]
-    breaker_id: u32,
-    /// JSON-encoded `CircuitBreakerUpdate` value.
-    #[arg(long)]
-    update: Option<String>,
-    /// Path to a JSON file containing `CircuitBreakerUpdate`.
-    #[arg(long)]
-    update_file: Option<PathBuf>,
-}
-
-#[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CircuitBreakerManualTripArgs {
     /// Hex-encoded 32-byte price identifier
     #[arg(long)]
@@ -222,52 +334,35 @@ pub struct CircuitBreakerManualTripArgs {
 }
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CircuitBreakerRoleArgs {
-    /// Account to grant or revoke the role for
+pub struct RearmArgs {
+    /// Hex-encoded 32-byte price identifier
     #[arg(long)]
-    account_id: AccountId,
-    /// Role to grant or revoke
+    price_id: CliPriceIdentifier,
+    /// Stable circuit breaker ID within the set.
     #[arg(long)]
-    role: CircuitBreakerRoleArg,
-    /// Grant the role
-    #[arg(long, conflicts_with = "revoke", required_unless_present = "revoke")]
-    grant: bool,
-    /// Revoke the role
-    #[arg(long, conflicts_with = "grant", required_unless_present = "grant")]
-    revoke: bool,
+    breaker_id: u32,
+    /// Time after which the circuit breaker is considered armed (in nanoseconds).
+    #[arg(long)]
+    armed_after_ns: u64,
+    /// Source for accepted history after rearm (empty or observed)
+    #[arg(long)]
+    accepted_history_source: AcceptedHistorySourceArg,
 }
 
-impl SetTtlArgs {
-    pub fn from_ns(ns: u64) -> Self {
-        Self {
-            ns: Some(ns),
-            ms: None,
-            secs: None,
-        }
-    }
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AcceptedHistorySourceArg {
+    Empty,
+    Observed,
+}
 
-    pub fn from_ms(ms: u64) -> Self {
-        Self {
-            ns: None,
-            ms: Some(ms),
-            secs: None,
+impl From<AcceptedHistorySourceArg>
+    for templar_proxy_oracle_kernel::proxy::circuit_breaker::AcceptedHistorySource
+{
+    fn from(value: AcceptedHistorySourceArg) -> Self {
+        match value {
+            AcceptedHistorySourceArg::Empty => Self::Empty,
+            AcceptedHistorySourceArg::Observed => Self::Observed,
         }
-    }
-
-    pub fn from_secs(secs: u64) -> Self {
-        Self {
-            ns: None,
-            ms: None,
-            secs: Some(secs),
-        }
-    }
-
-    pub fn ttl(&self) -> Nanoseconds {
-        self.ns
-            .map(Nanoseconds::from_ns)
-            .or_else(|| self.ms.map(Nanoseconds::from_ms))
-            .or_else(|| self.secs.map(Nanoseconds::from_secs))
-            .unwrap_or(Nanoseconds::zero())
     }
 }
 
@@ -313,7 +408,7 @@ impl CreateProposal {
             id
         } else {
             let next_id: u32 =
-                near::view(&ctx.near, &self.oracle_id, "gov_next_id", json!({})).await?;
+                near::view(&ctx.near, &self.oracle_id, "next_proposal_id", json!({})).await?;
             tracing::info!(id = next_id, "Auto-fetched next proposal ID");
             next_id
         };
@@ -331,9 +426,6 @@ impl CreateProposal {
                     proxy,
                 }
             }
-            OperationCommand::SetTtl(args) => Operation::SetActionTtl {
-                new_ttl: args.ttl(),
-            },
             OperationCommand::AddCircuitBreaker(args) => {
                 args.operation(ctx, &self.oracle_id).await?
             }
@@ -344,43 +436,61 @@ impl CreateProposal {
                     history_len: args.history_len,
                 },
             },
-            OperationCommand::CircuitBreakerManualTrip(args) => {
-                Operation::SetCircuitBreakerManualTrip {
-                    id: args.price_id.into(),
-                    is_manually_tripped: args.is_manually_tripped,
-                }
-            }
-            OperationCommand::CircuitBreakerRole(args) => Operation::SetCircuitBreakerRole {
-                account_id: args.account_id.clone(),
-                role: args.role.clone().into(),
-                is_granted: args.grant && !args.revoke,
+            OperationCommand::CircuitBreakerManualTrip(args) => Operation::SetManualTrip {
+                id: args.price_id.into(),
+                is_manually_tripped: args.is_manually_tripped,
+                metadata: None,
+            },
+            OperationCommand::Rearm(args) => Operation::Rearm {
+                id: args.price_id.into(),
+                breaker_id: args.breaker_id,
+                armed_after_ns: Nanoseconds::from_ns(args.armed_after_ns),
+                accepted_history_source: args.accepted_history_source.clone().into(),
+            },
+            OperationCommand::SetEnforced(args) => Operation::SetEnforced {
+                id: args.price_id.into(),
+                breaker_id: args.breaker_id,
+                is_enforced: args.is_enforced,
             },
             OperationCommand::RemoveCircuitBreaker(args) => Operation::RemoveCircuitBreaker {
                 id: args.price_id.into(),
                 breaker_id: args.breaker_id,
             },
-            OperationCommand::CircuitBreaker(args) => {
-                let update: CircuitBreakerUpdate = serde_json::from_str(&load_text(
-                    args.update.as_deref(),
-                    args.update_file.as_deref(),
-                    "update",
-                )?)?;
-                Operation::UpdateCircuitBreaker {
-                    id: args.price_id.into(),
-                    breaker_id: args.breaker_id,
-                    update,
+            OperationCommand::SetActionTtl(args) => Operation::SetActionTtl {
+                kind: args.kind.into(),
+                new_ttl: Nanoseconds::from_secs(args.secs),
+            },
+            OperationCommand::SetRole(args) => Operation::SetRole {
+                account_id: args.account_id.clone(),
+                role: args.role.into(),
+                set: !args.revoke,
+            },
+            OperationCommand::AdminUpgrade(args) => {
+                let (code, migrate_args) = args.resolve()?;
+                Operation::AdminUpgrade { code, migrate_args }
+            }
+            OperationCommand::AdminFunctionCall(args) => {
+                let (call_args, attached_deposit, gas) = args.resolve()?;
+                Operation::AdminFunctionCall {
+                    method_name: args.method_name.clone(),
+                    args: call_args,
+                    attached_deposit,
+                    gas,
                 }
             }
         };
 
         let signer = self.signer.signer();
 
+        let requested_ttl = Nanoseconds::from_secs(self.requested_ttl_secs.unwrap_or(0));
+
         ctx.batch(&signer, &self.oracle_id)
             .call(
-                Function::new("gov_create")
+                Function::new("create_proposal")
                     .args_json(json!({
                         "id": id,
                         "operation": operation,
+                        "requested_ttl": requested_ttl,
                     }))?
                     .deposit(NearToken::from_yoctonear(1))
                     .max_gas(),
@@ -389,8 +499,13 @@ impl CreateProposal {
             .await?;
 
         if self.execute_immediately {
-            let proposal: Option<Proposal<Operation>> =
-                near::view(&ctx.near, &self.oracle_id, "gov_get", json!({ "id": id })).await?;
+            let proposal: Option<Proposal<Operation>> = near::view(
+                &ctx.near,
+                &self.oracle_id,
+                "get_proposal",
+                json!({ "id": id }),
+            )
+            .await?;
 
             let proposal =
                 proposal.ok_or_else(|| anyhow::anyhow!("created proposal {id} not found"))?;

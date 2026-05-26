@@ -14,8 +14,8 @@ pub use rule::{
 };
 pub use set::{
     AcceptedHistorySource, CircuitBreakerEvent, CircuitBreakerOutcome, CircuitBreakerSet,
-    CircuitBreakerSetConfig, CircuitBreakerSetParseError, CircuitBreakerState,
-    CircuitBreakerUpdate, PriceAcceptance, PriceBlockedReason, UncheckedCircuitBreakerSet,
+    CircuitBreakerSetConfig, CircuitBreakerSetParseError, CircuitBreakerState, PriceAcceptance,
+    PriceBlockedReason, UncheckedCircuitBreakerSet,
 };
 pub use status::CircuitBreakerStatus;
 

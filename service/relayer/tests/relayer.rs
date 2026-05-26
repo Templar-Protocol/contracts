@@ -361,7 +361,7 @@ async fn set_proxy(
     source: impl Into<Source>,
 ) {
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             price_id,
             Some(Proxy::median_low([source.into()], FreshnessFilter::empty())),

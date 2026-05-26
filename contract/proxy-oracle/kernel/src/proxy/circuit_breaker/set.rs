@@ -45,17 +45,6 @@ serialize! {
 
 serialize! {
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum CircuitBreakerUpdate {
-        SetEnforced { is_enforced: bool },
-        Rearm {
-            armed_after_ns: Nanoseconds,
-            accepted_history_source: AcceptedHistorySource,
-        },
-    }
-}
-
-serialize! {
-    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum CircuitBreakerEvent {
         ManualTripSet {
             is_manually_tripped: bool,
@@ -253,14 +242,10 @@ impl<R> CircuitBreakerSet<R> {
     }
 
     pub fn set_config(&mut self, config: CircuitBreakerSetConfig) -> CircuitBreakerOutcome {
-        self.set_config_state(config);
-        CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::ConfigSet { config }])
-    }
-
-    fn set_config_state(&mut self, config: CircuitBreakerSetConfig) {
         self.0.sample_interval_ns = config.sample_interval_ns;
         self.0.accepted_history.set_capacity(config.history_len);
         self.0.observed_history.set_capacity(config.history_len);
+        CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::ConfigSet { config }])
     }
 
     pub fn set_manual_trip(
@@ -415,45 +400,42 @@ impl CircuitBreakerSet<CircuitBreaker> {
         )
     }
 
-    pub fn update(
+    pub fn set_enforced(
         &mut self,
         breaker_id: u32,
-        update: CircuitBreakerUpdate,
+        is_enforced: bool,
     ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
-        match update {
-            CircuitBreakerUpdate::SetEnforced { is_enforced } => {
-                let breaker = self.get_mut(breaker_id)?;
-                breaker.is_enforced = is_enforced;
-                Ok(CircuitBreakerOutcome::empty().with_events(vec![
-                    CircuitBreakerEvent::EnforcementSet {
-                        breaker_id,
-                        is_enforced,
-                    },
-                ]))
-            }
-            CircuitBreakerUpdate::Rearm {
+        let breaker = self.get_mut(breaker_id)?;
+        breaker.is_enforced = is_enforced;
+        Ok(
+            CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::EnforcementSet {
+                breaker_id,
+                is_enforced,
+            }]),
+        )
+    }
+
+    pub fn rearm(
+        &mut self,
+        breaker_id: u32,
+        armed_after_ns: Nanoseconds,
+        accepted_history_source: AcceptedHistorySource,
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
+        let breaker = self.get_mut(breaker_id)?;
+        breaker.status = CircuitBreakerStatus::ArmedAfter {
+            timestamp_ns: armed_after_ns,
+        };
+        match accepted_history_source {
+            AcceptedHistorySource::Empty => self.clear_accepted_history(),
+            AcceptedHistorySource::Observed => self.seed_accepted_history_from_observed(),
+        }
+        Ok(
+            CircuitBreakerOutcome::empty().with_events(vec![CircuitBreakerEvent::Rearmed {
+                breaker_id,
                 armed_after_ns,
                 accepted_history_source,
-            } => {
-                let breaker = self.get_mut(breaker_id)?;
-                breaker.status = CircuitBreakerStatus::ArmedAfter {
-                    timestamp_ns: armed_after_ns,
-                };
-                match accepted_history_source {
-                    AcceptedHistorySource::Empty => self.clear_accepted_history(),
-                    AcceptedHistorySource::Observed => self.seed_accepted_history_from_observed(),
-                }
-                Ok(
-                    CircuitBreakerOutcome::empty().with_events(vec![
-                        CircuitBreakerEvent::Rearmed {
-                            breaker_id,
-                            armed_after_ns,
-                            accepted_history_source,
-                        },
-                    ]),
-                )
-            }
-        }
+            }]),
+        )
     }
 }
 

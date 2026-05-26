@@ -5,18 +5,12 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerSetConfig, Observation,
 };
 
-use crate::{convert::account_id_try_from_kernel, role::Role};
+use crate::convert::account_id_try_from_kernel;
 
 pub const MAX_MANUAL_TRIP_METADATA_LEN: usize = 1024;
 
 #[near(event_json(standard = "templar-proxy-oracle"))]
 pub enum Event {
-    #[event_version("1.0.0")]
-    CircuitBreakerRoleSet {
-        account_id: AccountId,
-        role: Role,
-        is_granted: bool,
-    },
     #[event_version("1.0.0")]
     CircuitBreakerManualTripSet {
         price_id: PriceIdentifier,

@@ -3,6 +3,7 @@ use std::{num::NonZero, path::Path, str::FromStr};
 use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
     ft::FtController,
+    governance_contract::GovernanceContractController,
     market::{MarketController, UnifiedMarketController},
     mock_oracle::MockOracleController,
     proxy_oracle::{GovernanceController, ProxyOracleController},

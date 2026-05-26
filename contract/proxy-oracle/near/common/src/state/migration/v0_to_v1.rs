@@ -1,16 +1,8 @@
 use near_sdk::near;
-use templar_common::{
-    governance::{Governance, Proposal},
-    oracle::pyth::PriceIdentifier,
-    versioned_state::StateTransformer,
-};
-use templar_proxy_oracle_kernel::proxy::{
-    aggregator::method::{median::MedianLow, priority::Priority},
-    Aggregator, FreshnessFilter, Proxy, WeightedSource,
-};
+use templar_common::{oracle::pyth::PriceIdentifier, versioned_state::StateTransformer};
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 
 use crate::{
-    governance,
     input::Source,
     state::{self, legacy::v0, v1},
 };
@@ -34,13 +26,13 @@ impl From<v0::LegacySource> for Source {
     }
 }
 
-impl From<v0::Entry> for WeightedSource<Source> {
+impl From<v0::Entry> for templar_proxy_oracle_kernel::proxy::WeightedSource<Source> {
     fn from(value: v0::Entry) -> Self {
         Self::new(Source::from(value.source), value.weight)
     }
 }
 
-impl From<v0::Filter> for FreshnessFilter {
+impl From<v0::Filter> for templar_proxy_oracle_kernel::proxy::FreshnessFilter {
     fn from(value: v0::Filter) -> Self {
         Self::new(value.max_age, value.max_clock_drift)
     }
@@ -48,15 +40,26 @@ impl From<v0::Filter> for FreshnessFilter {
 
 impl From<v0::Proxy> for Proxy<Source> {
     fn from(value: v0::Proxy) -> Self {
-        let freshness_filter = FreshnessFilter::from(value.aggregator.filter.clone());
+        use templar_proxy_oracle_kernel::proxy::aggregator::{
+            method::{median::MedianLow, priority::Priority},
+            Aggregator,
+        };
+
+        let freshness_filter = templar_proxy_oracle_kernel::proxy::FreshnessFilter::from(
+            value.aggregator.filter.clone(),
+        );
         let source_count = u32::try_from(value.entries.len())
             .unwrap_or(u32::MAX)
             .max(1);
 
         let aggregator = match value.aggregator.method {
             v0::AggregationMethod::MedianLow => {
-                let mut aggregator =
-                    MedianLow::new(value.entries.into_iter().map(WeightedSource::from));
+                let mut aggregator = MedianLow::new(
+                    value
+                        .entries
+                        .into_iter()
+                        .map(templar_proxy_oracle_kernel::proxy::WeightedSource::from),
+                );
                 aggregator.min_sources = value
                     .aggregator
                     .filter
@@ -85,37 +88,6 @@ impl From<v0::Proxy> for Proxy<Source> {
     }
 }
 
-impl From<v0::Operation> for governance::Operation {
-    fn from(value: v0::Operation) -> Self {
-        match value {
-            v0::Operation::SetProxy { id, proxy } => Self::SetProxy {
-                id,
-                proxy: proxy.map(Proxy::from),
-            },
-            v0::Operation::SetActionTtl { new_ttl } => Self::SetActionTtl { new_ttl },
-        }
-    }
-}
-
-fn migrate_proposal(proposal: Proposal<v0::Operation>) -> Proposal<governance::Operation> {
-    Proposal {
-        operation: proposal.operation.into(),
-        created_at: proposal.created_at,
-        ttl: proposal.ttl,
-        created_by: proposal.created_by,
-    }
-}
-
-fn snapshot_proposals(
-    governance: &Governance<v0::Operation>,
-) -> Vec<(u32, Proposal<governance::Operation>)> {
-    governance
-        .proposals
-        .iter()
-        .map(|(proposal_id, proposal)| (*proposal_id, migrate_proposal(proposal.clone())))
-        .collect()
-}
-
 fn snapshot_proxies(
     proxies: &near_sdk::collections::UnorderedMap<PriceIdentifier, v0::Proxy>,
 ) -> Vec<(PriceIdentifier, Proxy<Source>)> {
@@ -135,34 +107,28 @@ impl StateTransformer for V0ToV1 {
     type Error = ();
 
     fn transform(&self, mut input: Self::Input) -> Result<Self::Output, Self::Error> {
-        let proposals = snapshot_proposals(&input.governance);
         let proxies_snapshot = snapshot_proxies(&input.proxies);
-        let next_id = input.governance.next_id;
-        let ttl = input.governance.ttl;
 
-        // `governance.proposals` is lazily flushed, so `clear()` needs `flush()` to persist.
-        // `proxies.clear()` writes eagerly, so it intentionally has no matching flush call.
         input.governance.proposals.clear();
         input.governance.proposals.flush();
         input.proxies.clear();
         drop(input);
 
-        let mut governance = Governance::new(v1::StorageKey::Governance);
-        governance.next_id = next_id;
-        governance.ttl = ttl;
-
-        for (proposal_id, proposal) in proposals {
-            governance.proposals.insert(proposal_id, proposal);
-        }
-
         let mut proxies = near_sdk::collections::UnorderedMap::new(v1::StorageKey::Proxies);
+        let mut circuit_breakers =
+            near_sdk::collections::UnorderedMap::new(v1::StorageKey::CircuitBreakers);
+        let cached_prices = near_sdk::collections::UnorderedMap::new(v1::StorageKey::CachedPrices);
+        let cache_epochs = near_sdk::collections::UnorderedMap::new(v1::StorageKey::CacheEpochs);
         for (price_id, proxy) in proxies_snapshot {
             proxies.insert(&price_id, &proxy);
+            circuit_breakers.insert(&price_id, &CircuitBreakerSet::empty());
         }
 
         Ok(state::v1::State {
-            governance,
             proxies,
+            circuit_breakers,
+            cached_prices,
+            cache_epochs,
         })
     }
 }
@@ -175,14 +141,12 @@ mod tests {
 
     use near_sdk::{test_utils::VMContextBuilder, testing_env, AccountId};
     use templar_common::{
-        governance::{Governance, Proposal},
         oracle::pyth::PriceIdentifier,
         versioned_state::{read_state_version, write_state_version, StateTransformer},
         Nanoseconds,
     };
 
     use crate::{
-        governance::Operation,
         request::OracleRequest,
         state::{legacy::v0, migration::v0_to_v1::V0ToV1},
     };
@@ -217,20 +181,20 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn v0_to_v1_migrates_proxy_map_and_governance() {
+    fn v0_to_v2_migrates_proxies_and_initializes_breaker_sets() {
         context();
 
         let btc = PriceIdentifier([0x11; 32]);
         let eth = PriceIdentifier([0x22; 32]);
-        let governance_id = 7;
-        let created_by = account("owner.near");
 
         let mut old = v0::State {
-            governance: Governance::new(v0::StorageKey::Governance),
+            governance: v0::Governance {
+                next_id: 9,
+                ttl: Nanoseconds::from_secs(55),
+                proposals: near_sdk::store::IterableMap::with_hasher(v0::StorageKey::Governance),
+            },
             proxies: near_sdk::collections::UnorderedMap::new(v0::StorageKey::Proxies),
         };
-        old.governance.next_id = 9;
-        old.governance.ttl = Nanoseconds::from_secs(55);
 
         let median_proxy = v0::Proxy {
             aggregator: v0::Aggregator::median_low(v0::Filter {
@@ -257,16 +221,17 @@ mod tests {
         };
 
         old.proxies.insert(&btc, &median_proxy);
+        old.proxies.insert(&eth, &priority_proxy);
         old.governance.proposals.insert(
-            governance_id,
-            Proposal {
+            7,
+            v0::Proposal {
                 operation: v0::Operation::SetProxy {
                     id: eth,
                     proxy: Some(priority_proxy.clone()),
                 },
                 created_at: Nanoseconds::from_secs(10),
                 ttl: Nanoseconds::from_secs(15),
-                created_by: created_by.clone(),
+                created_by: account("owner.near"),
             },
         );
         old.governance.proposals.flush();
@@ -277,19 +242,17 @@ mod tests {
         let new = V0ToV1.run().unwrap();
 
         assert_eq!(read_state_version().unwrap(), 1);
-        assert_eq!(new.governance.next_id, 9);
-        assert_eq!(new.governance.ttl, Nanoseconds::from_secs(55));
 
         let migrated_btc = new.proxies.get(&btc).unwrap();
         assert_eq!(
             migrated_btc.freshness_filter,
-            FreshnessFilter::new(
+            templar_proxy_oracle_kernel::proxy::FreshnessFilter::new(
                 Some(Nanoseconds::from_secs(60)),
                 Some(Nanoseconds::from_secs(10)),
             ),
         );
         match &migrated_btc.aggregator {
-            Aggregator::MedianLow(aggregator) => {
+            templar_proxy_oracle_kernel::proxy::aggregator::Aggregator::MedianLow(aggregator) => {
                 assert_eq!(aggregator.min_sources, 2);
                 assert_eq!(aggregator.sources[0].weight, 3);
                 assert_eq!(aggregator.sources[1].weight, 1);
@@ -297,49 +260,19 @@ mod tests {
             other => panic!("unexpected aggregator: {other:?}"),
         }
 
-        let proposal = new.governance.proposals.get(&governance_id).unwrap();
-        assert_eq!(proposal.created_at, Nanoseconds::from_secs(10));
-        assert_eq!(proposal.ttl, Nanoseconds::from_secs(15));
-        assert_eq!(proposal.created_by, created_by);
-
-        match &proposal.operation {
-            Operation::SetProxy {
-                id,
-                proxy: Some(proxy),
-            } => {
-                assert_eq!(id, &eth);
-                assert_eq!(
-                    proxy.freshness_filter,
-                    FreshnessFilter::new(
-                        Some(templar_common::Nanoseconds::from_secs(70)),
-                        Some(templar_common::Nanoseconds::from_secs(20)),
-                    ),
-                );
-                match &proxy.aggregator {
-                    Aggregator::Priority(priority) => {
-                        assert_eq!(priority.sources.len(), 3);
-                        assert!(matches!(
-                            priority.sources[0],
-                            Source::Request(OracleRequest::RedStone(_))
-                        ));
-                        assert!(matches!(
-                            priority.sources[1],
-                            Source::Request(OracleRequest::Pyth(_))
-                        ));
-                        assert!(matches!(
-                            priority.sources[2],
-                            Source::Request(OracleRequest::Pyth(_))
-                        ));
-                    }
-                    other => panic!("unexpected aggregator: {other:?}"),
-                }
-            }
-            other => panic!("unexpected operation: {other:?}"),
-        }
+        assert_eq!(
+            new.circuit_breakers.get(&btc),
+            Some(CircuitBreakerSet::empty())
+        );
+        assert_eq!(
+            new.circuit_breakers.get(&eth),
+            Some(CircuitBreakerSet::empty())
+        );
+        assert!(new.cached_prices.is_empty());
     }
 
     #[test]
-    fn v0_to_v1_ignores_priority_min_sources_over_one() {
+    fn v0_to_v2_ignores_priority_min_sources_over_one() {
         context();
 
         let proxy = Proxy::from(v0::Proxy {
@@ -355,7 +288,7 @@ mod tests {
         });
 
         match proxy.aggregator {
-            Aggregator::Priority(priority) => {
+            templar_proxy_oracle_kernel::proxy::aggregator::Aggregator::Priority(priority) => {
                 assert_eq!(priority.sources.len(), 1);
                 assert!(matches!(
                     priority.sources[0],
@@ -367,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn v0_to_v1_clamps_median_low_min_sources_to_available_entries() {
+    fn v0_to_v2_clamps_median_low_min_sources_to_available_entries() {
         context();
 
         let proxy = Proxy::from(v0::Proxy {
@@ -386,7 +319,7 @@ mod tests {
         });
 
         match proxy.aggregator {
-            Aggregator::MedianLow(aggregator) => {
+            templar_proxy_oracle_kernel::proxy::aggregator::Aggregator::MedianLow(aggregator) => {
                 assert_eq!(aggregator.sources.len(), 2);
                 assert_eq!(aggregator.min_sources, 2);
             }
@@ -395,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn v0_to_v1_handles_empty_median_low_entries_without_panicking() {
+    fn v0_to_v2_handles_empty_median_low_entries_without_panicking() {
         context();
 
         let proxy = Proxy::from(v0::Proxy {
@@ -408,7 +341,7 @@ mod tests {
         });
 
         match proxy.aggregator {
-            Aggregator::MedianLow(aggregator) => {
+            templar_proxy_oracle_kernel::proxy::aggregator::Aggregator::MedianLow(aggregator) => {
                 assert_eq!(aggregator.sources.len(), 0);
                 assert_eq!(aggregator.min_sources, 1);
             }

@@ -4,7 +4,6 @@ pub mod borrow;
 pub mod chunked_append_only_list;
 pub mod event;
 pub mod fee;
-pub mod governance;
 pub mod guard;
 pub mod incoming_deposit;
 pub mod interest_rate_strategy;

@@ -27,6 +27,9 @@ cargo near build non-reproducible-wasm 1>&2
 cd "$ROOT_DIR/contract/proxy-oracle/near/contract"
 cargo near build non-reproducible-wasm 1>&2
 
+cd "$ROOT_DIR/contract/proxy-oracle/near/governance-contract"
+cargo near build non-reproducible-wasm 1>&2
+
 cd "$ROOT_DIR/contract/universal-account"
 cargo near build non-reproducible-wasm 1>&2
 

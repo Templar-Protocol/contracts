@@ -4,38 +4,40 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{
-    env, json_types::Base64VecU8, near, require, AccountId, Gas, PanicOnDefault, PromiseOrValue,
+    env, json_types::Base64VecU8, near, require, AccountId, Gas, NearToken, PanicOnDefault,
+    Promise, PromiseOrValue,
 };
-use near_sdk_contract_tools::{owner::Owner, rbac::Rbac, Owner, Rbac};
+use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
-    contract::list,
     oracle::{
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
     },
     self_ext,
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
-    Decimal, Nanoseconds,
+    Decimal, Nanoseconds, UnwrapReject,
 };
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{CircuitBreakerOutcome, CircuitBreakerSet},
+    circuit_breaker::{
+        AcceptedHistorySource, CircuitBreaker, CircuitBreakerOutcome, CircuitBreakerSet,
+        CircuitBreakerSetConfig,
+    },
     Proxy,
 };
 use templar_proxy_oracle_near_common::{
     cache::{bounded_resolve_error_message, CachedProxyPrice, CachedProxyPriceStatus},
     convert::{account_id_to_kernel, pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
+    governance::ProxyOracleAdminInterface,
     input::Source,
     request::OracleRequest,
-    role::Role,
     state,
 };
 
 mod callback_handler;
 use callback_handler::{callback_result, CallbackHandler, OracleType};
-mod impl_governance;
 
-type State = state::v2::State;
+type State = state::v1::State;
 
 pub(crate) fn emit_outcome<T>(price_id: PriceIdentifier, outcome: CircuitBreakerOutcome<T>) -> T {
     for event in outcome.events {
@@ -44,8 +46,7 @@ pub(crate) fn emit_outcome<T>(price_id: PriceIdentifier, outcome: CircuitBreaker
     outcome.value
 }
 
-#[derive(Debug, Owner, Rbac, PanicOnDefault)]
-#[rbac(roles = "Role")]
+#[derive(Debug, Owner, PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
     pub state: VersionedState<State>,
@@ -70,6 +71,7 @@ impl DerefMut for Contract {
 impl Contract {
     pub const GAS_FOR_PYTH_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
     pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(17).saturating_div(10);
+    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
     #[init]
     pub fn new() -> Self {
@@ -83,6 +85,8 @@ impl Contract {
 
         self_
     }
+
+    // View methods
 
     pub fn list_proxies(&self, offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier> {
         self.state.list_proxies(offset, count)
@@ -107,49 +111,7 @@ impl Contract {
         self.state.list_cached_proxy_prices(price_ids)
     }
 
-    pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
-        <Self as Rbac>::has_role(&account_id, &role)
-    }
-
-    pub fn list_role(&self, role: Role, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
-        list(<Self as Rbac>::iter_members_of(&role), offset, count)
-    }
-
-    pub fn set_circuit_breaker_manual_trip(
-        &mut self,
-        id: PriceIdentifier,
-        is_manually_tripped: bool,
-        metadata: Option<Base64VecU8>,
-    ) {
-        if is_manually_tripped {
-            <Self as Rbac>::require_role(&Role::OfflineManualTrip);
-        } else {
-            <Self as Rbac>::require_role(&Role::OfflineManualUntrip);
-        }
-
-        require!(
-            metadata
-                .as_ref()
-                .is_none_or(|metadata| metadata.0.len() <= MAX_MANUAL_TRIP_METADATA_LEN),
-            "Manual trip metadata is too long"
-        );
-        let result = self
-            .state
-            .proxy_entry_mut(id)
-            .unwrap_or_else(|| env::panic_str("Proxy not found"))
-            .set_circuit_breaker_manual_trip(
-                is_manually_tripped,
-                account_id_to_kernel(env::predecessor_account_id().as_ref()),
-                metadata.map(|metadata| metadata.0),
-            );
-        if result.events.is_empty() {
-            return;
-        }
-
-        emit_outcome(id, result);
-    }
-
-    // impl Pyth:
+    // Pyth interface
 
     pub fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
         self.state.proxy_exists(&price_identifier)
@@ -285,7 +247,7 @@ impl Contract {
     pub fn update_prices_01_consume_results(
         &mut self,
         oracle_order: Vec<OracleType>,
-        invoked: Vec<state::v2::PendingProxyPriceUpdate>,
+        invoked: Vec<state::v1::PendingProxyPriceUpdate>,
     ) -> HashMap<PriceIdentifier, CachedProxyPriceStatus> {
         let callback = CallbackHandler::new(&oracle_order);
 
@@ -339,6 +301,127 @@ impl Contract {
         }
 
         results
+    }
+}
+
+#[near]
+impl ProxyOracleAdminInterface for Contract {
+    fn admin_set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
+        self.assert_owner();
+        self.state.set_proxy(id, proxy);
+    }
+
+    fn admin_configure_circuit_breakers(
+        &mut self,
+        id: PriceIdentifier,
+        config: CircuitBreakerSetConfig,
+    ) {
+        self.assert_owner();
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .configure_circuit_breakers(config);
+        emit_outcome(id, result);
+    }
+
+    fn admin_add_circuit_breaker(
+        &mut self,
+        id: PriceIdentifier,
+        breaker_id: u32,
+        breaker: CircuitBreaker,
+    ) {
+        self.assert_owner();
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .add_circuit_breaker(breaker_id, breaker)
+            .unwrap_or_reject();
+        emit_outcome(id, result);
+    }
+
+    fn admin_remove_circuit_breaker(&mut self, id: PriceIdentifier, breaker_id: u32) {
+        self.assert_owner();
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .remove_circuit_breaker(breaker_id)
+            .unwrap_or_reject();
+        emit_outcome(id, result);
+    }
+
+    fn admin_set_manual_trip(
+        &mut self,
+        id: PriceIdentifier,
+        is_manually_tripped: bool,
+        metadata: Option<Base64VecU8>,
+    ) {
+        self.assert_owner();
+
+        require!(
+            metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.0.len() <= MAX_MANUAL_TRIP_METADATA_LEN),
+            "Manual trip metadata is too long"
+        );
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .set_circuit_breaker_manual_trip(
+                is_manually_tripped,
+                account_id_to_kernel(env::predecessor_account_id().as_ref()),
+                metadata.map(|metadata| metadata.0),
+            );
+        if result.events.is_empty() {
+            return;
+        }
+
+        emit_outcome(id, result);
+    }
+
+    fn admin_rearm(
+        &mut self,
+        id: PriceIdentifier,
+        breaker_id: u32,
+        armed_after_ns: Nanoseconds,
+        accepted_history_source: AcceptedHistorySource,
+    ) {
+        self.assert_owner();
+
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .rearm(breaker_id, armed_after_ns, accepted_history_source)
+            .unwrap_or_reject();
+        emit_outcome(id, result);
+    }
+
+    fn admin_set_enforced(&mut self, id: PriceIdentifier, breaker_id: u32, is_enforced: bool) {
+        self.assert_owner();
+
+        let result = self
+            .state
+            .proxy_entry_mut(id)
+            .unwrap_or_else(|| env::panic_str("Proxy not found"))
+            .set_enforced(breaker_id, is_enforced)
+            .unwrap_or_reject();
+        emit_outcome(id, result);
+    }
+
+    fn admin_upgrade(&mut self, code: Base64VecU8, migrate_args: Base64VecU8) -> Promise {
+        self.assert_owner();
+        Promise::new(env::current_account_id())
+            .deploy_contract(code.0)
+            .function_call(
+                "migrate".to_string(),
+                migrate_args.0,
+                NearToken::from_yoctonear(0),
+                Self::GAS_FOR_MIGRATE,
+            )
     }
 }
 

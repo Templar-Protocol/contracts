@@ -110,7 +110,7 @@ async fn proxy_oracle(
         oracle_requests_collateral.reverse();
     }
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             DEFAULT_COLLATERAL_PRICE_ID,
             Some(Proxy::median_low(
@@ -128,7 +128,7 @@ async fn proxy_oracle(
         oracle_requests_borrow.reverse();
     }
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             DEFAULT_BORROW_PRICE_ID,
             Some(Proxy::median_low(

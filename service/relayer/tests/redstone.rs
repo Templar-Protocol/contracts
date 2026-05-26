@@ -66,7 +66,7 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
 
     let proxy_oracle = ProxyOracleController::deploy(proxy_oracle).await;
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             ETH_PRICE_ID,
             Some(Proxy::median_low(
@@ -79,7 +79,7 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
         )
         .await;
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             BTC_PRICE_ID,
             Some(Proxy::median_low(

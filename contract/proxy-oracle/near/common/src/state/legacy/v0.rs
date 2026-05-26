@@ -1,6 +1,11 @@
-use near_sdk::{borsh::BorshSerialize, collections::UnorderedMap, near, BorshStorageKey};
+use near_sdk::{
+    borsh::BorshSerialize,
+    collections::UnorderedMap,
+    near,
+    store::{key, IterableMap},
+    AccountId, BorshStorageKey,
+};
 use templar_common::{
-    governance::Governance,
     oracle::pyth::{self, PriceIdentifier, PythTimestamp},
     versioned_state::{StateVersion, VersionedState},
     Nanoseconds,
@@ -20,8 +25,16 @@ pub enum StorageKey {
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]
+pub struct Governance {
+    pub next_id: u32,
+    pub ttl: Nanoseconds,
+    pub proposals: IterableMap<u32, Proposal<Operation>, key::Identity>,
+}
+
+#[derive(Debug)]
+#[near(serializers = [borsh])]
 pub struct State {
-    pub governance: Governance<Operation>,
+    pub governance: Governance,
     pub proxies: UnorderedMap<PriceIdentifier, Proxy>,
 }
 
@@ -32,7 +45,11 @@ impl StateVersion for State {
 
     fn new((): Self::NewArgs) -> VersionedState<Self> {
         VersionedState::new(Self {
-            governance: Governance::new(StorageKey::Governance),
+            governance: Governance {
+                next_id: 0,
+                ttl: Nanoseconds::zero(),
+                proposals: IterableMap::with_hasher(StorageKey::Governance),
+            },
             proxies: UnorderedMap::new(StorageKey::Proxies),
         })
     }
@@ -48,6 +65,15 @@ pub enum Operation {
     SetActionTtl {
         new_ttl: Nanoseconds,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct Proposal<T> {
+    pub operation: T,
+    pub created_at: Nanoseconds,
+    pub ttl: Nanoseconds,
+    pub created_by: AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
