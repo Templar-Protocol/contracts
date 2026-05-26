@@ -163,6 +163,7 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
 
 #[allow(clippy::unwrap_used)]
 #[test]
+#[should_panic]
 pub fn admin_upgrade_requires_owner() {
     testing_env!(VMContextBuilder::new()
         .current_account_id("proxy.near".parse().unwrap())
@@ -175,11 +176,7 @@ pub fn admin_upgrade_requires_owner() {
         .predecessor_account_id("attacker.near".parse().unwrap())
         .build());
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
-    }));
-
-    assert!(result.is_err());
+    let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
 }
 
 #[allow(clippy::unwrap_used)]

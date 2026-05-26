@@ -510,7 +510,7 @@ impl OracleFetcher {
                 ))
             })?;
 
-        let mut accepted_updates = false;
+        let mut processed_updates = false;
         for price_id in price_ids {
             let Some(status) = statuses.get(price_id) else {
                 return Err(LiquidatorError::OracleUpdateError(format!(
@@ -518,8 +518,9 @@ impl OracleFetcher {
                 )));
             };
             match status {
-                CachedProxyPriceStatus::Accepted { .. } => accepted_updates = true,
+                CachedProxyPriceStatus::Accepted { .. } => processed_updates = true,
                 CachedProxyPriceStatus::Blocked { .. } => {
+                    processed_updates = true;
                     tracing::warn!(
                         %price_id,
                         ?status,
@@ -535,7 +536,7 @@ impl OracleFetcher {
         }
 
         tracing::info!(oracle = %oracle, price_ids = ?price_ids, "Successfully updated proxy oracle prices");
-        Ok(accepted_updates)
+        Ok(processed_updates)
     }
 
     /// Pushes fresh Pyth prices on-chain by fetching a VAA from Hermes and
