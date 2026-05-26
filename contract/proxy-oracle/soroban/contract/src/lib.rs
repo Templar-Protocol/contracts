@@ -9,9 +9,7 @@ extern crate alloc;
 
 use alloc::vec::Vec as AllocVec;
 
-use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, Address, Bytes, Env, Vec,
-};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Bytes, Env, Vec};
 use templar_primitives::{Decimal, Nanoseconds};
 use templar_proxy_oracle_kernel::{
     primitive::AccountId as KernelAccountId,
