@@ -42,6 +42,7 @@ impl GetProposal {
 }
 
 impl OutputStyle for Proposal<Operation> {
+    #[allow(clippy::too_many_lines)]
     fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
         #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         let now = Nanoseconds::from_ms(

@@ -77,9 +77,7 @@ mod tests {
         };
         let cached = CachedProxyPrice {
             updated_at_ns: Nanoseconds::from_secs(20),
-            status: CachedProxyPriceStatus::Accepted {
-                price: price.clone(),
-            },
+            status: CachedProxyPriceStatus::Accepted { price },
         };
 
         assert_eq!(

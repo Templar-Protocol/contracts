@@ -45,6 +45,9 @@ use crate::{
 pub mod args;
 pub use args::Configuration;
 
+type PythUpdatesByOracle = HashMap<AccountId, HashSet<pyth::PriceIdentifier>>;
+type RedstoneUpdatesByOracle = HashMap<AccountId, HashSet<redstone::FeedId>>;
+
 #[derive(Debug, Clone)]
 pub struct App {
     pub args: args::Configuration,
@@ -316,9 +319,9 @@ impl App {
         accounts: &AccountData,
         market_ids: &HashSet<AccountId>,
     ) -> (
-        HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
-        HashMap<AccountId, HashSet<redstone::FeedId>>,
-        HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
+        PythUpdatesByOracle,
+        RedstoneUpdatesByOracle,
+        PythUpdatesByOracle,
     ) {
         market_ids
             .iter()

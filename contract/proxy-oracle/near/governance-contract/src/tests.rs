@@ -428,10 +428,7 @@ fn set_role_cannot_remove_last_admin() {
     }));
     assert!(result.is_err());
     assert!(contract.get_proposal(0).is_some());
-    assert_eq!(
-        contract.has_role("admin.near".parse().unwrap(), Role::Admin),
-        true
-    );
+    assert!(contract.has_role("admin.near".parse().unwrap(), Role::Admin));
 }
 
 #[test]

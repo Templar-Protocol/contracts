@@ -82,6 +82,7 @@ impl GovernanceContractController {
         self.execute_proposal(executor, id).await;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn admin_function_call(
         &self,
         executor: &Account,

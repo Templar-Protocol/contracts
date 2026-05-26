@@ -21,27 +21,23 @@ pub struct Contract {
 impl Contract {
     pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
 
-    fn compute_minimum_ttl(&self, operation: &Operation) -> Nanoseconds {
-        match operation {
+    fn compute_effective_ttl(
+        &self,
+        operation: &Operation,
+        requested_ttl: Nanoseconds,
+    ) -> Nanoseconds {
+        let minimum = match operation {
             Operation::SetActionTtl { kind, .. } => {
                 let set_action_ttl = self.ttls.get(OperationKind::SetActionTtl);
                 let target_ttl = self.ttls.get(*kind);
                 std::cmp::max(set_action_ttl, target_ttl)
             }
             _ => self.ttls.get(operation.kind()),
-        }
-    }
-
-    fn compute_effective_ttl(
-        &self,
-        operation: &Operation,
-        requested_ttl: Nanoseconds,
-    ) -> Nanoseconds {
-        let minimum = self.compute_minimum_ttl(operation);
+        };
         std::cmp::max(minimum, requested_ttl)
     }
 
-    fn assert_authorized(&self, operation: &Operation) {
+    fn assert_authorized(operation: &Operation) {
         let required = operation.required_role();
         let caller = env::predecessor_account_id();
         let has_role = <Self as Rbac>::has_role(&caller, &Role::Admin)
@@ -49,12 +45,7 @@ impl Contract {
         require!(has_role, "Caller is not authorized for this operation");
     }
 
-    fn assert_authorized_for_proposal(&self, id: u32) {
-        let proposal = self.governance.proposals.get(&id).unwrap_or_reject();
-        self.assert_authorized(&proposal.operation);
-    }
-
-    fn assert_can_set_role(&self, account_id: &AccountId, role: Role, set: bool) {
+    fn assert_can_set_role(account_id: &AccountId, role: Role, set: bool) {
         let removes_admin =
             !set && role == Role::Admin && <Self as Rbac>::has_role(account_id, &Role::Admin);
         require!(
@@ -62,16 +53,6 @@ impl Contract {
                 || <Self as Rbac>::with_members_of(&Role::Admin, |members| members.len()) > 1,
             "Cannot remove the last admin"
         );
-    }
-
-    fn set_role(&mut self, account_id: AccountId, role: Role, set: bool) {
-        self.assert_can_set_role(&account_id, role, set);
-
-        if set {
-            <Self as Rbac>::add_role(self, &account_id, &role);
-        } else {
-            <Self as Rbac>::remove_role(self, &account_id, &role);
-        }
     }
 }
 
@@ -113,7 +94,7 @@ impl ProxyGovernanceInterface for Contract {
         requested_ttl: Nanoseconds,
     ) -> Proposal<Operation> {
         near_sdk::assert_one_yocto();
-        self.assert_authorized(&operation);
+        Self::assert_authorized(&operation);
 
         let effective_ttl = self.compute_effective_ttl(&operation, requested_ttl);
         if effective_ttl > MAX_PROPOSAL_TTL {
@@ -134,12 +115,14 @@ impl ProxyGovernanceInterface for Contract {
     #[payable]
     fn cancel_proposal(&mut self, id: u32) {
         near_sdk::assert_one_yocto();
-        self.assert_authorized_for_proposal(id);
+        let proposal = self.governance.proposals.get(&id).unwrap_or_reject();
+        Self::assert_authorized(&proposal.operation);
 
         self.governance.cancel(id).unwrap_or_reject();
     }
 
     #[payable]
+    #[allow(clippy::too_many_lines)]
     fn execute_proposal(&mut self, id: u32) {
         near_sdk::assert_one_yocto();
 
@@ -150,14 +133,14 @@ impl ProxyGovernanceInterface for Contract {
             .unwrap_or_reject()
             .operation
             .clone();
-        self.assert_authorized(&operation);
+        Self::assert_authorized(&operation);
         if let Operation::SetRole {
             account_id,
             role,
             set,
         } = &operation
         {
-            self.assert_can_set_role(account_id, *role, *set);
+            Self::assert_can_set_role(account_id, *role, *set);
         }
 
         let operation = self
@@ -232,7 +215,12 @@ impl ProxyGovernanceInterface for Contract {
                 role,
                 set,
             } => {
-                self.set_role(account_id, role, set);
+                Self::assert_can_set_role(&account_id, role, set);
+                if set {
+                    <Self as Rbac>::add_role(self, &account_id, &role);
+                } else {
+                    <Self as Rbac>::remove_role(self, &account_id, &role);
+                }
             }
             Operation::AdminUpgrade { code, migrate_args } => {
                 ext_proxy_oracle_admin::ext(proxy_oracle_id)
@@ -260,6 +248,7 @@ impl ProxyGovernanceInterface for Contract {
 }
 
 #[near]
+#[allow(clippy::needless_pass_by_value)]
 impl Contract {
     #[init]
     pub fn new(proxy_oracle_id: AccountId, admin_id: AccountId, ttls: TtlConfig) -> Self {

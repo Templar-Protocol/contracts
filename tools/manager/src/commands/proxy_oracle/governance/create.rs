@@ -180,7 +180,7 @@ pub struct AdminFunctionCallArgs {
     /// Gas to attach to the call, in raw NEAR gas units.
     #[arg(long, required_unless_present = "tgas", conflicts_with = "tgas")]
     gas: Option<u64>,
-    /// Gas to attach to the call, in TGas.
+    /// Gas to attach to the call, in `TGas`.
     #[arg(long, required_unless_present = "gas", conflicts_with = "gas")]
     tgas: Option<u64>,
 }
@@ -407,6 +407,7 @@ impl AddCircuitBreakerArgs {
 
 impl CreateProposal {
     #[tracing::instrument(skip_all, name = "governance_create", fields(oracle_id = %self.oracle_id))]
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let id = if let Some(id) = self.id {
             id

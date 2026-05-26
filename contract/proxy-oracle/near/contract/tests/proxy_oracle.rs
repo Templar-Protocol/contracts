@@ -97,8 +97,7 @@ fn cache_test_price_and_seed_history(c: &mut Contract, price_id: PriceIdentifier
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 3,
         });
-        set.try_accept_price(price.clone(), Nanoseconds::zero())
-            .unwrap();
+        set.try_accept_price(price, Nanoseconds::zero()).unwrap();
         CachedProxyPriceStatus::Accepted { price }
     })
     .unwrap();
@@ -163,7 +162,7 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
 
 #[allow(clippy::unwrap_used)]
 #[test]
-#[should_panic]
+#[should_panic(expected = "Owner only")]
 pub fn admin_upgrade_requires_owner() {
     testing_env!(VMContextBuilder::new()
         .current_account_id("proxy.near".parse().unwrap())

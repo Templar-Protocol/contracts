@@ -170,12 +170,11 @@ impl State {
         &self,
         price_ids: Vec<PriceIdentifier>,
     ) -> HashMap<PriceIdentifier, Option<CachedProxyPrice>> {
-        HashMap::from_iter(
-            HashSet::<PriceIdentifier>::from_iter(price_ids)
-                .into_iter()
-                .filter(|price_id| self.proxy_exists(price_id))
-                .map(|price_id| (price_id, self.cached_prices.get(&price_id))),
-        )
+        price_ids
+            .into_iter()
+            .filter(|price_id| self.proxy_exists(price_id))
+            .map(|price_id| (price_id, self.cached_prices.get(&price_id)))
+            .collect()
     }
 
     pub fn cache_epoch(&self, id: PriceIdentifier) -> u64 {
@@ -216,27 +215,24 @@ impl State {
     }
 
     pub fn set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
-        match proxy {
-            Some(proxy) => {
-                let proxy_changed = self.proxies.get(&id).as_ref() != Some(&proxy);
-                let missing_breaker_set = self.circuit_breakers.get(&id).is_none();
-                self.proxies.insert(&id, &proxy);
-                if missing_breaker_set {
-                    self.circuit_breakers
-                        .insert(&id, &CircuitBreakerSet::empty());
-                }
-                if proxy_changed || missing_breaker_set {
-                    self.invalidate_price_cache(id);
-                }
+        if let Some(proxy) = proxy {
+            let proxy_changed = self.proxies.get(&id).as_ref() != Some(&proxy);
+            let missing_breaker_set = self.circuit_breakers.get(&id).is_none();
+            self.proxies.insert(&id, &proxy);
+            if missing_breaker_set {
+                self.circuit_breakers
+                    .insert(&id, &CircuitBreakerSet::empty());
             }
-            None => {
-                let proxy_removed = self.proxies.remove(&id).is_some();
-                let breaker_set_removed = self.circuit_breakers.remove(&id).is_some();
-                let cached_price_removed = self.cached_prices.remove(&id).is_some();
-                let changed = proxy_removed || breaker_set_removed || cached_price_removed;
-                if changed {
-                    self.bump_cache_epoch(id);
-                }
+            if proxy_changed || missing_breaker_set {
+                self.invalidate_price_cache(id);
+            }
+        } else {
+            let proxy_removed = self.proxies.remove(&id).is_some();
+            let breaker_set_removed = self.circuit_breakers.remove(&id).is_some();
+            let cached_price_removed = self.cached_prices.remove(&id).is_some();
+            let changed = proxy_removed || breaker_set_removed || cached_price_removed;
+            if changed {
+                self.bump_cache_epoch(id);
             }
         }
     }
@@ -250,22 +246,25 @@ impl State {
     where
         F: FnOnce(&Proxy<Source>, &mut CircuitBreakerSet) -> CachedProxyPriceStatus,
     {
-        if self.cache_epoch(pending.price_id) != pending.epoch
-            || !self.proxy_exists(&pending.price_id)
-        {
+        let PendingProxyPriceUpdate {
+            price_id,
+            proxy,
+            epoch,
+        } = pending;
+
+        if self.cache_epoch(price_id) != epoch || !self.proxy_exists(&price_id) {
             return None;
         }
 
-        let Some(mut set) = self.circuit_breakers.get(&pending.price_id) else {
+        let Some(mut set) = self.circuit_breakers.get(&price_id) else {
             env::panic_str(&format!(
-                "Circuit breaker set not found for price {}",
-                pending.price_id
+                "Circuit breaker set not found for price {price_id}"
             ));
         };
-        let status = f(&pending.proxy, &mut set);
-        self.circuit_breakers.insert(&pending.price_id, &set);
+        let status = f(&proxy, &mut set);
+        self.circuit_breakers.insert(&price_id, &set);
         self.cached_prices.insert(
-            &pending.price_id,
+            &price_id,
             &CachedProxyPrice {
                 updated_at_ns: now,
                 status: status.clone(),

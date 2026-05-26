@@ -1,4 +1,4 @@
-use near_sdk::{json_types::Base64VecU8, near, AccountId};
+use near_sdk::{env, json_types::Base64VecU8, near, AccountId};
 use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     AcceptedHistorySource, CircuitBreaker, CircuitBreakerEvent as KernelEvent,
@@ -67,8 +67,9 @@ impl Event {
             } => Self::CircuitBreakerManualTripSet {
                 price_id,
                 is_manually_tripped,
-                actor: account_id_try_from_kernel(actor)
-                    .expect("kernel account ID must contain a valid NEAR account ID"),
+                actor: account_id_try_from_kernel(actor).unwrap_or_else(|| {
+                    env::panic_str("kernel account ID must contain a valid NEAR account ID")
+                }),
                 metadata: metadata.map(Base64VecU8),
             },
             KernelEvent::ConfigSet { config } => Self::CircuitBreakerConfigSet { price_id, config },

@@ -22,7 +22,7 @@ impl CircuitBreakerRule for StepwiseChange {
     fn should_trip(&self, history: &RingBuffer<Observation>) -> bool {
         if history.len() < 2 {
             return false;
-        };
+        }
         let Some(previous) = history.get(history.len() - 2) else {
             return false;
         };

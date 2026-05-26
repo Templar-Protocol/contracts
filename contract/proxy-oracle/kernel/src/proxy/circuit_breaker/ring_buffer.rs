@@ -130,6 +130,15 @@ impl<T> RingBuffer<T> {
     }
 }
 
+impl<'a, T> IntoIterator for &'a RingBuffer<T> {
+    type Item = &'a T;
+    type IntoIter = alloc::collections::vec_deque::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 #[cfg(feature = "borsh")]
 impl<T: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for RingBuffer<T> {
     fn deserialize_reader<Reader: ::borsh::io::Read>(
