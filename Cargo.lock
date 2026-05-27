@@ -13066,6 +13066,7 @@ name = "templar-proxy-oracle-soroban-common"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk 25.3.0",
+ "templar-primitives",
 ]
 
 [[package]]

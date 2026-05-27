@@ -311,7 +311,7 @@ audit-ready: test size-check budget-check release dry-run
         echo "events monitoring coverage: .omo/evidence/task-9-monitoring-coverage.txt"; \
         echo ""; \
         echo "## auth"; \
-        echo "auth split roles OfflineManualTrip/OfflineManualUntrip: .omo/evidence/task-4-tripper-cannot-untrip.txt"; \
+        echo "auth manual-trip governance role ManualTripper: .omo/evidence/task-4-tripper-cannot-untrip.txt"; \
         echo "auth duplicate source rejection: .omo/evidence/task-3-duplicate-source.txt"; \
         echo "auth governance require_auth: runtime contract source"; \
         echo "auth unauthorized mutation parity: .omo/evidence/task-6-manual-trip-parity.txt"; \

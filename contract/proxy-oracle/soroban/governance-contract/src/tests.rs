@@ -3,11 +3,12 @@ use super::*;
 use alloc::vec;
 use alloc::vec::Vec as StdVec;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
-use soroban_sdk::{Bytes, Event};
+use soroban_sdk::{Bytes, BytesN, Event, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
-    CircuitBreakerConfig, CircuitBreakerUpdateConfig, MonotonicRunConfig, RearmConfig, Role,
+    Asset, CircuitBreakerConfig, MonotonicRunConfig, OperationKind, ProxyConfig, RearmConfig, Role,
     SetEnforcedConfig, SourceConfig, StepwiseChangeConfig, WindowedChangeDeltaConfig,
+    MAX_PROPOSAL_TTL_NS,
 };
 use templar_proxy_oracle_soroban_contract::{SorobanProxyOracle, SorobanProxyOracleClient};
 
@@ -133,7 +134,7 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetActionTtl(42),
+        GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42),
     );
     assert_eq!(
         governance_events(&env, &governance_id),
@@ -149,7 +150,11 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
     assert_eq!(
         governance_events(&env, &governance_id),
         vec![
-            ActionTtlSet { new_ttl_ns: 42 }.to_xdr(&env, &governance_id),
+            ActionTtlSet {
+                kind: OperationKind::SetProxy,
+                new_ttl_ns: 42
+            }
+            .to_xdr(&env, &governance_id),
             ProposalAccepted { id: ttl }.to_xdr(&env, &governance_id),
         ]
     );
@@ -164,7 +169,7 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
         governance_events(&env, &governance_id),
         vec![ProposalSubmitted {
             id: revoke,
-            valid_after_ns: 100_000_000_042,
+            valid_after_ns: 100_000_000_000,
             action_code: 2,
         }
         .to_xdr(&env, &governance_id)]
@@ -194,7 +199,7 @@ fn event_failed_accept_does_not_emit_false_accepted_event() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetActionTtl(42),
+        GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42),
     );
 
     let early = env.as_contract(&governance_id, || {
@@ -206,7 +211,7 @@ fn event_failed_accept_does_not_emit_false_accepted_event() {
 }
 
 #[test]
-fn parity_governance_ordering_rejects_out_of_order_acceptance_and_executes_fifo() {
+fn parity_governance_allows_out_of_order_execution() {
     let (env, admin, _proxy_id, governance_id, proxy) = setup_with_ttl(0);
     let asset_one = Asset::Other(Symbol::new(&env, "BTC"));
     let asset_two = Asset::Other(Symbol::new(&env, "ETH"));
@@ -238,17 +243,14 @@ fn parity_governance_ordering_rejects_out_of_order_acceptance_and_executes_fifo(
     assert_eq!(ids.get(0).unwrap(), first);
     assert_eq!(ids.get(1).unwrap(), second);
 
-    let out_of_order = env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second)
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second).unwrap()
     });
-    assert_eq!(out_of_order, Err(GovernanceError::ProposalOutOfOrder));
     assert!(proxy.get_proxy(&asset_one).is_none());
-    assert!(proxy.get_proxy(&asset_two).is_none());
+    assert!(proxy.get_proxy(&asset_two).is_some());
 
     accept_now(&env, &governance_id, &admin, first);
     assert!(proxy.get_proxy(&asset_one).is_some());
-    assert!(proxy.get_proxy(&asset_two).is_none());
-    accept_now(&env, &governance_id, &admin, second);
     assert!(proxy.get_proxy(&asset_two).is_some());
 }
 
@@ -372,11 +374,7 @@ fn breaker_governance_workflows_execute_through_runtime() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::UpdateBreaker(
-            asset.clone(),
-            0,
-            CircuitBreakerUpdateConfig::SetEnforced(SetEnforcedConfig { is_enforced: false }),
-        ),
+        GovernanceAction::SetEnforced(asset.clone(), 0, SetEnforcedConfig { is_enforced: false }),
     );
     accept_now(&env, &governance_id, &admin, unenforce);
 
@@ -384,13 +382,13 @@ fn breaker_governance_workflows_execute_through_runtime() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::UpdateBreaker(
+        GovernanceAction::Rearm(
             asset.clone(),
             0,
-            CircuitBreakerUpdateConfig::Rearm(RearmConfig {
+            RearmConfig {
                 armed_after_secs: 100,
                 accepted_history_source_code: 0,
-            }),
+            },
         ),
     );
     accept_now(&env, &governance_id, &admin, rearm);
@@ -438,83 +436,6 @@ fn breaker_governance_workflows_execute_through_runtime() {
 }
 
 #[test]
-fn manual_trip_role_governance_grants_roles_and_routes_metadata() {
-    let (env, admin, _proxy_id, governance_id, proxy) = setup_with_ttl(0);
-    let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let source = Address::generate(&env);
-
-    let set_proxy = submit_now(
-        &env,
-        &governance_id,
-        &admin,
-        GovernanceAction::SetProxy(
-            asset.clone(),
-            sample_proxy_config(&env, asset.clone(), source),
-        ),
-    );
-    accept_now(&env, &governance_id, &admin, set_proxy);
-
-    let grant_trip = submit_now(
-        &env,
-        &governance_id,
-        &admin,
-        GovernanceAction::SetCircuitBreakerRole(
-            governance_id.clone(),
-            Role::OfflineManualTrip,
-            true,
-        ),
-    );
-    accept_now(&env, &governance_id, &admin, grant_trip);
-    assert!(proxy.has_role(&governance_id, &Role::OfflineManualTrip));
-    assert!(!proxy.has_role(&governance_id, &Role::OfflineManualUntrip));
-
-    let trip = submit_now(
-        &env,
-        &governance_id,
-        &admin,
-        GovernanceAction::SetManualTrip(
-            governance_id.clone(),
-            asset.clone(),
-            true,
-            Some(Bytes::from_array(&env, &[1_u8, 2, 3])),
-        ),
-    );
-    accept_now(&env, &governance_id, &admin, trip);
-    assert!(
-        proxy
-            .get_breaker_set_view(&asset)
-            .unwrap()
-            .is_manually_tripped
-    );
-
-    let grant_untrip = submit_now(
-        &env,
-        &governance_id,
-        &admin,
-        GovernanceAction::SetCircuitBreakerRole(
-            governance_id.clone(),
-            Role::OfflineManualUntrip,
-            true,
-        ),
-    );
-    accept_now(&env, &governance_id, &admin, grant_untrip);
-
-    let untrip = submit_now(
-        &env,
-        &governance_id,
-        &admin,
-        GovernanceAction::SetManualTrip(governance_id.clone(), asset.clone(), false, None),
-    );
-    accept_now(&env, &governance_id, &admin, untrip);
-    assert!(
-        !proxy
-            .get_breaker_set_view(&asset)
-            .unwrap()
-            .is_manually_tripped
-    );
-}
-
-#[test]
 fn remove_proxy_and_set_action_ttl_execute_through_governance() {
     let (env, admin, _proxy_id, governance_id, proxy) = setup_with_ttl(0);
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
@@ -545,7 +466,7 @@ fn remove_proxy_and_set_action_ttl_execute_through_governance() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetActionTtl(42),
+        GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42),
     );
     accept_now(&env, &governance_id, &admin, set_ttl);
     assert_eq!(
@@ -557,7 +478,7 @@ fn remove_proxy_and_set_action_ttl_execute_through_governance() {
 }
 
 #[test]
-fn accept_requires_lowest_pending_proposal_id() {
+fn accept_allows_any_mature_pending_proposal_id() {
     let (env, admin, _proxy_id, governance_id, proxy) = setup_with_ttl(0);
     let asset_one = Asset::Other(Symbol::new(&env, "BTC"));
     let asset_two = Asset::Other(Symbol::new(&env, "ETH"));
@@ -582,14 +503,12 @@ fn accept_requires_lowest_pending_proposal_id() {
         ),
     );
 
-    let out_of_order = env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second)
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second).unwrap()
     });
 
-    assert_eq!(out_of_order, Err(GovernanceError::ProposalOutOfOrder));
-    assert!(proxy.get_proxy(&asset_two).is_none());
+    assert!(proxy.get_proxy(&asset_two).is_some());
     accept_now(&env, &governance_id, &admin, first);
-    accept_now(&env, &governance_id, &admin, second);
     assert!(proxy.get_proxy(&asset_one).is_some());
     assert!(proxy.get_proxy(&asset_two).is_some());
 }
@@ -652,7 +571,7 @@ fn missing_config_governance_submit_fails_closed_on_missing_action_ttl() {
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
 
     env.as_contract(&governance_id, || {
-        env.storage().instance().remove(&DataKey::ActionTtlNs);
+        env.storage().instance().remove(&DataKey::Ttls);
     });
 
     let result = env.as_contract(&governance_id, || {
@@ -670,7 +589,7 @@ fn missing_config_governance_action_ttl_ns_fails_closed_on_missing_key() {
     let (env, _admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
 
     env.as_contract(&governance_id, || {
-        env.storage().instance().remove(&DataKey::ActionTtlNs);
+        env.storage().instance().remove(&DataKey::Ttls);
     });
 
     let result = env.as_contract(&governance_id, || {
@@ -775,5 +694,625 @@ fn same_asset_proxy_proposals_can_coexist_and_execute_in_order() {
             .unwrap()
             .oracle,
         source_two
+    );
+}
+
+#[test]
+fn proposal_views_and_per_operation_ttls_match_near_lifecycle() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(10);
+    let asset = Asset::Other(Symbol::new(&env, "BTC"));
+    let source = Address::generate(&env);
+    let set_proxy = GovernanceAction::SetProxy(
+        asset.clone(),
+        sample_proxy_config(&env, asset.clone(), source),
+    );
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::next_proposal_id(env.clone()).unwrap()
+        }),
+        0
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::SetProxy).unwrap()
+        }),
+        10
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_effective_proposal_ttl(env.clone(), set_proxy.clone(), 42)
+                .unwrap()
+        }),
+        42
+    );
+
+    let proposal = env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(env.clone(), admin.clone(), 0, set_proxy.clone(), 42)
+            .unwrap()
+    });
+    assert_eq!(proposal.created_at_ns, 100_000_000_000);
+    assert_eq!(proposal.ttl_ns, 42);
+    assert_eq!(proposal.created_by, admin);
+    assert_eq!(proposal.operation, set_proxy);
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::proposal_count(env.clone())
+        }),
+        1
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::list_proposals(env.clone(), 0, 10)
+                .iter()
+                .collect::<StdVec<_>>()
+        }),
+        vec![0]
+    );
+    assert!(env
+        .as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_proposal(env.clone(), 0)
+        })
+        .is_some());
+}
+
+#[test]
+fn role_specific_auth_admin_override_and_targeted_revoke() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+    let manager = Address::generate(&env);
+    let tripper = Address::generate(&env);
+    let asset = Asset::Other(Symbol::new(&env, "BTC"));
+    let source = Address::generate(&env);
+    let set_proxy = GovernanceAction::SetProxy(
+        asset.clone(),
+        sample_proxy_config(&env, asset.clone(), source),
+    );
+
+    let unauthorized = env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(
+            env.clone(),
+            manager.clone(),
+            0,
+            set_proxy.clone(),
+            0,
+        )
+    });
+    assert_eq!(unauthorized, Err(GovernanceError::Unauthorized));
+
+    let grant_manager = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetRole(manager.clone(), Role::ProxyConfigurationManager, true),
+    );
+    accept_now(&env, &governance_id, &admin, grant_manager);
+    let grant_tripper = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetRole(manager.clone(), Role::ManualTripper, true),
+    );
+    accept_now(&env, &governance_id, &admin, grant_tripper);
+
+    assert!(env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::has_role(
+            env.clone(),
+            manager.clone(),
+            Role::ProxyConfigurationManager,
+        )
+    }));
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_roles(env.clone(), manager.clone()).len()
+        }),
+        2
+    );
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                manager.clone(),
+                2,
+                GovernanceAction::SetManualTrip(tripper, asset.clone(), true, None),
+                0,
+            )
+        }),
+        Err(GovernanceError::InvalidInput)
+    );
+
+    let manager_created = env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(env.clone(), manager.clone(), 2, set_proxy, 0)
+            .unwrap()
+    });
+    assert_eq!(manager_created.created_by, manager);
+
+    let admin_override = env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(
+            env.clone(),
+            admin.clone(),
+            3,
+            GovernanceAction::SetManualTrip(admin.clone(), asset, true, None),
+            0,
+        )
+        .unwrap()
+    });
+    assert_eq!(admin_override.ttl_ns, 0);
+
+    let revoke_manager = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetRole(manager.clone(), Role::ProxyConfigurationManager, false),
+    );
+    accept_now(&env, &governance_id, &admin, revoke_manager);
+    assert!(!env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::has_role(
+            env.clone(),
+            manager.clone(),
+            Role::ProxyConfigurationManager,
+        )
+    }));
+    assert!(env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::has_role(env.clone(), manager, Role::ManualTripper)
+    }));
+}
+
+#[test]
+fn last_admin_protection_and_admin_role_views() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+    let second_admin = Address::generate(&env);
+
+    let remove_last = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetRole(admin.clone(), Role::Admin, false),
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), remove_last)
+        }),
+        Err(GovernanceError::LastAdmin)
+    );
+
+    let grant_second = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetRole(second_admin.clone(), Role::Admin, true),
+    );
+    accept_now(&env, &governance_id, &admin, grant_second);
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::list_role(env.clone(), Role::Admin).len()
+        }),
+        2
+    );
+    accept_now(&env, &governance_id, &admin, remove_last);
+    assert!(!env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::has_role(env.clone(), admin, Role::Admin)
+    }));
+    assert!(env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::has_role(env.clone(), second_admin, Role::Admin)
+    }));
+}
+
+#[test]
+fn validation_rejects_empty_proxy_invalid_ttls_and_large_metadata() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+    let asset = Asset::Other(Symbol::new(&env, "BTC"));
+    let empty_proxy = ProxyConfig {
+        sources: Vec::new(&env),
+        min_sources: 0,
+        max_age_secs: None,
+        max_clock_drift_secs: None,
+    };
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin.clone(),
+                0,
+                GovernanceAction::SetProxy(asset.clone(), empty_proxy),
+                0,
+            )
+        }),
+        Err(GovernanceError::InvalidInput)
+    );
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin.clone(),
+                0,
+                GovernanceAction::RemoveProxy(asset.clone()),
+                MAX_PROPOSAL_TTL_NS + 1,
+            )
+        }),
+        Err(GovernanceError::TtlExceedsMaximum)
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin.clone(),
+                0,
+                GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, MAX_PROPOSAL_TTL_NS + 1),
+                0,
+            )
+        }),
+        Err(GovernanceError::TtlExceedsMaximum)
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin.clone(),
+                0,
+                GovernanceAction::SetManualTrip(
+                    admin,
+                    asset,
+                    true,
+                    Some(Bytes::from_array(&env, &[7_u8; 1025])),
+                ),
+                0,
+            )
+        }),
+        Err(GovernanceError::InvalidInput)
+    );
+}
+
+#[test]
+fn set_action_ttl_uses_maximum_of_set_ttl_and_target_ttl() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(10);
+    let raise_set_proxy = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetActionTtl(OperationKind::SetProxy, 100),
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 101,
+        protocol_version: 25,
+        sequence_number: 101,
+        ..Default::default()
+    });
+    accept_now(&env, &governance_id, &admin, raise_set_proxy);
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_effective_proposal_ttl(
+                env.clone(),
+                GovernanceAction::SetActionTtl(OperationKind::SetProxy, 1),
+                0,
+            )
+            .unwrap()
+        }),
+        100
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_effective_proposal_ttl(
+                env.clone(),
+                GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 1),
+                0,
+            )
+            .unwrap()
+        }),
+        10
+    );
+}
+
+#[test]
+fn breaker_lifecycle_ttls_are_independent() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+    let asset = Asset::Other(Symbol::new(&env, "BTC"));
+
+    let set_rearm_ttl = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetActionTtl(OperationKind::Rearm, 20),
+    );
+    accept_now(&env, &governance_id, &admin, set_rearm_ttl);
+    let set_enforced_ttl = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetActionTtl(OperationKind::SetEnforced, 30),
+    );
+    accept_now(&env, &governance_id, &admin, set_enforced_ttl);
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::Rearm).unwrap()
+        }),
+        20
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::SetEnforced)
+                .unwrap()
+        }),
+        30
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_effective_proposal_ttl(
+                env.clone(),
+                GovernanceAction::Rearm(
+                    asset.clone(),
+                    0,
+                    RearmConfig {
+                        armed_after_secs: 0,
+                        accepted_history_source_code: 0,
+                    },
+                ),
+                0,
+            )
+            .unwrap()
+        }),
+        20
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_effective_proposal_ttl(
+                env.clone(),
+                GovernanceAction::SetEnforced(asset, 0, SetEnforcedConfig { is_enforced: false }),
+                0,
+            )
+            .unwrap()
+        }),
+        30
+    );
+}
+
+#[test]
+fn set_action_ttl_requires_proxy_configuration_manager() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+    let manager = Address::generate(&env);
+    let non_manager = Address::generate(&env);
+
+    let grant_manager = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetRole(manager.clone(), Role::ProxyConfigurationManager, true),
+    );
+    accept_now(&env, &governance_id, &admin, grant_manager);
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                non_manager,
+                1,
+                GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 42),
+                0,
+            )
+        }),
+        Err(GovernanceError::Unauthorized)
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                manager.clone(),
+                1,
+                GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 42),
+                0,
+            )
+            .unwrap()
+            .created_by
+        }),
+        manager
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                manager.clone(),
+                2,
+                GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42),
+                0,
+            )
+            .unwrap()
+            .created_by
+        }),
+        manager
+    );
+
+    let admin_only_ttl = env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(
+            env.clone(),
+            admin.clone(),
+            3,
+            GovernanceAction::SetActionTtl(OperationKind::SetGovernance, 42),
+            0,
+        )
+        .unwrap()
+    });
+    assert_eq!(admin_only_ttl.created_by, admin);
+}
+
+#[test]
+fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+
+    for id in 0..64_u64 {
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin.clone(),
+                id,
+                GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+                0,
+            )
+            .unwrap();
+        });
+    }
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::proposal_count(env.clone())
+        }),
+        64
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::next_proposal_id(env.clone()).unwrap()
+        }),
+        64
+    );
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin.clone(),
+                64,
+                GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+                0,
+            )
+        }),
+        Err(GovernanceError::InvalidInput)
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::next_proposal_id(env.clone()).unwrap()
+        }),
+        64
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::proposal_count(env.clone())
+        }),
+        64
+    );
+
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::cancel_proposal(env.clone(), admin.clone(), 0).unwrap();
+    });
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(
+            env.clone(),
+            admin.clone(),
+            64,
+            GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+            0,
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::proposal_count(env.clone())
+        }),
+        64
+    );
+
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), 1).unwrap();
+    });
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(
+            env.clone(),
+            admin,
+            65,
+            GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+            0,
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::proposal_count(env.clone())
+        }),
+        64
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::next_proposal_id(env.clone()).unwrap()
+        }),
+        66
+    );
+}
+
+#[test]
+fn admin_upgrade_is_admin_only_and_has_independent_ttl() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(10);
+    let non_admin = Address::generate(&env);
+    let wasm_hash = BytesN::from_array(&env, &[7_u8; 32]);
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                non_admin,
+                0,
+                GovernanceAction::AdminUpgrade(wasm_hash.clone()),
+                0,
+            )
+        }),
+        Err(GovernanceError::Unauthorized)
+    );
+
+    let set_admin_upgrade_ttl = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 77),
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 101,
+        protocol_version: 25,
+        sequence_number: 101,
+        ..Default::default()
+    });
+    accept_now(&env, &governance_id, &admin, set_admin_upgrade_ttl);
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::AdminUpgrade)
+                .unwrap()
+        }),
+        77
+    );
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::SetProxy).unwrap()
+        }),
+        10
+    );
+
+    let proposal = env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::create_proposal(
+            env.clone(),
+            admin,
+            1,
+            GovernanceAction::AdminUpgrade(wasm_hash),
+            0,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal.ttl_ns, 77);
+}
+
+#[test]
+fn admin_upgrade_zero_hash_is_rejected_before_silent_acceptance() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+    let zero_hash = BytesN::from_array(&env, &[0_u8; 32]);
+
+    assert_eq!(
+        env.as_contract(&governance_id, || {
+            ProxyOracleGovernance::create_proposal(
+                env.clone(),
+                admin,
+                0,
+                GovernanceAction::AdminUpgrade(zero_hash),
+                0,
+            )
+        }),
+        Err(GovernanceError::InvalidInput)
     );
 }

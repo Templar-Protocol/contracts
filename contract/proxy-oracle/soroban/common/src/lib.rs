@@ -2,6 +2,12 @@
 
 use soroban_sdk::{contracterror, contracttype, Address, Env, Symbol, Vec};
 
+pub mod governance;
+pub use governance::{
+    is_zero_wasm_hash, validate_action, GovernanceAction, GovernanceError, OperationKind,
+    PendingProposal, Proposal, Role, TtlConfig, MAX_PROPOSAL_TTL, MAX_PROPOSAL_TTL_NS,
+};
+
 pub const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 pub const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 pub const MAX_MANUAL_TRIP_METADATA_LEN: usize = 1024;
@@ -26,13 +32,6 @@ pub enum Asset {
     Other(Symbol),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[contracttype]
-pub enum Role {
-    OfflineManualTrip,
-    OfflineManualUntrip,
-}
-
 #[contracterror]
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -50,14 +49,14 @@ pub enum ContractError {
     BreakerError = 11,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct SourceConfig {
     pub oracle: Address,
     pub asset: Asset,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct ProxyConfig {
     pub sources: Vec<SourceConfig>,
@@ -66,20 +65,20 @@ pub struct ProxyConfig {
     pub max_clock_drift_secs: Option<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct StepwiseChangeConfig {
     pub max_relative_change_repr: Vec<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct MonotonicRunConfig {
     pub max_streak: u32,
     pub min_relative_step_change_repr: Vec<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct WindowedChangeDeltaConfig {
     pub window_len: u32,
@@ -87,7 +86,7 @@ pub struct WindowedChangeDeltaConfig {
     pub max_relative_change_delta_repr: Vec<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub enum CircuitBreakerConfig {
     StepwiseChange(StepwiseChangeConfig),
@@ -95,22 +94,15 @@ pub enum CircuitBreakerConfig {
     WindowedChangeDelta(WindowedChangeDeltaConfig),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct SetEnforcedConfig {
     pub is_enforced: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RearmConfig {
     pub armed_after_secs: u64,
     pub accepted_history_source_code: u32,
-}
-
-#[derive(Clone)]
-#[contracttype]
-pub enum CircuitBreakerUpdateConfig {
-    SetEnforced(SetEnforcedConfig),
-    Rearm(RearmConfig),
 }

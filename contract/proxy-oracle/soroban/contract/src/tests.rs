@@ -134,12 +134,12 @@ fn setup() -> (
     });
     proxy.set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources,
             min_sources: 1,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
-        }),
+        },
     );
 
     (env, proxy, source, asset)
@@ -243,12 +243,12 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
     });
     proxy.set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources,
             min_sources: 2,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
-        }),
+        },
     );
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     second_source.clear_price(&asset);
@@ -269,12 +269,12 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
     });
     proxy.set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources: wrong_base_sources,
             min_sources: 1,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
-        }),
+        },
     );
     let base_mismatch = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
     assert!(matches!(
@@ -294,7 +294,6 @@ fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
     assert!(proxy.lastprice(&asset).is_some());
 
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
     proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata.clone()));
     assert_eq!(
         contract_events(&env, &proxy.address),
@@ -393,13 +392,13 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
     assert_eq!(breakers_before_rearm.accepted_history().len(), 1);
     assert_eq!(breakers_before_rearm.observed_history().len(), 3);
 
-    proxy.update_breaker(
+    proxy.rearm(
         &asset,
         &breaker_id,
-        &CircuitBreakerUpdateConfig::Rearm(SorobanRearmConfig {
+        &SorobanRearmConfig {
             armed_after_secs: 103,
             accepted_history_source_code: 1,
-        }),
+        },
     );
     assert_eq!(
         contract_events(&env, &proxy.address),
@@ -425,7 +424,7 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     assert!(proxy.get_cached(&asset).is_some());
 
     let configured = proxy.get_proxy(&asset).unwrap();
-    proxy.set_proxy(&asset, &Some(configured));
+    proxy.set_proxy(&asset, &configured);
     assert!(proxy.get_cached(&asset).is_none());
     assert_eq!(proxy.lastprice(&asset), None);
 
@@ -450,12 +449,12 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     assert!(unauth_proxy
         .try_set_proxy(
             &unauthorized_asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 1,
                 max_age_secs: Some(30),
                 max_clock_drift_secs: Some(5),
-            }),
+            },
         )
         .is_err());
 }
@@ -488,7 +487,6 @@ fn event_refresh_success_failure_and_cache_blocked_topics_payloads_are_exact() {
     );
 
     let tripper = Address::generate(&env);
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
     proxy.set_manual_trip(&tripper, &asset, &true, &None);
     assert_eq!(
         contract_events(&env, &proxy.address),
@@ -537,12 +535,12 @@ fn event_proxy_set_topics_payload_are_exact() {
 
     proxy.set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources,
             min_sources: 1,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
-        }),
+        },
     );
 
     assert_eq!(
@@ -637,10 +635,10 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
         .to_xdr(&env, &proxy.address)]
     );
 
-    proxy.update_breaker(
+    proxy.set_enforced(
         &asset,
         &breaker_id,
-        &CircuitBreakerUpdateConfig::SetEnforced(SorobanSetEnforcedConfig { is_enforced: false }),
+        &SorobanSetEnforcedConfig { is_enforced: false },
     );
     assert_eq!(
         contract_events(&env, &proxy.address),
@@ -652,13 +650,13 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
         .to_xdr(&env, &proxy.address)]
     );
 
-    proxy.update_breaker(
+    proxy.rearm(
         &asset,
         &breaker_id,
-        &CircuitBreakerUpdateConfig::Rearm(SorobanRearmConfig {
+        &SorobanRearmConfig {
             armed_after_secs: 100,
             accepted_history_source_code: 0,
-        }),
+        },
     );
     assert_eq!(
         contract_events(&env, &proxy.address),
@@ -699,7 +697,7 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
         vec![TtlExtended { asset_count: 1 }.to_xdr(&env, &proxy.address)]
     );
 
-    proxy.set_proxy(&asset, &None);
+    proxy.remove_proxy(&asset);
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![ProxyRemoved { asset }.to_xdr(&env, &proxy.address)]
@@ -742,7 +740,6 @@ fn lastprice_fails_closed_when_cache_is_stale() {
 fn manual_trip_blocks_refresh_and_cached_read() {
     let (env, proxy, source, asset) = setup();
     let tripper = Address::generate(&env);
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.set_manual_trip(&tripper, &asset, &true, &None);
 
@@ -760,8 +757,6 @@ fn manual_trip_role_authorized_trip_and_untrip_are_separate() {
     let tripper = Address::generate(&proxy.env);
     let untripper = Address::generate(&proxy.env);
 
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
-    proxy.set_circuit_breaker_role(&untripper, &Role::OfflineManualUntrip, &true);
 
     proxy.set_manual_trip(&tripper, &asset, &true, &None);
     assert!(
@@ -781,51 +776,10 @@ fn manual_trip_role_authorized_trip_and_untrip_are_separate() {
 }
 
 #[test]
-fn manual_trip_role_unauthorized_trip_and_untrip_are_rejected() {
-    let (_env, proxy, _source, asset) = setup();
-    let unauthorized = Address::generate(&proxy.env);
-    let tripper = Address::generate(&proxy.env);
-
-    assert_eq!(
-        proxy.try_set_manual_trip(&unauthorized, &asset, &true, &None),
-        Err(Ok(ContractError::Unauthorized))
-    );
-
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
-    proxy.set_manual_trip(&tripper, &asset, &true, &None);
-    assert_eq!(
-        proxy.try_set_manual_trip(&unauthorized, &asset, &false, &None),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn manual_trip_role_tripper_cannot_untrip_without_untrip_role() {
-    let (_env, proxy, _source, asset) = setup();
-    let tripper = Address::generate(&proxy.env);
-
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
-    proxy.set_manual_trip(&tripper, &asset, &true, &None);
-
-    assert_eq!(
-        proxy.try_set_manual_trip(&tripper, &asset, &false, &None),
-        Err(Ok(ContractError::Unauthorized))
-    );
-    assert!(
-        proxy
-            .get_breaker_set_view(&asset)
-            .unwrap()
-            .is_manually_tripped
-    );
-}
-
-#[test]
-fn manual_trip_role_metadata_accepts_1024_and_rejects_1025_bytes() {
+fn manual_trip_metadata_accepts_1024_and_rejects_1025_bytes() {
     let (env, proxy, _source, asset) = setup();
     let tripper = Address::generate(&env);
     let untripper = Address::generate(&env);
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
-    proxy.set_circuit_breaker_role(&untripper, &Role::OfflineManualUntrip, &true);
 
     let metadata_1024 = Bytes::from_array(&env, &[7_u8; MAX_MANUAL_TRIP_METADATA_LEN]);
     proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata_1024));
@@ -854,7 +808,6 @@ fn manual_trip_role_metadata_event_payload_is_bounded_and_not_stored() {
     let (env, proxy, _source, asset) = setup();
     let tripper = Address::generate(&env);
     let metadata = Bytes::from_array(&env, &[1_u8, 2, 3]);
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
 
     proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata.clone()));
 
@@ -954,12 +907,12 @@ fn refresh_rejects_source_with_wrong_base_asset() {
     });
     proxy.set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources,
             min_sources: 1,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
-        }),
+        },
     );
 
     let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
@@ -1003,24 +956,24 @@ fn set_proxy_rejects_unreachable_min_sources() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources: sources.clone(),
                 min_sources: 0,
                 max_age_secs: Some(30),
                 max_clock_drift_secs: Some(5),
-            }),
+            },
         ),
         Err(Ok(ContractError::InvalidInput))
     );
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 2,
                 max_age_secs: Some(30),
                 max_clock_drift_secs: Some(5),
-            }),
+            },
         ),
         Err(Ok(ContractError::InvalidInput))
     );
@@ -1058,12 +1011,12 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 1,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
-            }),
+            },
         ),
         Err(Ok(ContractError::InvalidInput))
     );
@@ -1092,12 +1045,12 @@ fn invalid_config_same_oracle_different_asset_is_not_a_duplicate() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 1,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
-            }),
+            },
         ),
         Ok(Ok(()))
     );
@@ -1117,12 +1070,12 @@ fn invalid_config_zero_sources() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 1,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
-            }),
+            },
         ),
         Err(Ok(ContractError::TooManySources))
     );
@@ -1146,12 +1099,12 @@ fn invalid_config_quorum_zero() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 0,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
-            }),
+            },
         ),
         Err(Ok(ContractError::InvalidInput))
     );
@@ -1175,12 +1128,12 @@ fn invalid_config_quorum_above_source_count() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 2,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
-            }),
+            },
         ),
         Err(Ok(ContractError::InvalidInput))
     );
@@ -1206,12 +1159,12 @@ fn invalid_config_too_many_sources() {
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
-            &Some(ProxyConfig {
+            &ProxyConfig {
                 sources,
                 min_sources: 1,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
-            }),
+            },
         ),
         Err(Ok(ContractError::TooManySources))
     );
@@ -1254,13 +1207,13 @@ fn invalid_config_invalid_accepted_history_source_code() {
     );
 
     assert_eq!(
-        proxy.try_update_breaker(
+        proxy.try_rearm(
             &asset,
             &breaker_id,
-            &CircuitBreakerUpdateConfig::Rearm(SorobanRearmConfig {
+            &SorobanRearmConfig {
                 armed_after_secs: 0,
                 accepted_history_source_code: 99,
-            }),
+            },
         ),
         Err(Ok(ContractError::InvalidInput))
     );
@@ -1422,32 +1375,6 @@ fn ttl_extend_covers_cache_and_history_after_refresh() {
     );
 }
 
-#[test]
-fn ttl_extend_does_not_panic_without_role_accounts() {
-    // extend_ttl must not panic when no role accounts have been granted.
-    let (_env, proxy, _source, _asset) = setup();
-    proxy.extend_ttl(); // no roles set – must not panic
-}
-
-#[test]
-fn ttl_extend_does_not_panic_with_role_accounts_but_missing_role_key() {
-    // If a role account exists in the list but its individual Role key is
-    // missing (e.g. TTL expired independently), extend_ttl must not panic.
-    let (env, proxy, _source, _asset) = setup();
-    let tripper = Address::generate(&env);
-    proxy.set_circuit_breaker_role(&tripper, &Role::OfflineManualTrip, &true);
-
-    // Remove the individual Role key to simulate TTL expiry of that key.
-    env.as_contract(&proxy.address, || {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Role(Role::OfflineManualTrip, tripper.clone()));
-    });
-
-    // extend_ttl must skip the missing Role key without panicking.
-    proxy.extend_ttl();
-}
-
 // ── missing_config tests ─────────────────────────────────────────────────────
 
 #[test]
@@ -1464,7 +1391,7 @@ fn missing_config_refresh_fails_closed_on_missing_decimals() {
     let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
     assert!(matches!(
         result.get(0).unwrap().1,
-        RefreshStatus::ResolveFailed(RESOLVE_FAILED_STORAGE_CODE)
+        RefreshStatus::ResolveFailed(STORAGE_FAILED_CODE)
     ));
     assert_eq!(proxy.lastprice(&asset), None);
 }
@@ -1516,12 +1443,12 @@ fn missing_config_lastprice_no_freshness_limit_is_documented_exception() {
     // max_age_secs = None: operator deliberately configures no freshness limit.
     proxy.set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources,
             min_sources: 1,
             max_age_secs: None,
             max_clock_drift_secs: None,
-        }),
+        },
     );
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
@@ -1598,12 +1525,12 @@ fn direct_governed_mutation_requires_governance_auth() {
 
     let result = proxy.try_set_proxy(
         &asset,
-        &Some(ProxyConfig {
+        &ProxyConfig {
             sources,
             min_sources: 1,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
-        }),
+        },
     );
 
     assert!(result.is_err());

@@ -1062,12 +1062,7 @@ fn production_config_blocks_blend_exploit_stepwise_change() {
     );
 
     assert_eq!(
-        set.accepted_history()
-            .as_slice()
-            .last()
-            .unwrap()
-            .price
-            .price,
+        set.accepted_history().last().unwrap().price.price,
         prices[1]
     );
 
@@ -1169,13 +1164,7 @@ fn blend_exploit_cumulative_defense_all_breakers_together() {
         other => panic!("Expected BreakerTripped, got {:?}", other),
     }
 
-    let last_accepted = set
-        .accepted_history()
-        .as_slice()
-        .last()
-        .unwrap()
-        .price
-        .price;
+    let last_accepted = set.accepted_history().last().unwrap().price.price;
     assert_eq!(last_accepted, 10580);
 
     let result = set.try_accept_price(price(manipulated_price), Nanoseconds::from_secs(7));

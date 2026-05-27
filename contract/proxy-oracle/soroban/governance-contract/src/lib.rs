@@ -1,334 +1,37 @@
 #![no_std]
-// Soroban contract entry points require `env: Env` and `Address` by value.
-// Taking them by reference is not valid for the Soroban ABI and would not
-// compile. The lint is suppressed at the file level because every public
-// method in the #[contractimpl] block is an ABI entry point.
+// Every `#[contractimpl]` method in this crate is an ABI entry point and
+// must take `env: Env` and `Address` by value.
 #![allow(clippy::needless_pass_by_value)]
 
 extern crate alloc;
 
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env,
-    IntoVal, Symbol, Val, Vec,
-};
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_soroban_common::{
-    extend_instance_ttl, Asset, CircuitBreakerConfig, CircuitBreakerUpdateConfig, ContractError,
-    ProxyConfig, Role,
+    extend_instance_ttl, GovernanceAction, GovernanceError, OperationKind, PendingProposal,
+    Proposal, Role, TtlConfig, MAX_PROPOSAL_TTL_NS,
 };
+
+mod engine;
+mod events;
+mod roles;
+mod storage;
+
+pub use events::{
+    ActionTtlSet, GovernanceHandoffSubmitted, ProposalAccepted, ProposalRevoked, ProposalSubmitted,
+    TtlExtended,
+};
+
+use engine::{effective_ttl, execute_action, now, require_authorized, validate_for_creator};
+use storage::{
+    load_proposal, load_proposal_count, load_proposal_ids, load_ttls, remove_proposal,
+    remove_proposal_id, save_proposal, save_proposal_count, save_proposal_ids, save_ttls, DataKey,
+};
+
+const MAX_PENDING_PROPOSALS: u32 = 64;
 
 #[contract]
 pub struct ProxyOracleGovernance;
-
-#[contracttype]
-#[derive(Clone)]
-enum DataKey {
-    Admin,
-    ProxyOracle,
-    ActionTtlNs,
-    NextProposalId,
-    PendingQueue,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub enum GovernanceAction {
-    SetProxy(Asset, ProxyConfig),
-    RemoveProxy(Asset),
-    ConfigureBreakers(Asset, u64, u32),
-    AddBreaker(Asset, CircuitBreakerConfig),
-    RemoveBreaker(Asset, u32),
-    UpdateBreaker(Asset, u32, CircuitBreakerUpdateConfig),
-    SetManualTrip(Address, Asset, bool, Option<Bytes>),
-    SetCircuitBreakerRole(Address, Role, bool),
-    SetGovernance(Address),
-    SetActionTtl(u64),
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct PendingProposal {
-    pub id: u64,
-    pub action: GovernanceAction,
-    pub valid_after_ns: u64,
-}
-
-#[contracttype]
-#[derive(Clone)]
-struct StoredPending {
-    id: u64,
-    action: GovernanceAction,
-    valid_after_ns: u64,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct ProposalSubmitted {
-    #[topic]
-    pub id: u64,
-    pub valid_after_ns: u64,
-    pub action_code: u32,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct ProposalAccepted {
-    #[topic]
-    pub id: u64,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct ProposalRevoked {
-    #[topic]
-    pub id: u64,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct GovernanceHandoffSubmitted {
-    #[topic]
-    pub id: u64,
-    #[topic]
-    pub new_governance: Address,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct ActionTtlSet {
-    pub new_ttl_ns: u64,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct TtlExtended {}
-
-#[contracterror]
-#[repr(u32)]
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
-pub enum GovernanceError {
-    AlreadyInitialized = 1,
-    Unauthorized = 2,
-    MissingConfig = 3,
-    ProposalNotFound = 4,
-    ProposalNotMature = 5,
-    ArithmeticOverflow = 6,
-    RuntimeFailed = 7,
-    ProposalOutOfOrder = 8,
-}
-
-fn now_ns(env: &Env) -> Result<u64, GovernanceError> {
-    env.ledger()
-        .timestamp()
-        .checked_mul(1_000_000_000)
-        .ok_or(GovernanceError::ArithmeticOverflow)
-}
-
-fn load_address(env: &Env, key: DataKey) -> Result<Address, GovernanceError> {
-    env.storage()
-        .instance()
-        .get(&key)
-        .ok_or(GovernanceError::MissingConfig)
-}
-
-fn require_admin(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
-    caller.require_auth();
-    let admin = load_address(env, DataKey::Admin)?;
-    if &admin != caller {
-        return Err(GovernanceError::Unauthorized);
-    }
-    Ok(())
-}
-
-fn next_proposal_id(env: &Env) -> Result<u64, GovernanceError> {
-    let current = env
-        .storage()
-        .instance()
-        .get(&DataKey::NextProposalId)
-        .unwrap_or(1_u64);
-    let next = current
-        .checked_add(1)
-        .ok_or(GovernanceError::ArithmeticOverflow)?;
-    env.storage()
-        .instance()
-        .set(&DataKey::NextProposalId, &next);
-    Ok(current)
-}
-
-fn load_queue(env: &Env) -> Vec<StoredPending> {
-    env.storage()
-        .instance()
-        .get(&DataKey::PendingQueue)
-        .unwrap_or_else(|| Vec::new(env))
-}
-
-fn save_queue(env: &Env, queue: &Vec<StoredPending>) {
-    env.storage().instance().set(&DataKey::PendingQueue, queue);
-}
-
-#[allow(clippy::too_many_lines)]
-fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
-    let proxy = load_address(env, DataKey::ProxyOracle)?;
-    match action {
-        GovernanceAction::SetProxy(asset, config) => invoke_runtime_call(
-            env,
-            &proxy,
-            "set_proxy",
-            Vec::from_array(
-                env,
-                [
-                    asset.clone().into_val(env),
-                    Some(config.clone()).into_val(env),
-                ],
-            ),
-        ),
-        GovernanceAction::RemoveProxy(asset) => invoke_runtime_call(
-            env,
-            &proxy,
-            "set_proxy",
-            Vec::from_array(
-                env,
-                [
-                    asset.clone().into_val(env),
-                    Option::<ProxyConfig>::None.into_val(env),
-                ],
-            ),
-        ),
-        GovernanceAction::ConfigureBreakers(asset, sample_interval_secs, history_len) => {
-            invoke_runtime_call(
-                env,
-                &proxy,
-                "configure_breakers",
-                Vec::from_array(
-                    env,
-                    [
-                        asset.clone().into_val(env),
-                        sample_interval_secs.into_val(env),
-                        history_len.into_val(env),
-                    ],
-                ),
-            )
-        }
-        GovernanceAction::AddBreaker(asset, breaker) => invoke_runtime_call(
-            env,
-            &proxy,
-            "add_breaker",
-            Vec::from_array(
-                env,
-                [asset.clone().into_val(env), breaker.clone().into_val(env)],
-            ),
-        ),
-        GovernanceAction::RemoveBreaker(asset, breaker_id) => invoke_runtime_call(
-            env,
-            &proxy,
-            "remove_breaker",
-            Vec::from_array(env, [asset.clone().into_val(env), breaker_id.into_val(env)]),
-        ),
-        GovernanceAction::UpdateBreaker(asset, breaker_id, update) => invoke_runtime_call(
-            env,
-            &proxy,
-            "update_breaker",
-            Vec::from_array(
-                env,
-                [
-                    asset.clone().into_val(env),
-                    breaker_id.into_val(env),
-                    update.clone().into_val(env),
-                ],
-            ),
-        ),
-        GovernanceAction::SetManualTrip(actor, asset, is_manually_tripped, metadata) => {
-            invoke_runtime_call(
-                env,
-                &proxy,
-                "set_manual_trip",
-                Vec::from_array(
-                    env,
-                    [
-                        actor.clone().into_val(env),
-                        asset.clone().into_val(env),
-                        is_manually_tripped.into_val(env),
-                        metadata.clone().into_val(env),
-                    ],
-                ),
-            )
-        }
-        GovernanceAction::SetCircuitBreakerRole(account, role, is_granted) => invoke_runtime_call(
-            env,
-            &proxy,
-            "set_circuit_breaker_role",
-            Vec::from_array(
-                env,
-                [
-                    account.clone().into_val(env),
-                    role.clone().into_val(env),
-                    is_granted.into_val(env),
-                ],
-            ),
-        ),
-        GovernanceAction::SetGovernance(governance) => invoke_runtime_call(
-            env,
-            &proxy,
-            "set_governance",
-            Vec::from_array(env, [governance.clone().into_val(env)]),
-        ),
-        GovernanceAction::SetActionTtl(new_ttl_ns) => {
-            env.storage()
-                .instance()
-                .set(&DataKey::ActionTtlNs, new_ttl_ns);
-            ActionTtlSet {
-                new_ttl_ns: *new_ttl_ns,
-            }
-            .publish(env);
-            Ok(())
-        }
-    }
-}
-
-fn action_code(action: &GovernanceAction) -> u32 {
-    match action {
-        GovernanceAction::SetProxy(_, _) => 1,
-        GovernanceAction::RemoveProxy(_) => 2,
-        GovernanceAction::ConfigureBreakers(_, _, _) => 3,
-        GovernanceAction::AddBreaker(_, _) => 4,
-        GovernanceAction::RemoveBreaker(_, _) => 5,
-        GovernanceAction::UpdateBreaker(_, _, _) => 6,
-        GovernanceAction::SetManualTrip(_, _, _, _) => 7,
-        GovernanceAction::SetCircuitBreakerRole(_, _, _) => 8,
-        GovernanceAction::SetGovernance(_) => 9,
-        GovernanceAction::SetActionTtl(_) => 10,
-    }
-}
-
-fn invoke_runtime_call(
-    env: &Env,
-    proxy: &Address,
-    fn_name: &str,
-    args: Vec<Val>,
-) -> Result<(), GovernanceError> {
-    let fn_name = Symbol::new(env, fn_name);
-    let auth_args = args.clone();
-    env.authorize_as_current_contract(Vec::from_array(
-        env,
-        [InvokerContractAuthEntry::Contract(SubContractInvocation {
-            context: ContractContext {
-                contract: proxy.clone(),
-                fn_name: fn_name.clone(),
-                args: auth_args,
-            },
-            sub_invocations: Vec::new(env),
-        })],
-    ));
-    let result: Result<Val, ContractError> = env.invoke_contract(proxy, &fn_name, args);
-    result
-        .map(|_| ())
-        .map_err(|_| GovernanceError::RuntimeFailed)
-}
-
-fn lowest_pending_id(queue: &Vec<StoredPending>) -> Option<u64> {
-    queue.iter().map(|proposal| proposal.id).min()
-}
 
 #[contractimpl]
 impl ProxyOracleGovernance {
@@ -339,23 +42,166 @@ impl ProxyOracleGovernance {
         action_ttl_ns: u64,
     ) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::ProxyOracle) {
             return Err(GovernanceError::AlreadyInitialized);
         }
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        if action_ttl_ns > MAX_PROPOSAL_TTL_NS {
+            return Err(GovernanceError::TtlExceedsMaximum);
+        }
         env.storage()
             .instance()
             .set(&DataKey::ProxyOracle, &proxy_oracle);
+        save_ttls(
+            &env,
+            &TtlConfig::uniform(Nanoseconds::from_ns(action_ttl_ns)),
+        );
         env.storage()
             .instance()
-            .set(&DataKey::ActionTtlNs, &action_ttl_ns);
-        env.storage()
-            .instance()
-            .set(&DataKey::NextProposalId, &1_u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingQueue, &Vec::<StoredPending>::new(&env));
+            .set(&DataKey::NextProposalId, &0_u64);
+        save_proposal_ids(&env, &Vec::<u64>::new(&env));
+        save_proposal_count(&env, 0);
+        roles::grant(&env, &admin, Role::Admin);
         Ok(())
+    }
+
+    pub fn next_proposal_id(env: Env) -> Result<u64, GovernanceError> {
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::NextProposalId)
+            .ok_or(GovernanceError::MissingConfig)
+    }
+
+    pub fn proposal_count(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        load_proposal_count(&env)
+    }
+
+    pub fn list_proposals(env: Env, offset: u32, count: u32) -> Vec<u64> {
+        extend_instance_ttl(&env);
+        let ids = load_proposal_ids(&env);
+        let mut result = Vec::new(&env);
+        let end = offset.saturating_add(count);
+        for i in offset..end {
+            if let Some(id) = ids.get(i) {
+                result.push_back(id);
+            }
+        }
+        result
+    }
+
+    pub fn get_proposal(env: Env, id: u64) -> Option<Proposal> {
+        extend_instance_ttl(&env);
+        load_proposal(&env, id)
+    }
+
+    pub fn get_effective_proposal_ttl(
+        env: Env,
+        operation: GovernanceAction,
+        requested_ttl: u64,
+    ) -> Result<u64, GovernanceError> {
+        extend_instance_ttl(&env);
+        effective_ttl(&load_ttls(&env)?, &operation, requested_ttl)
+    }
+
+    pub fn get_operation_ttl(env: Env, kind: OperationKind) -> Result<u64, GovernanceError> {
+        extend_instance_ttl(&env);
+        Ok(load_ttls(&env)?.get(kind).as_ns())
+    }
+
+    pub fn create_proposal(
+        env: Env,
+        caller: Address,
+        id: u64,
+        operation: GovernanceAction,
+        requested_ttl: u64,
+    ) -> Result<Proposal, GovernanceError> {
+        extend_instance_ttl(&env);
+        require_authorized(&env, &caller, &operation)?;
+        validate_for_creator(&caller, &operation)?;
+        let next_id = env
+            .storage()
+            .instance()
+            .get::<_, u64>(&DataKey::NextProposalId)
+            .ok_or(GovernanceError::MissingConfig)?;
+        if id != next_id {
+            return Err(GovernanceError::ProposalOutOfOrder);
+        }
+        let ttl_ns = effective_ttl(&load_ttls(&env)?, &operation, requested_ttl)?;
+        if load_proposal_count(&env) >= MAX_PENDING_PROPOSALS {
+            return Err(GovernanceError::InvalidInput);
+        }
+        let proposal = Proposal {
+            operation: operation.clone(),
+            created_at_ns: now(&env)?.as_ns(),
+            ttl_ns,
+            created_by: caller,
+        };
+        save_proposal(&env, id, &proposal);
+        let mut ids = load_proposal_ids(&env);
+        ids.push_back(id);
+        save_proposal_ids(&env, &ids);
+        save_proposal_count(&env, load_proposal_count(&env) + 1);
+        env.storage().instance().set(
+            &DataKey::NextProposalId,
+            &id.checked_add(1)
+                .ok_or(GovernanceError::ArithmeticOverflow)?,
+        );
+        ProposalSubmitted {
+            id,
+            valid_after_ns: proposal
+                .created_at_ns
+                .checked_add(proposal.ttl_ns)
+                .ok_or(GovernanceError::ArithmeticOverflow)?,
+            action_code: operation.action_code(),
+        }
+        .publish(&env);
+        if let GovernanceAction::SetGovernance(new_governance) = operation {
+            GovernanceHandoffSubmitted { id, new_governance }.publish(&env);
+        }
+        Ok(proposal)
+    }
+
+    pub fn cancel_proposal(env: Env, caller: Address, id: u64) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
+        require_authorized(&env, &caller, &proposal.operation)?;
+        remove_proposal(&env, id);
+        remove_proposal_id(&env, id);
+        save_proposal_count(&env, load_proposal_count(&env).saturating_sub(1));
+        ProposalRevoked { id }.publish(&env);
+        Ok(())
+    }
+
+    pub fn execute_proposal(env: Env, caller: Address, id: u64) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
+        require_authorized(&env, &caller, &proposal.operation)?;
+        let elapsed = now(&env)?.saturating_sub(Nanoseconds::from_ns(proposal.created_at_ns));
+        if elapsed < Nanoseconds::from_ns(proposal.ttl_ns) {
+            return Err(GovernanceError::ProposalNotMature);
+        }
+        execute_action(&env, &proposal.operation)?;
+        remove_proposal(&env, id);
+        remove_proposal_id(&env, id);
+        save_proposal_count(&env, load_proposal_count(&env).saturating_sub(1));
+        ProposalAccepted { id }.publish(&env);
+        Ok(())
+    }
+
+    pub fn has_role(env: Env, account: Address, role: Role) -> bool {
+        extend_instance_ttl(&env);
+        roles::has(&env, &account, role)
+    }
+
+    pub fn list_role(env: Env, role: Role) -> Vec<Address> {
+        extend_instance_ttl(&env);
+        roles::members(&env, role)
+    }
+
+    pub fn get_roles(env: Env, account: Address) -> Vec<Role> {
+        extend_instance_ttl(&env);
+        roles::roles_of(&env, &account)
     }
 
     pub fn submit(
@@ -363,124 +209,61 @@ impl ProxyOracleGovernance {
         caller: Address,
         action: GovernanceAction,
     ) -> Result<u64, GovernanceError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        let id = next_proposal_id(&env)?;
-        let now = now_ns(&env)?;
-        let ttl: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ActionTtlNs)
-            .ok_or(GovernanceError::MissingConfig)?;
-        let valid_after_ns = now
-            .checked_add(ttl)
-            .ok_or(GovernanceError::ArithmeticOverflow)?;
-        let mut queue = load_queue(&env);
-        queue.push_back(StoredPending {
-            id,
-            action: action.clone(),
-            valid_after_ns,
-        });
-        save_queue(&env, &queue);
-        ProposalSubmitted {
-            id,
-            valid_after_ns,
-            action_code: action_code(&action),
-        }
-        .publish(&env);
-        if let GovernanceAction::SetGovernance(new_governance) = action {
-            GovernanceHandoffSubmitted { id, new_governance }.publish(&env);
-        }
-        Ok(id)
+        let id = Self::next_proposal_id(env.clone())?;
+        Self::create_proposal(env, caller, id, action, 0).map(|_| id)
     }
 
     pub fn accept(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        let now_ns = now_ns(&env)?;
-        let mut queue = load_queue(&env);
-        let Some(lowest_id) = lowest_pending_id(&queue) else {
-            return Err(GovernanceError::ProposalNotFound);
-        };
-        if proposal_id != lowest_id {
-            return Err(GovernanceError::ProposalOutOfOrder);
-        }
-        let index = queue
-            .iter()
-            .position(|proposal| proposal.id == proposal_id)
-            .and_then(|i| u32::try_from(i).ok())
-            .ok_or(GovernanceError::ProposalNotFound)?;
-        let proposal = queue.get(index).ok_or(GovernanceError::ProposalNotFound)?;
-        if proposal.valid_after_ns > now_ns {
-            return Err(GovernanceError::ProposalNotMature);
-        }
-        let proposal = queue.get(index).ok_or(GovernanceError::ProposalNotFound)?;
-        queue.remove(index);
-        execute_action(&env, &proposal.action)?;
-        save_queue(&env, &queue);
-        ProposalAccepted { id: proposal.id }.publish(&env);
-        Ok(())
+        Self::execute_proposal(env, caller, proposal_id)
     }
 
     pub fn revoke(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        let mut queue = load_queue(&env);
-        let index = queue
-            .iter()
-            .position(|proposal| proposal.id == proposal_id)
-            .and_then(|i| u32::try_from(i).ok())
-            .ok_or(GovernanceError::ProposalNotFound)?;
-        let removed = queue.get(index).ok_or(GovernanceError::ProposalNotFound)?;
-        queue.remove(index);
-        save_queue(&env, &queue);
-        ProposalRevoked { id: removed.id }.publish(&env);
-        Ok(())
+        Self::cancel_proposal(env, caller, proposal_id)
     }
 
     pub fn pending(env: Env, proposal_id: u64) -> Result<PendingProposal, GovernanceError> {
         extend_instance_ttl(&env);
-        for proposal in load_queue(&env).iter() {
-            if proposal.id == proposal_id {
-                return Ok(PendingProposal {
-                    id: proposal.id,
-                    action: proposal.action,
-                    valid_after_ns: proposal.valid_after_ns,
-                });
-            }
-        }
-        Err(GovernanceError::ProposalNotFound)
+        let proposal = Self::get_proposal(env.clone(), proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        Ok(PendingProposal {
+            id: proposal_id,
+            action: proposal.operation,
+            valid_after_ns: proposal
+                .created_at_ns
+                .checked_add(proposal.ttl_ns)
+                .ok_or(GovernanceError::ArithmeticOverflow)?,
+        })
     }
 
     pub fn pending_ids(env: Env) -> Vec<u64> {
-        extend_instance_ttl(&env);
-        let mut ids = Vec::new(&env);
-        for proposal in load_queue(&env).iter() {
-            ids.push_back(proposal.id);
-        }
-        ids
+        let count = Self::proposal_count(env.clone());
+        Self::list_proposals(env, 0, count)
     }
 
     pub fn action_ttl_ns(env: Env) -> Result<u64, GovernanceError> {
-        extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::ActionTtlNs)
-            .ok_or(GovernanceError::MissingConfig)
+        Self::get_operation_ttl(env, OperationKind::SetProxy)
     }
 
     pub fn admin(env: Env) -> Result<Address, GovernanceError> {
         extend_instance_ttl(&env);
-        load_address(&env, DataKey::Admin)
+        roles::members(&env, Role::Admin)
+            .get(0)
+            .ok_or(GovernanceError::MissingConfig)
     }
 
     pub fn proxy_oracle(env: Env) -> Result<Address, GovernanceError> {
         extend_instance_ttl(&env);
-        load_address(&env, DataKey::ProxyOracle)
+        env.storage()
+            .instance()
+            .get(&DataKey::ProxyOracle)
+            .ok_or(GovernanceError::MissingConfig)
     }
 
     pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
-        require_admin(&env, &caller)?;
+        caller.require_auth();
+        if !roles::has(&env, &caller, Role::Admin) {
+            return Err(GovernanceError::Unauthorized);
+        }
         extend_instance_ttl(&env);
         TtlExtended {}.publish(&env);
         Ok(())

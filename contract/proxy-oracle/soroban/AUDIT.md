@@ -18,18 +18,24 @@ Related documents:
    - Cache management, cache invalidation, and fail-closed read semantics.
    - Source IO and kernel integration via `refresh(assets)`.
    - Storage TTL management (`extend_ttl`).
-   - Manual trip / untrip authority split (`OfflineManualTrip`, `OfflineManualUntrip`).
+    - Manual trip/untrip through `ManualTripper` governance role via `SetManualTrip` proposals.
    - Compact Soroban typed event emission covering all state-change paths.
 
 2. **Governance Contract**: `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`
-   - Proposal submission, maturity enforcement, and FIFO execution.
-   - Timelock enforcement (`valid_after_ns` derived from `action_ttl_ns`).
+   - Proposal submission via `create_proposal` with per-operation TTLs (`OperationKind` / `TtlConfig`) and a 64-pending-proposal cap.
+   - Id-based execution via `execute_proposal`; no FIFO ordering required.
+   - Compatibility aliases: `submit`, `accept`, `revoke` delegate to typed lifecycle.
+   - Timelock enforcement (`valid_after_ns` derived from per-kind TTL via `effective_ttl`), including distinct breaker `Rearm` and `SetEnforced` TTLs.
    - Cross-contract authorization via `Address::require_auth()`.
-   - `revoke` path and proposal ordering guarantees.
+   - `cancel_proposal` path and proposal lifecycle.
+    - Role management: `SetRole` for all roles (`Admin`, `ManualTripper`, `CircuitBreakerOperator`, `ProxyConfigurationManager`).
+   - Last Admin removal rejection (`LastAdmin` error).
+   - `AdminUpgrade(new_wasm_hash)` for governed runtime WASM upgrades.
+   - Query views: `next_proposal_id`, `proposal_count`, `list_proposals`, `get_proposal`, `get_effective_proposal_ttl`, `get_operation_ttl`.
 
 3. **Shared DTOs and Errors**: `contract/proxy-oracle/soroban/common/src/lib.rs`
-   - Data structures, error types, and shared event schemas.
-   - `GovernanceAction` enum variants covering all mutation paths.
+    - Data structures, error types, and shared event schemas.
+    - Common contains shared DTOs such as `GovernanceAction`, `OperationKind`, `TtlConfig`, role definitions, proxy/breaker configs, and error types.
 
 4. **Kernel**: `templar-proxy-oracle-kernel`
    - `MedianLow` aggregation logic.
@@ -67,20 +73,22 @@ The following support operations but are not deployable contract code:
 
 - **Quorum Bypass**: `set_proxy` rejects `min_sources == 0` and `min_sources > sources.len()`. Governance proposals cannot set a zero-quorum proxy config. Empty source lists are rejected with `TooManySources`. Evidence: `.omo/evidence/task-3-duplicate-source.txt`.
 - **Stale Price Injection**: `FreshnessFilter` is enforced in `refresh_one` via `source_kernel_price`. Sources whose timestamp predates `max_age_secs` are rejected before aggregation. Evidence: parity matrix row "Stale Source" in `PARITY.md`.
-- **Breaker Evasion**: Circuit breakers require governance proposals to add, update, or remove. Emergency manual operations require the appropriate split offline role with `actor.require_auth()`. Removing a breaker via governance also invalidates the cache. Evidence: `.omo/evidence/task-6-breaker-trip-parity.txt`.
+- **Breaker Evasion**: Circuit breakers require governance proposals to add, update, or remove. Emergency manual operations require the `ManualTripper` governance role, and the action actor must match the authenticated proposal creator. Removing a breaker via governance also invalidates the cache. Evidence: `.omo/evidence/task-6-breaker-trip-parity.txt`.
 - **Missing Config Silent Failure**: `refresh_one` fails closed on missing storage keys, returning `RESOLVE_FAILED_STORAGE_CODE` rather than accepting a price. `lastprice` returns `None` on missing proxy config. Evidence: `.omo/evidence/task-5-missing-decimals.txt`, `.omo/evidence/task-5-ttl-coverage.txt`.
 
 ### Governance and Authorization
 
-- **Unauthorized Mutation**: All runtime state-changing methods except `refresh` and `set_manual_trip` require governance authorization (`governance.require_auth()`). Manual trip/untrip require the corresponding split offline role. Evidence: `.omo/evidence/task-4-tripper-cannot-untrip.txt`, `.omo/evidence/task-6-manual-trip-parity.txt`.
-- **Proposal Replay**: Governance enforces ordered execution via `NextProposalId`. Accepted proposals cannot be re-accepted. Evidence: `.omo/evidence/task-6-governance-ordering-parity.txt`.
-- **Timelock Bypass**: Proposals cannot be accepted before `valid_after_ns`. The `action_ttl_ns` parameter cannot be zero; `submit` fails closed with `MissingConfig` if it is absent from storage. Evidence: task 5 fail-closed governance tests.
+- **Unauthorized Mutation**: All runtime state-changing methods except `refresh` require governance authorization (`governance.require_auth()`). Manual trip/untrip require the `ManualTripper` governance role through `SetManualTrip` proposals. Governance actions require the role specific to the action, or Admin override. Evidence: `.omo/evidence/task-4-tripper-cannot-untrip.txt`, `.omo/evidence/task-6-manual-trip-parity.txt`.
+- **Proposal Lifecycle**: Proposals are created with `create_proposal(caller, id, operation, requested_ttl)` and executed by id via `execute_proposal(caller, id)` after maturity. No FIFO ordering is enforced. A hard cap of 64 pending proposals prevents unbounded single-vector growth; canceling or executing frees a slot. `submit`/`accept`/`revoke` remain as compatibility aliases. Evidence: governance contract tests.
+- **Timelock Bypass**: Proposals cannot be executed before their per-kind TTL matures. The `effective_ttl` function computes the maximum of the requested TTL and the configured per-kind minimum. Breaker lifecycle changes use explicit `Rearm` and `SetEnforced` proposal actions with independent operation TTLs. Zero TTL is allowed when the configured minimum and requested effective TTL are both zero. `submit` fails closed with `MissingConfig` if TTLs are absent from storage. Evidence: task 5 fail-closed governance tests.
+- **TTL Policy Authorization**: `SetActionTtl` requires `Role::ProxyConfigurationManager`; `Role::Admin` can still perform it through the global Admin override. Evidence: governance contract tests.
+- **Last Admin Protection**: Revoking the last `Role::Admin` membership is rejected with `LastAdmin` error, both in direct `SetRole` revocation and in `execute_proposal` for `SetRole` actions. Evidence: governance contract `LastAdmin` error path.
 - **Governance Handoff Race**: `SetGovernance` emits `GovernanceHandoffSubmitted` on submit and `GovernanceHandoff` on accept. Monitoring should alert immediately on `GovernanceHandoff` events.
 
 ### Storage and Resource Limits
 
 - **Storage Eviction**: `extend_ttl` guards all potentially-absent persistent keys with `storage.has(key)` before extending. Missing keys are skipped safely. Emits `TtlExtended` for monitoring. Evidence: `.omo/evidence/task-5-ttl-coverage.txt`.
-- **WASM Size**: Optimized contract sizes must remain at or below `131072` bytes (128 KiB). Current verified sizes: runtime 115399 bytes (112.69 KiB), governance 38997 bytes (38.08 KiB). Evidence: `.omo/evidence/task-7-size-check.txt`.
+- **WASM Size**: Optimized contract sizes must remain at or below `131072` bytes (128 KiB). Current verified sizes: runtime 121114 bytes (118.28 KiB), governance 55409 bytes (54.11 KiB). Release and audit gates write supporting evidence under `.omo/evidence`; size evidence is `.omo/evidence/task-7-size-check.txt`.
 - **Gas Exhaustion**: `refresh` calls are bounded by configured source count and asset list length. Asset lists are deduplicated before processing. Breaker evaluation is bounded by history length (max 32) and breaker count (max 16 per asset).
 
 ### Operational Safety
@@ -98,7 +106,10 @@ The following support operations but are not deployable contract code:
 - **Soroban TTL**: NEAR storage is permanent; Soroban storage is not. TTL expiry is a liveness risk. Operators must run `extend_ttl` on a regular cadence per `RUNBOOK.md` Section 10.
 - **No new source aggregation framework**: The kernel shares code with the NEAR proxy oracle. No additional aggregation algorithms were introduced in this implementation.
 - **No live mainnet deployment**: This document describes the contract at commit `64bf8b821cabbc94e4591ca89997c8ec00f365c7`. No claim is made about live mainnet deployment status.
-- **Single `action_ttl_ns`**: Governance uses one maturity delay for all proposal kinds, matching NEAR proxy-oracle governance rather than the vault per-kind timelock model.
+- **No implicit storage migration**: The Soroban governance storage layout uses per-operation `TtlConfig`, proposal records, and expanded role keys. Earlier prototype layouts require an explicit migration or a redeployed/reinitialized governance contract before in-place upgrades are safe.
+- **Per-operation TTLs**: Governance uses per-kind TTLs via `OperationKind` / `TtlConfig`, not a single runtime TTL. The constructor `action_ttl_ns` seeds uniform TTLs. `SetActionTtl(kind, new_ttl_ns)` changes the TTL for a specific operation kind; breaker lifecycle actions use distinct `Rearm` and `SetEnforced` TTLs.
+- **Id-based proposal execution**: Proposals execute by id after maturity; no FIFO ordering is required. `submit`/`accept`/`revoke` remain as compatibility aliases.
+- **No AdminFunctionCall**: NEAR `AdminFunctionCall` arbitrary dynamic dispatch is intentionally not implemented on Soroban. The upgrade surface is typed: `upgrade(new_wasm_hash)` on runtime, `AdminUpgrade(new_wasm_hash)` via governance.
 - **Synchronous refresh only**: All source IO occurs synchronously within a single `refresh` transaction. NEAR's async cross-contract callback pattern is not available in Soroban.
 - **Budget simulation scope**: Full Stellar resource simulation (CPU/memory instruction counts) requires a live Soroban RPC endpoint and is not available locally. The `budget-check` gate runs deterministic soroban-sdk testutils scenarios as the narrowest available local harness.
 
@@ -122,7 +133,7 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 - [x] **parity breaker trip**: Automatic trip, observed history, rearm.
   - Evidence: `.omo/evidence/task-6-breaker-trip-parity.txt`
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils parity_breaker_trip -- --nocapture`
-- [x] **parity governance ordering**: FIFO accept and revoke unblocks later proposals.
+- [x] **parity governance lifecycle**: Proposal creation, id-based execution, cancellation, per-operation TTLs, and compatibility aliases.
   - Evidence: `.omo/evidence/task-6-governance-ordering-parity.txt`
   - Verification: `cargo test -p templar-proxy-oracle-soroban-governance-contract --features testutils parity -- --nocapture`
 
@@ -139,13 +150,13 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 
 - [x] **auth governance authorization**: All configuration mutations require `governance.require_auth()`.
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils -- --nocapture`
-- [x] **auth manual-trip split roles**: `OfflineManualTrip` cannot untrip; `OfflineManualUntrip` is required to clear a manual trip.
+- [x] **auth manual-trip governance role**: `GovernanceAction::SetManualTrip` requires `Role::ManualTripper`; actor is retained for event attribution and must match the authenticated proposal creator.
   - Evidence: `.omo/evidence/task-4-tripper-cannot-untrip.txt`
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils manual_trip_role_tripper_cannot_untrip_without_untrip_role -- --nocapture`
 - [x] **auth duplicate source rejection**: `set_proxy` rejects duplicate `(oracle, asset)` pairs.
   - Evidence: `.omo/evidence/task-3-duplicate-source.txt`
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils invalid_config_duplicate_source -- --nocapture`
-- [x] **auth require_auth enforcement**: `set_manual_trip` enforces `actor.require_auth()`; governance actions enforce `admin.require_auth()`.
+- [x] **auth require_auth enforcement**: Governance actions enforce `caller.require_auth()` and role membership; runtime manual-trip mutation requires governance authorization.
   - Evidence: `.omo/evidence/task-6-manual-trip-parity.txt`
 
 ### Validation
@@ -178,7 +189,7 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 
 - [x] **unit tests runtime**: All runtime scenarios covered; parity, event, auth, validation, TTL, and breaker paths all tested.
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils -- --nocapture`
-- [x] **unit tests governance**: Governance lifecycle, FIFO ordering, revoke, and fail-closed paths covered.
+- [x] **unit tests governance**: Governance lifecycle, per-operation TTLs, id-based execution, cancel, role management, last-admin protection, and fail-closed paths covered.
   - Verification: `cargo test -p templar-proxy-oracle-soroban-governance-contract --features testutils -- --nocapture`
 - [x] **unit tests kernel**: Shared aggregation and breaker logic covered.
   - Verification: `cargo test -p templar-proxy-oracle-kernel --features serde --lib -- --nocapture`
@@ -192,10 +203,10 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 
 ### Size
 
-- [x] **optimized_size runtime**: 115399 bytes (112.69 KiB), limit 131072 bytes.
+- [x] **optimized_size runtime**: 121114 bytes (118.28 KiB), limit 131072 bytes.
   - Evidence: `.omo/evidence/task-7-size-check.txt`
   - Verification: `just -f contract/proxy-oracle/soroban/justfile size-check`
-- [x] **optimized_size governance**: 38997 bytes (38.08 KiB), limit 131072 bytes.
+- [x] **optimized_size governance**: 55409 bytes (54.11 KiB), limit 131072 bytes.
   - Evidence: `.omo/evidence/task-7-size-check.txt`
   - Verification: `just -f contract/proxy-oracle/soroban/justfile size-check`
 

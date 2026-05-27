@@ -58,7 +58,7 @@ Rejects prices older than `max_age_secs` or newer than `max_clock_drift_secs`. P
 
 ### Manual Trip
 
-An operator with `Role::OfflineManualTrip` can immediately block all refreshes for an asset. The attacker cannot untrip without compromising an account with `OfflineManualUntrip`.
+An operator with `Role::ManualTripper` can immediately block all refreshes for an asset. Untripping requires the same governance role.
 
 ---
 
@@ -87,7 +87,7 @@ The attack is computationally and economically infeasible.
 | Deviation check | Current vs previous | StepwiseChange vs accepted history | Historical baseline prevents chaining |
 | Sustained movement | None | MonotonicRun | Gradual ramps caught |
 | Statistical anomaly | None | WindowedChangeDelta | Outliers blocked |
-| Emergency response | None | ManualTripSet + role separation | Human-in-the-loop kill switch |
+| Emergency response | None | ManualTripSet + governance role | Human-in-the-loop kill switch |
 
 ---
 
@@ -108,7 +108,7 @@ let windowed = WindowedChangeDelta { window_len: 2, lookback_windows: 3, max_rel
 
 Configure `history_len` ≥ max required by any breaker. For the above: `max(1, 3, 8) = 8`.
 
-Never grant both `OfflineManualTrip` and `OfflineManualUntrip` to the same operator.
+Guard `Role::ManualTripper` access carefully; any operator with this role can both trip and untrip feeds.
 
 ---
 

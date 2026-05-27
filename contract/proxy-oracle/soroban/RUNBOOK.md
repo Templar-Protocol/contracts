@@ -86,11 +86,11 @@ just -f contract/proxy-oracle/soroban/justfile size-check
 just -f contract/proxy-oracle/soroban/justfile budget-check
 ```
 
-The size gate writes evidence to `.omo/evidence/task-7-size-check.txt`. Both optimized WASMs must remain at or below 131072 bytes (128 KiB). Recheck after any change to runtime, governance, ABI, or event structs.
+The size gate writes evidence to `.omo/evidence/task-7-size-check.txt`. Both optimized WASMs must remain at or below 131072 bytes (128 KiB). Release and audit gates write their supporting evidence under `.omo/evidence`. Recheck after any change to runtime, governance, ABI, or event structs.
 
-Current verified sizes (baseline `64bf8b821cabbc94e4591ca89997c8ec00f365c7`):
-- Runtime: 115399 bytes (112.69 KiB)
-- Governance: 38997 bytes (38.08 KiB)
+Current verified sizes:
+- Runtime: 121114 bytes (118.28 KiB)
+- Governance: 55409 bytes (54.11 KiB)
 
 ---
 
@@ -166,9 +166,9 @@ stellar contract invoke \
 ```
 
 Parameters:
-- `admin`: the address authorized to submit, accept, and revoke proposals
+- `admin`: the address authorized as initial `Role::Admin`; can submit, execute, and cancel proposals
 - `proxy_oracle`: the runtime contract address
-- `action_ttl_ns`: proposal maturity delay in nanoseconds (example: 86400000000000 = 24 hours)
+- `action_ttl_ns`: seeds a uniform proposal maturity delay across all `OperationKind` values in nanoseconds (example: 86400000000000 = 24 hours). Per-kind TTLs can be adjusted later via `SetActionTtl(kind, new_ttl_ns)`. Breaker lifecycle proposal actions use distinct `Rearm` and `SetEnforced` TTLs.
 
 After initialization, verify both contracts are live:
 
@@ -281,7 +281,7 @@ stellar contract invoke \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- submit \
   --caller <ADMIN_ADDRESS> \
-  --action '{"UpdateBreaker": [{"Other": "BTC"}, <BREAKER_ID>, {"SetEnforced": {"is_enforced": true}}]}'
+  --action '{"SetEnforced": [{"Other": "BTC"}, <BREAKER_ID>, {"is_enforced": true}]}'
 ```
 
 Unenforced breakers still evaluate and can trip, but a trip does not block the price feed. Set `is_enforced: true` for production feeds.
@@ -296,7 +296,7 @@ stellar contract invoke \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- submit \
   --caller <ADMIN_ADDRESS> \
-  --action '{"UpdateBreaker": [{"Other": "BTC"}, <BREAKER_ID>, {"Rearm": {"armed_after_secs": 3600, "accepted_history_source_code": 0}}]}'
+  --action '{"Rearm": [{"Other": "BTC"}, <BREAKER_ID>, {"armed_after_secs": 3600, "accepted_history_source_code": 0}]}'
 
 # Rearm seeding from observed history (collected during the incident)
 # accepted_history_source_code: 0 = Empty, 1 = Observed
@@ -318,15 +318,13 @@ stellar contract invoke \
 
 ---
 
-## 7. Grant and Revoke Manual-Trip Roles
+## 7. Grant and Revoke Roles
 
-Manual-trip authority is split into two roles:
-- `OfflineManualTrip`: can call `set_manual_trip(..., true, ...)` to block a feed.
-- `OfflineManualUntrip`: can call `set_manual_trip(..., false, ...)` to unblock a feed.
+Governance roles (`Admin`, `ManualTripper`, `CircuitBreakerOperator`, `ProxyConfigurationManager`) are managed through `SetRole` proposals. Manual trip/untrip requires the `ManualTripper` role via `SetManualTrip` governance actions.
 
-An account with only `OfflineManualTrip` cannot untrip. The governance admin is not implicitly granted either role.
+### Governance Roles
 
-**Grant a role:**
+**Grant a governance role:**
 
 ```bash
 stellar contract invoke \
@@ -335,10 +333,10 @@ stellar contract invoke \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- submit \
   --caller <ADMIN_ADDRESS> \
-  --action '{"SetCircuitBreakerRole": ["<OPERATOR_ADDRESS>", "OfflineManualTrip", true]}'
+  --action '{"SetRole": ["<OPERATOR_ADDRESS>", "ProxyConfigurationManager", true]}'
 ```
 
-**Revoke a role:**
+**Revoke a governance role:**
 
 ```bash
 stellar contract invoke \
@@ -347,19 +345,71 @@ stellar contract invoke \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- submit \
   --caller <ADMIN_ADDRESS> \
-  --action '{"SetCircuitBreakerRole": ["<OPERATOR_ADDRESS>", "OfflineManualTrip", false]}'
+  --action '{"SetRole": ["<OPERATOR_ADDRESS>", "ProxyConfigurationManager", false]}'
 ```
 
-**Inspect role grants:**
+Removing the last `Role::Admin` membership is rejected.
+
+### Manual Trip Role
+
+Manual trip and untrip both require the `ManualTripper` governance role. Grant it through `SetRole`:
 
 ```bash
-# Check whether a specific account holds a role
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- submit \
+  --caller <ADMIN_ADDRESS> \
+  --action '{"SetRole": ["<OPERATOR_ADDRESS>", "ManualTripper", true]}'
+```
+
+Revoke:
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- submit \
+  --caller <ADMIN_ADDRESS> \
+  --action '{"SetRole": ["<OPERATOR_ADDRESS>", "ManualTripper", false]}'
+```
+
+After granting, verify the role is active before an incident occurs.
+
+### Inspect Role Grants
+
+```bash
+# Check whether a specific account holds a role (runtime)
 stellar contract invoke \
   --network <network> \
   --id <RUNTIME_CONTRACT_ID> \
   -- has_role \
   --account <OPERATOR_ADDRESS> \
-  --role "OfflineManualTrip"
+  --role "ManualTripper"
+
+# Check governance roles
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- has_role \
+  --account <OPERATOR_ADDRESS> \
+  --role "Admin"
+
+# List all accounts holding a role
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- list_role \
+  --role "ProxyConfigurationManager"
+
+# List all roles for a specific account
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- get_roles \
+  --account <OPERATOR_ADDRESS>
 ```
 
 After accepting the proposal, verify the role is active before an incident occurs.
@@ -368,9 +418,34 @@ After accepting the proposal, verify the role is active before an incident occur
 
 ## 8. Governance Proposals
 
-The governance contract uses a FIFO proposal queue. Proposals must be accepted in proposal-id order after the `action_ttl_ns` maturity delay.
+The governance contract supports a typed proposal lifecycle with per-operation TTLs. Proposals execute by id after their maturity delay; no FIFO ordering is required. At most 64 proposals may be pending at once; canceling or executing a proposal frees a slot. The `submit`/`accept`/`revoke` methods remain as compatibility aliases.
 
-**Submit a proposal:**
+This contract is not an implicit migration target for earlier prototype governance storage. If an existing deployment used different role, TTL, or pending-proposal keys, deploy and initialize a fresh governance contract or ship an explicit migration before upgrading in place.
+
+### Proposal Lifecycle
+
+**Create a proposal (typed):**
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- create_proposal \
+  --caller <ADMIN_ADDRESS> \
+  --id <NEXT_ID> \
+  --operation '<ACTION_JSON>' \
+  --requested_ttl 0
+```
+
+Parameters:
+- `id`: must match `next_proposal_id`. Auto-incrementing.
+- `operation`: a `GovernanceAction` variant (see action list below).
+- `requested_ttl`: caller-specified maturity delay in nanoseconds. Zero uses the configured per-kind TTL. The effective TTL is the maximum of the requested TTL and the configured per-kind minimum.
+
+Creation returns `InvalidInput` once 64 proposals are pending. `next_proposal_id` does not advance when this cap rejects a proposal.
+
+**Submit a proposal (compatibility alias):**
 
 ```bash
 stellar contract invoke \
@@ -382,30 +457,71 @@ stellar contract invoke \
   --action '<ACTION_JSON>'
 ```
 
-Returns the proposal ID. Record it for acceptance.
+`submit` auto-assigns the next proposal id and uses zero requested TTL, delegating to `create_proposal`.
 
-**List pending proposal IDs:**
+### Query Views
 
 ```bash
+# Next proposal id (required for create_proposal)
 stellar contract invoke \
   --network <network> \
   --id <GOVERNANCE_CONTRACT_ID> \
-  -- pending_ids
+  -- next_proposal_id
+
+# Number of pending proposals
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- proposal_count
+
+# List pending proposal ids (paginated)
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- list_proposals \
+  --offset 0 \
+  --count 10
+
+# Inspect a specific proposal
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- get_proposal \
+  --id <ID>
+
+# Get effective TTL for an operation
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- get_effective_proposal_ttl \
+  --operation '<ACTION_JSON>' \
+  --requested_ttl 0
+
+# Get configured TTL for an operation kind
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- get_operation_ttl \
+  --kind SetProxy
 ```
 
-**Inspect a specific proposal:**
+### Execute and Cancel
+
+**Execute a mature proposal by id:**
 
 ```bash
 stellar contract invoke \
   --network <network> \
+  --source <admin-identity> \
   --id <GOVERNANCE_CONTRACT_ID> \
-  -- pending \
+  -- execute_proposal \
+  --caller <ADMIN_ADDRESS> \
   --proposal_id <ID>
 ```
 
-Returns `id`, `action`, and `valid_after_ns`. Do not accept before `valid_after_ns`.
+Returns `ProposalNotMature` if the proposal has not yet passed its TTL. Returns `ProposalNotFound` if the id does not exist. No FIFO ordering is enforced.
 
-**Accept the lowest pending proposal:**
+**Accept a proposal (compatibility alias):**
 
 ```bash
 stellar contract invoke \
@@ -417,9 +533,21 @@ stellar contract invoke \
   --proposal_id <ID>
 ```
 
-Acceptance enforces FIFO order: if `proposal_id` is not the lowest pending ID, the call returns `ProposalOutOfOrder`. If the proposal has not yet matured, it returns `ProposalNotMature`.
+`accept` delegates to `execute_proposal`.
 
-**Revoke a proposal:**
+**Cancel a proposal:**
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- cancel_proposal \
+  --caller <ADMIN_ADDRESS> \
+  --proposal_id <ID>
+```
+
+**Revoke a proposal (compatibility alias):**
 
 ```bash
 stellar contract invoke \
@@ -431,9 +559,67 @@ stellar contract invoke \
   --proposal_id <ID>
 ```
 
-Revocation removes the proposal from the queue without executing it. A later proposal with a higher ID that was blocked by the revoked proposal can then be accepted.
+`revoke` delegates to `cancel_proposal`.
 
-**Governance handoff (transfer runtime governance to a new address):**
+### Pending IDs (compatibility)
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- pending_ids
+```
+
+Returns all pending proposal ids. Equivalent to `list_proposals(0, proposal_count)`.
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- pending \
+  --proposal_id <ID>
+```
+
+Returns `id`, `action`, and `valid_after_ns`. Do not execute before `valid_after_ns`.
+
+### Governance Actions
+
+Action codes in `ProposalSubmitted` events:
+- `1`: SetProxy
+- `2`: RemoveProxy
+- `3`: ConfigureBreakers
+- `4`: AddBreaker
+- `5`: RemoveBreaker
+- `6`: (reserved)
+- `7`: SetManualTrip
+- `8`: (reserved)
+- `9`: SetGovernance
+- `10`: SetActionTtl
+- `11`: SetRole
+- `12`: AdminUpgrade
+- `13`: Rearm
+- `14`: SetEnforced
+
+### Per-Operation TTLs
+
+Each action kind has its own maturity delay stored in `TtlConfig`. The constructor seeds uniform TTLs. Breaker lifecycle changes are split into explicit `Rearm` and `SetEnforced` proposal actions with independent operation TTLs. Adjust individual TTLs via `SetActionTtl`:
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- submit \
+  --caller <ADMIN_ADDRESS> \
+  --action '{"SetActionTtl": ["SetProxy", 172800000000000]}'
+# SetProxy TTL = 172800000000000 ns = 48 hours
+```
+
+The `ActionTtlSet` event includes the `kind` and `new_ttl_ns`.
+
+`SetActionTtl` requires `Role::ProxyConfigurationManager`; `Role::Admin` can also change any TTL through the global Admin override.
+
+### Governance Handoff (transfer runtime governance to a new address)
 
 ```bash
 stellar contract invoke \
@@ -447,7 +633,7 @@ stellar contract invoke \
 
 This emits both `ProposalSubmitted` and `GovernanceHandoffSubmitted` events. After acceptance, the runtime emits `GovernanceHandoff` with the old and new governance addresses.
 
-**Update the action TTL:**
+### AdminUpgrade (governed runtime WASM upgrade)
 
 ```bash
 stellar contract invoke \
@@ -456,9 +642,10 @@ stellar contract invoke \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- submit \
   --caller <ADMIN_ADDRESS> \
-  --action '{"SetActionTtl": 172800000000000}'
-# 172800000000000 ns = 48 hours
+  --action '{"AdminUpgrade": "<NEW_WASM_HASH>"}'
 ```
+
+Requires `Role::Admin`. After execution, the runtime contract code is updated to the new WASM hash. Zero hashes are rejected.
 
 ---
 
@@ -507,7 +694,7 @@ stellar contract invoke \
   -- extend_ttl
 ```
 
-This extends instance storage and all persistent keys: `Assets`, `Proxy(asset)`, `Breakers(asset)`, `Cache(asset)`, `History(asset)`, and all `Role` and `RoleAccounts` keys. Keys that do not exist are skipped safely. Emits `TtlExtended` with the asset count.
+This extends instance storage and all persistent keys: `Assets`, `Proxy(asset)`, `Breakers(asset)`, `Cache(asset)`, and `History(asset)`. Keys that do not exist are skipped safely. Emits `TtlExtended` with the asset count.
 
 **Extend governance TTL:**
 
@@ -683,18 +870,8 @@ Response: Investigate the price that triggered the trip. If `is_enforced` is `fa
 Topics: `asset`, `actor`
 Payload: `is_manually_tripped` (bool), `metadata` (Option<Bytes>, max 1024 bytes)
 
-Meaning: An operator manually tripped or untripped this asset's feed. Metadata is event-only and not stored in contract state.
-Response: Confirm the actor is an authorized operator. If `is_manually_tripped` is `true`, the feed is blocked. Review the metadata for the stated reason. If unexpected, investigate immediately.
-
----
-
-#### `CircuitBreakerRoleSet`
-
-Topics: `account`
-Payload: `role` (Role), `is_granted` (bool)
-
-Meaning: An `OfflineManualTrip` or `OfflineManualUntrip` role was granted or revoked for an account.
-Response: Verify the account and role match the governance proposal. Alert on unexpected role grants, especially for `OfflineManualUntrip`.
+Meaning: A governed manual-trip proposal tripped or untripped this asset's feed. Metadata is event-only and not stored in contract state.
+Response: Confirm the actor is the proposal creator and an authorized operator. If `is_manually_tripped` is `true`, the feed is blocked. Review the metadata for the stated reason. If unexpected, investigate immediately.
 
 ---
 
@@ -753,11 +930,15 @@ Action codes:
 - `3`: ConfigureBreakers
 - `4`: AddBreaker
 - `5`: RemoveBreaker
-- `6`: UpdateBreaker
+- `6`: (reserved)
 - `7`: SetManualTrip
-- `8`: SetCircuitBreakerRole
+- `8`: (reserved)
 - `9`: SetGovernance
 - `10`: SetActionTtl
+- `11`: SetRole
+- `12`: AdminUpgrade
+- `13`: Rearm
+- `14`: SetEnforced
 
 Response: Record the proposal ID and `valid_after_ns`. Do not accept before maturity. Alert on unexpected submissions.
 
@@ -796,9 +977,9 @@ Response: Alert immediately. Verify the new governance address is correct before
 #### `ActionTtlSet`
 
 Topics: none
-Payload: `new_ttl_ns` (u64)
+Payload: `kind` (OperationKind), `new_ttl_ns` (u64)
 
-Meaning: The proposal maturity delay was changed.
+Meaning: The proposal maturity delay for a specific operation kind was changed.
 Response: Verify the new TTL matches the intended governance proposal. A shorter TTL reduces the window for catching and revoking malicious proposals.
 
 ---
@@ -823,19 +1004,18 @@ Use manual trip to immediately block a price feed when you suspect manipulation,
 stellar contract invoke \
   --network <network> \
   --source <trip-operator-identity> \
-  --id <RUNTIME_CONTRACT_ID> \
-  -- set_manual_trip \
-  --actor <TRIP_OPERATOR_ADDRESS> \
-  --asset '{"Other": "BTC"}' \
-  --is_manually_tripped true \
-  --metadata '"<base64-encoded reason, max 1024 bytes>"'
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- submit \
+  --caller <TRIP_OPERATOR_ADDRESS> \
+  --action '{"SetManualTrip": ["<TRIP_OPERATOR_ADDRESS>", {"Other": "BTC"}, true, "<base64-encoded reason, max 1024 bytes>"]}'
 ```
 
 Requirements:
-- The `actor` must hold `OfflineManualTrip` role.
-- `actor.require_auth()` is enforced: the transaction must be signed by `actor`.
+- The `caller` must hold `Role::ManualTripper`, or `Role::Admin` for the global override.
+- The action `actor` must match `caller`; mismatched actor attribution is rejected.
 - Metadata is event-only and capped at 1024 bytes. It is not stored in contract state.
 - The cache is invalidated immediately. `lastprice` returns `None` until the feed is untripped and refreshed.
+- Execute the proposal after its `SetManualTrip` maturity delay.
 
 **Verify the trip took effect:**
 
@@ -854,17 +1034,15 @@ stellar contract invoke \
 stellar contract invoke \
   --network <network> \
   --source <untrip-operator-identity> \
-  --id <RUNTIME_CONTRACT_ID> \
-  -- set_manual_trip \
-  --actor <UNTRIP_OPERATOR_ADDRESS> \
-  --asset '{"Other": "BTC"}' \
-  --is_manually_tripped false \
-  --metadata '"<base64-encoded reason>"'
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- submit \
+  --caller <UNTRIP_OPERATOR_ADDRESS> \
+  --action '{"SetManualTrip": ["<UNTRIP_OPERATOR_ADDRESS>", {"Other": "BTC"}, false, "<base64-encoded reason>"]}'
 ```
 
 Requirements:
-- The `actor` must hold `OfflineManualUntrip` role.
-- An account with only `OfflineManualTrip` cannot untrip.
+- The `caller` must hold `Role::ManualTripper`, or `Role::Admin` for the global override.
+- The action `actor` must match `caller`; mismatched actor attribution is rejected.
 
 After untripping, call `refresh` to repopulate the cache before downstream services resume reading.
 
@@ -917,6 +1095,9 @@ Review `.omo/evidence/task-8-dry-run.txt` for the simulated install commands. Cr
 
 **Upgrade the runtime contract:**
 
+Two paths are available:
+
+1. **Direct governed upgrade** (runtime method, requires governance authorization):
 ```bash
 # Install the new WASM (returns a new WASM hash)
 stellar contract install \
@@ -924,7 +1105,7 @@ stellar contract install \
   --source <identity> \
   --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.optimized.wasm
 
-# Upgrade the deployed contract to the new WASM hash
+# Upgrade the deployed contract to the new WASM hash (governance must authorize)
 stellar contract invoke \
   --network <network> \
   --source <governance-identity> \
@@ -933,7 +1114,28 @@ stellar contract invoke \
   --new_wasm_hash <NEW_WASM_HASH>
 ```
 
-The runtime uses `env.deployer().update_current_contract_wasm()` for upgrades. The governance contract must authorize the upgrade call.
+2. **Governed proposal upgrade** (AdminUpgrade proposal, executes after maturity):
+```bash
+# Submit AdminUpgrade proposal
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- submit \
+  --caller <ADMIN_ADDRESS> \
+  --action '{"AdminUpgrade": "<NEW_WASM_HASH>"}'
+
+# After maturity, execute the proposal
+stellar contract invoke \
+  --network <network> \
+  --source <admin-identity> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- execute_proposal \
+  --caller <ADMIN_ADDRESS> \
+  --proposal_id <ID>
+```
+
+The runtime uses `env.deployer().update_current_contract_wasm()` for upgrades. Zero WASM hashes are rejected. NEAR `AdminFunctionCall` arbitrary dynamic dispatch is intentionally not implemented on Soroban.
 
 **Upgrade the governance contract** follows the same pattern with the governance WASM.
 
@@ -992,7 +1194,7 @@ This file contains no credentials, key material, or unresolved placeholders. Run
 **Verify all event families are covered:**
 
 ```bash
-rg -n "RefreshSuccess|RefreshFailure|CacheBlocked|CircuitBreakerConfigSet|CircuitBreakerAdded|CircuitBreakerRemoved|CircuitBreakerEnforcementSet|CircuitBreakerRearmed|CircuitBreakerTripped|ManualTripSet|CircuitBreakerRoleSet|ProxySet|ProxyRemoved|GovernanceHandoff|TtlExtended|ProposalSubmitted|ProposalAccepted|ProposalRevoked|GovernanceHandoffSubmitted|ActionTtlSet" \
+rg -n "RefreshSuccess|RefreshFailure|CacheBlocked|CircuitBreakerConfigSet|CircuitBreakerAdded|CircuitBreakerRemoved|CircuitBreakerEnforcementSet|CircuitBreakerRearmed|CircuitBreakerTripped|ManualTripSet|ProxySet|ProxyRemoved|GovernanceHandoff|TtlExtended|ProposalSubmitted|ProposalAccepted|ProposalRevoked|GovernanceHandoffSubmitted|ActionTtlSet" \
   contract/proxy-oracle/soroban/RUNBOOK.md
 ```
 
@@ -1059,11 +1261,21 @@ stellar contract invoke \
   -- pending_ids
 ```
 
-**Check current action TTL:**
+**Check current action TTL (returns SetProxy TTL for backward compatibility):**
 
 ```bash
 stellar contract invoke \
   --network <network> \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- action_ttl_ns
+```
+
+**Check TTL for a specific operation kind:**
+
+```bash
+stellar contract invoke \
+  --network <network> \
+  --id <GOVERNANCE_CONTRACT_ID> \
+  -- get_operation_ttl \
+  --kind SetProxy
 ```

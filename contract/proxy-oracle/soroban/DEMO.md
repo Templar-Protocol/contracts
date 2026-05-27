@@ -76,7 +76,7 @@ Prevents acceptance of pre-manufactured stale prices.
 set_manual_trip(operator, asset, true, metadata);
 ```
 
-Emergency operators with `Role::OfflineManualTrip` can immediately block all refreshes. Requires separate `OfflineManualUntrip` role to unblock.
+Emergency operators with `Role::ManualTripper` can immediately block all refreshes. The same role is required to untrip.
 
 ---
 
@@ -106,5 +106,5 @@ cargo test -p templar-proxy-oracle-soroban-contract blend_exploit -- --nocapture
 | Naive adjacent-sample deviation | StepwiseChange vs accepted history |
 | Sustained manipulation across windows | MonotonicRun detects streaks |
 | Massive single-window jumps | WindowedChangeDelta vs historical avg |
-| No emergency stop | ManualTripSet with role separation |
+| No emergency stop | ManualTripSet with governance role |
 | No freshness enforcement | max_age_secs + max_clock_drift_secs |
