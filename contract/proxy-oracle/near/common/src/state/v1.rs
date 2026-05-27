@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use near_sdk::{collections::UnorderedMap, env, near, BorshStorageKey};
 use templar_common::{
