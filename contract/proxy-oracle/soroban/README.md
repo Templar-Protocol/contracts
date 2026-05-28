@@ -4,6 +4,8 @@ Soroban proxy oracle contract for SEP-40-compatible price feeds.
 
 The contract exposes SEP-40 cached reads (`base`, `assets`, `decimals`, `resolution`, `price`, `prices`, `lastprice`) and a separate `refresh(assets)` method. `refresh` deduplicates input assets in first-seen order, reads configured SEP-40 source oracle contracts once per target, aggregates source prices through `templar-proxy-oracle-kernel`, applies freshness filters and circuit breakers, and writes the accepted or failed result to cache.
 
+`decimals()` is the oracle-wide SEP-40 output price precision, not the token decimal count for any individual asset. Every accepted `PriceData.price` returned by this contract is normalized to that shared precision (`price / 10^decimals`) regardless of the source feed precision. This supports one proxy oracle serving multiple feeds as long as all consumers agree on the contract-level output precision.
+
 RedStone integration is via RedStone's deployed Stellar SEP-40 wrapper contracts, not by writing RedStone prices in this proxy. RedStone payload verification and price reporting remain owned by the RedStone adapter/wrapper contracts.
 
 Reads fail closed: `lastprice` returns `None` unless the latest cached status is accepted and still fresh under the proxy configuration.
@@ -42,7 +44,7 @@ The contract declares SEP-40 metadata via `contractmeta!(key = "sep", val = "40"
 - This governance model is not an implicit in-place migration for earlier prototype Soroban storage layouts. Existing deployments that stored different role, TTL, or pending-proposal keys need an explicit migration or a redeployed/reinitialized governance contract.
 - NEAR `AdminFunctionCall` arbitrary dynamic dispatch is intentionally not implemented on Soroban. The upgrade surface is typed: `upgrade(new_wasm_hash)` on runtime, `AdminUpgrade(new_wasm_hash)` via governance.
 - Events are compact Soroban events and are not byte-for-byte equivalent to NEAR proxy-oracle JSON events.
-- Shared NEAR/Soroban governance kernel extraction is deferred because storage, authorization, and serialization models differ materially between runtimes. Generated typed clients are not implemented in this slice; the current explicit `authorize_as_current_contract` pattern with exact `ContractContext` fn_name and args remains acceptable for this contract scope.
+- Governance proposal and role state-machine logic is shared with NEAR through `templar-governance-kernel`; Soroban still owns authorization, storage encoding, events, and runtime dispatch. Generated typed clients are not implemented in this slice; the current explicit `authorize_as_current_contract` pattern with exact `ContractContext` fn_name and args remains acceptable for this contract scope.
 
 ## Verification
 

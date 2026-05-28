@@ -11,7 +11,7 @@ use templar_proxy_oracle_kernel::proxy::{
 };
 use templar_proxy_oracle_near_common::input::Source;
 
-pub use engine::{error, Event, Governance, Proposal, Validatable};
+pub use engine::{error, Event, Governance, OperationPolicy, Proposal, Validatable};
 pub use templar_common::Nanoseconds;
 
 pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
@@ -56,7 +56,7 @@ macro_rules! governance_operations {
             $(pub $ttl_field: Nanoseconds),+
         }
 
-        impl TtlConfig {
+impl TtlConfig {
             pub fn get(&self, kind: OperationKind) -> Nanoseconds {
                 match kind {
                     $(OperationKind::$variant => self.$ttl_field),+
@@ -168,6 +168,16 @@ impl Validatable for Operation {
     }
 }
 
+impl templar_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
+    fn get(&self, kind: OperationKind) -> Nanoseconds {
+        self.get(kind)
+    }
+
+    fn set(&mut self, kind: OperationKind, ttl: Nanoseconds) {
+        self.set(kind, ttl);
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ValidationError {
     #[error("Empty proxy definition is not allowed")]
@@ -219,6 +229,30 @@ impl Operation {
             | Operation::AdminUpgrade { .. }
             | Operation::AdminFunctionCall { .. } => Role::Admin,
         }
+    }
+}
+
+impl OperationPolicy<TtlConfig> for Operation {
+    type OnCreateError = ValidationError;
+    type OnExecuteError = ValidationError;
+
+    fn minimum_ttl(&self, ttls: &TtlConfig) -> Nanoseconds {
+        match self {
+            Operation::SetActionTtl { kind, .. } => {
+                let set_action_ttl = ttls.get(OperationKind::SetActionTtl);
+                let target_ttl = ttls.get(*kind);
+                std::cmp::max(set_action_ttl, target_ttl)
+            }
+            _ => ttls.get(self.kind()),
+        }
+    }
+
+    fn validate_on_create(&self) -> Result<(), Self::OnCreateError> {
+        <Self as Validatable>::on_create(self)
+    }
+
+    fn validate_on_execute(&self) -> Result<(), Self::OnExecuteError> {
+        <Self as Validatable>::on_execute(self)
     }
 }
 

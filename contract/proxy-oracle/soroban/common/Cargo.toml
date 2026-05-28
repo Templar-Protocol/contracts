@@ -16,6 +16,7 @@ testutils = ["soroban-sdk/testutils"]
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 templar-primitives = { path = "../../../../primitives", default-features = false }
+templar-governance-kernel.workspace = true
 
 [lints]
 workspace = true

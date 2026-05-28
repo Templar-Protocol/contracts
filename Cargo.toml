@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "common",
     "contract/market",
+    "contract/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",
     "contract/proxy-oracle/near/contract",
@@ -12,6 +13,7 @@ members = [
     "contract/proxy-oracle/soroban/contract",
     "contract/proxy-oracle/soroban/governance-contract",
     "contract/proxy-oracle/soroban/common",
+    "contract/proxy-oracle/soroban/mock",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -91,6 +93,7 @@ sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
+templar-governance-kernel = { path = "./contract/governance-kernel" }
 templar-primitives = { path = "./primitives" }
 templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel" }
 templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common" }
@@ -169,6 +172,19 @@ overflow-checks = false
 
 
 [profile.release-soroban.package."*"]
+overflow-checks = false
+
+# Like `release-soroban`, but with overflow-checks enabled on our own crates.
+# The proxy-oracle contracts build via `stellar contract build`, which mandates
+# overflow-checks = true on the contract. Kept as a SEPARATE profile so other
+# Soroban contracts (e.g. the vault) that use `release-soroban` are unaffected —
+# their builds and WASM sizes do not change. External dependencies keep
+# overflow-checks off to limit size.
+[profile.release-soroban-checked]
+inherits = "release-soroban"
+overflow-checks = true
+
+[profile.release-soroban-checked.package."*"]
 overflow-checks = false
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification

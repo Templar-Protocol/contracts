@@ -244,7 +244,7 @@ fn parity_governance_allows_out_of_order_execution() {
     assert_eq!(ids.get(1).unwrap(), second);
 
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second).unwrap()
+        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second).unwrap();
     });
     assert!(proxy.get_proxy(&asset_one).is_none());
     assert!(proxy.get_proxy(&asset_two).is_some());
@@ -504,7 +504,7 @@ fn accept_allows_any_mature_pending_proposal_id() {
     );
 
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second).unwrap()
+        ProxyOracleGovernance::accept(env.clone(), admin.clone(), second).unwrap();
     });
 
     assert!(proxy.get_proxy(&asset_two).is_some());
@@ -566,12 +566,12 @@ fn ttl_governance_extend_requires_admin_and_emits_event() {
 // ── missing_config tests ──────────────────────────────────────────────────────
 
 #[test]
-fn missing_config_governance_submit_fails_closed_on_missing_action_ttl() {
+fn missing_config_governance_submit_fails_closed_on_missing_governance_state() {
     let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
 
     env.as_contract(&governance_id, || {
-        env.storage().instance().remove(&DataKey::Ttls);
+        env.storage().instance().remove(&DataKey::Header);
     });
 
     let result = env.as_contract(&governance_id, || {
@@ -585,11 +585,11 @@ fn missing_config_governance_submit_fails_closed_on_missing_action_ttl() {
 }
 
 #[test]
-fn missing_config_governance_action_ttl_ns_fails_closed_on_missing_key() {
+fn missing_config_governance_action_ttl_ns_fails_closed_on_missing_governance_state() {
     let (env, _admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
 
     env.as_contract(&governance_id, || {
-        env.storage().instance().remove(&DataKey::Ttls);
+        env.storage().instance().remove(&DataKey::Header);
     });
 
     let result = env.as_contract(&governance_id, || {

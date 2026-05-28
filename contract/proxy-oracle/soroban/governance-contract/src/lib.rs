@@ -6,6 +6,10 @@
 extern crate alloc;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use templar_governance_kernel::{
+    CancelError as KernelCancelError, CreateError as KernelCreateError,
+    ExecuteError as KernelExecuteError,
+};
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_soroban_common::{
     extend_instance_ttl, GovernanceAction, GovernanceError, OperationKind, PendingProposal,
@@ -24,8 +28,8 @@ pub use events::{
 
 use engine::{effective_ttl, execute_action, now, require_authorized, validate_for_creator};
 use storage::{
-    load_proposal, load_proposal_count, load_proposal_ids, load_ttls, remove_proposal,
-    remove_proposal_id, save_proposal, save_proposal_count, save_proposal_ids, save_ttls, DataKey,
+    load_header, load_proposal, proposal_from_kernel, proposal_to_kernel, remove_proposal,
+    save_header, save_proposal, DataKey, KernelGovernance,
 };
 
 const MAX_PENDING_PROPOSALS: u32 = 64;
@@ -51,40 +55,40 @@ impl ProxyOracleGovernance {
         env.storage()
             .instance()
             .set(&DataKey::ProxyOracle, &proxy_oracle);
-        save_ttls(
+        save_header(
             &env,
-            &TtlConfig::uniform(Nanoseconds::from_ns(action_ttl_ns)),
+            &KernelGovernance::new(
+                TtlConfig::uniform(Nanoseconds::from_ns(action_ttl_ns)),
+                MAX_PENDING_PROPOSALS,
+            ),
         );
-        env.storage()
-            .instance()
-            .set(&DataKey::NextProposalId, &0_u64);
-        save_proposal_ids(&env, &Vec::<u64>::new(&env));
-        save_proposal_count(&env, 0);
-        roles::grant(&env, &admin, Role::Admin);
+        roles::grant(&env, &admin, Role::Admin, &admin);
         Ok(())
     }
 
     pub fn next_proposal_id(env: Env) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::NextProposalId)
-            .ok_or(GovernanceError::MissingConfig)
+        Ok(load_header(&env)?.next_id)
     }
 
     pub fn proposal_count(env: Env) -> u32 {
         extend_instance_ttl(&env);
-        load_proposal_count(&env)
+        load_header(&env)
+            .map(|header| header.proposal_count())
+            .unwrap_or(0)
     }
 
     pub fn list_proposals(env: Env, offset: u32, count: u32) -> Vec<u64> {
         extend_instance_ttl(&env);
-        let ids = load_proposal_ids(&env);
+        let Ok(header) = load_header(&env) else {
+            return Vec::new(&env);
+        };
+        let ids: alloc::vec::Vec<u64> = header.proposal_ids().collect();
         let mut result = Vec::new(&env);
-        let end = offset.saturating_add(count);
-        for i in offset..end {
-            if let Some(id) = ids.get(i) {
-                result.push_back(id);
+        let upper_bound = offset.saturating_add(count);
+        for index in offset..upper_bound {
+            if let Some(id) = ids.get(index as usize) {
+                result.push_back(*id);
             }
         }
         result
@@ -101,12 +105,12 @@ impl ProxyOracleGovernance {
         requested_ttl: u64,
     ) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
-        effective_ttl(&load_ttls(&env)?, &operation, requested_ttl)
+        effective_ttl(&load_header(&env)?, &operation, requested_ttl)
     }
 
     pub fn get_operation_ttl(env: Env, kind: OperationKind) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
-        Ok(load_ttls(&env)?.get(kind).as_ns())
+        Ok(load_header(&env)?.ttls.get(kind).as_ns())
     }
 
     pub fn create_proposal(
@@ -119,34 +123,20 @@ impl ProxyOracleGovernance {
         extend_instance_ttl(&env);
         require_authorized(&env, &caller, &operation)?;
         validate_for_creator(&caller, &operation)?;
-        let next_id = env
-            .storage()
-            .instance()
-            .get::<_, u64>(&DataKey::NextProposalId)
-            .ok_or(GovernanceError::MissingConfig)?;
-        if id != next_id {
-            return Err(GovernanceError::ProposalOutOfOrder);
-        }
-        let ttl_ns = effective_ttl(&load_ttls(&env)?, &operation, requested_ttl)?;
-        if load_proposal_count(&env) >= MAX_PENDING_PROPOSALS {
-            return Err(GovernanceError::InvalidInput);
-        }
-        let proposal = Proposal {
-            operation: operation.clone(),
-            created_at_ns: now(&env)?.as_ns(),
-            ttl_ns,
-            created_by: caller,
-        };
+        let mut header = load_header(&env)?;
+        let ttl_ns = effective_ttl(&header, &operation, requested_ttl)?;
+        let kernel_proposal = header
+            .create(
+                id,
+                operation.clone(),
+                now(&env)?,
+                caller,
+                Nanoseconds::from_ns(ttl_ns),
+            )
+            .map_err(map_create_error)?;
+        let proposal = proposal_from_kernel(kernel_proposal);
         save_proposal(&env, id, &proposal);
-        let mut ids = load_proposal_ids(&env);
-        ids.push_back(id);
-        save_proposal_ids(&env, &ids);
-        save_proposal_count(&env, load_proposal_count(&env) + 1);
-        env.storage().instance().set(
-            &DataKey::NextProposalId,
-            &id.checked_add(1)
-                .ok_or(GovernanceError::ArithmeticOverflow)?,
-        );
+        save_header(&env, &header);
         ProposalSubmitted {
             id,
             valid_after_ns: proposal
@@ -166,9 +156,10 @@ impl ProxyOracleGovernance {
         extend_instance_ttl(&env);
         let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
         require_authorized(&env, &caller, &proposal.operation)?;
+        let mut header = load_header(&env)?;
+        header.cancel(id).map_err(map_cancel_error)?;
         remove_proposal(&env, id);
-        remove_proposal_id(&env, id);
-        save_proposal_count(&env, load_proposal_count(&env).saturating_sub(1));
+        save_header(&env, &header);
         ProposalRevoked { id }.publish(&env);
         Ok(())
     }
@@ -177,21 +168,25 @@ impl ProxyOracleGovernance {
         extend_instance_ttl(&env);
         let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
         require_authorized(&env, &caller, &proposal.operation)?;
-        let elapsed = now(&env)?.saturating_sub(Nanoseconds::from_ns(proposal.created_at_ns));
-        if elapsed < Nanoseconds::from_ns(proposal.ttl_ns) {
-            return Err(GovernanceError::ProposalNotMature);
-        }
-        execute_action(&env, &proposal.operation)?;
+        let mut header = load_header(&env)?;
+        // Commit the authoritative state transition first: the kernel
+        // re-validates the operation, enforces maturity, and drops the proposal
+        // from the pending set. Only then do we fire side effects, so they can
+        // never run for a proposal the kernel would reject.
+        let kernel_proposal = proposal_to_kernel(proposal.clone());
+        header
+            .execute(id, &kernel_proposal, now(&env)?)
+            .map_err(map_execute_error)?;
+        execute_action(&env, &mut header, &proposal.operation, &caller)?;
         remove_proposal(&env, id);
-        remove_proposal_id(&env, id);
-        save_proposal_count(&env, load_proposal_count(&env).saturating_sub(1));
+        save_header(&env, &header);
         ProposalAccepted { id }.publish(&env);
         Ok(())
     }
 
     pub fn has_role(env: Env, account: Address, role: Role) -> bool {
         extend_instance_ttl(&env);
-        roles::has(&env, &account, role)
+        roles::has_role(&env, &account, role)
     }
 
     pub fn list_role(env: Env, role: Role) -> Vec<Address> {
@@ -247,7 +242,7 @@ impl ProxyOracleGovernance {
     pub fn admin(env: Env) -> Result<Address, GovernanceError> {
         extend_instance_ttl(&env);
         roles::members(&env, Role::Admin)
-            .get(0)
+            .first()
             .ok_or(GovernanceError::MissingConfig)
     }
 
@@ -261,12 +256,39 @@ impl ProxyOracleGovernance {
 
     pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
         caller.require_auth();
-        if !roles::has(&env, &caller, Role::Admin) {
+        if !roles::has_role(&env, &caller, Role::Admin) {
             return Err(GovernanceError::Unauthorized);
         }
         extend_instance_ttl(&env);
         TtlExtended {}.publish(&env);
         Ok(())
+    }
+}
+
+fn map_create_error(error: KernelCreateError<GovernanceError>) -> GovernanceError {
+    match error {
+        KernelCreateError::IdOutOfOrder(_) => GovernanceError::ProposalOutOfOrder,
+        KernelCreateError::IdOverflow => GovernanceError::ArithmeticOverflow,
+        KernelCreateError::TooManyPendingProposals => GovernanceError::InvalidInput,
+        KernelCreateError::Validation(error) => error,
+    }
+}
+
+fn map_cancel_error(error: KernelCancelError) -> GovernanceError {
+    match error {
+        KernelCancelError::IdOutOfBounds(_) | KernelCancelError::ProposalDoesNotExist(_) => {
+            GovernanceError::ProposalNotFound
+        }
+    }
+}
+
+fn map_execute_error(error: KernelExecuteError<GovernanceError>) -> GovernanceError {
+    match error {
+        KernelExecuteError::IdOutOfBounds(_) | KernelExecuteError::ProposalDoesNotExist(_) => {
+            GovernanceError::ProposalNotFound
+        }
+        KernelExecuteError::TtlNotElapsed(_) => GovernanceError::ProposalNotMature,
+        KernelExecuteError::Validation(error) => error,
     }
 }
 

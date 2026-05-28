@@ -326,7 +326,7 @@ fn set_role_grants_adds_and_targeted_revoke_preserves_other_roles() {
     testing_env!(context_with_admin());
 
     let mut contract = contract();
-    contract.ttls.set(
+    contract.header.ttls.set(
         templar_proxy_oracle_near_governance_common::OperationKind::SetRole,
         Nanoseconds::zero(),
     );
@@ -384,7 +384,7 @@ fn set_action_ttl_does_not_control_set_role_ttl() {
     testing_env!(context_with_admin());
 
     let mut contract = contract();
-    contract.ttls.set(
+    contract.header.ttls.set(
         templar_proxy_oracle_near_governance_common::OperationKind::SetActionTtl,
         Nanoseconds::zero(),
     );
@@ -408,7 +408,7 @@ fn set_role_cannot_remove_last_admin() {
     testing_env!(context_with_admin());
 
     let mut contract = contract();
-    contract.ttls.set(
+    contract.header.ttls.set(
         templar_proxy_oracle_near_governance_common::OperationKind::SetRole,
         Nanoseconds::zero(),
     );
@@ -476,6 +476,7 @@ fn admin_function_call_execution_dispatches_proxy_call() {
 
     let mut contract = contract();
     contract
+        .header
         .ttls
         .set(OperationKind::AdminFunctionCall, Nanoseconds::zero());
 
@@ -579,6 +580,7 @@ fn admin_upgrade_execution_dispatches_proxy_admin_call() {
 
     let mut contract = contract();
     contract
+        .header
         .ttls
         .set(OperationKind::AdminUpgrade, Nanoseconds::zero());
 
@@ -620,6 +622,7 @@ fn admin_upgrade_respects_configured_ttl() {
 
     let mut contract = contract();
     contract
+        .header
         .ttls
         .set(OperationKind::AdminUpgrade, Nanoseconds::from_secs(3600));
 
@@ -638,6 +641,7 @@ fn admin_upgrade_rejects_empty_code_in_create() {
 
     let mut contract = contract();
     contract
+        .header
         .ttls
         .set(OperationKind::AdminUpgrade, Nanoseconds::zero());
 

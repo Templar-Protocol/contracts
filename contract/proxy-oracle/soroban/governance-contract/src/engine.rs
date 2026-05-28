@@ -1,5 +1,5 @@
-//! The proposal "engine": authorization, validation, TTL computation, and
-//! the dispatch table that translates a `GovernanceAction` into a runtime
+//! The proposal "engine": authorization, validation, TTL computation, and the
+//! dispatch table that translates a `GovernanceAction` into a runtime
 //! sub-invocation (or a local effect like setting a TTL or toggling a role).
 
 use soroban_sdk::{
@@ -8,14 +8,14 @@ use soroban_sdk::{
 };
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_soroban_common::{
-    validate_action, ContractError, GovernanceAction, GovernanceError, OperationKind, Role,
-    TtlConfig, MAX_MANUAL_TRIP_METADATA_LEN, MAX_PROPOSAL_TTL_NS,
+    validate_action, ContractError, GovernanceAction, GovernanceError, Role,
+    MAX_MANUAL_TRIP_METADATA_LEN, MAX_PROPOSAL_TTL_NS,
 };
 
 use crate::{
     events::ActionTtlSet,
     roles,
-    storage::{load_ttls, save_ttls, DataKey},
+    storage::{DataKey, KernelGovernance},
 };
 
 pub fn now(env: &Env) -> Result<Nanoseconds, GovernanceError> {
@@ -33,7 +33,7 @@ pub fn require_authorized(
 ) -> Result<(), GovernanceError> {
     caller.require_auth();
     let required = action.required_role();
-    if roles::has(env, caller, Role::Admin) || roles::has(env, caller, required) {
+    if roles::has_role(env, caller, Role::Admin) || roles::has_role(env, caller, required) {
         Ok(())
     } else {
         Err(GovernanceError::Unauthorized)
@@ -54,27 +54,14 @@ pub fn validate_for_creator(
 }
 
 pub fn effective_ttl(
-    ttls: &TtlConfig,
+    governance: &KernelGovernance,
     action: &GovernanceAction,
     requested_ttl: u64,
 ) -> Result<u64, GovernanceError> {
     if requested_ttl > MAX_PROPOSAL_TTL_NS {
         return Err(GovernanceError::TtlExceedsMaximum);
     }
-    let requested_ttl = Nanoseconds::from_ns(requested_ttl);
-    // `SetActionTtl` is special: the proposal that *edits* a per-op TTL must
-    // itself wait at least as long as the longest of (its own TTL,
-    // target-op TTL), so we can't shorten a long-running action by quickly
-    // re-tuning its TTL.
-    let minimum = match action {
-        GovernanceAction::SetActionTtl(kind, _) => {
-            let set_action_ttl = ttls.get(OperationKind::SetActionTtl);
-            let target_ttl = ttls.get(*kind);
-            set_action_ttl.max(target_ttl)
-        }
-        _ => ttls.get(action.kind()),
-    };
-    let ttl = minimum.max(requested_ttl);
+    let ttl = governance.effective_ttl(action, Nanoseconds::from_ns(requested_ttl));
     if ttl.as_ns() > MAX_PROPOSAL_TTL_NS {
         return Err(GovernanceError::TtlExceedsMaximum);
     }
@@ -83,7 +70,12 @@ pub fn effective_ttl(
 
 // One arm per `GovernanceAction` variant — the body is necessarily long.
 #[allow(clippy::too_many_lines)]
-pub fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
+pub fn execute_action(
+    env: &Env,
+    governance: &mut KernelGovernance,
+    action: &GovernanceAction,
+    caller: &Address,
+) -> Result<(), GovernanceError> {
     let proxy: Address = env
         .storage()
         .instance()
@@ -184,9 +176,7 @@ pub fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Govern
             Vec::from_array(env, [governance.clone().into_val(env)]),
         ),
         GovernanceAction::SetActionTtl(kind, new_ttl_ns) => {
-            let mut ttls = load_ttls(env)?;
-            ttls.set(*kind, Nanoseconds::from_ns(*new_ttl_ns));
-            save_ttls(env, &ttls);
+            governance.ttls.set(*kind, Nanoseconds::from_ns(*new_ttl_ns));
             ActionTtlSet {
                 kind: *kind,
                 new_ttl_ns: *new_ttl_ns,
@@ -196,10 +186,10 @@ pub fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Govern
         }
         GovernanceAction::SetRole(account, role, set) => {
             if *set {
-                roles::grant(env, account, *role);
+                roles::grant(env, account, *role, caller);
                 Ok(())
             } else {
-                roles::revoke(env, account, *role)
+                roles::revoke(env, account, *role, caller)
             }
         }
         GovernanceAction::AdminUpgrade(new_wasm_hash) => invoke_runtime_call(

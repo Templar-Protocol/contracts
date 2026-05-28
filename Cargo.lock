@@ -12324,6 +12324,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stellar-access"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ec08d321dff797b611228fea28527311f2f03721cb264433490f711d5afd1d6"
+dependencies = [
+ "soroban-sdk 25.3.0",
+]
+
+[[package]]
 name = "stellar-base"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12854,6 +12863,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-governance-kernel"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+ "rstest",
+ "schemars 0.8.22",
+ "serde",
+ "templar-primitives",
+]
+
+[[package]]
 name = "templar-liquidator"
 version = "0.1.0"
 dependencies = [
@@ -13044,6 +13064,7 @@ dependencies = [
  "near-sdk",
  "rstest",
  "templar-common",
+ "templar-governance-kernel",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "thiserror 2.0.18",
@@ -13066,6 +13087,7 @@ name = "templar-proxy-oracle-soroban-common"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk 25.3.0",
+ "templar-governance-kernel",
  "templar-primitives",
 ]
 
@@ -13085,10 +13107,19 @@ name = "templar-proxy-oracle-soroban-governance-contract"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk 25.3.0",
+ "stellar-access",
+ "templar-governance-kernel",
  "templar-primitives",
  "templar-proxy-oracle-soroban-common",
  "templar-proxy-oracle-soroban-contract",
  "templar-proxy-oracle-soroban-governance-contract",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-mock"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
 ]
 
 [[package]]

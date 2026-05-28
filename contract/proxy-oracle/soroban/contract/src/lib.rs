@@ -17,11 +17,13 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
 use templar_proxy_oracle_soroban_common::{extend_instance_ttl, is_zero_wasm_hash};
 pub use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ContractError, MonotonicRunConfig as SorobanMonotonicRunConfig,
-    PriceData, ProxyConfig, RearmConfig as SorobanRearmConfig, Role,
-    SetEnforcedConfig as SorobanSetEnforcedConfig, SourceConfig,
+    PriceData, ProxyConfig, RearmConfig, Role, SetEnforcedConfig, SourceConfig,
     StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };
+
+pub type SorobanRearmConfig = RearmConfig;
+pub type SorobanSetEnforcedConfig = SetEnforcedConfig;
 
 mod codes;
 mod conversion;
@@ -265,7 +267,7 @@ impl SorobanProxyOracle {
         env: Env,
         asset: Asset,
         breaker_id: u32,
-        config: SorobanRearmConfig,
+        config: RearmConfig,
     ) -> Result<(), ContractError> {
         let armed_after_ns = Nanoseconds::from_secs(config.armed_after_secs);
         let history_source = accepted_history_source(config.accepted_history_source_code)?;
@@ -281,7 +283,7 @@ impl SorobanProxyOracle {
         env: Env,
         asset: Asset,
         breaker_id: u32,
-        config: SorobanSetEnforcedConfig,
+        config: SetEnforcedConfig,
     ) -> Result<(), ContractError> {
         with_breakers(&env, &asset, |breakers| {
             let outcome = breakers

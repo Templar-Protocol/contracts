@@ -74,7 +74,7 @@ macro_rules! governance_operations {
             $(pub $ttl_field: u64),+
         }
 
-        impl TtlConfig {
+impl TtlConfig {
             pub fn uniform(ttl: Nanoseconds) -> Self {
                 let ttl_ns = ttl.as_ns();
                 Self {
@@ -103,6 +103,16 @@ macro_rules! governance_operations {
             }
         }
     };
+}
+
+impl templar_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
+    fn get(&self, kind: OperationKind) -> Nanoseconds {
+        self.get(kind)
+    }
+
+    fn set(&mut self, kind: OperationKind, ttl: Nanoseconds) {
+        self.set(kind, ttl);
+    }
 }
 
 governance_operations! {
@@ -150,6 +160,30 @@ impl GovernanceAction {
             OperationKind::SetRole => 11,
             OperationKind::AdminUpgrade => 12,
         }
+    }
+}
+
+impl templar_governance_kernel::OperationPolicy<TtlConfig> for GovernanceAction {
+    type OnCreateError = GovernanceError;
+    type OnExecuteError = GovernanceError;
+
+    fn minimum_ttl(&self, ttls: &TtlConfig) -> Nanoseconds {
+        match self {
+            Self::SetActionTtl(kind, _) => {
+                let set_action_ttl = ttls.get(OperationKind::SetActionTtl);
+                let target_ttl = ttls.get(*kind);
+                set_action_ttl.max(target_ttl)
+            }
+            _ => ttls.get(self.kind()),
+        }
+    }
+
+    fn validate_on_create(&self) -> Result<(), Self::OnCreateError> {
+        validate_action(self, crate::MAX_MANUAL_TRIP_METADATA_LEN)
+    }
+
+    fn validate_on_execute(&self) -> Result<(), Self::OnExecuteError> {
+        validate_action(self, crate::MAX_MANUAL_TRIP_METADATA_LEN)
     }
 }
 

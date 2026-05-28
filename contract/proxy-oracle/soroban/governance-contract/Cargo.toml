@@ -15,7 +15,9 @@ testutils = ["soroban-sdk/testutils", "templar-proxy-oracle-soroban-contract/tes
 
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+stellar-access = "0.7.1"
 templar-primitives = { path = "../../../../primitives", default-features = false }
+templar-governance-kernel.workspace = true
 templar-proxy-oracle-soroban-common = { path = "../common" }
 
 [dev-dependencies]
