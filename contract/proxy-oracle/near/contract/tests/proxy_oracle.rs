@@ -4,32 +4,37 @@
     clippy::unwrap_used
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::str::FromStr;
 
 use near_sdk::{
-    json_types::{I64, U64},
-    test_utils::VMContextBuilder,
-    testing_env, AccountIdRef, Gas, NearToken,
+    json_types::{Base64VecU8, I64, U64},
+    mock::MockAction,
+    test_utils::{get_created_receipts, VMContextBuilder},
+    testing_env, NearToken,
 };
-use near_workspaces::{network::Sandbox, Worker};
+use near_workspaces::{network::Sandbox, Account, Worker};
 
 use templar_common::{
-    governance::Proposal,
     oracle::{
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
     },
-    primitive_types, Nanoseconds,
+    primitive_types, Decimal, Nanoseconds,
 };
-use templar_proxy_oracle_kernel::proxy::{
-    aggregator::{method::median::MedianLow, Aggregator},
-    FreshnessFilter, Proxy, WeightedSource,
+use templar_proxy_oracle_kernel::{
+    proxy::{
+        aggregator::{method::median::MedianLow, Aggregator},
+        circuit_breaker::{
+            AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig, PriceBlockedReason,
+            StepwiseChange,
+        },
+        FreshnessFilter, Proxy, WeightedSource,
+    },
+    Price,
 };
 use templar_proxy_oracle_near_common::{
-    governance::{Operation, ProxyGovernanceInterface},
-    input::{ProxyPriceTransformer, Source},
-    price_transformer,
-    request::OracleRequest,
+    cache::CachedProxyPriceStatus, governance::ProxyOracleAdminInterface, request::OracleRequest,
 };
 use templar_proxy_oracle_near_contract::Contract;
 use test_utils::{
@@ -49,267 +54,317 @@ fn norm_price(price: &pyth::Price) -> u64 {
     }
 }
 
-fn estimate_gas(c: &Contract, price_ids: &[PriceIdentifier]) -> near_sdk::Gas {
-    let mut total = Contract::GAS_FOR_LIST_00_ENTRY;
+async fn update_and_list(
+    proxy_oracle: &ProxyOracleController,
+    actor: &Account,
+    price_ids: Vec<PriceIdentifier>,
+    age: u32,
+) -> pyth::OracleResponse {
+    proxy_oracle.update_prices(actor, price_ids.clone()).await;
+    proxy_oracle
+        .list_ema_prices_no_older_than(actor, price_ids, age)
+        .await
+}
 
-    let mut pyth = HashSet::new();
-    let mut redstone = HashSet::new();
-
-    for price_id in price_ids {
-        let Some(proxy) = c.proxies.get(price_id) else {
-            // Skip unknown.
-            continue;
-        };
-
-        for entry in proxy.sources() {
-            let request = match entry {
-                Source::Request(request) => request,
-                Source::Transformer(transformer) => {
-                    total = total.saturating_add(Gas::from_gas(transformer.call.gas.0));
-                    &transformer.request
-                }
-            };
-
-            match request {
-                OracleRequest::Pyth(p) => {
-                    pyth.insert(p.oracle_id.clone());
-                }
-                OracleRequest::RedStone(p) => {
-                    redstone.insert(p.oracle_id.clone());
-                }
-            }
-        }
+fn proxy_price(value: i64) -> Price {
+    Price {
+        price: value,
+        conf: 0,
+        expo: 0,
+        publish_time_ns: Nanoseconds::zero(),
     }
+}
 
-    total = total.saturating_add(Contract::GAS_FOR_PYTH_REQUEST.saturating_mul(pyth.len() as u64));
-    total = total
-        .saturating_add(Contract::GAS_FOR_REDSONE_REQUEST.saturating_mul(redstone.len() as u64));
-    total = total.saturating_add(Contract::GAS_FOR_LIST_01_CALLBACK);
+fn test_proxy(oracle_id: &str) -> Proxy<templar_proxy_oracle_near_common::input::Source> {
+    Proxy::median_low(
+        [OracleRequest::pyth(oracle_id.parse().unwrap(), CRYPTO_BTC_USD).into()],
+        FreshnessFilter::empty(),
+    )
+}
 
-    total
+fn cache_test_price(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
+    let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
+        CachedProxyPriceStatus::Accepted { price }
+    })
+    .unwrap();
+}
+
+fn cache_test_price_and_seed_history(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
+    let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, set| {
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
+        });
+        set.try_accept_price(price, Nanoseconds::zero()).unwrap();
+        CachedProxyPriceStatus::Accepted { price }
+    })
+    .unwrap();
+}
+
+fn stepwise_breaker() -> CircuitBreaker {
+    CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: Decimal::from_str("0.10").unwrap(),
+    })
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new();
+    let code = vec![0xde, 0xad, 0xbe, 0xef];
+    let migrate_args = br#"{"from_version":"v0"}"#.to_vec();
+
+    c.admin_upgrade(Base64VecU8(code.clone()), Base64VecU8(migrate_args.clone()))
+        .detach();
+
+    let receipts = get_created_receipts();
+    assert_eq!(receipts.len(), 1);
+    let receipt = &receipts[0];
+    assert_eq!(receipt.receiver_id.as_str(), "proxy.near");
+    assert!(receipt.receipt_indices.is_empty());
+    assert_eq!(receipt.actions.len(), 2);
+
+    let receipt_index = match &receipt.actions[0] {
+        MockAction::DeployContract {
+            receipt_index,
+            code: actual_code,
+        } => {
+            assert_eq!(actual_code, &code);
+            *receipt_index
+        }
+        action => panic!("expected deploy action first, got {action:?}"),
+    };
+
+    match &receipt.actions[1] {
+        MockAction::FunctionCallWeight {
+            receipt_index: migrate_receipt_index,
+            method_name,
+            args,
+            attached_deposit,
+            prepaid_gas,
+            ..
+        } => {
+            assert_eq!(*migrate_receipt_index, receipt_index);
+            assert_eq!(method_name, b"migrate");
+            assert_eq!(args, &migrate_args);
+            assert_eq!(*attached_deposit, NearToken::from_yoctonear(0));
+            assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
+        }
+        action => panic!("expected migrate call second, got {action:?}"),
+    }
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+#[should_panic(expected = "Owner only")]
+pub fn admin_upgrade_requires_owner() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new();
+
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("attacker.near".parse().unwrap())
+        .build());
+
+    let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn manual_trip_invalidates_cached_price() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x56; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    assert!(c.get_cached_proxy_price(proxy_id).is_some());
+
+    c.admin_set_manual_trip(proxy_id, true, None);
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+    assert_eq!(
+        c.list_ema_prices_no_older_than(vec![proxy_id], 60)
+            .get(&proxy_id),
+        Some(&None)
+    );
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn admin_configure_circuit_breakers_invalidates_cached_price() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x57; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.admin_configure_circuit_breakers(
+        proxy_id,
+        CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
+        },
+    );
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn breaker_mutations_invalidate_cached_price() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x5e; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+
+    cache_test_price(&mut c, proxy_id, proxy_price(200));
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.admin_set_enforced(proxy_id, 0, false);
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+
+    cache_test_price_and_seed_history(&mut c, proxy_id, proxy_price(100));
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.admin_rearm(
+        proxy_id,
+        0,
+        Nanoseconds::from_secs(1),
+        AcceptedHistorySource::Empty,
+    );
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+
+    cache_test_price(&mut c, proxy_id, proxy_price(300));
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.admin_remove_circuit_breaker(proxy_id, 0);
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x58; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-1.near")));
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-2.near")));
+    let breaker_set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
+
+    let result = c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, set| {
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 3,
+        });
+        CachedProxyPriceStatus::Accepted {
+            price: proxy_price(100),
+        }
+    });
+
+    assert_eq!(result, None);
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert_eq!(c.get_proxy_circuit_breaker_set(proxy_id), Some(breaker_set));
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn proxy_replacement_clears_cache_and_bumps_epoch() {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x59; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-1.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-2.near")));
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[allow(clippy::unwrap_used)]
+#[test]
+pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x5a; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+
+    let initial_epoch = c.cache_epoch(proxy_id);
+    c.set_proxy(proxy_id, None);
+
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+    assert_eq!(
+        c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
+            CachedProxyPriceStatus::Accepted {
+                price: proxy_price(200),
+            }
+        }),
+        None
+    );
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+}
+
+#[allow(clippy::unwrap_used)]
+#[rstest::rstest]
+#[case::blocked(CachedProxyPriceStatus::Blocked {
+    reason: PriceBlockedReason::ManuallyTripped,
+})]
+#[case::resolve_failed(CachedProxyPriceStatus::ResolveFailed {
+    message: "failed".to_string(),
+})]
+pub fn cached_non_accepted_status_reads_as_none(#[case] status: CachedProxyPriceStatus) {
+    testing_env!(VMContextBuilder::new().build());
+    let mut c = Contract::new();
+    let proxy_id = PriceIdentifier([0x5b; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| status)
+        .unwrap();
+
+    assert_eq!(
+        c.list_ema_prices_no_older_than(vec![proxy_id], 60)
+            .get(&proxy_id),
+        Some(&None)
+    );
 }
 
 #[derive(Clone, Copy)]
 enum TestMethod {
     MedianLow,
     Priority,
-}
-
-#[rstest::rstest]
-#[case::success(10 * 1000)]
-#[should_panic = "TTL not yet elapsed for proposal"]
-#[case::fail(0)]
-#[should_panic = "TTL not yet elapsed for proposal"]
-#[case::fail(10 * 1000 - 1)]
-pub fn governance_ttl(#[case] delay_ms: u64) {
-    let mut context = VMContextBuilder::new()
-        .attached_deposit(NearToken::from_yoctonear(1))
-        .block_timestamp(1_000_000)
-        .predecessor_account_id("owner.near".parse().unwrap())
-        .build();
-    testing_env!(context.clone());
-
-    let mut c = Contract::new();
-
-    assert_eq!(c.gov_count(), 0);
-    assert_eq!(c.gov_next_id(), 0);
-    assert_eq!(c.gov_get(0), None);
-    assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
-    assert_eq!(c.gov_ttl_ns(), Nanoseconds::zero());
-
-    let proposal = c.gov_create(
-        0,
-        Operation::SetActionTtl {
-            new_ttl: Nanoseconds::from_secs(10),
-        },
-    );
-
-    let expected = Proposal {
-        operation: Operation::SetActionTtl {
-            new_ttl: Nanoseconds::from_secs(10),
-        },
-        ttl: Nanoseconds::zero(),
-        created_at: Nanoseconds::from_ms(1),
-        created_by: "owner.near".parse().unwrap(),
-    };
-
-    assert_eq!(proposal, expected);
-    assert_eq!(c.gov_get(0).unwrap(), expected);
-    assert_eq!(c.gov_list(Some(0), Some(1)), vec![0]);
-    assert_eq!(c.gov_list(None, None), vec![0]);
-    assert_eq!(c.gov_count(), 1);
-    assert_eq!(c.gov_next_id(), 1);
-    assert_eq!(c.gov_ttl_ns(), Nanoseconds::zero());
-
-    c.gov_execute(0);
-    assert_eq!(c.gov_get(0), None);
-    assert_eq!(c.gov_list(Some(0), Some(1)), Vec::<u32>::new());
-    assert_eq!(c.gov_list(None, None), Vec::<u32>::new());
-    assert_eq!(c.gov_count(), 0);
-    assert_eq!(c.gov_next_id(), 1);
-    assert_eq!(c.gov_ttl_ns(), Nanoseconds::from_secs(10));
-
-    let proxy_id = PriceIdentifier([0x01_u8; 32]);
-    let proxy_def = Proxy::median_low(
-        [OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into()],
-        FreshnessFilter::empty(),
-    );
-
-    let proposal = c.gov_create(
-        1,
-        Operation::SetProxy {
-            id: proxy_id,
-            proxy: Some(proxy_def.clone()),
-        },
-    );
-    let expected = Proposal {
-        operation: Operation::SetProxy {
-            id: proxy_id,
-            proxy: Some(proxy_def),
-        },
-        ttl: Nanoseconds::from_secs(10),
-        created_at: Nanoseconds::from_ms(1),
-        created_by: "owner.near".parse().unwrap(),
-    };
-    assert_eq!(proposal, expected);
-    assert_eq!(c.gov_get(1).unwrap(), expected);
-    assert_eq!(c.gov_list(Some(0), Some(2)), vec![1]);
-    assert_eq!(c.gov_list(None, None), vec![1]);
-    assert_eq!(c.gov_count(), 1);
-    assert_eq!(c.gov_next_id(), 2);
-    assert_eq!(c.gov_ttl_ns(), Nanoseconds::from_secs(10));
-
-    context.block_timestamp += delay_ms * 1_000_000;
-    testing_env!(context.clone());
-
-    c.gov_execute(1);
-}
-
-#[test]
-#[should_panic = "Empty proxy definition is not allowed"]
-fn governance_rejects_empty_proxy_definition_on_create() {
-    let context = VMContextBuilder::new()
-        .attached_deposit(NearToken::from_yoctonear(1))
-        .build();
-    testing_env!(context);
-
-    let mut c = Contract::new();
-    c.gov_create(
-        0,
-        Operation::SetProxy {
-            id: PriceIdentifier([0xFF; 32]),
-            proxy: Some(Proxy::median_low([], FreshnessFilter::empty())),
-        },
-    );
-}
-
-#[allow(clippy::unwrap_used)]
-#[test]
-pub fn gas() {
-    let context = VMContextBuilder::new()
-        .attached_deposit(NearToken::from_yoctonear(1))
-        .build();
-    testing_env!(context.clone());
-
-    let mut c = Contract::new();
-
-    let proxy_btc = Proxy::median_low(
-        [
-            OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD).into(),
-            OracleRequest::redstone("redstone-adapter.near".parse().unwrap(), "BTC").into(),
-        ],
-        FreshnessFilter::empty(),
-    );
-    let proxy_btc_id = PriceIdentifier([0x01_u8; 32]);
-
-    let proxy_usdc = Proxy::median_low(
-        [
-            OracleRequest::pyth(
-                "pyth-oracle.near".parse().unwrap(),
-                pyth_price_id::stable::CRYPTO_USDC_USD,
-            )
-            .into(),
-            OracleRequest::redstone("redstone-adapter.near".parse().unwrap(), "USDC").into(),
-        ],
-        FreshnessFilter::empty(),
-    );
-    let proxy_usdc_id = PriceIdentifier([0x02_u8; 32]);
-
-    let proxy_wnear = Proxy::median_low(
-        [ProxyPriceTransformer::lst(
-            OracleRequest::pyth(
-                "pyth-oracle.near".parse().unwrap(),
-                pyth_price_id::stable::CRYPTO_NEAR_USD,
-            ),
-            24,
-            price_transformer::Call::new_simple(
-                AccountIdRef::new_or_panic("wrap.near"),
-                "redemption_rate",
-            ),
-        )
-        .into()],
-        FreshnessFilter::empty(),
-    );
-    let proxy_wnear_id = PriceIdentifier([0x03_u8; 32]);
-
-    let price_ids = vec![proxy_btc_id, proxy_usdc_id, proxy_wnear_id];
-
-    let mut set_proxy = |id, price_id, proxy| {
-        c.gov_create(
-            id,
-            Operation::SetProxy {
-                id: price_id,
-                proxy: Some(proxy),
-            },
-        );
-        c.gov_execute(id);
-    };
-
-    set_proxy(0, proxy_btc_id, proxy_btc.clone());
-    set_proxy(1, proxy_usdc_id, proxy_usdc.clone());
-    set_proxy(2, proxy_wnear_id, proxy_wnear.clone());
-
-    let gas = estimate_gas(&c, &price_ids);
-    eprintln!("Gas used: {gas}");
-    assert!(gas <= Gas::from_tgas(15));
-
-    c.list_ema_prices_no_older_than(price_ids, 60).detach();
-
-    for receipt in near_sdk::test_utils::get_created_receipts() {
-        println!("Receipt to {}", receipt.receiver_id);
-        for action in &receipt.actions {
-            use near_sdk::mock::MockAction;
-
-            match action {
-                MockAction::CreateReceipt {
-                    receipt_indices,
-                    receiver_id,
-                } => {
-                    println!("  CreateReceipt to {receiver_id}");
-                    for receipt_index in receipt_indices {
-                        println!("    Receipt index: {receipt_index}");
-                    }
-                }
-                MockAction::FunctionCallWeight {
-                    method_name,
-                    args,
-                    attached_deposit,
-                    prepaid_gas,
-                    gas_weight,
-                    ..
-                } => {
-                    println!("  FunctionCall to '{}' with args '{}', attached_deposit {}, prepaid_gas {}, gas_weight {:?}",
-                        String::from_utf8_lossy(method_name), String::from_utf8_lossy(args), attached_deposit, prepaid_gas, gas_weight);
-                }
-                MockAction::Transfer { deposit, .. } => {
-                    println!("  Transfer of {deposit} yoctoNEAR");
-                }
-                _ => {
-                    println!("  Other action: {action:?}");
-                }
-            }
-        }
-    }
 }
 
 #[rstest::rstest]
@@ -431,21 +486,21 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     let just_redstone_eth_id = PriceIdentifier([0x03_u8; 32]);
 
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             btc_proxy_id,
             Some(btc_proxy_def.clone()),
         )
         .await;
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             just_pyth_btc_id,
             Some(just_pyth_btc.clone()),
         )
         .await;
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             just_redstone_eth_id,
             Some(just_redstone_eth.clone()),
@@ -468,9 +523,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
 
     // Step 1: Only redstone has a price. Single source → same for both methods.
     set!(redstone.BTC = 100_000).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![btc_proxy_id, CRYPTO_BTC_USD],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -482,21 +541,21 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     //   Priority: redstone (weight 5) > pyth1 (weight 1) → 100k
     set!(pyth.CRYPTO_BTC_USD = 90_000).await;
     set!(redstone.ETH = 1_800).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(
-            &actor,
-            vec![
-                btc_proxy_id,
-                CRYPTO_BTC_USD,
-                btc_proxy_id,
-                CRYPTO_BTC_USD,
-                CRYPTO_BTC_USD,
-                just_pyth_btc_id,
-                just_redstone_eth_id,
-            ],
-            60_u32,
-        )
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![
+            btc_proxy_id,
+            CRYPTO_BTC_USD,
+            btc_proxy_id,
+            CRYPTO_BTC_USD,
+            CRYPTO_BTC_USD,
+            just_pyth_btc_id,
+            just_redstone_eth_id,
+        ],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 3);
     let expected_btc_2source = match method {
         TestMethod::MedianLow => 90_000,
@@ -527,9 +586,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     //   MedianLow: median of [80k, 90k, 100k] → 90k
     //   Priority: pyth2 (weight 10) wins → 80k
     set!(pyth2.CRYPTO_BTC_USD = 80_000).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![btc_proxy_id, CRYPTO_BTC_USD],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 1);
     let expected_btc_3source = match method {
         TestMethod::MedianLow => 90_000,
@@ -543,9 +606,13 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     // Step 4: Clear pyth1 and redstone, only pyth2=80k remains. Single source → same for both.
     set!(pyth.CRYPTO_BTC_USD = None).await;
     set!(redstone.BTC = None).await;
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result = update_and_list(
+        &proxy_oracle,
+        &actor,
+        vec![btc_proxy_id, CRYPTO_BTC_USD],
+        60_u32,
+    )
+    .await;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -611,7 +678,7 @@ async fn proxy_oracle_enforces_freshness_filter(
     };
     let btc_proxy_id = PriceIdentifier([0x09_u8; 32]);
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             btc_proxy_id,
             Some(btc_proxy_def.clone()),
@@ -658,9 +725,7 @@ async fn proxy_oracle_enforces_freshness_filter(
         )
         .await;
 
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id], 60_u32)
-        .await;
+    let result = update_and_list(&proxy_oracle, &actor, vec![btc_proxy_id], 60_u32).await;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),

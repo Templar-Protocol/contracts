@@ -12921,6 +12921,7 @@ dependencies = [
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
+ "templar-proxy-oracle-near-governance-common",
  "templar-redstone-bridge",
  "templar-tools-common",
  "test-utils",
@@ -13034,6 +13035,30 @@ dependencies = [
  "templar-proxy-oracle-near-common",
  "test-utils",
  "tokio",
+]
+
+[[package]]
+name = "templar-proxy-oracle-near-governance-common"
+version = "1.2.1"
+dependencies = [
+ "near-sdk",
+ "rstest",
+ "templar-common",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-near-common",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "templar-proxy-oracle-near-governance-contract"
+version = "1.2.1"
+dependencies = [
+ "getrandom 0.2.17",
+ "near-sdk",
+ "near-sdk-contract-tools",
+ "templar-common",
+ "templar-proxy-oracle-near-common",
+ "templar-proxy-oracle-near-governance-common",
 ]
 
 [[package]]
@@ -13330,6 +13355,8 @@ dependencies = [
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
+ "templar-proxy-oracle-near-governance-common",
+ "templar-proxy-oracle-near-governance-contract",
  "templar-universal-account",
  "tokio",
 ]

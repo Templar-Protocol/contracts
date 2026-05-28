@@ -60,9 +60,23 @@ pub struct ContractData {
 pub struct MarketData {
     pub account_id: AccountId,
     pub oracle_id: AccountId,
+    pub oracle_kind: MarketOracleKind,
     pub price_oracle_configuration: PriceOracleConfiguration,
     pub collateral: AssetResolution<CollateralAsset>,
     pub borrow: AssetResolution<BorrowAsset>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketOracleKind {
+    PythDirect,
+    PythLst,
+    Proxy,
+}
+
+impl MarketOracleKind {
+    pub const fn requires_proxy_update(self) -> bool {
+        matches!(self, Self::Proxy)
+    }
 }
 
 #[derive(Debug, Clone)]

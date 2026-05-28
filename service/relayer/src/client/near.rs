@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicUsize, Arc},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use near_crypto::{PublicKey, Signer};
@@ -42,14 +41,13 @@ use templar_common::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
-    convert::{pyth_price_try_from_kernel, pyth_price_try_to_kernel},
     input::Source,
     price_transformer::{Call, PriceTransformer},
     request::OracleRequest,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
-use crate::{cache::Cache, AssetResolution, MarketData, ViewMarketPrices};
+use crate::{cache::Cache, AssetResolution, MarketData, MarketOracleKind, ViewMarketPrices};
 
 pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
 pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
@@ -604,6 +602,8 @@ impl Near {
             .await?;
 
         let oracle_id = config.price_oracle_configuration.account_id.clone();
+        let oracle_type = self.query_oracle_type(oracle_id.clone()).await?;
+        let oracle_kind = oracle_type.kind();
 
         let borrow_request = self
             .resolve_price_identifier(
@@ -621,6 +621,7 @@ impl Near {
         Ok(MarketData {
             account_id: market_id.clone(),
             oracle_id,
+            oracle_kind,
             price_oracle_configuration: config.price_oracle_configuration.clone(),
             collateral: AssetResolution {
                 asset: config.collateral_asset.clone(),
@@ -640,14 +641,6 @@ impl Near {
             .view_raw(call.account_id, call.method_name, call.args.0)
             .await?;
         Ok(serde_json::from_slice(&bytes)?)
-    }
-
-    fn system_time() -> Nanoseconds {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        Nanoseconds::from_ns(u64::try_from(now).unwrap_or(u64::MAX))
     }
 
     async fn get_transformer(
@@ -786,62 +779,18 @@ impl Near {
         price_identifier: PriceIdentifier,
         max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
-        let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? else {
-            tracing::debug!("No proxy found");
-            return Ok(None);
-        };
-
-        let prices = futures::future::join_all(
-            proxy
-                .sources()
-                .map(|source| self.resolve_proxy_source_price(source, max_age)),
-        )
-        .await
-        .into_iter()
-        .map(|result| match result {
-            Ok(price) => price.as_ref().and_then(pyth_price_try_to_kernel),
-            Err(error) => {
-                tracing::debug!(%error, "Failed to resolve proxy source price");
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-        tracing::debug!(?prices, "Prices to aggregate");
-
-        let price = match proxy.resolve(prices, Self::system_time()) {
-            Ok(price) => Some(price),
-            Err(error) => {
-                tracing::debug!(%oracle_id, %price_identifier, ?error, "proxy.resolve failed");
-                None
-            }
-        };
-
-        tracing::debug!(?price, "Aggregated price");
-
-        Ok(price.as_ref().and_then(pyth_price_try_from_kernel))
-    }
-
-    #[tracing::instrument(skip(self), level = "debug")]
-    async fn resolve_proxy_source_price(
-        &self,
-        source: &Source,
-        max_age: Nanoseconds,
-    ) -> Result<Option<pyth::Price>, ViewError> {
-        match source {
-            Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
-            Source::Transformer(t) => {
-                let Some(price) = self
-                    .fetch_oracle_request(t.request.clone(), max_age)
-                    .await?
-                else {
-                    return Ok(None);
-                };
-
-                let input = self.fetch_transformer_input(t.call.clone()).await?;
-                Ok(t.action.apply(price, input))
-            }
-        }
+        Ok(self
+            .view::<pyth::OracleResponse>(
+                oracle_id,
+                "list_ema_prices_no_older_than",
+                json!({
+                    "price_ids": [price_identifier],
+                    "age": max_age.as_secs(),
+                }),
+            )
+            .await?
+            .remove(&price_identifier)
+            .flatten())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -1024,4 +973,14 @@ pub enum OracleType {
     PythDirect,
     PythLst { pyth_id: AccountId },
     Proxy,
+}
+
+impl OracleType {
+    const fn kind(&self) -> MarketOracleKind {
+        match self {
+            Self::PythDirect => MarketOracleKind::PythDirect,
+            Self::PythLst { .. } => MarketOracleKind::PythLst,
+            Self::Proxy => MarketOracleKind::Proxy,
+        }
+    }
 }

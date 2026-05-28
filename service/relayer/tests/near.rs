@@ -110,7 +110,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     let proxy_borrow_id = PriceIdentifier([0x01_u8; 32]);
 
     proxy_oracle
-        .set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
+        .admin_set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
         .await;
 
     let transform_borrow = Proxy::median_low(
@@ -124,7 +124,7 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     let transform_borrow_id = PriceIdentifier([0x02_u8; 32]);
 
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             transform_borrow_id,
             Some(transform_borrow.clone()),

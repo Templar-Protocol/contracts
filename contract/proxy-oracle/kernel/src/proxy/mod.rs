@@ -1,4 +1,5 @@
 pub mod aggregator;
+pub mod circuit_breaker;
 pub mod freshness_filter;
 
 #[cfg(any(feature = "borsh", feature = "schemars"))]
@@ -7,6 +8,9 @@ use alloc::{format, string::ToString};
 use crate::Price;
 use aggregator::method::Aggregate;
 pub use aggregator::Aggregator;
+use circuit_breaker::{
+    CircuitBreakerOutcome, CircuitBreakerRule, CircuitBreakerSet, PriceAcceptance,
+};
 pub use freshness_filter::FreshnessFilter;
 
 use templar_primitives::time::Nanoseconds;
@@ -18,6 +22,36 @@ serialize! {
         pub weight: u32,
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    Aggregation(aggregator::method::Error),
+    CircuitBreaker(circuit_breaker::CircuitBreakerError),
+}
+
+impl From<aggregator::method::Error> for ResolveError {
+    fn from(error: aggregator::method::Error) -> Self {
+        Self::Aggregation(error)
+    }
+}
+
+impl From<circuit_breaker::CircuitBreakerError> for ResolveError {
+    fn from(error: circuit_breaker::CircuitBreakerError) -> Self {
+        Self::CircuitBreaker(error)
+    }
+}
+
+impl core::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Aggregation(error) => write!(f, "aggregation failed: {error}"),
+            Self::CircuitBreaker(error) => write!(f, "circuit breaker failed: {error}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ResolveError {}
 
 impl<S> WeightedSource<S> {
     pub fn new(source: impl Into<S>, weight: u32) -> Self {
@@ -71,20 +105,32 @@ impl<S> Proxy<S> {
         self.aggregator.sources()
     }
 
-    pub fn resolve<I>(
+    pub fn resolve<I, R>(
         &self,
+        circuit_breakers: &mut CircuitBreakerSet<R>,
         prices: I,
         now: Nanoseconds,
-    ) -> Result<Price, aggregator::method::Error>
+    ) -> Result<CircuitBreakerOutcome<PriceAcceptance>, ResolveError>
+    where
+        I: IntoIterator<Item = Option<Price>>,
+        I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
+        R: CircuitBreakerRule,
+    {
+        let price = self.aggregate(prices, now)?;
+        let acceptance = circuit_breakers.try_accept_price(price, now)?;
+        Ok(acceptance)
+    }
+
+    fn aggregate<I>(&self, prices: I, now: Nanoseconds) -> Result<Price, aggregator::method::Error>
     where
         I: IntoIterator<Item = Option<Price>>,
         I::IntoIter: ExactSizeIterator<Item = Option<Price>>,
     {
-        self.aggregator.aggregate(
-            prices
-                .into_iter()
-                .map(|price| price.filter(|price| self.freshness_filter.accepts(price, now))),
-        )
+        self.aggregator.aggregate(prices.into_iter().map(|price| {
+            price
+                .filter(Price::has_strictly_positive_confidence_interval)
+                .filter(|price| self.freshness_filter.accepts(price, now))
+        }))
     }
 }
 
@@ -98,10 +144,15 @@ mod tests {
     use crate::{
         proxy::{
             aggregator::method::{median::MedianLow, Error},
-            Aggregator, FreshnessFilter, Proxy, WeightedSource,
+            circuit_breaker::{
+                CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig, PriceBlockedReason,
+                StepwiseChange,
+            },
+            Aggregator, FreshnessFilter, Proxy, ResolveError, WeightedSource,
         },
         Price,
     };
+    use templar_primitives::Decimal;
 
     fn price(value: i64, conf: u64, publish_time_s: u64) -> Price {
         Price {
@@ -141,15 +192,44 @@ mod tests {
         ];
 
         let error = proxy
-            .resolve(prices, Nanoseconds::from_secs(1_000))
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                Nanoseconds::from_secs(1_000),
+            )
             .unwrap_err();
 
         assert!(matches!(
             error,
-            Error::TooFewValidSources {
+            ResolveError::Aggregation(Error::TooFewValidSources {
                 expected: 2,
                 actual: 1,
-            }
+            })
+        ));
+    }
+
+    #[test]
+    fn resolve_median_applies_min_sources_after_invalid_price_filtering() {
+        let proxy = median_proxy(FreshnessFilter::new(None, None), 2);
+        let prices = vec![
+            Some(price(1_000_000, 1_000_000, 1_000)),
+            Some(price(2_000_000, 0, 1_000)),
+        ];
+
+        let error = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                Nanoseconds::from_secs(1_000),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ResolveError::Aggregation(Error::TooFewValidSources {
+                expected: 2,
+                actual: 1,
+            })
         ));
     }
 
@@ -176,9 +256,18 @@ mod tests {
             Some(price(9_999_999, 0, u64::try_from(now_s).unwrap())),
         ];
 
-        let result = proxy.resolve(prices, now).unwrap();
+        let result = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                now,
+            )
+            .unwrap();
 
-        assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
+        assert_eq!(
+            result.value.unwrap().price,
+            if included { 1_000_000 } else { 9_999_999 }
+        );
     }
 
     #[rstest]
@@ -200,9 +289,18 @@ mod tests {
             Some(price(9_999_999, 0, u64::try_from(now_s).unwrap())),
         ];
 
-        let result = proxy.resolve(prices, now).unwrap();
+        let result = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                now,
+            )
+            .unwrap();
 
-        assert_eq!(result.price, if included { 1_000_000 } else { 9_999_999 });
+        assert_eq!(
+            result.value.unwrap().price,
+            if included { 1_000_000 } else { 9_999_999 }
+        );
     }
 
     #[rstest]
@@ -226,10 +324,31 @@ mod tests {
     ) {
         let proxy = priority_proxy(freshness_filter);
         let result = proxy
-            .resolve(prices, Nanoseconds::from_secs(1_000))
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                Nanoseconds::from_secs(1_000),
+            )
             .unwrap();
 
-        assert_eq!(result.price, 2_000_000);
+        assert_eq!(result.value.unwrap().price, 2_000_000);
+    }
+
+    #[test]
+    fn resolve_priority_skips_invalid_first_source() {
+        let proxy = priority_proxy(FreshnessFilter::new(None, None));
+        let result = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                vec![
+                    Some(price(1_000_000, 1_000_000, 1_000)),
+                    Some(price(2_000_000, 0, 1_000)),
+                ],
+                Nanoseconds::from_secs(1_000),
+            )
+            .unwrap();
+
+        assert_eq!(result.value.unwrap().price, 2_000_000);
     }
 
     #[test]
@@ -256,8 +375,100 @@ mod tests {
             }),
         ];
 
-        let result = proxy.resolve(prices, Nanoseconds::from_ms(1_000)).unwrap();
+        let result = proxy
+            .resolve(
+                &mut CircuitBreakerSet::<CircuitBreaker>::empty(),
+                prices,
+                Nanoseconds::from_ms(1_000),
+            )
+            .unwrap();
 
-        assert_eq!(result.price, 9_999_999);
+        assert_eq!(result.value.unwrap().price, 9_999_999);
+    }
+
+    #[test]
+    fn resolve_applies_tripped_circuit_breaker_while_persisting_history() {
+        let proxy = priority_proxy(FreshnessFilter::new(None, None));
+        let mut circuit_breakers = CircuitBreakerSet::new(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 2,
+        });
+        let breaker_id = 0;
+        circuit_breakers
+            .add(
+                breaker_id,
+                CircuitBreaker::StepwiseChange(StepwiseChange {
+                    max_relative_change: Decimal::from_u8(1) / 10_u8,
+                }),
+            )
+            .unwrap();
+        let now = Nanoseconds::from_secs(1_000);
+
+        proxy
+            .resolve(
+                &mut circuit_breakers,
+                [Some(price(100, 0, 1_000)), None],
+                now,
+            )
+            .unwrap();
+        let resolution = proxy
+            .resolve(
+                &mut circuit_breakers,
+                [Some(price(120, 0, 1_000)), None],
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            resolution.value,
+            Err(PriceBlockedReason::BreakerTripped {
+                blocking_breaker_ids: vec![breaker_id]
+            })
+        );
+        assert_eq!(resolution.events.len(), 1);
+
+        let resolution = proxy
+            .resolve(
+                &mut circuit_breakers,
+                [Some(price(130, 0, 1_000)), None],
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            resolution.value,
+            Err(PriceBlockedReason::BreakerTripped {
+                blocking_breaker_ids: vec![breaker_id]
+            })
+        );
+        assert!(resolution.events.is_empty());
+
+        assert_eq!(circuit_breakers.accepted_history().len(), 1);
+        assert_eq!(
+            circuit_breakers
+                .accepted_history()
+                .get(0)
+                .unwrap()
+                .price
+                .price,
+            100
+        );
+        assert_eq!(circuit_breakers.observed_history().len(), 2);
+        assert_eq!(
+            circuit_breakers
+                .observed_history()
+                .get(0)
+                .unwrap()
+                .price
+                .price,
+            120
+        );
+        assert_eq!(
+            circuit_breakers
+                .observed_history()
+                .get(1)
+                .unwrap()
+                .price
+                .price,
+            130
+        );
     }
 }

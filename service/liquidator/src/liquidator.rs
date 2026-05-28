@@ -470,6 +470,19 @@ impl Liquidator {
         )
     }
 
+    fn record_price_update_attempt(result: LiquidatorResult<bool>) -> bool {
+        match result {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to update on-chain prices; proceeding and letting the market enforce oracle freshness"
+                );
+                true
+            }
+        }
+    }
+
     /// Performs a single liquidation using inventory-based model and modular architecture.
     ///
     /// # Flow
@@ -838,19 +851,11 @@ impl Liquidator {
                         .price_oracle_configuration
                         .collateral_asset_price_id,
                 ];
-                match self
-                    .oracle_fetcher
-                    .update_onchain_prices(oracle_account, price_ids)
-                    .await
-                {
-                    Ok(_) => {
-                        prices_pushed_onchain = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to update on-chain prices, proceeding with existing");
-                        prices_pushed_onchain = true;
-                    }
-                }
+                prices_pushed_onchain = Self::record_price_update_attempt(
+                    self.oracle_fetcher
+                        .update_onchain_prices(oracle_account, price_ids)
+                        .await,
+                );
             }
 
             // Execute liquidation (contract determines optimal collateral amount)
@@ -1178,5 +1183,12 @@ mod tests {
             NotificationKind::InsufficientBalance.as_str(),
             "insufficient_balance"
         );
+    }
+
+    #[test]
+    fn price_update_failure_is_non_blocking_for_liquidation_attempt() {
+        assert!(Liquidator::record_price_update_attempt(Err(
+            LiquidatorError::OracleUpdateError("transient update failure".to_string())
+        )));
     }
 }

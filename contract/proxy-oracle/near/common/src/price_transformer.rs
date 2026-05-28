@@ -17,7 +17,7 @@ impl Action {
     pub fn apply(&self, mut price: pyth::Price, input: Decimal) -> Option<pyth::Price> {
         match self {
             Self::NormalizeNativeLstPrice { decimals } => {
-                let scale_factor = input / 10u128.pow(*decimals);
+                let scale_factor = input / 10u128.checked_pow(*decimals)?;
 
                 let price_is_negative = if price.price.0.is_negative() { -1 } else { 1 };
                 let abs_price_u128 = i128::from(price.price.0).unsigned_abs();
@@ -134,5 +134,18 @@ mod tests {
                 publish_time: PythTimestamp::from_secs(0),
             },
         );
+    }
+
+    #[test]
+    fn price_transformation_rejects_unrepresentable_decimal_scale() {
+        let transformation = Action::NormalizeNativeLstPrice { decimals: 39 };
+        let price = pyth::Price {
+            price: 1234.into(),
+            conf: 4.into(),
+            expo: 5,
+            publish_time: PythTimestamp::from_secs(0),
+        };
+
+        assert_eq!(transformation.apply(price, dec!("1")), None);
     }
 }

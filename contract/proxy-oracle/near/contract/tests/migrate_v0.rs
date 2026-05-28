@@ -12,14 +12,12 @@ use near_sdk::{
 };
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::{
-    governance::Proposal, oracle::pyth::PriceIdentifier, versioned_state::write_state_version,
-    Nanoseconds,
+    oracle::pyth::PriceIdentifier, versioned_state::write_state_version, Nanoseconds,
 };
 use templar_proxy_oracle_kernel::proxy::{
     aggregator::method::median::MedianLow, Aggregator, FreshnessFilter, Proxy, WeightedSource,
 };
 use templar_proxy_oracle_near_common::{
-    governance::Operation,
     input::{ProxyPriceTransformer, Source},
     price_transformer::{Action, Call},
     request::OracleRequest,
@@ -28,7 +26,7 @@ use templar_proxy_oracle_near_common::{
 };
 use test_utils::{
     assert_all_outcomes_success, controller::migration::MigrationController, worker,
-    ContractController, GovernanceController, ProxyOracleController,
+    ContractController, ProxyOracleController,
 };
 
 type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
@@ -223,30 +221,17 @@ fn expected_stnear_proxy() -> Proxy<Source> {
     proxy
 }
 
-fn expected_pending_proxy() -> Proxy<Source> {
-    Proxy::priority(
-        [
-            OracleRequest::pyth("pyth2.test.near".parse().unwrap(), PENDING_PRICE_ID).into(),
-            OracleRequest::redstone("redstone.test.near".parse().unwrap(), "PENDING").into(),
-            OracleRequest::pyth("pyth.test.near".parse().unwrap(), PENDING_PRICE_ID).into(),
-        ],
-        FreshnessFilter::new(
-            Some(Nanoseconds::from_secs(30)),
-            Some(Nanoseconds::from_secs(5)),
-        ),
-    )
-}
-
 fn build_patch() -> StatePatch {
     testing_env!(VMContextBuilder::new().build());
 
     let mut state = v0::State {
-        governance: templar_common::governance::Governance::new(v0::StorageKey::Governance),
+        governance: v0::Governance {
+            next_id: 6,
+            ttl: Nanoseconds::from_secs(30),
+            proposals: near_sdk::store::IterableMap::with_hasher(v0::StorageKey::Governance),
+        },
         proxies: near_sdk::collections::UnorderedMap::new(v0::StorageKey::Proxies),
     };
-
-    state.governance.next_id = 6;
-    state.governance.ttl = Nanoseconds::from_secs(30);
     state.proxies.insert(&BTC_PRICE_ID, &executed_btc_proxy());
     state.proxies.insert(&ETH_PRICE_ID, &executed_eth_proxy());
     state
@@ -254,7 +239,7 @@ fn build_patch() -> StatePatch {
         .insert(&STNEAR_PRICE_ID, &executed_stnear_proxy());
     state.governance.proposals.insert(
         4,
-        Proposal {
+        v0::Proposal {
             operation: v0::Operation::SetProxy {
                 id: PENDING_PRICE_ID,
                 proxy: Some(pending_proxy()),
@@ -266,7 +251,7 @@ fn build_patch() -> StatePatch {
     );
     state.governance.proposals.insert(
         5,
-        Proposal {
+        v0::Proposal {
             operation: v0::Operation::SetActionTtl {
                 new_ttl: Nanoseconds::from_secs(90),
             },
@@ -351,9 +336,6 @@ async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(proxy.get_target_state_version().await, 1);
     assert!(!proxy.needs_migration().await);
 
-    assert_eq!(proxy.gov_next_id().await, 6);
-    assert_eq!(proxy.gov_ttl_ns().await, Nanoseconds::from_secs(30));
-
     let mut proxies = proxy.list_proxies(None, None).await;
     proxies.sort();
     assert_eq!(proxies, vec![BTC_PRICE_ID, ETH_PRICE_ID, STNEAR_PRICE_ID]);
@@ -370,44 +352,6 @@ async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
         proxy.get_proxy(STNEAR_PRICE_ID).await.unwrap(),
         expected_stnear_proxy()
     );
-
-    let mut proposal_ids = proxy.gov_list(None, None).await;
-    proposal_ids.sort_unstable();
-    assert_eq!(proposal_ids, vec![4, 5]);
-
-    let set_proxy = proxy.gov_get(4_u32).await.unwrap();
-    assert_eq!(set_proxy.created_at, Nanoseconds::from_ns(1));
-    assert_eq!(set_proxy.ttl, Nanoseconds::from_secs(30));
-    assert_eq!(
-        set_proxy.created_by,
-        PROXY_ORACLE_ACCOUNT_ID
-            .parse::<near_sdk::AccountId>()
-            .unwrap()
-    );
-    match set_proxy.operation {
-        Operation::SetProxy {
-            id,
-            proxy: Some(proxy),
-        } => {
-            assert_eq!(id, PENDING_PRICE_ID);
-            assert_eq!(proxy, expected_pending_proxy());
-        }
-        other => panic!("unexpected operation: {other:?}"),
-    }
-
-    let set_ttl = proxy.gov_get(5_u32).await.unwrap();
-    assert_eq!(set_ttl.created_at, Nanoseconds::from_ns(2));
-    assert_eq!(set_ttl.ttl, Nanoseconds::from_secs(30));
-    assert_eq!(
-        set_ttl.created_by,
-        PROXY_ORACLE_ACCOUNT_ID
-            .parse::<near_sdk::AccountId>()
-            .unwrap()
-    );
-    assert!(matches!(
-        set_ttl.operation,
-        Operation::SetActionTtl { new_ttl } if new_ttl == Nanoseconds::from_secs(90)
-    ));
 }
 
 /// These near-workspaces sandbox tests require local port binding and may fail

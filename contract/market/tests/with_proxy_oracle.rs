@@ -110,7 +110,7 @@ async fn proxy_oracle(
         oracle_requests_collateral.reverse();
     }
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             DEFAULT_COLLATERAL_PRICE_ID,
             Some(Proxy::median_low(
@@ -128,7 +128,7 @@ async fn proxy_oracle(
         oracle_requests_borrow.reverse();
     }
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             DEFAULT_BORROW_PRICE_ID,
             Some(Proxy::median_low(
@@ -177,15 +177,29 @@ async fn proxy_oracle(
                 .await;
             },
         );
+        proxy_oracle
+            .update_prices(
+                proxy_oracle.account(),
+                vec![DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID],
+            )
+            .await;
 
         let collateral_before = c
             .get_borrow_position(borrow_user.id())
             .await
             .map_or(0.into(), |p| p.get_total_collateral_amount());
 
+        let available_prices = c.get_prices().await;
+        let expect_success = available_prices
+            .get(&DEFAULT_BORROW_PRICE_ID)
+            .and_then(Option::as_ref)
+            .is_some()
+            && available_prices
+                .get(&DEFAULT_COLLATERAL_PRICE_ID)
+                .and_then(Option::as_ref)
+                .is_some();
+
         c.collateralize(&borrow_user, 1_000_000).await;
-        let expect_success =
-            (pyth_borrow || redstone_borrow) && (pyth_collateral || redstone_collateral);
 
         let collateral_after = c
             .get_borrow_position(borrow_user.id())

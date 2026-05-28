@@ -12,8 +12,7 @@ use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
 use test_utils::{
     assert_all_outcomes_success, controller::migration::MigrationController,
-    pyth_price_id::stable::CRYPTO_USDC_USD, worker, ContractController, GovernanceController,
-    ProxyOracleController,
+    pyth_price_id::stable::CRYPTO_USDC_USD, worker, ContractController, ProxyOracleController,
 };
 
 type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
@@ -119,7 +118,7 @@ async fn migrate_mainnet_patch_exactly(#[future(awt)] worker: Worker<Sandbox>) {
 
     assert_all_outcomes_success(&result);
     assert_eq!(proxy.get_stored_state_version().await, 1);
-    assert_eq!(proxy.gov_count().await, 0);
+    assert!(!proxy.needs_migration().await);
 
     let mut proxies = proxy.list_proxies(None, None).await;
     proxies.sort();

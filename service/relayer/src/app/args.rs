@@ -18,6 +18,14 @@ pub struct Configuration {
     /// NEAR RPC connection URL.
     #[arg(long, env = "RPC_URL", default_value_t = String::from("https://rpc.testnet.near.org"))]
     pub rpc_url: String,
+    /// Timeout for NEAR RPC calls that wait for final transaction execution.
+    #[arg(
+        long = "rpc-timeout-secs",
+        env = "RPC_TIMEOUT_SECS",
+        value_parser = duration_from_secs,
+        default_value = "30"
+    )]
+    pub rpc_timeout: Duration,
     #[clap(flatten)]
     pub monitor: Monitor,
     #[clap(flatten)]
