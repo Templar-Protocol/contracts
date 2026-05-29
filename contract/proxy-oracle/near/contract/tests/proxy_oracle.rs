@@ -84,7 +84,7 @@ fn test_proxy(oracle_id: &str) -> Proxy<templar_proxy_oracle_near_common::input:
 
 fn cache_test_price(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
     let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
-    c.finish_price_update_if_current(&pending, Nanoseconds::zero(), |_, _| {
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
         CachedProxyPriceStatus::Accepted { price }
     })
     .unwrap();
@@ -92,7 +92,7 @@ fn cache_test_price(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
 
 fn cache_test_price_and_seed_history(c: &mut Contract, price_id: PriceIdentifier, price: Price) {
     let pending = c.proxy_entry(price_id).unwrap().prepare_price_update();
-    c.finish_price_update_if_current(&pending, Nanoseconds::zero(), |_, set| {
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, set| {
         set.set_config(CircuitBreakerSetConfig {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 3,
@@ -279,7 +279,7 @@ pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-2.near")));
     let breaker_set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
 
-    let result = c.finish_price_update_if_current(&pending, Nanoseconds::zero(), |_, set| {
+    let result = c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, set| {
         set.set_config(CircuitBreakerSetConfig {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 3,
@@ -326,7 +326,7 @@ pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
     assert!(c.get_cached_proxy_price(proxy_id).is_none());
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
     assert_eq!(
-        c.finish_price_update_if_current(&pending, Nanoseconds::zero(), |_, _| {
+        c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
             CachedProxyPriceStatus::Accepted {
                 price: proxy_price(200),
             }
@@ -351,7 +351,7 @@ pub fn cached_non_accepted_status_reads_as_none(#[case] status: CachedProxyPrice
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
 
     let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
-    c.finish_price_update_if_current(&pending, Nanoseconds::zero(), |_, _| status)
+    c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| status)
         .unwrap();
 
     assert_eq!(

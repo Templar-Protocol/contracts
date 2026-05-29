@@ -142,9 +142,7 @@ impl MockSep40Oracle {
 
     pub fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
         extend_instance_ttl(&env);
-        env.storage()
-            .persistent()
-            .get(&DataKey::LastPrice(asset))
+        env.storage().persistent().get(&DataKey::LastPrice(asset))
     }
 }
 

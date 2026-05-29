@@ -17,7 +17,8 @@ use templar_proxy_oracle_soroban_common::{
 };
 
 pub type KernelGovernance = templar_governance_kernel::Governance<TtlConfig>;
-pub type KernelProposal = templar_governance_kernel::Proposal<GovernanceAction, soroban_sdk::Address>;
+pub type KernelProposal =
+    templar_governance_kernel::Proposal<GovernanceAction, soroban_sdk::Address>;
 
 #[contracttype]
 #[derive(Clone)]

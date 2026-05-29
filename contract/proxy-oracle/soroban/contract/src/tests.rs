@@ -757,7 +757,6 @@ fn manual_trip_role_authorized_trip_and_untrip_are_separate() {
     let tripper = Address::generate(&proxy.env);
     let untripper = Address::generate(&proxy.env);
 
-
     proxy.set_manual_trip(&tripper, &asset, &true, &None);
     assert!(
         proxy

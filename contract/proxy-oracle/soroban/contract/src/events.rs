@@ -257,4 +257,3 @@ fn publish_breaker_event(env: &Env, asset: &Asset, event: KernelCircuitBreakerEv
         .publish(env),
     }
 }
-

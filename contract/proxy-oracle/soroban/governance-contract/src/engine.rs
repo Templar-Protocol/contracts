@@ -176,7 +176,9 @@ pub fn execute_action(
             Vec::from_array(env, [governance.clone().into_val(env)]),
         ),
         GovernanceAction::SetActionTtl(kind, new_ttl_ns) => {
-            governance.ttls.set(*kind, Nanoseconds::from_ns(*new_ttl_ns));
+            governance
+                .ttls
+                .set(*kind, Nanoseconds::from_ns(*new_ttl_ns));
             ActionTtlSet {
                 kind: *kind,
                 new_ttl_ns: *new_ttl_ns,

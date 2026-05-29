@@ -42,8 +42,8 @@ use codes::breaker_error;
 use conversion::{accepted_history_source, circuit_breaker_from_config, validate_proxy_config};
 use refresh::{cached_accepted_no_older_than, refresh_one};
 use storage::{
-    add_asset, extend_persistent_ttl, get_assets, invalidate_cache, load_breakers,
-    remove_asset, require_governance, require_proxy_exists, store_breakers, DataKey,
+    add_asset, extend_persistent_ttl, get_assets, invalidate_cache, load_breakers, remove_asset,
+    require_governance, require_proxy_exists, store_breakers, DataKey,
 };
 
 pub(crate) const MAX_HISTORY_RECORDS: u32 = 32;
@@ -112,7 +112,9 @@ pub enum RefreshStatus {
 fn with_breakers<T>(
     env: &Env,
     asset: &Asset,
-    op: impl FnOnce(&mut CircuitBreakerSet) -> Result<(T, AllocVec<KernelCircuitBreakerEvent>), ContractError>,
+    op: impl FnOnce(
+        &mut CircuitBreakerSet,
+    ) -> Result<(T, AllocVec<KernelCircuitBreakerEvent>), ContractError>,
 ) -> Result<T, ContractError> {
     extend_instance_ttl(env);
     require_governance(env)?;

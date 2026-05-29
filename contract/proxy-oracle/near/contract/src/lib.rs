@@ -278,7 +278,7 @@ impl Contract {
 
             if let Some(status) =
                 self.state
-                    .finish_price_update_if_current(&pending, now, |proxy, set| {
+                    .finish_price_update_if_current(pending, now, |proxy, set| {
                         match proxy.resolve(set, prices, now) {
                             Ok(resolution) => match emit_outcome(price_id, resolution) {
                                 Ok(price) => CachedProxyPriceStatus::Accepted { price },

@@ -101,7 +101,9 @@ fn status_to_cached(status: &RefreshStatus) -> Option<CachedStatus> {
         RefreshStatus::Accepted(price) => Some(CachedStatus::Accepted(price.clone())),
         RefreshStatus::Blocked(code) => Some(CachedStatus::Blocked(*code)),
         RefreshStatus::ResolveFailed(code) => Some(CachedStatus::ResolveFailed(*code)),
-        RefreshStatus::SourceUnavailable => Some(CachedStatus::ResolveFailed(SOURCE_UNAVAILABLE_CODE)),
+        RefreshStatus::SourceUnavailable => {
+            Some(CachedStatus::ResolveFailed(SOURCE_UNAVAILABLE_CODE))
+        }
     }
 }
 
