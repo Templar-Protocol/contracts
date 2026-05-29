@@ -17,7 +17,7 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
 use templar_proxy_oracle_soroban_common::{extend_instance_ttl, is_zero_wasm_hash};
 pub use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ContractError, MonotonicRunConfig as SorobanMonotonicRunConfig,
-    PriceData, ProxyConfig, RearmConfig, Role, SetEnforcedConfig, SourceConfig,
+    PriceData, ProxyConfig, RearmConfig, SetEnforcedConfig, SourceConfig,
     StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };

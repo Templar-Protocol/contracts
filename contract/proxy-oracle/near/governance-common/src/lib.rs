@@ -1,4 +1,4 @@
-pub mod engine;
+pub mod interface;
 
 use near_sdk::{
     json_types::{Base64VecU8, U128},
@@ -11,7 +11,7 @@ use templar_proxy_oracle_kernel::proxy::{
 };
 use templar_proxy_oracle_near_common::input::Source;
 
-pub use engine::{error, Event, Governance, OperationPolicy, Proposal, Validatable};
+pub use interface::{error, Event, Governance, OperationPolicy, Proposal, Validatable};
 pub use templar_common::Nanoseconds;
 
 pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
@@ -168,7 +168,7 @@ impl Validatable for Operation {
     }
 }
 
-impl templar_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
+impl templar_proxy_oracle_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
     fn get(&self, kind: OperationKind) -> Nanoseconds {
         self.get(kind)
     }

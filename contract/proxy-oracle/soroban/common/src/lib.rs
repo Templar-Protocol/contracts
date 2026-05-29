@@ -1,12 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contracterror, contracttype, Address, Env, Symbol, Vec};
-
-pub mod governance;
-pub use governance::{
-    is_zero_wasm_hash, validate_action, GovernanceAction, GovernanceError, OperationKind,
-    PendingProposal, Proposal, Role, TtlConfig, MAX_PROPOSAL_TTL, MAX_PROPOSAL_TTL_NS,
-};
+use soroban_sdk::{contracterror, contracttype, Address, BytesN, Env, Symbol, Vec};
 
 pub const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 pub const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
@@ -16,6 +10,15 @@ pub fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+}
+
+/// Returns true when `wasm_hash` is all zero bytes.
+///
+/// Implemented without `Env` so it can be used anywhere `BytesN<32>` is
+/// available, including in pure validation helpers.
+#[must_use]
+pub fn is_zero_wasm_hash(wasm_hash: &BytesN<32>) -> bool {
+    wasm_hash.to_array() == [0_u8; 32]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

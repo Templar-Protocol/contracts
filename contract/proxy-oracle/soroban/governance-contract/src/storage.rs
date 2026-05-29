@@ -11,14 +11,14 @@
 
 use soroban_sdk::{contracttype, Env, Vec};
 use templar_primitives::Nanoseconds;
-use templar_proxy_oracle_soroban_common::{
-    GovernanceAction, GovernanceError, Proposal, TtlConfig, DEFAULT_TTL_EXTEND_TO,
-    DEFAULT_TTL_THRESHOLD,
+use templar_proxy_oracle_soroban_common::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
+use templar_proxy_oracle_soroban_governance_common::{
+    GovernanceAction, GovernanceError, Proposal, TtlConfig,
 };
 
-pub type KernelGovernance = templar_governance_kernel::Governance<TtlConfig>;
+pub type KernelGovernance = templar_proxy_oracle_governance_kernel::Governance<TtlConfig>;
 pub type KernelProposal =
-    templar_governance_kernel::Proposal<GovernanceAction, soroban_sdk::Address>;
+    templar_proxy_oracle_governance_kernel::Proposal<GovernanceAction, soroban_sdk::Address>;
 
 #[contracttype]
 #[derive(Clone)]

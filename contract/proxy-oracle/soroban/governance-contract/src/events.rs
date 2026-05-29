@@ -1,5 +1,5 @@
 use soroban_sdk::{contractevent, Address};
-use templar_proxy_oracle_soroban_common::OperationKind;
+use templar_proxy_oracle_soroban_governance_common::OperationKind;
 
 #[contractevent]
 #[derive(Clone)]

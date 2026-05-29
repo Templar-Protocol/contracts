@@ -6,11 +6,11 @@ use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
 use soroban_sdk::{Bytes, BytesN, Event, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
-    Asset, CircuitBreakerConfig, MonotonicRunConfig, OperationKind, ProxyConfig, RearmConfig, Role,
-    SetEnforcedConfig, SourceConfig, StepwiseChangeConfig, WindowedChangeDeltaConfig,
-    MAX_PROPOSAL_TTL_NS,
+    Asset, CircuitBreakerConfig, MonotonicRunConfig, ProxyConfig, RearmConfig, SetEnforcedConfig,
+    SourceConfig, StepwiseChangeConfig, WindowedChangeDeltaConfig,
 };
 use templar_proxy_oracle_soroban_contract::{SorobanProxyOracle, SorobanProxyOracleClient};
+use templar_proxy_oracle_soroban_governance_common::{OperationKind, Role, MAX_PROPOSAL_TTL_NS};
 
 fn setup() -> (
     Env,

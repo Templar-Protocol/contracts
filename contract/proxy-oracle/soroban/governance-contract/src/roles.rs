@@ -9,7 +9,7 @@
 
 use soroban_sdk::{Address, Env, Symbol, Vec};
 use stellar_access::access_control;
-use templar_proxy_oracle_soroban_common::{GovernanceError, Role};
+use templar_proxy_oracle_soroban_governance_common::{GovernanceError, Role};
 
 fn role_symbol(env: &Env, role: Role) -> Symbol {
     match role {

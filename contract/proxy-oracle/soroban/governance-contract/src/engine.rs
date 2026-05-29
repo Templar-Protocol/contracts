@@ -7,9 +7,9 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 use templar_primitives::Nanoseconds;
-use templar_proxy_oracle_soroban_common::{
-    validate_action, ContractError, GovernanceAction, GovernanceError, Role,
-    MAX_MANUAL_TRIP_METADATA_LEN, MAX_PROPOSAL_TTL_NS,
+use templar_proxy_oracle_soroban_common::{ContractError, MAX_MANUAL_TRIP_METADATA_LEN};
+use templar_proxy_oracle_soroban_governance_common::{
+    validate_action, GovernanceAction, GovernanceError, Role, MAX_PROPOSAL_TTL_NS,
 };
 
 use crate::{

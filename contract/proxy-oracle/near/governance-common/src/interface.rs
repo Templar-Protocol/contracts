@@ -1,5 +1,5 @@
 use near_sdk::{near, serde::Serialize, AccountId};
-use templar_governance_kernel as kernel;
+use templar_proxy_oracle_governance_kernel as kernel;
 
 pub type Proposal<T> = kernel::Proposal<T, AccountId>;
 pub type Governance = kernel::Governance<crate::TtlConfig>;
@@ -36,7 +36,7 @@ pub trait Validatable {
 }
 
 pub mod error {
-    pub use templar_governance_kernel::{
+    pub use templar_proxy_oracle_governance_kernel::{
         CancelError, CreateError, ExecuteError, IdOutOfBoundsError, IdOutOfOrderError,
         ProposalDoesNotExistError, TtlNotElapsedError,
     };
@@ -50,7 +50,7 @@ macro_rules! gen_ext_governance {
             fn next_proposal_id(&self) -> u32;
             fn proposal_count(&self) -> u32;
             fn list_proposals(&self, offset: Option<u32>, count: Option<u32>) -> Vec<u32>;
-            fn get_proposal(&self, id: u32) -> Option<$crate::engine::Proposal<$operation_ty>>;
+            fn get_proposal(&self, id: u32) -> Option<$crate::interface::Proposal<$operation_ty>>;
             fn get_effective_proposal_ttl(
                 &self,
                 operation: $operation_ty,
@@ -62,7 +62,7 @@ macro_rules! gen_ext_governance {
                 id: u32,
                 operation: $operation_ty,
                 requested_ttl: $crate::Nanoseconds,
-            ) -> $crate::engine::Proposal<$operation_ty>;
+            ) -> $crate::interface::Proposal<$operation_ty>;
             fn cancel_proposal(&mut self, id: u32);
             fn execute_proposal(&mut self, id: u32);
         }

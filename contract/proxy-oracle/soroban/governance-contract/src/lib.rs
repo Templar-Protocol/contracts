@@ -6,14 +6,15 @@
 extern crate alloc;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use templar_governance_kernel::{
+use templar_primitives::Nanoseconds;
+use templar_proxy_oracle_governance_kernel::{
     CancelError as KernelCancelError, CreateError as KernelCreateError,
     ExecuteError as KernelExecuteError,
 };
-use templar_primitives::Nanoseconds;
-use templar_proxy_oracle_soroban_common::{
-    extend_instance_ttl, GovernanceAction, GovernanceError, OperationKind, PendingProposal,
-    Proposal, Role, TtlConfig, MAX_PROPOSAL_TTL_NS,
+use templar_proxy_oracle_soroban_common::extend_instance_ttl;
+use templar_proxy_oracle_soroban_governance_common::{
+    GovernanceAction, GovernanceError, OperationKind, PendingProposal, Proposal, Role, TtlConfig,
+    MAX_PROPOSAL_TTL_NS,
 };
 
 mod engine;

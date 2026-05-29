@@ -44,7 +44,7 @@ The contract declares SEP-40 metadata via `contractmeta!(key = "sep", val = "40"
 - This governance model is not an implicit in-place migration for earlier prototype Soroban storage layouts. Existing deployments that stored different role, TTL, or pending-proposal keys need an explicit migration or a redeployed/reinitialized governance contract.
 - NEAR `AdminFunctionCall` arbitrary dynamic dispatch is intentionally not implemented on Soroban. The upgrade surface is typed: `upgrade(new_wasm_hash)` on runtime, `AdminUpgrade(new_wasm_hash)` via governance.
 - Events are compact Soroban events and are not byte-for-byte equivalent to NEAR proxy-oracle JSON events.
-- Governance proposal and role state-machine logic is shared with NEAR through `templar-governance-kernel`; Soroban still owns authorization, storage encoding, events, and runtime dispatch. Generated typed clients are not implemented in this slice; the current explicit `authorize_as_current_contract` pattern with exact `ContractContext` fn_name and args remains acceptable for this contract scope.
+- Governance proposal and role state-machine logic is shared with NEAR through `templar-proxy-oracle-governance-kernel`; Soroban still owns authorization, storage encoding, events, and runtime dispatch. Generated typed clients are not implemented in this slice; the current explicit `authorize_as_current_contract` pattern with exact `ContractContext` fn_name and args remains acceptable for this contract scope.
 
 ## Verification
 

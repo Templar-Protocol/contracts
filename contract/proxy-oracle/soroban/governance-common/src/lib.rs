@@ -1,7 +1,12 @@
+#![no_std]
+
 use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN};
 use templar_primitives::Nanoseconds;
 
-use crate::{Asset, CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig};
+use templar_proxy_oracle_soroban_common::{
+    is_zero_wasm_hash, Asset, CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig,
+    MAX_MANUAL_TRIP_METADATA_LEN,
+};
 
 pub const MAX_PROPOSAL_TTL: Nanoseconds = Nanoseconds::from_secs(180 * 24 * 60 * 60);
 pub const MAX_PROPOSAL_TTL_NS: u64 = MAX_PROPOSAL_TTL.as_ns();
@@ -74,7 +79,7 @@ macro_rules! governance_operations {
             $(pub $ttl_field: u64),+
         }
 
-impl TtlConfig {
+        impl TtlConfig {
             pub fn uniform(ttl: Nanoseconds) -> Self {
                 let ttl_ns = ttl.as_ns();
                 Self {
@@ -105,7 +110,7 @@ impl TtlConfig {
     };
 }
 
-impl templar_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
+impl templar_proxy_oracle_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
     fn get(&self, kind: OperationKind) -> Nanoseconds {
         self.get(kind)
     }
@@ -163,7 +168,7 @@ impl GovernanceAction {
     }
 }
 
-impl templar_governance_kernel::OperationPolicy<TtlConfig> for GovernanceAction {
+impl templar_proxy_oracle_governance_kernel::OperationPolicy<TtlConfig> for GovernanceAction {
     type OnCreateError = GovernanceError;
     type OnExecuteError = GovernanceError;
 
@@ -179,11 +184,11 @@ impl templar_governance_kernel::OperationPolicy<TtlConfig> for GovernanceAction 
     }
 
     fn validate_on_create(&self) -> Result<(), Self::OnCreateError> {
-        validate_action(self, crate::MAX_MANUAL_TRIP_METADATA_LEN)
+        validate_action(self, MAX_MANUAL_TRIP_METADATA_LEN)
     }
 
     fn validate_on_execute(&self) -> Result<(), Self::OnExecuteError> {
-        validate_action(self, crate::MAX_MANUAL_TRIP_METADATA_LEN)
+        validate_action(self, MAX_MANUAL_TRIP_METADATA_LEN)
     }
 }
 
@@ -210,14 +215,6 @@ pub fn validate_action(
         }
         _ => Ok(()),
     }
-}
-
-/// Returns true when `wasm_hash` is all zero bytes.
-///
-/// Implemented without `Env` so it can be used anywhere `BytesN<32>` is
-/// available, including in pure validation helpers.
-pub fn is_zero_wasm_hash(wasm_hash: &BytesN<32>) -> bool {
-    wasm_hash.to_array() == [0_u8; 32]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,12 +323,14 @@ mod tests {
         assert_eq!(
             GovernanceAction::AddBreaker(
                 asset.clone(),
-                CircuitBreakerConfig::StepwiseChange(crate::StepwiseChangeConfig {
-                    max_relative_change_repr: soroban_sdk::Vec::from_array(
-                        &env,
-                        templar_primitives::Decimal::ONE_HALF.as_repr()
-                    ),
-                })
+                CircuitBreakerConfig::StepwiseChange(
+                    templar_proxy_oracle_soroban_common::StepwiseChangeConfig {
+                        max_relative_change_repr: soroban_sdk::Vec::from_array(
+                            &env,
+                            templar_primitives::Decimal::ONE_HALF.as_repr()
+                        ),
+                    }
+                )
             )
             .action_code(),
             4
@@ -344,7 +343,7 @@ mod tests {
             GovernanceAction::Rearm(
                 asset.clone(),
                 0,
-                crate::RearmConfig {
+                templar_proxy_oracle_soroban_common::RearmConfig {
                     armed_after_secs: 0,
                     accepted_history_source_code: 0,
                 }
@@ -356,7 +355,7 @@ mod tests {
             GovernanceAction::SetEnforced(
                 asset.clone(),
                 0,
-                crate::SetEnforcedConfig { is_enforced: false }
+                templar_proxy_oracle_soroban_common::SetEnforcedConfig { is_enforced: false }
             )
             .action_code(),
             14
