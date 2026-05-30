@@ -51,7 +51,7 @@ The contract declares SEP-40 metadata via `contractmeta!(key = "sep", val = "40"
 - `cargo test -p templar-proxy-oracle-kernel --features serde --lib -- --nocapture`
 - `cargo test -p templar-proxy-oracle-soroban-contract -- --nocapture`
 - `cargo test -p templar-proxy-oracle-soroban-governance-contract -- --nocapture`
-- `cargo build --profile release-soroban --target wasm32-unknown-unknown -p templar-proxy-oracle-soroban-contract`
-- `cargo build --profile release-soroban --target wasm32-unknown-unknown -p templar-proxy-oracle-soroban-governance-contract`
-- `stellar contract optimize --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.wasm --wasm-out target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.optimized.wasm`
-- `stellar contract optimize --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_governance_contract.wasm --wasm-out target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_governance_contract.optimized.wasm`
+- `just -f contract/proxy-oracle/soroban/justfile build` — builds both unoptimized WASMs.
+- `just -f contract/proxy-oracle/soroban/justfile optimize` — builds + optimizes both WASMs to `target/proxy-oracle-soroban/wasm/*.optimized.wasm`.
+
+Both contracts must build via `stellar contract build` (not plain `cargo build`): the governance contract depends on `stellar-access`, which enables soroban-sdk's `experimental_spec_shaking_v2` — a feature that only resolves under the Stellar CLI (v25.2.0+).

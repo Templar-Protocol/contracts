@@ -124,13 +124,13 @@ jobs:
       - name: Enforce proxy-oracle Soroban size budget (runtime)
         run: |
           python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
-            --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.optimized.wasm \
+            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_contract.optimized.wasm \
             --max-bytes 131072
 
       - name: Enforce proxy-oracle Soroban size budget (governance)
         run: |
           python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
-            --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_governance_contract.optimized.wasm \
+            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_governance_contract.optimized.wasm \
             --max-bytes 131072
 
   feature-matrix:

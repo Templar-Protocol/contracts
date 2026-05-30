@@ -31,10 +31,14 @@ set dotenv-load := false
 # =============================================================================
 
 root             := justfile_directory() + "/../../.."
-wasm_dir         := root + "/target/wasm32-unknown-unknown/release-soroban"
+release_dir      := root + "/target/proxy-oracle-soroban"
+# `wasm_dir` is a justfile-managed output path (populated via `stellar contract
+# build --out-dir`), not where cargo writes intermediates. Cargo actually builds
+# to `target/wasm32v1-none/release-soroban-checked/`; keeping wasm_dir under
+# `release_dir` makes it clear this is a chosen artifact location.
+wasm_dir         := release_dir + "/wasm"
 scripts_dir      := justfile_directory() + "/scripts"
 evidence_dir     := root + "/.omo/evidence"
-release_dir      := root + "/target/proxy-oracle-soroban"
 manifest_path    := release_dir + "/release-manifest.json"
 
 runtime_pkg      := "templar-proxy-oracle-soroban-contract"
@@ -114,7 +118,7 @@ _optimize-wasm package optimized_path:
         --package "{{package}}" \
         --optimize \
         --out-dir "$staging"; \
-    cp "$staging"/*.wasm "{{optimized_path}}"; \
+    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized_path}}"; \
     rm -rf "$staging"
 
 # Build and optimize the runtime WASM.

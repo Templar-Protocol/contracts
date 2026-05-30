@@ -36,8 +36,8 @@ Related documents:
 **Toolchain:**
 
 ```bash
-# Rust with wasm32 target
-rustup target add wasm32-unknown-unknown
+# Rust with wasm32 target (Stellar CLI v25+ builds for wasm32v1-none)
+rustup target add wasm32v1-none
 
 # Stellar CLI with optimizer
 cargo install --locked stellar-cli --features opt
@@ -115,13 +115,13 @@ The dry-run writes `.omo/evidence/task-8-dry-run.txt` with simulated install and
 stellar contract install \
   --network <network> \
   --source <identity> \
-  --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.optimized.wasm
+  --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_contract.optimized.wasm
 
 # Install governance WASM
 stellar contract install \
   --network <network> \
   --source <identity> \
-  --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_governance_contract.optimized.wasm
+  --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_governance_contract.optimized.wasm
 ```
 
 Record the returned WASM hashes. They appear in the release manifest under `runtime_wasm.sha256` and `governance_wasm.sha256` for cross-check.
@@ -1103,7 +1103,7 @@ Two paths are available:
 stellar contract install \
   --network <network> \
   --source <identity> \
-  --wasm target/wasm32-unknown-unknown/release-soroban/templar_proxy_oracle_soroban_contract.optimized.wasm
+  --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_contract.optimized.wasm
 
 # Upgrade the deployed contract to the new WASM hash (governance must authorize)
 stellar contract invoke \
