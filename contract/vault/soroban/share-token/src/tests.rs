@@ -1,4 +1,5 @@
 use super::*;
+use soroban_sdk::testutils::storage::Instance;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::{Events, Ledger, LedgerInfo};
 use soroban_sdk::xdr::{ContractEventBody, ScVal};
@@ -531,6 +532,139 @@ fn admin_cannot_change_metadata_after_deployment() {
     assert_eq!(name, String::from_str(&env, "Templar Share"));
     assert_eq!(symbol, String::from_str(&env, "tvSHARE"));
     assert_eq!(decimals, 7);
+}
+
+#[test]
+fn read_only_entrypoints_cover_share_token_ttl_maintenance_surface() {
+    let (env, _admin, vault, token) = setup();
+    let user = Address::generate(&env);
+    let spender = Address::generate(&env);
+
+    env.as_contract(&vault, || {
+        VaultCaller::mint(env.clone(), token.clone(), user.clone(), 1000);
+        VaultCaller::approve(
+            env.clone(),
+            token.clone(),
+            user.clone(),
+            spender.clone(),
+            250,
+            300,
+        );
+    });
+
+    let supply: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "total_supply"),
+        ().into_val(&env),
+    );
+    let balance: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "balance"),
+        (&user,).into_val(&env),
+    );
+    let allowance: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "allowance"),
+        (&user, &spender).into_val(&env),
+    );
+    let name: String = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "name"),
+        ().into_val(&env),
+    );
+    let symbol: String = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "symbol"),
+        ().into_val(&env),
+    );
+    let decimals: u32 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "decimals"),
+        ().into_val(&env),
+    );
+
+    assert_eq!(supply, 1000);
+    assert_eq!(balance, 1000);
+    assert_eq!(allowance, 250);
+    assert_eq!(name, String::from_str(&env, "Templar Share"));
+    assert_eq!(symbol, String::from_str(&env, "tvSHARE"));
+    assert_eq!(decimals, 7);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        sequence_number: 2_592_100,
+        max_entry_ttl: 3_110_400,
+        ..Default::default()
+    });
+    let ttl_before_read = env.as_contract(&token, || env.storage().instance().get_ttl());
+    let refreshed_supply: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "total_supply"),
+        ().into_val(&env),
+    );
+    let ttl_after_read = env.as_contract(&token, || env.storage().instance().get_ttl());
+
+    assert_eq!(refreshed_supply, 1000);
+    assert!(ttl_after_read > ttl_before_read);
+}
+
+#[test]
+fn admin_extend_ttl_preserves_holder_balances_and_allowance_expiry_semantics() {
+    let (env, admin, vault, token) = setup();
+    let user = Address::generate(&env);
+    let spender = Address::generate(&env);
+
+    env.as_contract(&vault, || {
+        VaultCaller::mint(env.clone(), token.clone(), user.clone(), 1000);
+        VaultCaller::approve(
+            env.clone(),
+            token.clone(),
+            user.clone(),
+            spender.clone(),
+            400,
+            150,
+        );
+    });
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "extend_ttl"),
+        (&admin,).into_val(&env),
+    );
+
+    let balance: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "balance"),
+        (&user,).into_val(&env),
+    );
+    let allowance_before_expiry: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "allowance"),
+        (&user, &spender).into_val(&env),
+    );
+    assert_eq!(balance, 1000);
+    assert_eq!(allowance_before_expiry, 400);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 101,
+        protocol_version: 25,
+        sequence_number: 151,
+        max_entry_ttl: 1_000,
+        ..Default::default()
+    });
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "extend_ttl"),
+        (&admin,).into_val(&env),
+    );
+    let allowance_after_expiry: i128 = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "allowance"),
+        (&user, &spender).into_val(&env),
+    );
+    assert_eq!(allowance_after_expiry, 0);
 }
 
 #[test]

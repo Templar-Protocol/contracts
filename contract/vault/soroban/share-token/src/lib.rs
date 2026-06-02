@@ -28,14 +28,17 @@ impl FungibleToken for SorobanShareTokenContract {
     type ContractType = Base;
 
     fn total_supply(e: &Env) -> i128 {
+        extend_instance_ttl(e);
         Base::total_supply(e)
     }
 
     fn balance(e: &Env, account: Address) -> i128 {
+        extend_instance_ttl(e);
         Base::balance(e, &account)
     }
 
     fn allowance(e: &Env, owner: Address, spender: Address) -> i128 {
+        extend_instance_ttl(e);
         Base::allowance(e, &owner, &spender)
     }
 
@@ -55,14 +58,17 @@ impl FungibleToken for SorobanShareTokenContract {
     }
 
     fn decimals(e: &Env) -> u32 {
+        extend_instance_ttl(e);
         Base::decimals(e)
     }
 
     fn name(e: &Env) -> String {
+        extend_instance_ttl(e);
         Base::name(e)
     }
 
     fn symbol(e: &Env) -> String {
+        extend_instance_ttl(e);
         Base::symbol(e)
     }
 }
