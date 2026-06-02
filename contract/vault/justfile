@@ -66,40 +66,35 @@ near-build:
 	cargo near build non-reproducible-wasm --manifest-path "{{vault_root}}/near/Cargo.toml"
 
 # --------------------------------------------------------------------
-# Soroban operations (requires soroban CLI)
+# Soroban operations (requires stellar CLI)
 #
 # Configure via env vars (see contract/vault/soroban/.env.example):
-#   SOROBAN_NETWORK, SOROBAN_SOURCE, SOROBAN_WASM,
+#   SOROBAN_NETWORK, SOROBAN_IDENTITY, SOROBAN_WASM,
 #   SOROBAN_CONTRACT_ID, SOROBAN_ADMIN,
 #   SHARE_TOKEN_NAME, SHARE_TOKEN_SYMBOL, SHARE_TOKEN_DECIMALS
 # --------------------------------------------------------------------
 
-# Common soroban CLI flags (DRY helper — not a recipe)
-_soroban_net := "--network ${SOROBAN_NETWORK:-testnet} --source ${SOROBAN_SOURCE:-identity}"
+# Common Stellar CLI flags (DRY helper — not a recipe)
+_stellar_net := "--network ${SOROBAN_NETWORK:-testnet} --source-account ${SOROBAN_IDENTITY:-${SOROBAN_SOURCE:-identity}}"
 
 soroban-deploy:
 	@if [ -z "${SOROBAN_WASM:-}" ]; then echo "Set SOROBAN_WASM=/path/to/contract.wasm"; exit 1; fi
 	@echo "Deploying ${SOROBAN_WASM} to ${SOROBAN_NETWORK:-testnet}"; \
-	soroban contract deploy --wasm "${SOROBAN_WASM}" {{_soroban_net}}
+	stellar contract deploy --wasm "${SOROBAN_WASM}" {{_stellar_net}}
 
 soroban-invoke fn *args:
 	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
-	soroban contract invoke --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} -- "{{fn}}" {{args}}
+	stellar contract invoke --id "${SOROBAN_CONTRACT_ID}" {{_stellar_net}} -- "{{fn}}" {{args}}
 
 soroban-extend-ttl:
 	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
-	soroban contract extend --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} --ledgers-to-extend 100000
+	stellar contract extend --id "${SOROBAN_CONTRACT_ID}" {{_stellar_net}} --ledgers-to-extend 100000
 
-# Set share token metadata (SEP-41).
-# Env: SHARE_TOKEN_NAME, SHARE_TOKEN_SYMBOL, SHARE_TOKEN_DECIMALS
+# Share-token metadata is immutable after deployment in the current Soroban contract.
 soroban-share-metadata:
-	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
-	@name="${SHARE_TOKEN_NAME:-Templar Vault Share}"; \
-	symbol="${SHARE_TOKEN_SYMBOL:-tvSHARE}"; \
-	decimals="${SHARE_TOKEN_DECIMALS:-7}"; \
-	echo "Setting share metadata: name=${name} symbol=${symbol} decimals=${decimals}"; \
-	soroban contract invoke --id "${SOROBAN_CONTRACT_ID}" {{_soroban_net}} \
-		-- set_metadata --name "${name}" --symbol "${symbol}" --decimals "${decimals}"
+	@echo "Share-token metadata is set in the constructor and is immutable after deployment."
+	@echo "Use contract/vault/soroban: just deploy-share-token with SOROBAN_SHARE_NAME/SYMBOL/DECIMALS."
+	@exit 1
 
 # --------------------------------------------------------------------
 # Audit LOC counting
