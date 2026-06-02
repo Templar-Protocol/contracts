@@ -349,24 +349,6 @@ pub(crate) fn sdk_string_to_alloc(
     AllocString::from_utf8(value.to_bytes().to_alloc_vec()).map_err(|_| ContractError::InvalidInput)
 }
 
-pub(crate) fn migrate_legacy_paused(env: &Env) {
-    let storage = SorobanStorage::new(env);
-
-    if let Some(paused) = env
-        .storage()
-        .instance()
-        .get::<_, bool>(&VaultDataKey::Paused)
-    {
-        storage.set_paused(paused);
-        env.storage().instance().remove(&VaultDataKey::Paused);
-        return;
-    }
-
-    if let Some(paused) = storage.take_legacy_paused() {
-        storage.set_paused(paused);
-    }
-}
-
 #[inline(never)]
 pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, RuntimeError> {
     if migration_in_progress(env) {
@@ -376,7 +358,6 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
     }
 
     extend_storage_ttl(env);
-    migrate_legacy_paused(env);
     let curator: SdkAddress =
         require_config_address(env, &VaultDataKey::Curator, "curator not set")?;
     let _governance: SdkAddress =
@@ -396,7 +377,6 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
         curator_kernel,
         vault_kernel,
         Vec::new(),
-        Vec::new(),
         asset_kernel,
         share_kernel,
     );
@@ -409,12 +389,6 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
     let paused = storage.is_paused();
     let mut rbac_config = RbacConfig::with_curator(curator_kernel);
 
-    load_rbac_addresses(
-        env,
-        &VaultDataKey::Guardians,
-        Role::Sentinel,
-        &mut rbac_config,
-    );
     load_rbac_addresses(
         env,
         &VaultDataKey::Allocators,

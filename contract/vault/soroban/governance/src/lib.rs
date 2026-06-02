@@ -21,8 +21,8 @@ use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanosecond
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
     GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
     GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
     GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
@@ -35,6 +35,14 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const MIN_TIMELOCK_NS: u64 = 0;
 const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
+const MAX_PENDING_PROPOSALS: usize = 64;
+const PENDING_PAGE_SIZE: u64 = 16;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RevokerRole {
+    Admin,
+    Sentinel,
+}
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum ProposalKey {
@@ -52,7 +60,6 @@ enum GovernanceActionKey {
     SupplyQueue,
     Fees,
     Restrictions,
-    Guardian,
     Sentinel,
     Allocators,
     AllowedAdapters,
@@ -80,7 +87,6 @@ impl GovernanceAction {
             Self::SetSupplyQueue(_, _) => GovernanceActionKey::SupplyQueue,
             Self::SetFees(_) => GovernanceActionKey::Fees,
             Self::SetRestrictions(_, _) => GovernanceActionKey::Restrictions,
-            Self::SetGuardian(_) => GovernanceActionKey::Guardian,
             Self::SetSentinel(_) => GovernanceActionKey::Sentinel,
             Self::SetAllocators(_) => GovernanceActionKey::Allocators,
             Self::SetAllowedAdapters(_) => GovernanceActionKey::AllowedAdapters,
@@ -139,9 +145,6 @@ impl SorobanVaultGovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::NextProposalId, &1u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingQueue, &Vec::<StoredPending>::new(&env));
         env.storage()
             .instance()
             .set(&DataKey::CurrentPaused, &false);
@@ -284,14 +287,6 @@ impl SorobanVaultGovernanceContract {
             .instance()
             .set(&DataKey::CurrentRestrictionAccounts, &accounts);
         Ok(())
-    }
-
-    pub fn submit_set_guardian(
-        env: Env,
-        caller: Address,
-        guardian: Address,
-    ) -> Result<u64, GovernanceError> {
-        Self::submit(env, caller, GovernanceAction::SetGuardian(guardian))
     }
 
     pub fn submit_set_sentinel(
@@ -484,7 +479,7 @@ impl SorobanVaultGovernanceContract {
         payload_hash: BytesN<32>,
     ) -> Result<u32, GovernanceError> {
         extend_instance_ttl(&env);
-        require_revoker(&env, &caller)?;
+        require_revoke_kind(&env, &caller, GovernanceActionKind::Other)?;
         let key_for_match = key.clone();
         let hash_for_match = payload_hash.clone();
         let removed = revoke_by_action_key(
@@ -555,8 +550,14 @@ impl SorobanVaultGovernanceContract {
 
     pub fn revoke(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
-        require_revoker(&env, &caller)?;
         let mut queue = load_queue(&env);
+        let kind = queue
+            .iter()
+            .find(|entry| entry.value.id == proposal_id)
+            .map(|entry| action_kind(&entry.value.action))
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        require_revoke_kind(&env, &caller, kind)?;
+
         if queue
             .revoke_by_key(
                 &ProposalKey::ProposalId(proposal_id),
@@ -577,7 +578,7 @@ impl SorobanVaultGovernanceContract {
         kind: GovernanceActionKind,
     ) -> Result<u32, GovernanceError> {
         extend_instance_ttl(&env);
-        require_revoker(&env, &caller)?;
+        require_revoke_kind(&env, &caller, kind)?;
         let mut queue = load_queue(&env);
         let mut matching = 0u32;
         for entry in queue.iter() {
@@ -633,11 +634,6 @@ impl SorobanVaultGovernanceContract {
         get_address(&env, DataKey::Vault)
     }
 
-    pub fn guardian(env: Env) -> Option<Address> {
-        extend_instance_ttl(&env);
-        env.storage().instance().get(&DataKey::Guardian)
-    }
-
     pub fn sentinel(env: Env) -> Option<Address> {
         extend_instance_ttl(&env);
         env.storage().instance().get(&DataKey::Sentinel)
@@ -646,6 +642,7 @@ impl SorobanVaultGovernanceContract {
     pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
         require_admin(&env, &caller)?;
         extend_instance_ttl(&env);
+        extend_pending_queue_ttl(&env);
         Ok(())
     }
 
@@ -655,13 +652,41 @@ impl SorobanVaultGovernanceContract {
         require_not_abdicated(&env, &action)?;
         validate_action(&env, &action)?;
 
-        let id = next_proposal_id(&env)?;
         let decision = decide_submission(&env, &action)?;
         let now_ns = ledger_timestamp_ns(&env)?;
         let timelock_ns = DurationNs(load_timelocks(&env).get(timelock_kind_for_action(&action)));
+        let pending_key = action.pending_key();
         let mut queue = load_queue(&env);
+        let replaces_existing = queue.has_pending_key(&pending_key, QueuedProposal::action_key);
+        if matches!(decision, TimelockDecision::Timelocked)
+            && !replaces_existing
+            && queue.len() >= MAX_PENDING_PROPOSALS
+        {
+            return Err(GovernanceError::InvalidInput);
+        }
+
+        let id = next_proposal_id(&env)?;
+
+        if matches!(decision, TimelockDecision::Immediate) {
+            let replaced = queue.revoke_by_key(&pending_key, QueuedProposal::action_key);
+            if !replaced.is_empty() {
+                save_queue(&env, &queue);
+            }
+            for proposal in replaced.iter() {
+                ProposalRevoked { id: proposal.id }.publish(&env);
+            }
+            execute_action(&env, &action)?;
+            ProposalSubmitted {
+                id,
+                valid_after_ns: 0,
+            }
+            .publish(&env);
+            ProposalAccepted { id }.publish(&env);
+            return Ok(id);
+        }
+
         let scheduled = queue.schedule_replacing(
-            &action.pending_key(),
+            &pending_key,
             QueuedProposal::action_key,
             QueuedProposal {
                 id,
@@ -674,20 +699,6 @@ impl SorobanVaultGovernanceContract {
 
         for replaced in scheduled.replaced.iter() {
             ProposalRevoked { id: replaced.id }.publish(&env);
-        }
-
-        if matches!(decision, TimelockDecision::Immediate) {
-            let _removed =
-                queue.revoke_by_key(&ProposalKey::ProposalId(id), queued_proposal_key_by_id);
-            save_queue(&env, &queue);
-            execute_action(&env, &action)?;
-            ProposalSubmitted {
-                id,
-                valid_after_ns: 0,
-            }
-            .publish(&env);
-            ProposalAccepted { id }.publish(&env);
-            return Ok(id);
         }
 
         let valid_after_ns = scheduled.ready_at_ns;
@@ -710,7 +721,6 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetSupplyQueue(_, _) => GovernanceActionKind::SupplyQueue,
         GovernanceAction::SetFees(_) => GovernanceActionKind::Fees,
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
-        GovernanceAction::SetGuardian(_) => GovernanceActionKind::Guardian,
         GovernanceAction::SetSentinel(_) => GovernanceActionKind::Sentinel,
         GovernanceAction::SetAllocators(_) => GovernanceActionKind::Allocators,
         GovernanceAction::SetAllowedAdapters(_) => GovernanceActionKind::AllowedAdapters,
@@ -739,7 +749,6 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetSupplyQueue(_, _) => TimelockKind::SupplyQueue,
         GovernanceAction::SetFees(_) => TimelockKind::Fees,
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
-        GovernanceAction::SetGuardian(_) => TimelockKind::Guardian,
         GovernanceAction::SetSentinel(_) => TimelockKind::Sentinel,
         GovernanceAction::SetAllocators(_) => TimelockKind::Allocators,
         GovernanceAction::SetAllowedAdapters(_) => TimelockKind::AllowedAdapters,
@@ -838,13 +847,6 @@ fn decide_submission(
             }
 
             Ok(TimelockDecision::Timelocked)
-        }
-        GovernanceAction::SetGuardian(next) => {
-            let current: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
-            if current.as_ref() == Some(next) {
-                return Err(GovernanceError::NoChange);
-            }
-            Ok(TimelockDecision::from_requires_timelock(current.is_some()))
         }
         GovernanceAction::SetSentinel(next) => {
             let current: Option<Address> = env.storage().instance().get(&DataKey::Sentinel);
@@ -1081,39 +1083,118 @@ fn next_proposal_id(env: &Env) -> Result<u64, GovernanceError> {
     Ok(current)
 }
 
-fn load_queue(env: &Env) -> PendingActions<QueuedProposal> {
-    let stored: Vec<StoredPending> = env
-        .storage()
-        .instance()
-        .get(&DataKey::PendingQueue)
-        .unwrap_or_else(|| Vec::new(env));
+fn pending_page_id(proposal_id: u64) -> u64 {
+    proposal_id / PENDING_PAGE_SIZE
+}
 
+fn load_pending_page_index(env: &Env) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PendingPageIndex)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_pending_page_index(env: &Env, pages: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingPageIndex, pages);
+}
+
+fn load_pending_page(env: &Env, page: u64) -> Vec<StoredPending> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PendingPage(page))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_pending_page(env: &Env, page: u64, entries: &Vec<StoredPending>) {
+    if entries.is_empty() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingPage(page));
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingPage(page), entries);
+    }
+}
+
+fn push_unique_page(pages: &mut Vec<u64>, page: u64) {
+    if !pages.iter().any(|existing| existing == page) {
+        pages.push_back(page);
+    }
+}
+
+fn extend_pending_queue_ttl(env: &Env) {
+    let storage = env.storage().persistent();
+    if storage.has(&DataKey::PendingPageIndex) {
+        storage.extend_ttl(
+            &DataKey::PendingPageIndex,
+            INSTANCE_TTL_THRESHOLD,
+            INSTANCE_TTL_EXTEND_TO,
+        );
+    }
+    for page in load_pending_page_index(env).iter() {
+        let key = DataKey::PendingPage(page);
+        if storage.has(&key) {
+            storage.extend_ttl(&key, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+        }
+    }
+}
+
+fn load_queue(env: &Env) -> PendingActions<QueuedProposal> {
     let mut entries = alloc::vec::Vec::new();
-    for item in stored.iter() {
-        entries.push(PendingValue {
-            value: QueuedProposal {
-                id: item.id,
-                action: item.action.clone(),
-            },
-            ready_at_ns: TimestampNs(item.valid_at_ns),
-        });
+    let pages = load_pending_page_index(env);
+
+    for page in pages.iter() {
+        for item in load_pending_page(env, page).iter() {
+            if pending_page_id(item.id) == page {
+                entries.push(PendingValue {
+                    value: QueuedProposal {
+                        id: item.id,
+                        action: item.action.clone(),
+                    },
+                    ready_at_ns: TimestampNs(item.valid_at_ns),
+                });
+            }
+        }
     }
 
     PendingActions::from_restored_entries(entries)
 }
 
 fn save_queue(env: &Env, queue: &PendingActions<QueuedProposal>) {
-    let mut stored = Vec::new(env);
+    let old_pages = load_pending_page_index(env);
+    let mut new_pages = Vec::new(env);
+
     for entry in queue.iter() {
-        stored.push_back(StoredPending {
-            id: entry.value.id,
-            action: entry.value.action.clone(),
-            valid_at_ns: entry.ready_at_ns.into(),
-        });
+        push_unique_page(&mut new_pages, pending_page_id(entry.value.id));
     }
-    env.storage()
-        .instance()
-        .set(&DataKey::PendingQueue, &stored);
+
+    for page in new_pages.iter() {
+        let mut stored = Vec::new(env);
+        for entry in queue.iter() {
+            if pending_page_id(entry.value.id) == page {
+                stored.push_back(StoredPending {
+                    id: entry.value.id,
+                    action: entry.value.action.clone(),
+                    valid_at_ns: entry.ready_at_ns.into(),
+                });
+            }
+        }
+        save_pending_page(env, page, &stored);
+    }
+
+    for page in old_pages.iter() {
+        if !new_pages.iter().any(|existing| existing == page) {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::PendingPage(page));
+        }
+    }
+
+    save_pending_page_index(env, &new_pages);
+    extend_pending_queue_ttl(env);
 }
 
 fn load_pending_ids(env: &Env) -> Vec<u64> {
@@ -1204,10 +1285,6 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             env.storage()
                 .instance()
                 .set(&DataKey::CurrentRestrictionAccounts, accounts);
-        }
-        GovernanceAction::SetGuardian(guardian) => {
-            execute_vault_governance_action(env, &vault, action)?;
-            env.storage().instance().set(&DataKey::Guardian, guardian);
         }
         GovernanceAction::SetSentinel(sentinel) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1373,13 +1450,6 @@ fn governance_payload_for_action(
                 value_b: None,
             })
         }
-        GovernanceAction::SetGuardian(guardian) => Some(GovernanceCommand::SetGovernanceConfig {
-            kind: GOVERNANCE_CONFIG_KIND_GUARDIANS,
-            primary: None,
-            many: Some(alloc::vec![sdk_address_to_alloc_string(guardian)?]),
-            value_a: None,
-            value_b: None,
-        }),
         GovernanceAction::SetSentinel(sentinel) => Some(GovernanceCommand::SetGovernanceConfig {
             kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
             primary: Some(sdk_address_to_alloc_string(sentinel)?),
@@ -1635,19 +1705,15 @@ fn require_admin(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
     Ok(())
 }
 
-fn require_revoker(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
+fn revoker_role(env: &Env, caller: &Address) -> Result<RevokerRole, GovernanceError> {
     caller.require_auth();
     let admin = get_address(env, DataKey::Admin)?;
     if caller == &admin {
-        return Ok(());
-    }
-    let guardian: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
-    if guardian.as_ref() == Some(caller) {
-        return Ok(());
+        return Ok(RevokerRole::Admin);
     }
     let sentinel: Option<Address> = env.storage().instance().get(&DataKey::Sentinel);
     if sentinel.as_ref() == Some(caller) {
-        return Ok(());
+        return Ok(RevokerRole::Sentinel);
     }
     Err(GovernanceError::Unauthorized)
 }
@@ -1659,6 +1725,45 @@ fn require_sentinel(env: &Env, caller: &Address) -> Result<(), GovernanceError> 
         return Ok(());
     }
     Err(GovernanceError::Unauthorized)
+}
+
+fn require_revoke_kind(
+    env: &Env,
+    caller: &Address,
+    kind: GovernanceActionKind,
+) -> Result<(), GovernanceError> {
+    let role = revoker_role(env, caller)?;
+    if can_revoke_kind(role, kind) {
+        Ok(())
+    } else {
+        Err(GovernanceError::Unauthorized)
+    }
+}
+
+fn can_revoke_kind(role: RevokerRole, kind: GovernanceActionKind) -> bool {
+    match role {
+        RevokerRole::Admin => true,
+        // Sentinel is the active operational-risk backstop. It may cancel
+        // timelocked operational/economic proposals that could affect allocation,
+        // accounting, restrictions, or emergency controls. Ownership/control-plane
+        // transfers, curator replacement, skim actions, and arbitrary `Other`
+        // approvals remain admin-only so the sentinel cannot block governance
+        // handoff or unrelated external approvals.
+        RevokerRole::Sentinel => matches!(
+            kind,
+            GovernanceActionKind::Pause
+                | GovernanceActionKind::Sentinel
+                | GovernanceActionKind::SupplyQueue
+                | GovernanceActionKind::Allocators
+                | GovernanceActionKind::AllowedAdapters
+                | GovernanceActionKind::Fees
+                | GovernanceActionKind::Restrictions
+                | GovernanceActionKind::TimelockConfig
+                | GovernanceActionKind::Cap
+                | GovernanceActionKind::MarketRemoval
+                | GovernanceActionKind::CapGroup
+        ),
+    }
 }
 
 fn require_vault_caller(env: &Env, caller: &Address) -> Result<(), GovernanceError> {

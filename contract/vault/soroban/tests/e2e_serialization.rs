@@ -18,7 +18,6 @@ fn test_config() -> ContractConfig {
         Address([1u8; 32]),
         Address([9u8; 32]),
         vec![Address([2u8; 32])],
-        vec![Address([3u8; 32])],
         Address([4u8; 32]),
         Address([5u8; 32]),
     )

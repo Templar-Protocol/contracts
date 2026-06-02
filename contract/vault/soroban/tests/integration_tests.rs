@@ -22,8 +22,8 @@ use templar_soroban_runtime::{
 };
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
-    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
     GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
@@ -73,7 +73,6 @@ fn test_config() -> ContractConfig {
     ContractConfig::new(
         Address([1u8; 32]),       // curator
         Address([9u8; 32]),       // vault_address
-        vec![Address([2u8; 32])], // guardians
         vec![Address([3u8; 32])], // allocators
         Address([4u8; 32]),       // asset_address
         Address([5u8; 32]),       // share_address
@@ -264,7 +263,6 @@ fn runtime_initialize_rejects_non_contract_governance() {
 #[rstest]
 #[case(GOVERNANCE_CONFIG_KIND_CURATOR, true)]
 #[case(GOVERNANCE_CONFIG_KIND_SENTINEL, true)]
-#[case(GOVERNANCE_CONFIG_KIND_GUARDIANS, false)]
 #[case(GOVERNANCE_CONFIG_KIND_ALLOCATORS, false)]
 fn runtime_governance_config_rejects_sac_role_addresses(
     #[case] kind: u32,
