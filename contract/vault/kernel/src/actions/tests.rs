@@ -1401,15 +1401,15 @@ fn sync_external_assets_withdrawing() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 400,
+            new_external_assets: 500,
             op_id: 4,
             now_ns: TimestampNs(0),
         },
     )
     .unwrap();
 
-    assert_eq!(result.state.external_assets, 400);
-    assert_eq!(result.state.total_assets, 900);
+    assert_eq!(result.state.external_assets, 500);
+    assert_eq!(result.state.total_assets, 1_000);
 }
 
 #[test]
@@ -1430,14 +1430,14 @@ fn sync_external_assets_refreshing() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 600,
+            new_external_assets: 500,
             op_id: 5,
             now_ns: TimestampNs(0),
         },
     )
     .unwrap();
 
-    assert_eq!(result.state.external_assets, 600);
+    assert_eq!(result.state.external_assets, 500);
 }
 
 #[test]
@@ -1536,9 +1536,9 @@ fn sync_external_assets_payout_fails() {
 }
 
 #[test]
-fn sync_external_assets_rejects_doubling() {
+fn sync_external_assets_no_longer_applies_in_flight_allocation_bound() {
     use crate::state::op_state::AllocatingState;
-    // total_assets = 1000; trying to set external to 2001 would make new total > 2x
+
     let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
@@ -1554,24 +1554,21 @@ fn sync_external_assets_rejects_doubling() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 2_001,
+            new_external_assets: 501,
             op_id: 1,
             now_ns: TimestampNs(0),
         },
-    );
+    )
+    .unwrap();
 
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets
-        ))
-    ));
+    assert_eq!(result.state.external_assets, 501);
+    assert_eq!(result.state.total_assets, 1_501);
 }
 
 #[test]
-fn sync_external_assets_allows_up_to_double() {
+fn sync_external_assets_allows_up_to_in_flight_allocation() {
     use crate::state::op_state::AllocatingState;
-    // total_assets = 1000; setting external to 1000 with idle=1000 => new total=2000 = 2x, OK
+
     let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
@@ -1587,7 +1584,7 @@ fn sync_external_assets_allows_up_to_double() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 1_000,
+            new_external_assets: 500,
             op_id: 1,
             now_ns: TimestampNs(0),
         },
@@ -1595,7 +1592,66 @@ fn sync_external_assets_allows_up_to_double() {
 
     assert!(result.is_ok());
     let result = result.unwrap();
-    assert_eq!(result.state.total_assets, 2_000);
+    assert_eq!(result.state.external_assets, 500);
+    assert_eq!(result.state.total_assets, 1_500);
+}
+
+#[test]
+fn sync_external_assets_accepts_runtime_validated_refresh_total() {
+    use crate::state::op_state::RefreshingState;
+
+    let mut state = VaultState::with_initial(1_999, 1_000, 1_000, 999, TimestampNs(0));
+    state.op_state = OpState::Refreshing(RefreshingState {
+        op_id: 8,
+        index: 0,
+        plan: vec![0],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 2_997,
+            op_id: 8,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.external_assets, 2_997);
+    assert_eq!(result.state.total_assets, 3_997);
+}
+
+#[test]
+fn sync_external_assets_allows_decrease() {
+    use crate::state::op_state::RefreshingState;
+
+    let mut state = VaultState::with_initial(11_000, 1_000, 1_000, 10_000, TimestampNs(0));
+    state.op_state = OpState::Refreshing(RefreshingState {
+        op_id: 9,
+        index: 0,
+        plan: vec![0],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 0,
+            op_id: 9,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.external_assets, 0);
+    assert_eq!(result.state.total_assets, 1_000);
 }
 
 #[test]

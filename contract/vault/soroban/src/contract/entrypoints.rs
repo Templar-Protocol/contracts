@@ -466,14 +466,12 @@ fn allocate_impl(
     }
     let now_ns = ledger_timestamp_ns(env)?;
     let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
+    let asset_client = soroban_sdk::token::Client::new(env, &asset_token);
+    let vault_address = env.current_contract_address();
     let mut new_external: u128 = 0;
     let emitted_amount = if supply {
         let amount_u128 = to_u128(amount)?;
-        soroban_sdk::token::Client::new(env, &asset_token).transfer(
-            &env.current_contract_address(),
-            &adapter,
-            &amount,
-        );
+        asset_client.transfer(&vault_address, &adapter, &amount);
         invoke_supply(env, &adapter, &asset_token, amount);
         let observed_total_assets = to_u128(invoke_total_assets(env, &adapter, &asset_token))?;
 
@@ -492,7 +490,15 @@ fn allocate_impl(
         with_contract_vault_contract_error(env, &mut call)?;
         amount
     } else {
+        let balance_before = asset_client.balance(&vault_address);
         let realized_amount = invoke_progress_withdrawal(env, &adapter, &asset_token, amount);
+        let balance_after = asset_client.balance(&vault_address);
+        let observed_delta = balance_after
+            .checked_sub(balance_before)
+            .ok_or(ContractError::InvalidState)?;
+        if realized_amount != observed_delta {
+            return Err(ContractError::InvalidState);
+        }
         let realized_amount_u128 = to_u128(realized_amount)?;
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {

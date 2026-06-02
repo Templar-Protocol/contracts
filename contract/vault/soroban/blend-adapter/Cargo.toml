@@ -15,7 +15,7 @@ default = []
 testutils = ["soroban-sdk/testutils", "blend-contract-sdk/testutils"]
 
 [dependencies]
-soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2"] }
+soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2", "hazmat-address"] }
 blend-contract-sdk = "2.25.0"
 
 [dev-dependencies]

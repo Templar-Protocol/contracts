@@ -3815,18 +3815,20 @@ proptest! {
     #[test]
     fn prop_spec_sync_external_assets_updates_total(
         idle in 0u64..1_000_000,
-        external in 0u64..1_000_000,
+        existing_external in 0u64..1_000_000,
+        in_flight in 0u64..1_000_000,
+        delta in 0u64..1_000_000,
     ) {
-        prop_assume!(external <= idle);
+        let external = existing_external + delta;
         let mut state = VaultState::new();
         state.idle_assets = idle as u128;
-        state.external_assets = 0;
-        state.total_assets = idle as u128;
+        state.external_assets = existing_external as u128;
+        state.total_assets = idle as u128 + existing_external as u128;
         state.op_state = OpState::Allocating(AllocatingState {
             op_id: 7,
             index: 0,
-            remaining: 0,
-            plan: vec![alloc_step(0, 0)],
+            remaining: in_flight as u128,
+            plan: vec![alloc_step(0, in_flight as u128)],
         });
 
         let config = default_config();

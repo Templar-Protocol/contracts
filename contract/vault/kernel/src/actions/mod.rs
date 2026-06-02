@@ -937,14 +937,6 @@ fn plan_withdrawal_request(
 }
 
 #[inline]
-fn sync_external_in_flight_assets(op_state: &OpState) -> u128 {
-    match op_state {
-        OpState::Allocating(state) => state.remaining,
-        _ => 0,
-    }
-}
-
-#[inline]
 fn ensure_sync_external_state_allowed(op_state: &OpState) -> Result<(), KernelError> {
     match op_state {
         OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => Ok(()),
@@ -963,15 +955,6 @@ fn plan_external_asset_sync(
         .idle_assets
         .checked_add(new_external_assets)
         .ok_or_else(|| KernelError::from(InvalidStateCode::SyncExternalOverflowIdlePlusExternal))?;
-
-    let reference_total = state
-        .total_assets
-        .saturating_add(sync_external_in_flight_assets(&state.op_state));
-    if reference_total > 0 && new_total_assets > reference_total.saturating_mul(2) {
-        return Err(KernelError::from(
-            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets,
-        ));
-    }
 
     Ok(ExternalAssetSyncPlan {
         new_external_assets,
