@@ -24,6 +24,7 @@ use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GUARDIANS,
     GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -291,6 +292,63 @@ fn runtime_governance_config_rejects_sac_role_addresses(
             value_a: None,
             value_b: None,
         };
+        assert_eq!(
+            proxy.execute_governance_unit(&governance, &command),
+            Err(templar_soroban_runtime::ContractError::InvalidInput)
+        );
+    });
+}
+
+#[rstest]
+#[case(
+    GovernanceCommand::SetGovernancePolicy {
+        kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+        target_ids: Some(vec![0]),
+        mode: Some(0),
+        accounts: None,
+        market_id: None,
+        cap_group_id: None,
+        value: None,
+        value_b: None,
+        value_c: None,
+    }
+)]
+#[case(
+    GovernanceCommand::SetGovernancePolicy {
+        kind: GOVERNANCE_POLICY_KIND_CAP,
+        target_ids: None,
+        mode: None,
+        accounts: None,
+        market_id: Some(0),
+        cap_group_id: None,
+        value: Some(1_000),
+        value_b: Some(1),
+        value_c: None,
+    }
+)]
+#[case(
+    GovernanceCommand::SetGovernancePolicy {
+        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+        target_ids: None,
+        mode: Some(1),
+        accounts: None,
+        market_id: Some(0),
+        cap_group_id: None,
+        value: None,
+        value_b: None,
+        value_c: None,
+    }
+)]
+fn runtime_governance_policy_rejects_irrelevant_fields(
+    #[case] command: GovernanceCommand,
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.as_contract(&contract_id, || {
+        let governance = proxy.governance().unwrap();
         assert_eq!(
             proxy.execute_governance_unit(&governance, &command),
             Err(templar_soroban_runtime::ContractError::InvalidInput)
@@ -1842,7 +1900,11 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let governance = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
     let asset_admin = soroban_sdk::Address::generate(&env);
     let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
     let asset_token = asset_sac.address();

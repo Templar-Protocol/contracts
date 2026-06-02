@@ -352,6 +352,18 @@ fn governance_restrictions(
     }
 }
 
+fn ensure_none<T>(value: &Option<T>) -> Result<(), ContractError> {
+    if value.is_some() {
+        Err(ContractError::InvalidInput)
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_some<T>(value: Option<T>) -> Result<T, ContractError> {
+    value.ok_or(ContractError::InvalidInput)
+}
+
 fn apply_group_policy(
     env: &Env,
     caller_kernel: Address,
@@ -761,46 +773,90 @@ fn set_governance_policy_impl(
     };
     match kind {
         GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE => {
+            ensure_none(&mode)?;
+            ensure_none(&market_id)?;
+            ensure_none(&cap_group_id)?;
+            ensure_none(&value)?;
+            ensure_none(&value_b)?;
+            ensure_none(&value_c)?;
             let caller_kernel = governance_kernel()?;
             apply_supply_queue_policy(
                 env,
                 caller_kernel,
-                target_ids.ok_or(ContractError::InvalidInput)?,
+                ensure_some(target_ids)?,
                 accounts,
                 caller_preauthorized,
             )
         }
-        GOVERNANCE_POLICY_KIND_CAP => apply_cap_policy(
-            env,
-            governance_kernel()?,
-            market_id.ok_or(ContractError::InvalidInput)?,
-            required_i128(value)?,
-            caller_preauthorized,
-        ),
-        GOVERNANCE_POLICY_KIND_REMOVE_MARKET => apply_remove_market_policy(
-            env,
-            governance_kernel()?,
-            market_id.ok_or(ContractError::InvalidInput)?,
-            caller_preauthorized,
-        ),
-        GOVERNANCE_POLICY_KIND_RESTRICTIONS => apply_restrictions_policy(
-            env,
-            caller,
-            mode.ok_or(ContractError::InvalidInput)?,
-            accounts.ok_or(ContractError::InvalidInput)?,
-            caller_preauthorized,
-        ),
-        GOVERNANCE_POLICY_KIND_GROUP => apply_group_policy(
-            env,
-            governance_kernel()?,
-            mode.ok_or(ContractError::InvalidInput)?,
-            market_id,
-            cap_group_id,
-            value,
-            caller_preauthorized,
-        ),
+        GOVERNANCE_POLICY_KIND_CAP => {
+            ensure_none(&target_ids)?;
+            ensure_none(&mode)?;
+            ensure_none(&accounts)?;
+            ensure_none(&cap_group_id)?;
+            ensure_none(&value_b)?;
+            ensure_none(&value_c)?;
+            apply_cap_policy(
+                env,
+                governance_kernel()?,
+                ensure_some(market_id)?,
+                ensure_some(value)?,
+                caller_preauthorized,
+            )
+        }
+        GOVERNANCE_POLICY_KIND_REMOVE_MARKET => {
+            ensure_none(&target_ids)?;
+            ensure_none(&mode)?;
+            ensure_none(&accounts)?;
+            ensure_none(&cap_group_id)?;
+            ensure_none(&value)?;
+            ensure_none(&value_b)?;
+            ensure_none(&value_c)?;
+            apply_remove_market_policy(
+                env,
+                governance_kernel()?,
+                ensure_some(market_id)?,
+                caller_preauthorized,
+            )
+        }
+        GOVERNANCE_POLICY_KIND_RESTRICTIONS => {
+            ensure_none(&target_ids)?;
+            ensure_none(&market_id)?;
+            ensure_none(&cap_group_id)?;
+            ensure_none(&value)?;
+            ensure_none(&value_b)?;
+            ensure_none(&value_c)?;
+            apply_restrictions_policy(
+                env,
+                caller,
+                ensure_some(mode)?,
+                ensure_some(accounts)?,
+                caller_preauthorized,
+            )
+        }
+        GOVERNANCE_POLICY_KIND_GROUP => {
+            ensure_none(&target_ids)?;
+            ensure_none(&accounts)?;
+            ensure_none(&value_b)?;
+            ensure_none(&value_c)?;
+            apply_group_policy(
+                env,
+                governance_kernel()?,
+                ensure_some(mode)?,
+                market_id,
+                cap_group_id,
+                value,
+                caller_preauthorized,
+            )
+        }
         GOVERNANCE_POLICY_KIND_PAUSED => {
-            let paused = match mode.ok_or(ContractError::InvalidInput)? {
+            ensure_none(&target_ids)?;
+            ensure_none(&accounts)?;
+            ensure_none(&market_id)?;
+            ensure_none(&cap_group_id)?;
+            ensure_none(&value)?;
+            ensure_none(&value_b)?;
+            ensure_none(&value_c)?;
+            let paused = match ensure_some(mode)? {
                 0 => false,
                 1 => true,
                 _ => return Err(ContractError::InvalidInput),
@@ -808,12 +864,16 @@ fn set_governance_policy_impl(
             apply_paused_policy(env, caller, paused, caller_preauthorized)
         }
         GOVERNANCE_POLICY_KIND_FEES => {
+            ensure_none(&target_ids)?;
+            ensure_none(&mode)?;
+            ensure_none(&market_id)?;
+            ensure_none(&cap_group_id)?;
             ensure_governance()?;
             apply_fees_policy(
                 env,
-                accounts.ok_or(ContractError::InvalidInput)?,
-                required_i128(value)?,
-                required_i128(value_b)?,
+                ensure_some(accounts)?,
+                ensure_some(value)?,
+                ensure_some(value_b)?,
                 value_c,
             )
         }
