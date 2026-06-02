@@ -11,7 +11,8 @@ use super::helpers::{
     require_contract_address, require_governance, require_governance_control_plane,
     require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
     set_config_address, set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
+    supply_adapter_for_market, validate_and_rewrite_storage, virtual_offsets_locked,
+    with_contract_vault_contract_error,
 };
 use super::*;
 use crate::storage::{SorobanStorage, Storage};
@@ -660,7 +661,6 @@ fn allocate_impl(
         vault.authorize(ActionKind::BeginAllocating, caller_kernel)
     };
     with_contract_vault_contract_error(env, &mut preauth)?;
-    let adapter = adapter_for_market(env, market)?;
     if amount <= 0 {
         return Err(ContractError::InvalidInput);
     }
@@ -670,6 +670,7 @@ fn allocate_impl(
     let vault_address = env.current_contract_address();
     let mut new_external: u128 = 0;
     let emitted_amount = if supply {
+        let adapter = supply_adapter_for_market(env, market)?;
         let amount_u128 = to_u128(amount)?;
         asset_client.transfer(&vault_address, &adapter, &amount);
         invoke_supply(env, &adapter, &asset_token, amount);
@@ -690,6 +691,7 @@ fn allocate_impl(
         with_contract_vault_contract_error(env, &mut call)?;
         amount
     } else {
+        let adapter = adapter_for_market(env, market)?;
         let balance_before = asset_client.balance(&vault_address);
         let realized_amount = invoke_progress_withdrawal(env, &adapter, &asset_token, amount);
         let balance_after = asset_client.balance(&vault_address);

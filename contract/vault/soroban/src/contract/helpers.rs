@@ -278,6 +278,25 @@ pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, C
     bindings.get(market).ok_or(ContractError::InvalidInput)
 }
 
+pub(crate) fn supply_adapter_for_market(
+    env: &Env,
+    market: u32,
+) -> Result<SdkAddress, ContractError> {
+    let adapter = adapter_for_market(env, market)?;
+    let allowed_adapters = env
+        .storage()
+        .instance()
+        .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
+        .ok_or(ContractError::InvalidInput)?;
+    if !allowed_adapters
+        .iter()
+        .any(|candidate| candidate == adapter)
+    {
+        return Err(ContractError::InvalidInput);
+    }
+    Ok(adapter)
+}
+
 fn require_non_negative_bounded_wad(value: i128, max: u128) -> Result<Wad, ContractError> {
     let value = u128::try_from(value).map_err(|_| ContractError::InvalidInput)?;
     if value > max {

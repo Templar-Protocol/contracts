@@ -2971,7 +2971,7 @@ mod storage_tests {
     use crate::contract::helpers::{
         get_config_address, set_config_address, set_migration_in_progress,
     };
-    use crate::contract::{adapter_for_market, SorobanVaultContract};
+    use crate::contract::{adapter_for_market, supply_adapter_for_market, SorobanVaultContract};
     use crate::error::{ContractError, RuntimeError};
     use crate::storage::{
         SorobanStorage, SorobanStorageKey, Storage, SOROBAN_MAX_PENDING_WITHDRAWALS,
@@ -4369,6 +4369,39 @@ mod storage_tests {
                 Err(ContractError::InvalidInput)
             );
             assert_eq!(adapter_for_market(&env, 1).unwrap(), stale_adapter);
+        });
+    }
+
+    #[test]
+    fn test_supply_adapter_lookup_rejects_removed_adapter_binding() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let allowed_adapter = adapter_contract(&env);
+        let removed_adapter = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            store_allowed_adapters(&env, &[allowed_adapter]);
+            store_test_adapter_bindings(&env, &[(1, removed_adapter.clone())]);
+
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), removed_adapter);
+            assert_eq!(
+                supply_adapter_for_market(&env, 1),
+                Err(ContractError::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn test_supply_adapter_lookup_allows_live_adapter_binding() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let adapter = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            store_allowed_adapters(&env, &[adapter.clone()]);
+            store_test_adapter_bindings(&env, &[(1, adapter.clone())]);
+
+            assert_eq!(supply_adapter_for_market(&env, 1).unwrap(), adapter);
         });
     }
 
