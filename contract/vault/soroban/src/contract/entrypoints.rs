@@ -11,7 +11,7 @@ use super::helpers::{
     require_contract_address, require_governance, require_governance_control_plane,
     require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
     set_config_address, set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    virtual_offsets_locked, with_contract_vault_contract_error,
+    validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
 };
 use super::*;
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
@@ -1237,7 +1237,7 @@ impl SorobanVaultContract {
     #[allow(clippy::too_many_lines)]
     pub fn proxy_view(
         env: Env,
-        owner: soroban_sdk::Address,
+        _owner: soroban_sdk::Address,
         assets: i128,
         shares: i128,
     ) -> Result<
@@ -1462,6 +1462,7 @@ impl SorobanVaultContract {
         }
 
         normalize_fee_anchor(&env)?;
+        runtime_to_contract(validate_and_rewrite_storage(&env))?;
         extend_storage_ttl(&env);
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));

@@ -58,3 +58,13 @@ Base used: `origin/spr/refactor/vault-ergonomics/4f330057` at `4e72696d27e0f716b
 - Did not reintroduce `migrate_legacy_paused`; PR #437 removed that legacy paused-state migration shim. Kept `normalize_fee_anchor()` during `migrate()`.
 - Preserved PR #425's structured `ExecuteWithdrawStatus` return and added PR #428's separate `RefreshFees` implementation, instead of taking PR #428's older unit-returning `execute_withdraw_impl`.
 - In the Soroban integration fixture, kept the registered governance contract from the governance stack and PR #428's `asset_token` fixture field.
+
+### PR #430 in progress
+
+- Kept PR #430's `validate_and_rewrite_storage()` call during governed `migrate()` so current-version state, policy, restrictions, and fee blobs are validated/re-written.
+- Ordered governed `migrate()` as fee-anchor normalization first, then storage validation/rewrite, then TTL extension and migration flag clearing.
+- Did not reintroduce PR #430's older `migrate_legacy_paused` helper or `LEGACY_PAUSED_MIGRATED_KEY`, because PR #437 intentionally removed the undeployed legacy paused migration path.
+- Kept bounded conversion helpers and the storage queue cap import together in `contract/mod.rs`.
+- Combined storage-test imports so adapter/governance tests and PR #430 paged-storage cap tests both compile.
+- Removed the stale `MAX_PENDING` import after PR #430 switched the Soroban runtime path to `SOROBAN_MAX_PENDING_WITHDRAWALS`.
+- Renamed the now-unused `proxy_view` owner parameter to `_owner`; the ABI-shaped argument remains present while the merged fee/proxy-view logic no longer reads it directly.

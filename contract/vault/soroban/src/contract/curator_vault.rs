@@ -166,7 +166,7 @@ where
             fees: self.config.fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
             withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
-            max_pending_withdrawals: MAX_PENDING as u32,
+            max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
             paused: self.paused,
             virtual_shares: self.config.virtual_shares,
             virtual_assets: self.config.virtual_assets,

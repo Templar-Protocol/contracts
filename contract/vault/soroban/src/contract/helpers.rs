@@ -320,8 +320,8 @@ pub(crate) fn apply_fee_change(
 
     runtime_to_contract(store_fees_spec(env, &fees))?;
     let storage = SorobanStorage::new(env);
-    storage.save_address(&performance_kernel, &performance_recipient);
-    storage.save_address(&management_kernel, &management_recipient);
+    runtime_to_contract(storage.save_address(&performance_kernel, &performance_recipient))?;
+    runtime_to_contract(storage.save_address(&management_kernel, &management_recipient))?;
     Ok(())
 }
 
@@ -331,6 +331,29 @@ pub(crate) fn extend_storage_ttl(env: &Env) {
         .extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
     let storage = SorobanStorage::new(env);
     storage.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+    if let Ok(fees) = load_fees_spec(env) {
+        storage.extend_address_ttl(
+            &fees.performance.recipient,
+            DEFAULT_TTL_THRESHOLD,
+            DEFAULT_TTL_EXTEND_TO,
+        );
+        storage.extend_address_ttl(
+            &fees.management.recipient,
+            DEFAULT_TTL_THRESHOLD,
+            DEFAULT_TTL_EXTEND_TO,
+        );
+    }
+    for key in [
+        VaultDataKey::Curator,
+        VaultDataKey::Governance,
+        VaultDataKey::AssetToken,
+        VaultDataKey::ShareToken,
+    ] {
+        if let Ok(address) = get_config_address(env, &key) {
+            let kernel = kernel_address_from_sdk(env, &address);
+            storage.extend_address_ttl(&kernel, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+        }
+    }
 }
 
 pub(crate) fn get_config_address(
@@ -360,6 +383,22 @@ pub(crate) fn sdk_string_to_alloc(
     value: soroban_sdk::String,
 ) -> Result<AllocString, ContractError> {
     AllocString::from_utf8(value.to_bytes().to_alloc_vec()).map_err(|_| ContractError::InvalidInput)
+}
+
+pub(crate) fn validate_and_rewrite_storage(env: &Env) -> Result<(), RuntimeError> {
+    let mut storage = SorobanStorage::new(env);
+    if let Some(state) = storage.load_state()? {
+        storage.save_state(&state)?;
+    }
+    if let Some(policy) = storage.load_policy_state()? {
+        storage.save_policy_state(&policy)?;
+    }
+    if let Some(restrictions) = Storage::load_restrictions(&storage)? {
+        Storage::save_restrictions(&mut storage, &Some(restrictions))?;
+    }
+    let fees = load_fees_spec(env)?;
+    store_fees_spec(env, &fees)?;
+    Ok(())
 }
 
 #[inline(never)]

@@ -52,8 +52,10 @@ use templar_vault_kernel::{
     convert_to_shares_bounded, convert_to_shares_ceil_bounded, plan_idle_payout,
     withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, OpState,
     PayoutOutcome, Restrictions, TargetId, TimestampNs, VaultConfig, VaultState, Wad,
-    MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
+    MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
 };
+
+use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
 
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");

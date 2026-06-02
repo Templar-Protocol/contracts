@@ -17,14 +17,13 @@ use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
-    FeeAccrualAnchor, Number, TimestampNs, VaultConfig, VaultState, MAX_PENDING,
-    MIN_WITHDRAWAL_ASSETS,
+    FeeAccrualAnchor, Number, TimestampNs, VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::contract::{load_fees_spec, load_virtual_offsets, VaultDataKey};
 use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_u128};
 use crate::error::ContractError;
-use crate::storage::{SorobanStorage, Storage};
+use crate::storage::{SorobanStorage, Storage, SOROBAN_MAX_PENDING_WITHDRAWALS};
 
 fn preview_state_with_fee_accrual(
     env: &Env,
@@ -127,7 +126,7 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
         fees: runtime_to_contract(load_fees_spec(env))?,
         min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
         withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
-        max_pending_withdrawals: MAX_PENDING as u32,
+        max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
         paused: storage.is_paused(),
         virtual_shares,
         virtual_assets,
