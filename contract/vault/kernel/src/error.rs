@@ -49,6 +49,7 @@ pub enum InvalidStateCode {
     RebalanceWithdrawRequiresIdle = 38,
     RebalanceWithdrawExceedsExternalAssets = 39,
     RebalanceWithdrawOverflowsIdleAssets = 40,
+    WithdrawalLiquidityBelowMinimum = 41,
 }
 
 impl InvalidStateCode {
@@ -120,6 +121,9 @@ impl InvalidStateCode {
             }
             Self::RebalanceWithdrawOverflowsIdleAssets => {
                 "rebalance_withdraw would overflow idle_assets"
+            }
+            Self::WithdrawalLiquidityBelowMinimum => {
+                "withdrawal liquidity below minimum payout amount"
             }
         }
     }

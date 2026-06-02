@@ -14,14 +14,14 @@ use super::helpers::{
 };
 use super::*;
 use templar_soroban_shared_types::{
-    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
-    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
+    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+    GOVERNANCE_CONFIG_KIND_GUARDIANS, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
@@ -354,13 +354,43 @@ fn request_withdraw_impl(
     Ok(request_id)
 }
 
-fn execute_withdraw_impl(env: &Env, caller: soroban_sdk::Address) -> Result<(), ContractError> {
+fn execute_withdraw_impl(
+    env: &Env,
+    caller: soroban_sdk::Address,
+) -> Result<ExecuteWithdrawStatus, ContractError> {
+    require_signed(&caller);
+    let now_ns = ledger_timestamp_ns(env)?;
+
+    let mut status = ExecuteWithdrawStatus {
+        op_state_before: 0,
+        op_state_after: 0,
+        assets_transferred: 0,
+        events_emitted: 0,
+    };
+    let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        status.op_state_before = vault.state()?.op_state.kind_code();
+        let caller_k = vault.map_caller(env, &caller)?;
+        let summary = vault.execute_withdraw(caller_k, now_ns)?;
+        status.op_state_after = vault.state()?.op_state.kind_code();
+        status.assets_transferred = summary.assets_transferred;
+        status.events_emitted = summary.events_emitted;
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut call)?;
+    Ok(status)
+}
+
+fn abort_withdrawing_impl(
+    env: &Env,
+    caller: soroban_sdk::Address,
+    op_id: u64,
+) -> Result<(), ContractError> {
     require_signed(&caller);
     let now_ns = ledger_timestamp_ns(env)?;
 
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let caller_k = vault.map_caller(env, &caller)?;
-        vault.execute_withdraw(caller_k, now_ns).map(|_| ())
+        vault.abort_withdrawing(caller_k, op_id, now_ns).map(|_| ())
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -671,8 +701,11 @@ fn execute_public_command(
             shares,
             min_assets_out,
         )?)),
-        VaultCommand::ExecuteWithdraw { caller } => {
-            execute_withdraw_impl(env, address_from_alloc_string(env, &caller)?)?;
+        VaultCommand::ExecuteWithdraw { caller } => Ok(VaultCommandResult::ExecuteWithdrawStatus(
+            execute_withdraw_impl(env, address_from_alloc_string(env, &caller)?)?,
+        )),
+        VaultCommand::AbortWithdrawing { caller, op_id } => {
+            abort_withdrawing_impl(env, address_from_alloc_string(env, &caller)?, op_id)?;
             Ok(VaultCommandResult::Unit)
         }
         VaultCommand::Allocate {

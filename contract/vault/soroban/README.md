@@ -110,6 +110,38 @@ sequenceDiagram
     Contract-->>User: ok
 ```
 
+The typed `execute_withdraw` entrypoint keeps returning `Result<(), _>` for
+the stable contract ABI. The generic `execute(payload)` command path returns
+`VaultCommandResult::ExecuteWithdrawStatus` for
+`VaultCommand::ExecuteWithdraw`, with:
+
+- `op_state_before` and `op_state_after`: kernel operation-state codes
+  (`0 = Idle`, `1 = Allocating`, `2 = Withdrawing`, `3 = Refreshing`,
+  `4 = Payout`).
+- `assets_transferred`: assets paid to receivers during this command.
+- `events_emitted`: kernel/runtime events emitted while processing the command.
+
+Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity
+error as a signal to free market liquidity before retrying. A successful
+command with `assets_transferred == 0` and a non-idle `op_state_after` should
+be alerted as an unexpected no-progress withdrawal state. The A-002 fix is
+intended to reject that zero-progress transition before it is persisted, but the
+structured result keeps automation from relying on a bare `Unit` success.
+
+If withdrawal execution enters `Withdrawing` and cannot progress because idle
+liquidity remains below the kernel minimum, an allocator-emergency actor can
+submit `VaultCommand::AbortWithdrawing { caller, op_id }` through `execute`.
+The command reuses the kernel recovery transition: it validates the active
+operation id and queue head, refunds escrowed shares, emits the kernel
+`WithdrawalStopped` event, dequeues the request, and returns the vault to
+`Idle`.
+
+`AbortWithdrawing` uses the `ActionKind::AbortWithdrawing` authorization class.
+In the default Soroban RBAC policy this is available to allocator-emergency
+operators (`allocator`, `sentinel`, and `curator`), not ordinary users. The
+transition restores any `Withdrawing.collected` amount to idle accounting before
+refunding escrowed shares, dequeuing the head request, and returning to `Idle`.
+
 ## Prerequisites
 
 ### Stellar CLI

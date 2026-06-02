@@ -365,6 +365,17 @@ where
         Ok(summary)
     }
 
+    #[inline(never)]
+    pub fn abort_withdrawing(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.authorize(ActionKind::AbortWithdrawing, caller)?;
+        self.apply_kernel_action(KernelAction::abort_withdrawing(op_id), now_ns)
+    }
+
     /// Map vault + caller SDK address to kernel address.
     pub fn map_caller(&mut self, env: &Env, caller: &SdkAddress) -> Result<Address, RuntimeError> {
         self.ensure_vault_mapped(env)?;
@@ -504,14 +515,11 @@ where
         &mut self,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let Some(idle_payout) = transition_to_runtime(plan_idle_payout(self.state()?))? else {
-            return Ok(EffectSummary::new());
-        };
+        let min_withdrawal_assets = self.kernel_config().min_withdrawal_assets;
+        let idle_payout =
+            transition_to_runtime(plan_idle_payout(self.state()?, min_withdrawal_assets))?;
 
         let assets_out = idle_payout.assets_out;
-        if assets_out == 0 {
-            return Ok(EffectSummary::new());
-        }
         let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
 

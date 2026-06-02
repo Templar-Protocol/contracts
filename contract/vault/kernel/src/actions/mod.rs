@@ -85,6 +85,7 @@ pub struct IdlePayoutPlan {
 enum WithdrawalQueueOutcome {
     None,
     CoolingDown { requested_at_ns: TimestampNs },
+    InsufficientLiquidity,
     Ready(WithdrawalRequest),
 }
 
@@ -104,6 +105,7 @@ struct PendingWithdrawalHead {
 enum WithdrawalHeadOutcome {
     Skip(WithdrawalSkipReason),
     CoolingDown { requested_at_ns: TimestampNs },
+    InsufficientLiquidity,
     Ready,
 }
 
@@ -134,10 +136,13 @@ struct ExternalAssetSyncPlan {
 
 /// Plan an idle-funded payout from the current vault state.
 ///
-/// Returns `Ok(None)` when the vault is in a valid withdrawing state but there is
-/// not enough idle liquidity to satisfy the queue head yet.
-pub fn plan_idle_payout(state: &VaultState) -> Result<Option<IdlePayoutPlan>, KernelError> {
-    planning::plan_idle_payout(state)
+/// Returns an error when the current idle liquidity cannot produce an actionable
+/// payout for the queue head.
+pub fn plan_idle_payout(
+    state: &VaultState,
+    min_withdrawal_assets: u128,
+) -> Result<IdlePayoutPlan, KernelError> {
+    planning::plan_idle_payout(state, min_withdrawal_assets)
 }
 
 /// Kernel actions supported by the dispatcher.
@@ -850,6 +855,7 @@ fn classify_withdrawal_head(
     restrictions: Option<&Restrictions>,
     self_id: &Address,
     now_ns: TimestampNs,
+    available_assets: u128,
 ) -> WithdrawalHeadOutcome {
     if let Some(reason) = pending_withdrawal_skip_reason(
         restrictions,
@@ -863,9 +869,25 @@ fn classify_withdrawal_head(
         WithdrawalHeadOutcome::CoolingDown {
             requested_at_ns: head.requested_at_ns,
         }
+    } else if !has_actionable_withdrawal_liquidity(
+        head.expected_assets,
+        available_assets,
+        config.min_withdrawal_assets,
+    ) {
+        WithdrawalHeadOutcome::InsufficientLiquidity
     } else {
         WithdrawalHeadOutcome::Ready
     }
+}
+
+#[inline]
+fn has_actionable_withdrawal_liquidity(
+    expected_assets: u128,
+    available_assets: u128,
+    min_withdrawal_assets: u128,
+) -> bool {
+    available_assets >= expected_assets
+        || (available_assets > 0 && available_assets >= min_withdrawal_assets)
 }
 
 #[inline]
@@ -970,12 +992,22 @@ fn next_withdrawal_queue_outcome(
             return Ok(WithdrawalQueueOutcome::None);
         };
 
-        match classify_withdrawal_head(head, config, restrictions, self_id, now_ns) {
+        match classify_withdrawal_head(
+            head,
+            config,
+            restrictions,
+            self_id,
+            now_ns,
+            state.idle_assets,
+        ) {
             WithdrawalHeadOutcome::Skip(reason) => {
                 dequeue_skipped_withdrawal(state, self_id, skipped_effects, reason)?;
             }
             WithdrawalHeadOutcome::CoolingDown { requested_at_ns } => {
                 return Ok(WithdrawalQueueOutcome::CoolingDown { requested_at_ns });
+            }
+            WithdrawalHeadOutcome::InsufficientLiquidity => {
+                return Ok(WithdrawalQueueOutcome::InsufficientLiquidity);
             }
             WithdrawalHeadOutcome::Ready => {
                 return Ok(WithdrawalQueueOutcome::Ready(withdrawal_request_from_head(
@@ -1221,6 +1253,15 @@ fn handle_execute_withdraw(
                 Ok(KernelResult::new(state, skipped_effects))
             }
         }
+        WithdrawalQueueOutcome::InsufficientLiquidity => {
+            if skipped_effects.is_empty() {
+                Err(KernelError::from(
+                    InvalidStateCode::WithdrawalLiquidityBelowMinimum,
+                ))
+            } else {
+                Ok(KernelResult::new(state, skipped_effects))
+            }
+        }
         WithdrawalQueueOutcome::Ready(request) => {
             let transition = start_withdrawal(mem::take(&mut state.op_state), request);
             let mut result = apply_transition_result(state, transition)?;
@@ -1290,7 +1331,9 @@ fn handle_finish_allocating(
             &mut skipped_effects,
         )? {
             WithdrawalQueueOutcome::Ready(request) => Some(request),
-            WithdrawalQueueOutcome::None | WithdrawalQueueOutcome::CoolingDown { .. } => None,
+            WithdrawalQueueOutcome::None
+            | WithdrawalQueueOutcome::CoolingDown { .. }
+            | WithdrawalQueueOutcome::InsufficientLiquidity => None,
         }
     };
 
@@ -1739,7 +1782,8 @@ mod planning {
 
     pub(super) fn plan_idle_payout(
         state: &VaultState,
-    ) -> Result<Option<IdlePayoutPlan>, KernelError> {
+        min_withdrawal_assets: u128,
+    ) -> Result<IdlePayoutPlan, KernelError> {
         let (request_owner, request_receiver, request_escrow, request_expected) = state
             .withdraw_queue
             .head()
@@ -1772,29 +1816,37 @@ mod planning {
         }
 
         let available_assets = state.idle_assets;
-        if available_assets < request_expected
-            && available_assets < crate::state::queue::MIN_WITHDRAWAL_ASSETS
-        {
-            return Ok(None);
+        if !has_actionable_withdrawal_liquidity(
+            request_expected,
+            available_assets,
+            min_withdrawal_assets,
+        ) {
+            return Err(KernelError::from(
+                InvalidStateCode::WithdrawalLiquidityBelowMinimum,
+            ));
         }
 
         let Some(settlement) =
             compute_idle_settlement(request_escrow, request_expected, available_assets)
         else {
-            return Ok(None);
+            return Err(KernelError::from(
+                InvalidStateCode::WithdrawalLiquidityBelowMinimum,
+            ));
         };
 
         if settlement.assets_out == 0 {
-            return Ok(None);
+            return Err(KernelError::from(
+                InvalidStateCode::WithdrawalLiquidityBelowMinimum,
+            ));
         }
 
-        Ok(Some(IdlePayoutPlan {
+        Ok(IdlePayoutPlan {
             op_id: withdrawing.op_id,
             request_id: withdrawing.request_id,
             receiver: withdrawing.receiver,
             assets_out: settlement.assets_out,
             burn_shares: settlement.settlement.to_burn,
-        }))
+        })
     }
 }
 

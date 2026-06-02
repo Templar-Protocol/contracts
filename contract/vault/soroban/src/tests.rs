@@ -295,14 +295,17 @@ mod contract_tests {
     use alloc::string::{String as AllocString, ToString};
     use alloc::vec;
     use alloc::vec::Vec;
+    use proptest::prelude::*;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::PolicyState;
     use templar_soroban_shared_types::{
-        GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
+        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::{
-        FeeAccrualAnchor, FeesSpec, Restrictions, VaultState, MIN_WITHDRAWAL_ASSETS,
+        FeeAccrualAnchor, FeesSpec, OpState, Restrictions, VaultState, WithdrawingState,
+        MIN_WITHDRAWAL_ASSETS,
     };
 
     #[derive(Clone, Copy, Default)]
@@ -705,12 +708,13 @@ mod contract_tests {
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("low-liquidity withdrawal should not start");
 
-        assert_eq!(summary.assets_transferred, 0);
-        assert_eq!(summary.shares_burned, 0);
+        assert_eq!(error, RuntimeError::KernelError);
         let state = vault.state().unwrap();
-        assert!(state.op_state.is_withdrawing());
+        assert!(state.op_state.is_idle());
         let (head_id_after, head_after) = state
             .withdraw_queue
             .head()
@@ -723,10 +727,177 @@ mod contract_tests {
             state.total_assets,
             state.idle_assets.saturating_add(state.external_assets)
         );
-        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
-        assert_eq!(summary.shares_transferred, 0);
+        assert_eq!(state.total_shares, deposit_amount);
         assert_eq!(head_id, 0);
         assert_eq!(head_expected_before, deposit_amount);
+    }
+
+    #[test]
+    fn test_abort_withdrawing_recovers_low_liquidity_stuck_state() {
+        let mut vault = create_test_vault();
+        let allocator = templar_vault_kernel::Address([3u8; 32]);
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+
+        let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
+        let request_time: u64 = 200;
+        let exec_time = request_time
+            .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+            .saturating_add(1);
+
+        vault
+            .deposit(owner, receiver, deposit_amount, 0, request_time)
+            .unwrap();
+        vault
+            .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
+            .unwrap();
+
+        {
+            let state = vault.state_mut().unwrap();
+            state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
+                (
+                    request_id,
+                    head.owner,
+                    head.receiver,
+                    head.escrow_shares,
+                    head.expected_assets,
+                )
+            };
+            let op_id = state.allocate_op_id();
+            state.op_state = OpState::Withdrawing(WithdrawingState {
+                op_id,
+                request_id,
+                index: 0,
+                remaining: expected_assets,
+                collected: 0,
+                owner,
+                receiver,
+                escrow_shares,
+            });
+        }
+
+        let op_id = vault.state().unwrap().op_state.op_id().unwrap();
+        let recovery_summary = vault
+            .abort_withdrawing(allocator, op_id, exec_time.saturating_add(1))
+            .unwrap();
+
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert!(state.withdraw_queue.is_empty());
+        assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_sub(1));
+        assert_eq!(
+            state.total_assets,
+            state.idle_assets.saturating_add(state.external_assets)
+        );
+        assert_eq!(state.total_shares, deposit_amount);
+        assert_eq!(recovery_summary.assets_transferred, 0);
+        assert_eq!(recovery_summary.shares_burned, 0);
+        assert_eq!(recovery_summary.shares_transferred, deposit_amount);
+        assert_eq!(recovery_summary.events_emitted, 1);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_low_liquidity_execute_refuses_and_stale_withdrawing_has_abort_recovery(
+            deposit_multiple in 2u128..=32,
+            extra_assets in 0u128..=MIN_WITHDRAWAL_ASSETS,
+            low_idle in 0u128..MIN_WITHDRAWAL_ASSETS,
+            retry_count in 0usize..=3,
+        ) {
+            let mut vault = create_test_vault();
+            let allocator = templar_vault_kernel::Address([3u8; 32]);
+            let owner = templar_vault_kernel::Address([1u8; 32]);
+            let receiver = templar_vault_kernel::Address([2u8; 32]);
+
+            let deposit_amount = MIN_WITHDRAWAL_ASSETS
+                .saturating_mul(deposit_multiple)
+                .saturating_add(extra_assets);
+            let request_time: u64 = 200;
+            let exec_time = request_time
+                .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+                .saturating_add(1);
+
+            vault
+                .deposit(owner, receiver, deposit_amount, 0, request_time)
+                .expect("deposit should succeed");
+            vault
+                .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
+                .expect("withdraw request should succeed");
+
+            {
+                let state = vault.state_mut().expect("state is loaded");
+                state.idle_assets = low_idle;
+                state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            }
+
+            let error = vault
+                .execute_withdraw(allocator, exec_time)
+                .expect_err("low-liquidity execution should be refused");
+            prop_assert_eq!(error, RuntimeError::KernelError);
+            prop_assert!(vault.state().expect("state is loaded").op_state.is_idle());
+            prop_assert!(!vault.state().expect("state is loaded").withdraw_queue.is_empty());
+
+            {
+                let state = vault.state_mut().expect("state is loaded");
+                let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                    let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
+                    (
+                        request_id,
+                        head.owner,
+                        head.receiver,
+                        head.escrow_shares,
+                        head.expected_assets,
+                    )
+                };
+                let op_id = state.allocate_op_id();
+                state.op_state = OpState::Withdrawing(WithdrawingState {
+                    op_id,
+                    request_id,
+                    index: 0,
+                    remaining: expected_assets,
+                    collected: 0,
+                    owner,
+                    receiver,
+                    escrow_shares,
+                });
+            }
+
+            for offset in 0..retry_count {
+                let retry_error = vault
+                    .execute_withdraw(allocator, exec_time.saturating_add(offset as u64 + 1))
+                    .expect_err("stale low-liquidity withdrawal should remain blocked");
+                prop_assert_eq!(retry_error, RuntimeError::KernelError);
+                prop_assert!(vault.state().expect("state is loaded").op_state.is_withdrawing());
+            }
+
+            let op_id = vault
+                .state()
+                .expect("state is loaded")
+                .op_state
+                .as_withdrawing()
+                .expect("withdrawal should remain active")
+                .op_id;
+            let recovery_summary = vault
+                .abort_withdrawing(allocator, op_id, exec_time.saturating_add(10))
+                .expect("abort_withdrawing should recover stuck state");
+
+            let state = vault.state().expect("state is loaded");
+            prop_assert!(state.op_state.is_idle());
+            prop_assert!(state.withdraw_queue.is_empty());
+            prop_assert_eq!(state.idle_assets, low_idle);
+            prop_assert_eq!(
+                state.total_assets,
+                state.idle_assets.saturating_add(state.external_assets)
+            );
+            prop_assert_eq!(state.total_shares, deposit_amount);
+            prop_assert_eq!(recovery_summary.assets_transferred, 0);
+            prop_assert_eq!(recovery_summary.shares_burned, 0);
+            prop_assert_eq!(recovery_summary.shares_transferred, deposit_amount);
+            prop_assert_eq!(recovery_summary.events_emitted, 1);
+        }
     }
 
     #[test]
@@ -1375,6 +1546,261 @@ mod contract_tests {
             owner_assets_before - deposit_assets
         );
         assert_eq!(asset_client.balance(&contract_id), deposit_assets);
+    }
+
+    #[test]
+    fn test_abort_withdrawing_command_recovers_public_stuck_withdrawal() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        asset_admin_client.mint(&owner, &deposit_assets);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::DepositWithMin {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&owner),
+                        assets: deposit_assets,
+                        min_shares_out: 0,
+                    },
+                )
+                .unwrap(),
+                VaultCommandResult::I128(deposit_assets)
+            );
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::RequestWithdraw {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&owner),
+                        shares: deposit_assets,
+                        min_assets_out: 0,
+                    },
+                )
+                .unwrap(),
+                VaultCommandResult::U64(0)
+            );
+        });
+
+        assert_eq!(share_client.balance(&owner), 0);
+        assert_eq!(share_client.balance(&contract_id), deposit_assets);
+
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = storage
+                .load_state()
+                .unwrap()
+                .expect("initialized vault state");
+            state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.total_assets = state.idle_assets.saturating_add(state.external_assets);
+            storage.save_state(&state).unwrap();
+        });
+
+        env.ledger().set(LedgerInfo {
+            timestamp: templar_vault_kernel::DEFAULT_COOLDOWN_NS / 1_000_000_000 + 3,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::ExecuteWithdraw {
+                        caller: sdk_text(&curator),
+                    },
+                )
+                .expect_err("low-liquidity withdrawal should not start"),
+                crate::error::ContractError::KernelError
+            );
+        });
+
+        let op_id = env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = storage
+                .load_state()
+                .unwrap()
+                .expect("initialized vault state");
+            assert!(state.op_state.is_idle());
+            let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
+                (
+                    request_id,
+                    head.owner,
+                    head.receiver,
+                    head.escrow_shares,
+                    head.expected_assets,
+                )
+            };
+            let op_id = state.allocate_op_id();
+            state.op_state = OpState::Withdrawing(WithdrawingState {
+                op_id,
+                request_id,
+                index: 0,
+                remaining: expected_assets,
+                collected: 0,
+                owner,
+                receiver,
+                escrow_shares,
+            });
+            storage.save_state(&state).unwrap();
+            op_id
+        });
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::AbortWithdrawing {
+                        caller: sdk_text(&curator),
+                        op_id,
+                    },
+                )
+                .unwrap(),
+                VaultCommandResult::Unit
+            );
+        });
+
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            let state = storage
+                .load_state()
+                .unwrap()
+                .expect("initialized vault state");
+            assert!(state.op_state.is_idle());
+            assert!(state.withdraw_queue.is_empty());
+            assert_eq!(state.total_shares, deposit_assets as u128);
+        });
+        assert_eq!(share_client.balance(&owner), deposit_assets);
+        assert_eq!(share_client.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn test_execute_withdraw_command_returns_structured_status() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                curator.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        asset_admin_client.mint(&owner, &deposit_assets);
+
+        env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::DepositWithMin {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    assets: deposit_assets,
+                    min_shares_out: 0,
+                },
+            )
+            .unwrap();
+            execute_command(
+                &env,
+                &VaultCommand::RequestWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    shares: deposit_assets,
+                    min_assets_out: 0,
+                },
+            )
+            .unwrap();
+        });
+
+        env.ledger().set(LedgerInfo {
+            timestamp: templar_vault_kernel::DEFAULT_COOLDOWN_NS / 1_000_000_000 + 3,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::ExecuteWithdraw {
+                        caller: sdk_text(&curator),
+                    },
+                )
+                .unwrap(),
+                VaultCommandResult::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
+                    op_state_before: OpState::Idle.kind_code(),
+                    op_state_after: OpState::Idle.kind_code(),
+                    assets_transferred: deposit_assets as u128,
+                    events_emitted: 3,
+                })
+            );
+        });
     }
 
     #[test]
