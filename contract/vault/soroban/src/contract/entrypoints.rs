@@ -9,7 +9,8 @@ use super::helpers::{
     ensure_governance_identity, ensure_sentinel_identity, get_config_address, governance_caller,
     kernel_address_from_sdk, load_virtual_offsets, migrate_legacy_paused, migration_in_progress,
     require_contract_address, require_governance, require_governance_control_plane,
-    require_sentinel, require_signed, sdk_string_to_alloc, set_config_address,
+    require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
+    set_config_address,
     set_migration_in_progress, store_fees_spec, store_virtual_offsets,
     with_contract_vault_contract_error,
 };
@@ -57,9 +58,11 @@ fn require_unique_addresses(
     Ok(())
 }
 
-fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) {
+fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) -> Result<(), ContractError> {
+    require_wasm_or_account_address(&new_curator)?;
     set_config_address(env, &VaultDataKey::Curator, &new_curator);
     emit_admin_event(env, symbol_short!("s_curatr"));
+    Ok(())
 }
 
 fn apply_governance_config(
@@ -72,17 +75,22 @@ fn apply_governance_config(
     Ok(())
 }
 
-fn apply_sentinel_config(env: &Env, sentinel: soroban_sdk::Address) {
+fn apply_sentinel_config(env: &Env, sentinel: soroban_sdk::Address) -> Result<(), ContractError> {
+    require_wasm_or_account_address(&sentinel)?;
     env.storage()
         .instance()
         .set(&VaultDataKey::Sentinel, &sentinel);
     emit_admin_event(env, symbol_short!("s_sntnl"));
+    Ok(())
 }
 
 fn apply_guardians_config(
     env: &Env,
     guardians: soroban_sdk::Vec<soroban_sdk::Address>,
 ) -> Result<(), ContractError> {
+    for guardian in guardians.iter() {
+        require_wasm_or_account_address(&guardian)?;
+    }
     require_unique_addresses(&guardians)?;
     env.storage()
         .instance()
@@ -95,6 +103,9 @@ fn apply_allocators_config(
     env: &Env,
     allocators: soroban_sdk::Vec<soroban_sdk::Address>,
 ) -> Result<(), ContractError> {
+    for allocator in allocators.iter() {
+        require_wasm_or_account_address(&allocator)?;
+    }
     require_unique_addresses(&allocators)?;
     env.storage()
         .instance()
@@ -676,11 +687,11 @@ fn set_governance_config_impl(
     }
 
     match kind {
-        GOVERNANCE_CONFIG_KIND_CURATOR => apply_curator_config(env, required_address(primary)?),
+        GOVERNANCE_CONFIG_KIND_CURATOR => apply_curator_config(env, required_address(primary)?)?,
         GOVERNANCE_CONFIG_KIND_GOVERNANCE => {
             apply_governance_config(env, required_address(primary)?)?
         }
-        GOVERNANCE_CONFIG_KIND_SENTINEL => apply_sentinel_config(env, required_address(primary)?),
+        GOVERNANCE_CONFIG_KIND_SENTINEL => apply_sentinel_config(env, required_address(primary)?)?,
         GOVERNANCE_CONFIG_KIND_GUARDIANS => apply_guardians_config(env, required_addresses(many)?)?,
         GOVERNANCE_CONFIG_KIND_ALLOCATORS => {
             apply_allocators_config(env, required_addresses(many)?)?
@@ -1037,6 +1048,9 @@ impl SorobanVaultContract {
 
         let virtual_shares = to_u128(virtual_shares)?;
         let virtual_assets = to_u128(virtual_assets)?;
+
+        require_wasm_or_account_address(&curator)?;
+        require_contract_address(&governance)?;
 
         set_config_address(&env, &VaultDataKey::Curator, &curator);
         set_config_address(&env, &VaultDataKey::Governance, &governance);

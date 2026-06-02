@@ -1,6 +1,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod types;
 pub use types::*;
@@ -8,7 +10,7 @@ pub use types::*;
 use alloc::{string::String as AllocString, vec::Vec as AllocVec};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Vec,
+    contract, contractimpl, Address, Bytes, BytesN, Env, Executable, IntoVal, String, Symbol, Vec,
 };
 use templar_curator_primitives::governance::{
     timelock_config_decision, CapChangeError, FeeChangeError, FeeConfig, MembershipChangeError,
@@ -120,6 +122,7 @@ impl SorobanVaultGovernanceContract {
     ) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         require_contract_address(&vault)?;
+        require_constructor_topology(&env, &admin, &vault)?;
         validate_timelock_ns(timelock_ns)?;
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -180,7 +183,7 @@ impl SorobanVaultGovernanceContract {
         caller: Address,
         governance: Address,
     ) -> Result<u64, GovernanceError> {
-        require_contract_address(&governance)?;
+        require_governance_target(&env, &governance)?;
         Self::submit(env, caller, GovernanceAction::SetGovernance(governance))
     }
 
@@ -609,7 +612,7 @@ impl SorobanVaultGovernanceContract {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
         require_not_abdicated(&env, &action)?;
-        validate_action(&action)?;
+        validate_action(&env, &action)?;
 
         let id = next_proposal_id(&env)?;
         let decision = decide_submission(&env, &action)?;
@@ -722,9 +725,9 @@ fn require_unique_target_ids(target_ids: &Vec<u32>) -> Result<(), GovernanceErro
     Ok(())
 }
 
-fn validate_action(action: &GovernanceAction) -> Result<(), GovernanceError> {
+fn validate_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
     match action {
-        GovernanceAction::SetGovernance(governance) => require_contract_address(governance),
+        GovernanceAction::SetGovernance(governance) => require_governance_target(env, governance),
         GovernanceAction::SetSupplyQueue(target_ids, adapters) => {
             require_unique_target_ids(target_ids)?;
             if !adapters.is_empty() && adapters.len() != target_ids.len() {
@@ -1672,8 +1675,10 @@ fn ledger_timestamp_ns(env: &Env) -> Result<TimestampNs, GovernanceError> {
 }
 
 fn is_contract_address(addr: &Address) -> bool {
-    let bytes = addr.to_string().to_bytes();
-    matches!(bytes.get(0), Some(b'C'))
+    matches!(
+        addr.executable(),
+        Some(Executable::Wasm(_)) | Some(Executable::StellarAsset)
+    )
 }
 
 fn require_contract_address(addr: &Address) -> Result<(), GovernanceError> {
@@ -1682,6 +1687,34 @@ fn require_contract_address(addr: &Address) -> Result<(), GovernanceError> {
     } else {
         Err(GovernanceError::InvalidInput)
     }
+}
+
+fn require_wasm_contract_address(addr: &Address) -> Result<(), GovernanceError> {
+    match addr.executable() {
+        Some(Executable::Wasm(_)) => Ok(()),
+        _ => Err(GovernanceError::InvalidInput),
+    }
+}
+
+fn require_governance_target(env: &Env, governance: &Address) -> Result<(), GovernanceError> {
+    require_wasm_contract_address(governance)?;
+    let vault = get_address(env, DataKey::Vault)?;
+    if governance == &vault || governance == &env.current_contract_address() {
+        return Err(GovernanceError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn require_constructor_topology(
+    env: &Env,
+    admin: &Address,
+    vault: &Address,
+) -> Result<(), GovernanceError> {
+    let current = env.current_contract_address();
+    if admin == vault || admin == &current || vault == &current {
+        return Err(GovernanceError::InvalidInput);
+    }
+    Ok(())
 }
 
 fn extend_instance_ttl(env: &Env) {

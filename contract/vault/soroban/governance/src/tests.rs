@@ -1077,6 +1077,7 @@ fn submit_set_supply_queue_rejects_duplicate_targets() {
             env.clone(),
             admin.clone(),
             sdk_u32_vec(&env, &[7u32, 7u32]),
+            Vec::new(&env),
         )
     });
 
@@ -1100,6 +1101,7 @@ fn submit_set_supply_queue_allows_empty_clear_policy() {
             env.clone(),
             admin.clone(),
             sdk_u32_vec(&env, &[]),
+            Vec::new(&env),
         )
     });
 
@@ -1281,6 +1283,68 @@ fn cap_group_membership_clear_uses_mirrored_current_membership() {
 }
 
 #[test]
+fn governance_constructor_rejects_self_referential_or_colliding_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+
+    let admin_is_vault = Address::generate(&env);
+    let self_as_admin = Address::generate(&env);
+    let self_as_vault = Address::generate(&env);
+
+    let admin_is_vault_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &admin_is_vault,
+            SorobanVaultGovernanceContract,
+            (&vault, &vault, &(0u64)),
+        );
+    }));
+    assert!(admin_is_vault_result.is_err());
+
+    let self_admin_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &self_as_admin,
+            SorobanVaultGovernanceContract,
+            (&self_as_admin, &vault, &(0u64)),
+        );
+    }));
+    assert!(self_admin_result.is_err());
+
+    let self_vault_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &self_as_vault,
+            SorobanVaultGovernanceContract,
+            (&admin, &self_as_vault, &(0u64)),
+        );
+    }));
+    assert!(self_vault_result.is_err());
+}
+
+#[test]
+fn set_governance_rejects_obvious_invalid_contract_targets() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(SorobanVaultGovernanceContract, (&admin, &vault, &(0u64)));
+    let asset_contract = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    for target in [vault.clone(), governance.clone(), asset_contract] {
+        let result = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_governance(
+                env.clone(),
+                admin.clone(),
+                target.clone(),
+            )
+        });
+        assert_eq!(result, Err(GovernanceError::InvalidInput));
+    }
+}
+
+#[test]
 fn governance_change_is_timelocked_and_routes_to_vault() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1297,7 +1361,7 @@ fn governance_change_is_timelocked_and_routes_to_vault() {
         (&admin, &vault, &(5_000_000_000u64)),
     );
 
-    let new_governance = Address::generate(&env);
+    let new_governance = env.register(SorobanVaultGovernanceContract, (&admin, &vault, &(0u64)));
 
     let proposal_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_governance(

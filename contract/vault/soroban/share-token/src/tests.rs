@@ -35,8 +35,8 @@ fn setup() -> (Env, Address, Address, Address) {
         ..Default::default()
     });
 
-    let admin = Address::generate(&env);
     let vault = env.register(VaultCaller, ());
+    let admin = vault.clone();
     let token = env.register(
         SorobanShareTokenContract,
         (
@@ -48,6 +48,45 @@ fn setup() -> (Env, Address, Address, Address) {
         ),
     );
     (env, admin, vault, token)
+}
+
+#[test]
+fn constructor_rejects_external_share_token_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let external_admin = Address::generate(&env);
+    let vault = env.register(VaultCaller, ());
+    let token = Address::generate(&env);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &token,
+            SorobanShareTokenContract,
+            (
+                &external_admin,
+                &vault,
+                &String::from_str(&env, "Templar Share"),
+                &String::from_str(&env, "tvSHARE"),
+                &7u32,
+            ),
+        );
+    }));
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_admin_rejects_non_vault_admin() {
+    let (env, _admin, vault, _token) = setup();
+    let new_admin = Address::generate(&env);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.as_contract(&vault, || {
+            SorobanShareTokenContract::set_admin(env.clone(), vault.clone(), new_admin.clone());
+        });
+    }));
+
+    assert!(result.is_err());
 }
 
 #[test]

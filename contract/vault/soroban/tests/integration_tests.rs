@@ -6,7 +6,7 @@ use rstest::{fixture, rstest};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Bytes, Env,
+    Address as SdkAddress, Bytes, Env,
 };
 use std::string::String as AllocString;
 use templar_curator_primitives::policy::state::MarketConfig;
@@ -21,7 +21,9 @@ use templar_soroban_runtime::{
     Storage, // Import the trait
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GUARDIANS,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
@@ -218,13 +220,82 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
     let share = env
         .register_stellar_asset_contract_v2(contract_id.clone())
         .address();
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share, 0, 0)
+        SorobanVaultContract::initialize(env.clone(), curator, governance, asset, share, 0, 0)
             .unwrap();
     });
 
     SorobanContractFixture { env, contract_id }
+}
+
+#[test]
+fn runtime_initialize_rejects_non_contract_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let vault = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = SdkAddress::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let asset = env
+        .register_stellar_asset_contract_v2(soroban_sdk::Address::generate(&env))
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(vault.clone())
+        .address();
+
+    let result = env.as_contract(&vault, || {
+        SorobanVaultContract::initialize(env.clone(), curator, governance, asset, share, 0, 0)
+    });
+
+    assert_eq!(
+        result,
+        Err(templar_soroban_runtime::ContractError::InvalidInput)
+    );
+}
+
+#[rstest]
+#[case(GOVERNANCE_CONFIG_KIND_CURATOR, true)]
+#[case(GOVERNANCE_CONFIG_KIND_SENTINEL, true)]
+#[case(GOVERNANCE_CONFIG_KIND_GUARDIANS, false)]
+#[case(GOVERNANCE_CONFIG_KIND_ALLOCATORS, false)]
+fn runtime_governance_config_rejects_sac_role_addresses(
+    #[case] kind: u32,
+    #[case] primary_role: bool,
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let contract_role = env
+        .register_stellar_asset_contract_v2(contract_id.clone())
+        .address();
+
+    env.as_contract(&contract_id, || {
+        let governance = proxy.governance().unwrap();
+        let many = if primary_role {
+            None
+        } else {
+            Some(std::vec![sdk_wire(&contract_role)])
+        };
+        let command = GovernanceCommand::SetGovernanceConfig {
+            kind,
+            primary: primary_role.then(|| sdk_wire(&contract_role)),
+            many,
+            value_a: None,
+            value_b: None,
+        };
+        assert_eq!(
+            proxy.execute_governance_unit(&governance, &command),
+            Err(templar_soroban_runtime::ContractError::InvalidInput)
+        );
+    });
 }
 
 #[rstest]

@@ -296,9 +296,11 @@ mod contract_tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env};
     use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
+    use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
         ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
         GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
@@ -372,6 +374,24 @@ mod contract_tests {
     fn sdk_text(address: &SdkAddress) -> AllocString {
         AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec())
             .expect("valid address")
+    }
+
+    fn register_runtime_contracts(
+        env: &Env,
+        contract_id: &SdkAddress,
+        admin: &SdkAddress,
+    ) -> (SdkAddress, SdkAddress, SdkAddress) {
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (admin, contract_id, &(0u64)),
+        );
+        let asset = env
+            .register_stellar_asset_contract_v2(SdkAddress::generate(env))
+            .address();
+        let share = env
+            .register_stellar_asset_contract_v2(contract_id.clone())
+            .address();
+        (governance, asset, share)
     }
 
     fn execute_command(
@@ -1173,14 +1193,13 @@ mod contract_tests {
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
                 env.clone(),
                 curator.clone(),
-                curator,
+                governance,
                 asset,
                 share,
                 0,
@@ -1232,14 +1251,13 @@ mod contract_tests {
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
                 env.clone(),
                 curator.clone(),
-                curator.clone(),
+                governance,
                 asset,
                 share,
                 17,
@@ -1265,9 +1283,7 @@ mod contract_tests {
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
-        let governance = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -1516,7 +1532,12 @@ mod contract_tests {
 
         env.as_contract(&contract_id, || {
             proxy
-                .initialize(curator.clone(), curator, asset.clone(), share.clone())
+                .initialize(
+                    curator.clone(),
+                    register_runtime_contracts(&env, &contract_id, &curator).0,
+                    asset.clone(),
+                    share.clone(),
+                )
                 .unwrap();
 
             let mut storage = SorobanStorage::new(&env);
@@ -1587,7 +1608,7 @@ mod contract_tests {
             SorobanVaultContract::initialize(
                 env.clone(),
                 curator.clone(),
-                curator.clone(),
+                register_runtime_contracts(&env, &contract_id, &curator).0,
                 asset.clone(),
                 share.clone(),
                 0,
@@ -1912,14 +1933,13 @@ mod contract_tests {
 
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = soroban_sdk::Address::generate(&env);
-        let asset = soroban_sdk::Address::generate(&env);
-        let share = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
                 env.clone(),
                 curator.clone(),
-                curator,
+                governance,
                 asset,
                 share,
                 0,
@@ -2492,6 +2512,7 @@ mod storage_tests {
     use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
     use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
     use templar_curator_primitives::PolicyState;
+    use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
         GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
         GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
@@ -2588,6 +2609,24 @@ mod storage_tests {
         env.storage()
             .instance()
             .set(&crate::contract::VaultDataKey::AdapterBindings, &bindings);
+    }
+
+    fn register_runtime_contracts(
+        env: &Env,
+        contract_id: &SdkAddress,
+        admin: &SdkAddress,
+    ) -> (SdkAddress, SdkAddress, SdkAddress) {
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (admin, contract_id, &(0u64)),
+        );
+        let asset = env
+            .register_stellar_asset_contract_v2(SdkAddress::generate(env))
+            .address();
+        let share = env
+            .register_stellar_asset_contract_v2(contract_id.clone())
+            .address();
+        (governance, asset, share)
     }
 
     fn execute_governance_command(
@@ -3845,9 +3884,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4023,9 +4060,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4080,9 +4115,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4133,11 +4166,9 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let sentinel = SdkAddress::generate(&env);
         let attacker = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4326,12 +4357,10 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let sentinel = SdkAddress::generate(&env);
         let attacker = SdkAddress::generate(&env);
         let restricted = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4495,9 +4524,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let cap_group_id = CapGroupId::try_from("group-c".to_string()).unwrap();
 
         env.as_contract(&contract_id, || {
@@ -4581,10 +4608,8 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let attacker = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(env.clone(), curator, governance, asset, share, 0, 0)
@@ -4604,9 +4629,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let cap_group_id = CapGroupId::try_from("group-c".to_string()).unwrap();
 
         env.as_contract(&contract_id, || {
@@ -4670,9 +4693,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4726,11 +4747,21 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+        let asset = env
+            .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+            .address();
+        let share = env
+            .register_stellar_asset_contract_v2(contract_id.clone())
+            .address();
         let new_curator = SdkAddress::generate(&env);
-        let new_governance = SdkAddress::generate(&env);
+        let new_governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
         let sentinel = SdkAddress::generate(&env);
         let guardian = SdkAddress::generate(&env);
 
@@ -4841,9 +4872,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
@@ -4886,9 +4915,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let adapter = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {
@@ -4959,9 +4986,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
         let attacker = SdkAddress::generate(&env);
 
         env.as_contract(&contract_id, || {
@@ -5049,9 +5074,7 @@ mod storage_tests {
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
         let curator = SdkAddress::generate(&env);
-        let governance = SdkAddress::generate(&env);
-        let asset = SdkAddress::generate(&env);
-        let share = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
 
         env.as_contract(&contract_id, || {
             SorobanVaultContract::initialize(
