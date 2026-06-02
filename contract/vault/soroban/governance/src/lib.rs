@@ -44,6 +44,7 @@ enum ProposalKey {
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum GovernanceActionKey {
+    Admin,
     Pause,
     Curator,
     Governance,
@@ -71,6 +72,7 @@ enum GovernanceActionKey {
 impl GovernanceAction {
     fn pending_key(&self) -> GovernanceActionKey {
         match self {
+            Self::SetAdmin(_) => GovernanceActionKey::Admin,
             Self::SetPaused(_) => GovernanceActionKey::Pause,
             Self::SetCurator(_) => GovernanceActionKey::Curator,
             Self::SetGovernance(_) => GovernanceActionKey::Governance,
@@ -168,6 +170,14 @@ impl SorobanVaultGovernanceContract {
         paused: bool,
     ) -> Result<u64, GovernanceError> {
         Self::submit(env, caller, GovernanceAction::SetPaused(paused))
+    }
+
+    pub fn submit_set_admin(
+        env: Env,
+        caller: Address,
+        new_admin: Address,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetAdmin(new_admin))
     }
 
     pub fn submit_set_curator(
@@ -518,6 +528,18 @@ impl SorobanVaultGovernanceContract {
         let now_ns = ledger_timestamp_ns(&env)?;
 
         let mut queue = load_queue(&env);
+        let mut matching = 0u32;
+        for entry in queue.iter() {
+            if action_kind(&entry.value.action) == kind {
+                matching = matching
+                    .checked_add(1)
+                    .ok_or(GovernanceError::ArithmeticOverflow)?;
+            }
+        }
+        if matching > 1 {
+            return Err(GovernanceError::DuplicatePending);
+        }
+
         let proposal = match queue.take_by_key(now_ns, &kind, queued_proposal_kind) {
             TakePending::Ready(proposal) => proposal,
             TakePending::Missing => return Err(GovernanceError::ProposalNotFound),
@@ -555,11 +577,29 @@ impl SorobanVaultGovernanceContract {
     ) -> Result<u32, GovernanceError> {
         extend_instance_ttl(&env);
         require_revoker(&env, &caller)?;
-        let removed = revoke_where(&env, |action| action_kind(action) == kind);
-        if removed == 0 {
+        let mut queue = load_queue(&env);
+        let mut matching = 0u32;
+        for entry in queue.iter() {
+            if action_kind(&entry.value.action) == kind {
+                matching = matching
+                    .checked_add(1)
+                    .ok_or(GovernanceError::ArithmeticOverflow)?;
+            }
+        }
+        if matching == 0 {
             return Err(GovernanceError::ProposalNotFound);
         }
-        Ok(removed)
+        if matching > 1 {
+            return Err(GovernanceError::DuplicatePending);
+        }
+
+        let removed = queue.revoke_by_key(&kind, queued_proposal_kind);
+        save_queue(&env, &queue);
+        let Some(proposal) = removed.first() else {
+            return Err(GovernanceError::ProposalNotFound);
+        };
+        ProposalRevoked { id: proposal.id }.publish(&env);
+        Ok(1)
     }
 
     pub fn pending(env: Env, proposal_id: u64) -> Result<PendingProposal, GovernanceError> {
@@ -662,6 +702,7 @@ impl SorobanVaultGovernanceContract {
 
 fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
     match action {
+        GovernanceAction::SetAdmin(_) => GovernanceActionKind::Admin,
         GovernanceAction::SetPaused(_) => GovernanceActionKind::Pause,
         GovernanceAction::SetCurator(_) => GovernanceActionKind::Curator,
         GovernanceAction::SetGovernance(_) => GovernanceActionKind::Governance,
@@ -690,6 +731,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
 
 fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
     match action {
+        GovernanceAction::SetAdmin(_) => TimelockKind::Admin,
         GovernanceAction::SetPaused(_) => TimelockKind::Pause,
         GovernanceAction::SetCurator(_) => TimelockKind::Curator,
         GovernanceAction::SetGovernance(_) => TimelockKind::Governance,
@@ -773,6 +815,13 @@ fn decide_submission(
     action: &GovernanceAction,
 ) -> Result<TimelockDecision, GovernanceError> {
     match action {
+        GovernanceAction::SetAdmin(new_admin) => {
+            let current = get_address(env, DataKey::Admin)?;
+            if &current == new_admin {
+                return Err(GovernanceError::NoChange);
+            }
+            Ok(TimelockDecision::Timelocked)
+        }
         GovernanceAction::SetPaused(paused) => {
             if *paused {
                 return Err(GovernanceError::InvalidInput);
@@ -884,6 +933,13 @@ fn decide_submission(
         }
         GovernanceAction::RemoveMarket(_) => Ok(TimelockDecision::from_requires_timelock(true)),
         GovernanceAction::SetGroupCap(cap_group_id, new_cap) => {
+            let known: Option<bool> = env
+                .storage()
+                .instance()
+                .get(&DataKey::KnownCapGroupCap(cap_group_id.clone()));
+            if known != Some(true) {
+                return Ok(TimelockDecision::Timelocked);
+            }
             let current: Option<i128> = env
                 .storage()
                 .instance()
@@ -898,6 +954,13 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupRelCap(cap_group_id, new_relative_cap_wad) => {
+            let known: Option<bool> = env
+                .storage()
+                .instance()
+                .get(&DataKey::KnownCapGroupRelCap(cap_group_id.clone()));
+            if known != Some(true) {
+                return Ok(TimelockDecision::Timelocked);
+            }
             let current: Option<i128> = env
                 .storage()
                 .instance()
@@ -915,6 +978,13 @@ fn decide_submission(
             }
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
+            let known: Option<bool> = env
+                .storage()
+                .instance()
+                .get(&DataKey::KnownCapGroupMembership(*market_id));
+            if known != Some(true) {
+                return Ok(TimelockDecision::Timelocked);
+            }
             let current: Option<String> = env
                 .storage()
                 .instance()
@@ -1104,43 +1174,14 @@ fn revoke_by_action_key(env: &Env, key: &GovernanceActionKey) -> u32 {
     revoked_ids.len()
 }
 
-fn revoke_where(env: &Env, pred: impl Fn(&GovernanceAction) -> bool) -> u32 {
-    let mut queue = load_queue(env);
-    let mut revoked_ids = Vec::new(env);
-    let mut keys = alloc::vec::Vec::new();
-
-    for entry in queue.iter() {
-        if pred(&entry.value.action) {
-            revoked_ids.push_back(entry.value.id);
-            let key = entry.value.action_key();
-            if !keys.iter().any(|existing| existing == &key) {
-                keys.push(key);
-            }
-        }
-    }
-
-    if revoked_ids.is_empty() {
-        return 0;
-    }
-
-    for key in keys.iter() {
-        let _removed = queue.revoke_by_key(key, QueuedProposal::action_key);
-    }
-
-    save_queue(env, &queue);
-
-    for id in revoked_ids.iter() {
-        ProposalRevoked { id }.publish(env);
-    }
-
-    revoked_ids.len()
-}
-
 #[allow(clippy::too_many_lines)]
 fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
     let vault = get_address(env, DataKey::Vault)?;
 
     match action {
+        GovernanceAction::SetAdmin(new_admin) => {
+            env.storage().instance().set(&DataKey::Admin, new_admin);
+        }
         GovernanceAction::SetPaused(paused) => {
             execute_vault_governance_action(env, &vault, action)?;
             env.storage()
@@ -1195,6 +1236,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             env.storage()
                 .instance()
                 .set(&DataKey::CurrentCapGroupCap(cap_group_id.clone()), cap);
+            env.storage()
+                .instance()
+                .set(&DataKey::KnownCapGroupCap(cap_group_id.clone()), &true);
         }
         GovernanceAction::SetGroupRelCap(cap_group_id, relative_cap) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1202,6 +1246,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 &DataKey::CurrentCapGroupRelCap(cap_group_id.clone()),
                 relative_cap,
             );
+            env.storage()
+                .instance()
+                .set(&DataKey::KnownCapGroupRelCap(cap_group_id.clone()), &true);
         }
         GovernanceAction::SetGroupMember(market_id, cap_group_id) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1211,6 +1258,9 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             } else {
                 env.storage().instance().set(&key, cap_group_id);
             }
+            env.storage()
+                .instance()
+                .set(&DataKey::KnownCapGroupMembership(*market_id), &true);
         }
         GovernanceAction::SetSkimRecipient(recipient) => {
             execute_vault_governance_action(env, &vault, action)?;
@@ -1494,6 +1544,7 @@ fn governance_payload_for_action(
         GovernanceAction::Upgrade(_)
         | GovernanceAction::Migrate
         | GovernanceAction::CancelMigration
+        | GovernanceAction::SetAdmin(_)
         | GovernanceAction::SetTimelock(_, _)
         | GovernanceAction::Other(_, _) => None,
     };

@@ -379,7 +379,7 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
     migrate_legacy_paused(env);
     let curator: SdkAddress =
         require_config_address(env, &VaultDataKey::Curator, "curator not set")?;
-    let governance: SdkAddress =
+    let _governance: SdkAddress =
         require_config_address(env, &VaultDataKey::Governance, "governance not set")?;
     let asset_token: SdkAddress =
         require_config_address(env, &VaultDataKey::AssetToken, "asset token not set")?;
@@ -389,7 +389,6 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
     let vault_sdk = env.current_contract_address();
     let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
     let curator_kernel = kernel_address_from_sdk(env, &curator);
-    let governance_kernel = kernel_address_from_sdk(env, &governance);
     let asset_kernel = kernel_address_from_sdk(env, &asset_token);
     let share_kernel = kernel_address_from_sdk(env, &share_token);
 
@@ -409,7 +408,6 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
     let storage = SorobanStorage::new(env);
     let paused = storage.is_paused();
     let mut rbac_config = RbacConfig::with_curator(curator_kernel);
-    rbac_config.add_role(governance_kernel, Role::Curator);
 
     load_rbac_addresses(
         env,

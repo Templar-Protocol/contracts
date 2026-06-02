@@ -157,6 +157,7 @@ fn apply_supply_queue_policy(
     caller_kernel: Address,
     target_ids: soroban_sdk::Vec<u32>,
     adapters: Option<soroban_sdk::Vec<SdkAddress>>,
+    caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     let mut bindings = env
         .storage()
@@ -225,7 +226,11 @@ fn apply_supply_queue_policy(
         let targets = queue_targets
             .take()
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
-        vault.set_supply_queue(caller_kernel, targets)
+        if caller_preauthorized {
+            vault.set_supply_queue_authorized(targets)
+        } else {
+            vault.set_supply_queue(caller_kernel, targets)
+        }
     };
     with_contract_vault_contract_error(env, &mut call)?;
     if !bindings.is_empty() {
@@ -241,10 +246,15 @@ fn apply_cap_policy(
     caller_kernel: Address,
     market_id: u32,
     new_cap: i128,
+    caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     let new_cap_u128 = to_u128(new_cap)?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.apply_governance_cap(caller_kernel, market_id, new_cap_u128)
+        if caller_preauthorized {
+            vault.apply_governance_cap_authorized(market_id, new_cap_u128)
+        } else {
+            vault.apply_governance_cap(caller_kernel, market_id, new_cap_u128)
+        }
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -253,9 +263,14 @@ fn apply_remove_market_policy(
     env: &Env,
     caller_kernel: Address,
     market_id: u32,
+    caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.apply_governance_remove_market(caller_kernel, market_id)
+        if caller_preauthorized {
+            vault.apply_governance_remove_market_authorized(market_id)
+        } else {
+            vault.apply_governance_remove_market(caller_kernel, market_id)
+        }
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -344,6 +359,7 @@ fn apply_group_policy(
     market_id: Option<u32>,
     cap_group_id: Option<soroban_sdk::String>,
     value: Option<i128>,
+    caller_preauthorized: bool,
 ) -> Result<(), ContractError> {
     fn parse_cap_group(raw: alloc::string::String) -> Result<CapGroupId, ContractError> {
         CapGroupId::try_from(raw).map_err(|_| ContractError::InvalidInput)
@@ -385,7 +401,11 @@ fn apply_group_policy(
         let update = internal
             .take()
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
-        vault.apply_governance_cap_group_update(caller_kernel, update)
+        if caller_preauthorized {
+            vault.apply_governance_cap_group_update_authorized(update)
+        } else {
+            vault.apply_governance_cap_group_update(caller_kernel, update)
+        }
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -747,6 +767,7 @@ fn set_governance_policy_impl(
                 caller_kernel,
                 target_ids.ok_or(ContractError::InvalidInput)?,
                 accounts,
+                caller_preauthorized,
             )
         }
         GOVERNANCE_POLICY_KIND_CAP => apply_cap_policy(
@@ -754,11 +775,13 @@ fn set_governance_policy_impl(
             governance_kernel()?,
             market_id.ok_or(ContractError::InvalidInput)?,
             required_i128(value)?,
+            caller_preauthorized,
         ),
         GOVERNANCE_POLICY_KIND_REMOVE_MARKET => apply_remove_market_policy(
             env,
             governance_kernel()?,
             market_id.ok_or(ContractError::InvalidInput)?,
+            caller_preauthorized,
         ),
         GOVERNANCE_POLICY_KIND_RESTRICTIONS => apply_restrictions_policy(
             env,
@@ -774,6 +797,7 @@ fn set_governance_policy_impl(
             market_id,
             cap_group_id,
             value,
+            caller_preauthorized,
         ),
         GOVERNANCE_POLICY_KIND_PAUSED => {
             let paused = match mode.ok_or(ContractError::InvalidInput)? {

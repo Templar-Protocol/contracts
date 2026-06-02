@@ -24,11 +24,15 @@ pub(crate) enum DataKey {
     CurrentCap(u32),
     CurrentCapGroupCap(String),
     CurrentCapGroupRelCap(String),
+    KnownCapGroupCap(String),
+    KnownCapGroupRelCap(String),
+    KnownCapGroupMembership(u32),
 }
 
 #[contracttype]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TimelockKind {
+    Admin,
     Pause,
     Curator,
     Governance,
@@ -52,6 +56,7 @@ pub enum TimelockKind {
 #[contracttype]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum GovernanceActionKind {
+    Admin,
     Pause,
     Curator,
     Governance,
@@ -76,6 +81,7 @@ pub enum GovernanceActionKind {
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub struct Timelocks {
+    pub admin_ns: u64,
     pub pause_ns: u64,
     pub curator_ns: u64,
     pub governance_ns: u64,
@@ -99,6 +105,7 @@ pub struct Timelocks {
 impl Timelocks {
     pub(crate) fn from_default(default_ns: u64) -> Self {
         Self {
+            admin_ns: default_ns,
             pause_ns: default_ns,
             curator_ns: default_ns,
             governance_ns: default_ns,
@@ -122,6 +129,7 @@ impl Timelocks {
 
     pub(crate) fn get(self, kind: TimelockKind) -> u64 {
         match kind {
+            TimelockKind::Admin => self.admin_ns,
             TimelockKind::Pause => self.pause_ns,
             TimelockKind::Curator => self.curator_ns,
             TimelockKind::Governance => self.governance_ns,
@@ -145,6 +153,7 @@ impl Timelocks {
 
     pub(crate) fn set(&mut self, kind: TimelockKind, value: u64) {
         match kind {
+            TimelockKind::Admin => self.admin_ns = value,
             TimelockKind::Pause => self.pause_ns = value,
             TimelockKind::Curator => self.curator_ns = value,
             TimelockKind::Governance => self.governance_ns = value,
@@ -207,6 +216,7 @@ impl RestrictionMode {
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub enum GovernanceAction {
+    SetAdmin(Address),
     SetPaused(bool),
     SetCurator(Address),
     SetGovernance(Address),
