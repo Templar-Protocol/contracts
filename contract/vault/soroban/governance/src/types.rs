@@ -185,7 +185,7 @@ pub enum GovernanceAction {
     SetPaused(bool),
     SetCurator(Address),
     SetGovernance(Address),
-    SetSupplyQueue(Vec<u32>),
+    SetSupplyQueue(Vec<u32>, Vec<Address>),
     SetFees(FeeParams),
     SetRestrictions(RestrictionMode, Vec<Address>),
     SetGuardian(Address),

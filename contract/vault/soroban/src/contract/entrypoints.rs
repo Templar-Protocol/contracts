@@ -5,12 +5,11 @@
 
 use super::helpers::{
     adapter_for_market, address_from_alloc_string, addresses_from_alloc_strings, apply_fee_change,
-    current_supply_queue_len, emit_admin_event, emit_alloc_event, emit_pause_state_event,
-    extend_storage_ttl, get_config_address, governance_caller, kernel_address_from_sdk,
-    load_virtual_offsets, migrate_legacy_paused, migration_in_progress, require_contract_address,
-    require_governance, require_signed, sdk_string_to_alloc, set_config_address,
-    set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    with_contract_vault_contract_error,
+    emit_admin_event, emit_alloc_event, emit_pause_state_event, extend_storage_ttl,
+    get_config_address, governance_caller, kernel_address_from_sdk, load_virtual_offsets,
+    migrate_legacy_paused, migration_in_progress, require_contract_address, require_governance,
+    require_signed, sdk_string_to_alloc, set_config_address, set_migration_in_progress,
+    store_fees_spec, store_virtual_offsets, with_contract_vault_contract_error,
 };
 use super::*;
 use templar_soroban_shared_types::{
@@ -81,9 +80,8 @@ fn apply_allowed_adapters_config(
     env: &Env,
     adapters: soroban_sdk::Vec<soroban_sdk::Address>,
 ) -> Result<(), ContractError> {
-    let queue_len = current_supply_queue_len(env)?;
-    if queue_len > 0 && adapters.len() != queue_len {
-        return Err(ContractError::InvalidInput);
+    for adapter in adapters.iter() {
+        require_contract_address(&adapter)?;
     }
     if adapters.is_empty() {
         env.storage()
@@ -119,16 +117,64 @@ fn apply_supply_queue_policy(
     env: &Env,
     caller_kernel: Address,
     target_ids: soroban_sdk::Vec<u32>,
+    adapters: Option<soroban_sdk::Vec<SdkAddress>>,
 ) -> Result<(), ContractError> {
-    if let Some(adapters) = env
+    let mut bindings = env
         .storage()
         .instance()
-        .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
-    {
+        .get::<_, soroban_sdk::Map<u32, SdkAddress>>(&VaultDataKey::AdapterBindings)
+        .unwrap_or_else(|| soroban_sdk::Map::new(env));
+
+    if let Some(adapters) = adapters.as_ref() {
         if adapters.len() != target_ids.len() {
             return Err(ContractError::InvalidInput);
         }
     }
+    let allowed_adapters = env
+        .storage()
+        .instance()
+        .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters);
+
+    for (idx, target_id) in target_ids.iter().enumerate() {
+        let proposed_adapter = adapters
+            .as_ref()
+            .map(|values| {
+                let index = u32::try_from(idx).map_err(|_| ContractError::InvalidInput)?;
+                values.get(index).ok_or(ContractError::InvalidInput)
+            })
+            .transpose()?;
+        if let Some(existing_adapter) = bindings.get(target_id) {
+            if let Some(proposed_adapter) = proposed_adapter {
+                if proposed_adapter != existing_adapter {
+                    return Err(ContractError::InvalidInput);
+                }
+            }
+            require_contract_address(&existing_adapter)?;
+            let allowed = allowed_adapters
+                .as_ref()
+                .map(|allowed| {
+                    allowed
+                        .iter()
+                        .any(|candidate| candidate == existing_adapter)
+                })
+                .unwrap_or(false);
+            if !allowed {
+                return Err(ContractError::InvalidInput);
+            }
+        } else {
+            let adapter = proposed_adapter.ok_or(ContractError::InvalidInput)?;
+            require_contract_address(&adapter)?;
+            let allowed = allowed_adapters
+                .as_ref()
+                .map(|allowed| allowed.iter().any(|candidate| candidate == adapter))
+                .unwrap_or(false);
+            if !allowed {
+                return Err(ContractError::InvalidInput);
+            }
+            bindings.set(target_id, adapter);
+        }
+    }
+
     let mut queue_targets: Option<Vec<TargetId>> = {
         let mut v = Vec::with_capacity(target_ids.len() as usize);
         for target_id in target_ids.iter() {
@@ -142,7 +188,13 @@ fn apply_supply_queue_policy(
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
         vault.set_supply_queue(caller_kernel, targets)
     };
-    with_contract_vault_contract_error(env, &mut call)
+    with_contract_vault_contract_error(env, &mut call)?;
+    if !bindings.is_empty() {
+        env.storage()
+            .instance()
+            .set(&VaultDataKey::AdapterBindings, &bindings);
+    }
+    Ok(())
 }
 
 fn apply_cap_policy(
@@ -560,6 +612,7 @@ fn set_governance_policy_impl(
             env,
             caller_kernel,
             target_ids.ok_or(ContractError::InvalidInput)?,
+            accounts,
         ),
         GOVERNANCE_POLICY_KIND_CAP => apply_cap_policy(
             env,

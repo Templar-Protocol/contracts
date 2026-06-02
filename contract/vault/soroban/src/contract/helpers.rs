@@ -113,19 +113,6 @@ pub(crate) fn require_contract_address(addr: &SdkAddress) -> Result<(), Contract
         .ok_or(ContractError::InvalidInput)
 }
 
-fn allowed_adapters(env: &Env) -> Option<soroban_sdk::Vec<SdkAddress>> {
-    env.storage().instance().get(&VaultDataKey::AllowedAdapters)
-}
-
-fn load_policy_state(env: &Env) -> Result<PolicyState, ContractError> {
-    if migration_in_progress(env) {
-        return Err(ContractError::InvalidState);
-    }
-
-    let storage = SorobanStorage::new(env);
-    runtime_to_contract(storage.load_policy_state()).map(|state| state.unwrap_or_default())
-}
-
 fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
     let mut bytes = Vec::with_capacity(96);
     bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
@@ -261,25 +248,13 @@ pub(crate) fn emit_alloc_event(env: &Env, market: u32, amount: i128, supply: boo
 }
 
 pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, ContractError> {
-    let adapters = allowed_adapters(env);
-    let Some(adapters) = adapters else {
-        return Err(ContractError::InvalidInput);
-    };
+    let bindings = env
+        .storage()
+        .instance()
+        .get::<_, soroban_sdk::Map<u32, SdkAddress>>(&VaultDataKey::AdapterBindings)
+        .ok_or(ContractError::InvalidInput)?;
 
-    let policy_state = load_policy_state(env)?;
-    for (idx, entry) in policy_state.supply_queue().entries().iter().enumerate() {
-        if entry.target_id == market {
-            let index = u32::try_from(idx).map_err(|_| ContractError::InvalidInput)?;
-            return adapters.get(index).ok_or(ContractError::InvalidInput);
-        }
-    }
-
-    Err(ContractError::InvalidInput)
-}
-
-pub(crate) fn current_supply_queue_len(env: &Env) -> Result<u32, ContractError> {
-    let policy_state = load_policy_state(env)?;
-    u32::try_from(policy_state.supply_queue().len()).map_err(|_| ContractError::InvalidInput)
+    bindings.get(market).ok_or(ContractError::InvalidInput)
 }
 
 fn require_non_negative_bounded_wad(value: i128, max: u128) -> Result<Wad, ContractError> {
