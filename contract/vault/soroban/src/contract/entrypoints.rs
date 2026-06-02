@@ -380,13 +380,14 @@ fn apply_group_policy(
             },
         },
         2 => {
+            let market_id = market_id.ok_or(ContractError::InvalidInput)?;
             let group = if cap_group_raw.is_empty() {
                 None
             } else {
                 Some(parse_cap_group(cap_group_raw)?)
             };
             CapGroupUpdate::SetMembership {
-                market_id: market_id.ok_or(ContractError::InvalidInput)?,
+                market_id,
                 cap_group_id: group,
             }
         }

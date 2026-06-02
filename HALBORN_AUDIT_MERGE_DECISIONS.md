@@ -44,3 +44,9 @@ Base used: `origin/spr/refactor/vault-ergonomics/4f330057` at `4e72696d27e0f716b
 - Dropped the obsolete guardian config path during conflict resolution because the integrated shared-types ABI no longer defines `GOVERNANCE_CONFIG_KIND_GUARDIANS` and the governance action/types no longer include guardian proposals.
 - Removed `migrate_legacy_paused` from imports because PR #437 removes the legacy paused migration shim.
 - Updated downstream runtime tests to match the removed guardian config ABI: `ContractConfig::new` no longer receives a guardian list, and the SAC-role rejection parameterized test now covers primary roles via curator/sentinel and list roles via allocators.
+
+### PR #441 in progress
+
+- Kept both runtime ABI regressions: unauthorized governance callers are rejected before malformed body decode, and group-membership governance commands require an explicit `market_id`.
+- Used the integrated registered-governance test helper for the #441 group-membership test instead of the older generated-address-only setup, so the test matches the post-#451 governance identity requirements.
+- Preserved PR #441's explicit `market_id` unwrapping for membership mode and removed a stale second `ok_or` on the already-unwrapped `u32`.
