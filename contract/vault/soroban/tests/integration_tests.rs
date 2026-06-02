@@ -191,6 +191,20 @@ impl<'a> VaultProxy<'a> {
              .3)
     }
 
+    fn max_withdraw(
+        &self,
+        owner: soroban_sdk::Address,
+    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self.view(owner, 0, 0)?.2 .4)
+    }
+
+    fn max_redeem(
+        &self,
+        owner: soroban_sdk::Address,
+    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self.view(owner, 0, 0)?.2 .5)
+    }
+
     fn execute(
         &self,
         command: &VaultCommand,
@@ -881,6 +895,31 @@ fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
             proxy.view(owner, 0, 0),
             Err(templar_soroban_runtime::ContractError::ConversionOverflow)
         );
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_reports_zero_atomic_limits_until_atomic_abi_exists(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 1_000,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(proxy.max_withdraw(owner.clone()).unwrap(), 0);
+        assert_eq!(proxy.max_redeem(owner).unwrap(), 0);
     });
 }
 
