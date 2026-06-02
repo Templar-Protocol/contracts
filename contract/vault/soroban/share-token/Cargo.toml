@@ -15,7 +15,7 @@ default = []
 testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
-soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2", "hazmat-address"] }
 stellar-tokens.workspace = true
 
 [dev-dependencies]

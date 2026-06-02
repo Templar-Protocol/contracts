@@ -15,4 +15,6 @@ pub enum ShareTokenError {
     Unauthorized = 1,
     InvalidInput = 2,
     MissingConfig = 3,
+    VaultImmutable = 4,
+    MetadataImmutable = 5,
 }

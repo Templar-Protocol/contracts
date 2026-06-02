@@ -7,7 +7,8 @@ mod types;
 pub use types::*;
 
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, Address, Env, Executable, MuxedAddress, String,
+    address_payload::AddressPayload, contract, contractimpl, panic_with_error, symbol_short,
+    Address, Env, MuxedAddress, String,
 };
 use stellar_tokens::fungible::{
     burnable::{emit_burn, FungibleBurnable},
@@ -83,6 +84,9 @@ impl FungibleBurnable for SorobanShareTokenContract {
         Base::spend_allowance(e, &from, &spender, amount);
         Base::update(e, Some(&from), None, amount);
         emit_burn(e, &from, amount);
+        #[allow(deprecated)]
+        e.events()
+            .publish((symbol_short!("burn_from"), spender, from), amount);
     }
 }
 
@@ -124,13 +128,13 @@ impl SorobanShareTokenContract {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
         require_contract_address(&env, &vault);
-        env.storage().instance().set(&DataKey::Vault, &vault);
+        panic_with_error!(&env, ShareTokenError::VaultImmutable);
     }
 
-    pub fn set_metadata(env: Env, caller: Address, name: String, symbol: String, decimals: u32) {
+    pub fn set_metadata(env: Env, caller: Address, _name: String, _symbol: String, _decimals: u32) {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
-        Base::set_metadata(&env, decimals, name, symbol);
+        panic_with_error!(&env, ShareTokenError::MetadataImmutable);
     }
 
     pub fn admin(env: Env) -> Address {
@@ -180,8 +184,8 @@ fn require_vault_invoker(env: &Env) {
 
 fn is_contract_address(addr: &Address) -> bool {
     matches!(
-        addr.executable(),
-        Some(Executable::Wasm(_)) | Some(Executable::StellarAsset)
+        AddressPayload::from_address(addr),
+        Some(AddressPayload::ContractIdHash(_))
     )
 }
 

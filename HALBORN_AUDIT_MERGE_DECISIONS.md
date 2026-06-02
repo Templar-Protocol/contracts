@@ -68,3 +68,8 @@ Base used: `origin/spr/refactor/vault-ergonomics/4f330057` at `4e72696d27e0f716b
 - Combined storage-test imports so adapter/governance tests and PR #430 paged-storage cap tests both compile.
 - Removed the stale `MAX_PENDING` import after PR #430 switched the Soroban runtime path to `SOROBAN_MAX_PENDING_WITHDRAWALS`.
 - Renamed the now-unused `proxy_view` owner parameter to `_owner`; the ABI-shaped argument remains present while the merged fee/proxy-view logic no longer reads it directly.
+
+### PR #429 in progress
+
+- For share-token vault address validation, took PR #429's stricter `AddressPayload::ContractIdHash` check instead of the current branch's broader `Executable::{Wasm, StellarAsset}` check.
+- Kept `symbol_short` because PR #429 emits the delegated `burn_from` observability event.
