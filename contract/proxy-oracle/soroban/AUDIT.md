@@ -14,7 +14,7 @@ Related documents:
 ### In-Scope Components
 
 1. **Runtime Contract**: `contract/proxy-oracle/soroban/contract/src/lib.rs`
-   - SEP-40 interface implementation (`base`, `assets`, `decimals`, `resolution`, `price`, `prices`, `lastprice`).
+   - Normalized exponent-form read API (`aggregated_latest(asset)`, `aggregated_history(asset, records)`). The runtime does **not** implement SEP-40 itself; SEP-40 surface is provided by per-feed `Sep40Adapter` contracts that scale this normalized form to their own configured decimals.
    - Cache management, cache invalidation, and fail-closed read semantics.
    - Source IO and kernel integration via `refresh(assets)`.
    - Storage TTL management (`extend_ttl`).
@@ -33,11 +33,17 @@ Related documents:
    - `AdminUpgrade(new_wasm_hash)` for governed runtime WASM upgrades.
    - Query views: `next_proposal_id`, `proposal_count`, `list_proposals`, `get_proposal`, `get_effective_proposal_ttl`, `get_operation_ttl`.
 
-3. **Shared DTOs and Errors**: `contract/proxy-oracle/soroban/common/src/lib.rs`
-    - Data structures, error types, and shared event schemas.
-    - Common contains shared DTOs such as `GovernanceAction`, `OperationKind`, `TtlConfig`, role definitions, proxy/breaker configs, and error types.
+3. **SEP-40 Adapter Contract**: `contract/proxy-oracle/soroban/sep40-adapter-contract/src/lib.rs`
+   - SEP-40 `PriceFeedTrait` implementation (`base`, `assets`, `decimals`, `resolution`, `price`, `prices`, `lastprice`), declaring `contractmeta!(key = "sep", val = "40")`.
+   - Reads from a configured parent proxy oracle via `aggregated_latest` / `aggregated_history`, then rescales mantissa+expo to the adapter's per-instance `decimals`.
+   - Owner-gated admin entrypoints: `set_decimals`, `set_resolution`, `set_base`, `upgrade`. Ownership via OpenZeppelin's `stellar-access::ownable` (two-step `transfer_ownership` / `accept_ownership` / `renounce_ownership`).
+   - No decommission state: owner-controlled lifecycle (upgrade to no-op, transfer to burn, renounce, or off-chain unpublish).
 
-4. **Kernel**: `templar-proxy-oracle-kernel`
+4. **Shared DTOs and Errors**: `contract/proxy-oracle/soroban/common/src/lib.rs`
+    - Data structures, error types, and shared event schemas.
+    - Common contains shared DTOs such as `GovernanceAction`, `OperationKind`, `TtlConfig`, role definitions, proxy/breaker configs, `NormalizedPrice`, `PriceFeedTrait` / `ProxyOracleTrait` (and their auto-generated `PriceFeedClient` / `ProxyOracleClient`), the `normalized_to_sep40` scaling helper, and error types.
+
+5. **Kernel**: `templar-proxy-oracle-kernel`
    - `MedianLow` aggregation logic.
    - `FreshnessFilter` enforcement.
    - Circuit breaker evaluation (`StepwiseChange`, `MonotonicRun`, `WindowedChangeDelta`).
@@ -74,7 +80,7 @@ The following support operations but are not deployable contract code:
 - **Quorum Bypass**: `set_proxy` rejects `min_sources == 0` and `min_sources > sources.len()`. Governance proposals cannot set a zero-quorum proxy config. Empty source lists are rejected with `TooManySources`. Evidence: `.omo/evidence/task-3-duplicate-source.txt`.
 - **Stale Price Injection**: `FreshnessFilter` is enforced in `refresh_one` via `source_kernel_price`. Sources whose timestamp predates `max_age_secs` are rejected before aggregation. Evidence: parity matrix row "Stale Source" in `PARITY.md`.
 - **Breaker Evasion**: Circuit breakers require governance proposals to add, update, or remove. Emergency manual operations require the `ManualTripper` governance role, and the action actor must match the authenticated proposal creator. Removing a breaker via governance also invalidates the cache. Evidence: `.omo/evidence/task-6-breaker-trip-parity.txt`.
-- **Missing Config Silent Failure**: `refresh_one` fails closed on missing storage keys, returning `RESOLVE_FAILED_STORAGE_CODE` rather than accepting a price. `lastprice` returns `None` on missing proxy config. Evidence: `.omo/evidence/task-5-missing-decimals.txt`, `.omo/evidence/task-5-ttl-coverage.txt`.
+- **Missing Config Silent Failure**: `refresh_one` fails closed on missing storage keys, returning `RESOLVE_FAILED_STORAGE_CODE` rather than accepting a price. `aggregated_latest` (runtime) and `lastprice` (adapter) return `None` on missing proxy config. Evidence: `.omo/evidence/task-5-missing-decimals.txt`, `.omo/evidence/task-5-ttl-coverage.txt`.
 
 ### Governance and Authorization
 
@@ -93,7 +99,7 @@ The following support operations but are not deployable contract code:
 
 ### Operational Safety
 
-- **Fail Closed**: `lastprice` returns `None` if the proxy config is missing, the cached status is not `Accepted`, or the cached timestamp is older than `max_age_secs`. There is no default price fallback.
+- **Fail Closed**: `aggregated_latest` (runtime) and the adapter's SEP-40 `lastprice` return `None` if the proxy config is missing, the cached status is not `Accepted`, or the cached timestamp is older than `max_age_secs`. There is no default price fallback.
 - **Manual Trip Semantics**: Emergency trips immediately block the feed and invalidate the cache. Metadata is event-only, capped at 1024 bytes, and not stored in breaker state. Evidence: `.omo/evidence/task-4-metadata-limit.txt`, `.omo/evidence/task-4-tripper-cannot-untrip.txt`.
 - **Cache Invalidation**: Any governance mutation to proxy config, breaker config, or breaker set clears the cached price. Stale-epoch callbacks (NEAR pattern) are handled here by explicit cache removal on config change. Evidence: `.omo/evidence/task-6-refresh-and-cache-parity.txt`.
 
@@ -161,9 +167,9 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 
 ### Validation
 
-- [x] **validation constructor**: `decimals > 18` and `resolution == 0` are rejected at construction time.
+- [x] **validation constructor**: On the adapter, `decimals > 18` and `resolution == 0` are rejected at construction. The runtime no longer carries those fields (moved to the adapter).
   - Evidence: `.omo/evidence/task-5-missing-decimals.txt`
-  - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils invalid_config_zero_resolution -- --nocapture`
+  - Verification: `cargo test -p templar-proxy-oracle-soroban-sep40-adapter-contract --features testutils constructor_rejects_decimals_above_18 constructor_rejects_zero_resolution -- --nocapture`
 - [x] **validation min_sources**: Zero `min_sources` and `min_sources > source count` are rejected.
   - Evidence: `.omo/evidence/task-3-duplicate-source.txt`
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils invalid_config_zero_sources -- --nocapture`
@@ -182,7 +188,7 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 - [x] **TTL coverage**: All persistent and instance storage keys use `extend_ttl`; missing keys guarded with `storage.has()` to prevent host panics.
   - Evidence: `.omo/evidence/task-5-ttl-coverage.txt`
   - Verification: `cargo test -p templar-proxy-oracle-soroban-contract --features testutils ttl -- --nocapture`
-- [x] **TTL fail-closed on eviction**: `refresh_one` returns `RESOLVE_FAILED_STORAGE_CODE` on missing required config key; `lastprice` returns `None` on missing proxy config. No silent price defaults on TTL expiry.
+- [x] **TTL fail-closed on eviction**: `refresh_one` returns `RESOLVE_FAILED_STORAGE_CODE` on missing required config key; `aggregated_latest` (runtime) and adapter `lastprice` return `None` on missing proxy config. No silent price defaults on TTL expiry.
   - Evidence: `.omo/evidence/task-5-ttl-coverage.txt`
 
 ### Tests
@@ -197,7 +203,7 @@ All items verified as of baseline commit `64bf8b821cabbc94e4591ca89997c8ec00f365
 
 ### Budget
 
-- [x] **budget deterministic scenarios**: Soroban-sdk testutils scenarios exercise `refresh`, `lastprice`, governance accept, and breaker paths. Full Stellar resource simulation requires a live Soroban RPC endpoint and is not available locally; this gate verifies scenario correctness as the narrowest available local harness.
+- [x] **budget deterministic scenarios**: Soroban-sdk testutils scenarios exercise `refresh`, `aggregated_latest`, adapter `lastprice`, governance accept, and breaker paths. Full Stellar resource simulation requires a live Soroban RPC endpoint and is not available locally; this gate verifies scenario correctness as the narrowest available local harness.
   - Evidence: `.omo/evidence/task-7-budget-check.txt`
   - Verification: `just -f contract/proxy-oracle/soroban/justfile budget-check`
 

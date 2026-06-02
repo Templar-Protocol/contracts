@@ -1,8 +1,9 @@
 //! Conversions between the Soroban surface types and the kernel's primitives.
 //!
-//! The kernel speaks `Price { i64, expo }`; the SEP-40 surface speaks
-//! `PriceData { i128, fixed-decimals }`. The host-vs-decimal mismatch is
-//! resolved here, along with the `CircuitBreakerConfig` enum unpacking.
+//! Sources speak SEP-40 `PriceData { i128, fixed-decimals }`; the kernel
+//! speaks `Price { i64, expo }`; the main contract's cache + history speak
+//! `NormalizedPrice { i64, expo, timestamp }`. Adapters scale `NormalizedPrice`
+//! back to SEP-40 with their own per-adapter decimals.
 
 use soroban_sdk::Vec;
 use templar_primitives::{Decimal, Nanoseconds};
@@ -19,7 +20,7 @@ use templar_proxy_oracle_kernel::{
 };
 use templar_proxy_oracle_soroban_common::{
     CircuitBreakerConfig, ContractError, MonotonicRunConfig as SorobanMonotonicRunConfig,
-    PriceData, ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
+    NormalizedPrice, PriceData, ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig,
 };
 
@@ -51,29 +52,12 @@ pub fn source_price_to_kernel(
     })
 }
 
-pub fn kernel_price_to_sep40(price: Price, decimals: u32) -> Result<PriceData, ContractError> {
-    let decimals = i32::try_from(decimals).map_err(|_| ContractError::ConversionOverflow)?;
-    let scale = decimals
-        .checked_add(price.expo)
-        .ok_or(ContractError::ConversionOverflow)?;
-    let mut value = i128::from(price.price);
-    if scale >= 0 {
-        value = value
-            .checked_mul(
-                10_i128
-                    .checked_pow(scale.unsigned_abs())
-                    .ok_or(ContractError::ConversionOverflow)?,
-            )
-            .ok_or(ContractError::ConversionOverflow)?;
-    } else {
-        value /= 10_i128
-            .checked_pow(scale.unsigned_abs())
-            .ok_or(ContractError::ConversionOverflow)?;
-    }
-    Ok(PriceData {
-        price: value,
+pub fn kernel_price_to_normalized(price: Price) -> NormalizedPrice {
+    NormalizedPrice {
+        mantissa: price.price,
+        expo: price.expo,
         timestamp: price.publish_time_ns.as_secs(),
-    })
+    }
 }
 
 pub fn decimal_from_repr(repr: Vec<u64>) -> Result<Decimal, ContractError> {

@@ -122,15 +122,21 @@ stellar contract install \
   --network <network> \
   --source <identity> \
   --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_governance_contract.optimized.wasm
+
+# Install SEP-40 adapter WASM (one wasm hash; deploy one adapter instance per feed)
+stellar contract install \
+  --network <network> \
+  --source <identity> \
+  --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm
 ```
 
-Record the returned WASM hashes. They appear in the release manifest under `runtime_wasm.sha256` and `governance_wasm.sha256` for cross-check.
+Record the returned WASM hashes. They appear in the release manifest under `runtime_wasm.sha256`, `governance_wasm.sha256`, and `sep40_adapter_wasm.sha256` for cross-check.
 
 ---
 
 ## 4. Initialize
 
-Initialize the runtime contract first, then the governance contract. Both constructors are one-shot: calling them a second time returns `AlreadyInitialized`.
+Initialize the runtime contract first, then the governance contract. Both constructors are one-shot: calling them a second time returns `AlreadyInitialized`. SEP-40 adapter instances are deployed per-feed after the runtime is registering sources — see "Deploy SEP-40 adapter" below.
 
 **Runtime constructor:**
 
@@ -141,16 +147,14 @@ stellar contract invoke \
   --id <RUNTIME_CONTRACT_ID> \
   -- __constructor \
   --governance <GOVERNANCE_CONTRACT_ID> \
-  --base '{"Other": "USD"}' \
-  --decimals 7 \
-  --resolution 1
+  --base '{"Other": "USD"}'
 ```
 
 Parameters:
 - `governance`: address of the governance contract (set this after deploying governance, or use a multisig address and update later via `set_governance`)
-- `base`: the SEP-40 base asset for all proxied prices
-- `decimals`: output price decimal places (0–18; 18 is the maximum)
-- `resolution`: must be non-zero; typically 1 for per-asset resolution
+- `base`: the source-validation invariant — every registered source must report `base()` matching this value. Not a SEP-40 surface concern; each `Sep40Adapter` declares its own SEP-40 `base()` independently.
+
+Per-feed `decimals` and `resolution` are now adapter-side; they are not part of the runtime constructor.
 
 **Governance constructor:**
 
@@ -176,6 +180,30 @@ After initialization, verify both contracts are live:
 stellar contract invoke --network <network> --id <RUNTIME_CONTRACT_ID> -- governance
 stellar contract invoke --network <network> --id <GOVERNANCE_CONTRACT_ID> -- admin
 ```
+
+**Deploy a SEP-40 adapter (once per feed):**
+
+```bash
+stellar contract deploy \
+  --network <network> \
+  --source <identity> \
+  --wasm-hash <SEP40_ADAPTER_WASM_HASH> \
+  -- \
+  --owner <OWNER_ADDRESS> \
+  --parent_oracle <RUNTIME_CONTRACT_ID> \
+  --asset '{"Other": "BTC"}' \
+  --decimals 8 \
+  --resolution 1 \
+  --base '{"Other": "USD"}'
+```
+
+Parameters:
+- `owner`: address authorized for `set_decimals`, `set_resolution`, `set_base`, `upgrade`, and `transfer_ownership`. Initially a multisig key or a future governance contract.
+- `parent_oracle`: the runtime contract address — adapters call its `aggregated_latest` for every read.
+- `asset`: the single asset this adapter exposes via SEP-40. Re-deploy with a different `asset` for additional feeds.
+- `decimals` / `resolution` / `base`: per-adapter SEP-40 surface metadata. `decimals` ≤ 18; `resolution` non-zero.
+
+The constructor emits `sep40_adapter_deployed { owner, parent_oracle, asset, decimals, resolution }`. Off-chain indexers can rebuild the directory of live adapters from these events.
 
 ---
 
@@ -651,7 +679,7 @@ Requires `Role::Admin`. After execution, the runtime contract code is updated to
 
 ## 9. Refresh Cadence
 
-`refresh(assets)` is the only path that reads source contracts and updates the cache. SEP-40 reads (`lastprice`, `price`, `prices`) are storage-only and never call source contracts.
+`refresh(assets)` is the only path that reads source contracts and updates the cache. Runtime reads (`aggregated_latest`, `aggregated_history`) and adapter SEP-40 reads (`lastprice`, `price`, `prices`) are storage-only and never call source contracts. Adapter reads make one cross-contract call to the parent runtime per request.
 
 **Trigger a refresh:**
 
@@ -891,7 +919,7 @@ Topics: `asset`
 Payload: none
 
 Meaning: A proxy was removed. All associated state (config, breakers, history, cache) was cleared.
-Response: Confirm removal was intentional. Any downstream service reading this asset will now receive `None` from `lastprice`.
+Response: Confirm removal was intentional. Any downstream service reading this asset will now receive `None` from the runtime's `aggregated_latest` and from every adapter's `lastprice`.
 
 ---
 
@@ -1014,7 +1042,7 @@ Requirements:
 - The `caller` must hold `Role::ManualTripper`, or `Role::Admin` for the global override.
 - The action `actor` must match `caller`; mismatched actor attribution is rejected.
 - Metadata is event-only and capped at 1024 bytes. It is not stored in contract state.
-- The cache is invalidated immediately. `lastprice` returns `None` until the feed is untripped and refreshed.
+- The cache is invalidated immediately. `aggregated_latest` (runtime) and adapter `lastprice` return `None` until the feed is untripped and refreshed.
 - Execute the proposal after its `SetManualTrip` maturity delay.
 
 **Verify the trip took effect:**
@@ -1139,6 +1167,24 @@ The runtime uses `env.deployer().update_current_contract_wasm()` for upgrades. Z
 
 **Upgrade the governance contract** follows the same pattern with the governance WASM.
 
+**Upgrade a SEP-40 adapter:**
+
+```bash
+stellar contract install \
+  --network <network> \
+  --source <identity> \
+  --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm
+
+stellar contract invoke \
+  --network <network> \
+  --source <adapter-owner-identity> \
+  --id <ADAPTER_CONTRACT_ID> \
+  -- upgrade \
+  --new_wasm_hash <NEW_WASM_HASH>
+```
+
+The adapter's `upgrade` entrypoint is gated by `#[only_owner]` from `stellar-macros`. Owners can change `decimals`/`resolution`/`base` independently, transfer ownership in two steps (`transfer_ownership` → `accept_ownership`), or renounce ownership to freeze the adapter's parameters.
+
 After upgrading, verify the contract is still responsive:
 
 ```bash
@@ -1153,7 +1199,7 @@ stellar contract invoke --network <network> --id <GOVERNANCE_CONTRACT_ID> -- adm
 Roll back an upgrade if any of the following occur within the first 30 minutes after deployment:
 
 - `RefreshFailure` events appear for assets that were refreshing successfully before the upgrade.
-- `lastprice` returns `None` for assets that had accepted cached prices.
+- `aggregated_latest` (runtime) or adapter `lastprice` returns `None` for assets that had accepted cached prices.
 - Governance proposals fail to submit, accept, or revoke.
 - `extend_ttl` panics or returns an error.
 - Any unexpected `GovernanceHandoff` event.

@@ -124,7 +124,7 @@ fn setup() -> (
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let (source_id, source) = register_mock_source(&env, &base);
-    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
 
     let mut sources = Vec::new(&env);
@@ -143,6 +143,54 @@ fn setup() -> (
     );
 
     (env, proxy, source, asset)
+}
+
+/// Helpers that mimic the pre-refactor SEP-40 surface (decimals=8) by reading
+/// the new `aggregated_latest` API and scaling. Used so the bulk of the test
+/// suite, which was written against the SEP-40 surface, doesn't need to be
+/// rewritten — the surface is now adapter-side, but the underlying semantics
+/// (cache, freshness, breakers) are unchanged.
+const TEST_LEGACY_DECIMALS: u32 = 8;
+
+fn legacy_lastprice(proxy: &SorobanProxyOracleClient, asset: &Asset) -> Option<PriceData> {
+    proxy.aggregated_latest(asset).and_then(|p| {
+        templar_proxy_oracle_soroban_common::normalized_to_sep40(&p, TEST_LEGACY_DECIMALS).ok()
+    })
+}
+
+fn legacy_prices(
+    env: &Env,
+    proxy: &SorobanProxyOracleClient,
+    asset: &Asset,
+    records: u32,
+) -> Option<Vec<PriceData>> {
+    let history = proxy.aggregated_history(asset, &records)?;
+    let mut out = Vec::new(env);
+    for entry in history.iter() {
+        out.push_back(
+            templar_proxy_oracle_soroban_common::normalized_to_sep40(&entry, TEST_LEGACY_DECIMALS)
+                .ok()?,
+        );
+    }
+    Some(out)
+}
+
+fn legacy_price(
+    proxy: &SorobanProxyOracleClient,
+    asset: &Asset,
+    timestamp: u64,
+) -> Option<PriceData> {
+    let history = proxy.aggregated_history(asset, &MAX_HISTORY_RECORDS)?;
+    for entry in history.iter().rev() {
+        if entry.timestamp == timestamp {
+            return templar_proxy_oracle_soroban_common::normalized_to_sep40(
+                &entry,
+                TEST_LEGACY_DECIMALS,
+            )
+            .ok();
+        }
+    }
+    None
 }
 
 fn contract_events(env: &Env, contract_id: &Address) -> StdVec<soroban_sdk::xdr::ContractEvent> {
@@ -176,7 +224,7 @@ fn stored_breakers(env: &Env, contract_id: &Address, asset: &Asset) -> CircuitBr
 fn assert_refresh_failure_event(env: &Env, proxy: &SorobanProxyOracleClient, asset: &Asset) {
     let events = contract_events(env, &proxy.address);
     assert_eq!(events.len(), 1);
-    assert_eq!(proxy.lastprice(asset), None);
+    assert_eq!(legacy_lastprice(proxy, asset), None);
 }
 
 #[test]
@@ -193,12 +241,16 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
         contract_events(&env, &proxy.address),
         vec![RefreshSuccess {
             asset: asset.clone(),
-            price: 5_000_000_000,
+            mantissa: 5_000_000_000,
+            expo: -8,
             timestamp: 100,
         }
         .to_xdr(&env, &proxy.address)]
     );
-    assert_eq!(proxy.lastprice(&asset).unwrap().price, 5_000_000_000);
+    assert_eq!(
+        legacy_lastprice(&proxy, &asset).unwrap().price,
+        5_000_000_000
+    );
 
     source.set_price(&asset, &5_100_000_000_i128, &69_u64);
     let stale = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
@@ -281,7 +333,7 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
         base_mismatch.get(0).unwrap().1,
         RefreshStatus::SourceUnavailable
     ));
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -292,7 +344,7 @@ fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(proxy.lastprice(&asset).is_some());
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata.clone()));
     assert_eq!(
@@ -311,7 +363,7 @@ fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
             .unwrap()
             .is_manually_tripped
     );
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 
     source.set_price(&asset, &5_100_000_000_i128, &100_u64);
     let blocked = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
@@ -327,7 +379,7 @@ fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
         }
         .to_xdr(&env, &proxy.address)]
     );
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -370,7 +422,7 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
             .to_xdr(&env, &proxy.address),
         ]
     );
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 
     set_ledger(&env, 102);
     source.set_price(&asset, &10_500_000_000_i128, &102_u64);
@@ -426,7 +478,7 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     let configured = proxy.get_proxy(&asset).unwrap();
     proxy.set_proxy(&asset, &configured);
     assert!(proxy.get_cached(&asset).is_none());
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 
     let unauth_env = Env::default();
     unauth_env.ledger().set(LedgerInfo {
@@ -438,7 +490,7 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     let governance = Address::generate(&unauth_env);
     let base = Asset::Other(Symbol::new(&unauth_env, "USD"));
     let unauthorized_asset = Asset::Other(Symbol::new(&unauth_env, "BTC"));
-    let proxy_id = unauth_env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = unauth_env.register(SorobanProxyOracle, (&governance, &base));
     let unauth_proxy = SorobanProxyOracleClient::new(&unauth_env, &proxy_id);
     let mut sources = Vec::new(&unauth_env);
     sources.push_back(SourceConfig {
@@ -469,7 +521,8 @@ fn event_refresh_success_failure_and_cache_blocked_topics_payloads_are_exact() {
         contract_events(&env, &proxy.address),
         vec![RefreshSuccess {
             asset: asset.clone(),
-            price: 5_000_000_000,
+            mantissa: 5_000_000_000,
+            expo: -8,
             timestamp: 100,
         }
         .to_xdr(&env, &proxy.address)]
@@ -525,7 +578,7 @@ fn event_proxy_set_topics_payload_are_exact() {
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let (source_id, _source) = register_mock_source(&env, &base);
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -715,7 +768,7 @@ fn refresh_updates_sep40_lastprice() {
         RefreshStatus::Accepted(_)
     ));
 
-    let price = proxy.lastprice(&asset).unwrap();
+    let price = legacy_lastprice(&proxy, &asset).unwrap();
     assert_eq!(price.price, 5_000_000_000);
     assert_eq!(price.timestamp, 100);
 }
@@ -733,7 +786,7 @@ fn lastprice_fails_closed_when_cache_is_stale() {
         ..Default::default()
     });
 
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -748,7 +801,7 @@ fn manual_trip_blocks_refresh_and_cached_read() {
         result.get(0).unwrap().1,
         RefreshStatus::Blocked(1)
     ));
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -839,11 +892,14 @@ fn prices_returns_cached_history() {
     source.set_price(&asset, &5_100_000_000_i128, &101_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
 
-    let prices = proxy.prices(&asset, &2).unwrap();
+    let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
     assert_eq!(prices.len(), 2);
     assert_eq!(prices.get(0).unwrap().price, 5_000_000_000);
     assert_eq!(prices.get(1).unwrap().price, 5_100_000_000);
-    assert_eq!(proxy.price(&asset, &100).unwrap().price, 5_000_000_000);
+    assert_eq!(
+        legacy_price(&proxy, &asset, 100).unwrap().price,
+        5_000_000_000
+    );
 }
 
 #[test]
@@ -854,10 +910,13 @@ fn same_timestamp_refresh_replaces_history_entry() {
     source.set_price(&asset, &5_100_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
 
-    let prices = proxy.prices(&asset, &2).unwrap();
+    let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
     assert_eq!(prices.len(), 1);
     assert_eq!(prices.get(0).unwrap().price, 5_100_000_000);
-    assert_eq!(proxy.price(&asset, &100).unwrap().price, 5_100_000_000);
+    assert_eq!(
+        legacy_price(&proxy, &asset, 100).unwrap().price,
+        5_100_000_000
+    );
 }
 
 #[test]
@@ -865,7 +924,7 @@ fn failed_refresh_overwrites_accepted_cache_fail_closed() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(proxy.lastprice(&asset).is_some());
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     source.clear_price(&asset);
     let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
@@ -874,7 +933,7 @@ fn failed_refresh_overwrites_accepted_cache_fail_closed() {
         result.get(0).unwrap().1,
         RefreshStatus::SourceUnavailable
     ));
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
     assert!(matches!(
         proxy.get_cached(&asset).unwrap().status,
         CachedStatus::ResolveFailed(5)
@@ -897,7 +956,7 @@ fn refresh_rejects_source_with_wrong_base_asset() {
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let (source_id, source) = register_mock_source(&env, &eur);
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &usd, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &usd));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -920,7 +979,7 @@ fn refresh_rejects_source_with_wrong_base_asset() {
         result.get(0).unwrap().1,
         RefreshStatus::SourceUnavailable
     ));
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -934,7 +993,7 @@ fn refresh_rejects_future_source_beyond_clock_drift() {
         result.get(0).unwrap().1,
         RefreshStatus::ResolveFailed(1)
     ));
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -944,7 +1003,7 @@ fn set_proxy_rejects_unreachable_min_sources() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -984,7 +1043,7 @@ fn prices_with_zero_records_returns_none() {
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
 
-    assert_eq!(proxy.prices(&asset, &0), None);
+    assert_eq!(legacy_prices(&env, &proxy, &asset, 0), None);
 }
 
 #[test]
@@ -995,7 +1054,7 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let (source_id, _source) = register_mock_source(&env, &base);
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -1029,7 +1088,7 @@ fn invalid_config_same_oracle_different_asset_is_not_a_duplicate() {
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let (source_id, _source) = register_mock_source(&env, &base);
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -1062,7 +1121,7 @@ fn invalid_config_zero_sources() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let sources = Vec::new(&env);
 
@@ -1087,7 +1146,7 @@ fn invalid_config_quorum_zero() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -1116,7 +1175,7 @@ fn invalid_config_quorum_above_source_count() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -1145,7 +1204,7 @@ fn invalid_config_too_many_sources() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     for _ in 0..17_u32 {
@@ -1216,26 +1275,6 @@ fn invalid_config_invalid_accepted_history_source_code() {
         ),
         Err(Ok(ContractError::InvalidInput))
     );
-}
-
-#[test]
-#[should_panic]
-fn invalid_config_constructor_zero_resolution() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let governance = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 0_u32));
-}
-
-#[test]
-#[should_panic]
-fn invalid_config_constructor_decimals_out_of_range() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let governance = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    env.register(SorobanProxyOracle, (&governance, &base, 19_u32, 1_u32));
 }
 
 #[test]
@@ -1377,14 +1416,15 @@ fn ttl_extend_covers_cache_and_history_after_refresh() {
 // ── missing_config tests ─────────────────────────────────────────────────────
 
 #[test]
-fn missing_config_refresh_fails_closed_on_missing_decimals() {
-    // If the Decimals instance key is absent (e.g. TTL expired), refresh must
-    // return ResolveFailed rather than silently using a default of 8.
+fn missing_config_refresh_fails_closed_on_missing_base() {
+    // If the Base instance key is absent (e.g. TTL expired), refresh must
+    // return ResolveFailed rather than silently aggregating across sources
+    // whose base assets we can no longer validate.
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
 
     env.as_contract(&proxy.address, || {
-        env.storage().instance().remove(&DataKey::Decimals);
+        env.storage().instance().remove(&DataKey::Base);
     });
 
     let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
@@ -1392,7 +1432,7 @@ fn missing_config_refresh_fails_closed_on_missing_decimals() {
         result.get(0).unwrap().1,
         RefreshStatus::ResolveFailed(STORAGE_FAILED_CODE)
     ));
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -1402,7 +1442,7 @@ fn missing_config_lastprice_fails_closed_on_missing_proxy_config() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(proxy.lastprice(&asset).is_some());
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     // Remove the Proxy config to simulate TTL expiry.
     env.as_contract(&proxy.address, || {
@@ -1412,7 +1452,7 @@ fn missing_config_lastprice_fails_closed_on_missing_proxy_config() {
     });
 
     // Must return None, not treat missing Proxy as "no freshness limit".
-    assert_eq!(proxy.lastprice(&asset), None);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -1432,7 +1472,7 @@ fn missing_config_lastprice_no_freshness_limit_is_documented_exception() {
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let (source_id, source) = register_mock_source(&env, &base);
-    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {
@@ -1459,47 +1499,30 @@ fn missing_config_lastprice_no_freshness_limit_is_documented_exception() {
         sequence_number: 200,
         ..Default::default()
     });
-    assert!(proxy.lastprice(&asset).is_some());
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
 }
 
 #[test]
-#[should_panic]
-fn missing_config_base_panics() {
+fn missing_config_source_base_returns_none() {
     let (env, proxy, _source, _asset) = setup();
     env.as_contract(&proxy.address, || {
         env.storage().instance().remove(&DataKey::Base);
     });
-    proxy.base(); // must panic — Base is always set by constructor
+    // Post-refactor `source_base()` returns Option — adapter contracts
+    // decide how to handle a missing parent base. No longer a hard panic.
+    assert_eq!(proxy.source_base(), None);
 }
 
 #[test]
-#[should_panic]
-fn missing_config_decimals_panics() {
-    let (env, proxy, _source, _asset) = setup();
-    env.as_contract(&proxy.address, || {
-        env.storage().instance().remove(&DataKey::Decimals);
-    });
-    proxy.decimals(); // must panic
-}
-
-#[test]
-#[should_panic]
-fn missing_config_resolution_panics() {
-    let (env, proxy, _source, _asset) = setup();
-    env.as_contract(&proxy.address, || {
-        env.storage().instance().remove(&DataKey::Resolution);
-    });
-    proxy.resolution(); // must panic
-}
-
-#[test]
-#[should_panic]
-fn missing_config_assets_panics() {
+fn missing_config_registered_assets_returns_empty() {
     let (env, proxy, _source, _asset) = setup();
     env.as_contract(&proxy.address, || {
         env.storage().persistent().remove(&DataKey::Assets);
     });
-    proxy.assets(); // must panic
+    // Post-refactor `registered_assets()` defaults a missing key to empty
+    // rather than panicking — it's an enumeration helper, not a SEP-40
+    // surface promise.
+    assert!(proxy.registered_assets().is_empty());
 }
 
 #[test]
@@ -1514,7 +1537,7 @@ fn direct_governed_mutation_requires_governance_auth() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
     sources.push_back(SourceConfig {

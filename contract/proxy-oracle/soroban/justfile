@@ -43,26 +43,31 @@ manifest_path    := release_dir + "/release-manifest.json"
 
 runtime_pkg      := "templar-proxy-oracle-soroban-contract"
 governance_pkg   := "templar-proxy-oracle-soroban-governance-contract"
+adapter_pkg      := "templar-proxy-oracle-soroban-sep40-adapter-contract"
 
 runtime_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_contract.wasm"
 governance_wasm  := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.wasm"
+adapter_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.wasm"
 
 runtime_opt      := wasm_dir + "/templar_proxy_oracle_soroban_contract.optimized.wasm"
 governance_opt   := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.optimized.wasm"
+adapter_opt      := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm"
 
 remap_rustflags  := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 
 size_limit       := "131072"
+adapter_size_limit := "32768"
 
 # =============================================================================
 # TEST
 # =============================================================================
 
-# Run all proxy-oracle Soroban unit tests (runtime + governance).
+# Run all proxy-oracle Soroban unit tests (runtime + governance + adapter).
 test:
     @echo "Running proxy-oracle Soroban tests..."
     @cargo test -p "{{runtime_pkg}}" --features testutils -- --nocapture
     @cargo test -p "{{governance_pkg}}" --features testutils -- --nocapture
+    @cargo test -p "{{adapter_pkg}}" --features testutils -- --nocapture
     @echo "✓ All proxy-oracle Soroban tests passed"
 
 # =============================================================================
@@ -96,9 +101,20 @@ build-governance:
         --out-dir "{{wasm_dir}}"
     @echo "✓ Built: {{governance_wasm}}"
 
-# Build both runtime and governance WASMs.
-build: build-runtime build-governance
-    @echo "✓ Both proxy-oracle WASMs built"
+# Build the SEP-40 adapter WASM. The adapter also depends on stellar-access,
+# so it must build via `stellar contract build`.
+build-sep40-adapter:
+    @echo "Building proxy-oracle SEP-40 adapter WASM..."
+    @CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
+        --profile release-soroban-checked \
+        --manifest-path "{{root}}/Cargo.toml" \
+        --package "{{adapter_pkg}}" \
+        --out-dir "{{wasm_dir}}"
+    @echo "✓ Built: {{adapter_wasm}}"
+
+# Build runtime, governance, and adapter WASMs.
+build: build-runtime build-governance build-sep40-adapter
+    @echo "✓ All proxy-oracle WASMs built"
 
 # =============================================================================
 # OPTIMIZE
@@ -141,9 +157,19 @@ optimize-governance: build-governance
         --label "governance"
     @echo "✓ Optimized: {{governance_opt}}"
 
-# Build and optimize both WASMs.
-optimize: optimize-runtime optimize-governance
-    @echo "✓ Both proxy-oracle WASMs optimized"
+# Build and optimize the SEP-40 adapter WASM.
+optimize-sep40-adapter: build-sep40-adapter
+    @echo "Optimizing SEP-40 adapter WASM..."
+    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{adapter_pkg}}" "{{adapter_opt}}"
+    @python3 "{{scripts_dir}}/print_wasm_sizes.py" \
+        --wasm "{{adapter_wasm}}" \
+        --optimized "{{adapter_opt}}" \
+        --label "sep40-adapter"
+    @echo "✓ Optimized: {{adapter_opt}}"
+
+# Build and optimize all WASMs.
+optimize: optimize-runtime optimize-governance optimize-sep40-adapter
+    @echo "✓ All proxy-oracle WASMs optimized"
 
 # =============================================================================
 # SIZE GATE
@@ -172,6 +198,12 @@ size-check: optimize
             --optimized "{{governance_opt}}" \
             --label "governance"; \
         echo ""; \
+        echo "## SEP-40 Adapter"; \
+        python3 "{{scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{adapter_wasm}}" \
+            --optimized "{{adapter_opt}}" \
+            --label "sep40-adapter"; \
+        echo ""; \
     } | tee "{{evidence_dir}}/task-7-size-check.txt"
     @python3 "{{scripts_dir}}/check_wasm_budget.py" \
         --wasm "{{runtime_opt}}" \
@@ -179,6 +211,9 @@ size-check: optimize
     @python3 "{{scripts_dir}}/check_wasm_budget.py" \
         --wasm "{{governance_opt}}" \
         --max-bytes "{{size_limit}}"
+    @python3 "{{scripts_dir}}/check_wasm_budget.py" \
+        --wasm "{{adapter_opt}}" \
+        --max-bytes "{{adapter_size_limit}}"
     @echo "" >> "{{evidence_dir}}/task-7-size-check.txt"
     @echo "## Result: PASS" >> "{{evidence_dir}}/task-7-size-check.txt"
     @echo "✓ Size gate passed — evidence: {{evidence_dir}}/task-7-size-check.txt"
@@ -232,8 +267,10 @@ release: optimize
         --root "{{root}}" \
         --runtime-wasm "{{runtime_opt}}" \
         --governance-wasm "{{governance_opt}}" \
+        --adapter-wasm "{{adapter_opt}}" \
         --runtime-pkg "{{runtime_pkg}}" \
         --governance-pkg "{{governance_pkg}}" \
+        --adapter-pkg "{{adapter_pkg}}" \
         --out "{{manifest_path}}"
     @cp "{{manifest_path}}" "{{evidence_dir}}/task-8-release-manifest.json"
     @echo "✓ Release manifest: {{manifest_path}}"

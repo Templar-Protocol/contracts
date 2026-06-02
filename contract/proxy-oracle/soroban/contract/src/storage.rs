@@ -1,24 +1,25 @@
 //! Storage layout for the runtime contract.
 //!
-//! `instance` storage holds singleton config (governance, base, decimals,
-//! resolution); `persistent` storage is keyed per-asset (proxy config,
-//! breaker set, price cache, history).
+//! `instance` storage holds singleton config (governance, base);
+//! `persistent` storage is keyed per-asset (proxy config, breaker set,
+//! price cache, history). SEP-40 surface concerns (decimals/resolution)
+//! live in the per-feed `Sep40Adapter` contracts, not here. `Base` is
+//! retained as the source-validation invariant — every source must report
+//! prices in the same base.
 
 use soroban_sdk::{contracttype, Address, Bytes, Env, Vec};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
 use templar_proxy_oracle_soroban_common::{
-    Asset, ContractError, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
+    Asset, ContractError, NormalizedPrice, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
 };
 
-use crate::{CachedProxyPrice, PriceData};
+use crate::CachedProxyPrice;
 
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
     Governance,
     Base,
-    Decimals,
-    Resolution,
     Assets,
     Proxy(Asset),
     Breakers(Asset),
@@ -111,12 +112,12 @@ pub fn cache_price(env: &Env, asset: &Asset, cached: &CachedProxyPrice) {
         .set(&DataKey::Cache(asset.clone()), cached);
 }
 
-pub fn push_history(env: &Env, asset: &Asset, price: &PriceData, max_records: u32) {
+pub fn push_history(env: &Env, asset: &Asset, price: &NormalizedPrice, max_records: u32) {
     let key = DataKey::History(asset.clone());
     let mut history = env
         .storage()
         .persistent()
-        .get::<_, Vec<PriceData>>(&key)
+        .get::<_, Vec<NormalizedPrice>>(&key)
         .unwrap_or_else(|| Vec::new(env));
     if let Some(index) = history
         .iter()

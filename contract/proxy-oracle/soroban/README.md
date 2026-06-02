@@ -1,14 +1,19 @@
 # Soroban Proxy Oracle
 
-Soroban proxy oracle contract for SEP-40-compatible price feeds.
+Soroban proxy oracle that aggregates external SEP-40 price feeds into a normalized exponent-form cache. A companion **`Sep40Adapter`** contract re-exposes the proxy oracle's normalized prices as SEP-40 `PriceFeedTrait` for downstream consumers, with per-adapter `decimals` / `resolution` / `base`.
 
-The contract exposes SEP-40 cached reads (`base`, `assets`, `decimals`, `resolution`, `price`, `prices`, `lastprice`) and a separate `refresh(assets)` method. `refresh` deduplicates input assets in first-seen order, reads configured SEP-40 source oracle contracts once per target, aggregates source prices through `templar-proxy-oracle-kernel`, applies freshness filters and circuit breakers, and writes the accepted or failed result to cache.
+The runtime contract exposes:
 
-`decimals()` is the oracle-wide SEP-40 output price precision, not the token decimal count for any individual asset. Every accepted `PriceData.price` returned by this contract is normalized to that shared precision (`price / 10^decimals`) regardless of the source feed precision. This supports one proxy oracle serving multiple feeds as long as all consumers agree on the contract-level output precision.
+- `refresh(assets)` — pulls source SEP-40 prices, aggregates through `templar-proxy-oracle-kernel`, applies freshness + breakers, writes accepted/failed status to cache.
+- `aggregated_latest(asset)` — returns the cached `NormalizedPrice { mantissa, expo, timestamp }` if accepted and still fresh under the proxy configuration.
+- `aggregated_history(asset, records)` — last N normalized cached prices for an asset.
+- `registered_assets()`, `source_base()`, `get_proxy(asset)`, `get_cached(asset)`, `get_breaker_set_view(asset)`, `governance()` — admin / introspection helpers. The names are deliberately distinct from SEP-40's `assets()` / `base()`: `source_base()` is the source-validation invariant (every source must report against it), and `registered_assets()` is the enumeration of assets with registered proxy configs. Per-feed SEP-40 `base` and `assets` are declared on each `Sep40Adapter`.
+
+The runtime contract does **not** implement SEP-40 itself. Per-feed SEP-40 exposure is the job of `Sep40Adapter` contracts — see `sep40-adapter-contract/`. Each adapter stores `(owner, parent_oracle, asset, decimals, resolution, base)` and dispatches SEP-40 reads to the parent's `aggregated_latest`. This lets different feeds publish at different decimals without forcing the proxy oracle to pick a single contract-wide precision.
 
 RedStone integration is via RedStone's deployed Stellar SEP-40 wrapper contracts, not by writing RedStone prices in this proxy. RedStone payload verification and price reporting remain owned by the RedStone adapter/wrapper contracts.
 
-Reads fail closed: `lastprice` returns `None` unless the latest cached status is accepted and still fresh under the proxy configuration.
+Reads fail closed: `aggregated_latest` (on the runtime) and `lastprice` (on adapters) return `None` unless the latest cached status is accepted and still fresh under the proxy configuration.
 
 Governance is handled by the companion `templar-proxy-oracle-soroban-governance-contract`. The runtime stores a governance address and all proxy/circuit-breaker configuration mutations require that address to authorize the call. Emergency manual trip/untrip calls are authorized through the `ManualTripper` governance role via `SetManualTrip` proposals. Soroban intentionally omits NEAR `AdminFunctionCall` and keeps the upgrade surface typed through `AdminUpgrade`.
 
@@ -18,12 +23,22 @@ Proposals use `create_proposal(caller, id, operation, requested_ttl)` with id-ba
 
 The runtime exposes a governed `upgrade(new_wasm_hash)` method for WASM upgrades. The governance contract provides `AdminUpgrade(new_wasm_hash)` as the Admin-only proposal path. NEAR `AdminFunctionCall` arbitrary dynamic dispatch is intentionally not implemented on Soroban because it is not a safe typed parity surface.
 
-The contract declares SEP-40 metadata via `contractmeta!(key = "sep", val = "40")`.
+SEP-40 metadata (`contractmeta!(key = "sep", val = "40")`) is declared on `Sep40Adapter`, not on the runtime contract.
+
+## Sep40Adapter
+
+Each adapter is independently owned (via `stellar-access`'s `Ownable` two-step transfer pattern) and tracks a single `(parent_oracle, asset)` pairing. Admin entrypoints, all owner-gated:
+
+- `set_decimals(u32)`, `set_resolution(u32)`, `set_base(Asset)` — change the SEP-40 surface metadata.
+- `upgrade(BytesN<32>)` — swap the adapter wasm.
+- `transfer_ownership` / `accept_ownership` / `renounce_ownership` — from the `Ownable` trait.
+
+Decommissioning is out of band: no special "deactivated" state on-chain. Owners upgrade to a no-op wasm, renounce ownership, transfer ownership to a burn address, or simply stop publishing the address. The proxy oracle has no registry of adapters — anyone can deploy an adapter pointing at the proxy oracle, and Templar's "official" adapters are listed in the release manifest / docs.
 
 ## Operational Notes
 
 - Configure at least one source and set `min_sources` between `1` and the number of configured sources. Invalid quorum settings are rejected.
-- Use `refresh(assets)` as the only source IO path. SEP-40 reads are storage-only and never call source contracts.
+- Use `refresh(assets)` as the only source IO path. `aggregated_latest` (runtime) and SEP-40 reads (adapters) are storage-only and never call source contracts.
 - Manage circuit breakers through the runtime's `add_breaker(asset, config)`, `remove_breaker(asset, breaker_id)`, `rearm(asset, breaker_id, config)`, and `set_enforced(asset, breaker_id, config)` methods.
 - Grant emergency operators with `SetRole(account, ManualTripper, true)`. `GovernanceAction::SetManualTrip(actor, asset, is_manually_tripped, metadata)` retains the actor for event attribution, and the actor must match the authenticated proposal creator.
 - Manual-trip metadata is event-only, capped at 1024 bytes, and not stored in breaker state.
@@ -32,7 +47,7 @@ The contract declares SEP-40 metadata via `contractmeta!(key = "sep", val = "40"
 - Manage governance roles with `SetRole(account, role, set)` for `Admin`, `ManualTripper`, `CircuitBreakerOperator`, `ProxyConfigurationManager`.
 - Runtime upgrades use `upgrade(new_wasm_hash)` authorized by governance. Governance upgrades use `AdminUpgrade(new_wasm_hash)` proposal. NEAR `AdminFunctionCall` is intentionally not implemented on Soroban.
 - Call `extend_ttl()` periodically on the runtime and governance contracts to preserve persistent and instance storage.
-- Keep optimized runtime and governance WASM artifacts at or below `128 KiB` (`131072` bytes). Latest release-gate sizes are runtime `121114` bytes (`118.28 KiB`) and governance `55409` bytes (`54.11 KiB`). Recheck size after runtime, governance, ABI, or event changes; release and audit gates write supporting evidence under `.omo/evidence`.
+- Keep optimized runtime, governance, and adapter WASM artifacts within their size budgets: runtime and governance at or below `128 KiB` (`131072` bytes); adapter at or below `32 KiB` (`32768` bytes). Recheck sizes after ABI or event changes; release and audit gates write supporting evidence under `.omo/evidence`.
 
 ## Known Limits
 
@@ -49,9 +64,10 @@ The contract declares SEP-40 metadata via `contractmeta!(key = "sep", val = "40"
 ## Verification
 
 - `cargo test -p templar-proxy-oracle-kernel --features serde --lib -- --nocapture`
-- `cargo test -p templar-proxy-oracle-soroban-contract -- --nocapture`
-- `cargo test -p templar-proxy-oracle-soroban-governance-contract -- --nocapture`
-- `just -f contract/proxy-oracle/soroban/justfile build` — builds both unoptimized WASMs.
-- `just -f contract/proxy-oracle/soroban/justfile optimize` — builds + optimizes both WASMs to `target/proxy-oracle-soroban/wasm/*.optimized.wasm`.
+- `cargo test -p templar-proxy-oracle-soroban-contract --features testutils -- --nocapture`
+- `cargo test -p templar-proxy-oracle-soroban-governance-contract --features testutils -- --nocapture`
+- `cargo test -p templar-proxy-oracle-soroban-sep40-adapter-contract --features testutils -- --nocapture`
+- `just -f contract/proxy-oracle/soroban/justfile build` — builds runtime, governance, and adapter unoptimized WASMs.
+- `just -f contract/proxy-oracle/soroban/justfile optimize` — builds + optimizes all three to `target/proxy-oracle-soroban/wasm/*.optimized.wasm`.
 
-Both contracts must build via `stellar contract build` (not plain `cargo build`): the governance contract depends on `stellar-access`, which enables soroban-sdk's `experimental_spec_shaking_v2` — a feature that only resolves under the Stellar CLI (v25.2.0+).
+All three contracts must build via `stellar contract build` (not plain `cargo build`): the governance contract and the adapter both depend on `stellar-access`, which enables soroban-sdk's `experimental_spec_shaking_v2` — a feature that only resolves under the Stellar CLI (v25.2.0+).

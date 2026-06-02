@@ -42,7 +42,7 @@ fn setup_with_ttl(
 
     let admin = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
-    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base, 8_u32, 1_u32));
+    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
     let governance_id = env.register(ProxyOracleGovernance, (&admin, &proxy_id, action_ttl_ns));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     proxy.set_governance(&governance_id);

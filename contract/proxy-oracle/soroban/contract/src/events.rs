@@ -21,7 +21,8 @@ use crate::{
 pub struct RefreshSuccess {
     #[topic]
     pub asset: Asset,
-    pub price: i128,
+    pub mantissa: i64,
+    pub expo: i32,
     pub timestamp: u64,
 }
 
@@ -155,7 +156,8 @@ pub fn publish_refresh_event(env: &Env, asset: &Asset, status: &RefreshStatus) {
     match status {
         RefreshStatus::Accepted(price) => RefreshSuccess {
             asset: asset.clone(),
-            price: price.price,
+            mantissa: price.mantissa,
+            expo: price.expo,
             timestamp: price.timestamp,
         }
         .publish(env),

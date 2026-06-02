@@ -15,6 +15,7 @@ members = [
     "contract/proxy-oracle/soroban/governance-contract",
     "contract/proxy-oracle/soroban/common",
     "contract/proxy-oracle/soroban/mock",
+    "contract/proxy-oracle/soroban/sep40-adapter-contract",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",

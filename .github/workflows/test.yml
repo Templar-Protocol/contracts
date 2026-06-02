@@ -112,6 +112,9 @@ jobs:
       - name: Run proxy-oracle Soroban governance tests
         run: cargo nextest run -p templar-proxy-oracle-soroban-governance-contract
 
+      - name: Run proxy-oracle Soroban SEP-40 adapter tests
+        run: cargo nextest run -p templar-proxy-oracle-soroban-sep40-adapter-contract
+
       - name: Install packages
         run: sudo apt install libdbus-1-dev pkg-config
 
@@ -132,6 +135,12 @@ jobs:
           python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
             --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_governance_contract.optimized.wasm \
             --max-bytes 131072
+
+      - name: Enforce proxy-oracle Soroban size budget (sep40-adapter)
+        run: |
+          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
+            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm \
+            --max-bytes 32768
 
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})

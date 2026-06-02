@@ -12388,6 +12388,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-macros"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad14d3698274547aa5a61874c986855c549231f95b39c0de03b0bd96b6bcac9f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "stellar-strkey"
 version = "0.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13130,6 +13141,18 @@ name = "templar-proxy-oracle-soroban-mock"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk 25.3.0",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-sep40-adapter-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
+ "stellar-access",
+ "stellar-macros",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-sep40-adapter-contract",
 ]
 
 [[package]]

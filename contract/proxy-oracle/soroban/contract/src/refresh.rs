@@ -9,15 +9,17 @@ use alloc::vec::Vec as AllocVec;
 use soroban_sdk::Env;
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::Price;
-use templar_proxy_oracle_soroban_common::{Asset, PriceData, ProxyConfig, SourceConfig};
+use templar_proxy_oracle_soroban_common::{
+    Asset, NormalizedPrice, PriceFeedClient, ProxyConfig, SourceConfig,
+};
 
 use crate::{
     codes::{blocked_reason_code, resolve_error_code},
-    conversion::{kernel_price_to_sep40, kernel_proxy_from_config, source_price_to_kernel},
+    conversion::{kernel_price_to_normalized, kernel_proxy_from_config, source_price_to_kernel},
     events::{publish_breaker_events, publish_refresh_event},
     storage::{cache_price, load_breakers, push_history, store_breakers, DataKey},
-    CachedProxyPrice, CachedStatus, PriceFeedClient, RefreshStatus, CONVERSION_FAILED_CODE,
-    MAX_HISTORY_RECORDS, SOURCE_UNAVAILABLE_CODE, STORAGE_FAILED_CODE,
+    CachedProxyPrice, CachedStatus, RefreshStatus, MAX_HISTORY_RECORDS, SOURCE_UNAVAILABLE_CODE,
+    STORAGE_FAILED_CODE,
 };
 
 pub fn refresh_one(env: &Env, asset: Asset) -> RefreshStatus {
@@ -35,9 +37,6 @@ fn compute_refresh(env: &Env, asset: &Asset, now: Nanoseconds) -> RefreshStatus 
         return RefreshStatus::UnknownAsset;
     };
     let Some(expected_base) = env.storage().instance().get::<_, Asset>(&DataKey::Base) else {
-        return RefreshStatus::ResolveFailed(STORAGE_FAILED_CODE);
-    };
-    let Some(decimals) = env.storage().instance().get::<_, u32>(&DataKey::Decimals) else {
         return RefreshStatus::ResolveFailed(STORAGE_FAILED_CODE);
     };
 
@@ -65,10 +64,7 @@ fn compute_refresh(env: &Env, asset: &Asset, now: Nanoseconds) -> RefreshStatus 
 
     match outcome.value {
         Err(reason) => RefreshStatus::Blocked(blocked_reason_code(reason)),
-        Ok(price) => match kernel_price_to_sep40(price, decimals) {
-            Ok(price) => RefreshStatus::Accepted(price),
-            Err(_) => RefreshStatus::ResolveFailed(CONVERSION_FAILED_CODE),
-        },
+        Ok(price) => RefreshStatus::Accepted(kernel_price_to_normalized(price)),
     }
 }
 
@@ -122,7 +118,7 @@ pub fn cached_accepted_no_older_than(
     cached: &CachedProxyPrice,
     max_age_secs: u64,
     now: u64,
-) -> Option<PriceData> {
+) -> Option<NormalizedPrice> {
     let CachedStatus::Accepted(price) = &cached.status else {
         return None;
     };

@@ -159,6 +159,11 @@ def main() -> None:
     parser.add_argument("--runtime-wasm", required=True, help="Path to runtime optimized WASM")
     parser.add_argument("--governance-wasm", required=True, help="Path to governance optimized WASM")
     parser.add_argument(
+        "--adapter-wasm",
+        required=True,
+        help="Path to SEP-40 adapter optimized WASM",
+    )
+    parser.add_argument(
         "--runtime-pkg",
         default="templar-proxy-oracle-soroban-contract",
         help="Runtime Cargo package name",
@@ -168,12 +173,18 @@ def main() -> None:
         default="templar-proxy-oracle-soroban-governance-contract",
         help="Governance Cargo package name",
     )
+    parser.add_argument(
+        "--adapter-pkg",
+        default="templar-proxy-oracle-soroban-sep40-adapter-contract",
+        help="SEP-40 adapter Cargo package name",
+    )
     parser.add_argument("--out", required=True, help="Output path for release-manifest.json")
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
     runtime_wasm = Path(args.runtime_wasm).resolve()
     governance_wasm = Path(args.governance_wasm).resolve()
+    adapter_wasm = Path(args.adapter_wasm).resolve()
     out_path = Path(args.out).resolve()
 
     # Validate artifacts exist
@@ -182,6 +193,8 @@ def main() -> None:
         errors.append(f"Runtime WASM not found: {runtime_wasm}")
     if not governance_wasm.exists():
         errors.append(f"Governance WASM not found: {governance_wasm}")
+    if not adapter_wasm.exists():
+        errors.append(f"SEP-40 adapter WASM not found: {adapter_wasm}")
     if errors:
         for e in errors:
             print(f"ERROR: {e}", file=sys.stderr)
@@ -194,29 +207,34 @@ def main() -> None:
     rust_toolchain = get_rust_toolchain(root)
     runtime_version = get_package_version(root, args.runtime_pkg)
     governance_version = get_package_version(root, args.governance_pkg)
+    adapter_version = get_package_version(root, args.adapter_pkg)
 
     runtime_sha256 = sha256_file(runtime_wasm)
     governance_sha256 = sha256_file(governance_wasm)
+    adapter_sha256 = sha256_file(adapter_wasm)
     runtime_size = runtime_wasm.stat().st_size
     governance_size = governance_wasm.stat().st_size
+    adapter_size = adapter_wasm.stat().st_size
 
     # Build dry-run command templates (relative paths for portability)
-    try:
-        runtime_rel = str(runtime_wasm.relative_to(root))
-    except ValueError:
-        runtime_rel = str(runtime_wasm)
-    try:
-        governance_rel = str(governance_wasm.relative_to(root))
-    except ValueError:
-        governance_rel = str(governance_wasm)
+    def rel_or_abs(p: Path) -> str:
+        try:
+            return str(p.relative_to(root))
+        except ValueError:
+            return str(p)
+
+    runtime_rel = rel_or_abs(runtime_wasm)
+    governance_rel = rel_or_abs(governance_wasm)
+    adapter_rel = rel_or_abs(adapter_wasm)
 
     deploy_cmd_runtime = build_deploy_command(runtime_rel)
     deploy_cmd_governance = build_deploy_command(governance_rel)
+    deploy_cmd_adapter = build_deploy_command(adapter_rel)
     init_cmd_runtime = build_initialize_command(runtime_sha256)
     init_cmd_governance = build_initialize_command(governance_sha256)
 
     manifest = {
-        "schema_version": "1",
+        "schema_version": "2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_commit,
         "git_commit_short": git_commit_short,
@@ -236,14 +254,24 @@ def main() -> None:
             "sha256": governance_sha256,
             "optimized_size": governance_size,
         },
+        "sep40_adapter_wasm": {
+            "package": args.adapter_pkg,
+            "version": adapter_version,
+            "path": adapter_rel,
+            "sha256": adapter_sha256,
+            "optimized_size": adapter_size,
+        },
         "dry_run_commands": {
             "note": (
                 "These commands use --simulate-only and do not broadcast. "
                 "Replace <network>, <source-identity>, <contract-id>, "
-                "<governance-contract-id> with real values for actual deployment."
+                "<governance-contract-id>, <owner>, <parent-oracle-id>, "
+                "<asset>, <decimals>, <resolution>, <base> with real values "
+                "for actual deployment."
             ),
             "install_runtime": deploy_cmd_runtime,
             "install_governance": deploy_cmd_governance,
+            "install_sep40_adapter": deploy_cmd_adapter,
             "initialize_runtime": init_cmd_runtime,
             "initialize_governance": init_cmd_governance,
         },

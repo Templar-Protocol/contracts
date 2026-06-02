@@ -7,9 +7,7 @@ extern crate alloc;
 
 use alloc::vec::Vec as AllocVec;
 
-use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerEvent as KernelCircuitBreakerEvent, CircuitBreakerSet, CircuitBreakerSetConfig,
@@ -17,7 +15,8 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
 use templar_proxy_oracle_soroban_common::{extend_instance_ttl, is_zero_wasm_hash};
 pub use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ContractError, MonotonicRunConfig as SorobanMonotonicRunConfig,
-    PriceData, ProxyConfig, RearmConfig, SetEnforcedConfig, SourceConfig,
+    NormalizedPrice, PriceData, PriceFeedClient, PriceFeedTrait, ProxyConfig, ProxyOracleClient,
+    ProxyOracleTrait, RearmConfig, SetEnforcedConfig, SourceConfig,
     StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };
@@ -52,30 +51,16 @@ const MAX_BREAKERS_PER_PROXY: usize = 16;
 
 // `RefreshFailure` / `CacheBlocked` event codes published as the `code` field.
 pub(crate) const STORAGE_FAILED_CODE: u32 = 3;
-pub(crate) const CONVERSION_FAILED_CODE: u32 = 4;
 pub(crate) const SOURCE_UNAVAILABLE_CODE: u32 = 5;
 pub(crate) const UNKNOWN_ASSET_CODE: u32 = 6;
-
-soroban_sdk::contractmeta!(key = "sep", val = "40");
 
 #[contract]
 pub struct SorobanProxyOracle;
 
-#[contractclient(name = "PriceFeedClient")]
-pub trait PriceFeedTrait {
-    fn base(env: Env) -> Asset;
-    fn assets(env: Env) -> Vec<Asset>;
-    fn decimals(env: Env) -> u32;
-    fn resolution(env: Env) -> u32;
-    fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData>;
-    fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>>;
-    fn lastprice(env: Env, asset: Asset) -> Option<PriceData>;
-}
-
 #[derive(Clone)]
 #[contracttype]
 pub enum CachedStatus {
-    Accepted(PriceData),
+    Accepted(NormalizedPrice),
     Blocked(u32),
     ResolveFailed(u32),
 }
@@ -99,7 +84,7 @@ pub struct CircuitBreakerSetView {
 #[derive(Clone)]
 #[contracttype]
 pub enum RefreshStatus {
-    Accepted(PriceData),
+    Accepted(NormalizedPrice),
     Blocked(u32),
     ResolveFailed(u32),
     UnknownAsset,
@@ -129,28 +114,14 @@ fn with_breakers<T>(
 
 #[contractimpl]
 impl SorobanProxyOracle {
-    pub fn __constructor(
-        env: Env,
-        governance: Address,
-        base: Asset,
-        decimals: u32,
-        resolution: u32,
-    ) -> Result<(), ContractError> {
+    pub fn __constructor(env: Env, governance: Address, base: Asset) -> Result<(), ContractError> {
         extend_instance_ttl(&env);
         if env.storage().instance().has(&DataKey::Governance) {
             return Err(ContractError::AlreadyInitialized);
         }
-        if resolution == 0 {
-            return Err(ContractError::InvalidInput);
-        }
-        if decimals > 18 {
-            return Err(ContractError::InvalidInput);
-        }
         let storage = env.storage().instance();
         storage.set(&DataKey::Governance, &governance);
         storage.set(&DataKey::Base, &base);
-        storage.set(&DataKey::Decimals, &decimals);
-        storage.set(&DataKey::Resolution, &resolution);
         env.storage()
             .persistent()
             .set(&DataKey::Assets, &Vec::<Asset>::new(&env));
@@ -395,60 +366,12 @@ impl SorobanProxyOracle {
     }
 }
 
-// SEP-40 getters cannot return Option or Result per the interface contract.
-// Panic on missing key is the documented fail-closed behavior.
-#[allow(clippy::expect_used)]
+/// Read API for `Sep40Adapter` contracts. The proxy oracle does not
+/// implement SEP-40; adapters scale `NormalizedPrice` to their own
+/// per-adapter decimals + resolution + base.
 #[contractimpl]
-impl PriceFeedTrait for SorobanProxyOracle {
-    fn base(env: Env) -> Asset {
-        env.storage().instance().get(&DataKey::Base).expect("base")
-    }
-
-    fn assets(env: Env) -> Vec<Asset> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Assets)
-            .expect("assets")
-    }
-
-    fn decimals(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Decimals)
-            .expect("decimals")
-    }
-
-    fn resolution(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Resolution)
-            .expect("resolution")
-    }
-
-    fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
-        let history = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<PriceData>>(&DataKey::History(asset))?;
-        history.iter().rev().find(|p| p.timestamp == timestamp)
-    }
-
-    fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
-        if records == 0 {
-            return None;
-        }
-        let history = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<PriceData>>(&DataKey::History(asset))?;
-        if history.is_empty() {
-            return None;
-        }
-        let start = history.len().saturating_sub(records);
-        Some(history.slice(start..))
-    }
-
-    fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
+impl ProxyOracleTrait for SorobanProxyOracle {
+    fn aggregated_latest(env: Env, asset: Asset) -> Option<NormalizedPrice> {
         let cached = env
             .storage()
             .persistent()
@@ -459,6 +382,39 @@ impl PriceFeedTrait for SorobanProxyOracle {
             .get::<_, ProxyConfig>(&DataKey::Proxy(asset))?;
         let max_age = proxy_config.max_age_secs.unwrap_or(u64::MAX);
         cached_accepted_no_older_than(&cached, max_age, env.ledger().timestamp())
+    }
+
+    fn aggregated_history(env: Env, asset: Asset, records: u32) -> Option<Vec<NormalizedPrice>> {
+        if records == 0 {
+            return None;
+        }
+        let history = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<NormalizedPrice>>(&DataKey::History(asset))?;
+        if history.is_empty() {
+            return None;
+        }
+        let start = history.len().saturating_sub(records);
+        Some(history.slice(start..))
+    }
+}
+
+/// Admin / introspection helpers — deliberately named to avoid collision with
+/// SEP-40's `base()` / `assets()`, since these mean different things here.
+#[contractimpl]
+impl SorobanProxyOracle {
+    /// The base asset every source must report against (`source.base()`
+    /// must match this on refresh). Not the same concept as SEP-40 `base`,
+    /// which is per-adapter and describes what the adapter publishes.
+    pub fn source_base(env: Env) -> Option<Asset> {
+        env.storage().instance().get(&DataKey::Base)
+    }
+
+    /// Assets with a registered proxy config. Used by off-chain indexers
+    /// and adapter deployer tooling.
+    pub fn registered_assets(env: Env) -> Vec<Asset> {
+        get_assets(&env)
     }
 }
 
