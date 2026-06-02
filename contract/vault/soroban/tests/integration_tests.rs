@@ -10,6 +10,7 @@ use soroban_sdk::{
 };
 use std::string::String as AllocString;
 use templar_curator_primitives::policy::state::MarketConfig;
+use templar_soroban_governance::{GovernanceError, SorobanVaultGovernanceContract};
 use templar_soroban_runtime::{
     contract::{ContractConfig, CuratorVault, SorobanVaultContract},
     rbac::{RbacAuth, RbacConfig, Role},
@@ -412,6 +413,137 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
         assert_eq!(
             stored_offsets,
             (virtual_shares as i128, virtual_assets as i128)
+        );
+    });
+}
+
+#[test]
+fn governance_routes_upgrade_migrate_and_cancel_migration_to_real_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let vault = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset = env
+        .register_stellar_asset_contract_v2(asset_admin)
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(vault.clone())
+        .address();
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+
+    env.as_contract(&vault, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            admin.clone(),
+            governance.clone(),
+            asset,
+            share,
+            0,
+            0,
+        )
+        .unwrap();
+    });
+
+    let upgrade_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_upgrade(
+            env.clone(),
+            admin.clone(),
+            wasm_hash.clone(),
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id).unwrap();
+    });
+
+    let migrate_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_migrate(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 112,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id).unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let second_upgrade_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_upgrade(
+            env.clone(),
+            admin.clone(),
+            wasm_hash.clone(),
+        )
+        .unwrap()
+    });
+    env.ledger().set(LedgerInfo {
+        timestamp: 206,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), second_upgrade_id)
+            .unwrap();
+    });
+
+    let cancel_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_cancel_migration(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 212,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id).unwrap();
+    });
+
+    env.as_contract(&vault, || {
+        assert_eq!(
+            SorobanVaultContract::migrate(env.clone(), governance.clone()),
+            Err(templar_soroban_runtime::ContractError::InvalidState)
         );
     });
 }

@@ -16,9 +16,10 @@ Governance timelock/orchestration lives in the dedicated `contract/vault/soroban
 contract. The runtime still applies canonical governance state changes. Vault-bound governance
 actions cross the contract boundary via `execute_governance(env, caller, payload)`, where the
 payload carries a `GovernanceCommand`. `SetTimelock` and `Other` actions stay local to the
-governance contract. The generic `execute(payload)` path remains for user flows and a small
-retained config subset (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`); vault-bound
-governance mutations use `execute_governance`.
+governance contract. The generic `execute(payload)` path remains for user flows and the
+`CancelMigration` recovery command. Runtime support for `VIRTUAL_OFFSETS` remains in the retained
+config subset and has no shipped governance-contract submitter; allocator and adapter-allowlist
+changes are routed through `execute_governance`.
 
 ```mermaid
 graph TB
@@ -70,13 +71,21 @@ sequenceDiagram
 ### Governance Control-Plane Boundary
 
 - The governance contract owns proposal submission, timelocks, approval/revocation, and abdication.
+- The configured Sentinel is a separate emergency role holder. The governance contract is not
+  implicitly treated as Sentinel and should not be granted `Role::Sentinel` just to make governance
+  proposals work.
 - The runtime remains the canonical owner of applied vault config/policy state.
 - Vault-bound governance actions cross the boundary through a single bridge:
   `execute_governance(env, caller, payload)`. The payload is a `GovernanceCommand` that the
   runtime decodes and dispatches to the corresponding internal config/policy/state helpers.
-- `execute(payload)` remains for user flows and for the retained execute-path config subset
-  (`ALLOCATORS`, `ALLOWED_ADAPTERS`, `VIRTUAL_OFFSETS`). Vault-bound governance mutations use
-  `execute_governance`, not the generic user-flow command path.
+- Emergency pause and restriction tightening are immediate Sentinel actions. Unpause and
+  relaxing/removing restrictions are governance actions and must pass through the configured
+  timelock before the runtime applies them.
+- Skim recipient changes and skim execution are governance actions and must pass through the
+  configured `Skim` timelock before the runtime applies them.
+- `execute(payload)` remains for user flows and the `CancelMigration` recovery command.
+  Allocator and adapter-allowlist governance changes use `execute_governance`; `VIRTUAL_OFFSETS`
+  remains a runtime governance-config kind without a shipped governance-contract submitter.
 
 ### Soroban-Specific Withdrawal Path
 
