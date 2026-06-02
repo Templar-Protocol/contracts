@@ -73,3 +73,10 @@ Base used: `origin/spr/refactor/vault-ergonomics/4f330057` at `4e72696d27e0f716b
 
 - For share-token vault address validation, took PR #429's stricter `AddressPayload::ContractIdHash` check instead of the current branch's broader `Executable::{Wasm, StellarAsset}` check.
 - Kept `symbol_short` because PR #429 emits the delegated `burn_from` observability event.
+
+### PR #452 in progress
+
+- For Blend adapter, kept PR #431's removal of public admin/accounting shortcuts (`supply_balance`, `withdraw_to_vault`) and did not add PR #452's older admin-rotation entrypoints.
+- Kept PR #452 Blend adapter pause/readback and upgrade observability controls because they do not reopen the adapter accounting shortcut boundary.
+- Combined Blend adapter tests by keeping PR #431 source-sweep tests and PR #452 upgrade event-count coverage, while removing stale admin-rotation tests for entrypoints not present in the integrated branch.
+- For share-token admin rotation, combined PR #429 vault-admin validation with PR #452's pending-admin flow: proposed admins are validated against the current vault before being stored as pending.

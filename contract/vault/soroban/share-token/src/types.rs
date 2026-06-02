@@ -4,7 +4,25 @@ use soroban_sdk::{contracterror, contracttype};
 #[derive(Clone)]
 pub(super) enum DataKey {
     Admin,
+    PendingAdmin,
     Vault,
+    Paused,
+    Restrictions,
+}
+
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+pub enum RestrictionMode {
+    None,
+    Blacklist,
+    Whitelist,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Restrictions {
+    pub mode: RestrictionMode,
+    pub accounts: soroban_sdk::Vec<soroban_sdk::Address>,
 }
 
 #[contracterror]
@@ -17,4 +35,6 @@ pub enum ShareTokenError {
     MissingConfig = 3,
     VaultImmutable = 4,
     MetadataImmutable = 5,
+    Paused = 6,
+    Restricted = 7,
 }

@@ -3,9 +3,10 @@
 use soroban_sdk::{
     address_payload::AddressPayload,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    BytesN, Env, IntoVal, Symbol, Vec,
 };
+use stellar_contract_utils::upgradeable::{self, Upgradeable};
 
 use blend_contract_sdk::pool::{Client as PoolClient, Request};
 
@@ -25,6 +26,7 @@ enum DataKey {
     Admin,
     Vault,
     Pool,
+    Paused,
 }
 
 #[contracterror]
@@ -44,6 +46,8 @@ pub enum AdapterError {
     ZeroWithdrawal = 7,
     /// Reserve data is stale.
     StaleReserve = 8,
+    /// Emergency pause is active.
+    Paused = 9,
 }
 
 #[contract]
@@ -70,6 +74,22 @@ impl BlendAdapterContract {
         Ok(())
     }
 
+    /// Pause or unpause adapter state-changing operations (admin or vault).
+    #[allow(deprecated)]
+    pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin_or_vault(&env, &caller)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        env.events()
+            .publish((symbol_short!("paused"), caller), paused);
+        Ok(())
+    }
+
+    pub fn paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        is_paused(&env)
+    }
+
     /// Supply assets from the adapter into the Blend pool (vault-only).
     #[allow(deprecated)]
     pub fn supply(
@@ -79,6 +99,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -134,6 +155,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -177,6 +199,7 @@ impl BlendAdapterContract {
         receiver: Address,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -240,6 +263,18 @@ impl BlendAdapterContract {
     }
 }
 
+#[contractimpl]
+impl Upgradeable for BlendAdapterContract {
+    #[allow(deprecated)]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        extend_instance_ttl(e);
+        require_admin(e, &operator).unwrap_or_else(|err| panic_with_error!(e, err));
+        upgradeable::upgrade(e, &new_wasm_hash);
+        e.events()
+            .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
+    }
+}
+
 fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
     env.storage()
         .instance()
@@ -277,6 +312,30 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     Ok(())
 }
 
+fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
+    caller.require_auth();
+    let admin = get_admin(env)?;
+    let vault = get_vault(env)?;
+    if caller != &admin && caller != &vault {
+        return Err(AdapterError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(env: &Env) -> Result<(), AdapterError> {
+    if is_paused(env) {
+        return Err(AdapterError::Paused);
+    }
+    Ok(())
+}
+
 fn is_contract_address(addr: &Address) -> bool {
     matches!(
         AddressPayload::from_address(addr),
@@ -303,7 +362,7 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Events as _};
 
     const BLEND_ADAPTER_SOURCE: &str = include_str!("lib.rs");
 
@@ -327,6 +386,25 @@ mod tests {
         Address::from_str(
             env,
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        )
+    }
+
+    fn adapter_event_count(env: &Env, contract_id: &Address) -> usize {
+        env.events()
+            .all()
+            .filter_by_contract(contract_id)
+            .events()
+            .len()
+    }
+
+    fn empty_wasm_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(
+            env,
+            &[
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
+            ],
         )
     }
 
@@ -422,6 +500,48 @@ mod tests {
         env.as_contract(&contract_id, || {
             let result =
                 BlendAdapterContract::supply(env.clone(), impostor.clone(), asset.clone(), 100);
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn admin_can_pause_adapter_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert_eq!(BlendAdapterContract::paused(env.clone()), false);
+            BlendAdapterContract::set_paused(env.clone(), admin, true).unwrap();
+            assert_eq!(BlendAdapterContract::paused(env.clone()), true);
+
+            let result = BlendAdapterContract::supply(env.clone(), vault, asset, 100);
+            assert_eq!(result, Err(AdapterError::Paused));
+        });
+    }
+
+    #[test]
+    fn vault_can_pause_adapter_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_paused(env.clone(), vault.clone(), true).unwrap();
+
+            let result = BlendAdapterContract::withdraw(env.clone(), vault, asset, 100);
+            assert_eq!(result, Err(AdapterError::Paused));
+        });
+    }
+
+    #[test]
+    fn non_admin_or_vault_cannot_pause_adapter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let impostor = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_paused(env.clone(), impostor, true);
             assert_eq!(result, Err(AdapterError::Unauthorized));
         });
     }
@@ -552,6 +672,18 @@ mod tests {
         assert!(!source.contains(concat!("pub fn ", "set_vault")));
         assert!(!source.contains(concat!("pool", "_upd")));
         assert!(!source.contains(concat!("vlt", "_upd")));
+    }
+
+    #[test]
+    fn upgrade_requires_admin_and_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_hash = empty_wasm_hash(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::upgrade(&env, new_hash.clone(), admin);
+        });
+        assert_eq!(adapter_event_count(&env, &contract_id), 1);
     }
 
     // Note: "query before initialize" test not applicable — __constructor
