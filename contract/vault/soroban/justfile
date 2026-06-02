@@ -587,28 +587,7 @@ blend-adapter-extend-ttl ledgers="100000":
 		--ledgers-to-extend {{ledgers}}; \
 	echo "✓ TTL extended"
 
-# Supply tokens from adapter into the Blend pool (admin-only).
-# Tokens must already be on the adapter address.
-blend-supply asset amount:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Supplying {{amount}} to Blend pool..."; \
-	just blend-invoke supply_balance \
-		--caller "$admin" \
-		--asset "{{asset}}" \
-		--amount "{{amount}}"; \
-	echo "✓ Supplied to Blend"
-
-# Withdraw tokens from Blend pool and send to vault (admin-only).
-blend-withdraw asset amount:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Withdrawing {{amount}} from Blend pool to vault..."; \
-	just blend-invoke withdraw_to_vault \
-		--caller "$admin" \
-		--asset "{{asset}}" \
-		--amount "{{amount}}"; \
-	echo "✓ Withdrawn from Blend to vault"
-
-# Transfer tokens to the adapter address (for funding before blend-supply).
+# Transfer tokens to the adapter address for operator-managed recovery workflows.
 fund-adapter amount:
 	@asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \

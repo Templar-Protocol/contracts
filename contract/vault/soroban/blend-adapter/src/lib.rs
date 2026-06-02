@@ -24,6 +24,7 @@ const RESERVE_STALE_WINDOW_SECS: u64 = 300;
 #[derive(Clone, Debug)]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Vault,
     Pool,
     Paused,
@@ -255,6 +256,40 @@ impl BlendAdapterContract {
         get_pool(&env)
     }
 
+    /// Propose a new admin. The pending admin must accept in a separate call.
+    #[allow(deprecated)]
+    pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        require_contract_address(&admin, AdapterError::InvalidInput)?;
+        env.storage().instance().set(&DataKey::PendingAdmin, &admin);
+        env.events()
+            .publish((symbol_short!("admin_set"), caller), admin);
+        Ok(())
+    }
+
+    /// Accept admin role previously proposed with `set_admin`.
+    #[allow(deprecated)]
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        caller.require_auth();
+        let pending_admin = get_pending_admin(&env)?;
+        if caller != pending_admin {
+            return Err(AdapterError::Unauthorized);
+        }
+        let old_admin = get_admin(&env)?;
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("admin_acc"), old_admin), caller);
+        Ok(())
+    }
+
+    pub fn pending_admin(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
+        get_pending_admin(&env)
+    }
+
     /// Extend instance storage TTL (admin-only).
     pub fn extend_ttl(env: Env, caller: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
@@ -284,6 +319,10 @@ fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
 
 fn get_admin(env: &Env) -> Result<Address, AdapterError> {
     get_address(env, DataKey::Admin)
+}
+
+fn get_pending_admin(env: &Env) -> Result<Address, AdapterError> {
+    get_address(env, DataKey::PendingAdmin)
 }
 
 fn get_vault(env: &Env) -> Result<Address, AdapterError> {
@@ -672,6 +711,57 @@ mod tests {
         assert!(!source.contains(concat!("pub fn ", "set_vault")));
         assert!(!source.contains(concat!("pool", "_upd")));
         assert!(!source.contains(concat!("vlt", "_upd")));
+    }
+
+    #[test]
+    fn set_admin_requires_pending_admin_acceptance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_admin = register_dummy_contract(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_admin(env.clone(), admin.clone(), new_admin.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()).unwrap(),
+                new_admin
+            );
+            BlendAdapterContract::accept_admin(env.clone(), new_admin.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), new_admin);
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()),
+                Err(AdapterError::MissingConfig)
+            );
+        });
+    }
+
+    #[test]
+    fn set_admin_emits_propose_and_accept_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_admin = register_dummy_contract(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_admin(env.clone(), admin, new_admin.clone()).unwrap();
+            BlendAdapterContract::accept_admin(env.clone(), new_admin).unwrap();
+        });
+        assert_eq!(adapter_event_count(&env, &contract_id), 2);
+    }
+
+    #[test]
+    fn set_admin_rejects_non_contract_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let account = account_address(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_admin(env.clone(), admin, account);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()),
+                Err(AdapterError::MissingConfig)
+            );
+        });
     }
 
     #[test]

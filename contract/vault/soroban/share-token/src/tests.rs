@@ -191,16 +191,15 @@ fn constructor_rejects_external_share_token_admin() {
 
 #[test]
 fn set_admin_rejects_non_vault_admin() {
-    let (env, _admin, vault, _token) = setup();
+    let (env, admin, _vault, token) = setup();
     let new_admin = Address::generate(&env);
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        env.as_contract(&vault, || {
-            SorobanShareTokenContract::set_admin(env.clone(), vault.clone(), new_admin.clone());
-        });
-    }));
-
-    assert!(result.is_err());
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "set_admin"),
+        (&admin, &new_admin).into_val(&env),
+    );
+    assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
 }
 
 #[test]
@@ -487,41 +486,23 @@ fn share_token_whitelist_allows_only_listed_transfer_parties() {
 }
 
 #[test]
-fn set_admin_rotates_admin() {
-    let (env, admin, _vault, token) = setup();
+fn set_admin_rejects_admin_rotation_away_from_vault() {
+    let (env, admin, vault, token) = setup();
     let new_admin = Address::generate(&env);
 
-    env.invoke_contract::<()>(
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
         &soroban_sdk::Symbol::new(&env, "set_admin"),
         (&admin, &new_admin).into_val(&env),
     );
+    assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
 
     let stored_admin: Address = env.invoke_contract(
         &token,
         &soroban_sdk::Symbol::new(&env, "admin"),
         ().into_val(&env),
     );
-    assert_eq!(stored_admin, admin);
-    let pending_admin: Option<Address> = env.invoke_contract(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "pending_admin"),
-        ().into_val(&env),
-    );
-    assert_eq!(pending_admin, Some(new_admin.clone()));
-
-    env.invoke_contract::<()>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "accept_admin"),
-        (&new_admin,).into_val(&env),
-    );
-
-    let stored_admin: Address = env.invoke_contract(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "admin"),
-        ().into_val(&env),
-    );
-    assert_eq!(stored_admin, new_admin);
+    assert_eq!(stored_admin, vault);
     let pending_admin: Option<Address> = env.invoke_contract(
         &token,
         &soroban_sdk::Symbol::new(&env, "pending_admin"),
@@ -533,12 +514,12 @@ fn set_admin_rotates_admin() {
 #[test]
 fn set_admin_emits_propose_and_accept_events() {
     let (env, admin, _vault, token) = setup();
-    let new_admin = Address::generate(&env);
+    let retained_admin = admin.clone();
 
     env.invoke_contract::<()>(
         &token,
         &soroban_sdk::Symbol::new(&env, "set_admin"),
-        (&admin, &new_admin).into_val(&env),
+        (&admin, &retained_admin).into_val(&env),
     );
     let filtered_events = env.events().all().filter_by_contract(&token);
     let events = filtered_events.events();
@@ -551,7 +532,7 @@ fn set_admin_emits_propose_and_accept_events() {
     env.invoke_contract::<()>(
         &token,
         &soroban_sdk::Symbol::new(&env, "accept_admin"),
-        (&new_admin,).into_val(&env),
+        (&retained_admin,).into_val(&env),
     );
     let filtered_events = env.events().all().filter_by_contract(&token);
     let events = filtered_events.events();
@@ -577,27 +558,23 @@ fn non_admin_cannot_set_admin() {
 }
 
 #[test]
-fn old_admin_loses_privilege_after_rotation() {
+fn failed_admin_rotation_leaves_vault_admin_authorized() {
     let (env, admin, _vault, token) = setup();
     let new_admin = Address::generate(&env);
-
-    env.invoke_contract::<()>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "set_admin"),
-        (&admin, &new_admin).into_val(&env),
-    );
-    env.invoke_contract::<()>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "accept_admin"),
-        (&new_admin,).into_val(&env),
-    );
 
     let err = env.try_invoke_contract::<(), ShareTokenError>(
         &token,
         &soroban_sdk::Symbol::new(&env, "set_admin"),
-        (&admin, &Address::generate(&env)).into_val(&env),
+        (&admin, &new_admin).into_val(&env),
     );
-    assert_eq!(err, Err(Ok(ShareTokenError::Unauthorized)));
+    assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "set_paused"),
+        (&admin, &true).into_val(&env),
+    );
+    assert!(env.invoke_contract::<bool>(&token, &Symbol::new(&env, "paused"), ().into_val(&env)));
 }
 
 #[test]
