@@ -493,3 +493,35 @@ pub enum WithdrawalAttempt {
     EmptyPosition,
     NoLiquidity,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::incoming_deposit::IncomingDeposit;
+
+    // Backstop for `fuzz_supply_overflow`: that target asserts correctness up
+    // to the boundary but cannot observe the abort itself (libfuzzer-sys
+    // aborts on panic before catch_unwind sees it). The contract's safety
+    // property — `Deposit::total` overflow aborts — is asserted here.
+    #[test]
+    #[should_panic(expected = "attempt to add with overflow")]
+    fn deposit_total_overflow_aborts() {
+        let deposit = Deposit {
+            active: BorrowAssetAmount::new(u128::MAX),
+            incoming: vec![IncomingDeposit {
+                activate_at_snapshot_index: 1,
+                amount: BorrowAssetAmount::new(1),
+            }],
+            outgoing: BorrowAssetAmount::zero(),
+        };
+        let _ = deposit.total();
+    }
+
+    #[test]
+    fn can_be_removed_is_complement_of_exists() {
+        let p = SupplyPosition::new(0);
+        assert!(!p.exists());
+        assert!(p.can_be_removed());
+        assert_eq!(p.exists(), !p.can_be_removed());
+    }
+}

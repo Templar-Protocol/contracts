@@ -1,303 +1,149 @@
-// ============================================================================
-// FILE: fuzz/fuzz_targets/fuzz_price_calculations.rs
-// ============================================================================
-// Fuzzes price oracle calculations and conversions between asset pairs
+//! Fuzz the real `Convert` implementations on `PricePair` (`common/src/price.rs`)
+//! with a **round-trip / reciprocal** oracle (P1: real code, independent
+//! oracle).
+//!
+//! Scope is deliberately complementary to `fuzz_price`: that target covers
+//! `valuation`/`ratio` monotonicity and the ENG-343 extreme-exponent boundary;
+//! this one drives both `convert` directions and asserts the *metamorphic*
+//! property that converting a unit of value one way and back must recover that
+//! unit — a property that holds independently of the conversion formula, so it
+//! catches a transposed numerator/denominator, a swapped price, or a dropped
+//! scaling that the per-direction monotonicity checks cannot see.
+//!
+//! Inputs are Pyth-shaped and kept in a realistic range (P2, targeted +
+//! documented): prices in `[1e5, ~1e9]`, decimals in `[0, 18]`, and exponents
+//! in `[-12, -4]`. The exponent is **fuzzed**, not fixed, so the exponent-gap
+//! axis is exercised — but bounded together with decimals to stay clear of the
+//! extreme-gap region that trips the intentional U512 overflow / ENG-343 div0
+//! (owned by `fuzz_price`). The combined gap stays within `mul_pow10`'s exact
+//! range, so `ratio` takes its exact path and the round-trip identity holds to
+//! Decimal precision.
 
 #![no_main]
+#![cfg(not(target_arch = "wasm32"))]
 
-use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
+use near_sdk::json_types::{I64, U64};
+use templar_common::{
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount},
+    oracle::pyth::{self, PythTimestamp},
+    price::{Appraise, Convert, PricePair},
+    Decimal,
+};
 
-#[derive(Arbitrary, Debug)]
-struct PriceScenario {
-    // Asset prices (scaled by 1e8 for precision)
-    collateral_price: u32,
-    borrow_price: u32,
+// MUTATION-CHECK (P5): in `Convert<CollateralAsset, BorrowAsset>::convert`
+// (price.rs:111), swap the `ratio` operands (`valuation(1 borrow).ratio(
+// valuation(amount))`). The forward/back product then diverges from 1 and the
+// round-trip assertion below must fire. (Alternatively: delete the
+// `if rhs.coefficient.is_zero() { return None; }` guard in `Valuation::ratio`
+// to break the zero-valuation assertion.)
 
-    // Amounts to convert
-    collateral_amount: u64,
-    borrow_amount: u64,
+fuzz_target!(|data: (i64, u64, i64, u64, u64, u64, i32, i32, i32, i32)| {
+    let (c_px, c_conf, b_px, b_conf, coll_amt, borrow_amt, c_dec, b_dec, c_expo_raw, b_expo_raw) =
+        data;
 
-    // Oracle parameters
-    price_age: u32,       // Seconds since last update
-    max_price_age: u32,   // Maximum acceptable age
-    price_deviation: u16, // Basis points of acceptable deviation
+    // Pyth-realistic: prices in [1e5, ~1e9], conf < price, decimals in [0,18],
+    // exponents in [-12,-4] (fuzzed). See the module doc for why these bounds
+    // are targeted (not a blanket narrow) and how they keep `ratio` exact.
+    let c_price = 100_000 + (c_px.unsigned_abs() % 1_000_000_000);
+    let b_price = 100_000 + (b_px.unsigned_abs() % 1_000_000_000);
+    let c_conf_b = c_conf % c_price;
+    let b_conf_b = b_conf % b_price;
+    let c_dec = c_dec.rem_euclid(19);
+    let b_dec = b_dec.rem_euclid(19);
+    let c_expo = -4 - c_expo_raw.rem_euclid(9); // [-12, -4]
+    let b_expo = -4 - b_expo_raw.rem_euclid(9); // [-12, -4]
 
-    // Previous prices for comparison
-    prev_collateral_price: u32,
-    // prev_borrow_price: u32,
-}
+    let c_pyth = pyth::Price {
+        price: I64(c_price as i64),
+        conf: U64(c_conf_b),
+        expo: c_expo,
+        publish_time: PythTimestamp::from_secs(0),
+    };
+    let b_pyth = pyth::Price {
+        price: I64(b_price as i64),
+        conf: U64(b_conf_b),
+        expo: b_expo,
+        publish_time: PythTimestamp::from_secs(0),
+    };
 
-fuzz_target!(|scenario: PriceScenario| {
-    // Validate inputs
-    if scenario.collateral_price == 0 || scenario.borrow_price == 0 {
-        return; // Invalid prices
-    }
-    if scenario.max_price_age == 0 {
+    let Ok(price_pair) = PricePair::new(&c_pyth, c_dec, &b_pyth, b_dec) else {
         return;
-    }
+    };
 
-    let collateral_price = u128::from(scenario.collateral_price);
-    let borrow_price = u128::from(scenario.borrow_price);
-    let collateral_amount = u128::from(scenario.collateral_amount);
-    let borrow_amount = u128::from(scenario.borrow_amount);
+    let coll = CollateralAssetAmount::new(u128::from(coll_amt));
+    let borrow = BorrowAssetAmount::new(u128::from(borrow_amt));
 
-    // Test 1: Price staleness check
-    let is_stale = scenario.price_age > scenario.max_price_age;
+    // ---- Non-trivial properties of the real functions (P2) ----
 
-    // Invariant: Stale prices should be rejected
-    if is_stale {
-        // In actual code: assert!(get_price().is_err())
-        return;
-    }
-
-    // Test 2: Convert collateral amount to borrow amount
-    // borrow_equivalent = (collateral_amount * collateral_price) / borrow_price
-    if let Some(collateral_value) = collateral_amount.checked_mul(collateral_price) {
-        if let Some(borrow_equivalent) = collateral_value.checked_div(borrow_price) {
-            // Invariant: Result should be proportional to input
-            // If collateral_price > borrow_price, should get more borrow tokens
-            if collateral_price > borrow_price {
-                assert!(
-                    borrow_equivalent >= collateral_amount,
-                    "Price conversion error: higher priced asset should convert to more"
-                );
-            }
-
-            // Invariant: Converting back should give approximately original amount
-            if let Some(back_value) = borrow_equivalent.checked_mul(borrow_price) {
-                if let Some(back_to_collateral) = back_value.checked_div(collateral_price) {
-                    // Allow 1 unit difference for rounding
-                    let diff = back_to_collateral.abs_diff(collateral_amount);
-
-                    assert!(
-                        diff <= 1,
-                        "Round-trip conversion lost too much: original={collateral_amount}, back={back_to_collateral}",
-                    );
-                }
-            }
-        }
-    }
-
-    // Test 3: Calculate position value in USD
-    let collateral_value_usd = collateral_amount.saturating_mul(collateral_price);
-    let borrow_value_usd = borrow_amount.saturating_mul(borrow_price);
-
-    // Invariant: Values should never overflow to wrap around
+    // 1. A zero-amount valuation has a zero coefficient, so using it as the
+    //    divisor of `ratio` must be None (the div0 guard). HARD assertion: a
+    //    wrong-but-nonzero result is not tolerated.
+    let v_zero = price_pair.valuation(CollateralAssetAmount::zero());
+    let v_one = price_pair.valuation(CollateralAssetAmount::new(1));
     assert!(
-        collateral_value_usd >= collateral_amount || collateral_amount == 0,
-        "Collateral value calculation overflowed"
-    );
-    assert!(
-        borrow_value_usd >= borrow_amount || borrow_amount == 0,
-        "Borrow value calculation overflowed"
+        v_one.ratio(v_zero).is_none(),
+        "ratio by a zero-amount valuation must be None (div0 guard)",
     );
 
-    // Test 4: Price deviation checks (circuit breaker)
-    if scenario.prev_collateral_price > 0 {
-        let prev_price = u128::from(scenario.prev_collateral_price);
-        let current_price = collateral_price;
-
-        // Calculate percentage change
-        let (change_numerator, change_denominator) = if current_price > prev_price {
-            (current_price - prev_price, prev_price)
-        } else {
-            (prev_price - current_price, prev_price)
-        };
-
-        if change_denominator > 0 {
-            let change_bps = (change_numerator * 10000) / change_denominator;
-
-            // Invariant: Reject prices that deviate too much
-            if change_bps > u128::from(scenario.price_deviation) {
-                // In actual code: should reject this price update
-                // assert!(update_price(current_price).is_err())
-                return;
-            }
-
-            // Invariant: Change should never exceed 100% in one update
-            assert!(
-                change_bps <= 10000,
-                "Price changed by more than 100% in one update: {change_bps}bps",
-            );
-        }
-    }
-
-    // Test 5: Collateral ratio calculations with prices
-    // collateral_ratio = (collateral_value * 10000) / borrow_value
-    if borrow_value_usd > 0 {
-        if let Some(ratio_numerator) = collateral_value_usd.checked_mul(10000) {
-            let collateral_ratio = ratio_numerator / borrow_value_usd;
-
-            // Invariant: Ratio calculation should be consistent
-            // If we have 2x collateral value, ratio should be 20000 (200%)
-            if collateral_value_usd >= borrow_value_usd * 2 {
-                assert!(
-                    collateral_ratio >= 20000,
-                    "Collateral ratio calculation is wrong: ratio={collateral_ratio}"
-                );
-            }
-
-            // Invariant: If collateral value < borrow value, ratio < 100%
-            if collateral_value_usd < borrow_value_usd {
-                assert!(
-                    collateral_ratio < 10000,
-                    "Undercollateralized but ratio shows healthy: {collateral_ratio}"
-                );
-            }
-        }
-    }
-
-    // Test 6: Liquidation calculations with price changes
-    // Simulate price crash of collateral
-    let crash_scenarios = [
-        (80, "20% drop"), // 80% of original price
-        (50, "50% drop"), // 50% of original price
-        (20, "80% drop"), // 20% of original price
-    ];
-
-    for (crash_percent, _description) in crash_scenarios {
-        #[allow(clippy::unwrap_used, reason = "Fuzzing with valid inputs")]
-        let crashed_price = (collateral_price * u128::try_from(crash_percent).unwrap()) / 100;
-        if crashed_price == 0 {
-            continue;
-        }
-
-        let crashed_value = collateral_amount.saturating_mul(crashed_price);
-
-        // Check if position becomes liquidatable
-        let collateral_ratio_threshold = 13000u128; // 130%
-        let required_collateral =
-            borrow_value_usd.saturating_mul(collateral_ratio_threshold) / 10000;
-
-        if crashed_value < required_collateral && borrow_value_usd > 0 {
-            // Position is now liquidatable
-
-            // Calculate liquidation health factor
-            let health = (crashed_value * 10000) / required_collateral;
-
-            // Invariant: Health factor should be < 100% for liquidatable position
-            assert!(
-                health < 10000,
-                "Position should be liquidatable but health={health}/10000",
-            );
-        }
-    }
-
-    // Test 7: Price precision and rounding
-    // Test that we don't lose precision in conversions
-    let small_amounts = [1u128, 10, 100, 1000];
-
-    for small in small_amounts {
-        if let Some(value) = small.checked_mul(collateral_price) {
-            if let Some(converted) = value.checked_div(borrow_price) {
-                if converted > 0 {
-                    // Converting back should not be zero
-                    let back = converted.saturating_mul(borrow_price) / collateral_price;
-
-                    // Should not lose everything to rounding
-                    assert!(
-                        back > 0 || small == 0,
-                        "Small amount lost to rounding: {small} -> {converted} -> {back}",
-                    );
-                }
-            }
-        }
-    }
-
-    // Test 8: TWAP (Time-Weighted Average Price) calculations
-    // Simulate multiple price points
-    let price_points = [
-        collateral_price,
-        collateral_price * 95 / 100,  // -5%
-        collateral_price * 105 / 100, // +5%
-        collateral_price * 98 / 100,  // -2%
-    ];
-
-    let weights = [1u128, 2, 3, 1]; // Different time weights
-    let total_weight: u128 = weights.iter().sum();
-
-    if total_weight > 0 {
-        let mut weighted_sum: u128 = 0;
-        for (price, weight) in price_points.iter().zip(weights.iter()) {
-            weighted_sum = weighted_sum.saturating_add(price.saturating_mul(*weight));
-        }
-
-        let twap = weighted_sum / total_weight;
-
-        // Invariant: TWAP should be within range of price points
-        #[allow(clippy::unwrap_used, reason = "Fuzzing with valid inputs")]
-        let min_price = *price_points.iter().min().unwrap();
-        #[allow(clippy::unwrap_used, reason = "Fuzzing with valid inputs")]
-        let max_price = *price_points.iter().max().unwrap();
-
+    // 2. Round-trip / reciprocal identity (the precision oracle). Converting one
+    //    unit of borrow value into collateral units and one unit of collateral
+    //    value into borrow units are reciprocals: their product must equal 1.
+    //    The confidence terms cancel exactly (optimistic·pessimistic over
+    //    pessimistic·optimistic), so this is a clean implementation-independent
+    //    check. With the bounded domain both directions stay on `ratio`'s exact
+    //    path, so the only error is Decimal truncation. The worst case is an
+    //    extreme exponent gap that drives one direction to ~1e-30, which keeps
+    //    only ~28 of Decimal's significant bits (~3e-9 relative error); we
+    //    assert within 1e-6 — ~300× that worst case, yet far tighter than any
+    //    *structural* bug (a transposed operand or wrong price shifts the
+    //    product by O(1)).
+    let fwd = <PricePair as Convert<BorrowAsset, CollateralAsset>>::convert(
+        &price_pair,
+        BorrowAssetAmount::new(1),
+    );
+    let back = <PricePair as Convert<CollateralAsset, BorrowAsset>>::convert(
+        &price_pair,
+        CollateralAssetAmount::new(1),
+    );
+    // Guard against a saturated ratio (Decimal::MAX / zero), which the bounded
+    // domain should never produce but which would make the product meaningless.
+    if !fwd.is_zero() && fwd != Decimal::MAX && !back.is_zero() && back != Decimal::MAX {
+        let product = fwd * back;
+        let tolerance = Decimal::ONE.mul_pow10(-6).expect("1e-6 is in range");
         assert!(
-            twap >= min_price && twap <= max_price,
-            "TWAP outside price range: {twap} not in [{min_price}, {max_price}]",
-        );
-
-        // Invariant: TWAP should be close to simple average for equal weights
-        let simple_avg = price_points.iter().sum::<u128>() / price_points.len() as u128;
-        let diff_pct = if twap > simple_avg {
-            ((twap - simple_avg) * 100) / simple_avg
-        } else {
-            ((simple_avg - twap) * 100) / simple_avg
-        };
-
-        // For equal weights, difference should be minimal
-        if weights.iter().all(|&w| w == weights[0]) {
-            assert!(
-                diff_pct == 0,
-                "Equal weights should give same result as simple average"
-            );
-        }
-    }
-
-    // Test 9: Exchange rate calculations
-    // For cToken-like logic: exchangeRate = (totalCash + totalBorrows - reserves) / totalSupply
-    let total_cash = collateral_amount;
-    let total_borrows = borrow_amount;
-    let reserves = total_borrows / 10; // 10% reserve factor
-    let total_supply = collateral_amount;
-
-    if total_supply > 0 {
-        let numerator = total_cash
-            .saturating_add(total_borrows)
-            .saturating_sub(reserves);
-        let exchange_rate = numerator / total_supply;
-
-        // Invariant: Exchange rate should be reasonable (not zero, not absurdly high)
-        assert!(exchange_rate > 0, "Exchange rate is zero");
-        assert!(
-            exchange_rate <= total_supply * 10,
-            "Exchange rate absurdly high: {exchange_rate} for supply {total_supply}",
+            product.abs_diff(Decimal::ONE) <= tolerance,
+            "convert round-trip must recover unity: fwd={fwd:?} * back={back:?} = {product:?}",
         );
     }
 
-    // Test 10: Multi-hop price conversions (A -> B -> C -> A)
-    // Ensure round-trip conversions preserve value
-    if let Some(step1) = collateral_amount
-        .checked_mul(collateral_price)
-        .and_then(|v| v.checked_div(borrow_price))
-    {
-        if let Some(step2) = step1
-            .checked_mul(borrow_price)
-            .and_then(|v| v.checked_div(collateral_price))
-        {
-            // Should get back approximately the same amount
-            let loss = collateral_amount.abs_diff(step2);
-
-            let loss_pct = if collateral_amount > 0 {
-                (loss * 100) / collateral_amount
-            } else {
-                0
-            };
-
-            // Should lose less than 1% to rounding
+    // 3. Monotonicity: a larger amount yields a larger-or-equal valuation.
+    if u128::from(coll_amt) > 0 {
+        let v_coll = price_pair.valuation(coll);
+        let v_coll_plus = price_pair.valuation(CollateralAssetAmount::new(
+            u128::from(coll_amt).saturating_add(1),
+        ));
+        if let Some(ratio) = v_coll_plus.ratio(v_coll) {
             assert!(
-                loss_pct <= 1,
-                "Multi-hop conversion lost {loss_pct}% of value",
+                ratio >= Decimal::ONE,
+                "valuation must be monotone non-decreasing in amount; got ratio={ratio:?}",
             );
         }
     }
+    if u128::from(borrow_amt) > 0 {
+        let v_borrow = price_pair.valuation(borrow);
+        let v_borrow_plus = price_pair.valuation(BorrowAssetAmount::new(
+            u128::from(borrow_amt).saturating_add(1),
+        ));
+        if let Some(ratio) = v_borrow_plus.ratio(v_borrow) {
+            assert!(
+                ratio >= Decimal::ONE,
+                "borrow valuation must be monotone in amount; got ratio={ratio:?}",
+            );
+        }
+    }
+
+    // 4. The real conversions on the fuzzed amounts must not panic.
+    let _ = <PricePair as Convert<BorrowAsset, CollateralAsset>>::convert(&price_pair, borrow);
+    let _ = <PricePair as Convert<CollateralAsset, BorrowAsset>>::convert(&price_pair, coll);
 });

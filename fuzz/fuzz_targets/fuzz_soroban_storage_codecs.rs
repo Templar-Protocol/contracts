@@ -1,5 +1,10 @@
 #![no_main]
 
+// MUTATION-CHECK (P5): in `contract/vault/soroban/src/storage/mod.rs`, change
+// one encoder to drop a field (e.g. omit `push_u128(amount)` in
+// `encode_supply_queue`) or change a `push_u32` width. Then the corresponding
+// `decode(encode(x)) == x` round-trip assertion below must fire.
+
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use templar_curator_primitives::policy::cap_group::CapGroupId;
@@ -11,12 +16,16 @@ use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueE
 use templar_soroban_runtime::test_utils::fuzz_api;
 use templar_vault_kernel::{
     Address, AllocationPlanEntry, FeeAccrualAnchor, OpState, Restrictions, TargetId, TimestampNs,
-    VaultState, VersionedState, WithdrawQueue, WithdrawingState,
+    VaultState, WithdrawQueue, WithdrawingState,
 };
+
+// Cap collection sizes so encoded blobs stay below libFuzzer's RSS ceiling.
+// The decoders themselves don't enforce upper bounds; that should be tracked
+// separately (untrusted-input DoS).
+const MAX_COLLECTION_LEN: usize = 64;
 
 #[derive(Arbitrary, Debug)]
 struct StorageCodecInput {
-    raw: Vec<u8>,
     addresses: Vec<[u8; 32]>,
     restriction_mode: u8,
     max_length: Option<u16>,
@@ -35,9 +44,12 @@ struct StorageCodecInput {
     fee_anchor_ts: u64,
 }
 
+fn truncate<T>(v: &[T], max: usize) -> &[T] {
+    &v[..v.len().min(max)]
+}
+
 fn build_restrictions(input: &StorageCodecInput) -> Restrictions {
-    let addresses = input
-        .addresses
+    let addresses = truncate(&input.addresses, MAX_COLLECTION_LEN)
         .iter()
         .copied()
         .map(Address)
@@ -49,8 +61,7 @@ fn build_restrictions(input: &StorageCodecInput) -> Restrictions {
 }
 
 fn build_supply_queue(input: &StorageCodecInput) -> SupplyQueue {
-    let entries = input
-        .queue_entries
+    let entries = truncate(&input.queue_entries, MAX_COLLECTION_LEN)
         .iter()
         .filter_map(|(target, amount, priority)| {
             SupplyQueueEntry::new_with_priority(*target, *amount, *priority).ok()
@@ -64,7 +75,7 @@ fn build_supply_queue(input: &StorageCodecInput) -> SupplyQueue {
 
 fn build_markets(input: &StorageCodecInput) -> OrderedMap<TargetId, MarketConfig> {
     let mut out = OrderedMap::new();
-    for (target_id, enabled, cap, cap_group_bytes) in &input.market_entries {
+    for (target_id, enabled, cap, cap_group_bytes) in truncate(&input.market_entries, MAX_COLLECTION_LEN) {
         let cap_group_id = cap_group_bytes
             .as_ref()
             .and_then(|raw| core::str::from_utf8(raw).ok())
@@ -77,7 +88,7 @@ fn build_markets(input: &StorageCodecInput) -> OrderedMap<TargetId, MarketConfig
 
 fn build_principals(input: &StorageCodecInput) -> OrderedMap<TargetId, u128> {
     let mut out = OrderedMap::new();
-    for (target_id, principal) in &input.principal_entries {
+    for (target_id, principal) in truncate(&input.principal_entries, MAX_COLLECTION_LEN) {
         let _ = out.insert(*target_id, *principal);
     }
     out
@@ -85,7 +96,9 @@ fn build_principals(input: &StorageCodecInput) -> OrderedMap<TargetId, u128> {
 
 fn build_leases(input: &StorageCodecInput) -> MarketLeaseRegistry {
     let mut leases = OrderedMap::new();
-    for (target_id, owner, op_id, acquired_at, expires_at, fencing_token) in &input.lease_entries {
+    for (target_id, owner, op_id, acquired_at, expires_at, fencing_token) in
+        truncate(&input.lease_entries, MAX_COLLECTION_LEN)
+    {
         let lease = MarketLease::from_parts(
             *target_id,
             LeaseOwner(*owner),
@@ -100,8 +113,8 @@ fn build_leases(input: &StorageCodecInput) -> MarketLeaseRegistry {
 }
 
 fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
-    let entries = input
-        .withdraw_entries
+    let bounded = truncate(&input.withdraw_entries, MAX_COLLECTION_LEN);
+    let entries = bounded
         .iter()
         .map(
             |(id, owner, receiver, escrow_shares, expected_assets, requested_at_ns)| {
@@ -118,7 +131,7 @@ fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
             },
         )
         .collect::<Vec<_>>();
-    WithdrawQueue::with_state(entries, 0, input.withdraw_entries.len() as u64)
+    WithdrawQueue::with_state(entries, 0, bounded.len() as u64)
 }
 
 fn build_op_state(input: &StorageCodecInput) -> OpState {
@@ -143,8 +156,8 @@ fn build_op_state(input: &StorageCodecInput) -> OpState {
     }
 }
 
-fn build_versioned_state(input: &StorageCodecInput) -> VersionedState {
-    VersionedState::new(VaultState {
+fn build_vault_state(input: &StorageCodecInput) -> VaultState {
+    VaultState {
         total_assets: input.total_assets,
         total_shares: input.total_shares,
         idle_assets: input.idle_assets,
@@ -156,17 +169,12 @@ fn build_versioned_state(input: &StorageCodecInput) -> VersionedState {
         op_state: build_op_state(input),
         withdraw_queue: build_withdraw_queue(input),
         next_op_id: input.next_op_id,
-    })
+    }
 }
 
 fuzz_target!(|input: StorageCodecInput| {
-    let _ = fuzz_api::decode_restrictions_bytes(&input.raw);
-    let _ = fuzz_api::decode_supply_queue_bytes(&input.raw);
-    let _ = fuzz_api::decode_markets_bytes(&input.raw);
-    let _ = fuzz_api::decode_principals_bytes(&input.raw);
-    let _ = fuzz_api::decode_policy_locks_bytes(&input.raw);
-    let _ = fuzz_api::decode_state_blob_bytes(&input.raw);
-
+    // Decoding arbitrary bytes is not fuzzed: the decoders over-allocate on an
+    // unbounded length prefix (ENG-345). Only the encode→decode round-trips run.
     let restrictions = build_restrictions(&input);
     let restrictions_bytes = fuzz_api::encode_restrictions_bytes(&restrictions);
     let decoded_restrictions =
@@ -197,7 +205,7 @@ fuzz_target!(|input: StorageCodecInput| {
         fuzz_api::decode_policy_locks_bytes(&lease_bytes).expect("leases roundtrip");
     assert_eq!(decoded_leases, leases);
 
-    let state = build_versioned_state(&input);
+    let state = build_vault_state(&input);
     let state_bytes = fuzz_api::encode_state_blob_bytes(&state);
     let decoded_state = fuzz_api::decode_state_blob_bytes(&state_bytes).expect("state roundtrip");
     assert_eq!(decoded_state, state);

@@ -1,14 +1,30 @@
+//! Fuzz `SupplyPosition` / `Deposit` real functions.
+//!
+//! Rule 7: `SupplyPosition::can_be_removed` still exists (the prior disable
+//! TODO claimed it was removed — it was not; verified against
+//! `common/src/supply.rs`). It is exercised here.
+//!
+//! Rule 3: deposit amounts are bounded to `u64` so the
+//! `active + outgoing + Σ incoming` sum in `Deposit::total()` cannot trip the
+//! contract's intentional `u128` overflow abort. That boundary is fuzzed by
+//! `fuzz_supply_overflow` (the P2 backstop) and asserted by the unit test
+//! `supply::tests::deposit_total_overflow_aborts`.
+
 #![no_main]
-#[cfg(not(target_arch = "wasm32"))]
+#![cfg(not(target_arch = "wasm32"))]
+
 use libfuzzer_sys::fuzz_target;
 use templar_common::{
-    accumulator::Accumulator,
     asset::BorrowAssetAmount,
     incoming_deposit::IncomingDeposit,
     supply::{Deposit, SupplyPosition},
 };
 
-fuzz_target!(|data: (u32, u128, u128, u128, u32, u32, u128)| {
+// MUTATION-CHECK (P5): in `Deposit::total` (supply.rs:29), drop the
+// `+ self.outgoing` term (or skip an `incoming` entry). Then the
+// `total == active + outgoing + Σ incoming` assertion below must fire.
+
+fuzz_target!(|data: (u32, u64, u64, u64, u32, u32, u64)| {
     let (
         snapshot_index,
         active_amount,
@@ -16,78 +32,62 @@ fuzz_target!(|data: (u32, u128, u128, u128, u32, u32, u128)| {
         incoming_amount_2,
         activate_at_1,
         activate_at_2,
-        yield_amount,
+        outgoing_amount,
     ) = data;
 
-    // Fuzz SupplyPosition creation and basic operations
-    let mut position = SupplyPosition::new(snapshot_index);
+    // ---- SupplyPosition basic invariants (P2) ----
+    let fresh = SupplyPosition::new(snapshot_index);
+    // exists() and can_be_removed() must be exact complements, always.
+    assert_eq!(
+        fresh.exists(),
+        !fresh.can_be_removed(),
+        "exists() and can_be_removed() must be complements",
+    );
+    // A fresh position is empty.
+    assert!(!fresh.exists(), "fresh SupplyPosition must not exist");
+    assert!(fresh.can_be_removed(), "fresh SupplyPosition must be removable");
 
-    // Test exists() on new position
-    let _ = position.exists();
-    let _ = position.can_be_removed();
-    // Fuzz deposit structure
-    let mut deposit = Deposit {
-        active: BorrowAssetAmount::new(active_amount),
-        incoming: vec![],
-        outgoing: BorrowAssetAmount::zero(),
-    };
-
-    // Add incoming deposits
+    // ---- Deposit::total / total_incoming (P2) ----
+    let mut incoming = Vec::new();
     if incoming_amount_1 > 0 && activate_at_1 > snapshot_index {
-        deposit.incoming.push(IncomingDeposit {
+        incoming.push(IncomingDeposit {
             activate_at_snapshot_index: activate_at_1,
-            amount: BorrowAssetAmount::new(incoming_amount_1),
+            amount: BorrowAssetAmount::new(u128::from(incoming_amount_1)),
         });
     }
-
     if incoming_amount_2 > 0 && activate_at_2 > snapshot_index && activate_at_2 != activate_at_1 {
-        deposit.incoming.push(IncomingDeposit {
+        incoming.push(IncomingDeposit {
             activate_at_snapshot_index: activate_at_2,
-            amount: BorrowAssetAmount::new(incoming_amount_2),
+            amount: BorrowAssetAmount::new(u128::from(incoming_amount_2)),
         });
     }
 
-    // Test total calculation (should not panic on overflow)
-    let _ = deposit.total();
-
-    // Update position with deposit
-
-    // Fuzz yield accumulator
-    let yield_acc = Accumulator::new(snapshot_index);
-    if yield_amount > 0 {
-        // Try to add yield
-        let _ = yield_acc.get_total();
-    }
-    position.borrow_asset_yield = yield_acc;
-
-    // Test total_incoming
-    let _ = position.total_incoming();
-
-    // Test exists and can_be_removed after modifications
-    let _ = position.exists();
-    let _ = position.can_be_removed();
-
-    // Test get methods
-    let _ = position.get_deposit();
-    let _ = position.get_started_at_block_timestamp_ms();
-
-    // Fuzz edge cases
-    let zero_position = SupplyPosition::new(0);
-    let _ = zero_position.exists();
-    let _ = zero_position.can_be_removed();
-
-    let max_position = SupplyPosition::new(u32::MAX);
-    let _ = max_position.exists();
-
-    // Test deposit with max values
-    let max_deposit = Deposit {
-        active: BorrowAssetAmount::new(u128::MAX / 3),
-        incoming: vec![IncomingDeposit {
-            activate_at_snapshot_index: u32::MAX - 1,
-            amount: BorrowAssetAmount::new(u128::MAX / 3),
-        }],
-        outgoing: BorrowAssetAmount::new(u128::MAX / 3),
+    let deposit = Deposit {
+        active: BorrowAssetAmount::new(u128::from(active_amount)),
+        incoming: incoming.clone(),
+        outgoing: BorrowAssetAmount::new(u128::from(outgoing_amount)),
     };
-    // This might overflow, which is expected behavior
-    let _ = max_deposit.total();
+
+    // total() must equal active + outgoing + Σ incoming, exactly. A buggy
+    // implementation that dropped `outgoing` or an incoming entry, or
+    // double-counted, would fail this.
+    let incoming_sum: u128 = incoming.iter().map(|i| u128::from(i.amount)).sum();
+    let expected_total = u128::from(active_amount) + u128::from(outgoing_amount) + incoming_sum;
+    assert_eq!(
+        u128::from(deposit.total()),
+        expected_total,
+        "Deposit::total must equal active + outgoing + Σ incoming",
+    );
+
+    // Adding more incoming must never decrease total() (monotonicity a buggy
+    // accumulation could violate).
+    let mut deposit_more = deposit.clone();
+    deposit_more.incoming.push(IncomingDeposit {
+        activate_at_snapshot_index: snapshot_index.wrapping_add(100),
+        amount: BorrowAssetAmount::new(1),
+    });
+    assert!(
+        deposit_more.total() >= deposit.total(),
+        "adding an incoming deposit must not decrease total()",
+    );
 });

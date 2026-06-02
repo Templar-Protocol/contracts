@@ -96,6 +96,10 @@ fn try_create_market_config(
     Some(config)
 }
 
+// MUTATION-CHECK (P5): in `MarketConfiguration::validate`, remove the
+// borrow-asset-equals-collateral-asset rejection. Then a `same_asset == true`
+// config validates Ok and the `same_asset ⇒ is_err` assertion below must fire.
+
 fuzz_target!(|data: (
     u128,
     u128,
@@ -193,18 +197,17 @@ fuzz_target!(|data: (
         );
     }
 
-    // If all checks pass, validation should succeed
-    if !same_asset
-        && config.borrow_mcr_maintenance > Decimal::ONE
-        && config.borrow_mcr_liquidation > Decimal::ONE
-        && config.borrow_mcr_maintenance >= config.borrow_mcr_liquidation
-        && !config.borrow_asset_maximum_usage_ratio.is_zero()
-        && config.borrow_asset_maximum_usage_ratio <= Decimal::ONE
-        && config.liquidation_maximum_spread < Decimal::ONE
-    {
-        assert!(
-            validation_result.is_ok(),
-            "Valid config should pass validation: {validation_result:?}",
-        );
-    }
+    // The harness's checks above are SOUND but not COMPLETE — they cover the
+    // primary invariants we care about (`same_asset`, MCR ordering, usage
+    // bounds, spread bound), but `MarketConfiguration::validate` enforces
+    // additional rules (e.g. `supply_withdrawal_range.minimum > 0`) that the
+    // harness does not enumerate. Per PRINCIPLES.md P1, an incomplete oracle
+    // can't assert "if my checks pass, validate() must succeed" — that
+    // produced false positives on perfectly valid rejections in the previous
+    // version of this fuzzer.
+    //
+    // We therefore downgrade the always-true claim to the P1 safe one:
+    // `validate()` must return a well-formed `Result` (it already does, by
+    // type), and must not panic on any input the harness can construct.
+    let _ = validation_result;
 });
