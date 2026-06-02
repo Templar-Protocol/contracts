@@ -59,7 +59,7 @@ type ProxyCoreView = (
     ),
     (i128, i128, bool),
     (i128, i128, i128, i128),
-    (i128, u64, i128, i128),
+    (i128, u64, i128, i128, i128),
 );
 type ProxyPolicyView = (
     soroban_sdk::Vec<u32>,
@@ -175,6 +175,20 @@ impl<'a> VaultProxy<'a> {
             .view(soroban_sdk::Address::generate(self.env), assets, 0)?
             .2
              .7)
+    }
+
+    fn max_deposit(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self
+            .view(soroban_sdk::Address::generate(self.env), 0, 0)?
+            .2
+             .2)
+    }
+
+    fn max_mint(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self
+            .view(soroban_sdk::Address::generate(self.env), 0, 0)?
+            .2
+             .3)
     }
 
     fn execute(
@@ -835,6 +849,162 @@ fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
 
         let total_shares = proxy.view(owner, 0, 0).unwrap().0 .2 .0;
         assert_eq!(total_shares, 1_000);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 0,
+                external_assets: 1_000,
+                fee_anchor: FeeAccrualAnchor::new(
+                    i128::MAX as u128 + 1,
+                    templar_vault_kernel::TimestampNs(123),
+                ),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(
+            proxy.view(owner, 0, 0),
+            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
+        );
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_reports_fee_growth_cap(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 5, Address([1u8; 32])),
+            FeeSlot::new(Wad::one() / 10, Address([2u8; 32])),
+            Some(Wad::one() / 20),
+        );
+        let mut bytes = Vec::with_capacity(113);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(
+            &fees
+                .max_total_assets_growth_rate
+                .expect("growth cap configured")
+                .as_u128_trunc()
+                .to_le_bytes(),
+        );
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let fee_info = proxy.view(owner, 0, 0).unwrap().0 .3;
+        assert_eq!(fee_info.4, (Wad::one() / 20).as_u128_trunc() as i128);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_max_deposit_and_mint_respect_opposite_headroom(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 2,
+                total_shares: 1,
+                idle_assets: 2,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(proxy.max_deposit().unwrap(), i128::MAX);
+        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+
+        storage
+            .save_state(&VaultState {
+                total_assets: 1,
+                total_shares: 2,
+                idle_assets: 1,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        let expected_max_deposit = (((i128::MAX as u128) * 2) / 3) as i128;
+        assert_eq!(proxy.max_deposit().unwrap(), expected_max_deposit);
+        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+    });
+}
+
+#[rstest]
+fn soroban_contract_fee_aware_preview_fails_on_supply_overflow(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::zero(), Address([1u8; 32])),
+            FeeSlot::new(Wad::one(), Address([2u8; 32])),
+            None,
+        );
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: u128::MAX,
+                total_shares: u128::MAX,
+                idle_assets: u128::MAX,
+                fee_anchor: FeeAccrualAnchor::new(1, templar_vault_kernel::TimestampNs(1)),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(
+            proxy.preview_deposit(1),
+            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
+        );
     });
 }
 

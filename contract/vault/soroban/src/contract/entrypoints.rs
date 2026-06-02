@@ -1251,7 +1251,7 @@ impl SorobanVaultContract {
                 ),
                 (i128, i128, bool),
                 (i128, i128, i128, i128),
-                (i128, u64, i128, i128),
+                (i128, u64, i128, i128, i128),
             ),
             (
                 soroban_sdk::Vec<u32>,
@@ -1270,11 +1270,16 @@ impl SorobanVaultContract {
         let idle_assets = to_i128(state.idle_assets)?;
         let external_assets = to_i128(state.external_assets)?;
         let total_assets = to_i128(state.total_assets)?;
+        let fee_growth_rate = match config.fees.max_total_assets_growth_rate {
+            Some(rate) => to_i128(u128::from(rate))?,
+            None => 0,
+        };
         let fee_info = (
-            state.fee_anchor.total_assets as i128,
+            to_i128(state.fee_anchor.total_assets)?,
             state.fee_anchor.timestamp_ns.as_u64(),
-            u128::from(config.fees.management.fee_wad) as i128,
-            u128::from(config.fees.performance.fee_wad) as i128,
+            to_i128(u128::from(config.fees.management.fee_wad))?,
+            to_i128(u128::from(config.fees.performance.fee_wad))?,
+            fee_growth_rate,
         );
         let policy_state = runtime_to_contract(storage.load_policy_state())?.unwrap_or_default();
         for entry in policy_state.supply_queue().entries() {
@@ -1318,13 +1323,55 @@ impl SorobanVaultContract {
         };
 
         let (max_deposit_value, max_mint_value) = if state.op_state.is_idle() && !config.paused {
-            let max_assets = u128::MAX
+            let asset_headroom = u128::MAX
                 .saturating_sub(state.total_assets)
-                .min(i128::MAX as u128) as i128;
-            let max_shares = u128::MAX
-                .saturating_sub(state.total_shares)
-                .min(i128::MAX as u128) as i128;
-            (max_assets, max_shares)
+                .min(u128::MAX.saturating_sub(state.idle_assets));
+            let share_headroom = u128::MAX.saturating_sub(state.total_shares);
+
+            let max_assets = asset_headroom.min(i128::MAX as u128);
+            let shares_for_max_assets = convert_to_shares_bounded(
+                &state,
+                &config,
+                max_assets,
+                u128::MAX,
+                InvalidStateCode::MintOverflowTotalShares,
+            );
+            let max_deposit = if matches!(shares_for_max_assets, Ok(shares) if shares <= share_headroom)
+            {
+                max_assets
+            } else {
+                convert_to_assets_bounded(
+                    &state,
+                    &config,
+                    share_headroom,
+                    i128::MAX as u128,
+                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?
+            };
+
+            let max_shares = share_headroom.min(i128::MAX as u128);
+            let assets_for_max_shares = convert_to_assets_bounded(
+                &state,
+                &config,
+                max_shares,
+                u128::MAX,
+                InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+            );
+            let max_mint = if matches!(assets_for_max_shares, Ok(assets) if assets <= asset_headroom)
+            {
+                max_shares
+            } else {
+                convert_to_shares_bounded(
+                    &state,
+                    &config,
+                    asset_headroom,
+                    i128::MAX as u128,
+                    InvalidStateCode::MintOverflowTotalShares,
+                )
+                .map_err(|_| ContractError::ConversionOverflow)?
+            };
+            (to_i128(max_deposit)?, to_i128(max_mint)?)
         } else {
             (0, 0)
         };
