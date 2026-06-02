@@ -986,6 +986,51 @@ fn in_flight_proposal_keeps_submit_time_timelock_after_timelock_raise() {
 }
 
 #[test]
+fn timelock_getters_do_not_materialize_missing_timelocks_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let default_ns = 5_000_000_000u64;
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &default_ns),
+    );
+
+    env.as_contract(&governance, || {
+        // Simulate a legacy/pre-migration state that has the scalar default
+        // timelock but not the per-kind map. Getter-style APIs must read the
+        // fallback value without materializing storage.
+        env.storage().instance().remove(&DataKey::Timelocks);
+
+        let before: Option<Timelocks> = env.storage().instance().get(&DataKey::Timelocks);
+        assert!(before.is_none());
+
+        assert_eq!(
+            SorobanVaultGovernanceContract::timelock_ns(env.clone(), TimelockKind::Cap),
+            default_ns
+        );
+
+        let after_timelock_ns: Option<Timelocks> =
+            env.storage().instance().get(&DataKey::Timelocks);
+        assert!(
+            after_timelock_ns.is_none(),
+            "timelock_ns getter must not write Timelocks storage"
+        );
+
+        let observed = SorobanVaultGovernanceContract::timelocks(env.clone());
+        assert!(observed == Timelocks::from_default(default_ns));
+
+        let after_timelocks: Option<Timelocks> = env.storage().instance().get(&DataKey::Timelocks);
+        assert!(
+            after_timelocks.is_none(),
+            "timelocks getter must not write Timelocks storage"
+        );
+    });
+}
+
+#[test]
 fn timelock_config_increase_immediate_decrease_timelocked() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1031,6 +1076,44 @@ fn timelock_config_increase_immediate_decrease_timelocked() {
         SorobanVaultGovernanceContract::pending_ids(env.clone())
     });
     assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn timelock_config_rejects_u64_max_without_mutating_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::TimelockConfig,
+            u64::MAX,
+        )
+    });
+    assert_eq!(result, Err(GovernanceError::TimelockOutOfBounds));
+
+    let current = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::timelock_ns(env.clone(), TimelockKind::TimelockConfig)
+    });
+    assert_eq!(current, 5_000_000_000);
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 0);
 }
 
 #[test]
