@@ -5,8 +5,8 @@
 
 use super::helpers::{
     adapter_for_market, address_from_alloc_string, addresses_from_alloc_strings, apply_fee_change,
-    emit_admin_event, emit_alloc_event, emit_pause_state_event, extend_storage_ttl,
-    ensure_governance_identity, ensure_sentinel_identity, get_config_address, governance_caller,
+    emit_admin_event, emit_alloc_event, emit_pause_state_event, ensure_governance_identity,
+    ensure_sentinel_identity, extend_storage_ttl, get_config_address, governance_caller,
     kernel_address_from_sdk, load_virtual_offsets, lock_virtual_offsets, migration_in_progress,
     require_contract_address, require_governance, require_governance_control_plane,
     require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
@@ -14,17 +14,17 @@ use super::helpers::{
     validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
 };
 use super::*;
-use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use crate::storage::{SorobanStorage, Storage};
+use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
     ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
     GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
-    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
-    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};

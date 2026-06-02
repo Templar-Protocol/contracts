@@ -269,6 +269,64 @@ mod auth_tests {
     }
 
     #[test]
+    fn verify_and_authorize_requires_native_auth_even_for_public_actions() {
+        let env = Env::default();
+        let curator = SdkAddress::generate(&env);
+        let user = SdkAddress::generate(&env);
+        let auth = SorobanAuth::new(&env, curator);
+        let contract_id = env.register(crate::contract::SorobanVaultContract, ());
+
+        assert!(auth.check_role(ActionKind::Deposit, &user).is_ok());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            env.as_contract(&contract_id, || {
+                auth.verify_and_authorize(ActionKind::Deposit, &user)
+            })
+        }));
+        assert!(
+            result.is_err(),
+            "require_auth must not be bypassed by public policy"
+        );
+    }
+
+    #[test]
+    fn verify_and_authorize_records_native_auth_and_preserves_role_errors() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let curator = SdkAddress::generate(&env);
+        let allocator = SdkAddress::generate(&env);
+        let user = SdkAddress::generate(&env);
+        let auth = SorobanAuth::with_roles(&env, curator, None, Some(allocator.clone()));
+        let contract_id = env.register(crate::contract::SorobanVaultContract, ());
+
+        env.as_contract(&contract_id, || {
+            assert!(auth
+                .verify_and_authorize(ActionKind::BeginAllocating, &allocator)
+                .is_ok());
+        });
+        assert_eq!(
+            env.auths().len(),
+            1,
+            "successful verify path must call require_auth"
+        );
+        assert_eq!(env.auths()[0].0, allocator);
+
+        let result = env.as_contract(&contract_id, || {
+            auth.verify_and_authorize(ActionKind::BeginAllocating, &user)
+        });
+        assert_missing_role(
+            result,
+            ActionKind::BeginAllocating,
+            AuthPolicyClass::Allocator,
+        );
+        assert_eq!(
+            env.auths().len(),
+            1,
+            "role failure happens after require_auth succeeds"
+        );
+    }
+
+    #[test]
     fn test_soroban_auth_set_paused() {
         let env = Env::default();
         let curator = SdkAddress::generate(&env);
@@ -285,6 +343,7 @@ mod auth_tests {
 
 mod contract_tests {
     use crate::auth::{ActionKind, AuthAdapter, AuthResult};
+    use crate::contract::helpers::set_config_address;
     use crate::contract::*;
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
@@ -475,6 +534,54 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_initialize_onboards_default_storage_and_config() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset_token = SdkAddress::generate(&env);
+        let share_token = SdkAddress::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset_token.clone(),
+                share_token.clone(),
+                123,
+                456,
+            )
+            .unwrap();
+
+            let storage = SorobanStorage::new(&env);
+            assert!(storage.is_initialized());
+            assert_eq!(storage.load_state().unwrap(), Some(VaultState::default()));
+            assert!(!storage.is_paused());
+            assert_eq!(load_virtual_offsets(&env), (123, 456));
+            assert_eq!(load_fees_spec(&env).unwrap(), FeesSpec::zero());
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::Curator).unwrap(),
+                curator
+            );
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::Governance).unwrap(),
+                governance
+            );
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::AssetToken).unwrap(),
+                asset_token
+            );
+            assert_eq!(
+                get_config_address(&env, &VaultDataKey::ShareToken).unwrap(),
+                share_token
+            );
+        });
+    }
+
+    #[test]
     fn test_kernel_address_from_sdk_is_domain_separated() {
         use soroban_sdk::testutils::Address as _;
 
@@ -590,6 +697,77 @@ mod contract_tests {
 
         assert_eq!(op_id, 0);
         assert!(vault.state().unwrap().op_state.is_allocating());
+    }
+
+    #[test]
+    fn test_begin_allocating_helper_matches_production_begin_state() {
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        let deposit_amount = 2_000u128;
+        let supply_amount = 500u128;
+        let plan = [templar_vault_kernel::AllocationPlanEntry::new(
+            0,
+            supply_amount,
+        )];
+
+        let mut helper_vault = create_test_vault();
+        helper_vault
+            .deposit(owner, receiver, deposit_amount, 0, 100)
+            .unwrap();
+        let helper_op_id =
+            begin_allocating(&mut helper_vault, caller, vec![(0, supply_amount)], 1_000).unwrap();
+
+        let mut production_vault = create_test_vault();
+        production_vault
+            .deposit(owner, receiver, deposit_amount, 0, 100)
+            .unwrap();
+        let production_op_id = production_vault
+            .begin_allocation_internal(caller, &plan, 1_000)
+            .unwrap();
+
+        let helper_state = helper_vault.state().unwrap();
+        let production_state = production_vault.state().unwrap();
+        assert_eq!(helper_op_id, production_op_id);
+        assert_eq!(helper_state.idle_assets, production_state.idle_assets);
+        assert_eq!(
+            helper_state.external_assets,
+            production_state.external_assets
+        );
+        assert_eq!(helper_state.total_assets, production_state.total_assets);
+        assert_eq!(helper_state.op_state, production_state.op_state);
+    }
+
+    #[test]
+    fn test_direct_supply_allocation_covers_production_completion_flow() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+
+        vault.deposit(owner, receiver, 2_000, 0, 100).unwrap();
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 0).unwrap();
+
+        let result = vault
+            .allocate(
+                caller,
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: 500,
+                }),
+            )
+            .unwrap();
+        let state = vault.state().unwrap();
+
+        assert_eq!(result.new_external_assets, 500);
+        assert_eq!(state.idle_assets, 1_500);
+        assert_eq!(state.external_assets, 500);
+        assert_eq!(state.total_assets, 2_000);
+        assert!(state.op_state.is_idle());
     }
 
     #[test]
@@ -780,6 +958,53 @@ mod contract_tests {
         assert_eq!(vault.state().unwrap().external_assets, 0);
         assert_eq!(vault.state().unwrap().total_assets, 1_000);
         assert_eq!(vault.policy_state().principal_for(0), Some(0));
+    }
+
+    #[test]
+    fn test_complete_refresh_with_positions_accounts_for_external_growth() {
+        let mut vault = create_test_vault();
+        let caller = templar_vault_kernel::Address([3u8; 32]);
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+
+        let deposit_amount = 1_000_000u128;
+        let supply_amount = 400_000u128;
+        let growth = 25_000u128;
+        vault
+            .deposit(owner, receiver, deposit_amount, 0, 100)
+            .unwrap();
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 0).unwrap();
+        vault
+            .allocate(
+                caller,
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: supply_amount,
+                }),
+            )
+            .unwrap();
+
+        let total_before = vault.state().unwrap().total_assets;
+        let grown_external = supply_amount + growth;
+        let op_id = vault.begin_refreshing(caller, vec![0], 1_500).unwrap();
+        let result = vault
+            .complete_refresh_with_positions(caller, &[(0, grown_external)], op_id, 1_600)
+            .unwrap();
+        let state = vault.state().unwrap();
+
+        assert_eq!(result.new_external_assets, grown_external);
+        assert_eq!(state.external_assets, grown_external);
+        assert_eq!(state.total_assets, total_before + growth);
+        assert_eq!(
+            state.total_assets,
+            state.idle_assets + state.external_assets
+        );
+        assert_eq!(state.total_shares, deposit_amount);
+        assert!(state.op_state.is_idle());
     }
 
     #[test]
@@ -1608,6 +1833,135 @@ mod contract_tests {
             assert_eq!(
                 state.fee_anchor.timestamp_ns,
                 templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
+            );
+        });
+    }
+
+    #[test]
+    fn test_proxy_view_uses_fee_aware_kernel_conversions_for_high_values() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+        use soroban_sdk::token::StellarAssetClient;
+        use templar_vault_kernel::fee::FeeSlot;
+        use templar_vault_kernel::math::wad::Wad;
+        use templar_vault_kernel::{
+            convert_to_assets_ceil, convert_to_shares_ceil, Number, VaultConfig,
+        };
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_000,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = SdkAddress::generate(&env);
+        let asset_admin = SdkAddress::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let owner = SdkAddress::generate(&env);
+        let proxy = VaultProxy::new(&env);
+
+        env.as_contract(&contract_id, || {
+            proxy
+                .initialize(curator, governance, asset.clone(), share.clone())
+                .unwrap();
+            set_config_address(&env, &VaultDataKey::AssetToken, &asset);
+            set_config_address(&env, &VaultDataKey::ShareToken, &share);
+
+            let fees = FeesSpec::new(
+                FeeSlot::new(Wad::one() / 8, templar_vault_kernel::Address([8u8; 32])),
+                FeeSlot::new(Wad::one() / 16, templar_vault_kernel::Address([9u8; 32])),
+                None,
+            );
+            store_fees_spec(&env, &fees).unwrap();
+            let state = VaultState {
+                // High-value balances keep this parity test on the Soroban-specific large-number path.
+                total_assets: 9_000_000_000_000_000_000,
+                total_shares: 6_000_000_000_000_000_000,
+                idle_assets: 7_000_000_000_000_000_000,
+                external_assets: 2_000_000_000_000_000_000,
+                fee_anchor: FeeAccrualAnchor::new(
+                    8_000_000_000_000_000_000,
+                    templar_vault_kernel::TimestampNs(0),
+                ),
+                ..Default::default()
+            };
+            let mut storage = SorobanStorage::new(&env);
+            storage.save_state(&state).unwrap();
+            asset_admin_client.mint(&contract_id, &(state.idle_assets as i128));
+
+            let config = VaultConfig {
+                fees,
+                min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+                withdrawal_cooldown_ns: templar_vault_kernel::DEFAULT_COOLDOWN_NS,
+                max_pending_withdrawals: templar_vault_kernel::MAX_PENDING as u32,
+                paused: false,
+                virtual_shares: 0,
+                virtual_assets: 0,
+            };
+            let expected_state = {
+                let mut expected = state;
+                let now_ns = env.ledger().timestamp() * 1_000_000_000;
+                let current_assets = expected.total_assets;
+                let fee_assets_base = templar_vault_kernel::total_assets_for_fee_accrual(
+                    current_assets,
+                    expected.fee_anchor.total_assets,
+                    expected.fee_anchor.timestamp_ns.as_u64(),
+                    now_ns,
+                    config.fees.max_total_assets_growth_rate,
+                );
+                let management_shares = templar_vault_kernel::compute_management_fee_shares(
+                    fee_assets_base,
+                    current_assets,
+                    expected.total_shares,
+                    config.fees.management.fee_wad,
+                    expected.fee_anchor.timestamp_ns.as_u64(),
+                    now_ns,
+                );
+                let supply_after_management =
+                    Number::from(expected.total_shares).saturating_add(management_shares);
+                let profit = fee_assets_base.saturating_sub(expected.fee_anchor.total_assets);
+                let performance_fee_assets = config
+                    .fees
+                    .performance
+                    .fee_wad
+                    .apply_floored(Number::from(profit));
+                let performance_shares = templar_vault_kernel::compute_fee_shares_from_assets(
+                    performance_fee_assets,
+                    Number::from(current_assets),
+                    supply_after_management,
+                );
+                expected.total_shares = supply_after_management
+                    .saturating_add(performance_shares)
+                    .as_u128_saturating();
+                expected.fee_anchor = FeeAccrualAnchor::new(
+                    current_assets,
+                    templar_vault_kernel::TimestampNs(now_ns),
+                );
+                expected
+            };
+
+            let view = SorobanVaultContract::proxy_view(
+                env.clone(),
+                owner,
+                3_333_333_333_333_333_333,
+                2_222_222_222_222_222_222,
+            )
+            .unwrap();
+            let conversions = view.2;
+            assert_eq!(
+                conversions.6 as u128,
+                convert_to_assets_ceil(&expected_state, &config, 2_222_222_222_222_222_222)
+            );
+            assert_eq!(
+                conversions.7 as u128,
+                convert_to_shares_ceil(&expected_state, &config, 3_333_333_333_333_333_333)
             );
         });
     }
@@ -2637,9 +2991,9 @@ mod storage_tests {
         GovernanceCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
         GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
         GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
-        GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP,
-        GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
-        GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+        GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
+        GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+        GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
     };
     use templar_vault_kernel::{
         Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,

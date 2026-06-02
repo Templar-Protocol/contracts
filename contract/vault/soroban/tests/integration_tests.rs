@@ -23,8 +23,8 @@ use templar_soroban_runtime::{
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
@@ -256,8 +256,16 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
     );
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator, governance, asset.clone(), share, 0, 0)
-            .unwrap();
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator,
+            governance,
+            asset.clone(),
+            share,
+            0,
+            0,
+        )
+        .unwrap();
     });
 
     SorobanContractFixture {

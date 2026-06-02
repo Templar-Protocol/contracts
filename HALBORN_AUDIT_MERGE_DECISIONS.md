@@ -80,3 +80,8 @@ Base used: `origin/spr/refactor/vault-ergonomics/4f330057` at `4e72696d27e0f716b
 - Kept PR #452 Blend adapter pause/readback and upgrade observability controls because they do not reopen the adapter accounting shortcut boundary.
 - Combined Blend adapter tests by keeping PR #431 source-sweep tests and PR #452 upgrade event-count coverage, while removing stale admin-rotation tests for entrypoints not present in the integrated branch.
 - For share-token admin rotation, combined PR #429 vault-admin validation with PR #452's pending-admin flow: proposed admins are validated against the current vault before being stored as pending.
+
+### PR #447 in progress
+
+- Preserved the existing cumulative adapter-inflation rejection and adapter-reported-decrease tests from the integrated fee/accounting stack.
+- Added PR #447's external-growth accounting test as a separate adjacent regression, because the three cases cover distinct refresh-accounting behaviors rather than mutually exclusive expectations.

@@ -647,6 +647,85 @@ mod tests {
     }
 
     #[test]
+    fn vault_command_decode_rejects_malformed_payloads_by_error_class() {
+        let valid = VaultCommand::Allocate {
+            caller: String::from("allocator"),
+            market: 7,
+            amount: 123,
+            supply: true,
+        }
+        .encode();
+
+        assert_eq!(VaultCommand::decode(&[]), Err(CodecError::Truncated));
+        assert_eq!(VaultCommand::decode(&[0xFE]), Err(CodecError::InvalidTag));
+
+        let truncated_string = vec![2, 4, 0, 0, 0, b'a', b'b'];
+        assert_eq!(
+            VaultCommand::decode(&truncated_string),
+            Err(CodecError::Truncated)
+        );
+
+        let invalid_utf8 = vec![2, 1, 0, 0, 0, 0xFF];
+        assert_eq!(
+            VaultCommand::decode(&invalid_utf8),
+            Err(CodecError::InvalidUtf8)
+        );
+
+        let mut invalid_bool = valid.clone();
+        *invalid_bool.last_mut().expect("bool byte") = 2;
+        assert_eq!(
+            VaultCommand::decode(&invalid_bool),
+            Err(CodecError::InvalidEncoding)
+        );
+
+        let mut trailing = valid;
+        trailing.push(0);
+        assert_eq!(
+            VaultCommand::decode(&trailing),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn governance_command_decode_rejects_incomplete_nested_payloads() {
+        let valid = GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: Some(vec![1, 2]),
+            mode: Some(3),
+            accounts: Some(vec![String::from("alice"), String::from("bob")]),
+            market_id: Some(4),
+            cap_group_id: Some(String::from("group")),
+            value: Some(5),
+            value_b: None,
+            value_c: Some(6),
+        }
+        .encode();
+
+        for len in [0usize, 1, 5, 10, valid.len() - 1] {
+            assert_eq!(
+                GovernanceCommand::decode(&valid[..len]),
+                Err(CodecError::Truncated),
+                "length {len} should be rejected as truncated"
+            );
+        }
+
+        let mut invalid_nested_option = valid.clone();
+        // tag + kind + target_ids(Some) + len + two u32s; next byte is mode's option tag.
+        invalid_nested_option[1 + 4 + 1 + 4 + 8] = 9;
+        assert_eq!(
+            GovernanceCommand::decode(&invalid_nested_option),
+            Err(CodecError::InvalidTag)
+        );
+
+        let mut trailing = valid;
+        trailing.extend_from_slice(&[0, 1]);
+        assert_eq!(
+            GovernanceCommand::decode(&trailing),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
+
+    #[test]
     fn vault_and_governance_tags_do_not_overlap() {
         let governance = GovernanceCommand::SetGovernanceConfig {
             kind: GOVERNANCE_CONFIG_KIND_CURATOR,
