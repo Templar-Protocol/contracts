@@ -1315,6 +1315,122 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_rejects_virtual_offset_updates_after_capitalization() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                11,
+                7,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    ..Default::default()
+                })
+                .expect("save capitalized state");
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                    primary: None,
+                    many: None,
+                    value_a: Some(101),
+                    value_b: Some(202),
+                },
+            )
+            .expect_err("capitalized vault must not accept virtual-offset changes");
+
+            assert_eq!(err, crate::error::ContractError::InvalidState);
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::VirtualShares),
+                Some(11u128)
+            );
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::VirtualAssets),
+                Some(7u128)
+            );
+        });
+    }
+
+    #[test]
+    fn test_rejects_virtual_offset_updates_after_first_deposit_lock() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = soroban_sdk::Address::generate(&env);
+        let asset = soroban_sdk::Address::generate(&env);
+        let share = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                11,
+                7,
+            )
+            .unwrap();
+            env.storage()
+                .instance()
+                .set(&VaultDataKey::VirtualOffsetsLocked, &true);
+            SorobanStorage::new(&env)
+                .save_state(&VaultState::default())
+                .expect("save fully unwound state");
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                    primary: None,
+                    many: None,
+                    value_a: Some(101),
+                    value_b: Some(202),
+                },
+            )
+            .expect_err("first-deposit lock must survive zero accounting state");
+
+            assert_eq!(err, crate::error::ContractError::InvalidState);
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::VirtualShares),
+                Some(11u128)
+            );
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::VirtualAssets),
+                Some(7u128)
+            );
+        });
+    }
+
+    #[test]
     fn test_deposit_uses_configured_virtual_offsets() {
         let mut vault = CuratorVault::new(
             test_config().with_virtual_offsets(11, 7),
@@ -1651,6 +1767,13 @@ mod contract_tests {
             owner_assets_before - deposit_assets
         );
         assert_eq!(asset_client.balance(&contract_id), deposit_assets);
+        assert_eq!(
+            env.as_contract(&contract_id, || env
+                .storage()
+                .instance()
+                .get(&VaultDataKey::VirtualOffsetsLocked)),
+            Some(true)
+        );
     }
 
     #[test]

@@ -243,6 +243,7 @@ pub enum VaultCommand {
         caller: String,
         markets: Vec<u32>,
     },
+    RefreshFees,
     ResyncIdleBalance,
     CancelMigration {
         caller: String,
@@ -362,6 +363,7 @@ impl VaultCommand {
                 push_string(&mut out, caller);
                 push_u32_vec(&mut out, markets);
             }
+            Self::RefreshFees => push_u8(&mut out, 5),
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
                 push_u8(&mut out, 9);
@@ -408,6 +410,7 @@ impl VaultCommand {
                 caller: read_string(bytes, &mut cursor)?,
                 markets: read_u32_vec(bytes, &mut cursor)?,
             }),
+            5 => Ok(Self::RefreshFees),
             8 => Ok(Self::ResyncIdleBalance),
             9 => Ok(Self::CancelMigration {
                 caller: read_string(bytes, &mut cursor)?,
@@ -559,6 +562,7 @@ mod tests {
                 min_shares_out: 1,
             },
             VaultCommand::ResyncIdleBalance,
+            VaultCommand::RefreshFees,
             VaultCommand::CancelMigration {
                 caller: String::from("caller"),
             },
@@ -573,6 +577,17 @@ mod tests {
             let decoded = VaultCommand::decode(&encoded).expect("decode vault command");
             assert_eq!(decoded, command);
         }
+    }
+
+    #[test]
+    fn vault_command_surface_exposes_fee_refresh() {
+        let mut encoded = Vec::new();
+        encoded.push(5);
+
+        assert!(
+            VaultCommand::decode(&encoded).is_ok(),
+            "VaultCommand has no fee-refresh command tag; persisted fee accrual is unreachable through the deployed ABI"
+        );
     }
 
     #[test]

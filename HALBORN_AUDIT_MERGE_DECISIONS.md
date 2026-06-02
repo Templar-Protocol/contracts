@@ -50,3 +50,11 @@ Base used: `origin/spr/refactor/vault-ergonomics/4f330057` at `4e72696d27e0f716b
 - Kept both runtime ABI regressions: unauthorized governance callers are rejected before malformed body decode, and group-membership governance commands require an explicit `market_id`.
 - Used the integrated registered-governance test helper for the #441 group-membership test instead of the older generated-address-only setup, so the test matches the post-#451 governance identity requirements.
 - Preserved PR #441's explicit `market_id` unwrapping for membership mode and removed a stale second `ok_or` on the already-unwrapped `u32`.
+
+### PR #428 in progress
+
+- Kept both kernel invalid-state variants added by earlier PRs: `WithdrawalLiquidityBelowMinimum = 41` from PR #425 and `RequestWithdrawExpectedAssetsExceedTotalAssets = 42` from PR #428, avoiding duplicate diagnostic codes.
+- Added PR #428 fee-anchor helpers (`current_idle_assets`, idle reconciliation, virtual-offset lock checks, fee-anchor normalization) while preserving the integrated governance/role helper imports.
+- Did not reintroduce `migrate_legacy_paused`; PR #437 removed that legacy paused-state migration shim. Kept `normalize_fee_anchor()` during `migrate()`.
+- Preserved PR #425's structured `ExecuteWithdrawStatus` return and added PR #428's separate `RefreshFees` implementation, instead of taking PR #428's older unit-returning `execute_withdraw_impl`.
+- In the Soroban integration fixture, kept the registered governance contract from the governance stack and PR #428's `asset_token` fixture field.

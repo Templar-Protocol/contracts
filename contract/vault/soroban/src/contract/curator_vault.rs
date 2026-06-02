@@ -332,6 +332,17 @@ where
     }
 
     #[inline(never)]
+    pub fn refresh_fees(&mut self, now_ns: u64) -> Result<(), RuntimeError> {
+        self.apply_kernel_action(
+            KernelAction::RefreshFees {
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )?;
+        Ok(())
+    }
+
+    #[inline(never)]
     pub fn execute_withdraw(
         &mut self,
         caller: Address,

@@ -344,6 +344,28 @@ fn deposit_zero_assets_fails_slippage() {
 }
 
 #[test]
+fn deposit_that_would_mint_zero_shares_fails_before_mutation() {
+    let state = idle_state(u128::MAX, 1);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::Deposit {
+            owner: addr(1),
+            receiver: addr(2),
+            assets_in: 1,
+            min_shares_out: 0,
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert!(matches!(result, Err(KernelError::ZeroAmount)));
+}
+
+#[test]
 fn deposit_slippage_check_fails() {
     let state = idle_state(1_000, 1_000);
     let config = test_config();
@@ -2803,6 +2825,42 @@ fn refresh_fees_no_profit_skips_performance() {
 }
 
 #[test]
+fn refresh_fees_zero_anchor_excludes_uncapped_donation_growth() {
+    use crate::math::wad::YEAR_NS;
+    let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient),
+        FeeSlot::zero(),
+        Some(Wad::one() / 5),
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    )
+    .unwrap();
+
+    let minted: Vec<_> = result
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
+        .collect();
+    assert!(minted.is_empty());
+    assert_eq!(result.state.total_shares, 1_000);
+    assert_eq!(result.state.fee_anchor.total_assets, 2_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+}
+
+#[test]
 fn refresh_fees_max_rate_caps_fee_accrual() {
     use crate::math::wad::YEAR_NS;
     // 1000 -> 2000 (100% profit), but max_rate = 20% per year
@@ -3151,6 +3209,32 @@ fn base_state(total_assets: u128, total_shares: u128) -> VaultState {
 }
 
 #[test]
+fn deposit_advances_fee_anchor_to_post_deposit_assets() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(10));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &Address([0u8; 32]),
+        KernelAction::Deposit {
+            owner: Address([1u8; 32]),
+            receiver: Address([2u8; 32]),
+            assets_in: 250,
+            min_shares_out: 0,
+            now_ns: TimestampNs(20),
+        },
+    )
+    .expect("deposit succeeds");
+
+    assert_eq!(result.state.total_assets, 1_250);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_250);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(20));
+}
+
+#[test]
 fn convert_to_shares_ceil_matches_floor_on_exact_multiple() {
     let config = base_config();
     let state = base_state(100, 100);
@@ -3277,7 +3361,7 @@ fn refresh_fees_overflow_total_supply_rejected() {
         None,
     );
     let mut state = base_state(1_000, u128::MAX - 1);
-    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(1, TimestampNs(0));
 
     let result = apply_action(
         state,

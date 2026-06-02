@@ -49,6 +49,7 @@ pub enum InvalidStateCode {
     RebalanceWithdrawExceedsExternalAssets = 39,
     RebalanceWithdrawOverflowsIdleAssets = 40,
     WithdrawalLiquidityBelowMinimum = 41,
+    RequestWithdrawExpectedAssetsExceedTotalAssets = 42,
 }
 
 impl InvalidStateCode {
@@ -120,6 +121,9 @@ impl InvalidStateCode {
             }
             Self::WithdrawalLiquidityBelowMinimum => {
                 "withdrawal liquidity below minimum payout amount"
+            }
+            Self::RequestWithdrawExpectedAssetsExceedTotalAssets => {
+                "request_withdraw expected assets exceed total_assets"
             }
         }
     }

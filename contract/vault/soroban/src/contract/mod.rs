@@ -26,7 +26,7 @@ use crate::effects::{
     ShareTokenAdapter, SorobanEffectInterpreter,
 };
 use crate::error::{ContractError, RuntimeError};
-use crate::fungible_vault::{load_state_and_config, share_balance};
+use crate::fungible_vault::{load_state_and_config, reconcile_actual_idle_assets, share_balance};
 use crate::market::{invoke_progress_withdrawal, invoke_supply, invoke_total_assets};
 use crate::storage::{SorobanStorage, Storage, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 use alloc::string::String as AllocString;
@@ -45,13 +45,14 @@ use templar_curator_primitives::rbac::{RbacAuth, RbacConfig, Role};
 use templar_curator_primitives::PolicyState;
 use templar_soroban_shared_types::{VaultCommand, VaultCommandResult};
 use templar_vault_kernel::effects::KernelEffect;
+use templar_vault_kernel::error::InvalidStateCode;
 use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
-    apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
-    convert_to_shares_ceil, plan_idle_payout, withdrawal_settled, Address, FeeAccrualAnchor,
-    FeeSlot, FeesSpec, KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, TimestampNs,
-    VaultConfig, VaultState, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD,
-    MIN_WITHDRAWAL_ASSETS,
+    apply_action, convert_to_assets_bounded, convert_to_assets_ceil_bounded,
+    convert_to_shares_bounded, convert_to_shares_ceil_bounded, plan_idle_payout,
+    withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, OpState,
+    PayoutOutcome, Restrictions, TargetId, TimestampNs, VaultConfig, VaultState, Wad,
+    MAX_MANAGEMENT_FEE_WAD, MAX_PENDING, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
 };
 
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
