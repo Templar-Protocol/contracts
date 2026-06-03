@@ -338,10 +338,11 @@ mod tests {
                 asset.clone(),
                 CircuitBreakerConfig::StepwiseChange(
                     templar_proxy_oracle_soroban_common::StepwiseChangeConfig {
-                        max_relative_change_repr: soroban_sdk::Vec::from_array(
-                            &env,
-                            templar_primitives::Decimal::ONE_HALF.as_repr()
-                        ),
+                        max_relative_change:
+                            templar_proxy_oracle_soroban_common::SorobanDecimal::from_decimal(
+                                &env,
+                                templar_primitives::Decimal::ONE_HALF,
+                            ),
                     }
                 )
             )

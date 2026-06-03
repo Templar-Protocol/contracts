@@ -290,7 +290,7 @@ stellar contract invoke \
   --id <GOVERNANCE_CONTRACT_ID> \
   -- submit \
   --caller <ADMIN_ADDRESS> \
-  --action '{"AddBreaker": [{"Other": "BTC"}, {"StepwiseChange": {"max_relative_change_repr": [...]}}]}'
+  --action '{"AddBreaker": [{"Other": "BTC"}, {"StepwiseChange": {"max_relative_change": "<64-byte-hex>"}}]}'
 ```
 
 Breaker kinds:

@@ -7,7 +7,7 @@ use soroban_sdk::{Bytes, BytesN, Event, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, MonotonicRunConfig, ProxyConfig, RearmConfig, SetEnforcedConfig,
-    SourceConfig, StepwiseChangeConfig, WindowedChangeDeltaConfig,
+    SorobanDecimal, SourceConfig, StepwiseChangeConfig, WindowedChangeDeltaConfig,
 };
 use templar_proxy_oracle_soroban_contract::{SorobanProxyOracle, SorobanProxyOracleClient};
 use templar_proxy_oracle_soroban_governance_common::{OperationKind, Role, MAX_PROPOSAL_TTL_NS};
@@ -53,10 +53,6 @@ fn setup_with_ttl(
     proxy.accept_ownership();
 
     (env, admin, proxy_id, governance_id, proxy)
-}
-
-fn decimal_repr(env: &Env, value: Decimal) -> Vec<u64> {
-    Vec::from_array(env, value.as_repr())
 }
 
 fn sample_proxy_config(env: &Env, asset: Asset, source: Address) -> ProxyConfig {
@@ -426,7 +422,7 @@ fn breaker_governance_workflows_execute_through_runtime() {
         GovernanceAction::AddBreaker(
             asset.clone(),
             CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
-                max_relative_change_repr: decimal_repr(&env, Decimal::ONE_HALF),
+                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
     );
@@ -472,7 +468,7 @@ fn breaker_governance_workflows_execute_through_runtime() {
             asset.clone(),
             CircuitBreakerConfig::MonotonicRun(MonotonicRunConfig {
                 max_streak: 3,
-                min_relative_step_change_repr: decimal_repr(&env, Decimal::ONE_HALF),
+                min_relative_step_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
     );
@@ -487,7 +483,7 @@ fn breaker_governance_workflows_execute_through_runtime() {
             CircuitBreakerConfig::WindowedChangeDelta(WindowedChangeDeltaConfig {
                 window_len: 2,
                 lookback_windows: 1,
-                max_relative_change_delta_repr: decimal_repr(&env, Decimal::ONE_HALF),
+                max_relative_change_delta: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
     );

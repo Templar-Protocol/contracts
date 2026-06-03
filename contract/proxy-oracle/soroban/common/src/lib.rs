@@ -1,6 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contractclient, contracterror, contracttype, Address, BytesN, Env, Symbol, Vec};
+use templar_primitives::Decimal;
 
 pub const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 pub const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
@@ -142,17 +143,67 @@ pub struct ProxyConfig {
     pub max_clock_drift_secs: Option<u64>,
 }
 
+/// Soroban wire format for a 512-bit `Decimal`. Wrapping `BytesN<64>` (the
+/// 8 × `u64` words of `Decimal::as_repr` laid out little-endian) gives a
+/// compile-time length guarantee at the contract boundary — unlike a raw
+/// `Vec<u64>` field, which could arrive empty, short, or oversized and
+/// would have to be re-validated by every consumer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct SorobanDecimal(pub BytesN<64>);
+
+impl SorobanDecimal {
+    // `From<Decimal> for SorobanDecimal` would be the natural counterpart to
+    // the `From<&SorobanDecimal> for Decimal` impl below, but construction
+    // needs the `Env` (to allocate the `BytesN<64>` in host memory) and the
+    // `From` trait doesn't admit a context parameter — so this stays as a
+    // method.
+    #[must_use]
+    pub fn from_decimal(env: &Env, decimal: Decimal) -> Self {
+        // SAFETY: `[u64; 8]` and `[u8; 64]` are POD types of equal size with
+        // no invalid bit patterns. `u64::to_le` forces little-endian byte
+        // layout regardless of target (no-op on LE, byte-swap on BE), so
+        // the wire format is platform-independent.
+        let words = decimal.as_repr().map(u64::to_le);
+        let bytes: [u8; 64] = unsafe { core::mem::transmute(words) };
+        Self(BytesN::from_array(env, &bytes))
+    }
+
+    /// Convenience for sites where `.into()` would force the caller to
+    /// annotate the destination type (e.g. `let d = sd.to_decimal();` reads
+    /// cleaner than `let d: Decimal = sd.into();`). Equivalent to
+    /// `Decimal::from(&self)`.
+    #[must_use]
+    pub fn to_decimal(&self) -> Decimal {
+        Decimal::from(self)
+    }
+}
+
+impl From<&SorobanDecimal> for Decimal {
+    fn from(value: &SorobanDecimal) -> Self {
+        // SAFETY: see `SorobanDecimal::from_decimal`.
+        let raw: [u64; 8] = unsafe { core::mem::transmute(value.0.to_array()) };
+        Self::from_repr(raw.map(u64::from_le))
+    }
+}
+
+impl From<SorobanDecimal> for Decimal {
+    fn from(value: SorobanDecimal) -> Self {
+        Self::from(&value)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct StepwiseChangeConfig {
-    pub max_relative_change_repr: Vec<u64>,
+    pub max_relative_change: SorobanDecimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct MonotonicRunConfig {
     pub max_streak: u32,
-    pub min_relative_step_change_repr: Vec<u64>,
+    pub min_relative_step_change: SorobanDecimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,7 +211,7 @@ pub struct MonotonicRunConfig {
 pub struct WindowedChangeDeltaConfig {
     pub window_len: u32,
     pub lookback_windows: u32,
-    pub max_relative_change_delta_repr: Vec<u64>,
+    pub max_relative_change_delta: SorobanDecimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

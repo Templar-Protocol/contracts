@@ -389,7 +389,7 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
     let breaker_id = proxy.add_breaker(
         &asset,
         &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-            max_relative_change_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
         }),
     );
 
@@ -614,7 +614,7 @@ fn event_circuit_breaker_tripped_topics_payload_are_exact() {
     let breaker_id = proxy.add_breaker(
         &asset,
         &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-            max_relative_change_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
         }),
     );
 
@@ -675,7 +675,7 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
     let breaker_id = proxy.add_breaker(
         &asset,
         &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-            max_relative_change_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
         }),
     );
     assert_eq!(
@@ -1231,22 +1231,6 @@ fn invalid_config_too_many_sources() {
 }
 
 #[test]
-fn invalid_config_invalid_decimal_repr_length() {
-    let (env, proxy, _source, asset) = setup();
-    let bad_repr = Vec::from_array(&env, [1_u64, 0, 0, 0, 0, 0, 0]);
-
-    assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-                max_relative_change_repr: bad_repr,
-            }),
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
-}
-
-#[test]
 fn invalid_config_max_history_above_limit() {
     let (_env, proxy, _source, asset) = setup();
 
@@ -1262,7 +1246,7 @@ fn invalid_config_invalid_accepted_history_source_code() {
     let breaker_id = proxy.add_breaker(
         &asset,
         &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-            max_relative_change_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
         }),
     );
 
@@ -1282,13 +1266,13 @@ fn invalid_config_invalid_accepted_history_source_code() {
 #[test]
 fn inert_breaker_stepwise_max_change_zero() {
     let (env, proxy, _source, asset) = setup();
-    let zero_repr = Vec::from_array(&env, Decimal::ZERO.as_repr());
+    let zero = SorobanDecimal::from_decimal(&env, Decimal::ZERO);
 
     assert_eq!(
         proxy.try_add_breaker(
             &asset,
             &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-                max_relative_change_repr: zero_repr,
+                max_relative_change: zero,
             }),
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1304,7 +1288,7 @@ fn inert_breaker_monotonic_max_streak_zero() {
             &asset,
             &CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
                 max_streak: 0,
-                min_relative_step_change_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+                min_relative_step_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1314,14 +1298,14 @@ fn inert_breaker_monotonic_max_streak_zero() {
 #[test]
 fn inert_breaker_monotonic_min_step_zero() {
     let (env, proxy, _source, asset) = setup();
-    let zero_repr = Vec::from_array(&env, Decimal::ZERO.as_repr());
+    let zero = SorobanDecimal::from_decimal(&env, Decimal::ZERO);
 
     assert_eq!(
         proxy.try_add_breaker(
             &asset,
             &CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
                 max_streak: 3,
-                min_relative_step_change_repr: zero_repr,
+                min_relative_step_change: zero,
             }),
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1338,7 +1322,7 @@ fn inert_breaker_windowed_window_len_below_2() {
             &CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
                 window_len: 1,
                 lookback_windows: 1,
-                max_relative_change_delta_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+                max_relative_change_delta: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1355,7 +1339,7 @@ fn inert_breaker_windowed_lookback_zero() {
             &CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
                 window_len: 2,
                 lookback_windows: 0,
-                max_relative_change_delta_repr: Vec::from_array(&env, Decimal::ONE_HALF.as_repr()),
+                max_relative_change_delta: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1365,7 +1349,7 @@ fn inert_breaker_windowed_lookback_zero() {
 #[test]
 fn inert_breaker_windowed_max_delta_zero() {
     let (env, proxy, _source, asset) = setup();
-    let zero_repr = Vec::from_array(&env, Decimal::ZERO.as_repr());
+    let zero = SorobanDecimal::from_decimal(&env, Decimal::ZERO);
 
     assert_eq!(
         proxy.try_add_breaker(
@@ -1373,7 +1357,7 @@ fn inert_breaker_windowed_max_delta_zero() {
             &CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
                 window_len: 2,
                 lookback_windows: 1,
-                max_relative_change_delta_repr: zero_repr,
+                max_relative_change_delta: zero,
             }),
         ),
         Err(Ok(ContractError::InvalidInput))

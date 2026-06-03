@@ -5,8 +5,7 @@
 //! `NormalizedPrice { i64, expo, timestamp }`. Adapters scale `NormalizedPrice`
 //! back to SEP-40 with their own per-adapter decimals.
 
-use soroban_sdk::Vec;
-use templar_primitives::{Decimal, Nanoseconds};
+use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::{
     proxy::{
         aggregator::{method::median::MedianLow, Aggregator},
@@ -60,17 +59,6 @@ pub fn kernel_price_to_normalized(price: Price) -> NormalizedPrice {
     }
 }
 
-pub fn decimal_from_repr(repr: Vec<u64>) -> Result<Decimal, ContractError> {
-    if repr.len() != 8 {
-        return Err(ContractError::InvalidInput);
-    }
-    let mut raw = [0_u64; 8];
-    for (index, value) in repr.iter().enumerate() {
-        raw[index] = value;
-    }
-    Ok(Decimal::from_repr(raw))
-}
-
 pub fn accepted_history_source(value: u32) -> Result<AcceptedHistorySource, ContractError> {
     match value {
         0 => Ok(AcceptedHistorySource::Empty),
@@ -84,9 +72,9 @@ pub fn circuit_breaker_from_config(
 ) -> Result<CircuitBreaker, ContractError> {
     match config {
         CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-            max_relative_change_repr,
+            max_relative_change,
         }) => {
-            let max_relative_change = decimal_from_repr(max_relative_change_repr)?;
+            let max_relative_change = max_relative_change.to_decimal();
             if max_relative_change.is_zero() {
                 return Err(ContractError::InvalidInput);
             }
@@ -96,12 +84,12 @@ pub fn circuit_breaker_from_config(
         }
         CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
             max_streak,
-            min_relative_step_change_repr,
+            min_relative_step_change,
         }) => {
             if max_streak == 0 {
                 return Err(ContractError::InvalidInput);
             }
-            let min_relative_step_change = decimal_from_repr(min_relative_step_change_repr)?;
+            let min_relative_step_change = min_relative_step_change.to_decimal();
             if min_relative_step_change.is_zero() {
                 return Err(ContractError::InvalidInput);
             }
@@ -113,7 +101,7 @@ pub fn circuit_breaker_from_config(
         CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
             window_len,
             lookback_windows,
-            max_relative_change_delta_repr,
+            max_relative_change_delta,
         }) => {
             if window_len < 2 {
                 return Err(ContractError::InvalidInput);
@@ -121,7 +109,7 @@ pub fn circuit_breaker_from_config(
             if lookback_windows == 0 {
                 return Err(ContractError::InvalidInput);
             }
-            let max_relative_change_delta = decimal_from_repr(max_relative_change_delta_repr)?;
+            let max_relative_change_delta = max_relative_change_delta.to_decimal();
             if max_relative_change_delta.is_zero() {
                 return Err(ContractError::InvalidInput);
             }

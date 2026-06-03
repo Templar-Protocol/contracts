@@ -18,7 +18,7 @@ use templar_proxy_oracle_soroban_common::{extend_instance_ttl, is_zero_wasm_hash
 pub use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ContractError, MonotonicRunConfig as SorobanMonotonicRunConfig,
     NormalizedPrice, PriceData, PriceFeedClient, PriceFeedTrait, ProxyConfig, ProxyOracleClient,
-    ProxyOracleTrait, RearmConfig, SetEnforcedConfig, SourceConfig,
+    ProxyOracleTrait, RearmConfig, SetEnforcedConfig, SorobanDecimal, SourceConfig,
     StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };
