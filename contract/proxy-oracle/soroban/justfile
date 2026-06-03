@@ -70,6 +70,15 @@ test:
     @cargo test -p "{{adapter_pkg}}" --features testutils -- --nocapture
     @echo "✓ All proxy-oracle Soroban tests passed"
 
+# Run the cross-contract integration tests (deploys runtime + governance +
+# adapter + a Blend pool into a single in-process Env and exercises the full
+# operator workflow). Slower than `test` because each scenario spins up a
+# fresh fixture.
+test-integration:
+    @echo "Running proxy-oracle Soroban integration tests..."
+    @cargo test -p templar-proxy-oracle-soroban-integration-tests -- --nocapture
+    @echo "✓ All proxy-oracle Soroban integration tests passed"
+
 # =============================================================================
 # BUILD
 # =============================================================================

@@ -13139,6 +13139,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-soroban-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "blend-contract-sdk",
+ "soroban-sdk 25.3.0",
+ "templar-primitives",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-governance-common",
+ "templar-proxy-oracle-soroban-governance-contract",
+ "templar-proxy-oracle-soroban-sep40-adapter-contract",
+]
+
+[[package]]
 name = "templar-proxy-oracle-soroban-mock"
 version = "0.1.0"
 dependencies = [
