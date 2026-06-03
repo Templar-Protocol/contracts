@@ -1,6 +1,11 @@
 # Rust
 /target/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # IDEs and Editors
 .helix/
 .idea/
