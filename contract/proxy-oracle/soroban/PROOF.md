@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-23
 **Scope**: Soroban Proxy Oracle
-**Threat**: Oracle price manipulation as demonstrated in the Blend protocol exploit (see `/home/peer2/Downloads/blendmath.md`)
+**Threat**: Oracle price manipulation as demonstrated in the Blend protocol exploit (see Blend exploit analysis documentation)
 
 ---
 
@@ -28,7 +28,7 @@ Example: Pyth reports $1.06, RedStone reports $1.06, Reflector reports $106.74. 
 
 Blocks prices that deviate more than `max_relative_change` from the last accepted price:
 
-```
+```text
 δ = |p_new - h_last| / h_last
 ```
 
@@ -46,7 +46,7 @@ Example: A sustained 20% pump for 4 windows trips the breaker when `max_streak =
 
 Blocks statistical outliers by comparing recent window average against historical average:
 
-```
+```text
 δ = |A_recent - A_history| / A_history
 ```
 
@@ -123,7 +123,7 @@ Guard `Role::ManualTripper` access carefully; any operator with this role can bo
 
 ## References
 
-- [Blend Exploit Analysis](/home/peer2/Downloads/blendmath.md)
+- Blend exploit analysis (see internal documentation)
 - [README](README.md)
 - [Runbook](RUNBOOK.md)
 - [Audit Evidence](AUDIT.md)

@@ -381,6 +381,7 @@ audit-ready: test size-check budget-check release dry-run
         echo "budget note: full Stellar CPU/memory simulation requires live Soroban RPC; local gate uses soroban-sdk testutils"; \
         echo ""; \
         echo "## optimized_size"; \
+        echo "# Snapshot at audit baseline; current sizes live in .omo/evidence/task-7-size-check.txt"; \
         echo "optimized_size runtime: 86531 bytes (84.50 KiB), limit 131072 bytes"; \
         echo "optimized_size governance: 44645 bytes (43.60 KiB), limit 131072 bytes"; \
         echo "size evidence: .omo/evidence/task-7-size-check.txt"; \

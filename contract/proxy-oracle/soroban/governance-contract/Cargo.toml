@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-testutils = ["soroban-sdk/testutils", "templar-proxy-oracle-soroban-contract/testutils"]
+testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }

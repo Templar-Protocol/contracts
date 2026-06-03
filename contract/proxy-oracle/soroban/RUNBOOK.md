@@ -17,7 +17,7 @@ Related documents:
 4. [Initialize](#4-initialize)
 5. [Configure Sources](#5-configure-sources)
 6. [Configure Circuit Breakers](#6-configure-circuit-breakers)
-7. [Grant and Revoke Manual-Trip Roles](#7-grant-and-revoke-manual-trip-roles)
+7. [Grant and Revoke Roles](#7-grant-and-revoke-roles)
 8. [Governance Proposals](#8-governance-proposals)
 9. [Refresh Cadence](#9-refresh-cadence)
 10. [TTL Extension Cadence](#10-ttl-extension-cadence)
@@ -1142,7 +1142,7 @@ stellar contract invoke \
   --new_wasm_hash <NEW_WASM_HASH>
 ```
 
-2. **Governed proposal upgrade** (AdminUpgrade proposal, executes after maturity):
+1. **Governed proposal upgrade** (AdminUpgrade proposal, executes after maturity):
 ```bash
 # Submit AdminUpgrade proposal
 stellar contract invoke \

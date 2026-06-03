@@ -129,7 +129,6 @@ def build_deploy_command(
 
 
 def build_initialize_command(
-    wasm_hash: str,
     contract_id: str = "<contract-id>",
     governance_id: str = "<governance-contract-id>",
     network: str = "<network>",
@@ -230,8 +229,8 @@ def main() -> None:
     deploy_cmd_runtime = build_deploy_command(runtime_rel)
     deploy_cmd_governance = build_deploy_command(governance_rel)
     deploy_cmd_adapter = build_deploy_command(adapter_rel)
-    init_cmd_runtime = build_initialize_command(runtime_sha256)
-    init_cmd_governance = build_initialize_command(governance_sha256)
+    init_cmd_runtime = build_initialize_command()
+    init_cmd_governance = build_initialize_command()
 
     manifest = {
         "schema_version": "2",

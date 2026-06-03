@@ -72,7 +72,6 @@ def extract_test_results(output: str) -> dict[str, str]:
 
 
 def map_scenario(
-    scenario_label: str,
     pattern: str,
     test_results: dict[str, str],
 ) -> tuple[str, str]:
@@ -128,7 +127,7 @@ def main() -> None:
     runtime_results = extract_test_results(runtime_output)
 
     if not runtime_ok and not runtime_results:
-        lines.append(f"  cargo test FAILED to run:")
+        lines.append("  cargo test FAILED to run:")
         lines.append(f"  {runtime_output[:500]}")
         all_ok = False
     else:
@@ -139,7 +138,7 @@ def main() -> None:
             "config_update": "event_proxy_set",
         }
         for scenario, pattern in runtime_scenarios.items():
-            matched, status = map_scenario(scenario, pattern, runtime_results)
+            matched, status = map_scenario(pattern, runtime_results)
             ok_marker = "PASS" if status == "ok" else ("SKIP" if status == "SKIPPED" else "FAIL")
             if ok_marker == "FAIL":
                 all_ok = False
@@ -162,7 +161,7 @@ def main() -> None:
     gov_results = extract_test_results(gov_output)
 
     if not gov_ok and not gov_results:
-        lines.append(f"  cargo test FAILED to run:")
+        lines.append("  cargo test FAILED to run:")
         lines.append(f"  {gov_output[:500]}")
         all_ok = False
     else:
@@ -170,7 +169,7 @@ def main() -> None:
             "governance_accept": "execute_through_governance",
         }
         for scenario, pattern in gov_scenarios.items():
-            matched, status = map_scenario(scenario, pattern, gov_results)
+            matched, status = map_scenario(pattern, gov_results)
             ok_marker = "PASS" if status == "ok" else ("SKIP" if status == "SKIPPED" else "FAIL")
             if ok_marker == "FAIL":
                 all_ok = False

@@ -18,6 +18,7 @@ templates; replace placeholder values before executing.
 Usage:
     python3 scripts/dry_run_deploy.py \\
         --manifest <target/proxy-oracle-soroban/release-manifest.json> \\
+        --root <workspace_root> \\
         --out <evidence/task-8-dry-run.txt>
 """
 
@@ -83,7 +84,7 @@ def validate_artifacts(manifest: dict, root: Path) -> list[str]:
 # Report
 # ---------------------------------------------------------------------------
 
-def format_report(manifest: dict, root: Path, errors: list[str]) -> str:
+def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     lines: list[str] = []
     now = datetime.now(timezone.utc).isoformat()
 

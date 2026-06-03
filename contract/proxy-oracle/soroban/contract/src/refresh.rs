@@ -1,6 +1,11 @@
 //! Pull source feeds, run the kernel resolve, cache the outcome, and emit
-//! events. `compute_refresh` is the pure decision pipeline; `apply_refresh`
-//! does the side-effecting cache write + event publish.
+//! events. `compute_refresh` runs the resolve, persists the updated breaker
+//! state, and publishes breaker events; `apply_refresh` performs the
+//! cache write, accepted-price history push, and the top-level refresh
+//! event. Splitting the two leaves the cache update + refresh-event emission
+//! sequenced after every successful resolve, but the breaker-side effects
+//! must run inline with the resolve to stay consistent with the kernel
+//! state that was just computed.
 
 extern crate alloc;
 
@@ -122,7 +127,11 @@ pub fn cached_accepted_no_older_than(
     let CachedStatus::Accepted(price) = &cached.status else {
         return None;
     };
-    if now >= price.timestamp && now.saturating_sub(price.timestamp) > max_age_secs {
+    // Bound staleness by the cache update time, not the upstream source's
+    // claimed timestamp. A source returning a future-dated reading would
+    // otherwise bypass the freshness gate forever (`now < price.timestamp`
+    // makes `saturating_sub` zero).
+    if now.saturating_sub(cached.updated_at) > max_age_secs {
         return None;
     }
     Some(price.clone())

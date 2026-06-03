@@ -41,6 +41,8 @@ pub fn resolve_error_code(error: ResolveError) -> u32 {
 pub fn breaker_error(error: CircuitBreakerError) -> ContractError {
     match error {
         CircuitBreakerError::TooManyBreakers => ContractError::TooManyBreakers,
-        _ => ContractError::BreakerError,
+        CircuitBreakerError::BreakerNotFound { .. }
+        | CircuitBreakerError::UnexpectedBreakerId { .. }
+        | CircuitBreakerError::InvalidPrice => ContractError::BreakerError,
     }
 }
