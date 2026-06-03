@@ -109,11 +109,12 @@ impl HotBridgeAdapterContract {
             adapter.clone(),
             amount_u128,
             asset.clone(),
-            hot_receiver_id,
+            hot_receiver_id.clone(),
             client_timestamp,
         )
             .into_val(&env);
-        env.invoke_contract::<u128>(&hot_locker, &Symbol::new(&env, "deposit"), args);
+        let returned_nonce =
+            env.invoke_contract::<u128>(&hot_locker, &Symbol::new(&env, "deposit"), args);
 
         let balance_after = token.balance(&adapter);
         let spent = balance_before
@@ -124,6 +125,10 @@ impl HotBridgeAdapterContract {
         }
 
         increase_principal(&env, &asset, amount)?;
+        env.events().publish(
+            (symbol_short!("hot_dep"), asset.clone()),
+            (amount, hot_locker, hot_receiver_id, returned_nonce),
+        );
         env.events()
             .publish((symbol_short!("supply"), asset), amount);
         Ok(())
@@ -436,8 +441,10 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         contract, contractimpl,
-        testutils::{Address as _, Ledger as _},
+        testutils::{Address as _, Events as _, Ledger as _},
         token::StellarAssetClient,
+        xdr::{ContractEventBody, ScVal},
+        TryFromVal,
     };
 
     #[contract]
@@ -549,6 +556,32 @@ mod tests {
         (adapter, admin, vault, hot_locker, asset, receiver)
     }
 
+    fn assert_hot_deposit_event(
+        env: &Env,
+        adapter: &Address,
+        asset: &Address,
+        hot_locker: &Address,
+        receiver: &BytesN<32>,
+        amount: i128,
+        nonce: u128,
+    ) {
+        let hot_deposit = ScVal::try_from_val(env, &symbol_short!("hot_dep")).unwrap();
+        let asset_val: Val = asset.clone().into_val(env);
+        let asset_scval = ScVal::try_from_val(env, &asset_val).unwrap();
+        let data_val: Val = (amount, hot_locker.clone(), receiver.clone(), nonce).into_val(env);
+        let data_scval = ScVal::try_from_val(env, &data_val).unwrap();
+        let filtered_events = env.events().all().filter_by_contract(adapter);
+        let events = filtered_events.events();
+
+        assert!(events.iter().any(|event| {
+            let ContractEventBody::V0(body) = &event.body;
+            body.topics.len() == 2
+                && body.topics[0] == hot_deposit
+                && body.topics[1] == asset_scval
+                && body.data == data_scval
+        }));
+    }
+
     #[test]
     fn supply_calls_hot_locker_with_configured_receiver_id() {
         let env = Env::default();
@@ -558,6 +591,15 @@ mod tests {
         asset_admin.mint(&adapter, &100);
 
         client.supply(&vault, &asset, &100);
+        assert_hot_deposit_event(
+            &env,
+            &adapter,
+            &asset,
+            &hot_locker,
+            &receiver,
+            100,
+            1_777_000_000_000_000_000_000,
+        );
 
         let locker_client = MockHotLockerClient::new(&env, &hot_locker);
         assert_eq!(locker_client.receiver(), receiver);
