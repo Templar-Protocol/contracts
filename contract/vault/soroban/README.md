@@ -231,6 +231,21 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 After deployment, register the adapter as a vault market before allocation.
 
+## HOT Bridge Adapter
+
+HOT bridge integration lives in `contract/vault/soroban/hot-bridge-adapter`. It exposes the same
+Soroban market-adapter surface as Blend (`supply`, `progress_withdrawal`, `total_assets`) while
+routing supplied assets into the HOT Stellar locker.
+
+Use recipes in [contract/vault/soroban/justfile](./justfile):
+
+- `just build-hot-bridge-adapter`
+- `HOT_STELLAR_LOCKER_CONTRACT=<contract> HOT_STELLAR_RECEIVER_HEX=<64 hex chars> just deploy-hot-bridge-adapter`
+- `just hot-bridge-adapter-status`
+
+`HOT_STELLAR_RECEIVER_HEX` is intentionally explicit. It should be copied from a proven HOT receiver
+for the NEAR counterparty, not recomputed locally during deployment.
+
 ## Deployment Artifact
 
 The Soroban justfile builds two runtime artifacts:

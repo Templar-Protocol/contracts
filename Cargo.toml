@@ -16,6 +16,7 @@ members = [
     "contract/vault/soroban",
     "contract/vault/soroban/shared-types",
     "contract/vault/soroban/blend-adapter",
+    "contract/vault/soroban/hot-bridge-adapter",
     "contract/vault/soroban/governance",
     "contract/vault/soroban/share-token",
     "fuzz",
