@@ -95,7 +95,7 @@ impl HotBridgeAdapterContract {
         let adapter = env.current_contract_address();
         let hot_locker = get_hot_locker(&env)?;
         let hot_receiver_id = get_hot_receiver_id(&env)?;
-        let client_timestamp = ledger_timestamp_ns(&env)?;
+        let client_timestamp = hot_locker_timestamp(&env)?;
         let amount_u128 = amount_as_u128(amount)?;
         let token = soroban_sdk::token::Client::new(&env, &asset);
         let balance_before = token.balance(&adapter);
@@ -291,9 +291,9 @@ fn amount_as_u128(amount: i128) -> Result<u128, AdapterError> {
     u128::try_from(amount).map_err(|_| AdapterError::InvalidInput)
 }
 
-fn ledger_timestamp_ns(env: &Env) -> Result<u128, AdapterError> {
+fn hot_locker_timestamp(env: &Env) -> Result<u128, AdapterError> {
     u128::from(env.ledger().timestamp())
-        .checked_mul(1_000_000_000)
+        .checked_mul(1_000_000_000_000)
         .ok_or(AdapterError::ArithmeticOverflow)
 }
 
@@ -562,7 +562,7 @@ mod tests {
         let locker_client = MockHotLockerClient::new(&env, &hot_locker);
         assert_eq!(locker_client.receiver(), receiver);
         assert_eq!(locker_client.amount(), 100);
-        assert_eq!(locker_client.timestamp(), 1_777_000_000_000_000_000);
+        assert_eq!(locker_client.timestamp(), 1_777_000_000_000_000_000_000);
         assert_eq!(client.total_assets(&asset), 100);
         assert_eq!(
             soroban_sdk::token::Client::new(&env, &asset).balance(&adapter),
