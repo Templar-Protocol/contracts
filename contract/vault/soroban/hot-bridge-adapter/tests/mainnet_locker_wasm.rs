@@ -1,8 +1,9 @@
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Ledger as _},
+    contract, contractimpl, symbol_short,
+    testutils::{Address as _, Events as _, Ledger as _},
     token::StellarAssetClient,
-    Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    xdr::{ContractEventBody, ScVal},
+    Address, Bytes, BytesN, Env, IntoVal, Symbol, TryFromVal, Val, Vec,
 };
 use templar_soroban_hot_bridge_adapter::{
     HotBridgeAdapterContract, HotBridgeAdapterContractClient,
@@ -77,6 +78,32 @@ fn get_locker_deposit(env: &Env, locker: &Address, nonce: u128) -> Bytes {
     env.invoke_contract(locker, &Symbol::new(env, "get_deposit"), args)
 }
 
+fn assert_hot_deposit_event(
+    env: &Env,
+    adapter: &Address,
+    asset: &Address,
+    hot_locker: &Address,
+    receiver: &BytesN<32>,
+    amount: i128,
+    nonce: u128,
+) {
+    let hot_deposit = ScVal::try_from_val(env, &symbol_short!("hot_dep")).unwrap();
+    let asset_val: Val = asset.clone().into_val(env);
+    let asset_scval = ScVal::try_from_val(env, &asset_val).unwrap();
+    let data_val: Val = (amount, hot_locker.clone(), receiver.clone(), nonce).into_val(env);
+    let data_scval = ScVal::try_from_val(env, &data_val).unwrap();
+    let filtered_events = env.events().all().filter_by_contract(adapter);
+    let events = filtered_events.events();
+
+    assert!(events.iter().any(|event| {
+        let ContractEventBody::V0(body) = &event.body;
+        body.topics.len() == 2
+            && body.topics[0] == hot_deposit
+            && body.topics[1] == asset_scval
+            && body.data == data_scval
+    }));
+}
+
 #[test]
 fn pinned_fixture_matches_mainnet_locker_hash() {
     let env = Env::default();
@@ -131,14 +158,24 @@ fn adapter_supply_works_against_mainnet_locker_wasm() {
     let locker = register_mainnet_locker_wasm(&env);
     let token_sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
     let token = token_sac.address();
+    let receiver = proven_receiver(&env);
     let adapter = env.register(
         HotBridgeAdapterContract,
-        (&admin, &vault, &locker, &proven_receiver(&env)),
+        (&admin, &vault, &locker, &receiver),
     );
     let adapter_client = HotBridgeAdapterContractClient::new(&env, &adapter);
     StellarAssetClient::new(&env, &token).mint(&adapter, &100);
 
     adapter_client.supply(&vault, &token, &100);
+    assert_hot_deposit_event(
+        &env,
+        &adapter,
+        &token,
+        &locker,
+        &receiver,
+        100,
+        1_777_000_000_000_000_000_000,
+    );
 
     assert_eq!(adapter_client.total_assets(&token), 100);
     assert_eq!(
