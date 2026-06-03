@@ -48,8 +48,6 @@ pub fn create_test_app() -> App {
         bridge_client,
         token_registry,
         external_chains: std::sync::Arc::new(crate::external::ExternalChainRegistry::new()),
-        bridge_relayer: None,
-        bridge_relayer_auth_token: None,
         config: Arc::new(args),
         dry_run: false,
         version: "0.1.0-test",

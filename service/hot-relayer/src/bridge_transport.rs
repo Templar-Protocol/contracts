@@ -98,10 +98,13 @@ mod tests {
     }
 
     fn routing() -> HotRelayerRouting {
-        HotRelayerRouting {
-            near_receiver: "vault-counterparty.near".to_string(),
-            stellar_receiver: "GADAPTERADDRESS".to_string(),
-        }
+        HotRelayerRouting::new(
+            "vault-counterparty.near".to_string(),
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
+            1100,
+            "1100_CUSDC".to_string(),
+        )
+        .unwrap_or_else(|e| panic!("{e}"))
     }
 
     #[tokio::test]
@@ -111,7 +114,7 @@ mod tests {
         let event = StellarDepositEvent {
             chain_id: 1100,
             nonce: "55".to_string(),
-            sender_id: "GVAULT".to_string(),
+            sender_id: "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
             receiver_id: "vault-counterparty.near".to_string(),
             token_id: "1100_CUSDC".to_string(),
             amount: "9".to_string(),
@@ -136,7 +139,7 @@ mod tests {
         let event = StellarDepositEvent {
             chain_id: 1100,
             nonce: "55".to_string(),
-            sender_id: "GVAULT".to_string(),
+            sender_id: "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
             receiver_id: "unexpected.near".to_string(),
             token_id: "1100_CUSDC".to_string(),
             amount: "9".to_string(),

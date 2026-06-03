@@ -56,6 +56,7 @@ derive_more = { version = "1", default-features = false, features = [
     "is_variant",
 ] }
 getrandom = { version = "0.2", features = ["custom"] }
+getset = "0.1.6"
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"

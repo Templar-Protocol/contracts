@@ -47,11 +47,9 @@
 
 pub mod app;
 pub mod bridge;
-pub mod bridge_transport;
 pub mod config;
 pub mod error;
 pub mod external;
-pub mod hot_relayer;
 pub mod intents;
 pub mod metrics;
 pub mod routes;
