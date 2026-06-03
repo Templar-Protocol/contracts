@@ -4,10 +4,8 @@ use std::sync::Arc;
 
 use crate::{
     bridge::BridgeClient,
-    bridge_transport::{BridgeRelayer, HotBridgeRelayer},
     config::Args,
     external::{config::EvmChainConfig, evm::EvmChainHandler, ExternalChainRegistry},
-    hot_relayer::{HotMpcApiClient, HotRelayerRouting},
     tokens::TokenRegistry,
     treasury::NearHandler,
     VERSION,
@@ -27,12 +25,6 @@ pub struct App {
 
     /// External chain registry for cross-chain deposits
     pub external_chains: Arc<ExternalChainRegistry>,
-
-    /// Optional bridge relayer backend used for transport-specific completion flows.
-    pub bridge_relayer: Option<Arc<dyn BridgeRelayer + Send + Sync>>,
-
-    /// Optional bearer token required for relay completion endpoints.
-    pub bridge_relayer_auth_token: Option<String>,
 
     /// Configuration
     pub config: Arc<Args>,
@@ -77,99 +69,15 @@ impl App {
 
         // Initialize external chain registry
         let external_chains = Self::build_external_chain_registry(args);
-        let bridge_relayer = Self::build_bridge_relayer();
-        let bridge_relayer_auth_token = Self::build_bridge_relayer_auth_token();
 
         Self {
             near_handler,
             bridge_client,
             token_registry,
             external_chains,
-            bridge_relayer,
-            bridge_relayer_auth_token,
             config: Arc::new(args.clone()),
             dry_run: args.dry_run,
             version: VERSION,
-        }
-    }
-
-    /// Build optional bridge relayer backend from environment variables.
-    ///
-    /// `BRIDGE_RELAYER_BACKEND` options:
-    /// - `none` (default)
-    /// - `hot`
-    ///
-    /// For `hot`, these environment variables are required:
-    /// - `HOT_MPC_API_URL`
-    /// - `HOT_RELAYER_NEAR_RECEIVER`
-    /// - `HOT_RELAYER_STELLAR_RECEIVER`
-    fn build_bridge_relayer() -> Option<Arc<dyn BridgeRelayer + Send + Sync>> {
-        let backend = std::env::var("BRIDGE_RELAYER_BACKEND")
-            .unwrap_or_else(|_| "none".to_string())
-            .to_lowercase();
-
-        match backend.as_str() {
-            "" | "none" => None,
-            "hot" => {
-                let mpc_api_url = match std::env::var("HOT_MPC_API_URL") {
-                    Ok(v) if !v.trim().is_empty() => v,
-                    _ => {
-                        tracing::warn!(
-                            "BRIDGE_RELAYER_BACKEND=hot but HOT_MPC_API_URL is missing; disabling bridge relayer backend"
-                        );
-                        return None;
-                    }
-                };
-                let near_receiver = match std::env::var("HOT_RELAYER_NEAR_RECEIVER") {
-                    Ok(v) if !v.trim().is_empty() => v,
-                    _ => {
-                        tracing::warn!(
-                            "BRIDGE_RELAYER_BACKEND=hot but HOT_RELAYER_NEAR_RECEIVER is missing; disabling bridge relayer backend"
-                        );
-                        return None;
-                    }
-                };
-                let stellar_receiver = match std::env::var("HOT_RELAYER_STELLAR_RECEIVER") {
-                    Ok(v) if !v.trim().is_empty() => v,
-                    _ => {
-                        tracing::warn!(
-                            "BRIDGE_RELAYER_BACKEND=hot but HOT_RELAYER_STELLAR_RECEIVER is missing; disabling bridge relayer backend"
-                        );
-                        return None;
-                    }
-                };
-
-                let routing = HotRelayerRouting {
-                    near_receiver,
-                    stellar_receiver,
-                };
-                let signer = HotMpcApiClient::new(mpc_api_url);
-                let relayer = HotBridgeRelayer::new(routing, signer);
-
-                tracing::info!(backend = "hot", "Configured bridge relayer backend");
-                Some(Arc::new(relayer))
-            }
-            other => {
-                tracing::warn!(
-                    backend = %other,
-                    "Unknown BRIDGE_RELAYER_BACKEND; disabling bridge relayer backend"
-                );
-                None
-            }
-        }
-    }
-
-    fn build_bridge_relayer_auth_token() -> Option<String> {
-        match std::env::var("BRIDGE_RELAYER_AUTH_TOKEN") {
-            Ok(token) => {
-                let trimmed = token.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }
-            Err(_) => None,
         }
     }
 

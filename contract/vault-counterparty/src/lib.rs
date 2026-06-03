@@ -18,6 +18,7 @@ const INTENTS_CONTRACT: &str = "intents.near";
 const BRIDGE_REFUEL_ACCOUNT: &str = "bridge-refuel.hot.tg";
 const MAX_STELLAR_RECEIVER_LEN: usize = 256;
 const MAX_TOKEN_ID_LEN: usize = 256;
+const HOT_STELLAR_CHAIN_PREFIX: &str = "1100_";
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
@@ -31,12 +32,89 @@ pub struct Config {
     pub omni_contract: AccountId,
 }
 
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh])]
+struct StellarReceiver {
+    raw: String,
+    encoded: String,
+}
+
+impl StellarReceiver {
+    fn new(receiver: String) -> Self {
+        require!(
+            !receiver.trim().is_empty(),
+            "stellar receiver cannot be empty"
+        );
+        require!(
+            receiver.len() <= MAX_STELLAR_RECEIVER_LEN,
+            format!(
+                "stellar receiver too long, max {}",
+                MAX_STELLAR_RECEIVER_LEN
+            )
+        );
+
+        let sc_address = ScAddress::from_str(&receiver)
+            .unwrap_or_else(|_| env::panic_str("invalid stellar receiver"));
+        let encoded = Contract::encode_stellar_sc_address(&sc_address);
+        Self {
+            raw: receiver,
+            encoded,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        &self.raw
+    }
+
+    fn encoded(&self) -> &str {
+        &self.encoded
+    }
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh])]
+struct OmniTokenId(String);
+
+impl OmniTokenId {
+    fn new(token_id: String, omni_contract: &AccountId) -> Self {
+        require!(!token_id.trim().is_empty(), "token_id cannot be empty");
+        require!(
+            token_id.len() <= MAX_TOKEN_ID_LEN,
+            format!("token_id too long, max {}", MAX_TOKEN_ID_LEN)
+        );
+
+        let wrapped_prefix = format!("nep245:{}:", omni_contract);
+        let normalized = token_id
+            .strip_prefix(&wrapped_prefix)
+            .unwrap_or(&token_id)
+            .to_string();
+        require!(
+            !normalized.contains(':'),
+            "token_id cannot contain an unexpected wrapper prefix"
+        );
+        require!(
+            normalized.starts_with(HOT_STELLAR_CHAIN_PREFIX)
+                && normalized.len() > HOT_STELLAR_CHAIN_PREFIX.len(),
+            format!(
+                "token_id must start with {} and include an asset id",
+                HOT_STELLAR_CHAIN_PREFIX
+            )
+        );
+
+        Self(normalized)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
-    stellar_receiver: String,
+    stellar_receiver: StellarReceiver,
     near_market: AccountId,
-    omni_token_id: String,
+    omni_token_id: OmniTokenId,
     curator: AccountId,
     owner: AccountId,
     pending_owner: Option<AccountId>,
@@ -54,8 +132,8 @@ impl Contract {
         curator: AccountId,
         owner: AccountId,
     ) -> Self {
-        Self::assert_receiver(&stellar_receiver);
-        Self::assert_token_id(&omni_token_id);
+        let stellar_receiver = StellarReceiver::new(stellar_receiver);
+        let omni_token_id = OmniTokenId::new(omni_token_id, &omni_contract);
 
         Self {
             stellar_receiver,
@@ -113,7 +191,7 @@ impl Contract {
 
     fn withdraw_msg_json(&self) -> String {
         json!({
-            "receiver_id": self.encoded_stellar_receiver(),
+            "receiver_id": self.stellar_receiver.encoded(),
             "amount_native": "0",
             "block_number": 0,
         })
@@ -139,21 +217,7 @@ impl Contract {
     }
 
     fn omni_token_id_for_contract(&self) -> String {
-        let wrapped_prefix = format!("nep245:{}:", self.omni_contract);
-        self.omni_token_id
-            .strip_prefix(&wrapped_prefix)
-            .unwrap_or(&self.omni_token_id)
-            .to_string()
-    }
-
-    fn encoded_stellar_receiver(&self) -> String {
-        let sc_address = self.parse_stellar_receiver();
-        Self::encode_stellar_sc_address(&sc_address)
-    }
-
-    fn parse_stellar_receiver(&self) -> ScAddress {
-        ScAddress::from_str(&self.stellar_receiver)
-            .unwrap_or_else(|_| env::panic_str("invalid stellar receiver"))
+        self.omni_token_id.as_str().to_string()
     }
 
     fn encode_stellar_sc_address(sc_address: &ScAddress) -> String {
@@ -164,28 +228,6 @@ impl Contract {
             .write_xdr(&mut limited_writer)
             .unwrap_or_else(|_| env::panic_str("failed to encode stellar receiver"));
         bs58::encode(xdr_bytes).into_string()
-    }
-
-    fn assert_token_id(token_id: &str) {
-        require!(!token_id.trim().is_empty(), "token_id cannot be empty");
-        require!(
-            token_id.len() <= MAX_TOKEN_ID_LEN,
-            format!("token_id too long, max {}", MAX_TOKEN_ID_LEN)
-        );
-    }
-
-    fn assert_receiver(receiver: &str) {
-        require!(
-            !receiver.trim().is_empty(),
-            "stellar receiver cannot be empty"
-        );
-        require!(
-            receiver.len() <= MAX_STELLAR_RECEIVER_LEN,
-            format!(
-                "stellar receiver too long, max {}",
-                MAX_STELLAR_RECEIVER_LEN
-            )
-        );
     }
 }
 
@@ -225,9 +267,9 @@ impl Contract {
 
     pub fn get_config(&self) -> Config {
         Config {
-            stellar_receiver: self.stellar_receiver.clone(),
+            stellar_receiver: self.stellar_receiver.as_str().to_string(),
             near_market: self.near_market.clone(),
-            omni_token_id: self.omni_token_id.clone(),
+            omni_token_id: self.omni_token_id.as_str().to_string(),
             curator: self.curator.clone(),
             owner: self.owner.clone(),
             pending_owner: self.pending_owner.clone(),
@@ -473,12 +515,65 @@ mod tests {
     #[should_panic(expected = "token_id cannot be empty")]
     fn init_rejects_empty_token_id() {
         let _ = Contract::new(
-            "GCYV3WBXWJY4UVQZ6X3I6LBKAKP4YB6ESQOKJP4MZ2S2BFOFGB2P4D7F".to_string(),
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
             account("templar-market.near"),
             "".to_string(),
             account("v2_1.omni.hot.tg"),
             account("curator.near"),
             account("owner.near"),
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid stellar receiver")]
+    fn init_rejects_invalid_stellar_receiver() {
+        let _ = Contract::new(
+            "not-a-stellar-address".to_string(),
+            account("templar-market.near"),
+            "1100_stellar_usdc".to_string(),
+            account("v2_1.omni.hot.tg"),
+            account("curator.near"),
+            account("owner.near"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "token_id must start with 1100_ and include an asset id")]
+    fn init_rejects_token_id_for_wrong_chain() {
+        let _ = Contract::new(
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
+            account("templar-market.near"),
+            "1101_stellar_usdc".to_string(),
+            account("v2_1.omni.hot.tg"),
+            account("curator.near"),
+            account("owner.near"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "token_id cannot contain an unexpected wrapper prefix")]
+    fn init_rejects_unexpected_token_wrapper_prefix() {
+        let _ = Contract::new(
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
+            account("templar-market.near"),
+            "nep245:other.omni.hot.tg:1100_stellar_usdc".to_string(),
+            account("v2_1.omni.hot.tg"),
+            account("curator.near"),
+            account("owner.near"),
+        );
+    }
+
+    #[test]
+    fn init_normalizes_expected_wrapped_token_id() {
+        let contract = Contract::new(
+            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
+            account("templar-market.near"),
+            "nep245:v2_1.omni.hot.tg:1100_stellar_usdc".to_string(),
+            account("v2_1.omni.hot.tg"),
+            account("curator.near"),
+            account("owner.near"),
+        );
+
+        assert_eq!(contract.get_config().omni_token_id, "1100_stellar_usdc");
     }
 }

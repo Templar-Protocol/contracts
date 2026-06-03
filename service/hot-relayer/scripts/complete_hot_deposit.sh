@@ -36,10 +36,11 @@ Arguments:
   receiver_id  NEAR receiver account. Defaults to HOT_RELAYER_NEAR_RECEIVER from .env
 
 Environment:
-  SERVICE_URL                  Default: http://localhost:3000
-  BRIDGE_RELAYER_AUTH_TOKEN    Optional bearer token if relay auth is enabled
+  SERVICE_URL                  Default: http://localhost:3001
+  HOT_RELAYER_AUTH_TOKEN       Required bearer token
   HOT_RELAYER_NEAR_RECEIVER    Required when receiver_id is not passed
-  CHAIN_ID                     Default: 1100
+  HOT_RELAYER_TOKEN_ID         Expected HOT token id configured in the service
+  HOT_RELAYER_CHAIN_ID         Default: 1100
 
 Example:
   ./scripts/complete_hot_deposit.sh \
@@ -74,18 +75,10 @@ require_health() {
 }
 
 build_auth_args() {
-    AUTH_ARGS=()
-    if [ -n "${BRIDGE_RELAYER_AUTH_TOKEN:-}" ]; then
-        AUTH_ARGS=(-H "Authorization: Bearer $BRIDGE_RELAYER_AUTH_TOKEN")
-    fi
+    AUTH_ARGS=(-H "Authorization: Bearer $HOT_RELAYER_AUTH_TOKEN")
 }
 
 check_required_config() {
-    if [ "${BRIDGE_RELAYER_BACKEND:-none}" != "hot" ]; then
-        print_error "BRIDGE_RELAYER_BACKEND must be set to 'hot' in .env"
-        exit 1
-    fi
-
     if [ -z "${HOT_MPC_API_URL:-}" ]; then
         print_error "HOT_MPC_API_URL is required in .env"
         exit 1
@@ -95,6 +88,16 @@ check_required_config() {
         print_error "HOT_RELAYER_STELLAR_RECEIVER is required in .env"
         exit 1
     fi
+
+    if [ -z "${HOT_RELAYER_TOKEN_ID:-}" ]; then
+        print_error "HOT_RELAYER_TOKEN_ID is required in .env"
+        exit 1
+    fi
+
+    if [ -z "${HOT_RELAYER_AUTH_TOKEN:-}" ]; then
+        print_error "HOT_RELAYER_AUTH_TOKEN is required in .env"
+        exit 1
+    fi
 }
 
 NONCE="${1:-}"
@@ -102,8 +105,8 @@ SENDER_ID="${2:-}"
 TOKEN_ID="${3:-}"
 AMOUNT="${4:-}"
 RECEIVER_ID="${5:-${HOT_RELAYER_NEAR_RECEIVER:-}}"
-CHAIN_ID="${CHAIN_ID:-1100}"
-SERVICE_URL="${SERVICE_URL:-http://localhost:3000}"
+HOT_RELAYER_CHAIN_ID="${HOT_RELAYER_CHAIN_ID:-1100}"
+SERVICE_URL="${SERVICE_URL:-http://localhost:3001}"
 
 if [ -z "$NONCE" ] || [ -z "$SENDER_ID" ] || [ -z "$TOKEN_ID" ] || [ -z "$AMOUNT" ]; then
     show_usage
@@ -113,6 +116,7 @@ fi
 check_env_file
 load_env
 RECEIVER_ID="${5:-${HOT_RELAYER_NEAR_RECEIVER:-}}"
+HOT_RELAYER_CHAIN_ID="${HOT_RELAYER_CHAIN_ID:-1100}"
 
 if [ -z "$RECEIVER_ID" ]; then
     print_error "receiver_id is required either as arg 5 or HOT_RELAYER_NEAR_RECEIVER in .env"
@@ -127,7 +131,7 @@ JSON_PAYLOAD="$(python3 - <<PY
 import json
 payload = {
     "event": {
-        "chain_id": int(${CHAIN_ID}),
+        "chain_id": int(${HOT_RELAYER_CHAIN_ID}),
         "nonce": ${NONCE@Q},
         "sender_id": ${SENDER_ID@Q},
         "receiver_id": ${RECEIVER_ID@Q},
@@ -141,7 +145,7 @@ PY
 
 print_info "Submitting one-shot HOT deposit completion request"
 echo -e "${BLUE}Service:${NC} $SERVICE_URL"
-echo -e "${BLUE}Chain ID:${NC} $CHAIN_ID"
+echo -e "${BLUE}Chain ID:${NC} $HOT_RELAYER_CHAIN_ID"
 echo -e "${BLUE}Nonce:${NC} $NONCE"
 echo -e "${BLUE}Sender:${NC} $SENDER_ID"
 echo -e "${BLUE}Receiver:${NC} $RECEIVER_ID"
