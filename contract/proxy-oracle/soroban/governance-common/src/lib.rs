@@ -303,6 +303,10 @@ mod tests {
 
     #[test]
     fn action_code_covers_all_variants() {
+        use templar_proxy_oracle_soroban_common::{
+            RearmConfig, SetEnforcedConfig, SorobanDecimal, StepwiseChangeConfig,
+        };
+
         let env = soroban_sdk::Env::default();
         let account = Address::from_string(&soroban_sdk::String::from_str(
             &env,
@@ -310,90 +314,53 @@ mod tests {
         ));
         let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
         let wasm_hash = BytesN::from_array(&env, &[7_u8; 32]);
+        let proxy_config = ProxyConfig {
+            sources: soroban_sdk::Vec::new(&env),
+            min_sources: 1,
+            max_age_secs: None,
+            max_clock_drift_secs: None,
+        };
+        let stepwise = CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(
+                &env,
+                templar_primitives::Decimal::ONE_HALF,
+            ),
+        });
+        let rearm = RearmConfig {
+            armed_after_secs: 0,
+            accepted_history_source_code: 0,
+        };
+        let enforced = SetEnforcedConfig { is_enforced: false };
 
         // The action codes must remain stable.
-        assert_eq!(
-            GovernanceAction::SetProxy(
-                asset.clone(),
-                ProxyConfig {
-                    sources: soroban_sdk::Vec::new(&env),
-                    min_sources: 1,
-                    max_age_secs: None,
-                    max_clock_drift_secs: None,
-                }
-            )
-            .action_code(),
-            1
-        );
-        assert_eq!(
-            GovernanceAction::RemoveProxy(asset.clone()).action_code(),
-            2
-        );
-        assert_eq!(
-            GovernanceAction::ConfigureBreakers(asset.clone(), 0, 8).action_code(),
-            3
-        );
-        assert_eq!(
-            GovernanceAction::AddBreaker(
-                asset.clone(),
-                CircuitBreakerConfig::StepwiseChange(
-                    templar_proxy_oracle_soroban_common::StepwiseChangeConfig {
-                        max_relative_change:
-                            templar_proxy_oracle_soroban_common::SorobanDecimal::from_decimal(
-                                &env,
-                                templar_primitives::Decimal::ONE_HALF,
-                            ),
-                    }
-                )
-            )
-            .action_code(),
-            4
-        );
-        assert_eq!(
-            GovernanceAction::RemoveBreaker(asset.clone(), 0).action_code(),
-            5
-        );
-        assert_eq!(
-            GovernanceAction::Rearm(
-                asset.clone(),
-                0,
-                templar_proxy_oracle_soroban_common::RearmConfig {
-                    armed_after_secs: 0,
-                    accepted_history_source_code: 0,
-                }
-            )
-            .action_code(),
-            13
-        );
-        assert_eq!(
-            GovernanceAction::SetEnforced(
-                asset.clone(),
-                0,
-                templar_proxy_oracle_soroban_common::SetEnforcedConfig { is_enforced: false }
-            )
-            .action_code(),
-            14
-        );
-        assert_eq!(
-            GovernanceAction::SetManualTrip(account.clone(), asset.clone(), true, None)
-                .action_code(),
-            7
-        );
-        assert_eq!(GovernanceAction::RenounceOwnership(()).action_code(), 6);
-        assert_eq!(GovernanceAction::AcceptOwnership(()).action_code(), 8);
-        assert_eq!(
-            GovernanceAction::TransferOwnership(account.clone()).action_code(),
-            9
-        );
-        assert_eq!(
-            GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42).action_code(),
-            10
-        );
-        assert_eq!(
-            GovernanceAction::SetRole(account.clone(), Role::ManualTripper, true).action_code(),
-            11
-        );
-        assert_eq!(GovernanceAction::Upgrade(wasm_hash).action_code(), 12);
+        let action = GovernanceAction::SetProxy(asset.clone(), proxy_config);
+        assert_eq!(action.action_code(), 1);
+        let action = GovernanceAction::RemoveProxy(asset.clone());
+        assert_eq!(action.action_code(), 2);
+        let action = GovernanceAction::ConfigureBreakers(asset.clone(), 0, 8);
+        assert_eq!(action.action_code(), 3);
+        let action = GovernanceAction::AddBreaker(asset.clone(), stepwise);
+        assert_eq!(action.action_code(), 4);
+        let action = GovernanceAction::RemoveBreaker(asset.clone(), 0);
+        assert_eq!(action.action_code(), 5);
+        let action = GovernanceAction::Rearm(asset.clone(), 0, rearm);
+        assert_eq!(action.action_code(), 13);
+        let action = GovernanceAction::SetEnforced(asset.clone(), 0, enforced);
+        assert_eq!(action.action_code(), 14);
+        let action = GovernanceAction::SetManualTrip(account.clone(), asset.clone(), true, None);
+        assert_eq!(action.action_code(), 7);
+        let action = GovernanceAction::RenounceOwnership(());
+        assert_eq!(action.action_code(), 6);
+        let action = GovernanceAction::AcceptOwnership(());
+        assert_eq!(action.action_code(), 8);
+        let action = GovernanceAction::TransferOwnership(account.clone());
+        assert_eq!(action.action_code(), 9);
+        let action = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42);
+        assert_eq!(action.action_code(), 10);
+        let action = GovernanceAction::SetRole(account.clone(), Role::ManualTripper, true);
+        assert_eq!(action.action_code(), 11);
+        let action = GovernanceAction::Upgrade(wasm_hash);
+        assert_eq!(action.action_code(), 12);
     }
 
     #[test]

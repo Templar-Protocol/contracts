@@ -20,6 +20,7 @@ templar-proxy-oracle-soroban-sep40-adapter-contract = { path = "../sep40-adapter
 
 [dev-dependencies]
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
+rstest.workspace = true
 
 [lints]
 workspace = true

@@ -13097,6 +13097,7 @@ dependencies = [
 name = "templar-proxy-oracle-soroban-common"
 version = "0.1.0"
 dependencies = [
+ "rstest",
  "soroban-sdk 25.3.0",
  "templar-primitives",
 ]
@@ -13143,6 +13144,7 @@ name = "templar-proxy-oracle-soroban-integration-tests"
 version = "0.1.0"
 dependencies = [
  "blend-contract-sdk",
+ "rstest",
  "soroban-sdk 25.3.0",
  "templar-primitives",
  "templar-proxy-oracle-soroban-common",

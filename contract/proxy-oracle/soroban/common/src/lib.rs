@@ -237,31 +237,25 @@ pub struct RearmConfig {
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
-
     use super::*;
+    use rstest::rstest;
     use soroban_sdk::Env;
 
     /// Cover the unsafe `transmute` path in `SorobanDecimal` end-to-end:
-    /// every value we round-trip must come back equal, both through the
-    /// `to_decimal()` method and through both `From` impls.
-    #[test]
-    fn soroban_decimal_round_trips_representative_values() {
+    /// every value round-trips through `to_decimal()` and both `From` impls.
+    #[rstest]
+    #[case::zero(Decimal::ZERO)]
+    #[case::one_half(Decimal::ONE_HALF)]
+    #[case::one(Decimal::ONE)]
+    #[case::two(Decimal::TWO)]
+    #[case::ln2(Decimal::LN2)]
+    #[case::e(Decimal::E)]
+    #[case::max(Decimal::MAX)]
+    fn soroban_decimal_round_trips(#[case] original: Decimal) {
         let env = Env::default();
-        let cases: alloc::vec::Vec<Decimal> = alloc::vec![
-            Decimal::ZERO,
-            Decimal::ONE_HALF,
-            Decimal::ONE,
-            Decimal::TWO,
-            Decimal::LN2,
-            Decimal::E,
-            Decimal::MAX,
-        ];
-        for original in cases {
-            let wrapped = SorobanDecimal::from_decimal(&env, original);
-            assert_eq!(wrapped.to_decimal(), original, "to_decimal");
-            assert_eq!(Decimal::from(&wrapped), original, "From<&SorobanDecimal>");
-            assert_eq!(Decimal::from(wrapped), original, "From<SorobanDecimal>");
-        }
+        let wrapped = SorobanDecimal::from_decimal(&env, original);
+        assert_eq!(wrapped.to_decimal(), original, "to_decimal");
+        assert_eq!(Decimal::from(&wrapped), original, "From<&SorobanDecimal>");
+        assert_eq!(Decimal::from(wrapped), original, "From<SorobanDecimal>");
     }
 }

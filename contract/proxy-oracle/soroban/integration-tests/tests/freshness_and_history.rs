@@ -8,6 +8,7 @@
 
 //! Groups N + O + P — Scaling math, freshness gate, history windowing.
 
+use rstest::rstest;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Symbol, Vec as SVec};
 use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
@@ -30,30 +31,25 @@ fn deploy_adapter_with_decimals(b: &Bootstrap, decimals: u32) -> Sep40AdapterCli
     Sep40AdapterClient::new(&b.env, &id)
 }
 
-#[test]
-fn adapter_scaling_matches_decimals_grid() {
-    // Each row: (adapter_decimals, source_mantissa_at_8_decimals, expected_sep40_price).
-    // Source publishes a price already shaped as if it had 8 decimals
-    // internally (mantissa = "human_value * 10^8") so the kernel's
-    // NormalizedPrice ends up with mantissa = that i64 and expo = -8.
-    // The adapter then scales by `decimals + expo = decimals - 8`.
-    let cases: &[(u32, i128, i128)] = &[
-        (2, 5_000_000_000, 50_00),         // expo total = -6 → /1_000_000
-        (8, 5_000_000_000, 5_000_000_000), // expo total = 0
-        (18, 1_000_000_000, 10_000_000_000_000_000_000), // expo total = +10
-    ];
-    for (decimals, source_price, expected) in cases.iter().copied() {
-        let b = Bootstrap::new();
-        b.configure_default_feed();
-        let adapter = deploy_adapter_with_decimals(&b, decimals);
-        b.push_upstream_price(&b.asset_btc, source_price, 100);
-        let _ = b.refresh_one(&b.asset_btc);
-        let sep40 = adapter.lastprice(&b.asset_btc).unwrap();
-        assert_eq!(
-            sep40.price, expected,
-            "decimals={decimals} source={source_price}"
-        );
-    }
+/// Source publishes at 8 decimals (mantissa = "human_value * 10^8"), so the
+/// kernel's `NormalizedPrice` ends up with `expo = -8`. The adapter then
+/// scales by `adapter_decimals + expo = adapter_decimals - 8`.
+#[rstest]
+#[case::downscale_to_2(2, 5_000_000_000, 50_00)]
+#[case::identity_at_8(8, 5_000_000_000, 5_000_000_000)]
+#[case::upscale_to_18(18, 1_000_000_000, 10_000_000_000_000_000_000)]
+fn adapter_scales_for_decimals(
+    #[case] adapter_decimals: u32,
+    #[case] source_price: i128,
+    #[case] expected: i128,
+) {
+    let b = Bootstrap::new();
+    b.configure_default_feed();
+    let adapter = deploy_adapter_with_decimals(&b, adapter_decimals);
+    b.push_upstream_price(&b.asset_btc, source_price, 100);
+    let _ = b.refresh_one(&b.asset_btc);
+    let sep40 = adapter.lastprice(&b.asset_btc).unwrap();
+    assert_eq!(sep40.price, expected);
 }
 
 // `normalized_to_sep40` has an overflow guard, but with the in-contract
