@@ -133,15 +133,6 @@ pub struct ProxyRemoved {
 
 #[contractevent]
 #[derive(Clone)]
-pub struct GovernanceHandoff {
-    #[topic]
-    pub old_governance: Address,
-    #[topic]
-    pub new_governance: Address,
-}
-
-#[contractevent]
-#[derive(Clone)]
 pub struct ContractUpgraded {
     pub new_wasm_hash: BytesN<32>,
 }

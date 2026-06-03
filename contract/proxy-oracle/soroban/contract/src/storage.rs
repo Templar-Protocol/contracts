@@ -1,13 +1,14 @@
 //! Storage layout for the runtime contract.
 //!
-//! `instance` storage holds singleton config (governance, base);
-//! `persistent` storage is keyed per-asset (proxy config, breaker set,
-//! price cache, history). SEP-40 surface concerns (decimals/resolution)
-//! live in the per-feed `Sep40Adapter` contracts, not here. `Base` is
-//! retained as the source-validation invariant — every source must report
-//! prices in the same base.
+//! `instance` storage holds the source base; the owner address is managed by
+//! `stellar_access::ownable` under its own storage key. `persistent` storage
+//! is keyed per-asset (proxy config, breaker set, price cache, history).
+//! SEP-40 surface concerns (decimals/resolution) live in the per-feed
+//! `Sep40Adapter` contracts, not here. `Base` is retained as the
+//! source-validation invariant — every source must report prices in the same
+//! base.
 
-use soroban_sdk::{contracttype, Address, Bytes, Env, Vec};
+use soroban_sdk::{contracttype, Bytes, Env, Vec};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
 use templar_proxy_oracle_soroban_common::{
     Asset, ContractError, NormalizedPrice, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
@@ -18,23 +19,12 @@ use crate::CachedProxyPrice;
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
-    Governance,
     Base,
     Assets,
     Proxy(Asset),
     Breakers(Asset),
     Cache(Asset),
     History(Asset),
-}
-
-pub fn require_governance(env: &Env) -> Result<Address, ContractError> {
-    let governance: Address = env
-        .storage()
-        .instance()
-        .get(&DataKey::Governance)
-        .ok_or(ContractError::MissingConfig)?;
-    governance.require_auth();
-    Ok(governance)
 }
 
 pub fn require_proxy_exists(env: &Env, asset: &Asset) -> Result<(), ContractError> {

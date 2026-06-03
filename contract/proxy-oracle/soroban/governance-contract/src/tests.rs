@@ -45,7 +45,12 @@ fn setup_with_ttl(
     let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
     let governance_id = env.register(ProxyOracleGovernance, (&admin, &proxy_id, action_ttl_ns));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    proxy.set_governance(&governance_id);
+    // The runtime contract delegates ownership to `stellar_access::ownable`'s
+    // two-step transfer. We initiate transfer as the initial owner and the
+    // governance contract accepts. `mock_all_auths` covers both auth checks.
+    let live_until_ledger = env.ledger().max_live_until_ledger();
+    proxy.transfer_ownership(&governance_id, &live_until_ledger);
+    proxy.accept_ownership();
 
     (env, admin, proxy_id, governance_id, proxy)
 }
@@ -105,7 +110,7 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetGovernance(next_governance.clone()),
+        GovernanceAction::TransferOwnership(next_governance.clone()),
     );
     assert_eq!(
         governance_events(&env, &governance_id),
@@ -116,9 +121,9 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
                 action_code: 9,
             }
             .to_xdr(&env, &governance_id),
-            GovernanceHandoffSubmitted {
+            OwnershipTransferSubmitted {
                 id: handoff,
-                new_governance: next_governance,
+                new_owner: next_governance,
             }
             .to_xdr(&env, &governance_id),
         ]
@@ -237,7 +242,7 @@ fn parity_governance_allows_out_of_order_execution() {
     );
 
     let ids = env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::pending_ids(env.clone())
+        ProxyOracleGovernance::active_ids(env.clone())
     });
     assert_eq!(ids.len(), 2);
     assert_eq!(ids.get(0).unwrap(), first);
@@ -302,7 +307,7 @@ fn accept_requires_action_ttl_to_elapse() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetGovernance(next_governance.clone()),
+        GovernanceAction::TransferOwnership(next_governance.clone()),
     );
 
     let pending = env
@@ -316,7 +321,7 @@ fn accept_requires_action_ttl_to_elapse() {
         ProxyOracleGovernance::accept(env.clone(), admin.clone(), proposal_id)
     });
     assert_eq!(early, Err(GovernanceError::ProposalNotMature));
-    assert_eq!(proxy.governance(), Some(governance_id.clone()));
+    assert_eq!(proxy.get_owner(), Some(governance_id.clone()));
 
     env.ledger().set(LedgerInfo {
         timestamp: 110,
@@ -328,7 +333,64 @@ fn accept_requires_action_ttl_to_elapse() {
         ProxyOracleGovernance::accept(env.clone(), admin.clone(), proposal_id).unwrap();
     });
 
-    assert_eq!(proxy.governance(), Some(next_governance));
+    // The proposal initiated `transfer_ownership`; the new owner must
+    // explicitly accept to finalize the handoff under the two-step
+    // ownership pattern provided by `stellar_access::ownable`.
+    assert_eq!(proxy.get_owner(), Some(governance_id.clone()));
+    proxy.accept_ownership();
+    assert_eq!(proxy.get_owner(), Some(next_governance));
+}
+
+#[test]
+fn accept_ownership_proposal_finalizes_handoff_to_a_new_governance_contract() {
+    // Two governance contracts back-to-back: the second one (`next_gov`) is
+    // the pending owner, and uses its own `AcceptOwnership` proposal to
+    // claim ownership without anyone calling `proxy.accept_ownership()`
+    // directly. This exercises the dispatch path added for the second leg
+    // of `stellar_access::ownable`'s two-step transfer.
+    let (env, admin, proxy_id, governance_id, proxy) = setup_with_ttl(0);
+    let next_admin = Address::generate(&env);
+    let next_gov_id = env.register(ProxyOracleGovernance, (&next_admin, &proxy_id, 0_u64));
+
+    // Old governance hands off to new governance.
+    let handoff = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::TransferOwnership(next_gov_id.clone()),
+    );
+    accept_now(&env, &governance_id, &admin, handoff);
+    // Pending transfer: owner is still old governance.
+    assert_eq!(proxy.get_owner(), Some(governance_id.clone()));
+
+    // New governance finalizes ownership via its own AcceptOwnership proposal.
+    let claim = submit_now(
+        &env,
+        &next_gov_id,
+        &next_admin,
+        GovernanceAction::AcceptOwnership(()),
+    );
+    accept_now(&env, &next_gov_id, &next_admin, claim);
+    assert_eq!(proxy.get_owner(), Some(next_gov_id));
+}
+
+#[test]
+fn renounce_ownership_proposal_permanently_relinquishes_ownership() {
+    let (env, admin, _proxy_id, governance_id, proxy) = setup_with_ttl(0);
+
+    let renounce = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::RenounceOwnership(()),
+    );
+    accept_now(&env, &governance_id, &admin, renounce);
+
+    // After renounce, the proxy has no owner. Any subsequent `#[only_owner]`
+    // call panics with `OwnableError::OwnerNotSet` (2100) — out of band of
+    // the typed `ContractError` enum that the governance dispatch path
+    // catches — so mutations are effectively, permanently blocked.
+    assert_eq!(proxy.get_owner(), None);
 }
 
 #[test]
@@ -471,7 +533,7 @@ fn remove_proxy_and_set_action_ttl_execute_through_governance() {
     accept_now(&env, &governance_id, &admin, set_ttl);
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::action_ttl_ns(env.clone()).unwrap()
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::SetProxy).unwrap()
         }),
         42
     );
@@ -585,7 +647,7 @@ fn missing_config_governance_submit_fails_closed_on_missing_governance_state() {
 }
 
 #[test]
-fn missing_config_governance_action_ttl_ns_fails_closed_on_missing_governance_state() {
+fn missing_config_get_operation_ttl_fails_closed_on_missing_governance_state() {
     let (env, _admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
 
     env.as_contract(&governance_id, || {
@@ -593,7 +655,7 @@ fn missing_config_governance_action_ttl_ns_fails_closed_on_missing_governance_st
     });
 
     let result = env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::action_ttl_ns(env.clone())
+        ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::SetProxy)
     });
     assert_eq!(result, Err(GovernanceError::MissingConfig));
 }
@@ -655,7 +717,7 @@ fn same_asset_proxy_proposals_can_coexist_and_execute_in_order() {
     assert_ne!(first, second);
 
     let ids = env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::pending_ids(env.clone())
+        ProxyOracleGovernance::active_ids(env.clone())
     });
     assert_eq!(ids.len(), 2);
     assert_eq!(ids.get(0).unwrap(), first);
@@ -737,13 +799,7 @@ fn proposal_views_and_per_operation_ttls_match_near_lifecycle() {
     assert_eq!(proposal.operation, set_proxy);
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::proposal_count(env.clone())
-        }),
-        1
-    );
-    assert_eq!(
-        env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::list_proposals(env.clone(), 0, 10)
+            ProxyOracleGovernance::active_ids(env.clone())
                 .iter()
                 .collect::<StdVec<_>>()
         }),
@@ -1089,7 +1145,7 @@ fn set_action_ttl_requires_proxy_configuration_manager() {
                 env.clone(),
                 non_manager,
                 1,
-                GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 42),
+                GovernanceAction::SetActionTtl(OperationKind::Upgrade, 42),
                 0,
             )
         }),
@@ -1101,7 +1157,7 @@ fn set_action_ttl_requires_proxy_configuration_manager() {
                 env.clone(),
                 manager.clone(),
                 1,
-                GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 42),
+                GovernanceAction::SetActionTtl(OperationKind::Upgrade, 42),
                 0,
             )
             .unwrap()
@@ -1129,7 +1185,7 @@ fn set_action_ttl_requires_proxy_configuration_manager() {
             env.clone(),
             admin.clone(),
             3,
-            GovernanceAction::SetActionTtl(OperationKind::SetGovernance, 42),
+            GovernanceAction::SetActionTtl(OperationKind::TransferOwnership, 42),
             0,
         )
         .unwrap()
@@ -1155,7 +1211,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
     }
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::proposal_count(env.clone())
+            ProxyOracleGovernance::active_ids(env.clone()).len()
         }),
         64
     );
@@ -1186,7 +1242,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
     );
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::proposal_count(env.clone())
+            ProxyOracleGovernance::active_ids(env.clone()).len()
         }),
         64
     );
@@ -1206,7 +1262,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
     });
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::proposal_count(env.clone())
+            ProxyOracleGovernance::active_ids(env.clone()).len()
         }),
         64
     );
@@ -1226,7 +1282,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
     });
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::proposal_count(env.clone())
+            ProxyOracleGovernance::active_ids(env.clone()).len()
         }),
         64
     );
@@ -1239,7 +1295,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
 }
 
 #[test]
-fn admin_upgrade_is_admin_only_and_has_independent_ttl() {
+fn upgrade_is_admin_only_and_has_independent_ttl() {
     let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(10);
     let non_admin = Address::generate(&env);
     let wasm_hash = BytesN::from_array(&env, &[7_u8; 32]);
@@ -1250,18 +1306,18 @@ fn admin_upgrade_is_admin_only_and_has_independent_ttl() {
                 env.clone(),
                 non_admin,
                 0,
-                GovernanceAction::AdminUpgrade(wasm_hash.clone()),
+                GovernanceAction::Upgrade(wasm_hash.clone()),
                 0,
             )
         }),
         Err(GovernanceError::Unauthorized)
     );
 
-    let set_admin_upgrade_ttl = submit_now(
+    let set_upgrade_ttl = submit_now(
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 77),
+        GovernanceAction::SetActionTtl(OperationKind::Upgrade, 77),
     );
     env.ledger().set(LedgerInfo {
         timestamp: 101,
@@ -1269,12 +1325,11 @@ fn admin_upgrade_is_admin_only_and_has_independent_ttl() {
         sequence_number: 101,
         ..Default::default()
     });
-    accept_now(&env, &governance_id, &admin, set_admin_upgrade_ttl);
+    accept_now(&env, &governance_id, &admin, set_upgrade_ttl);
 
     assert_eq!(
         env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::AdminUpgrade)
-                .unwrap()
+            ProxyOracleGovernance::get_operation_ttl(env.clone(), OperationKind::Upgrade).unwrap()
         }),
         77
     );
@@ -1290,7 +1345,7 @@ fn admin_upgrade_is_admin_only_and_has_independent_ttl() {
             env.clone(),
             admin,
             1,
-            GovernanceAction::AdminUpgrade(wasm_hash),
+            GovernanceAction::Upgrade(wasm_hash),
             0,
         )
         .unwrap()
@@ -1299,7 +1354,7 @@ fn admin_upgrade_is_admin_only_and_has_independent_ttl() {
 }
 
 #[test]
-fn admin_upgrade_zero_hash_is_rejected_before_silent_acceptance() {
+fn upgrade_zero_hash_is_rejected_before_silent_acceptance() {
     let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
     let zero_hash = BytesN::from_array(&env, &[0_u8; 32]);
 
@@ -1309,7 +1364,7 @@ fn admin_upgrade_zero_hash_is_rejected_before_silent_acceptance() {
                 env.clone(),
                 admin,
                 0,
-                GovernanceAction::AdminUpgrade(zero_hash),
+                GovernanceAction::Upgrade(zero_hash),
                 0,
             )
         }),

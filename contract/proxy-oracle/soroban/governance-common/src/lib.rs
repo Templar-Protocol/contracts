@@ -129,10 +129,17 @@ governance_operations! {
     Rearm(Asset, u32, RearmConfig) => rearm,
     SetEnforced(Asset, u32, SetEnforcedConfig) => set_enforced,
     SetManualTrip(Address, Asset, bool, Option<Bytes>) => set_manual_trip,
-    SetGovernance(Address) => set_governance,
+    TransferOwnership(Address) => transfer_ownership,
+    // `AcceptOwnership` and `RenounceOwnership` carry no semantic payload, but
+    // `#[contracttype]` does not support 0-element tuple variants and mixing
+    // bare unit variants with tuple variants is not allowed either, so each
+    // takes a `()` placeholder field. Callers construct
+    // `GovernanceAction::AcceptOwnership(())`.
+    AcceptOwnership(()) => accept_ownership,
+    RenounceOwnership(()) => renounce_ownership,
     SetActionTtl(OperationKind, u64) => set_action_ttl,
     SetRole(Address, Role, bool) => set_role,
-    AdminUpgrade(BytesN<32>) => admin_upgrade,
+    Upgrade(BytesN<32>) => upgrade,
 }
 
 impl GovernanceAction {
@@ -146,7 +153,11 @@ impl GovernanceAction {
             | Self::AddBreaker(_, _)
             | Self::RemoveBreaker(_, _)
             | Self::SetActionTtl(_, _) => Role::ProxyConfigurationManager,
-            Self::SetGovernance(_) | Self::SetRole(_, _, _) | Self::AdminUpgrade(_) => Role::Admin,
+            Self::TransferOwnership(_)
+            | Self::AcceptOwnership(())
+            | Self::RenounceOwnership(())
+            | Self::SetRole(_, _, _)
+            | Self::Upgrade(_) => Role::Admin,
         }
     }
 
@@ -157,13 +168,15 @@ impl GovernanceAction {
             OperationKind::ConfigureBreakers => 3,
             OperationKind::AddBreaker => 4,
             OperationKind::RemoveBreaker => 5,
-            OperationKind::Rearm => 13,
-            OperationKind::SetEnforced => 14,
+            OperationKind::RenounceOwnership => 6,
             OperationKind::SetManualTrip => 7,
-            OperationKind::SetGovernance => 9,
+            OperationKind::AcceptOwnership => 8,
+            OperationKind::TransferOwnership => 9,
             OperationKind::SetActionTtl => 10,
             OperationKind::SetRole => 11,
-            OperationKind::AdminUpgrade => 12,
+            OperationKind::Upgrade => 12,
+            OperationKind::Rearm => 13,
+            OperationKind::SetEnforced => 14,
         }
     }
 }
@@ -210,7 +223,7 @@ pub fn validate_action(
         GovernanceAction::SetActionTtl(_, new_ttl_ns) if *new_ttl_ns > MAX_PROPOSAL_TTL_NS => {
             Err(GovernanceError::TtlExceedsMaximum)
         }
-        GovernanceAction::AdminUpgrade(wasm_hash) if is_zero_wasm_hash(wasm_hash) => {
+        GovernanceAction::Upgrade(wasm_hash) if is_zero_wasm_hash(wasm_hash) => {
             Err(GovernanceError::InvalidInput)
         }
         _ => Ok(()),
@@ -268,7 +281,7 @@ mod tests {
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
         ));
 
-        let admin_ttl = GovernanceAction::SetActionTtl(OperationKind::AdminUpgrade, 1);
+        let admin_ttl = GovernanceAction::SetActionTtl(OperationKind::Upgrade, 1);
         assert_eq!(admin_ttl.kind(), OperationKind::SetActionTtl);
         assert_eq!(admin_ttl.required_role(), Role::ProxyConfigurationManager);
 
@@ -365,9 +378,10 @@ mod tests {
                 .action_code(),
             7
         );
-        // Codes 6 and 8 are intentionally skipped (reserved).
+        assert_eq!(GovernanceAction::RenounceOwnership(()).action_code(), 6);
+        assert_eq!(GovernanceAction::AcceptOwnership(()).action_code(), 8);
         assert_eq!(
-            GovernanceAction::SetGovernance(account.clone()).action_code(),
+            GovernanceAction::TransferOwnership(account.clone()).action_code(),
             9
         );
         assert_eq!(
@@ -378,7 +392,7 @@ mod tests {
             GovernanceAction::SetRole(account.clone(), Role::ManualTripper, true).action_code(),
             11
         );
-        assert_eq!(GovernanceAction::AdminUpgrade(wasm_hash).action_code(), 12);
+        assert_eq!(GovernanceAction::Upgrade(wasm_hash).action_code(), 12);
     }
 
     #[test]
@@ -437,7 +451,7 @@ mod tests {
         let zero_hash = BytesN::from_array(&env, &[0_u8; 32]);
 
         assert_eq!(
-            validate_action(&GovernanceAction::AdminUpgrade(zero_hash), 1024,),
+            validate_action(&GovernanceAction::Upgrade(zero_hash), 1024,),
             Err(GovernanceError::InvalidInput)
         );
     }

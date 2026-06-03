@@ -658,7 +658,7 @@ fn event_circuit_breaker_tripped_topics_payload_are_exact() {
 #[test]
 fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
     let (env, proxy, source, asset) = setup();
-    let old_governance = proxy.governance().unwrap();
+    let old_governance = proxy.get_owner().unwrap();
     let new_governance = Address::generate(&env);
 
     proxy.configure_breakers(&asset, &2, &8);
@@ -732,15 +732,17 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
         .to_xdr(&env, &proxy.address)]
     );
 
-    proxy.set_governance(&new_governance);
-    assert_eq!(
-        contract_events(&env, &proxy.address),
-        vec![GovernanceHandoff {
-            old_governance,
-            new_governance,
-        }
-        .to_xdr(&env, &proxy.address)]
-    );
+    // Ownership transfer is delegated to `stellar_access::ownable`, which
+    // emits its own events. We don't assert exact event payloads here —
+    // those are the library's responsibility — but we verify the owner
+    // field flips after the two-step transfer completes. `contract_events`
+    // is filtered by sequence in subsequent steps, so the ownership events
+    // don't leak into later assertions.
+    let _ = old_governance;
+    let live_until_ledger = env.ledger().max_live_until_ledger();
+    proxy.transfer_ownership(&new_governance, &live_until_ledger);
+    proxy.accept_ownership();
+    assert_eq!(proxy.get_owner(), Some(new_governance.clone()));
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));

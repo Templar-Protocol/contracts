@@ -65,12 +65,16 @@ impl ProxyGovernanceInterface for Contract {
     }
 
     fn proposal_count(&self) -> u32 {
-        self.header.proposal_count()
+        u32::try_from(self.header.active_ids().len()).unwrap_or(u32::MAX)
     }
 
     fn list_proposals(&self, offset: Option<u32>, count: Option<u32>) -> Vec<u32> {
         list(
-            self.header.proposal_ids().map(Self::id_to_u32),
+            self.header
+                .active_ids()
+                .iter()
+                .copied()
+                .map(Self::id_to_u32),
             offset,
             count,
         )

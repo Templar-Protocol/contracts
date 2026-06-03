@@ -23,7 +23,7 @@ mod roles;
 mod storage;
 
 pub use events::{
-    ActionTtlSet, GovernanceHandoffSubmitted, ProposalAccepted, ProposalRevoked, ProposalSubmitted,
+    ActionTtlSet, OwnershipTransferSubmitted, ProposalAccepted, ProposalRevoked, ProposalSubmitted,
     TtlExtended,
 };
 
@@ -44,13 +44,13 @@ impl ProxyOracleGovernance {
         env: Env,
         admin: Address,
         proxy_oracle: Address,
-        action_ttl_ns: u64,
+        initial_uniform_ttl_ns: u64,
     ) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         if env.storage().instance().has(&DataKey::ProxyOracle) {
             return Err(GovernanceError::AlreadyInitialized);
         }
-        if action_ttl_ns > MAX_PROPOSAL_TTL_NS {
+        if initial_uniform_ttl_ns > MAX_PROPOSAL_TTL_NS {
             return Err(GovernanceError::TtlExceedsMaximum);
         }
         env.storage()
@@ -59,7 +59,7 @@ impl ProxyOracleGovernance {
         save_header(
             &env,
             &KernelGovernance::new(
-                TtlConfig::uniform(Nanoseconds::from_ns(action_ttl_ns)),
+                TtlConfig::uniform(Nanoseconds::from_ns(initial_uniform_ttl_ns)),
                 MAX_PENDING_PROPOSALS,
             ),
         );
@@ -70,29 +70,6 @@ impl ProxyOracleGovernance {
     pub fn next_proposal_id(env: Env) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
         Ok(load_header(&env)?.next_id)
-    }
-
-    pub fn proposal_count(env: Env) -> u32 {
-        extend_instance_ttl(&env);
-        load_header(&env)
-            .map(|header| header.proposal_count())
-            .unwrap_or(0)
-    }
-
-    pub fn list_proposals(env: Env, offset: u32, count: u32) -> Vec<u64> {
-        extend_instance_ttl(&env);
-        let Ok(header) = load_header(&env) else {
-            return Vec::new(&env);
-        };
-        let ids: alloc::vec::Vec<u64> = header.proposal_ids().collect();
-        let mut result = Vec::new(&env);
-        let upper_bound = offset.saturating_add(count);
-        for index in offset..upper_bound {
-            if let Some(id) = ids.get(index as usize) {
-                result.push_back(*id);
-            }
-        }
-        result
     }
 
     pub fn get_proposal(env: Env, id: u64) -> Option<Proposal> {
@@ -147,8 +124,8 @@ impl ProxyOracleGovernance {
             action_code: operation.action_code(),
         }
         .publish(&env);
-        if let GovernanceAction::SetGovernance(new_governance) = operation {
-            GovernanceHandoffSubmitted { id, new_governance }.publish(&env);
+        if let GovernanceAction::TransferOwnership(new_owner) = operation {
+            OwnershipTransferSubmitted { id, new_owner }.publish(&env);
         }
         Ok(proposal)
     }
@@ -231,20 +208,16 @@ impl ProxyOracleGovernance {
         })
     }
 
-    pub fn pending_ids(env: Env) -> Vec<u64> {
-        let count = Self::proposal_count(env.clone());
-        Self::list_proposals(env, 0, count)
-    }
-
-    pub fn action_ttl_ns(env: Env) -> Result<u64, GovernanceError> {
-        Self::get_operation_ttl(env, OperationKind::SetProxy)
-    }
-
-    pub fn admin(env: Env) -> Result<Address, GovernanceError> {
+    pub fn active_ids(env: Env) -> Vec<u64> {
         extend_instance_ttl(&env);
-        roles::members(&env, Role::Admin)
-            .first()
-            .ok_or(GovernanceError::MissingConfig)
+        let Ok(header) = load_header(&env) else {
+            return Vec::new(&env);
+        };
+        let mut result = Vec::new(&env);
+        for id in header.active_ids() {
+            result.push_back(*id);
+        }
+        result
     }
 
     pub fn proxy_oracle(env: Env) -> Result<Address, GovernanceError> {

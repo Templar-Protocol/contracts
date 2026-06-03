@@ -26,11 +26,11 @@ pub struct ProposalRevoked {
 
 #[contractevent]
 #[derive(Clone)]
-pub struct GovernanceHandoffSubmitted {
+pub struct OwnershipTransferSubmitted {
     #[topic]
     pub id: u64,
     #[topic]
-    pub new_governance: Address,
+    pub new_owner: Address,
 }
 
 #[contractevent]

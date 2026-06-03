@@ -8,6 +8,8 @@ extern crate alloc;
 use alloc::vec::Vec as AllocVec;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+use stellar_access::ownable::{set_owner, Ownable};
+use stellar_macros::only_owner;
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerEvent as KernelCircuitBreakerEvent, CircuitBreakerSet, CircuitBreakerSetConfig,
@@ -33,8 +35,7 @@ mod storage;
 pub use events::{
     CacheBlocked, CircuitBreakerAdded, CircuitBreakerConfigSet, CircuitBreakerEnforcementSet,
     CircuitBreakerRearmed, CircuitBreakerRemoved, CircuitBreakerTripped, ContractUpgraded,
-    GovernanceHandoff, ManualTripSet, ProxyRemoved, ProxySet, RefreshFailure, RefreshSuccess,
-    TtlExtended,
+    ManualTripSet, ProxyRemoved, ProxySet, RefreshFailure, RefreshSuccess, TtlExtended,
 };
 
 use codes::breaker_error;
@@ -42,7 +43,7 @@ use conversion::{accepted_history_source, circuit_breaker_from_config, validate_
 use refresh::{cached_accepted_no_older_than, refresh_one};
 use storage::{
     add_asset, extend_persistent_ttl, get_assets, invalidate_cache, load_breakers, remove_asset,
-    require_governance, require_proxy_exists, store_breakers, DataKey,
+    require_proxy_exists, store_breakers, DataKey,
 };
 
 pub(crate) const MAX_HISTORY_RECORDS: u32 = 32;
@@ -91,9 +92,11 @@ pub enum RefreshStatus {
     SourceUnavailable,
 }
 
-/// Shared scaffolding for every governance-driven breaker mutation: auths,
-/// loads the set, runs `op`, persists, publishes the kernel-emitted events,
-/// invalidates the cache, and returns whatever `op` returned.
+/// Shared scaffolding for every owner-driven breaker mutation: auths via
+/// `#[only_owner]` on the caller, loads the set, runs `op`, persists,
+/// publishes the kernel-emitted events, invalidates the cache, and returns
+/// whatever `op` returned. The auth check is done by the `#[only_owner]`
+/// macro on the entrypoint, not here.
 fn with_breakers<T>(
     env: &Env,
     asset: &Asset,
@@ -102,7 +105,6 @@ fn with_breakers<T>(
     ) -> Result<(T, AllocVec<KernelCircuitBreakerEvent>), ContractError>,
 ) -> Result<T, ContractError> {
     extend_instance_ttl(env);
-    require_governance(env)?;
     require_proxy_exists(env, asset)?;
     let mut breakers = load_breakers(env, asset)?;
     let (result, events) = op(&mut breakers)?;
@@ -114,40 +116,21 @@ fn with_breakers<T>(
 
 #[contractimpl]
 impl SorobanProxyOracle {
-    pub fn __constructor(env: Env, governance: Address, base: Asset) -> Result<(), ContractError> {
+    pub fn __constructor(env: Env, governance: Address, base: Asset) {
         extend_instance_ttl(&env);
-        if env.storage().instance().has(&DataKey::Governance) {
-            return Err(ContractError::AlreadyInitialized);
-        }
-        let storage = env.storage().instance();
-        storage.set(&DataKey::Governance, &governance);
-        storage.set(&DataKey::Base, &base);
+        env.storage().instance().set(&DataKey::Base, &base);
         env.storage()
             .persistent()
             .set(&DataKey::Assets, &Vec::<Asset>::new(&env));
-        Ok(())
+        set_owner(&env, &governance);
     }
 
-    pub fn set_governance(env: Env, new_governance: Address) -> Result<(), ContractError> {
-        extend_instance_ttl(&env);
-        let old_governance = require_governance(&env)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::Governance, &new_governance);
-        GovernanceHandoff {
-            old_governance,
-            new_governance,
-        }
-        .publish(&env);
-        Ok(())
-    }
-
-    /// Governance-only runtime upgrade. Takes an already-uploaded WASM hash;
-    /// does not accept a `migrate` payload to avoid widening governance's
+    /// Owner-only runtime upgrade. Takes an already-uploaded WASM hash;
+    /// does not accept a `migrate` payload to avoid widening the owner's
     /// authority surface beyond a typed code swap.
+    #[only_owner]
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         extend_instance_ttl(&env);
-        require_governance(&env)?;
         if is_zero_wasm_hash(&new_wasm_hash) {
             return Err(ContractError::InvalidInput);
         }
@@ -157,9 +140,9 @@ impl SorobanProxyOracle {
         Ok(())
     }
 
+    #[only_owner]
     pub fn set_proxy(env: Env, asset: Asset, config: ProxyConfig) -> Result<(), ContractError> {
         extend_instance_ttl(&env);
-        require_governance(&env)?;
         validate_proxy_config(&config)?;
         env.storage()
             .persistent()
@@ -182,9 +165,9 @@ impl SorobanProxyOracle {
         Ok(())
     }
 
-    pub fn remove_proxy(env: Env, asset: Asset) -> Result<(), ContractError> {
+    #[only_owner]
+    pub fn remove_proxy(env: Env, asset: Asset) {
         extend_instance_ttl(&env);
-        require_governance(&env)?;
         let storage = env.storage().persistent();
         storage.remove(&DataKey::Proxy(asset.clone()));
         storage.remove(&DataKey::Breakers(asset.clone()));
@@ -192,9 +175,9 @@ impl SorobanProxyOracle {
         remove_asset(&env, &asset);
         invalidate_cache(&env, &asset);
         ProxyRemoved { asset }.publish(&env);
-        Ok(())
     }
 
+    #[only_owner]
     pub fn configure_breakers(
         env: Env,
         asset: Asset,
@@ -213,6 +196,7 @@ impl SorobanProxyOracle {
         })
     }
 
+    #[only_owner]
     pub fn add_breaker(
         env: Env,
         asset: Asset,
@@ -229,6 +213,7 @@ impl SorobanProxyOracle {
         })
     }
 
+    #[only_owner]
     pub fn remove_breaker(env: Env, asset: Asset, breaker_id: u32) -> Result<(), ContractError> {
         with_breakers(&env, &asset, |breakers| {
             let outcome = breakers.remove(breaker_id).map_err(breaker_error)?;
@@ -236,6 +221,7 @@ impl SorobanProxyOracle {
         })
     }
 
+    #[only_owner]
     pub fn rearm(
         env: Env,
         asset: Asset,
@@ -252,6 +238,7 @@ impl SorobanProxyOracle {
         })
     }
 
+    #[only_owner]
     pub fn set_enforced(
         env: Env,
         asset: Asset,
@@ -266,6 +253,7 @@ impl SorobanProxyOracle {
         })
     }
 
+    #[only_owner]
     pub fn set_manual_trip(
         env: Env,
         actor: Address,
@@ -345,10 +333,6 @@ impl SorobanProxyOracle {
         })
     }
 
-    pub fn governance(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::Governance)
-    }
-
     pub fn extend_ttl(env: Env) {
         extend_instance_ttl(&env);
         extend_persistent_ttl(&env, &DataKey::Assets);
@@ -365,6 +349,14 @@ impl SorobanProxyOracle {
         .publish(&env);
     }
 }
+
+/// Owner/governance surface is delegated to `stellar_access::ownable`, which
+/// exposes `get_owner`, two-step `transfer_ownership`/`accept_ownership`, and
+/// `renounce_ownership` via the standard `Ownable` trait. We re-export those
+/// methods on the contract's client by exposing the trait's default
+/// implementations through `#[contractimpl(contracttrait)]`.
+#[contractimpl(contracttrait)]
+impl Ownable for SorobanProxyOracle {}
 
 /// Read API for `Sep40Adapter` contracts. The proxy oracle does not
 /// implement SEP-40; adapters scale `NormalizedPrice` to their own

@@ -254,18 +254,12 @@ impl<Ttls> Governance<Ttls> {
         }
     }
 
+    /// The full slice of currently-pending proposal ids in insertion order.
+    /// Callers derive count (`.len()`), iteration, and membership
+    /// (`.contains(&id)`) directly from this — no separate accessors needed.
     #[must_use]
-    pub fn proposal_count(&self) -> u32 {
-        u32::try_from(self.active_ids.len()).unwrap_or(u32::MAX)
-    }
-
-    pub fn proposal_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.active_ids.iter().copied()
-    }
-
-    #[must_use]
-    pub fn contains(&self, id: u64) -> bool {
-        self.active_ids.iter().any(|candidate| *candidate == id)
+    pub fn active_ids(&self) -> &[u64] {
+        &self.active_ids
     }
 
     /// Validates and reserves a new proposal id, returning the proposal body
@@ -294,7 +288,7 @@ impl<Ttls> Governance<Ttls> {
             }
             .into());
         }
-        if self.proposal_count() >= self.max_pending_proposals {
+        if u32::try_from(self.active_ids.len()).unwrap_or(u32::MAX) >= self.max_pending_proposals {
             return Err(CreateError::TooManyPendingProposals);
         }
         operation
@@ -496,15 +490,15 @@ mod tests {
         let fast = governance
             .create(1, Op("fast", Kind::Fast), now, "alice", Nanoseconds::zero())
             .unwrap();
-        assert_eq!(governance.proposal_count(), 2);
+        assert_eq!(governance.active_ids().len(), 2);
 
         governance.execute(1, &fast, now).unwrap();
-        assert_eq!(governance.proposal_count(), 1);
-        assert!(governance.contains(0));
-        assert!(!governance.contains(1));
+        assert_eq!(governance.active_ids().len(), 1);
+        assert!(governance.active_ids().contains(&0));
+        assert!(!governance.active_ids().contains(&1));
 
         governance.execute(0, &slow, now).unwrap();
-        assert_eq!(governance.proposal_count(), 0);
+        assert_eq!(governance.active_ids().len(), 0);
     }
 
     #[test]
@@ -542,12 +536,12 @@ mod tests {
             governance.execute(0, &proposal, created_at).unwrap_err(),
             ExecuteError::TtlNotElapsed(_)
         ));
-        assert!(governance.contains(0));
+        assert!(governance.active_ids().contains(&0));
 
         governance
             .execute(0, &proposal, Nanoseconds::from_secs(11))
             .unwrap();
-        assert!(!governance.contains(0));
+        assert!(!governance.active_ids().contains(&0));
     }
 
     #[test]
@@ -559,7 +553,7 @@ mod tests {
             .create(0, Op("x", Kind::Fast), now, "alice", Nanoseconds::zero())
             .unwrap();
         governance.cancel(0).unwrap();
-        assert!(!governance.contains(0));
+        assert!(!governance.active_ids().contains(&0));
 
         assert!(matches!(
             governance.cancel(0).unwrap_err(),

@@ -169,12 +169,34 @@ pub fn execute_action(
                 ),
             )
         }
-        GovernanceAction::SetGovernance(governance) => invoke_runtime_call(
-            env,
-            &proxy,
-            "set_governance",
-            Vec::from_array(env, [governance.clone().into_val(env)]),
-        ),
+        GovernanceAction::TransferOwnership(new_owner) => {
+            // First leg of `stellar_access::ownable`'s two-step transfer.
+            // The new owner must follow up with an `AcceptOwnership`
+            // proposal (executed on whichever governance contract becomes
+            // the new owner) or a direct `accept_ownership` call.
+            // `live_until_ledger` is set to the maximum entry TTL window —
+            // past that, the pending transfer expires and the proposal
+            // must be re-submitted.
+            let live_until_ledger = env.ledger().max_live_until_ledger();
+            invoke_runtime_call(
+                env,
+                &proxy,
+                "transfer_ownership",
+                Vec::from_array(
+                    env,
+                    [
+                        new_owner.clone().into_val(env),
+                        live_until_ledger.into_val(env),
+                    ],
+                ),
+            )
+        }
+        GovernanceAction::AcceptOwnership(()) => {
+            invoke_runtime_call(env, &proxy, "accept_ownership", Vec::new(env))
+        }
+        GovernanceAction::RenounceOwnership(()) => {
+            invoke_runtime_call(env, &proxy, "renounce_ownership", Vec::new(env))
+        }
         GovernanceAction::SetActionTtl(kind, new_ttl_ns) => {
             governance
                 .ttls
@@ -194,7 +216,7 @@ pub fn execute_action(
                 roles::revoke(env, account, *role, caller)
             }
         }
-        GovernanceAction::AdminUpgrade(new_wasm_hash) => invoke_runtime_call(
+        GovernanceAction::Upgrade(new_wasm_hash) => invoke_runtime_call(
             env,
             &proxy,
             "upgrade",

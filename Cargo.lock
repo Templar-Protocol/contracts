@@ -13107,6 +13107,8 @@ version = "0.1.0"
 dependencies = [
  "postcard",
  "soroban-sdk 25.3.0",
+ "stellar-access",
+ "stellar-macros",
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-soroban-common",
