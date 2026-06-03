@@ -151,7 +151,7 @@ stellar contract invoke \
 ```
 
 Parameters:
-- `governance`: address of the governance contract (set this after deploying governance, or use a multisig address and update later via `set_governance`)
+- `governance`: address of the governance contract (set this after deploying governance, or use a multisig address and rotate later via the two-step Ownable handoff — `transfer_ownership(<NEW_OWNER>, <LIVE_UNTIL_LEDGER>)` from the current owner followed by `accept_ownership()` from the new owner)
 - `base`: the source-validation invariant — every registered source must report `base()` matching this value. Not a SEP-40 surface concern; each `Sep40Adapter` declares its own SEP-40 `base()` independently.
 
 Per-feed `decimals` and `resolution` are now adapter-side; they are not part of the runtime constructor.
@@ -198,7 +198,7 @@ stellar contract deploy \
 ```
 
 Parameters:
-- `owner`: address authorized for `set_decimals`, `set_resolution`, `set_base`, `upgrade`, and `transfer_ownership`. Initially a multisig key or a future governance contract.
+- `owner`: address authorized for `set_metadata`, `upgrade`, and the two-step `transfer_ownership`/`accept_ownership` flow. Initially a multisig key or a future governance contract.
 - `parent_oracle`: the runtime contract address — adapters call its `aggregated_latest` for every read.
 - `asset`: the single asset this adapter exposes via SEP-40. Re-deploy with a different `asset` for additional feeds.
 - `decimals` / `resolution` / `base`: per-adapter SEP-40 surface metadata. `decimals` ≤ 18; `resolution` non-zero.
@@ -1183,7 +1183,7 @@ stellar contract invoke \
   --new_wasm_hash <NEW_WASM_HASH>
 ```
 
-The adapter's `upgrade` entrypoint is gated by `#[only_owner]` from `stellar-macros`. Owners can change `decimals`/`resolution`/`base` independently, transfer ownership in two steps (`transfer_ownership` → `accept_ownership`), or renounce ownership to freeze the adapter's parameters.
+The adapter's `upgrade` entrypoint is gated by `#[only_owner]` from `stellar-macros`. Owners can update `decimals`/`resolution`/`base` together via `set_metadata(decimals, resolution, base)`, transfer ownership in two steps (`transfer_ownership` → `accept_ownership`), or renounce ownership to freeze the adapter's parameters.
 
 After upgrading, verify the contract is still responsive:
 

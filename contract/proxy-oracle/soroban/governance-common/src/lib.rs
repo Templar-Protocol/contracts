@@ -311,7 +311,7 @@ mod tests {
         let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
         let wasm_hash = BytesN::from_array(&env, &[7_u8; 32]);
 
-        // The action codes must remain stable; gaps are intentional (code 8 is reserved).
+        // The action codes must remain stable.
         assert_eq!(
             GovernanceAction::SetProxy(
                 asset.clone(),

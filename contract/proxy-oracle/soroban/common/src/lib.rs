@@ -234,3 +234,34 @@ pub struct RearmConfig {
     pub armed_after_secs: u64,
     pub accepted_history_source_code: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+
+    use super::*;
+    use soroban_sdk::Env;
+
+    /// Cover the unsafe `transmute` path in `SorobanDecimal` end-to-end:
+    /// every value we round-trip must come back equal, both through the
+    /// `to_decimal()` method and through both `From` impls.
+    #[test]
+    fn soroban_decimal_round_trips_representative_values() {
+        let env = Env::default();
+        let cases: alloc::vec::Vec<Decimal> = alloc::vec![
+            Decimal::ZERO,
+            Decimal::ONE_HALF,
+            Decimal::ONE,
+            Decimal::TWO,
+            Decimal::LN2,
+            Decimal::E,
+            Decimal::MAX,
+        ];
+        for original in cases {
+            let wrapped = SorobanDecimal::from_decimal(&env, original);
+            assert_eq!(wrapped.to_decimal(), original, "to_decimal");
+            assert_eq!(Decimal::from(&wrapped), original, "From<&SorobanDecimal>");
+            assert_eq!(Decimal::from(wrapped), original, "From<SorobanDecimal>");
+        }
+    }
+}
